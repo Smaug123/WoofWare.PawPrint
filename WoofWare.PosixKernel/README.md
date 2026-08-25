@@ -1,5 +1,11 @@
 # WoofWare.PosixKernel
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="logos/dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="logos/light.svg">
+  <img alt="Project logo: minimalistic face of a cartoon Shiba Inu, drawn in outline, sitting at the centre of three concentric rings." src="logos/light.svg" width="300">
+</picture>
+
 A deterministic, purely functional simulation of a POSIX process.
 
 This library models what a Unix kernel tells a process about the world.
