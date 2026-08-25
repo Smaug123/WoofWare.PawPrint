@@ -41,11 +41,9 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     by text, so the subjects are compared as a multiset and adding a *new*
     declaration that reuses an existing one-liner is reported as MOVED. Read the
     report: if every old name is still there, nothing was detached.
-  * A block that was stranded and then fused with a block documenting a
-    declaration of the *same name*. The subject test that separates a fusion
-    from an ordinary expansion cannot distinguish those, and it is the right
-    trade: expansion is common and same-name fusion needs two declarations of
-    one name in scope.
+  * A fusion in which one half was also reworded. Fusion is recognised by the
+    fused text being exactly the two originals joined, so an edit to either half
+    hides it; the block then reads as deleted-and-added like any other rewording.
 """
 
 import os
@@ -152,13 +150,34 @@ def side(files: list[str], ref: str | None = None) -> dict[str, list[str | None]
                 continue
             text = r.stdout
         else:
-            p = Path(f)
-            if not p.exists():
+            # Exact spelling here too: on a case-insensitive filesystem the two
+            # halves of a case-only rename both open the destination, so the
+            # current side would read one file twice and report the phantom
+            # duplicate as a changed subject.
+            if not exists_exactly(f):
                 continue
-            text = p.read_text()
+            text = Path(f).read_text()
         for k, v in pairs(text).items():
             acc.setdefault(k, []).extend(v)
     return acc
+
+
+def split_into(text: str, old: dict[str, list[str | None]], memo) -> list[str] | None:
+    """`text` as a concatenation of blocks that stood on their own before, if it is."""
+    if text in memo:
+        return memo[text]
+    if text in old:
+        memo[text] = [text]
+        return memo[text]
+    memo[text] = None  # guard against a pathological re-entry
+    for i in range(len(text) - 1, 0, -1):
+        if text[i] != " " or text[:i] not in old:
+            continue
+        rest = split_into(text[i + 1 :], old, memo)
+        if rest:
+            memo[text] = [text[:i]] + rest
+            return memo[text]
+    return None
 
 
 def main() -> int:
@@ -209,30 +228,31 @@ def main() -> int:
         return sorted(x or "<none>" for x in subs)
 
     bad = 0
-    new_keys = list(new)
     for key, subs in old.items():
-        if key not in new:
-            # A block stranded immediately above another docstring fuses with
-            # it, so its old text survives only as a substring of a new block.
-            # That is a detachment rather than a deletion, and it is the shape
-            # the eye misses.
-            # A block that merely gained a paragraph is also a substring of a
-            # larger one, so the substring test alone cannot tell an edit from a
-            # fusion. What separates them is the subject: an expanded docstring
-            # still documents what it did, a fused one has been captured by
-            # whatever followed the definition that left.
-            merged = [
-                k for k in new_keys if key in k and names(new[k]) != names(subs)
-            ]
-            if merged:
-                bad += 1
-                print(f"MERGED  into a larger block, which now documents {names(new[merged[0]])}")
-                print(f"        {key[:150]}")
-            continue
-        if names(subs) != names(new[key]):
+        if key in new and names(subs) != names(new[key]):
             bad += 1
             print(f"MOVED   {names(subs)} -> {names(new[key])}")
             print(f"        {key[:150]}")
+
+    # A block stranded above another fuses with it, and the fused text is
+    # exactly the two originals joined. That concatenation is the signature, and
+    # it is what separates a fusion from an ordinary expansion: an expanded
+    # docstring also contains its old self, but the added prose is new text
+    # rather than another block that used to stand on its own. Testing for it
+    # exactly also means a fusion between two declarations of the *same* name —
+    # F# overloads, of which this repository has several — is still caught, and
+    # that each fused block is reported once rather than once per half.
+    memo: dict[str, list[str] | None] = {}
+    for key in new:
+        if key in old:
+            continue
+        parts = split_into(key, old, memo)
+        if parts and len(parts) > 1:
+            bad += 1
+            was = [names(old[k])[0] for k in parts]
+            print(f"MERGED  {was} fused into one block, which documents {names(new[key])}")
+            for k in parts:
+                print(f"        {k[:120]}")
 
     print()
     if bad:
