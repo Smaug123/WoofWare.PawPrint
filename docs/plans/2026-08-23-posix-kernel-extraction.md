@@ -1242,6 +1242,44 @@ The remaining two records follow the same shape — stage 6f for
 one diff of ~260 mechanical call sites is not reviewable, and the split is the
 same one 6a–6d used.
 
+#### Stage 6f: the process forwarders deleted — done
+
+Nine wrappers gone, `mapProcess` added beside `mapTasks`, about forty call sites
+respelled. Three of the nine took a hard-coded `context` string, and 6d's choice
+(c) pays off here exactly as it was meant to: `KernelConfig.applyTo` now passes
+`"KernelConfig.ProcessPath"`, `"KernelConfig.Umask"` and
+`"KernelConfig.Environment"` — the knob a host actually turns — instead of
+`EmulatedKernel.ProcessPath` and a field name that is about to become
+`kernel.Process.Environment`. Tests pass `"test"`, which is what every other
+`context`-taking call in this repository does.
+
+**The two tests that asserted a message had to move with the name.** Both called
+a setter directly and asserted the string that setter hard-coded. With the name
+supplied by the caller, a test that calls the library directly is asserting a
+string it chose itself, which is no test at all — the library's own fixture
+already covers that the parameter is not ignored. What PawPrint still owns is
+*which* name it passes, and that is only observable through `KernelConfig.applyTo`:
+
+* `TestProcessPath`'s "rejects a forged path" now drives `applyTo` with a
+  defaulted `AbsoluteUnixPath` and asserts `KernelConfig.ProcessPath`.
+* `TestEnvironmentEntryInvariant`'s direct-setter rejection is deleted. Its
+  sibling already drove the same `rejected` corpus through `applyTo` and asserted
+  the same thing, expressly so that an `applyTo` which assigned `Environment` by
+  record-copy would be caught; that sibling inherits the deleted test's account
+  of why the boundary matters.
+
+Mutation-tested, both surviving assertions: change either context string at its
+`applyTo` call site and the corresponding test fails. `KernelConfig.Umask`'s has
+no such test and cannot have one — 6d measured that a defaulted `PermissionBits`
+is `0o000`, a legal `umask 000`, so no forged value reaches that guard.
+
+**Correctness oracle**: the non-`Guest` suite, the library suite, and the
+docstring check; `Guest` runs in CI. The count drops by one, which is the deleted
+test.
+
+Stage 6g is the last: `UnixMachineState`'s twenty-four wrappers and about two
+hundred call sites.
+
 ### Stage 7: the syscall request layer, on the pure syscalls first
 
 **Dependencies**: stage 6.

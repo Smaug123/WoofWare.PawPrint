@@ -52,26 +52,35 @@ module TestProcessPath =
         kernel.ProcessPath |> shouldEqual None
 
     [<Test>]
-    let ``withProcessPath rejects a forged path`` () : unit =
+    let ``applyTo rejects a forged path, naming the knob a host would fix`` () : unit =
         // `AbsoluteUnixPath`'s case is private, so the only invalid value a host
-        // can produce is a defaulted one. The setter is where that stops, and it
-        // must name the knob rather than failing as a null reference inside the
-        // first `SystemNative_GetProcessPath` — the same boundary
+        // can produce is a defaulted one. `UnixProcessState.withProcessPath` is
+        // where that stops — its own test is in `WoofWare.PosixKernel.Test` — and
+        // what PawPrint owns is the *name* it hands that setter. Asserted through
+        // `applyTo` because that is the path a host takes, and because the name
+        // is only right if it is the one this call site passes: a setter tested
+        // directly would be asserting a string the test itself chose.
+        //
+        // It must also fail here rather than as a null reference inside the first
+        // `SystemNative_GetProcessPath` — the same boundary
         // `withFileSystemAndCurrentDirectory` draws for the current directory.
         let exn =
             Assert.Throws<Exception> (fun () ->
                 EmulatedKernel.initial
-                |> EmulatedKernel.withProcessPath (Some Unchecked.defaultof<AbsoluteUnixPath>)
+                |> KernelConfig.applyTo
+                    { KernelConfig.Default with
+                        ProcessPath = Some Unchecked.defaultof<AbsoluteUnixPath>
+                    }
                 |> ignore<EmulatedKernel>
             )
 
-        exn.Message |> shouldContainText "EmulatedKernel.ProcessPath"
+        exn.Message |> shouldContainText "KernelConfig.ProcessPath"
 
     [<Test>]
     let ``withProcessPath accepts None`` () : unit =
         // The validation must not fire on the absent case: `None` carries no
         // path to validate.
         EmulatedKernel.initial
-        |> EmulatedKernel.withProcessPath None
+        |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "test" None)
         |> fun k -> k.ProcessPath
         |> shouldEqual None

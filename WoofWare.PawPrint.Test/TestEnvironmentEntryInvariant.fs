@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// A real process's environment is a list of `name=value` strings, not a map; the
 /// map every environment API presents is a *view* of that list, split at each
@@ -82,43 +83,22 @@ module TestEnvironmentEntryInvariant =
     [<Test>]
     let ``the entry rule names what is wrong`` () : unit =
         for description, name, value in rejected do
-            match EmulatedKernel.environmentEntryProblem name value with
+            match UnixProcessState.environmentEntryProblem name value with
             | None -> failwith $"expected %s{description} to be rejected, but the rule accepted it"
             | Some problem -> problem |> shouldNotEqual ""
 
     [<Test>]
     let ``the entry rule accepts what a real environ can hold`` () : unit =
         for name, value in accepted do
-            match EmulatedKernel.environmentEntryProblem name value with
+            match UnixProcessState.environmentEntryProblem name value with
             | None -> ()
             | Some problem -> failwith $"expected (%A{name}, %A{value}) to be accepted, but the rule said: %s{problem}"
 
     [<Test>]
-    let ``the kernel refuses an unrepresentable overlay entry`` () : unit =
-        // The boundary that matters. Without it the two environment APIs disagree
-        // for the same table, and — worse — they disagree *asymmetrically*:
-        // `GetEnvironmentVariable "A=B"` would quietly answer with the value,
-        // where real .NET answers null, while `GetEnvironmentVariables` would
-        // abort in the block writer. One silently wrong path, one loud one.
-        for description, name, value in rejected do
-            let exn =
-                Assert.Throws<System.Exception> (fun () ->
-                    EmulatedKernel.initial
-                    |> EmulatedKernel.withEnvironment (Map.ofList [ name, value ])
-                    |> ignore<EmulatedKernel>
-                )
-
-            // Names the field and the knob a host would have to fix, rather than
-            // failing later inside whichever environment API the guest reached
-            // first.
-            exn.Message |> shouldContainText "EmulatedKernel.Environment"
-            exn.Message |> shouldContainText "KernelConfig.Environment"
-            description |> shouldNotEqual ""
-
-    [<Test>]
     let ``the kernel accepts an overlay a real environ can hold`` () : unit =
         let kernel =
-            EmulatedKernel.initial |> EmulatedKernel.withEnvironment (Map.ofList accepted)
+            EmulatedKernel.initial
+            |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "test" (Map.ofList accepted))
 
         for name, value in accepted do
             kernel.Environment |> Map.tryFind name |> shouldEqual (Some value)
@@ -130,11 +110,22 @@ module TestEnvironmentEntryInvariant =
 
     [<Test>]
     let ``applying a KernelConfig rejects an unrepresentable entry`` () : unit =
-        // `KernelConfig.applyTo` is the path every host takes, so the rejection
-        // has to fire from there and not only from the setter called directly.
-        // Without this, a future `applyTo` that assigned `Environment` by
-        // record-copy instead of through the setter would bypass the rule and no
-        // test would notice.
+        // The boundary that matters. Without it the two environment APIs disagree
+        // for the same table, and — worse — they disagree *asymmetrically*:
+        // `GetEnvironmentVariable "A=B"` would quietly answer with the value,
+        // where real .NET answers null, while `GetEnvironmentVariables` would
+        // abort in the block writer. One silently wrong path, one loud one.
+        //
+        // `KernelConfig.applyTo` is the path every host takes, so this is where
+        // the rejection has to fire. A future `applyTo` that assigned
+        // `Environment` by record-copy instead of through
+        // `UnixProcessState.withEnvironment` would bypass the rule, and nothing
+        // in this repository would notice: the rule itself belongs to the
+        // library, whose own tests cannot see how PawPrint reaches it.
+        //
+        // The message names the knob because this call site passes that name;
+        // asserting it here is what stops the name drifting to one no host has
+        // heard of.
         for description, name, value in rejected do
             let config =
                 { KernelConfig.Default with
@@ -157,7 +148,7 @@ module TestEnvironmentEntryInvariant =
         let kernel = EmulatedKernel.initial |> KernelConfig.applyTo KernelConfig.Default
 
         for KeyValue (name, value) in kernel.Environment do
-            match EmulatedKernel.environmentEntryProblem name value with
+            match UnixProcessState.environmentEntryProblem name value with
             | None -> ()
             | Some problem -> failwith $"the default kernel environment holds an unrepresentable entry: %s{problem}"
 
