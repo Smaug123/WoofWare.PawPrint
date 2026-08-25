@@ -1081,20 +1081,26 @@ written on the spot. The second half never existed at the base, so there was
 nothing to split against and the check stayed silent — which is how #1080 could
 take `withUmask`'s prose and #1089 `cpuForRotation`'s with the tool in the
 repository. It now takes the longest opening that stood on its own before and
-asks two things of it: whether the subject changed, since prose merely appended
-to a docstring opens with its old self too but keeps its subject; and whether
-that opening has stopped being a block of its own, since a block that is still a
-block was absorbed into nothing — an unrelated declaration whose new docstring
-merely quotes an existing one has detached nothing. Codex found the second
-condition missing, on a fixture where the quoted block was still standing above
-its own subject, and then found that rejecting an opening on that ground must
-not end the search: two old blocks can be nested prefixes of each other, and
-then the shorter is stranded while the longer stands untouched. Neither shape
-occurs in this repository's history — the sweep's output is identical across
-both fixes — so the oracle for them is
-`scripts/test-docstring-attachment.sh`, which puts all six shapes in one
-throwaway repository and is itself mutation-tested: four mutants of the three
-guards, each killed by exactly the row written for it.
+asks the question of the *subject* rather than of the text: is that opening
+still the opening of its own subject's docstring? If it is, the subject kept its
+prose and nothing detached, whether or not the prose has since grown.
+
+Three review rounds arrived at that phrasing, and the first two are why it is
+phrased that way. Asking only "did the subject change" reported a docstring that
+merely gained a paragraph as absorbed. Asking additionally "does the opening
+still stand alone as a block" reported nothing for a stranding whose fused text
+happened to open with a *longer* block that was still standing — and, once that
+was fixed by continuing the search rather than stopping, still reported a false
+positive for an opening retained inside its own subject's expanded block. Each
+of those is a text-shaped approximation of one subject-shaped question, which is
+what three rounds on one predicate usually means.
+
+None of the three shapes occurs in this repository's history: the whole-repository
+sweep reports the same thirty-five fusions throughout. Their oracle is
+`scripts/test-docstring-attachment.sh`, which puts all eight shapes in one
+throwaway repository — three that must report, five that must stay silent — and
+is itself mutation-tested: four mutants of the guard, each killed by exactly the
+rows written for it.
 
 Measured by running the check across every commit in the repository against its
 own parent, over the F# files that commit touched. Thirty-five fusions of the

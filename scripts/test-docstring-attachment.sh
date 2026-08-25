@@ -3,8 +3,8 @@
 #
 # Builds a throwaway repository whose one commit exercises every shape the check
 # has an opinion about, and asserts the report names exactly the three that are
-# detachments. The three silent shapes are the point: a check that reports an
-# ordinary docstring edit is a check nobody runs. Both silent shapes below were
+# detachments. The five silent shapes are the point: a check that reports an
+# ordinary docstring edit is a check nobody runs, and three of the five were
 # false positives at some stage of #1173, found by review rather than by reading.
 set -euo pipefail
 
@@ -38,6 +38,9 @@ let alpha (x : int) : int = x
 
 /// Prefix. Suffix.
 let beta (x : int) : int = x
+
+/// Shared trunk.
+let trunkOwner (x : int) : int = x
 EOF
 git add -A
 git commit -qm base
@@ -75,6 +78,14 @@ let alpha (x : int) : int = x
 
 /// Prefix. Suffix.
 let beta (x : int) : int = x
+
+/// Shared trunk.
+/// Detail for the owner.
+let trunkOwner (x : int) : int = x
+
+/// Shared trunk.
+/// Detail for a different API.
+let trunkQuoter (x : int) : int = x
 EOF
 
 report="$(python3 "$checker" HEAD A.fs 2>&1 || true)"
@@ -101,10 +112,12 @@ expect_reported nestedIntruder "the fused block's longest old opening is a block
 expect_silent   expanded       "a paragraph appended to a docstring keeps its subject"
 expect_silent   quotesIt       "a new docstring quoting one that is still in place detaches nothing"
 expect_silent   keepsItsDocstring "the quoted block itself never moved"
+expect_silent   trunkQuoter    "the opening it quotes is still on its own subject, inside that subject's expanded block"
+expect_silent   trunkOwner     "expanding a docstring in place is not a detachment"
 
 echo
 if [ "$fail" -ne 0 ]; then
   echo "report was:"; echo "$report"
   exit 1
 fi
-echo "check-docstring-attachment: all six shapes behave"
+echo "check-docstring-attachment: all eight shapes behave"
