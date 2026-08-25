@@ -729,7 +729,7 @@ module NativeSystemNative =
         // disagree only about `S_ISGID` on a file that is not group-executable.
         let rule = SimulatedUnixPlatform.setGroupIdOnWrite state.Kernel.UnixPlatform
 
-        let privilege = EmulatedKernel.callerPrivilege state.Kernel
+        let privilege = UnixProcessState.callerPrivilege state.Kernel.Process
 
         match VirtualFileSystem.writeFile inode offset bytes rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -765,7 +765,7 @@ module NativeSystemNative =
         let now = EmulatedKernel.fileTimestamp state.Kernel
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation state.Kernel.UnixPlatform
 
-        let privilege = EmulatedKernel.callerPrivilege state.Kernel
+        let privilege = UnixProcessState.callerPrivilege state.Kernel.Process
 
         match VirtualFileSystem.truncateFile inode length rule privilege now state.Kernel.FileSystem with
         | Ok filesystem ->
@@ -883,7 +883,7 @@ module NativeSystemNative =
 
         VirtualFileSystem.resolveFull
             limits
-            (EmulatedKernel.callerPrivilege kernel)
+            (UnixProcessState.callerPrivilege kernel.Process)
             startDirectory
             policy
             trailingSeparatorPolicy
@@ -2703,7 +2703,7 @@ module NativeSystemNative =
             match
                 CreatingOpenRules.verdict
                     rules
-                    (EmulatedKernel.callerPrivilege state.Kernel)
+                    (UnixProcessState.callerPrivilege state.Kernel.Process)
                     creating
                     exclusive
                     resolution
@@ -2843,7 +2843,10 @@ module NativeSystemNative =
                          0)
 
             let lacksNeededBits =
-                PermissionBits.deniedTo (EmulatedKernel.callerPrivilege state.Kernel) neededBits permissionBits
+                PermissionBits.deniedTo
+                    (UnixProcessState.callerPrivilege state.Kernel.Process)
+                    neededBits
+                    permissionBits
 
             if lacksNeededBits then
                 fail UnixError.EACCES
@@ -2938,7 +2941,10 @@ module NativeSystemNative =
             | Ok resolution ->
 
             match
-                MkDirRules.verdict (EmulatedKernel.callerPrivilege state.Kernel) resolution state.Kernel.FileSystem
+                MkDirRules.verdict
+                    (UnixProcessState.callerPrivilege state.Kernel.Process)
+                    resolution
+                    state.Kernel.FileSystem
             with
             | MkDirVerdict.Refuse error -> fail error
             | MkDirVerdict.Create (directory, name, parentPermissions) ->
@@ -3025,7 +3031,7 @@ module NativeSystemNative =
             match
                 UnlinkRules.verdict
                     (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
-                    (EmulatedKernel.callerPrivilege state.Kernel)
+                    (UnixProcessState.callerPrivilege state.Kernel.Process)
                     resolution
                     state.Kernel.FileSystem
             with
@@ -3112,7 +3118,7 @@ module NativeSystemNative =
             match
                 RmDirRules.verdict
                     (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
-                    (EmulatedKernel.callerPrivilege state.Kernel)
+                    (UnixProcessState.callerPrivilege state.Kernel.Process)
                     resolution
                     state.Kernel.FileSystem
             with
@@ -3199,7 +3205,10 @@ module NativeSystemNative =
             | Ok resolution ->
 
             match
-                OpenDirRules.verdict (EmulatedKernel.callerPrivilege state.Kernel) resolution state.Kernel.FileSystem
+                OpenDirRules.verdict
+                    (UnixProcessState.callerPrivilege state.Kernel.Process)
+                    resolution
+                    state.Kernel.FileSystem
             with
             | OpenDirVerdict.Refuse error -> fail error
             | OpenDirVerdict.Open inode ->

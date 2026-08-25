@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module NativeKernel32 =
@@ -36,10 +37,10 @@ module NativeKernel32 =
                     ValueToWrite = Some value
                 }
 
-    /// Re-assert `EmulatedKernel.environmentEntryProblem` at the point the map is
+    /// Re-assert `UnixProcessState.environmentEntryProblem` at the point the map is
     /// flattened back into an environment list.
     ///
-    /// `EmulatedKernel.withEnvironment` already rejects such an entry when the
+    /// `UnixProcessState.withEnvironment` already rejects such an entry when the
     /// table is built, so this is unreachable through `KernelConfig`. It is here
     /// because a kernel assembled by record-copy — as tests do — never passed
     /// through that writer, and emitting the block anyway would hand a guest
@@ -47,7 +48,7 @@ module NativeKernel32 =
     /// the same table. Same reasoning as `systemTimeAsTicks` re-asserting its
     /// epoch bound.
     let private requireBlockRepresentable (name : string) (value : string) : unit =
-        match EmulatedKernel.environmentEntryProblem name value with
+        match UnixProcessState.environmentEntryProblem name value with
         | None -> ()
         | Some problem ->
             failwith

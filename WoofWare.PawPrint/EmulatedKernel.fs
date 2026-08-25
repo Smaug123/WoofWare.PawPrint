@@ -794,8 +794,8 @@ type EmulatedKernelDefect =
     | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
     /// An open directory stream names an inode the filesystem no longer holds.
     ///
-    /// Unreachable by construction — `heldInodes` counts a stream's inode among
-    /// the things pinning it, so `forgetIfUnheld` cannot free one out from under
+    /// Unreachable by construction — `UnixProcessState.heldInodes` counts a stream's inode
+    /// among the things pinning it, so `forgetIfUnheld` cannot free one out from under
     /// a stream — which is exactly why a violation is an interpreter bug rather
     /// than something a guest did. The next `readdir` would crash the
     /// interpreter, and this names the cause instead.
@@ -1305,11 +1305,15 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" does not resolve in KernelConfig.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
 
-    /// Set the path to the executable that started the simulated process, or
-    /// `None` to report that it has none. See `UnixProcessState.withProcessPath`.
-    let withProcessPath (path : AbsoluteUnixPath option) (kernel : EmulatedKernel) : EmulatedKernel =
+    /// Apply an operation to the simulated process's own state. Those operations
+    /// live in `UnixProcessState`, which takes that state rather than the kernel.
+    let mapProcess
+        (f : UnixProcessState<ThreadId, SignalHandler> -> UnixProcessState<ThreadId, SignalHandler>)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
         { kernel with
-            Process = UnixProcessState.withProcessPath "EmulatedKernel.ProcessPath" path kernel.Process
+            Process = f kernel.Process
         }
 
 
@@ -1365,20 +1369,6 @@ module EmulatedKernel =
                 }
         }
 
-    /// Set the file-mode creation mask `open(O_CREAT)` clears from the mode its
-    /// caller asked for. See `UnixProcessState.withUmask`.
-    let withUmask (umask : PermissionBits) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Process = UnixProcessState.withUmask "EmulatedKernel.Umask" umask kernel.Process
-        }
-
-    /// Set the effective user and group IDs the simulated process runs as. See
-    /// `UnixProcessState.withUserAndGroupId`.
-    let withUserAndGroupId (userId : uint32) (groupId : uint32) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Process = UnixProcessState.withUserAndGroupId userId groupId kernel.Process
-        }
-
 
 
     /// Set the virtual time charged per retired instruction. See
@@ -1425,11 +1415,6 @@ module EmulatedKernel =
         { kernel with
             OptimalMaxSpinWaitsPerSpinIteration = count
         }
-
-    /// Whether the simulated process is exempt from the permission rules a kernel
-    /// applies to everyone else. See `UnixProcessState.callerPrivilege`.
-    let callerPrivilege (kernel : EmulatedKernel) : CallerPrivilege =
-        UnixProcessState.callerPrivilege kernel.Process
 
 
     /// Retire one interpreted instruction: bump `StepCounter` by one and charge
@@ -1702,22 +1687,6 @@ module EmulatedKernel =
         // and `Int32.MaxValue + 1` is less than half of `0xFFFF_FFFF`.
         OsThreadId (uint32 i + 1u)
 
-    /// Why `name`/`value` could not be a variable of a real process, or `None` if
-    /// it could. See `UnixProcessState.environmentEntryProblem`.
-    let environmentEntryProblem (name : string) (value : string) : string option =
-        UnixProcessState.environmentEntryProblem name value
-
-    /// Overlay `env` onto the environment the simulated process already holds.
-    /// See `UnixProcessState.withEnvironment`.
-    let withEnvironment (env : Map<string, string>) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Process =
-                UnixProcessState.withEnvironment
-                    "EmulatedKernel.Environment (set from KernelConfig.Environment)"
-                    env
-                    kernel.Process
-        }
-
 
     /// The epoll readiness of the descriptor `targetId` names, for computing
     /// what a registration on it would report.
@@ -1804,12 +1773,6 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.pollReadinessOfDescription: %O{targetId} is a socket event port, and what poll(2) reports for one is unmeasured. Unlike the epoll dispatcher's refusal of this case, a guest genuinely can reach it — poll accepts any descriptor — but no managed caller does: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model). Measure what an epoll descriptor with and without ready events reports before answering."
 
-    /// Whether any socket event port holds a registration targeting an open
-    /// file description that names `socketId`. See
-    /// `UnixProcessState.socketIsRegisteredWithAnyEventPort`.
-    let socketIsRegisteredWithAnyEventPort (socketId : SocketId) (kernel : EmulatedKernel) : bool =
-        UnixProcessState.socketIsRegisteredWithAnyEventPort socketId kernel.Process
-
 
 
     /// A *data-ready* wake on `socketId` — the accept-queue push is the one
@@ -1833,13 +1796,6 @@ module EmulatedKernel =
                             (Some (lazy (socketReadinessLevel socketId kernel)))
                             kernel.FileDescriptors
                 }
-        }
-
-    /// A *state-change* wake on `socketId`. See
-    /// `UnixProcessState.signalSocketStateChange`.
-    let signalSocketStateChange (socketId : SocketId) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Process = UnixProcessState.signalSocketStateChange socketId kernel.Process
         }
 
 
@@ -2088,13 +2044,8 @@ module EmulatedKernel =
                 }
         }
 
-    /// Every inode this kernel holds a reference to *directly*, independently of
-    /// any name the filesystem binds to it. See `UnixProcessState.heldInodes`.
-    let heldInodes (kernel : EmulatedKernel) : Set<InodeNumber> =
-        UnixProcessState.heldInodes kernel.Process
 
-
-    /// Every inode that must not be freed: `heldInodes`, closed under
+    /// Every inode that must not be freed: `UnixProcessState.heldInodes`, closed under
     /// `DirectoryContent.Parent`.
     ///
     /// The closure is not caution — it is measured. `rmdir` can remove a
@@ -2131,7 +2082,7 @@ module EmulatedKernel =
                 | Some (InodeContent.Symlink _)
                 | None -> climb rest seen
 
-        climb (heldInodes kernel |> Set.toList) Set.empty
+        climb (UnixProcessState.heldInodes kernel.Process |> Set.toList) Set.empty
 
     /// Free `inode` if the filesystem no longer names it and this kernel holds
     /// no reference to it — what a real kernel does once the last link and the
@@ -2390,7 +2341,7 @@ module EmulatedKernel =
             // nothing.
             let closed =
                 (closed, establishedSurvivors)
-                ||> List.fold (fun k s -> signalSocketStateChange s k)
+                ||> List.fold (fun k s -> mapProcess (UnixProcessState.signalSocketStateChange s) k)
 
             // The close may have been the last reference to an inode whose last
             // name went away earlier, which is what keeps `read` on an unlinked
@@ -2848,7 +2799,9 @@ module EmulatedKernel =
                 // client's phase resolves in this call whether or not the
                 // syscall's own answer is deferred to EINPROGRESS.
                 let kernel =
-                    kernel |> signalSocketStateChange socketId |> signalSocketDataReady listenerId
+                    kernel
+                    |> mapProcess (UnixProcessState.signalSocketStateChange socketId)
+                    |> signalSocketDataReady listenerId
 
                 if nonBlocking then
                     // The syscall itself still answers EINPROGRESS —
@@ -2934,7 +2887,7 @@ module EmulatedKernel =
                     // (measured separately for the deferred path, `order3.c`
                     // row M); inline delivery collapses them into this one
                     // state change, so one signal carries both.
-                    let kernel = signalSocketStateChange socketId kernel
+                    let kernel = mapProcess (UnixProcessState.signalSocketStateChange socketId) kernel
 
                     ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
                 else
@@ -2960,7 +2913,7 @@ module EmulatedKernel =
 
                     // The error's arrival signals the client (measured,
                     // `order3.c` row M: the 0x201d edge).
-                    let kernel = signalSocketStateChange socketId kernel
+                    let kernel = mapProcess (UnixProcessState.signalSocketStateChange socketId) kernel
 
                     ConnectOutcome.Failed UnixError.EINPROGRESS, kernel
 
@@ -3035,7 +2988,7 @@ module EmulatedKernel =
                     // The reset signals: a registered client whose error edge
                     // was already consumed sees a fresh OUT|HUP edge after
                     // the delivering connect (measured, `order3.c` row M).
-                    let kernel = signalSocketStateChange socketId kernel
+                    let kernel = mapProcess (UnixProcessState.signalSocketStateChange socketId) kernel
 
                     ConnectOutcome.Failed UnixError.ECONNREFUSED, kernel
                 | SocketPhase.Dead ->
@@ -3436,7 +3389,7 @@ module EmulatedKernel =
 
         // Both directions: a `DIR*` naming a stream that is gone would crash the
         // next `readdir`, and a stream no `DIR*` names can never be closed, so it
-        // pins its directory through `heldInodes` for the rest of the run.
+        // pins its directory through `UnixProcessState.heldInodes` for the rest of the run.
         let directoryStreamBlocks =
             let named = kernel.DirectoryStreamBlocks |> Map.toList |> List.map snd |> Set.ofList
 
@@ -3638,7 +3591,7 @@ type KernelConfig =
         /// value may contain a NUL: those are exactly the variables a real
         /// process can have, and applying a config that breaks the rule fails
         /// rather than handing a guest an environment it could not observe on
-        /// real .NET. See `EmulatedKernel.environmentEntryProblem`.
+        /// real .NET. See `UnixProcessState.environmentEntryProblem`.
         Environment : Map<string, string>
         /// Logical processor count the guest observes via
         /// `Environment.ProcessorCount`. Must be at least 1.
@@ -3805,7 +3758,7 @@ module KernelConfig =
     /// guards the configuration path.
     let applyTo (config : KernelConfig) (kernel : EmulatedKernel) : EmulatedKernel =
         kernel
-        |> EmulatedKernel.withEnvironment config.Environment
+        |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "KernelConfig.Environment" config.Environment)
         |> EmulatedKernel.withProcessorCount config.ProcessorCount
         |> EmulatedKernel.withUserAddressLimit config.UserAddressLimit
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
@@ -3813,14 +3766,14 @@ module KernelConfig =
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
-        |> EmulatedKernel.withProcessPath config.ProcessPath
+        |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             config.UnixPlatform
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem
             config.CurrentDirectory
-        |> EmulatedKernel.withUserAndGroupId config.UserId config.GroupId
+        |> EmulatedKernel.mapProcess (UnixProcessState.withUserAndGroupId config.UserId config.GroupId)
         |> EmulatedKernel.withEphemeralPortRange config.EphemeralPortRange
         |> EmulatedKernel.withSoMaxConn config.UnixPlatform config.SoMaxConn
         |> EmulatedKernel.withLocalAddresses config.LocalAddresses config.LocalRoutes
-        |> EmulatedKernel.withUmask config.Umask
+        |> EmulatedKernel.mapProcess (UnixProcessState.withUmask "KernelConfig.Umask" config.Umask)

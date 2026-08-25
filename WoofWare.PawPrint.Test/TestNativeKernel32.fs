@@ -331,7 +331,7 @@ module TestNativeKernel32 =
         // flattening it would hand a guest variables differing from the ones
         // `Environment.GetEnvironmentVariable` reports for the same table.
         //
-        // `EmulatedKernel.withEnvironment` already rejects these when the table is
+        // `UnixProcessState.withEnvironment` already rejects these when the table is
         // built, so a host cannot reach this through `KernelConfig`; what this
         // covers is the record-copied kernel that never passed through that
         // writer, which is exactly how the map arrives here. (The boundary itself

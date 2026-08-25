@@ -138,16 +138,16 @@ module TestEmulatedKernelInodeLifetime =
         // reference. A `heldInodes` that enumerated only the descriptor table
         // would answer the empty set here — and then reap the directory the
         // process is standing in, the moment `rmdir` can orphan one.
-        EmulatedKernel.heldInodes kernel
+        UnixProcessState.heldInodes kernel.Process
         |> shouldEqual (Set.singleton kernel.CurrentDirectoryInode)
 
         let _, withA = opened a kernel
 
-        EmulatedKernel.heldInodes withA
+        UnixProcessState.heldInodes withA.Process
         |> shouldEqual (Set.ofList [ kernel.CurrentDirectoryInode ; a ])
 
         // ...and not merely "some file is open": `b` is not held.
-        EmulatedKernel.heldInodes withA |> Set.contains b |> shouldEqual false
+        UnixProcessState.heldInodes withA.Process |> Set.contains b |> shouldEqual false
 
     [<Test>]
     let ``a standard stream or a socket holds no inode`` () : unit =
@@ -156,7 +156,7 @@ module TestEmulatedKernelInodeLifetime =
         // whatever `InodeNumber` it invented for them.
         let kernel = kernel ()
 
-        EmulatedKernel.heldInodes kernel |> Set.count |> shouldEqual 1
+        UnixProcessState.heldInodes kernel.Process |> Set.count |> shouldEqual 1
 
         FileDescriptorRegistry.descriptions kernel.FileDescriptors
         |> Map.isEmpty
@@ -174,7 +174,7 @@ module TestEmulatedKernelInodeLifetime =
         let outer = inodeOf kernel "/outer"
         let inner = inodeOf kernel "/outer/inner"
 
-        EmulatedKernel.heldInodes kernel |> shouldEqual (Set.singleton inner)
+        UnixProcessState.heldInodes kernel.Process |> shouldEqual (Set.singleton inner)
 
         EmulatedKernel.pinnedInodes kernel
         |> shouldEqual (Set.ofList [ inner ; outer ; root ])
@@ -353,7 +353,10 @@ module TestEmulatedKernelInodeLifetime =
 
         // The descriptor holds `inner` directly...
         contains inner kernel |> shouldEqual true
-        EmulatedKernel.heldInodes kernel |> Set.contains inner |> shouldEqual true
+
+        UnixProcessState.heldInodes kernel.Process
+        |> Set.contains inner
+        |> shouldEqual true
 
         // ...and `inner`'s recorded parent is what "`.." from the orphan
         // resolves to, so it must survive being unbound as well. Measured on
@@ -363,7 +366,11 @@ module TestEmulatedKernelInodeLifetime =
         let kernel = EmulatedKernel.forgetIfUnheld outer kernel
 
         contains outer kernel |> shouldEqual true
-        EmulatedKernel.heldInodes kernel |> Set.contains outer |> shouldEqual false
+
+        UnixProcessState.heldInodes kernel.Process
+        |> Set.contains outer
+        |> shouldEqual false
+
         EmulatedKernel.pinnedInodes kernel |> Set.contains outer |> shouldEqual true
 
         VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel) kernel.FileSystem
@@ -475,11 +482,13 @@ module TestEmulatedKernelInodeLifetime =
         let stream = EmulatedKernel.directoryStream block kernel
         let kernel = closed stream.Fd kernel
 
-        EmulatedKernel.heldInodes kernel |> Set.contains inner |> shouldEqual true
+        UnixProcessState.heldInodes kernel.Process
+        |> Set.contains inner
+        |> shouldEqual true
 
         // ...and it really was the stream that held it: forget the stream and
         // the inode is unheld.
-        EmulatedKernel.heldInodes (EmulatedKernel.withoutDirectoryStream block kernel)
+        UnixProcessState.heldInodes (EmulatedKernel.withoutDirectoryStream block kernel).Process
         |> Set.contains inner
         |> shouldEqual false
 

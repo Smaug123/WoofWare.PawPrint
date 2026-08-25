@@ -7,6 +7,7 @@ open Microsoft.CodeAnalysis
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Direct-call tests for the `XplatEventLogger` QCall handlers in
 /// `NativeEventSource`. The handlers are reached from Linux-built CoreLib
@@ -143,7 +144,7 @@ public static class Entry
         }
 
     let private withEnvironment (env : (string * string) list) (state : IlMachineState) : IlMachineState =
-        state.MapKernel (EmulatedKernel.withEnvironment (Map.ofList env))
+        state.MapKernel (EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "test" (Map.ofList env)))
 
     // ---------- Pure helper tests ----------
 
