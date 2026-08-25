@@ -2,10 +2,11 @@
 # Executable contract for check-docstring-attachment.py.
 #
 # Builds a throwaway repository whose one commit exercises every shape the check
-# has an opinion about, and asserts the report names exactly the three that are
-# detachments. The five silent shapes are the point: a check that reports an
-# ordinary docstring edit is a check nobody runs, and three of the five were
+# has an opinion about, and asserts the report names exactly the seven that are
+# detachments. The eight silent shapes are as much the point: a check that reports
+# an ordinary docstring edit is a check nobody runs, and most of the eight were
 # false positives at some stage of #1173, found by review rather than by reading.
+# The exit status is asserted too, since that is what callers branch on.
 set -euo pipefail
 
 checker="$(cd "$(dirname "$0")" && pwd)/check-docstring-attachment.py"
@@ -55,6 +56,18 @@ module Twins1 =
 module Twins2 =
     /// Duplicated across modules.
     let sameName (x : int) : int = x
+
+/// Body kept intact.
+let prependee (x : int) : int = x
+
+/// Doubled block.
+let dblOne (x : int) : int = x
+
+/// Doubled block.
+let dblTwo (x : int) : int = x
+
+/// Read the mask
+let maskee (x : int) : int = x
 EOF
 git add -A
 git commit -qm base
@@ -122,6 +135,31 @@ module Twins2 =
     /// Duplicated across modules.
     /// A paragraph only the second module wanted.
     let sameName (x : int) : int = x
+
+/// Introductory line added above.
+/// Body kept intact.
+let prependee (x : int) : int = x
+
+/// Body kept intact.
+/// Quoted by an unrelated API.
+let prependQuoter (x : int) : int = x
+
+/// Doubled block.
+/// Same added text.
+let dblIntruder (x : int) : int = x
+
+let dblOne (x : int) : int = x
+
+/// Doubled block.
+/// Same added text.
+let dblTwo (x : int) : int = x
+
+/// Read the masked value entirely
+let maskee (x : int) : int = x
+
+/// Read the mask
+/// Quoted by an unrelated API.
+let maskQuoter (x : int) : int = x
 EOF
 
 # The exit status is what callers branch on, so it is part of the contract: a
@@ -140,14 +178,14 @@ else
 fi
 
 expect_reported () { # <subject the block now wrongly documents> <why this shape matters>
-  if grep -q "documents \['let $1'\]\|-> \['let $1'\]" <<<"$report"; then
+  if grep -q "'let $1'" <<<"$report"; then
     echo "ok       detachment onto $1 reported ($2)"
   else
     echo "MISSING  detachment onto $1 not reported ($2)"; fail=1
   fi
 }
 expect_silent () {
-  if grep -q "let $1" <<<"$report"; then
+  if grep -q "'let $1'" <<<"$report"; then
     echo "SPURIOUS $1 reported, but nothing detached ($2)"; fail=1
   else
     echo "ok       $1 silent ($2)"
@@ -165,10 +203,14 @@ expect_silent   trunkOwner     "expanding a docstring in place is not a detachme
 expect_reported twinIntruder   "one of the two declarations a shared block documented has lost it"
 expect_silent   twinTwo        "the other one kept it, inside a block it merely expanded"
 expect_reported dupIntruder    "a block borne by two same-named declarations is kept by only one of them"
+expect_reported dblIntruder    "the fused block also lands on a declaration that kept it, but another lost it"
+expect_silent   prependQuoter  "the block it quotes is still inside its own subject's docstring, below a prepended line"
+expect_silent   prependee      "prose prepended above a docstring leaves the docstring where it was"
+expect_reported maskQuoter     "its subject's new docstring merely starts with the old block's characters, mid-word"
 
 echo
 if [ "$fail" -ne 0 ]; then
   echo "report was:"; echo "$report"
   exit 1
 fi
-echo "check-docstring-attachment: all eleven shapes behave, and the exit status with them"
+echo "check-docstring-attachment: all fifteen shapes behave, and the exit status with them"

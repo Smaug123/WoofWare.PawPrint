@@ -311,10 +311,12 @@ def stranded_prefix(
     That alone is not evidence — a docstring that gains a paragraph opens with its
     old self too, and so does an unrelated one that quotes it — so the two things
     that make it one are asked of the *declarations* rather than of the text.
-    `text` must document nothing the opening already documented, since a
-    declaration that had this prose and still has it has been left alone; and some
-    declaration that did have it must no longer open its docstring with it, since
-    that is what having been detached from it means.
+    `text` must precede at least one declaration the opening did not already
+    document, since a declaration that had this prose and still has it has been
+    left alone; and some declaration that did have it must no longer have it
+    anywhere in its docstring, since that is what having been detached from it
+    means. Both are counted per declaration rather than per block, because one
+    normalised block can precede several.
 
     Openings are tried longest first, that being the most specific account of
     where the new text starts, and one that fails either test does not end the
@@ -322,19 +324,21 @@ def stranded_prefix(
     shorter is stranded while the longer stays where it was.
     """
 
+    def holds(block: str, head: str) -> bool:
+        # Anywhere in the block, not only at its start: prose is as often
+        # prepended above an existing docstring as appended below it, and either
+        # way the declaration still has what it had. Padded so the span has to be
+        # whole words.
+        return f" {block} ".find(f" {head} ") >= 0
+
     def detached(head: str) -> bool:
-        # Per subject and with multiplicity, because a subject is a kind and a
-        # name: one block documenting two same-named declarations must be found
-        # opening two docstrings still, or one of the two has lost it.
+        # Per declaration and with multiplicity, because a subject is a kind and
+        # a name: one block documenting two same-named declarations must be found
+        # inside two docstrings still, or one of the two has lost it.
         for subject, count in Counter(old[head]).items():
             if subject is None:
                 return True
-            kept = sum(
-                1
-                for t in new_by_subject.get(subject, ())
-                if t == head or t.startswith(head + " ")
-            )
-            if kept < count:
+            if sum(1 for t in new_by_subject.get(subject, ()) if holds(t, head)) < count:
                 return True
         return False
 
@@ -342,7 +346,10 @@ def stranded_prefix(
         head = text[:i]
         if text[i] != " " or head not in old:
             continue
-        if any(s is not None and s in old[head] for s in subjects):
+        # Per occurrence, not per key: one normalised block can precede several
+        # declarations, and the ones this opening already documented say nothing
+        # about the ones it did not.
+        if not +(Counter(subjects) - Counter(old[head])):
             continue
         if not detached(head):
             continue

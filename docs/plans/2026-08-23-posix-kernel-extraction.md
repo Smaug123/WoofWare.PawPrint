@@ -1082,28 +1082,34 @@ nothing to split against and the check stayed silent — which is how #1080 coul
 take `withUmask`'s prose and #1089 `cpuForRotation`'s with the tool in the
 repository. It now takes the longest opening that stood on its own before and
 asks about the *declarations* rather than about the text: the new block must
-document none of the ones that opening already documented, and some declaration
-that did have it must no longer open its docstring with it. A declaration that
-had the prose and still has it was left alone, however much that prose has since
-grown; and being detached from prose is exactly no longer opening with it.
+precede at least one declaration that opening did not already document, and some
+declaration that did have it must no longer have it anywhere in its docstring.
+A declaration that had the prose and still has it was left alone, however much
+that prose has grown above or below it; and being detached from prose is exactly
+no longer having it. Both counted per declaration, since one normalised block can
+precede several.
 
-Four review rounds arrived at that phrasing, and the first three are why it is
+Five review rounds arrived at that phrasing, and the first four are why it is
 phrased that way. Asking only "did the subject change" reported a docstring that
 merely gained a paragraph. Asking additionally "does the opening still stand
-alone as a block" reported nothing for a stranding whose fused text opened with a
-*longer* block that was still standing; fixing that by continuing the search
-rather than stopping still misreported an opening retained inside its own
-subject's expanded block; and asking the subjects existentially still missed a
-block borne by two declarations where only one of them lost it. Every one of
-those is a text-shaped approximation of a question about declarations, which is
-what four rounds on one predicate usually means.
+alone as a block" missed a stranding whose fused text opened with a *longer*
+block that was still standing; fixing that by continuing the search rather than
+stopping still misreported an opening retained inside its own subject's expanded
+block; asking the subjects existentially missed a block borne by two declarations
+where only one lost it; and asking whether the surviving docstring *starts* with
+the block reported prose merely prepended above it. Every one is a text-shaped
+approximation of a question about declarations, which is what five rounds on one
+predicate usually means.
 
 None of the shapes occurs in this repository's history: the whole-repository
 sweep reports the same thirty-five fusions throughout. Their oracle is
-`scripts/test-docstring-attachment.sh`, which puts all eleven shapes in one
-throwaway repository — four that must report, seven that must stay silent, plus
-the exit status — and is itself mutation-tested: six mutants of the guard, each
-killed by exactly the rows written for it.
+`scripts/test-docstring-attachment.sh`, which puts all fifteen shapes in one
+throwaway repository — seven that must report, eight that must stay silent, plus
+the exit status — and is itself mutation-tested: eight mutants of the guard, each
+killed by exactly the rows written for it. Two of those rows exist only because a
+mutant survived the first battery, which is the usual reason to keep a fixture
+honest: with two *distinct* subjects `kept < count` and `kept < 1` agree, and
+without a partial-word case the word-boundary padding is unobservable.
 
 Measured by running the check across every commit in the repository against its
 own parent, over the F# files that commit touched. Thirty-five fusions of the
