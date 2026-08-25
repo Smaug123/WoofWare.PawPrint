@@ -33,6 +33,10 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     revision. This compares two revisions, so it inherits the base's mistakes.
   * Anything below a `let`: docstrings on local bindings inside a function body
     are not tracked, because the declaration regex is anchored at module level.
+  * A declaration form the regex does not know is named by its own source line
+    rather than by an identifier, which keeps it distinguishable but means an
+    unrelated edit to that line reads as a changed subject. Teaching the regex
+    the form removes the noise; the check is correct either way.
   * A short docstring shared verbatim by several declarations. Blocks are keyed
     by text, so the subjects are compared as a multiset and adding a *new*
     declaration that reuses an existing one-liner is reported as MOVED. Read the
@@ -44,6 +48,7 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     one name in scope.
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -57,6 +62,7 @@ MODS = r"(?:private\s+|internal\s+|public\s+|rec\s+|inline\s+|mutable\s+|static\
 DECL = re.compile(
     r"^\s*(?:\[<[^\]]*>\]\s*)?"
     r"(?:let\s+" + MODS + r"\((?P<active>\|[^)]*\|)\)"
+    r"|let\s+" + MODS + r"``(?P<quoted>[^`]+)``"
     r"|let\s+" + MODS + r"(?P<let>[a-zA-Z_][A-Za-z0-9_']*)"
     r"|type\s+" + MODS + r"(?P<type>[A-Za-z_][A-Za-z0-9_']*)"
     r"|module\s+" + MODS + r"(?P<module>[A-Za-z_][A-Za-z0-9_']*)"
@@ -100,11 +106,41 @@ def pairs(text: str) -> dict[str, list[str | None]]:
             m = DECL.match(lines[k])
             if m:
                 subject = next(v for v in m.groupdict().values() if v)
+            elif lines[k].strip():
+                # A form the regex does not know is still a distinguishable
+                # subject: use the declaration line itself. Letting every
+                # unrecognised form share one `None` is what makes a regex gap
+                # fail *open* — cut a definition from under its docstring, and
+                # if what follows is also unrecognised the two holes compare
+                # equal and the detachment passes. Keyed by text, they do not.
+                subject = "<unparsed> " + " ".join(lines[k].split())
         key = " ".join(w for w in block if w)
         if key:
             out.setdefault(key, []).append(subject)
         i = j
     return out
+
+
+def exists_exactly(f: str) -> bool:
+    """Whether `f` exists spelt exactly that way.
+
+    `Path.exists()` is not that question on macOS: the default filesystem is
+    case-insensitive, so a mis-cased argument passes it while `git show` — which
+    is case-sensitive — finds nothing at the base ref, and the file goes
+    silently unexamined. Compare each component against its parent's listing.
+    """
+    p = Path(f)
+    if p.is_absolute():
+        return False
+    cur = Path(".")
+    for part in p.parts:
+        try:
+            if part not in os.listdir(cur):
+                return False
+        except OSError:
+            return False
+        cur = cur / part
+    return True
 
 
 def side(files: list[str], ref: str | None = None) -> dict[str, list[str | None]]:
@@ -144,7 +180,7 @@ def main() -> int:
     unknown = [
         f
         for f in files
-        if not Path(f).exists()
+        if not exists_exactly(f)
         and subprocess.run(
             ["git", "cat-file", "-e", f"{ref}:{f}"], capture_output=True
         ).returncode
