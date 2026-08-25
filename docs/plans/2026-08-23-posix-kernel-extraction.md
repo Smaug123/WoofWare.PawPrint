@@ -1081,11 +1081,16 @@ written on the spot. The second half never existed at the base, so there was
 nothing to split against and the check stayed silent — which is how #1080 could
 take `withUmask`'s prose and #1089 `cpuForRotation`'s with the tool in the
 repository. It now takes the longest opening that stood on its own before and
-asks whether the subject changed, since prose merely appended to a docstring
-opens with its old self too but keeps its subject.
+asks two things of it: whether the subject changed, since prose merely appended
+to a docstring opens with its old self too but keeps its subject; and whether
+that opening has stopped being a block of its own, since a block that is still a
+block was absorbed into nothing — an unrelated declaration whose new docstring
+merely quotes an existing one has detached nothing. Codex found the second
+condition missing, on a fixture where the quoted block was still standing above
+its own subject.
 
 Measured by running the check across every commit in the repository against its
-own parent, over the F# files that commit touched. Thirty-seven fusions of the
+own parent, over the F# files that commit touched. Thirty-five fusions of the
 new shape, of which nine are strandings still in the tree: five in files this
 extraction has been moving (`cpuForRotation`, `defaultUserId`,
 `sockaddrFamilyField`, `socketCreation`, `GetCwdOrphanAnswer`) and four not.
@@ -1099,7 +1104,7 @@ holding. Where the inserted declaration is a *generalisation* that legitimately
 inherited the prose — `tryNameCellWith`, `allocateZeroedAs`, `invokeStringQCall`
 — the block still describes what it now precedes; only the specialisation is
 left undocumented, and giving it words is writing rather than reattaching. The
-rest of the thirty-seven are renames that carried their prose along, or
+rest of the thirty-five are renames that carried their prose along, or
 strandings #1166 and #1171 had already repaired.
 
 ### Stage 6: move `UnixSystem` to the library
