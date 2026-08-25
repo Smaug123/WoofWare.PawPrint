@@ -20,7 +20,10 @@ for.
 Two shapes are reported:
   MOVED   the same block now precedes a differently-named declaration
   MERGED  the block's text survives only inside a larger block, which is what
-          happens when a stranded docstring abuts the next one and the two fuse
+          happens when a stranded docstring abuts the next one and the two fuse.
+          The larger block's second half need not have existed before: inserting
+          a declaration that brings its own, freshly-written docstring is the
+          commonest way to strand one, and is reported too
 
 WHAT THIS CANNOT SEE, and so must be checked by hand:
   * A docstring that was reworded in the same commit that moved it. Rewording
@@ -47,15 +50,18 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     because qualifying every repeated name buries a move audit in subjects that
     differ solely in whether they were qualified. Two overloads with an
     unrelated declaration between them can therefore still swap prose unseen.
-  * A fusion in which one half was also reworded. Fusion is recognised by the
-    fused text being exactly the two originals joined, so an edit to either half
-    hides it; the block then reads as deleted-and-added like any other rewording.
+  * A fusion in which the *stranded* half was also reworded. A fusion is
+    recognised by the fused text opening with a block that stood on its own
+    before, so an edit to that half hides it and the block reads as
+    deleted-and-added like any other rewording. Rewording the intruder's half is
+    fine: only the opening has to survive verbatim.
 """
 
 import os
 import re
 import subprocess
 import sys
+from collections import Counter
 from pathlib import Path
 
 # Accessibility and binding modifiers must be consumed rather than captured:
@@ -282,6 +288,75 @@ def split_into(text: str, old: dict[str, list[str | None]], memo) -> list[str] |
     return None
 
 
+def names(subs: list[str | None]) -> list[str]:
+    return sorted(x or "<none>" for x in subs)
+
+
+def stranded_prefix(
+    text: str,
+    subjects: list[str | None],
+    old: dict[str, list[str | None]],
+    new_by_subject: dict[str, list[str]],
+) -> list[str] | None:
+    """`text` as a block that stood on its own before, plus prose that is new.
+
+    `split_into` asks for a concatenation of blocks that *all* stood on their own
+    before, which misses the commonest way to strand a docstring: insert a
+    declaration carrying its own, freshly-written docstring between an existing
+    block and the declaration that block documents. The two fuse, and because the
+    second half never existed at the base revision there is nothing to split it
+    against.
+
+    What survives is that the fused text opens with the stranded block verbatim.
+    That alone is not evidence — a docstring that gains a paragraph opens with its
+    old self too, and so does an unrelated one that quotes it — so the two things
+    that make it one are asked of the *declarations* rather than of the text.
+    `text` must precede at least one declaration the opening did not already
+    document, since a declaration that had this prose and still has it has been
+    left alone; and some declaration that did have it must no longer have it
+    anywhere in its docstring, since that is what having been detached from it
+    means. Both are counted per declaration rather than per block, because one
+    normalised block can precede several.
+
+    Openings are tried longest first, that being the most specific account of
+    where the new text starts, and one that fails either test does not end the
+    search: two old blocks can be nested prefixes of each other, and then the
+    shorter is stranded while the longer stays where it was.
+    """
+
+    def holds(block: str, head: str) -> bool:
+        # Anywhere in the block, not only at its start: prose is as often
+        # prepended above an existing docstring as appended below it, and either
+        # way the declaration still has what it had. Padded so the span has to be
+        # whole words.
+        return f" {block} ".find(f" {head} ") >= 0
+
+    def detached(head: str) -> bool:
+        # Per declaration and with multiplicity, because a subject is a kind and
+        # a name: one block documenting two same-named declarations must be found
+        # inside two docstrings still, or one of the two has lost it.
+        for subject, count in Counter(old[head]).items():
+            if subject is None:
+                return True
+            if sum(1 for t in new_by_subject.get(subject, ()) if holds(t, head)) < count:
+                return True
+        return False
+
+    for i in range(len(text) - 1, 0, -1):
+        head = text[:i]
+        if text[i] != " " or head not in old:
+            continue
+        # Per occurrence, not per key: one normalised block can precede several
+        # declarations, and the ones this opening already documented say nothing
+        # about the ones it did not.
+        if not +(Counter(subjects) - Counter(old[head])):
+            continue
+        if not detached(head):
+            continue
+        return [head, text[i + 1 :]]
+    return None
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print("usage: check-docstring-attachment.py <base-ref> <file>...", file=sys.stderr)
@@ -326,9 +401,6 @@ def main() -> int:
         )
         return 2
 
-    def names(subs: list[str | None]) -> list[str]:
-        return sorted(x or "<none>" for x in subs)
-
     bad = 0
     for key, subs in old.items():
         if key in new and names(subs) != names(new[key]):
@@ -336,22 +408,31 @@ def main() -> int:
             print(f"MOVED   {names(subs)} -> {names(new[key])}")
             print(f"        {key[:150]}")
 
-    # A block stranded above another fuses with it, and the fused text is
-    # exactly the two originals joined. That concatenation is the signature, and
-    # it is what separates a fusion from an ordinary expansion: an expanded
-    # docstring also contains its old self, but the added prose is new text
-    # rather than another block that used to stand on its own. Testing for it
-    # exactly also means a fusion between two declarations of the *same* name —
-    # F# overloads, of which this repository has several — is still caught, and
-    # that each fused block is reported once rather than once per half.
+    # A block stranded above another fuses with it, and the fused text opens with
+    # the stranded block verbatim. That opening is the signature. Where the rest
+    # is also blocks that stood on their own, `split_into` accounts for the whole
+    # text, which catches a fusion between two declarations of the *same* name —
+    # F# overloads, of which this repository has several — and reports each fused
+    # block once rather than once per half. Where it is not, `stranded_prefix`
+    # takes the opening alone and asks the declarations rather than the text:
+    # whether this block documents any of the ones that opening already did, and
+    # whether any of those has stopped opening its docstring with it.
     memo: dict[str, list[str] | None] = {}
+    new_by_subject: dict[str, list[str]] = {}
+    for key, subs in new.items():
+        for sub in subs:
+            if sub is not None:
+                new_by_subject.setdefault(sub, []).append(key)
+
     for key in new:
         if key in old:
             continue
-        parts = split_into(key, old, memo)
+        parts = split_into(key, old, memo) or stranded_prefix(
+            key, new[key], old, new_by_subject
+        )
         if parts and len(parts) > 1:
             bad += 1
-            was = [names(old[k])[0] for k in parts]
+            was = [names(old[k])[0] if k in old else "<written here>" for k in parts]
             print(f"MERGED  {was} fused into one block, which documents {names(new[key])}")
             for k in parts:
                 print(f"        {k[:120]}")

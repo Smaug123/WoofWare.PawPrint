@@ -1072,6 +1072,65 @@ stale since #848 renamed the constant.
 Run it against the branch point for every remaining stage; the moves are not
 finished.
 
+**The check had a blind spot, and it was the shape that caused both of the
+strandings found by eye.** `MERGED` recognised a fusion by splitting the fused
+text into blocks that had *each* stood on their own at the base revision, so it
+saw two existing docstrings pushed together but not the far commoner case: a
+declaration inserted between a block and its subject, carrying a docstring
+written on the spot. The second half never existed at the base, so there was
+nothing to split against and the check stayed silent — which is how #1080 could
+take `withUmask`'s prose and #1089 `cpuForRotation`'s with the tool in the
+repository. It now takes the longest opening that stood on its own before and
+asks about the *declarations* rather than about the text: the new block must
+precede at least one declaration that opening did not already document, and some
+declaration that did have it must no longer have it anywhere in its docstring.
+A declaration that had the prose and still has it was left alone, however much
+that prose has grown above or below it; and being detached from prose is exactly
+no longer having it. Both counted per declaration, since one normalised block can
+precede several.
+
+Five review rounds arrived at that phrasing, and the first four are why it is
+phrased that way. Asking only "did the subject change" reported a docstring that
+merely gained a paragraph. Asking additionally "does the opening still stand
+alone as a block" missed a stranding whose fused text opened with a *longer*
+block that was still standing; fixing that by continuing the search rather than
+stopping still misreported an opening retained inside its own subject's expanded
+block; asking the subjects existentially missed a block borne by two declarations
+where only one lost it; and asking whether the surviving docstring *starts* with
+the block reported prose merely prepended above it. Every one is a text-shaped
+approximation of a question about declarations, which is what five rounds on one
+predicate usually means.
+
+None of the shapes occurs in this repository's history: the whole-repository
+sweep reports the same thirty-five fusions throughout. Their oracle is
+`scripts/test-docstring-attachment.sh`, which puts all fifteen shapes in one
+throwaway repository — seven that must report, eight that must stay silent, plus
+the exit status and the exact number of findings — and runs as the
+`docstring-attachment` flake check, so a change to the checker cannot quietly
+retire it. It is itself mutation-tested: eight mutants of the guard, each
+killed by exactly the rows written for it. Two of those rows exist only because a
+mutant survived the first battery, which is the usual reason to keep a fixture
+honest: with two *distinct* subjects `kept < count` and `kept < 1` agree, and
+without a partial-word case the word-boundary padding is unobservable.
+
+Measured by running the check across every commit in the repository against its
+own parent, over the F# files that commit touched. Thirty-five fusions of the
+new shape, of which nine are strandings still in the tree: five in files this
+extraction has been moving (`cpuForRotation`, `defaultUserId`,
+`sockaddrFamilyField`, `socketCreation`, `GetCwdOrphanAnswer`) and four not.
+Eight are repaired as pure relocations. The ninth,
+`MemoryBlock.readNamedBytes`, needs writing rather than relocating: the stranded
+half says the function refuses a cell whose typed view is not byte-addressable,
+which is exactly the cell it *names* instead.
+
+Three more reports are not defects, and the line separating them is worth
+holding. Where the inserted declaration is a *generalisation* that legitimately
+inherited the prose — `tryNameCellWith`, `allocateZeroedAs`, `invokeStringQCall`
+— the block still describes what it now precedes; only the specialisation is
+left undocumented, and giving it words is writing rather than reattaching. The
+rest of the thirty-five are renames that carried their prose along, or
+strandings #1166 and #1171 had already repaired.
+
 ### Stage 6: move `UnixSystem` to the library
 
 **Dependencies**: stage 5.
