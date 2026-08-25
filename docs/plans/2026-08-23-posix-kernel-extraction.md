@@ -1645,6 +1645,18 @@ narrower than "measurement is the library's": a pointer to work is owned by
 whoever would do that work. The library cannot block a caller because it has no
 scheduler; the issue for building one is the client's.
 
+**Publishing a helper inherits the preconditions its private callers kept.**
+Review found that `truncateAt`, being public where `commitTruncation` was
+private, admits a negative length — and `VirtualFileSystem.truncateFile` guarded
+that with a `Debug.Assert`, which a Release build compiles out, after which the
+negative reaches `Array.Take` as an empty prefix and the file is silently emptied
+and stamped. The guard is now a `failwith`, mirroring
+`FileDescriptorRegistry.setOffset`'s treatment of a negative offset, which is the
+same precondition one layer over. This is the hazard `unparking-inherits-the-
+refusals-validations` names, in a new place: *widening* a definition's audience
+inherits every rule its old audience happened to satisfy, and a `Debug.Assert` is
+not a rule, it is a hope.
+
 `Close` is last, because it drags `closeFd` — 217 lines, refusals of both kinds,
 and two callers besides `Close` itself.
 

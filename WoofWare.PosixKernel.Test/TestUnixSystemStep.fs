@@ -416,3 +416,25 @@ module TestUnixSystemStep =
         // The failure dropped `first`'s lock rather than leaving it: the table
         // the caller gets back is not the one it passed in.
         afterFailedConversion |> shouldNotEqual both
+
+    [<Test>]
+    let ``truncateAt refuses a negative length rather than emptying the file`` () : unit =
+        // `truncateAt` is shared with `open`'s `O_TRUNC`, so unlike `ftruncate`
+        // it has callers that have not screened the length. A negative one
+        // reaches `Array.Take` as an empty prefix, which would silently empty the
+        // file and stamp it — and the guard that stops it must not be a
+        // `Debug.Assert`, which a Release build compiles out.
+        let fd, system = withOpenFile linux
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, _)) -> inode
+            | other -> failwith $"expected a file, got %O{other}"
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixSystem.truncateAt inode -1L system
+                |> ignore<Result<UnixSystem<int, string>, TruncationRefusal>>
+            )
+
+        exn.Message |> shouldContainText "negative"
