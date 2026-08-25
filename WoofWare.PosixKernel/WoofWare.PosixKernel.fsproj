@@ -81,7 +81,9 @@ else
     </UsingTask>
     <Target Name="PackReadmeWithoutLogo" BeforeTargets="_GetPackageFiles">
         <PropertyGroup>
-            <_NuGetReadme>$(MSBuildProjectDirectory)/$(IntermediateOutputPath)nuget-readme/README.md</_NuGetReadme>
+            <!-- IntermediateOutputPath is relative to the project by default but absolute under
+                 UseArtifactsOutput, so combine rather than prepend. -->
+            <_NuGetReadme>$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'nuget-readme', 'README.md'))</_NuGetReadme>
         </PropertyGroup>
         <WriteReadmeWithoutLogo Source="$(MSBuildProjectDirectory)/README.md" Destination="$(_NuGetReadme)" />
         <ItemGroup>
