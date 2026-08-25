@@ -179,7 +179,7 @@ type ClockJitterStrategy =
     /// monotonic) or above `ClockJitter.maxOvershootBoundTicks`. A bound that is
     /// legal here but still large enough to run the clock past its representable
     /// range is not rejected — that fault belongs to
-    /// `EmulatedKernel.withVirtualClockTicks`, which raises it naming the wait
+    /// `UnixMachineState.withVirtualClockTicks`, which raises it naming the wait
     /// responsible.
     ///
     /// Keep the probability small. Every jump discards the interval between the
@@ -286,7 +286,7 @@ module ClockJitter =
     /// nothing more.
     ///
     /// A returned target is always strictly greater than `currentClock`, so a
-    /// caller can hand it straight to `EmulatedKernel.withVirtualClockTicks`.
+    /// caller can hand it straight to `UnixMachineState.withVirtualClockTicks`.
     /// `pendingDeadlines` may contain duplicates and need not be sorted: the
     /// answer depends only on the *set* of deadlines strictly ahead of the
     /// clock, so a caller need not enumerate threads in any particular order.
@@ -862,107 +862,13 @@ type EmulatedKernelDefect =
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
 
-    // Forwarding wrappers for the machine-state operations, which now live in
-    // `WoofWare.PosixKernel.UnixMachineState`. They keep every call site in this
-    // repository unchanged; they go when the remaining state follows and callers
-    // learn to say `UnixMachineState.f kernel.Machine`.
-    let withUserAddressLimit limit (kernel : EmulatedKernel) : EmulatedKernel =
+    /// Apply an operation to the POSIX machine this process runs on. Those
+    /// operations live in `UnixMachineState`, which takes that machine rather
+    /// than the kernel.
+    let mapMachine (f : UnixMachineState -> UnixMachineState) (kernel : EmulatedKernel) : EmulatedKernel =
         { kernel with
-            Machine = UnixMachineState.withUserAddressLimit limit kernel.Machine
+            Machine = f kernel.Machine
         }
-
-    let withProcessorCount count (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = UnixMachineState.withProcessorCount count kernel.Machine
-        }
-
-    let withEphemeralPortRange (low, high) (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = UnixMachineState.withEphemeralPortRange (low, high) kernel.Machine
-        }
-
-    [<Literal>]
-    let maxWallClockEpochMs = UnixMachineState.maxWallClockEpochMs
-
-    let validateVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : unit =
-        UnixMachineState.validateVirtualClockTicks ticks kernel.Machine
-
-    let withWallClockEpochMs epochMs (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = UnixMachineState.withWallClockEpochMs epochMs kernel.Machine
-        }
-
-    [<Literal>]
-    let maxMonotonicTimestampClockTicks =
-        UnixMachineState.maxMonotonicTimestampClockTicks
-
-    let withVirtualClockTicks ticks (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = UnixMachineState.withVirtualClockTicks ticks kernel.Machine
-        }
-
-    let withLocalAddresses addresses routes (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = UnixMachineState.withLocalAddresses addresses routes kernel.Machine
-        }
-
-    let withUnixPlatformAndFileSystemType platform fileSystemType (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = UnixMachineState.withUnixPlatformAndFileSystemType platform fileSystemType kernel.Machine
-        }
-
-    let userBufferCheck (kernel : EmulatedKernel) =
-        UnixMachineState.userBufferCheck kernel.Machine
-
-    let socket socketId (kernel : EmulatedKernel) =
-        UnixMachineState.socket socketId kernel.Machine
-
-    let connection connectionId (kernel : EmulatedKernel) =
-        UnixMachineState.connection connectionId kernel.Machine
-
-    let socketReadinessLevel socketId (kernel : EmulatedKernel) =
-        UnixMachineState.socketReadinessLevel socketId kernel.Machine
-
-    let allocateEphemeralPort
-        (isAcceptable : uint16 -> bool)
-        (kernel : EmulatedKernel)
-        : (uint16 * EmulatedKernel) option
-        =
-        UnixMachineState.allocateEphemeralPort isAcceptable kernel.Machine
-        |> Option.map (fun (port, machine) ->
-            port,
-            { kernel with
-                Machine = machine
-            }
-        )
-
-    let defaultSoMaxConn = UnixMachineState.defaultSoMaxConn
-
-    [<Literal>]
-    let maxWallClockTicks = UnixMachineState.maxWallClockTicks
-
-    [<Literal>]
-    let nanosecondsPerTick = UnixMachineState.nanosecondsPerTick
-
-    [<Literal>]
-    let ticksPerMillisecond = UnixMachineState.ticksPerMillisecond
-
-    let withSoMaxConn platform value (kernel : EmulatedKernel) : EmulatedKernel =
-        { kernel with
-            Machine = UnixMachineState.withSoMaxConn platform value kernel.Machine
-        }
-
-    let systemTimeAsTicks (kernel : EmulatedKernel) =
-        UnixMachineState.systemTimeAsTicks kernel.Machine
-
-    let monotonicTimestampNanos (kernel : EmulatedKernel) =
-        UnixMachineState.monotonicTimestampNanos kernel.Machine
-
-    let lowResolutionTimestampMs (kernel : EmulatedKernel) =
-        UnixMachineState.lowResolutionTimestampMs kernel.Machine
-
-    let fileTimestamp (kernel : EmulatedKernel) =
-        UnixMachineState.fileTimestamp kernel.Machine
 
     /// Default environment variables for a freshly-minted simulated process.
     /// PawPrint only implements invariant-globalization today, so this seed
@@ -1210,7 +1116,7 @@ module EmulatedKernel =
                     EphemeralPortRange = defaultEphemeralPortRange
                     // The Linux default, matching `defaultUnixPlatform`;
                     // `KernelConfig.applyTo` re-resolves it beside the platform.
-                    SoMaxConn = defaultSoMaxConn SimulatedUnixFlavour.Linux
+                    SoMaxConn = UnixMachineState.defaultSoMaxConn SimulatedUnixFlavour.Linux
                     LocalAddresses = defaultLocalAddresses
                     LocalRoutes = defaultLocalRoutes
                     VirtualClockTicks = 0L
@@ -1434,7 +1340,7 @@ module EmulatedKernel =
         // by record-copy bypasses that setter entirely, which is the same hole the monotonicity
         // check below already exists to cover. Revalidating keeps this path's guarantee independent
         // of how its caller's kernel was assembled.
-        validateVirtualClockTicks ticks kernel
+        UnixMachineState.validateVirtualClockTicks ticks kernel.Machine
 
         { kernel with
             StepCounter = kernel.StepCounter + 1L
@@ -1707,7 +1613,7 @@ module EmulatedKernel =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.Socket socketId -> socketReadinessLevel socketId kernel
+        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId kernel.Machine
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
             { ReadinessLevel.none with
                 Hup = true
@@ -1744,7 +1650,7 @@ module EmulatedKernel =
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.Socket socketId -> socketReadinessLevel socketId kernel
+        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId kernel.Machine
         | OpenFileTarget.File _ ->
             // Measured (`pollgaps.c`): a regular file answers IN|OUT at every
             // offset and under O_RDONLY as much as O_RDWR, and a directory
@@ -1793,7 +1699,7 @@ module EmulatedKernel =
                     FileDescriptors =
                         FileDescriptorRegistry.signalSocketEventPorts
                             (UnixProcessState.descriptionsNamingSocket socketId kernel.Process)
-                            (Some (lazy (socketReadinessLevel socketId kernel)))
+                            (Some (lazy (UnixMachineState.socketReadinessLevel socketId kernel.Machine)))
                             kernel.FileDescriptors
                 }
         }
@@ -2481,7 +2387,7 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : ConnectOutcome * EmulatedKernel
         =
-        let sock = socket socketId kernel
+        let sock = UnixMachineState.socket socketId kernel.Machine
         let platform = kernel.UnixPlatform
         let flavour = SimulatedUnixPlatform.flavour platform
         let exactSize = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
@@ -2611,8 +2517,12 @@ module EmulatedKernel =
                     )
                 )
 
-            match allocateEphemeralPort acceptable kernel with
-            | Some (port, kernel) -> candidate port, kernel
+            match UnixMachineState.allocateEphemeralPort acceptable kernel.Machine with
+            | Some (port, machine) ->
+                candidate port,
+                { kernel with
+                    Machine = machine
+                }
             | None ->
                 let low, high = kernel.EphemeralPortRange
 
@@ -3216,13 +3126,13 @@ module EmulatedKernel =
     /// listening stream socket, so reaching this in any other state is an
     /// interpreter bug.
     let acceptConnection (socketId : SocketId) (kernel : EmulatedKernel) : int * TcpConnection * EmulatedKernel =
-        let listener = socket socketId kernel
+        let listener = UnixMachineState.socket socketId kernel.Machine
 
         match listener.Phase with
         | SocketPhase.Listening ({
                                      Queue = connectionId :: rest
                                  } as listenState) ->
-            let tcpConnection = connection connectionId kernel
+            let tcpConnection = UnixMachineState.connection connectionId kernel.Machine
             let acceptedId = kernel.NextSocketId
             let (SocketId rawAcceptedId) = acceptedId
 
@@ -3633,7 +3543,7 @@ type KernelConfig =
         /// Wall-clock reading, in milliseconds since the Unix epoch, that the
         /// simulated process boots at — the instant `DateTime.UtcNow` reports
         /// before the virtual clock has advanced. Must lie in
-        /// `[0, EmulatedKernel.maxWallClockEpochMs]`. See
+        /// `[0, UnixMachineState.maxWallClockEpochMs]`. See
         /// `EmulatedKernel.WallClockEpochMs` for why the default of 0 (and
         /// hence a guest that thinks it is 1970) is the honest choice, and note
         /// that whatever a host picks here becomes part of that run's replay
@@ -3712,7 +3622,7 @@ type KernelConfig =
         EphemeralPortRange : uint16 * uint16
         /// The `somaxconn` sysctl, or `None` for the flavour's measured
         /// default (4096 on Linux, 128 on Darwin): the ceiling `listen(2)`
-        /// clamps its backlog to. See `EmulatedKernel.withSoMaxConn`.
+        /// clamps its backlog to. See `UnixMachineState.withSoMaxConn`.
         SoMaxConn : int option
         /// The IPv4 addresses this machine holds, as prefixes. See
         /// `EmulatedKernel.defaultLocalAddresses`, and note the flavours read one
@@ -3759,13 +3669,15 @@ module KernelConfig =
     let applyTo (config : KernelConfig) (kernel : EmulatedKernel) : EmulatedKernel =
         kernel
         |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "KernelConfig.Environment" config.Environment)
-        |> EmulatedKernel.withProcessorCount config.ProcessorCount
-        |> EmulatedKernel.withUserAddressLimit config.UserAddressLimit
+        |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
+        |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit config.UserAddressLimit)
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
         |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
-        |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
-        |> EmulatedKernel.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
+        |> EmulatedKernel.mapMachine (UnixMachineState.withWallClockEpochMs config.WallClockEpochMs)
+        |> EmulatedKernel.mapMachine (
+            UnixMachineState.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
+        )
         |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
             config.UnixPlatform
@@ -3773,7 +3685,7 @@ module KernelConfig =
             config.FileSystem
             config.CurrentDirectory
         |> EmulatedKernel.mapProcess (UnixProcessState.withUserAndGroupId config.UserId config.GroupId)
-        |> EmulatedKernel.withEphemeralPortRange config.EphemeralPortRange
-        |> EmulatedKernel.withSoMaxConn config.UnixPlatform config.SoMaxConn
-        |> EmulatedKernel.withLocalAddresses config.LocalAddresses config.LocalRoutes
+        |> EmulatedKernel.mapMachine (UnixMachineState.withEphemeralPortRange config.EphemeralPortRange)
+        |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.UnixPlatform config.SoMaxConn)
+        |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> EmulatedKernel.mapProcess (UnixProcessState.withUmask "KernelConfig.Umask" config.Umask)

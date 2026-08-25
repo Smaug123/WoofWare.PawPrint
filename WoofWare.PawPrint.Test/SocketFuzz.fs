@@ -210,7 +210,7 @@ module SocketFuzz =
             // in EmulatedKernel, and are deliberately outside the fuzzed
             // vocabulary (see the plan doc's altitude option).
             let socketId = socketIdOfSlot slot state
-            let sock = EmulatedKernel.socket socketId state.Kernel
+            let sock = UnixMachineState.socket socketId state.Kernel.Machine
 
             match sock.Phase with
             | SocketPhase.Idle -> ()
@@ -255,7 +255,7 @@ module SocketFuzz =
             // slot of it, so ask the kernel at connect time — the harness
             // does the same with getsockname.
             let endpoint =
-                match (EmulatedKernel.socket (socketIdOfSlot listener state) state.Kernel).Binding with
+                match (UnixMachineState.socket (socketIdOfSlot listener state) state.Kernel.Machine).Binding with
                 | Some binding when binding.Endpoint.Port <> 0us -> binding.Endpoint
                 | _ -> failwith $"INTERPRETER-DRIVER BUG: conn targets slot %d{listener}, whose socket never listened."
 
@@ -299,7 +299,7 @@ module SocketFuzz =
         | FuzzOp.Accept (listener, newSlot) ->
             let socketId = socketIdOfSlot listener state
 
-            match (EmulatedKernel.socket socketId state.Kernel).Phase with
+            match (UnixMachineState.socket socketId state.Kernel.Machine).Phase with
             | SocketPhase.Listening listenState when List.isEmpty listenState.Queue ->
                 // Nonblocking accept of an empty queue, exactly accept4's
                 // answer; `acceptConnection` requires a nonempty queue.

@@ -1140,6 +1140,11 @@ CLR-side fields listed in "What stays in PawPrint", plus `Unix : UnixSystem`.
 Delete the forwarding accessors from stage 5 and update the ~180 call sites in
 `NativeSystemNative.fs`.
 
+**Done, in seven sub-stages** (6a leaf types, 6b–6d the three records, 6e–6g the
+forwarders they left behind), with one deviation: `EmulatedKernel` holds the
+three records flat rather than a `Unix : UnixSystem` aggregate. See 6g for why
+that waits for stage 7.
+
 **Correctness oracle**: the full suite, plus the CI assertion from stage 1 that
 the library references nothing of PawPrint's. At this point the goal's second
 bullet is met and the third is met; the first is met for state but not yet for
@@ -1279,6 +1284,58 @@ test.
 
 Stage 6g is the last: `UnixMachineState`'s twenty-four wrappers and about two
 hundred call sites.
+
+#### Stage 6g: the machine forwarders deleted — stage 6 done
+
+The last twenty-four wrappers are gone and `mapMachine` joins `mapProcess` and
+`mapTasks`. One hundred and eighty-eight call sites were respelled by script,
+sixteen more by hand, and nine files gained an `open WoofWare.PosixKernel`.
+`EmulatedKernel` now holds `Machine`, `Process` and `Tasks` and restates none of
+the library's API: the three lenses take an operation and apply it to a field,
+which is the only thing left that is PawPrint's to say.
+
+**Redone from scratch once, and the reason is worth keeping.** The first attempt
+rewrote reads with a regex whose first capture was `\S+`, so
+`EmulatedKernel.socket (SocketId client) kernel` matched with the argument split
+at the space inside the parentheses — producing
+`UnixMachineState.socket (SocketId client.Machine) kernel`, which projects the
+wrong value and drops the kernel. The compiler caught those, but "the compiler
+caught the ones that did not typecheck" is not the same as "none survived", and
+a transformation applied 188 times has to be trustworthy rather than
+spot-checked. The tree was reset and everything redone with one
+argument-aware rewriter that consumes balanced parentheses and **reports what it
+cannot parse instead of guessing** — three calls whose arguments spanned a line
+break, which were then done by hand.
+
+**The audit that makes that trustworthy** is a token multiset comparison against
+the branch point, written separately from the rewriter: normalise away exactly
+what the rewrite may change (which module qualifies a name, the `.Machine` that
+projects a kernel, the `mapMachine` lens) and every remaining token must match.
+It does, for all twenty-one rewritten files — the only residue is the deleted
+block, the added `open`s, and the three deliberate hand edits, each of which the
+audit names. Whole-file rather than per-line, because `fantomas` reflows.
+
+**`allocateEphemeralPort` was the one operation that could not be mechanical**:
+it answers a port *and* advances the machine, so the wrapper existed to re-wrap
+`(port * UnixMachineState) option` into `(port * EmulatedKernel) option`. A
+fourth lens for option-returning state operations would be a shape invented for
+one function, so instead the seven test sites thread `UnixMachineState` directly
+— ephemeral-port allocation is a machine operation, and they only ever built
+kernels to reach the machine — and the two production sites rebuild the kernel
+in the match arm, which is a line longer and says plainly where the advance goes.
+
+**`UnixSystem` is deliberately still absent.** The target shape has
+`EmulatedKernel` hold `Unix : UnixSystem` rather than three fields, and stage 5
+deferred it on the grounds that a one-field wrapper buys nothing. It is still
+deferred, now for a better reason: its consumer is stage 7's
+`step : Syscall -> UnixSystem -> SyscallOutcome * UnixSystem`, which cannot take
+three separate arguments and return three. Introducing the aggregate with its
+consumer costs one mechanical `kernel.Machine` -> `kernel.Unix.Machine` rename;
+introducing it now would be a rename with nothing to justify it.
+
+**Correctness oracle**: the token audit, the non-`Guest` suite and the library
+suite (`Guest` runs in CI), and the docstring check. No behaviour changes: every
+call site is the same computation spelled differently.
 
 ### Stage 7: the syscall request layer, on the pure syscalls first
 

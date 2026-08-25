@@ -53,7 +53,7 @@ type UnixMachineState =
         /// Linux, `kern.ipc.somaxconn` on Darwin): the ceiling `listen(2)`
         /// clamps its backlog to before the accept-queue capacity is derived.
         /// Host configuration with a per-flavour default; see
-        /// `EmulatedKernel.withSoMaxConn` for the measured clamp rules.
+        /// `UnixMachineState.withSoMaxConn` for the measured clamp rules.
         SoMaxConn : int
         /// The IPv4 addresses this machine holds. Host configuration; see
         /// `EmulatedKernel.defaultLocalAddresses`.
@@ -76,10 +76,10 @@ type UnixMachineState =
         /// source of truth for every elapsed-time computation the guest
         /// performs. `SystemNative_GetSystemTimeAsTicks` (the wall clock
         /// behind `DateTime.UtcNow`) derives from it via
-        /// `EmulatedKernel.systemTimeAsTicks`, and
+        /// `UnixMachineState.systemTimeAsTicks`, and
         /// `SystemNative_GetTimestamp` (the high-resolution clock behind
         /// `Stopwatch`) derives from it via
-        /// `EmulatedKernel.monotonicTimestampNanos` — rather than either
+        /// `UnixMachineState.monotonicTimestampNanos` — rather than either
         /// maintaining a parallel clock.
         ///
         /// Denominated in 100 ns ticks — `DateTime`'s own quantum — so that

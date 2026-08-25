@@ -9,6 +9,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `ClockJitterStrategy` lets a run advance the virtual clock onto a deadline a
 /// thread is already parked on, so that a timeout fires while other threads
@@ -432,8 +433,8 @@ module TestClockJitter =
             (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, 0L))
             0L
             0L
-            [ EmulatedKernel.maxMonotonicTimestampClockTicks + 1L ]
-        |> shouldEqual (Some (EmulatedKernel.maxMonotonicTimestampClockTicks + 1L))
+            [ UnixMachineState.maxMonotonicTimestampClockTicks + 1L ]
+        |> shouldEqual (Some (UnixMachineState.maxMonotonicTimestampClockTicks + 1L))
 
     [<Test>]
     let ``the overshoot does not disturb which deadline was chosen`` () : unit =

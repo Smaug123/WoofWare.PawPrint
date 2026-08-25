@@ -24,7 +24,9 @@ module TestEffectiveProcessorCount =
     /// A kernel whose detection-equivalent count is `detected` and whose
     /// environment carries exactly the supplied overrides.
     let private kernelWith (detected : int) (overrides : (string * string) list) : EmulatedKernel =
-        let kernel = EmulatedKernel.initial |> EmulatedKernel.withProcessorCount detected
+        let kernel =
+            EmulatedKernel.initial
+            |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount detected)
 
         kernel
         |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "test" (Map.ofList overrides))

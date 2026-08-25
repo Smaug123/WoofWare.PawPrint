@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
+
 [<RequireQualifiedAccess>]
 module NativeThreading =
     let private objectOwnFieldId
@@ -125,7 +127,7 @@ module NativeThreading =
                 Some (
                     Some (
                         state.Kernel.VirtualClockTicks
-                        + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                        + int64 timeout * UnixMachineState.ticksPerMillisecond
                     )
                 )
 
@@ -658,7 +660,7 @@ module NativeThreading =
                 else
                     let deadline =
                         state.Kernel.VirtualClockTicks
-                        + int64 millisecondsTimeout * EmulatedKernel.ticksPerMillisecond
+                        + int64 millisecondsTimeout * UnixMachineState.ticksPerMillisecond
 
                     Scheduler.blockOnSleep ctx.Thread (Some deadline) state
 

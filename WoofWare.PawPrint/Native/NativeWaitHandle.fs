@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
+
 /// Native handler for the Win32-shaped wait-handle QCalls reachable from
 /// CoreCLR-on-Unix: `CreateSemaphoreExW`, `ReleaseSemaphore`,
 /// `CloseHandle`, `WaitHandle_WaitOneCore`,
@@ -342,7 +344,7 @@ module NativeWaitHandle =
             // `Int32.MaxValue` timeouts against a long-running clock.
             let deadlineTicks =
                 state.Kernel.VirtualClockTicks
-                + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                + int64 timeout * UnixMachineState.ticksPerMillisecond
 
             match blockingWait (Some deadlineTicks) state with
             | WaitHandle.WaitOutcome.Acquired state -> state, waitObjectZero
@@ -717,7 +719,7 @@ module NativeWaitHandle =
             else
                 let deadlineTicks =
                     state.Kernel.VirtualClockTicks
-                    + int64 timeout * EmulatedKernel.ticksPerMillisecond
+                    + int64 timeout * UnixMachineState.ticksPerMillisecond
 
                 match WaitHandle.waitMultiple ctx.Thread handles waitAll (Some deadlineTicks) state with
                 | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->

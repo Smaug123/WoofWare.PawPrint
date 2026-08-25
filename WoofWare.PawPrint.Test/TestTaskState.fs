@@ -86,7 +86,8 @@ module TestTaskState =
 
     [<Test>]
     let ``guest threads take successive cores in the rotation`` () : unit =
-        let state = (machine ()).MapKernel (EmulatedKernel.withProcessorCount 4)
+        let state =
+            (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
 
         let state, first =
             IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
@@ -146,7 +147,9 @@ module TestTaskState =
         // placement is currently indistinguishable from the constant, and a
         // second caller would silently land on core 0. This pins the contract
         // instead: the second thread through here takes the next slot.
-        let state = (machine ()).MapKernel (EmulatedKernel.withProcessorCount 4)
+        let state =
+            (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
+
         let state, frame = aFrame state
         let state, first = IlMachineState.addThread frame state
         let state, second = IlMachineState.addThread frame state
@@ -209,7 +212,9 @@ module TestTaskState =
         // the task under test is not on core 0: a fixture whose thread already
         // sits there cannot tell "parking left the core alone" from "parking
         // reset it to zero".
-        let state = (machine ()).MapKernel (EmulatedKernel.withProcessorCount 4)
+        let state =
+            (machine ()).MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 4))
+
         let state, _ = IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1) state
 
         let state, thread =

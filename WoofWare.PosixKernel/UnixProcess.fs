@@ -148,7 +148,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// enforces that as `DirectoryStreamBlockDangling` — so an absent one is
         /// an interpreter bug rather than anything a guest did, and
         /// `directoryStream` says so loudly rather than inventing an errno, the
-        /// way `EmulatedKernel.connection` does for a `ConnectionId`.
+        /// way `UnixMachineState.connection` does for a `ConnectionId`.
         DirectoryStreams : Map<DirectoryStreamId, DirectoryStream>
         /// The id `withNewDirectoryStream` will hand out next.
         NextDirectoryStreamId : DirectoryStreamId
