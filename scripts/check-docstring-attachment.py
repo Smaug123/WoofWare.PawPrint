@@ -33,6 +33,15 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     revision. This compares two revisions, so it inherits the base's mistakes.
   * Anything below a `let`: docstrings on local bindings inside a function body
     are not tracked, because the declaration regex is anchored at module level.
+  * A short docstring shared verbatim by several declarations. Blocks are keyed
+    by text, so the subjects are compared as a multiset and adding a *new*
+    declaration that reuses an existing one-liner is reported as MOVED. Read the
+    report: if every old name is still there, nothing was detached.
+  * A block that was stranded and then fused with a block documenting a
+    declaration of the *same name*. The subject test that separates a fusion
+    from an ordinary expansion cannot distinguish those, and it is the right
+    trade: expansion is common and same-name fusion needs two declarations of
+    one name in scope.
 """
 
 import re
@@ -40,12 +49,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Accessibility and binding modifiers must be consumed rather than captured:
+# `let internal fractionBits` whose subject reads as `internal` compares equal to
+# every other internal binding, which is exactly the rebinding this looks for.
+MODS = r"(?:private\s+|internal\s+|public\s+|rec\s+|inline\s+|mutable\s+|static\s+|abstract\s+|override\s+|default\s+)*"
+
 DECL = re.compile(
     r"^\s*(?:\[<[^\]]*>\]\s*)?"
-    r"(?:let\s+(?:private\s+|rec\s+|inline\s+|mutable\s+)*(?P<let>[a-zA-Z_][A-Za-z0-9_']*)"
-    r"|type\s+(?P<type>[A-Za-z_][A-Za-z0-9_']*)"
-    r"|module\s+(?P<module>[A-Za-z_][A-Za-z0-9_']*)"
-    r"|(?:member|override)\s+(?:this\.|_\.|val\s+)?(?P<member>[A-Za-z_][A-Za-z0-9_']*)"
+    r"(?:let\s+" + MODS + r"(?P<let>[a-zA-Z_][A-Za-z0-9_']*)"
+    r"|type\s+" + MODS + r"(?P<type>[A-Za-z_][A-Za-z0-9_']*)"
+    r"|module\s+" + MODS + r"(?P<module>[A-Za-z_][A-Za-z0-9_']*)"
+    r"|(?:static\s+|abstract\s+|default\s+)*(?:member|override)\s+"
+    + MODS
+    + r"(?:this\.|_\.|val\s+)?(?P<member>[A-Za-z_][A-Za-z0-9_']*)"
     r"|(?P<field>[A-Z][A-Za-z0-9_]*)\s*:\s"
     r"|\|\s*(?P<case>[A-Z][A-Za-z0-9_]*))"
 )
@@ -114,7 +130,25 @@ def main() -> int:
         return 2
 
     ref, files = sys.argv[1], sys.argv[2:]
+
+    # An oracle that passes when it read nothing is worse than no oracle: a
+    # misspelt ref would silently retire the check.
+    if subprocess.run(
+        ["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+        capture_output=True,
+    ).returncode:
+        print(f"{ref} does not name a commit", file=sys.stderr)
+        return 2
+
     old, new = side(files, ref), side(files)
+    if not old:
+        print(
+            f"none of the {len(files)} file(s) given exist at {ref}, so there is "
+            "nothing to compare against; pass the union of the paths involved on "
+            "both sides",
+            file=sys.stderr,
+        )
+        return 2
 
     def names(subs: list[str | None]) -> list[str]:
         return sorted(x or "<none>" for x in subs)
@@ -127,7 +161,14 @@ def main() -> int:
             # it, so its old text survives only as a substring of a new block.
             # That is a detachment rather than a deletion, and it is the shape
             # the eye misses.
-            merged = [k for k in new_keys if key in k]
+            # A block that merely gained a paragraph is also a substring of a
+            # larger one, so the substring test alone cannot tell an edit from a
+            # fusion. What separates them is the subject: an expanded docstring
+            # still documents what it did, a fused one has been captured by
+            # whatever followed the definition that left.
+            merged = [
+                k for k in new_keys if key in k and names(new[k]) != names(subs)
+            ]
             if merged:
                 bad += 1
                 print(f"MERGED  into a larger block, which now documents {names(new[merged[0]])}")
