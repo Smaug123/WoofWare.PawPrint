@@ -306,23 +306,30 @@ def stranded_prefix(
     second half never existed at the base revision there is nothing to split it
     against.
 
-    What survives is that the fused text opens with the stranded block verbatim.
-    The longest such opening wins, being the most specific account of where the
-    new text starts, and two further things have to hold before that opening is a
-    fusion rather than a coincidence. It must no longer stand on its own
-    anywhere, since a block that is still a block was not absorbed into anything:
-    an unrelated declaration whose new docstring merely opens with an existing
-    one's text has detached nothing. And its subject must have changed, since
-    prose appended to a docstring opens with its old self too and stays where it
-    was.
+    What survives is that the fused text opens with the stranded block verbatim,
+    and two further things have to hold before such an opening is a fusion rather
+    than a coincidence. It must no longer stand on its own anywhere, since a
+    block that is still a block was not absorbed into anything: an unrelated
+    declaration whose new docstring merely opens with an existing one's text has
+    detached nothing. And its subject must have changed, since prose appended to
+    a docstring opens with its old self too and stays where it was.
+
+    Openings are tried longest first, that being the most specific account of
+    where the new text starts, but one that is still a block of its own does not
+    end the search — two old blocks can be nested prefixes of each other, and
+    then the shorter is stranded while the longer stands untouched.
     """
     for i in range(len(text) - 1, 0, -1):
         if text[i] != " " or text[:i] not in old:
             continue
         head = text[:i]
-        if head in new or names(old[head]) == subject:
-            return None
-        return [head, text[i + 1 :]]
+        if head in new:
+            # Still a block of its own, so nothing was absorbed at this boundary.
+            # Keep looking: where two old blocks are nested prefixes of each
+            # other, the shorter one can be the stranded one while the longer
+            # stands untouched above its own subject.
+            continue
+        return [head, text[i + 1 :]] if names(old[head]) != subject else None
     return None
 
 
