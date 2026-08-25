@@ -41,8 +41,9 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
     by text, so the subjects are compared as a multiset and adding a *new*
     declaration that reuses an existing one-liner is reported as MOVED. Read the
     report: if every old name is still there, nothing was detached.
-  * A same-named pair that is not adjacent. Overloads carry their signature in
-    the subject only when two successive declarations share a name and kind,
+  * A same-named, same-kind pair that is not adjacent. A subject is its kind and
+    its name, which separates `type Foo` from `module Foo`; the signature is
+    added only where two *successive* declarations share a name and kind,
     because qualifying every repeated name buries a move audit in subjects that
     differ solely in whether they were qualified. Two overloads with an
     unrelated declaration between them can therefore still swap prose unseen.
@@ -151,8 +152,13 @@ def pairs(text: str, ambiguous: set[str] = frozenset()) -> dict[str, list[str | 
         if k < len(lines):
             m = DECL.match(lines[k])
             if m:
-                subject = next(v for v in m.groupdict().values() if v)
-                if subject in ambiguous:
+                kind, name = next(kv for kv in m.groupdict().items() if kv[1])
+                # The kind belongs in the identity: `type Foo` and its companion
+                # `module Foo` are the same name, so a stranded docstring moving
+                # between them would otherwise compare equal, and that pairing
+                # is everywhere in this repository.
+                subject = f"{kind} {name}"
+                if name in ambiguous:
                     subject = " ".join(lines[k].split())
             elif lines[k].strip():
                 # A form the regex does not know is still a distinguishable
@@ -205,11 +211,18 @@ def sides(
     files: list[str], ref: str
 ) -> tuple[dict[str, list[str | None]], dict[str, list[str | None]]]:
     """The old and new (docstring -> subjects) maps, built together."""
+    texts = [(read(f, ref), read(f, None)) for f in files]
+
+    # One ambiguity set over every path and both revisions. Deriving it per file
+    # would qualify a name in the file it moved out of (where its overload pair
+    # still stands) and not in the file it moved into, so a definition that
+    # moved *correctly, with its docstring* would be reported as changing
+    # subject.
+    ambiguous = ambiguous_names(*(t for pair in texts for t in pair if t is not None))
+
     old: dict[str, list[str | None]] = {}
     new: dict[str, list[str | None]] = {}
-    for f in files:
-        was, now = read(f, ref), read(f, None)
-        ambiguous = ambiguous_names(*(t for t in (was, now) if t is not None))
+    for was, now in texts:
         for text, acc in ((was, old), (now, new)):
             if text is None:
                 continue
