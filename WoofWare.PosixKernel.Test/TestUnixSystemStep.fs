@@ -242,3 +242,177 @@ module TestUnixSystemStep =
 
         UnixSystem.step (Syscall.LSeek (fd, 0L, 3)) seeded
         |> shouldEqual (Error (SyscallRefusal.LSeek (LSeekRefusal.Sparseness (3, SeekExtension.SeekData))))
+
+    /// A system holding one directory, and the read-only descriptor onto it that
+    /// `open` would give: the only access mode a directory can have.
+    let private withOpenDirectory (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let inode, filesystem =
+            match
+                VirtualFileSystem.createDirectory
+                    rootInode
+                    (FileName.parseOrFail context "d")
+                    (PermissionBits.parseOrFail context 0o755)
+                    epoch
+                    system.Machine.FileSystem
+            with
+            | Ok pair -> pair
+            | Error error -> failwith $"could not seed the directory: %O{error}"
+
+        let fd, registry =
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly system.Process.FileDescriptors
+
+        fd,
+        { system with
+            Machine =
+                { system.Machine with
+                    FileSystem = filesystem
+                }
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    [<Test>]
+    let ``ftruncate validates the length before the descriptor`` () : unit =
+        // Measured on both: the same unknown fd is EBADF at length 0 and EINVAL
+        // at length -1, so the length really is checked first rather than the two
+        // faults merely sharing an errno. A row per fault alone could not tell.
+        UnixSystem.ftruncate 99 0L linux
+        |> answered
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
+
+        UnixSystem.ftruncate 99 -1L linux
+        |> answered
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL)
+
+    [<Test>]
+    let ``ftruncate of a read-only descriptor is EINVAL, not EBADF`` () : unit =
+        // `ftruncate(2)` differs from `write(2)` here, measured on both. It is
+        // also what makes a directory answer EINVAL without a type check, since
+        // a directory can only ever be opened read-only.
+        let fd, system = withOpenDirectory linux
+
+        UnixSystem.ftruncate fd 0L system
+        |> answered
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL)
+
+    [<Test>]
+    let ``ftruncate shortens the file and stamps it`` () : unit =
+        let fd, system = withOpenFile linux
+
+        let after =
+            match UnixSystem.ftruncate fd 2L system with
+            | Ok (SyscallAnswer.Completed 0L, after) -> after
+            | other -> failwith $"expected success, got %O{other}"
+
+        // Seeking to the end is how the length is read back without a `stat`.
+        UnixSystem.lseek fd 0L 2 after
+        |> answered
+        |> shouldEqual (SyscallAnswer.Completed 2L)
+
+    [<Test>]
+    let ``an unlockable operation is EINVAL on Linux and refused on Darwin`` () : unit =
+        // Linux validates strictly: exactly one of SH/EX/UN, optionally with NB.
+        // Darwin is laxer *and* answers differently per input, which is why the
+        // whole of it is refused rather than one row of it modelled.
+        let shAndEx = 1 ||| 2
+
+        UnixSystem.flock 0 shAndEx linux
+        |> answered
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL)
+
+        UnixSystem.flock 0 shAndEx darwin
+        |> shouldEqual (Error (FLockRefusal.DarwinMalformedOperation shAndEx))
+
+    [<Test>]
+    let ``flock on a pipe is Linux's business and Darwin's refusal`` () : unit =
+        // The standard streams are pipes here. Linux permits `flock` on one and
+        // returns 0; Darwin answers ENOTSUP, and what that leaves the lock state
+        // as is unmeasured.
+        UnixSystem.flock 0 2 linux
+        |> answered
+        |> shouldEqual (SyscallAnswer.Completed 0L)
+
+        match UnixSystem.flock 0 2 darwin with
+        | Error (FLockRefusal.DarwinStandardStream _) -> ()
+        | other -> failwith $"expected a Darwin standard-stream refusal, got %O{other}"
+
+    [<Test>]
+    let ``a contended blocking lock is refused, and a non-blocking one is EAGAIN`` () : unit =
+        // Two descriptions of one file, so the second acquire genuinely
+        // contends. The refusal must not quietly become the non-blocking answer:
+        // that would hand a caller an EWOULDBLOCK no kernel would have produced.
+        let first, system = withOpenFile linux
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget first system.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, _)) -> inode
+            | other -> failwith $"expected a file, got %O{other}"
+
+        let second, registry =
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let held =
+            match UnixSystem.flock first 2 system with
+            | Ok (SyscallAnswer.Completed 0L, held) -> held
+            | other -> failwith $"expected the first lock to be granted, got %O{other}"
+
+        UnixSystem.flock second (2 ||| 4) held
+        |> answered
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EAGAIN)
+
+        UnixSystem.flock second 2 held
+        |> shouldEqual (Error (FLockRefusal.WouldBlockIndefinitely FlockMode.Exclusive))
+
+    [<Test>]
+    let ``a failing flock still advances the descriptor table`` () : unit =
+        // The design's most distinctive claim, and the reason state rides
+        // alongside a `Failed` rather than being withheld: a conversion that
+        // cannot be granted has already dropped the caller's old lock.
+        let first, system = withOpenFile linux
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget first system.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, _)) -> inode
+            | other -> failwith $"expected a file, got %O{other}"
+
+        let second, registry =
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        // `second` holds a shared lock; `first` takes one too, then tries to
+        // convert to exclusive, which cannot be granted while `second` holds its.
+        let held =
+            match UnixSystem.flock second 1 system with
+            | Ok (SyscallAnswer.Completed 0L, held) -> held
+            | other -> failwith $"expected the shared lock to be granted, got %O{other}"
+
+        let both =
+            match UnixSystem.flock first 1 held with
+            | Ok (SyscallAnswer.Completed 0L, both) -> both
+            | other -> failwith $"expected the second shared lock to be granted, got %O{other}"
+
+        let afterFailedConversion =
+            match UnixSystem.flock first (2 ||| 4) both with
+            | Ok (SyscallAnswer.Failed UnixError.EAGAIN, after) -> after
+            | other -> failwith $"expected EAGAIN, got %O{other}"
+
+        // The failure dropped `first`'s lock rather than leaving it: the table
+        // the caller gets back is not the one it passed in.
+        afterFailedConversion |> shouldNotEqual both

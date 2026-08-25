@@ -1628,9 +1628,25 @@ answer exists ("the two platforms transpose the numbers"), and PawPrint says
 which managed caller could have asked ("CoreLib never sends these —
 `Interop.Sys.SeekWhence` is 0, 1, 2"). Neither half can write the other's.
 
-`FLock`, `FTruncate` and `Close` follow. `Close` is last because it drags
-`closeFd`, which is 217 lines with refusals of both kinds and two callers besides
-`Close` itself.
+`FLock` and `FTruncate` followed. Between them they brought the first refusals
+with more than one reason — `flock` has six, five of which are `refuseDarwin`
+call sites that the old code spelled as one `failwith` — and the first operation
+shared with a syscall that has not hoisted: `commitTruncation` becomes
+`UnixSystem.truncateAt`, which `ftruncate` calls and which PawPrint's `open`
+still calls directly for `O_TRUNC`. That is the "directly-callable operations
+with `step` delegating" shape the design predicted, arriving on schedule rather
+than as a surprise.
+
+**An existing guest test caught the split putting prose on the wrong side.**
+`TestFlockBlocking` asserts the refusal names `issue #956`, and the first cut of
+the message lost it: the issue tracks *PawPrint's* scheduler work, so it belongs
+in PawPrint's half, and I had left it in neither. The rule the split needs is
+narrower than "measurement is the library's": a pointer to work is owned by
+whoever would do that work. The library cannot block a caller because it has no
+scheduler; the issue for building one is the client's.
+
+`Close` is last, because it drags `closeFd` — 217 lines, refusals of both kinds,
+and two callers besides `Close` itself.
 
 #### Correctness oracle
 

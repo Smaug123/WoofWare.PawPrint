@@ -776,24 +776,9 @@ module NativeSystemNative =
         (state : IlMachineState)
         : IlMachineState
         =
-        let now = UnixMachineState.fileTimestamp state.Kernel.Machine
-        let rule = SimulatedUnixPlatform.setIdBitsOnTruncation state.Kernel.UnixPlatform
-
-        let privilege = UnixProcessState.callerPrivilege state.Kernel.Process
-
-        match VirtualFileSystem.truncateFile inode length rule privilege now state.Kernel.FileSystem with
-        | Ok filesystem ->
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            FileSystem = filesystem
-                        }
-                }
-            )
-        | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
-            failwith
-                $"%s{operation}: asked to set inode %O{inode} to %d{length} bytes, which is longer than the %d{VirtualFileSystem.maxFileLength} bytes PawPrint can represent. A real filesystem answers this without difficulty — measured on ext4 and APFS alike, ftruncate to three gigabytes succeeds and leaves a sparse file — so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced for that length."
+        match UnixSystem.truncateAt inode length (EmulatedKernel.unix state.Kernel) with
+        | Ok system -> state.MapKernel (EmulatedKernel.withUnix system)
+        | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
 
     /// Turn the NUL-terminated bytes a guest passed as a pathname into a
     /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
@@ -3500,7 +3485,8 @@ module NativeSystemNative =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // `int32_t SystemNative_FTruncate(intptr_t fd, int64_t length)`
             // (pal_io.c:1094): `ftruncate(2)` verbatim behind an EINTR retry, with
-            // no validation of its own, so the order below is the kernel's.
+            // no validation of its own, so the order the library applies is the
+            // kernel's.
             //
             // This is how the BCL's commonest creation APIs truncate: with file
             // locking enabled `FileMode.Create` and `FileMode.Truncate` emit no
@@ -3512,59 +3498,18 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
             let length = NativeCall.int64Argument operation instruction.Arguments.[1]
 
-            let fail (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
+            match UnixSystem.ftruncate fd length (EmulatedKernel.unix state.Kernel) with
+            | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
+            | Ok (SyscallAnswer.Failed error, system) ->
+                withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-
-            // **Ahead of the descriptor**, measured on both platforms: the same
-            // unknown fd is EBADF with a length of 0 and EINVAL with a length of
-            // -1, so the length really is validated first rather than the two
-            // faults merely sharing an errno.
-            if length < 0L then
-                fail UnixError.EINVAL
-            else
-
-            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-            | None -> fail UnixError.EBADF
-            | Some description ->
-
-            match description.Target with
-            | OpenFileTarget.StandardStream _
-            | OpenFileTarget.SocketEventPort _
-            | OpenFileTarget.Socket _ ->
-                // EINVAL on both platforms for every object that is not a regular
-                // file: measured on a pipe (either end), an INET socket, a UNIX
-                // socket, an epoll port and a kqueue. Unlike `pread`/`pwrite`
-                // there is no unseekable-versus-unwritable tie for the platforms
-                // to break differently, so this arm deliberately carries no
-                // Darwin flag — do not copy `SystemNative_PWrite`'s over.
-                fail UnixError.EINVAL
-            | OpenFileTarget.File (inode, _) ->
-
-            // A descriptor not open for writing is EINVAL rather than EBADF —
-            // `ftruncate(2)` differs from `write(2)` here, and it is measured on
-            // both platforms.
-            //
-            // This is also what makes a *directory* descriptor answer EINVAL
-            // without a type check: one can only ever be opened `O_RDONLY`,
-            // `SystemNative_Open` answering EISDIR for every write access mode.
-            // Adding a type check here would be a mistake as well as redundant —
-            // EISDIR is what path-based `truncate(2)` answers for a directory,
-            // where `ftruncate(2)` answers EINVAL.
-            if not (FileAccessMode.permitsWrite description.AccessMode) then
-                fail UnixError.EINVAL
-            else
-
-            commitTruncation operation inode length state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
+            | Ok (SyscallAnswer.Completed _, system) ->
+                withAnswered system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         | Some "SystemNative_FStat",
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer fileStatusHandle ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -3657,183 +3602,45 @@ module NativeSystemNative =
         | Some "SystemNative_FLock",
           [ ConcreteIntPtr state.ConcreteTypes ; _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_FLock(intptr_t fd, int32_t operation)`
+            // (pal_io.c). The operation bits are passed straight through to
+            // `flock(2)` — they are not PAL values that the C translates — so
+            // they reach the library raw, which is where deciding that a
+            // combination is malformed belongs.
             let operation = "SystemNative_FLock"
             let fd = fdArgument operation instruction.Arguments.[0]
             let request = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            // Unlike `Interop.Error` and `Interop.Sys.OpenFlags`, these are
-            // *not* PAL values that the C translates: `SystemNative_FLock`
-            // passes `operation` straight to `flock(2)`. `Interop.FLock.cs`
-            // hardcodes 1/2/4/8 anyway, which is correct only because Linux and
-            // Darwin happen to agree on all four — measured on both rather than
-            // assumed, since nothing in the interop layer would catch it if they
-            // did not.
-            let lockShared = 1
-            let lockExclusive = 2
-            let lockNonBlocking = 4
-            let lockUnlock = 8
+            match UnixSystem.flock fd request (EmulatedKernel.unix state.Kernel) with
+            | Error refusal ->
+                // The library says which measured divergence it will not answer
+                // across; PawPrint says which managed caller could have asked,
+                // which is a fact about CoreLib rather than about any kernel.
+                let reachability =
+                    match refusal with
+                    | FLockRefusal.WouldBlockIndefinitely _ ->
+                        // Parking the caller is PawPrint's scheduler's job, so
+                        // PawPrint owns the issue tracking it — the library has
+                        // no scheduler to point at.
+                        "Parking a thread on a lock is a scheduler feature PawPrint has not built (issue #956). CoreLib never reaches this: SafeFileHandle.Init always sets LOCK_NB."
+                    | FLockRefusal.DarwinMalformedOperation _
+                    | FLockRefusal.DarwinStandardStream _
+                    | FLockRefusal.DarwinSocketEventPort
+                    | FLockRefusal.DarwinSocket _
+                    | FLockRefusal.DarwinConversion ->
+                        "Configure a Linux platform, or model Darwin's flock (issue #956)."
 
-            // Takes the state explicitly rather than closing over the outer one:
-            // a failing `flock` still advances the descriptor table, so the
-            // error paths below must report from the state that *includes* that
-            // advance, not from the one before it.
-            let failFrom (state : IlMachineState) (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
+                failwith $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal} %s{reachability}"
+            | Ok (SyscallAnswer.Failed error, system) ->
+                withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-
-            // `flock` is one of the places where the two Unixes PawPrint models
-            // disagree, and not only about errno numbering. PawPrint
-            // models Linux's rules and refuses under Darwin rather than
-            // guessing, because what has been *measured* about Darwin is its
-            // return codes and not the lock state they leave behind: Darwin
-            // accepts `LOCK_SH|LOCK_EX` and `LOCK_UN|LOCK_SH`, and nothing here
-            // knows which lock the description then holds, which is precisely
-            // what `FlockMode` would have to commit to. Each refusal below
-            // carries what was measured so that the run that hits it starts from
-            // data rather than from scratch.
-            //
-            // Deliberately *not* a `SimulatedUnixPlatform` accessor in the style
-            // of `pathLimits`: those exist because their facts are complete, and
-            // this one is not yet.
-            let refuseDarwin (divergence : string) : 'a =
-                failwith
-                    $"%s{operation}: %s{divergence} PawPrint models Linux's `flock` and has not modelled Darwin's, but this kernel's SimulatedUnixPlatform is Darwin — so answering would be inventing behaviour rather than reporting it. What is measured about Darwin here is the return code only, not the lock state it leaves; deciding that needs its own measurements (issue #956). Configure a Linux platform, or model Darwin's flock."
-
-            // Linux validates strictly: exactly one of SH/EX/UN, optionally
-            // with NB, and nothing else — `0`, `SH|EX`, `UN|SH`, a bare `NB` and
-            // any unknown bit are all EINVAL. Darwin is laxer *and* uses a
-            // different errno: it answers EBADF for `0`, a bare `NB` and `16`,
-            // and succeeds outright for `SH|EX`, `UN|SH` and `SH|16`. Both
-            // measured.
-            let nonBlocking = request &&& lockNonBlocking <> 0
-            let mode = request &&& ~~~lockNonBlocking
-
-            let flockRequest : FlockRequest option =
-                if mode = lockUnlock then
-                    Some FlockRequest.Release
-                elif mode = lockShared then
-                    Some (FlockRequest.Acquire FlockMode.Shared)
-                elif mode = lockExclusive then
-                    Some (FlockRequest.Acquire FlockMode.Exclusive)
-                else
-                    None
-
-            let flavour = SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform
-
-            match flockRequest with
-            | None ->
-                match flavour with
-                | SimulatedUnixFlavour.Linux -> failFrom state UnixError.EINVAL
-                | SimulatedUnixFlavour.Darwin ->
-                    refuseDarwin
-                        $"operation %d{request} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL and Darwin does not treat uniformly — measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
-            | Some flockRequest ->
-
-            // The two remaining divergences, both about a descriptor PawPrint has
-            // already resolved, so they are checked here rather than in the
-            // registry: that module models one coherent set of rules. Throws or
-            // falls through; an unknown fd is EBADF on both platforms, so there
-            // is nothing to refuse for one.
-            match flavour, FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-            | SimulatedUnixFlavour.Linux, _
-            | _, None -> ()
-            | SimulatedUnixFlavour.Darwin, Some description ->
-                match OpenFileDescription.object description with
-                | OpenFileObject.StandardStream role ->
-                    refuseDarwin
-                        $"fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
-                | OpenFileObject.AnonymousInode ->
-                    // Same divergence as the pipe above, and refused for the
-                    // same reason rather than reported: measured, `flock` on a
-                    // kqueue is ENOTSUP for LOCK_SH, LOCK_EX and LOCK_UN alike,
-                    // where Linux's epoll descriptor takes the lock and returns
-                    // 0. Reporting the errno would model one row of Darwin's
-                    // `flock` while the rest of it stays unmodelled.
-                    refuseDarwin
-                        $"fd %d{fd} is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
-                | OpenFileObject.Socket socketId ->
-                    // The same divergence again, and measured on a socket
-                    // specifically rather than assumed from the port: Linux
-                    // takes the lock and returns 0, Darwin answers ENOTSUP (raw
-                    // 45). Refused rather than reported for the same reason —
-                    // modelling one row of Darwin's `flock` while the rest of it
-                    // stays unmodelled.
-                    refuseDarwin
-                        $"fd %d{fd} is socket %O{socketId}. Linux permits `flock` on a socket and returns 0; Darwin refuses it with ENOTSUP (raw 45)."
-                | OpenFileObject.File _ ->
-
-                match flockRequest, description.Flock with
-                // Only a *conversion* — an acquire by a description that already
-                // holds something — can expose the keep-versus-drop divergence,
-                // and only when it fails. Refused on the request rather than on
-                // the outcome, so that the refusal is a property of what was
-                // asked rather than of who else happened to hold a lock.
-                | FlockRequest.Acquire _, Some _ ->
-                    refuseDarwin
-                        $"fd %d{fd} is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place — measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
-                | _, _ -> ()
-
-            // The table advances even when the call fails: a conversion that
-            // could not be granted has already dropped the caller's old lock.
-            // So the new table is committed *before* the outcome is inspected,
-            // and every branch below reports from `state'`.
-            let registry, error =
-                FileDescriptorRegistry.flock fd flockRequest state.Kernel.FileDescriptors
-
-            let state' =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                FileDescriptors = registry
-                            }
-                    }
-                )
-
-            match error with
-            | Some FlockError.BadFd -> failFrom state' UnixError.EBADF
-            | Some FlockError.WouldBlock ->
-                if nonBlocking then
-                    failFrom state' UnixError.EAGAIN
-                else
-                    // A blocking acquisition that *can* be satisfied is served
-                    // above, so only genuine contention reaches here. Waiting
-                    // for it is a scheduler feature rather than a filesystem
-                    // one: the caller must park and be woken when the holder
-                    // releases.
-                    //
-                    // The holder is some other open file description of this
-                    // same process, PawPrint simulating exactly one — but not
-                    // necessarily another *thread*. A single-threaded guest that
-                    // opens one file twice and blocks on its own lock is
-                    // deadlocked, and a real kernel duly hangs it forever. The
-                    // refusal must never convert the request into a
-                    // non-blocking one, which would hand the guest an
-                    // `EWOULDBLOCK` no kernel would have produced.
-                    //
-                    // CoreLib never reaches this: `SafeFileHandle.Init` always
-                    // sets `LOCK_NB`.
-                    let requested = if mode = lockShared then "shared" else "exclusive"
-
-                    failwith
-                        $"%s{operation}: fd %d{fd} requested a blocking %s{requested} lock, and another open file description holds a conflicting one. PawPrint cannot block a thread on a lock: that needs the scheduler to park it and wake it when the holder releases (issue #956). If the holder is this same thread, a real kernel would deadlock here rather than return. Pass LOCK_NB to get EWOULDBLOCK instead."
-            | None ->
-                state'
+            | Ok (SyscallAnswer.Completed _, system) ->
+                withAnswered system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-        // `int32_t SystemNative_PRead(intptr_t fd, void* buffer, int32_t
-        // bufferSize, int64_t fileOffset)` (pal_io.c:1847): `pread(2)` verbatim,
-        // with an EINTR retry. Note it does *not* go through `Common_Read` in
-        // `pal_io_common.h`, so unlike `SystemNative_Read` it has no
-        // negative-size guard — its `assert(bufferSize >= 0)` is debug-only, and
-        // a release build casts a negative size to a ~4 GB unsigned count.
         | Some "SystemNative_PRead",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
