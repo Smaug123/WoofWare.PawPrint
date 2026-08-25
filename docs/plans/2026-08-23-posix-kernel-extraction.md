@@ -1086,6 +1086,51 @@ the library references nothing of PawPrint's. At this point the goal's second
 bullet is met and the third is met; the first is met for state but not yet for
 transitions.
 
+#### Stage 6d: `UnixProcessState` — done
+
+The record and nine process-only operations moved, generic in both of
+`SignalState`'s parameters because it holds one:
+`UnixProcessState<'Task, 'Handler>`. `environmentEntryProblem` went with them,
+being the rule `withEnvironment` enforces and no use of a CLR concept.
+`descriptionsNamingSocket` was private and stops being so: two of its three
+callers moved, and the third — `signalSocketDataReady`, which is mixed and stays
+— now reaches the library definition rather than a wrapper existing for one call
+site. `EmulatedKernel` keeps a thin forwarder for each of the rest, as stage 6c
+did, and stage 6e deletes them all.
+
+**Decided while doing it: who names the knob in a rejection.** Three setters
+validate and throw, and three tests assert the message names what a *host* would
+have to fix — `EmulatedKernel.ProcessPath`, `EmulatedKernel.Umask`,
+`KernelConfig.Environment`. None of those names is the library's to know, and two
+of them stop existing at stage 6e.
+
+* **(a) The library names its own field**, and the tests relax to
+  `UnixProcessState.Environment`. Simplest, and stops being wrong at 6e — but a
+  host that trips the check is told which field of a package it has never heard
+  of is unhappy, rather than which line of its own configuration to edit. The
+  test comments say avoiding exactly that is why they exist.
+* **(b) The client validates first and throws its own message**, with the
+  library re-checking behind it. Keeps both messages accurate, at the cost of two
+  statements of one rule that can drift apart, and of a second scan.
+* **(c) The caller supplies a `context` string the library prefixes**, which is
+  what `AbsoluteUnixPath.assertValid` and `PermissionBits.assertValid` already
+  do throughout this library, and for the same reason.
+
+Chosen: **(c)**. It is the house pattern, it is one parameter rather than a
+duplicated rule, and it puts the name in the hands of whoever owns it — so stage
+6e re-spells `"EmulatedKernel.ProcessPath"` by editing a string at the call site
+instead of a message inside the package. PawPrint passes
+`"EmulatedKernel.Environment (set from KernelConfig.Environment)"`, which names
+both the field and the knob; the three tests pass unchanged.
+
+**Found by eye while scoping, then confirmed mechanically**: `withUmask` had
+never had a docstring. #1080 inserted it directly beneath
+`withUserAndGroupId`'s, so it adopted that one and left the function that does
+set the ids undocumented. `scripts/check-docstring-attachment.py 5ebe390d^`
+reports it. This is the tool's documented blind spot — a mistake already in the
+base is invisible to a check between two revisions — and the way out is to run
+it across the commit suspected of making it.
+
 ### Stage 7: the syscall request layer, on the pure syscalls first
 
 **Dependencies**: stage 6.
