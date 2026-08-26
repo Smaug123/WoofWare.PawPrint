@@ -2421,7 +2421,15 @@ module VirtualFileSystem =
         (vfs : VirtualFileSystem)
         : Result<VirtualFileSystem, FileTruncationRefusal>
         =
-        System.Diagnostics.Debug.Assert (length >= 0L, "truncateFile: length must not be negative")
+        // A hard check rather than a `Debug.Assert`, which a Release build
+        // compiles out: a negative length reaches `Array.Take` as an empty
+        // prefix, so the file would be silently emptied and stamped instead. The
+        // same guard `FileDescriptorRegistry.setOffset` applies to a negative
+        // offset, and for the same reason.
+        if length < 0L then
+            failwith
+                $"VirtualFileSystem.truncateFile: inode %O{inode} was asked to become %d{length} bytes, which is negative. No kernel permits it; the caller must reject this as EINVAL before committing it (this is an interpreter bug)."
+
 
         match Map.tryFind inode vfs.Inodes with
         | None ->

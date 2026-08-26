@@ -33,10 +33,58 @@ type LSeekRefusal =
     /// `SEEK_END` on a directory.
     | DirectoryEnd of inode : InodeNumber
 
+/// Why this kernel will not answer an `flock`.
+///
+/// Every case is a measured divergence between the two flavours that this
+/// library models Linux's side of. Darwin's `flock` is unmodelled not because
+/// its return codes are unknown — they are measured, and named in each case's
+/// description — but because what they leave the *lock state* as is not, which
+/// is what a model would have to commit to.
+[<RequireQualifiedAccess>]
+type FLockRefusal =
+    /// Not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB.
+    | DarwinMalformedOperation of operation : int
+    /// A pipe, which is what this kernel models the standard streams as.
+    | DarwinStandardStream of role : FileDescriptorRole
+    /// A socket event port: an epoll descriptor on Linux, a kqueue on Darwin.
+    | DarwinSocketEventPort
+    | DarwinSocket of socket : SocketId
+    /// An acquire by a description that already holds a lock. Only a conversion
+    /// can expose the keep-versus-drop divergence, and only when it fails —
+    /// refused on the request rather than on the outcome, so that the refusal is
+    /// a property of what was asked rather than of who else held a lock.
+    | DarwinConversion
+    /// A blocking acquisition against a conflicting holder. Waiting is a
+    /// scheduler feature rather than a filesystem one, and this library has no
+    /// scheduler.
+    ///
+    /// Unlike every other case here, this one is not a gap in what has been
+    /// *measured*: a real kernel parks the caller, and it does so having already
+    /// dropped the caller's old lock, because `flock` removes before it
+    /// establishes. That advance is discarded with the refusal — a refused call
+    /// hands back no system at all, which is what stops a client continuing from
+    /// a half-step — so a client that could park must not treat this as a park.
+    /// When blocking gets an outcome of its own rather than a refusal, this case
+    /// moves there and carries the advance with it.
+    | WouldBlockIndefinitely of mode : FlockMode
+
+/// Why this kernel will not commit a truncation.
+[<RequireQualifiedAccess>]
+type TruncationRefusal =
+    /// Longer than this kernel can represent. A real filesystem answers without
+    /// difficulty — measured on ext4 and APFS alike, `ftruncate` to three
+    /// gigabytes succeeds and leaves a sparse file — so this is a limit of the
+    /// model, and refusing beats reporting an errno no kernel would produce for
+    /// that length.
+    | ExceedsRepresentableLength of inode : InodeNumber * length : int64
+
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
-type SyscallRefusal = | LSeek of LSeekRefusal
+type SyscallRefusal =
+    | LSeek of LSeekRefusal
+    | FLock of FLockRefusal
+    | FTruncate of TruncationRefusal
 
 [<RequireQualifiedAccess>]
 module LSeekRefusal =
@@ -56,6 +104,38 @@ module LSeekRefusal =
         | LSeekRefusal.DirectoryEnd inode ->
             $"inode %O{inode} is a directory, and was asked to seek relative to its end. A directory's size is a filesystem artefact rather than a fact about its contents, and there is no portable answer: measured, lseek(dir, 0, SEEK_END) is EINVAL on Linux/tmpfs, 4096 on Linux/ext4 and 64 on macOS/APFS. SEEK_SET and SEEK_CUR on a directory are portable and are supported."
 
+[<RequireQualifiedAccess>]
+module FLockRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half — which entry point, and which managed caller could have
+    /// reached it.
+    let describe (refusal : FLockRefusal) : string =
+        match refusal with
+        | FLockRefusal.DarwinMalformedOperation operation ->
+            $"operation %d{operation} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL and Darwin does not treat uniformly -- measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
+        | FLockRefusal.DarwinStandardStream role ->
+            $"the descriptor is the standard stream %O{role}, which this kernel models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
+        | FLockRefusal.DarwinSocketEventPort ->
+            "the descriptor is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
+        | FLockRefusal.DarwinSocket socket ->
+            $"the descriptor is socket %O{socket}. Linux permits `flock` on a socket and returns 0; Darwin refuses it with ENOTSUP (raw 45)."
+        | FLockRefusal.DarwinConversion ->
+            "the descriptor is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place -- measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
+        | FLockRefusal.WouldBlockIndefinitely mode ->
+            let requested =
+                match mode with
+                | FlockMode.Shared -> "shared"
+                | FlockMode.Exclusive -> "exclusive"
+
+            $"a blocking %s{requested} lock was requested, and another open file description holds a conflicting one. This library cannot block a caller on a lock: that needs a scheduler to park it and wake it when the holder releases. If the holder is the same task, a real kernel would deadlock here rather than return. Pass LOCK_NB to get EWOULDBLOCK instead."
+
+[<RequireQualifiedAccess>]
+module TruncationRefusal =
+    let describe (refusal : TruncationRefusal) : string =
+        match refusal with
+        | TruncationRefusal.ExceedsRepresentableLength (inode, length) ->
+            $"inode %O{inode} was asked to become %d{length} bytes, which is longer than the %d{VirtualFileSystem.maxFileLength} bytes this kernel can represent. A real filesystem answers this without difficulty -- measured on ext4 and APFS alike, ftruncate to three gigabytes succeeds and leaves a sparse file -- so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced for that length."
+
 /// A request to this kernel, in the vocabulary of the kernel ABI rather than of
 /// any client's foreign-function layer.
 ///
@@ -66,6 +146,11 @@ type Syscall =
     | GetEffectiveUserId
     | Dup of fd : int
     | LSeek of fd : int * offset : int64 * whence : int
+    /// `operation` is raw: which combinations of LOCK_SH/LOCK_EX/LOCK_UN/LOCK_NB
+    /// are legal, and what an illegal one earns, is behaviour this kernel models
+    /// and models per flavour.
+    | FLock of fd : int * operation : int
+    | FTruncate of fd : int * length : int64
 
 /// What the entry point returns, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -348,6 +433,190 @@ module UnixSystem =
             }
         )
 
+    /// Commit a truncation of the regular file `inode` to `length`, together with
+    /// the `mtime`, `ctime` and set-ID bits it moves.
+    ///
+    /// Shared by `ftruncate` and by `open`'s `O_TRUNC`, which are the same
+    /// operation with the same measured consequences — the mode rule, the
+    /// timestamp rule and the truncate-to-the-same-length rule all agree between
+    /// them on both platforms.
+    ///
+    /// Not short-circuited when the file is already that length: unlike a write
+    /// of no bytes, a truncation that moves no bytes still stamps the inode.
+    let truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inode : InodeNumber)
+        (length : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<UnixSystem<'Task, 'Handler>, TruncationRefusal>
+        =
+        let now = UnixMachineState.fileTimestamp system.Machine
+        let rule = SimulatedUnixPlatform.setIdBitsOnTruncation system.Machine.UnixPlatform
+        let privilege = UnixProcessState.callerPrivilege system.Process
+
+        match VirtualFileSystem.truncateFile inode length rule privilege now system.Machine.FileSystem with
+        | Ok filesystem ->
+            Ok
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+        | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
+            Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))
+
+    /// `ftruncate(2)`: set a regular file's length through a descriptor open for
+    /// writing.
+    let ftruncate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (length : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, TruncationRefusal>
+        =
+        // **Ahead of the descriptor**, measured on both platforms: the same
+        // unknown fd is EBADF with a length of 0 and EINVAL with a length of -1,
+        // so the length really is validated first rather than the two faults
+        // merely sharing an errno.
+        if length < 0L then
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        else
+
+        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Socket _ ->
+            // EINVAL on both platforms for every object that is not a regular
+            // file: measured on a pipe (either end), an INET socket, a UNIX
+            // socket, an epoll port and a kqueue. Unlike `pread`/`pwrite` there
+            // is no unseekable-versus-unwritable tie for the platforms to break
+            // differently, so this arm deliberately carries no Darwin flag.
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | OpenFileTarget.File (inode, _) ->
+
+        // A descriptor not open for writing is EINVAL rather than EBADF —
+        // `ftruncate(2)` differs from `write(2)` here, and it is measured on both
+        // platforms.
+        //
+        // This is also what makes a *directory* descriptor answer EINVAL without
+        // a type check: one can only ever be opened `O_RDONLY`, `open` answering
+        // EISDIR for every write access mode. Adding a type check here would be a
+        // mistake as well as redundant — EISDIR is what path-based `truncate(2)`
+        // answers for a directory, where `ftruncate(2)` answers EINVAL.
+        if not (FileAccessMode.permitsWrite description.AccessMode) then
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        else
+
+        truncateAt inode length system
+        |> Result.map (fun system -> SyscallAnswer.Completed 0L, system)
+
+    /// `flock(2)`: take, convert or release an advisory lock on `fd`'s open file
+    /// description.
+    ///
+    /// Models Linux's rules and refuses under Darwin rather than guessing, for
+    /// each of the divergences `FLockRefusal` names.
+    let flock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (operation : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FLockRefusal>
+        =
+        // Unlike a foreign-function layer's error and open-flag encodings, these
+        // are *not* values anything translates: `flock(2)` takes them verbatim,
+        // and Linux and Darwin happen to agree on all four — measured on both
+        // rather than assumed.
+        let lockShared = 1
+        let lockExclusive = 2
+        let lockNonBlocking = 4
+        let lockUnlock = 8
+
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        let nonBlocking = operation &&& lockNonBlocking <> 0
+        let mode = operation &&& ~~~lockNonBlocking
+
+        let request : FlockRequest option =
+            if mode = lockUnlock then
+                Some FlockRequest.Release
+            elif mode = lockShared then
+                Some (FlockRequest.Acquire FlockMode.Shared)
+            elif mode = lockExclusive then
+                Some (FlockRequest.Acquire FlockMode.Exclusive)
+            else
+                None
+
+        // Linux validates strictly: exactly one of SH/EX/UN, optionally with NB,
+        // and nothing else. Darwin is laxer *and* uses a different errno.
+        match request with
+        | None ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+            | SimulatedUnixFlavour.Darwin -> Error (FLockRefusal.DarwinMalformedOperation operation)
+        | Some request ->
+
+        // The remaining divergences are all about a descriptor already resolved,
+        // so they are checked here rather than in the registry: that module
+        // models one coherent set of rules. An unknown fd is EBADF on both
+        // platforms, so there is nothing to refuse for one.
+        let darwinRefusal : FLockRefusal option =
+            match flavour, FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | SimulatedUnixFlavour.Linux, _
+            | _, None -> None
+            | SimulatedUnixFlavour.Darwin, Some description ->
+                match OpenFileDescription.object description with
+                | OpenFileObject.StandardStream role -> Some (FLockRefusal.DarwinStandardStream role)
+                | OpenFileObject.AnonymousInode -> Some FLockRefusal.DarwinSocketEventPort
+                | OpenFileObject.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
+                | OpenFileObject.File _ ->
+                    match request, description.Flock with
+                    | FlockRequest.Acquire _, Some _ -> Some FLockRefusal.DarwinConversion
+                    | _, _ -> None
+
+        match darwinRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        // The table advances even when the call fails: a conversion that could
+        // not be granted has already dropped the caller's old lock. So the new
+        // table is committed *before* the outcome is inspected, and every branch
+        // below reports from `advanced`.
+        let registry, error =
+            FileDescriptorRegistry.flock fd request system.Process.FileDescriptors
+
+        let advanced =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        match error with
+        | Some FlockError.BadFd -> Ok (SyscallAnswer.Failed UnixError.EBADF, advanced)
+        | Some FlockError.WouldBlock ->
+            if nonBlocking then
+                Ok (SyscallAnswer.Failed UnixError.EAGAIN, advanced)
+            else
+                // A blocking acquisition that *can* be satisfied is served above,
+                // so only genuine contention reaches here. Refusing must never
+                // convert the request into a non-blocking one, which would hand
+                // the caller an EWOULDBLOCK no kernel would have produced.
+                //
+                // `advanced` is deliberately dropped: see the case's own note.
+                // The registry has already removed the caller's old lock, which
+                // is what a real kernel does before it sleeps — but a refusal
+                // carries no system, so a client cannot mistake this for a park.
+                let requested =
+                    if mode = lockShared then
+                        FlockMode.Shared
+                    else
+                        FlockMode.Exclusive
+
+                Error (FLockRefusal.WouldBlockIndefinitely requested)
+        | None -> Ok (SyscallAnswer.Completed 0L, advanced)
+
     /// Answer one syscall.
     ///
     /// Sugar over the per-syscall functions above, for a client that wants one
@@ -364,3 +633,5 @@ module UnixSystem =
         | Syscall.GetEffectiveUserId -> Ok (SyscallAnswer.Completed (int64 (effectiveUserId system)), system)
         | Syscall.Dup fd -> Ok (dup fd system)
         | Syscall.LSeek (fd, offset, whence) -> lseek fd offset whence system |> Result.mapError SyscallRefusal.LSeek
+        | Syscall.FLock (fd, operation) -> flock fd operation system |> Result.mapError SyscallRefusal.FLock
+        | Syscall.FTruncate (fd, length) -> ftruncate fd length system |> Result.mapError SyscallRefusal.FTruncate

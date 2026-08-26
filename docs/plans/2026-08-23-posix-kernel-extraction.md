@@ -1628,9 +1628,51 @@ answer exists ("the two platforms transpose the numbers"), and PawPrint says
 which managed caller could have asked ("CoreLib never sends these —
 `Interop.Sys.SeekWhence` is 0, 1, 2"). Neither half can write the other's.
 
-`FLock`, `FTruncate` and `Close` follow. `Close` is last because it drags
-`closeFd`, which is 217 lines with refusals of both kinds and two callers besides
-`Close` itself.
+`FLock` and `FTruncate` followed. Between them they brought the first refusals
+with more than one reason — `flock` has six, five of which are `refuseDarwin`
+call sites that the old code spelled as one `failwith` — and the first operation
+shared with a syscall that has not hoisted: `commitTruncation` becomes
+`UnixSystem.truncateAt`, which `ftruncate` calls and which PawPrint's `open`
+still calls directly for `O_TRUNC`. That is the "directly-callable operations
+with `step` delegating" shape the design predicted, arriving on schedule rather
+than as a surprise.
+
+**An existing guest test caught the split putting prose on the wrong side.**
+`TestFlockBlocking` asserts the refusal names `issue #956`, and the first cut of
+the message lost it: the issue tracks *PawPrint's* scheduler work, so it belongs
+in PawPrint's half, and I had left it in neither. The rule the split needs is
+narrower than "measurement is the library's": a pointer to work is owned by
+whoever would do that work. The library cannot block a caller because it has no
+scheduler; the issue for building one is the client's.
+
+**Publishing a helper inherits the preconditions its private callers kept.**
+Review found that `truncateAt`, being public where `commitTruncation` was
+private, admits a negative length — and `VirtualFileSystem.truncateFile` guarded
+that with a `Debug.Assert`, which a Release build compiles out, after which the
+negative reaches `Array.Take` as an empty prefix and the file is silently emptied
+and stamped. The guard is now a `failwith`, mirroring
+`FileDescriptorRegistry.setOffset`'s treatment of a negative offset, which is the
+same precondition one layer over. This is the hazard `unparking-inherits-the-
+refusals-validations` names, in a new place: *widening* a definition's audience
+inherits every rule its old audience happened to satisfy, and a `Debug.Assert` is
+not a rule, it is a hope.
+
+**A refusal that is really stage 9's outcome, and what it costs.** Review
+pointed out that `FLockRefusal.WouldBlockIndefinitely` discards a state change a
+real kernel makes: `flock` removes the caller's old lock before it sleeps, so
+the registry has already advanced by the time the contention is discovered, and
+a refusal hands back no system. That is correct as far as this stage goes —
+PawPrint crashes, and a refusal must not look continuable — but it is a real
+loss for a client that *could* park, and it is the tell that this case is not a
+refusal at all. Decision 3 already says blocking becomes
+`WouldBlock of WakeCondition`, an *outcome*; when stage 9 builds that, this case
+moves there and carries the advance. Making it carry a state now would undo the
+property that a refusal cannot hand back a half-step, which is the more valuable
+of the two. The contract is pinned by a row, so stage 9 has to change it
+deliberately rather than discover it.
+
+`Close` is last, because it drags `closeFd` — 217 lines, refusals of both kinds,
+and two callers besides `Close` itself.
 
 #### Correctness oracle
 
@@ -1712,7 +1754,10 @@ three cases needs a row that only it can satisfy.
 **Implements**: decision 3.
 
 `WaitForSocketEvents`, `poll`, `accept`, `connect`: `WouldBlock of
-WakeCondition` plus `WakeCondition.isSatisfied`. PawPrint's `Program` readiness
+WakeCondition` plus `WakeCondition.isSatisfied`. **And `flock`**, whose blocking
+case stage 7 had to spell as a refusal: moving it here is what lets it carry the
+descriptor-table advance a real kernel makes before it sleeps, which a refusal
+cannot. PawPrint's `Program` readiness
 sweep becomes a poll of that predicate. Then: `README`, the
 `emulated-posix-kernel` skill's paths, `docs/divergences.md`, and the
 packaging decision from the open questions.
