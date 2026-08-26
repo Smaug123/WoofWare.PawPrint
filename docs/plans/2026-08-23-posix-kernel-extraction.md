@@ -1674,6 +1674,35 @@ deliberately rather than discover it.
 `Close` is last, because it drags `closeFd` — 217 lines, refusals of both kinds,
 and two callers besides `Close` itself.
 
+**`Close`'s prerequisite went first, on its own.** `closeFd` reaps the inode a
+closing description was the last reference to, which is `forgetIfUnheld`, which
+is `pinnedInodes`. Both were PawPrint's, both are pure POSIX object-lifetime
+rules over the filesystem and the process's own references, and neither reads a
+CLR-side field — so they move, and `closeFd` cannot move before them without
+taking them as callbacks, which is the dependency injection the gospel rejects.
+
+Moving them first rather than inside the `Close` commit is the same argument
+this document made for the `UnixSystem` rename: it is a rename-only change at
+seventeen production and test call sites, and the *design* work in `close` is
+the refusal split. Audited as rename-only by a token-multiset comparison of the
+two definitions before and after, which reported exactly the intended signature
+substitutions and nothing else.
+
+It also adds the fourth lens, `EmulatedKernel.mapUnix`, beside `mapMachine`,
+`mapProcess` and `mapTasks`: an operation spanning all three parts is called
+through it, and it is `withUnix ∘ f ∘ unix` composed once rather than at every
+call site. Its own row is in `TestUnixSystemProjection` because a `mapUnix` that
+dropped its function's result, or wrote back the projection it read, passes both
+existing round-trip rows.
+
+**The tests for the moved rules stayed at PawPrint's altitude**, and that is a
+known cost rather than an oversight: `TestEmulatedKernelInodeLifetime` builds its
+kernels from `EmulatedKernel.initial`, and the library still exposes no
+constructor of its own (the gap recorded above). Two rows at the new altitude
+went into `TestUnixSystemStep` — an unnamed inode a descriptor holds, and one
+nothing holds — so that the pair is exercised by a client that is not PawPrint;
+moving the rest waits for the constructor stage.
+
 #### Correctness oracle
 
 * **A new `TestUnixSystemStep.fs` in `WoofWare.PosixKernel.Test`** driving the

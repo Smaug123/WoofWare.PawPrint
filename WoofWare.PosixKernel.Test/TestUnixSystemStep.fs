@@ -113,6 +113,92 @@ module TestUnixSystemStep =
         | Error e -> failwith $"expected an answer, got a refusal: %O{e}"
 
     [<Test>]
+    let ``an unnamed inode a descriptor still holds is not freed`` () : unit =
+        // The rule that makes `read` on an unlinked file keep working: the last
+        // *name* has gone, but an open file description is still a reference.
+        let fd, system = withOpenFile linux
+
+        let unnamed =
+            match
+                VirtualFileSystem.unbind
+                    UnbindTargetEffect.LostALink
+                    rootInode
+                    (FileName.parseOrFail context "f")
+                    epoch
+                    system.Machine.FileSystem
+            with
+            | Ok (_, filesystem) ->
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+            | Error error -> failwith $"could not unlink the file: %O{error}"
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget fd unnamed.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, _)) -> inode
+            | other -> failwith $"expected a file descriptor, got %O{other}"
+
+        VirtualFileSystem.bindingCount inode unnamed.Machine.FileSystem |> shouldEqual 0
+        UnixSystem.pinnedInodes unnamed |> Set.contains inode |> shouldEqual true
+
+        let attempted = UnixSystem.forgetIfUnheld inode unnamed
+
+        (VirtualFileSystem.tryGet inode attempted.Machine.FileSystem).IsSome
+        |> shouldEqual true
+
+    [<Test>]
+    let ``an unnamed inode nothing holds is freed`` () : unit =
+        // The other half of the same rule, and the pair is what makes the row
+        // above load-bearing: without it, a `forgetIfUnheld` that never freed
+        // anything would pass.
+        let fd, system = withOpenFile linux
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, _)) -> inode
+            | other -> failwith $"expected a file descriptor, got %O{other}"
+
+        let unnamed =
+            match
+                VirtualFileSystem.unbind
+                    UnbindTargetEffect.LostALink
+                    rootInode
+                    (FileName.parseOrFail context "f")
+                    epoch
+                    system.Machine.FileSystem
+            with
+            | Ok (_, filesystem) -> filesystem
+            | Error error -> failwith $"could not unlink the file: %O{error}"
+
+        let released =
+            match FileDescriptorRegistry.close fd system.Process.FileDescriptors with
+            | Ok (registry, _) -> registry
+            | Error error -> failwith $"could not close the descriptor: %O{error}"
+
+        let orphaned =
+            {
+                Machine =
+                    { system.Machine with
+                        FileSystem = unnamed
+                    }
+                Process =
+                    { system.Process with
+                        FileDescriptors = released
+                    }
+                Tasks = system.Tasks
+            }
+
+        UnixSystem.pinnedInodes orphaned |> Set.contains inode |> shouldEqual false
+
+        let reaped = UnixSystem.forgetIfUnheld inode orphaned
+
+        (VirtualFileSystem.tryGet inode reaped.Machine.FileSystem).IsSome
+        |> shouldEqual false
+
+    [<Test>]
     let ``geteuid is total, and its type says so`` () : unit =
         // Not a `SyscallAnswer`: `geteuid(2)` cannot fail, so a shape that
         // admitted `Failed` would make an unreachable state representable. The

@@ -65,6 +65,31 @@ module TestUnixSystemProjection =
         restored.Machine |> shouldEqual distinctive.Machine
 
     [<Test>]
+    let ``mapUnix applies the operation and writes back every part of it`` () : unit =
+        // The composition of the two directions, which is how every library
+        // operation that spans the three parts is called. Asserted separately
+        // because a `mapUnix` that discarded its function's result, or that
+        // wrote back the projection it read rather than the one it computed,
+        // passes both round-trip rows above.
+        let changed =
+            distinctive
+            |> EmulatedKernel.mapUnix (fun system ->
+                {
+                    Machine = UnixMachineState.withProcessorCount 5 system.Machine
+                    Process = UnixProcessState.withUserAndGroupId 11u 13u system.Process
+                    Tasks = UnixTaskTable.register (ThreadId 4) (CpuId 1) (OsThreadId 12u) system.Tasks
+                }
+            )
+
+        changed.Machine.ProcessorCount |> shouldEqual 5
+        changed.UserId |> shouldEqual 11u
+        changed.Tasks.ContainsKey (ThreadId 4) |> shouldEqual true
+
+        // And the part the operation left alone is still the one it was handed,
+        // rather than the default a whole-kernel replacement would restore.
+        changed.Tasks.ContainsKey (ThreadId 3) |> shouldEqual true
+
+    [<Test>]
     let ``a system stepped from one kernel does not carry another's parts`` () : unit =
         // The hazard the round trip exists to catch, stated as a property over
         // arbitrary processor counts: read, change one part through the library,

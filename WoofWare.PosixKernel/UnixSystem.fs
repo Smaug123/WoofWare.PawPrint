@@ -183,6 +183,110 @@ type private DescriptorFault =
 [<RequireQualifiedAccess>]
 module UnixSystem =
 
+    /// Every inode that must not be freed: `UnixProcessState.heldInodes`, closed under
+    /// `DirectoryContent.Parent`.
+    ///
+    /// The closure is not caution — it is measured. `rmdir` can remove a
+    /// directory something still holds, and that orphan keeps its "..": probed
+    /// on both flavours, with `a/b` and the current directory inside `b`,
+    /// `rmdir(b)` then `rmdir(a)` both succeed and `stat("..")` still answers
+    /// `a`'s inode while `stat("../..")` still answers the live grandparent's.
+    /// So a held orphan holds its whole ancestor chain, and freeing one of them
+    /// would leave a `DirectoryContent.Parent` naming an inode the graph no
+    /// longer contains.
+    ///
+    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
+    /// and the check `forgetIfUnheld` makes before freeing an inode. Ancestors
+    /// that are still reachable from the root are in it too, harmlessly: both
+    /// callers only ever ask about an inode no name reaches.
+    let pinnedInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Set<InodeNumber>
+        =
+        let rec climb (frontier : InodeNumber list) (seen : Set<InodeNumber>) : Set<InodeNumber> =
+            match frontier with
+            | [] -> seen
+            | inode :: rest ->
+                if Set.contains inode seen then
+                    climb rest seen
+                else
+
+                let seen = Set.add inode seen
+
+                match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
+                // A file or a link records no parent, and a held inode the graph
+                // has already forgotten records nothing at all — which is a
+                // defect (`EmulatedKernelDefect.DanglingOpenInode`) rather than
+                // something to climb from.
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.Symlink _)
+                | None -> climb rest seen
+
+        climb (UnixProcessState.heldInodes system.Process |> Set.toList) Set.empty
+
+    /// Free `inode` if the filesystem no longer names it and this system holds
+    /// no reference to it — what a real kernel does once the last link and the
+    /// last descriptor have both gone.
+    ///
+    /// Total and idempotent: an inode that still has a name, that something
+    /// still holds, or that is already gone, is left exactly as it was. Call it
+    /// after anything that can drop a reference of either kind — removing a
+    /// name, and closing a descriptor — because either may be the one that
+    /// finishes the job, and which one that is cannot be known from the call
+    /// site.
+    ///
+    /// Freeing a *directory* cascades onto its recorded parent, which the
+    /// directory's ".." was the last reference to. So one call collects a whole
+    /// orphaned chain, and the caller passes only the inode whose reference it
+    /// just dropped.
+    let rec forgetIfUnheld<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inode : InodeNumber)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        // The root is excluded explicitly rather than by the binding count,
+        // which is zero for it by construction: nothing holds an entry naming
+        // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
+        // so the count alone would free the filesystem out from under every
+        // path. A guest can reach here with it — `close(open("/"))` is an
+        // ordinary thing to do.
+        if inode = VirtualFileSystem.root system.Machine.FileSystem then
+            system
+        elif (VirtualFileSystem.tryGet inode system.Machine.FileSystem).IsNone then
+            system
+        elif VirtualFileSystem.bindingCount inode system.Machine.FileSystem <> 0 then
+            system
+        elif Set.contains inode (pinnedInodes system) then
+            system
+        else
+
+        // Read before the removal, because it is the removal that makes the
+        // parent's own reference count drop.
+        let parent =
+            match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+            | Some (InodeContent.Directory directory) -> Some directory.Parent
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | None -> None
+
+        let freed =
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = VirtualFileSystem.forget inode system.Machine.FileSystem
+                    }
+            }
+
+        // A directory freed here was the last thing holding its parent's ".."
+        // reference, so the parent may now be free in turn — the chain a held
+        // orphan kept alive is collected as soon as the last holder goes.
+        // Terminating: each step has removed one inode, and the root is refused
+        // above.
+        match parent with
+        | None -> freed
+        | Some parent -> forgetIfUnheld parent freed
+
     /// The effective user ID, as `geteuid(2)` reports it.
     ///
     /// Total, and changes nothing: `geteuid` cannot fail, and this library

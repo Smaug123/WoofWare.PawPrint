@@ -458,7 +458,7 @@ module TestEmulatedKernelSockets =
                                             FileSystem = filesystem
                                         }
                                 }
-                                |> EmulatedKernel.forgetIfUnheld inode
+                                |> EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld inode)
 
                             observedUnlinks <- observedUnlinks + 1
 
@@ -510,7 +510,9 @@ module TestEmulatedKernelSockets =
                 EmulatedKernel.checkInvariants kernel |> shouldEqual []
                 FileDescriptorRegistry.checkInvariants kernel.FileDescriptors |> shouldEqual []
 
-                VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel) kernel.FileSystem
+                VirtualFileSystem.checkInvariants
+                    (UnixSystem.pinnedInodes (EmulatedKernel.unix kernel))
+                    kernel.FileSystem
                 |> shouldEqual []
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWalkSeed) property)
