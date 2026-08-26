@@ -823,62 +823,28 @@ module NativeSystemNative =
     /// Turn the NUL-terminated bytes a guest passed as a pathname into a
     /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
     ///
-    /// Takes bytes rather than machine state, so the boundary — the
-    /// one part of the length rules that the resolver can never see — is
-    /// testable without a heap. `readGuestPathBytes` is the half that needs a
-    /// machine.
+    /// Takes bytes rather than machine state, so the boundary — the one part of
+    /// the length rules that the resolver can never see — is testable without a
+    /// heap. `readGuestPathBytes` is the half that needs a machine.
     ///
-    /// The three stages must run in this order:
-    ///
-    ///  1. **Length first.** `PATH_MAX` is enforced by `getname()`/`copyinstr`
-    ///     when the kernel copies the string in, before anything looks at what
-    ///     it says. So an over-long path that also contains an invalid UTF-8
-    ///     byte must be ENAMETOOLONG — if the strict decode ran first it would
-    ///     abort the interpreter over a path a real kernel rejects cheaply.
-    ///  2. **Strict decode.** Not `readNullTerminatedUtf8`, which substitutes
-    ///     U+FFFD: a kernel looks up raw bytes, so byte 0xFF names a file no
-    ///     valid UTF-8 name can, and decoding leniently would silently resolve a
-    ///     *different* inode — a seeded file literally called "&#65533;". PawPrint models
-    ///     a filename as a .NET string and cannot represent such a path at all;
-    ///     it should say so rather than answer about the wrong file.
-    ///  3. **Parse.**
-    ///
-    /// The limit counts the NUL, and `readNullTerminatedBytes` has already
-    /// dropped it, so the comparison is against `pathMaxBytes - 1`. Measured:
-    /// 1023 bytes resolves on macOS and 1024 does not.
+    /// The rules themselves, and the order they run in, are
+    /// `PathArgument.parse`'s. What is PawPrint's is the reachability: CoreLib
+    /// never produces a path that is not valid UTF-8, because it encodes from a
+    /// string, so only a hand-rolled P/Invoke can reach that refusal.
     let internal parseGuestPathBytes
         (operation : string)
         (limits : PathLimits)
         (bytes : byte[])
         : Result<UnixPath, UnixError>
         =
-        if bytes.Length > PathLimits.pathMaxBytes limits - 1 then
-            Error UnixError.ENAMETOOLONG
-        else
-
-        let decoded =
-            try
-                Some (Text.UTF8Encoding(false, true).GetString bytes)
-            with :? Text.DecoderFallbackException ->
-                None
-
-        match decoded with
-        | None ->
+        match PathArgument.parse limits (ImmutableArray.CreateRange bytes) with
+        | Ok (PathArgument.Parsed path) -> Ok path
+        | Ok (PathArgument.Failed error) -> Error error
+        | Error PathArgumentRefusal.NotUtf8 ->
             let rendered = bytes |> Array.map (sprintf "%02X") |> String.concat " "
 
             failwith
-                $"%s{operation}: the guest passed a path that is not valid UTF-8 (bytes: %s{rendered}). A Unix kernel looks up the raw bytes, but PawPrint models a filename as a .NET string, so this path has no representation in the emulated filesystem; decoding it leniently would silently resolve a different file. CoreLib never produces such a path — it encodes from a string — so this can only come from a hand-rolled P/Invoke."
-        | Some decoded ->
-
-        match UnixPath.parse decoded with
-        | Error error ->
-            // Unreachable from a guest today: the only rejections are a null
-            // candidate (impossible — we have just decoded a string) and text
-            // that cannot survive the `char*` boundary, which a string decoded
-            // *from* that boundary cannot contain.
-            failwith
-                $"%s{operation}: the guest's path did not survive parsing: %s{UnixPath.describe error}. This is an interpreter bug: the value was decoded from a NUL-terminated byte string, so it cannot contain an embedded NUL and cannot be null."
-        | Ok path -> Ok path
+                $"%s{operation}: the guest passed a path that is not valid UTF-8 (bytes: %s{rendered}). This kernel models a filename as a string of characters, so this path has no representation in the emulated filesystem, and decoding it leniently would silently resolve a different file. CoreLib never produces such a path — it encodes from a string — so this can only come from a hand-rolled P/Invoke."
 
     /// The resolution of a guest path, or the errno the lookup owes the guest.
     ///

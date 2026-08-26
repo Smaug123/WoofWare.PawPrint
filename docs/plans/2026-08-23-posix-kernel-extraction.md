@@ -2161,6 +2161,23 @@ Ordered so that each has an oracle before the next depends on it.
   non-UTF-8 refusal moves into the library as a refusal case. Oracle:
   `TestGuestPathBytes`, plus the ENAMETOOLONG boundary rows, which are the ones
   that can tell a byte budget from a character budget.
+  Two things implementing it settled. **Where it lives**: `PathArgument` sits in
+  `VirtualFileSystem.fs` beside `PathLimits`, because that is where `PathLimits`
+  and its two supporting types are, and `UnixPath.fs` compiles before them. The
+  alternative was moving all three types up into `UnixPath.fs` so that every path
+  concept lives in one file — a ~150-line rename-only move, which is exactly the
+  thing this plan keeps refusing to bundle with a design change. `PathLimits`'s
+  own docstring already says its rule is "enforced at the syscall boundary rather
+  than in the walk", so the file was never only about the image.
+
+  **And the refusal carries no payload.** The bytes are the client's — it read
+  them — so a `NotUtf8 of bytes` would have the library hand back something the
+  caller already holds, purely so the caller could render it. The hex rendering
+  stays in PawPrint's half of the message, along with the entry point's name and
+  the reachability sentence, and the library's half is the one fact the client
+  cannot state: that this kernel models a filename as characters and has no such
+  name to look up.
+
 * **8c — `read`**, first because its measured ordering exercises every part of
   (2): three buffer-untouched short-circuits, a platform-dependent up-front
   screen, and a copy-out. `pread` follows as the same operation with an explicit
