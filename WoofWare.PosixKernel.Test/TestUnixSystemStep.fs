@@ -339,6 +339,59 @@ module TestUnixSystemStep =
         |> shouldEqual socketRefused
 
     [<Test>]
+    let ``Linux's zero-length socket answer does not depend on the phase`` () : unit =
+        // The rule is keyed on the flavour alone, so it must hold for every
+        // phase this kernel can put a socket in — measured on Linux for an idle,
+        // a bound-not-listening, a listening and a connected socket, empty and
+        // with a byte queued, and for one whose peer has closed. A rule drawn
+        // from a single phase would be a rule about that phase.
+        let phases =
+            [
+                SocketPhase.Idle
+                SocketPhase.Listening
+                    {
+                        ListenState.Backlog = 4
+                        ListenState.Queue = []
+                    }
+                SocketPhase.Established (ConnectionId 0L)
+                SocketPhase.EstablishedPendingReport (ConnectionId 0L)
+                SocketPhase.RefusedPendingDelivery
+            ]
+
+        for phase in phases do
+            let fd, registry =
+                FileDescriptorRegistry.createSocket socketZero linux.Process.FileDescriptors
+
+            let system =
+                { linux with
+                    Machine =
+                        { linux.Machine with
+                            Sockets =
+                                Map.ofList
+                                    [
+                                        socketZero,
+                                        { socketDescription with
+                                            Phase = phase
+                                        }
+                                    ]
+                        }
+                    Process =
+                        { linux.Process with
+                            FileDescriptors = registry
+                        }
+                }
+
+            UnixSystem.read fd UserBuffer.Mapped 0 system
+            |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, system))
+
+            // ...and one byte is still refused in every one of them, so the row
+            // above is about the length rather than about the phase happening to
+            // be an answerable one.
+            match UnixSystem.read fd UserBuffer.Mapped 1 system with
+            | Error (ReadRefusal.SocketConnectionState _) -> ()
+            | other -> failwith $"expected a refusal for phase %O{phase}, got %A{other}"
+
+    [<Test>]
     let ``read of a descriptor that is not open is EBADF whatever the buffer`` () : unit =
         // The descriptor precedes the buffer on both platforms, so even a buffer
         // that has no answer at all does not get one here.

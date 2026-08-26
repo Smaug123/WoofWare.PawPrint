@@ -1211,18 +1211,34 @@ module UnixSystem =
 
         match target with
         | ReadTarget.Socket socketId ->
-            // A zero-length read of a socket is where the flavours part, and the
-            // rule is uniform rather than a quirk of one socket kind: measured
-            // on Linux, `read(sock, buf, 0)` is 0 for an INET stream, a
-            // UNIX-domain stream and a datagram socket alike, while
-            // `read(sock, buf, 1)` on the same descriptors is ENOTCONN. On
-            // Darwin the same call is ENOTCONN for both stream kinds (it is the
-            // *socket's* operation answering, not a generic short-circuit) and 0
-            // for a datagram one.
+            // A zero-length read of a socket is where the flavours part, and it
+            // is the one socket answer that needs no connection state — on one
+            // of them. Measured across every phase this kernel can produce and
+            // every kind it models, `read(sock, buf, 0)`:
             //
-            // So Linux's zero-length answer is knowable without modelling
-            // connection state and Darwin's is not, which is exactly the split
-            // this refusal draws. The socket event port does not share the rule
+            //   socket state                     Linux   Darwin
+            //   INET stream, idle                0       ENOTCONN
+            //   UNIX stream, idle                0       ENOTCONN
+            //   datagram, idle                   0       0
+            //   INET stream, bound not listening 0       ENOTCONN
+            //   INET stream, listening           0       ENOTCONN
+            //   stream, connected, nothing queued 0      0
+            //   stream, connected, a byte queued  0      0
+            //   datagram, connected, empty        0      0
+            //   datagram, connected, one queued   0      0
+            //   stream, peer closed               0      0
+            //
+            // So **Linux answers 0 in every state**, which is why the flavour
+            // alone decides it here: there is no phase or kind on which the
+            // answer depends. Darwin's is 0 too except for a stream socket that
+            // is not connected, and telling those apart means modelling exactly
+            // the connection state this refusal exists to avoid — so Darwin
+            // declines the whole class, which over-refuses the connected cases
+            // and never answers wrongly.
+            //
+            // The same descriptors answer ENOTCONN (or EAGAIN, connected and
+            // empty) at length 1, so the short-circuit is about the length
+            // rather than the socket. The socket event port does not share it
             // and is answered above: measured, `read(port, buf, 0)` is EINVAL on
             // Linux like every other length.
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, count with
