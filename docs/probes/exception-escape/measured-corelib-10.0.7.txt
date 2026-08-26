@@ -1,0 +1,119 @@
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1178ms
+methods: 41561 (IL bodies: 39466, 95.0%)
+
+-- body kinds --
+  Il                                        39466   95.0%
+  Abstract                                   1116    2.7%
+  PInvoke                                     490    1.2%
+  InternalCall                                205    0.5%
+  RuntimeProvided(DelegateCtor)                73    0.2%
+  RuntimeProvided(DelegateInvoke)              73    0.2%
+  RuntimeProvided(Unrecognised "BeginInvoke")     65    0.2%
+  RuntimeProvided(Unrecognised "EndInvoke")     65    0.2%
+  RuntimeProvided(UnsafeAccessor (Constructor, None))      2    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetDefaultInstance"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (Method, Some "Deserialize"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "ConvertFromInvariantString"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetAssemblyName"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (Method, None))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetInstance"))      1    0.0%
+
+IL methods with no raising op at all: 2030 (5.1% of IL methods)
+IL methods with at least one implicitly-raising opcode: 23104 (58.5%)
+IL methods with any exception region: 947 (2.4%)
+throw sites: 8704 ; rethrow sites: 41 ; call-ish sites: 117535
+
+-- what precedes a `throw` (can we name the thrown type syntactically?) --
+  newobj immediately before                            8460   97.2%
+  call (needs callee return type)                       228    2.6%
+  other: Nullary Ldloc_0                                  4    0.0%
+  other: Nullary LdNull                                   3    0.0%
+  other: Nullary Ldloc_3                                  2    0.0%
+  other: UnaryConst.Ldloc_s 4                             2    0.0%
+  other: Nullary Ldloc_2                                  1    0.0%
+  other: Nullary Ldloc_1                                  1    0.0%
+  other: UnaryConst.Ldloc_s 7                             1    0.0%
+  ldfld (needs dataflow)                                  1    0.0%
+  other: UnaryMetadataToken.Callvirt                      1    0.0%
+
+-- exception regions --
+  finally                                     796
+  resolved-to-name                            396
+  filter                                       24
+  fault                                         3
+
+-- top 10 catch types --
+  System.Exception                                 180
+  System.Object                                     52
+  System.ArgumentException                          26
+  System.ArgumentOutOfRangeException                14
+  System.InvalidCastException                       11
+  System.OverflowException                          10
+  System.NullReferenceException                      9
+  System.ArrayTypeMismatchException                  9
+  System.IndexOutOfRangeException                    8
+  System.MissingMethodException                      8
+
+-- callee token kinds --
+  MethodDef (same assembly)                           82815   70.5%
+  MemberRef (needs cross-assembly resolution)         19588   16.7%
+    ...of which callvirt (needs devirtualisation)     17021   14.5%
+  MethodSpec (generic instantiation)                  15132   12.9%
+
+-- implicit (opcode-raised) exception site counts --
+  System.NullReferenceException                  63196
+  System.OutOfMemoryException                    17827
+  System.TypeInitializationException              3952
+  System.InvalidCastException                     2945
+  System.IndexOutOfRangeException                 2161
+  System.OverflowException                        1967
+  System.ArrayTypeMismatchException               1063
+  System.DivideByZeroException                     911
+
+-- top 12 directly-thrown types (newobj;throw) --
+  System.PlatformNotSupportedException                      5530
+  System.ArgumentException                                   867
+  System.NotSupportedException                               488
+  System.ArgumentOutOfRangeException                         458
+  System.InvalidOperationException                           285
+  System.NotImplementedException                             150
+  System.FormatException                                      78
+  System.Runtime.Serialization.SerializationException         60
+  System.ArgumentNullException                                51
+  System.InvalidCastException                                 50
+  System.BadImageFormatException                              49
+  System.IndexOutOfRangeException                             36
+
+escape analysis (implicit on) took 1919ms
+
+===== sound: opcode-raised exceptions included =====
+fixpoint rounds: 23
+methods: 41561
+  provably throws nothing:              6355   15.3%
+  exact non-empty escaping set:         4322   10.4%
+  Unknown (analysis envelope hit):     30884   74.3%
+  escaping-set size (exact answers): median 0, p90 1, max 7
+  incompleteness reasons (site counts):
+    ForeignCallee               19588
+    GenericInstantiation        15132
+    VirtualCall                 13760
+    NoIlBody                     2095
+    UntypedThrow                  244
+    Rethrow                        41
+
+escape analysis (implicit off) took 658ms
+
+===== unsound control: only explicit `throw`s and propagation =====
+fixpoint rounds: 20
+methods: 41561
+  provably throws nothing:             10677   25.7%
+  exact non-empty escaping set:            0    0.0%
+  Unknown (analysis envelope hit):     30884   74.3%
+  escaping-set size (exact answers): median 0, p90 0, max 0
+  incompleteness reasons (site counts):
+    ForeignCallee               19588
+    GenericInstantiation        15132
+    VirtualCall                 13760
+    NoIlBody                     2095
+    UntypedThrow                  244
+    Rethrow                        41

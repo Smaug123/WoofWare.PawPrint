@@ -1,0 +1,91 @@
+read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 101ms
+methods: 16 (IL bodies: 16, 100.0%)
+
+-- body kinds --
+  Il                                           16  100.0%
+
+IL methods with no raising op at all: 1 (6.2% of IL methods)
+IL methods with at least one implicitly-raising opcode: 4 (25.0%)
+IL methods with any exception region: 7 (43.8%)
+throw sites: 3 ; rethrow sites: 1 ; call-ish sites: 19
+
+-- what precedes a `throw` (can we name the thrown type syntactically?) --
+  newobj immediately before                               3  100.0%
+
+-- exception regions --
+  resolved-to-name                              6
+  finally                                       1
+
+-- top 10 catch types --
+  System.Exception                                   2
+  System.InvalidOperationException                   1
+  System.SystemException                             1
+  System.ArgumentException                           1
+  Fixture.LocalBase                                  1
+
+-- callee token kinds --
+  MethodDef (same assembly)                              13   68.4%
+  MemberRef (needs cross-assembly resolution)             6   31.6%
+
+-- implicit (opcode-raised) exception site counts --
+  System.OutOfMemoryException                        5
+  System.TypeInitializationException                 2
+
+-- top 12 directly-thrown types (newobj;throw) --
+  System.InvalidOperationException                             1
+  System.FormatException                                       1
+  Fixture.Derived                                              1
+
+escape analysis (implicit on) took 9ms
+
+===== sound: opcode-raised exceptions included =====
+fixpoint rounds: 3
+methods: 16
+  provably throws nothing:                 2   12.5%
+  exact non-empty escaping set:            0    0.0%
+  Unknown (analysis envelope hit):        14   87.5%
+  escaping-set size (exact answers): median 0, p90 0, max 0
+  incompleteness reasons (site counts):
+    ForeignCallee                   6
+    Rethrow                         1
+
+escape analysis (implicit off) took 0ms
+
+===== unsound control: only explicit `throw`s and propagation =====
+fixpoint rounds: 3
+methods: 16
+  provably throws nothing:                 2   12.5%
+  exact non-empty escaping set:            0    0.0%
+  Unknown (analysis envelope hit):        14   87.5%
+  escaping-set size (exact answers): median 0, p90 0, max 0
+  incompleteness reasons (site counts):
+    ForeignCallee                   6
+    Rethrow                         1
+
+-- sample answers matching Cases:: --
+  Fixture.Cases::ThrowsDirectly
+      System.InvalidOperationException, + UNKNOWN
+  Fixture.Cases::CaughtExactly
+      UNKNOWN
+  Fixture.Cases::CaughtByBase
+      System.InvalidOperationException, + UNKNOWN
+  Fixture.Cases::UnrelatedCatch
+      System.InvalidOperationException, + UNKNOWN
+  Fixture.Cases::FinallyDoesNotCatch
+      System.InvalidOperationException, + UNKNOWN
+  Fixture.Cases::PropagatesOneHop
+      System.InvalidOperationException, + UNKNOWN
+  Fixture.Cases::TwoSources
+      System.FormatException, System.InvalidOperationException, + UNKNOWN
+  Fixture.Cases::CatchesBoth
+      (nothing)
+  Fixture.Cases::Leaf
+      (nothing)
+  Fixture.Cases::Recursive
+      System.InvalidOperationException, + UNKNOWN
+  Fixture.Cases::Rethrows
+      UNKNOWN
+  Fixture.Cases::ThrowsLocalDerived
+      Fixture.Derived, + UNKNOWN
+  Fixture.Cases::CaughtByLocalBase
+      UNKNOWN
