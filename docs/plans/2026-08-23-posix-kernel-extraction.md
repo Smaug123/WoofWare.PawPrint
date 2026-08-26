@@ -2527,6 +2527,36 @@ Ordered so that each has an oracle before the next depends on it.
   because the first instinct on one is to reach for another row.
 * **8j — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
   land together once 8b exists.
+
+  Their rules were already the library's — `MkDirRules`, `UnlinkRules`,
+  `RmDirRules` and their verdicts — so what was left standing between those
+  rules and the syscall boundary was three handler bodies. With 8i's walk
+  across, each is now resolve, verdict, commit, reap.
+
+  **None of the three can be refused**, every outcome being a success or an
+  errno, so they return a bare `SyscallAnswer * system`. Being payload-free they
+  also join `step`, which the buffer-carrying syscalls could not: that is the
+  first time since stage 7 that the dispatcher has grown, and it is the shape
+  the `step` docstring predicted would be able to.
+
+  `unlink` and `rmdir` carry `forgetIfUnheld` with them, which is the part they
+  add over the filesystem's own `unbind`.
+
+  On PawPrint's side the three handlers collapse into one `pathSyscall` — decode
+  a NUL-terminated path out of guest memory, hand it to the kernel, turn the
+  answer into the zero or the -1-with-errno the C returns. That is the shape
+  they always shared, and the syscall itself is now the only parameter.
+
+  **Three of the seven mutants survived the first battery, and all three were
+  rows that could not discriminate rather than rules that were untested.** A
+  `mkdir` onto a symbolic link to an *existing* file is EEXIST whether the final
+  component is dereferenced or not, so only a *dangling* link separates the two
+  readings. `Syscall.MkDir` at mode 0o755 and at 0o777 both become 0o755 under
+  the default umask, so a dispatcher that dropped the mode agreed. And the
+  `rmdir` ctime divergence — Linux moves the removed directory's, Darwin does
+  not — is visible only through a descriptor *held across the call*, an unheld
+  inode being reaped with nothing left to ask. Each of those is the same trap in
+  a different costume: an input whose two candidate rules agree.
 * **8k — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
   file syscalls, and `open`'s flags are PAL values.
 * **8l — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
