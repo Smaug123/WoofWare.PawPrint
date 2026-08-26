@@ -415,9 +415,9 @@ module UnixProcessState =
     ///
     /// Everything that can *create* a reference must appear here: an omission
     /// makes a live inode look free, and freeing it leaves a descriptor pointing
-    /// at nothing. It is not what callers want, though — see the client's
-    /// `pinnedInodes`, which adds the references the *filesystem* holds on
-    /// behalf of these.
+    /// at nothing. It is not what callers want, though — see
+    /// `UnixSystem.pinnedInodes`, which adds the references the *filesystem*
+    /// holds on behalf of these.
     let heldInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (proc : UnixProcessState<'Task, 'Handler>)
         : Set<InodeNumber>

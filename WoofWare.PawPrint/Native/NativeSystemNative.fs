@@ -3066,7 +3066,7 @@ module NativeSystemNative =
                 // any other name or any open descriptor still holds it. A real
                 // `unlink` of a file something has open leaves it readable
                 // through that descriptor until the last one closes.
-                |> EmulatedKernel.forgetIfUnheld target
+                |> EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld target)
             )
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
@@ -3154,7 +3154,7 @@ module NativeSystemNative =
                 // hold it, and a real `rmdir` leaves such an orphan usable
                 // through what holds it. `forgetIfUnheld` also collects the
                 // ancestors this directory's ".." was keeping alive.
-                |> EmulatedKernel.forgetIfUnheld target
+                |> EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld target)
             )
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed
@@ -3428,7 +3428,7 @@ module NativeSystemNative =
             // kernel with an inode no path reaches — `checkInvariants` would
             // report it, and it would be PawPrint's bookkeeping at fault rather
             // than the guest's. Idempotent when the descriptor did the job.
-            state.MapKernel (EmulatedKernel.forgetIfUnheld stream.Inode)
+            state.MapKernel (EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld stream.Inode))
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -3576,7 +3576,7 @@ module NativeSystemNative =
                 match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
                 | Some entry -> entry
                 | None ->
-                    // Not reachable: `EmulatedKernel.pinnedInodes` names every
+                    // Not reachable: `UnixSystem.pinnedInodes` names every
                     // inode an open description holds, and `forgetIfUnheld`
                     // refuses to free one of those — so a descriptor outlives
                     // the last name bound to its inode, exactly as it does on a

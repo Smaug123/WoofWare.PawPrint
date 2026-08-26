@@ -795,7 +795,7 @@ type EmulatedKernelDefect =
     /// An open directory stream names an inode the filesystem no longer holds.
     ///
     /// Unreachable by construction — `UnixProcessState.heldInodes` counts a stream's inode
-    /// among the things pinning it, so `forgetIfUnheld` cannot free one out from under
+    /// among the things pinning it, so `UnixSystem.forgetIfUnheld` cannot free one out from under
     /// a stream — which is exactly why a violation is an interpreter bug rather
     /// than something a guest did. The next `readdir` would crash the
     /// interpreter, and this names the cause instead.
@@ -890,6 +890,16 @@ module EmulatedKernel =
             Process = system.Process
             Tasks = system.Tasks
         }
+
+    /// Apply an operation that spans this kernel's whole POSIX half. Those
+    /// operations live in `UnixSystem`, which takes the three parts as one
+    /// record rather than the kernel.
+    let mapUnix
+        (f : UnixSystem<ThreadId, SignalHandler> -> UnixSystem<ThreadId, SignalHandler>)
+        (kernel : EmulatedKernel)
+        : EmulatedKernel
+        =
+        withUnix (f (unix kernel)) kernel
 
     /// Default environment variables for a freshly-minted simulated process.
     /// PawPrint only implements invariant-globalization today, so this seed
@@ -1972,103 +1982,6 @@ module EmulatedKernel =
         }
 
 
-    /// Every inode that must not be freed: `UnixProcessState.heldInodes`, closed under
-    /// `DirectoryContent.Parent`.
-    ///
-    /// The closure is not caution — it is measured. `rmdir` can remove a
-    /// directory something still holds, and that orphan keeps its "..": probed
-    /// on both flavours, with `a/b` and the current directory inside `b`,
-    /// `rmdir(b)` then `rmdir(a)` both succeed and `stat("..")` still answers
-    /// `a`'s inode while `stat("../..")` still answers the live grandparent's.
-    /// So a held orphan holds its whole ancestor chain, and freeing one of them
-    /// would leave a `DirectoryContent.Parent` naming an inode the graph no
-    /// longer contains.
-    ///
-    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
-    /// and the check `forgetIfUnheld` makes before freeing an inode. Ancestors
-    /// that are still reachable from the root are in it too, harmlessly: both
-    /// callers only ever ask about an inode no name reaches.
-    let pinnedInodes (kernel : EmulatedKernel) : Set<InodeNumber> =
-        let rec climb (frontier : InodeNumber list) (seen : Set<InodeNumber>) : Set<InodeNumber> =
-            match frontier with
-            | [] -> seen
-            | inode :: rest ->
-                if Set.contains inode seen then
-                    climb rest seen
-                else
-
-                let seen = Set.add inode seen
-
-                match VirtualFileSystem.tryGetContent inode kernel.FileSystem with
-                | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
-                // A file or a link records no parent, and a held inode the graph
-                // has already forgotten records nothing at all — which is a
-                // defect (`EmulatedKernelDefect.DanglingOpenInode`) rather than
-                // something to climb from.
-                | Some (InodeContent.RegularFile _)
-                | Some (InodeContent.Symlink _)
-                | None -> climb rest seen
-
-        climb (UnixProcessState.heldInodes kernel.Process |> Set.toList) Set.empty
-
-    /// Free `inode` if the filesystem no longer names it and this kernel holds
-    /// no reference to it — what a real kernel does once the last link and the
-    /// last descriptor have both gone.
-    ///
-    /// Total and idempotent: an inode that still has a name, that something
-    /// still holds, or that is already gone, is left exactly as it was. Call it
-    /// after anything that can drop a reference of either kind — removing a
-    /// name, and closing a descriptor — because either may be the one that
-    /// finishes the job, and which one that is cannot be known from the call
-    /// site.
-    ///
-    /// Freeing a *directory* cascades onto its recorded parent, which the
-    /// directory's ".." was the last reference to. So one call collects a whole
-    /// orphaned chain, and the caller passes only the inode whose reference it
-    /// just dropped.
-    let rec forgetIfUnheld (inode : InodeNumber) (kernel : EmulatedKernel) : EmulatedKernel =
-        // The root is excluded explicitly rather than by the binding count,
-        // which is zero for it by construction: nothing holds an entry naming
-        // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
-        // so the count alone would free the filesystem out from under every
-        // path. A guest can reach here with it — `close(open("/"))` is an
-        // ordinary thing to do.
-        if inode = VirtualFileSystem.root kernel.FileSystem then
-            kernel
-        elif (VirtualFileSystem.tryGet inode kernel.FileSystem).IsNone then
-            kernel
-        elif VirtualFileSystem.bindingCount inode kernel.FileSystem <> 0 then
-            kernel
-        elif Set.contains inode (pinnedInodes kernel) then
-            kernel
-        else
-
-        // Read before the removal, because it is the removal that makes the
-        // parent's own reference count drop.
-        let parent =
-            match VirtualFileSystem.tryGetContent inode kernel.FileSystem with
-            | Some (InodeContent.Directory directory) -> Some directory.Parent
-            | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.Symlink _)
-            | None -> None
-
-        let freed =
-            { kernel with
-                Machine =
-                    { kernel.Machine with
-                        FileSystem = VirtualFileSystem.forget inode kernel.FileSystem
-                    }
-            }
-
-        // A directory freed here was the last thing holding its parent's ".."
-        // reference, so the parent may now be free in turn — the chain a held
-        // orphan kept alive is collected as soon as the last holder goes.
-        // Terminating: each step has removed one inode, and the root is refused
-        // above.
-        match parent with
-        | None -> freed
-        | Some parent -> forgetIfUnheld parent freed
-
     /// Mirrors `close(2)`, including the kernel objects a description was the
     /// last reference to: the socket it named, or the inode whose last name had
     /// already gone.
@@ -2279,7 +2192,7 @@ module EmulatedKernel =
                 match destroyed with
                 | Some description ->
                     match description.Target with
-                    | OpenFileTarget.File (inode, _) -> forgetIfUnheld inode closed
+                    | OpenFileTarget.File (inode, _) -> mapUnix (UnixSystem.forgetIfUnheld inode) closed
                     | OpenFileTarget.StandardStream _
                     | OpenFileTarget.SocketEventPort _
                     | OpenFileTarget.Socket _ -> closed
@@ -3242,9 +3155,10 @@ module EmulatedKernel =
     ///
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
     /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
-    /// repeats neither. The latter takes a `pinned` argument that only this
-    /// layer can supply, so a caller wanting the whole picture pairs this with
-    /// `VirtualFileSystem.checkInvariants (EmulatedKernel.pinnedInodes kernel)`.
+    /// repeats neither. The latter takes a `pinned` argument, which is what
+    /// `UnixSystem.pinnedInodes` computes, so a caller wanting the whole picture
+    /// pairs this with
+    /// `VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes (unix kernel))`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         let named =
             FileDescriptorRegistry.descriptions kernel.FileDescriptors
