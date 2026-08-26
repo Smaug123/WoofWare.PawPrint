@@ -1187,6 +1187,22 @@ module PathArgument =
     /// Linux 4096), which is why it arrives as `PathLimits` rather than as a
     /// constant.
     let parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : Result<PathArgument, PathArgumentRefusal> =
+        // A forged `PathLimits` has a `PathMaxBytes` of zero, under which *every*
+        // path is over-long — a plausible-looking ENAMETOOLONG from a kernel that
+        // cannot exist, produced silently for every path a guest names. Checked
+        // before the limit is read, as `resolveFull` checks it before the walk.
+        let limits = PathLimits.assertValid "PathArgument.parse" limits
+
+        // `ImmutableArray` is a struct wrapping an array, so `default` carries a
+        // null one and would throw on the `Length` read below rather than at the
+        // point the mistake was made. Rejected rather than treated as empty: an
+        // empty path argument is a real thing a guest passes, and `open("")` is
+        // ENOENT, so silently conflating the two would answer about a path the
+        // caller never had.
+        if bytes.IsDefault then
+            failwith
+                "PathArgument.parse: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty path; pass ImmutableArray<byte>.Empty."
+
         if bytes.Length > PathLimits.pathMaxBytes limits - 1 then
             Ok (PathArgument.Failed UnixError.ENAMETOOLONG)
         else

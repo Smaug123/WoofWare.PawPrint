@@ -113,6 +113,34 @@ module TestPathArgument =
         | other -> failwith $"expected a parse, got %O{other}"
 
     [<Test>]
+    let ``a forged limit is rejected rather than making every path too long`` () : unit =
+        // The failure worth catching is not a crash: a defaulted `PathLimits`
+        // has a PATH_MAX of zero, under which every path is over-long, so a
+        // caller would get a confident ENAMETOOLONG for every path a guest ever
+        // names.
+        let exn =
+            Assert.Throws<Exception> (fun () ->
+                PathArgument.parse Unchecked.defaultof<PathLimits> (bytesOf "/etc")
+                |> ignore<Result<PathArgument, PathArgumentRefusal>>
+            )
+
+        exn.Message |> shouldContainText "PathArgument.parse"
+
+    [<Test>]
+    let ``a defaulted byte array is rejected rather than read`` () : unit =
+        // `default(ImmutableArray<byte>)` wraps a null array, so the length read
+        // below would throw a bare NullReferenceException from inside the
+        // parser. It is also not the same as an empty path, which the row below
+        // shows is a legitimate argument.
+        let exn =
+            Assert.Throws<Exception> (fun () ->
+                PathArgument.parse linux Unchecked.defaultof<ImmutableArray<byte>>
+                |> ignore<Result<PathArgument, PathArgumentRefusal>>
+            )
+
+        exn.Message |> shouldContainText "ImmutableArray<byte>.Empty"
+
+    [<Test>]
     let ``an empty argument parses rather than refusing`` () : unit =
         // `open("")` is ENOENT, which is an answer about resolution rather than
         // about the bytes, so this stage must let it through: refusing here
