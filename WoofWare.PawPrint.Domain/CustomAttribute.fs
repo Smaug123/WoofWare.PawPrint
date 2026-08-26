@@ -900,6 +900,29 @@ module CustomAttribute =
     /// which rule fired. The native handler discards it too, having only <c>FALSE</c> to report,
     /// but it lets a test pin *why* a blob was rejected rather than merely that it was.
     /// </remarks>
+    /// <summary>
+    /// Decode a <c>CustomAttrib</c> blob as an application of <c>[AttributeUsage]</c>: one
+    /// <c>AttributeTargets</c> fixed argument, plus the optional <c>AllowMultiple</c> and
+    /// <c>Inherited</c> named arguments. <c>Error</c> is every input on which CoreCLR's parser
+    /// returns <c>FALSE</c>, which its managed caller turns into a
+    /// <c>CustomAttributeFormatException</c>.
+    /// </summary>
+    /// <remarks>
+    /// The contract here is "what CoreCLR's parser does", not "what ECMA-335 II.23.3 says" — this
+    /// exists to be that primitive, so where the two disagree this follows the parser. The
+    /// divergences from the grammar are marked at the code that makes them.
+    ///
+    /// The parse is <c>::ParseKnownCaArgs</c> and <c>::ParseKnownCaNamedArgs</c>
+    /// (<c>md/compiler/custattr_emit.cpp</c>), reached from
+    /// <c>CustomAttribute_ParseAttributeUsageAttribute</c> (<c>vm/customattribute.cpp</c>). Note
+    /// that <c>customattribute.cpp</c> also defines a VM-local <c>ParseCaNamedArgs</c> which is
+    /// *not* what this QCall uses and which behaves differently; the <c>::</c> qualification at the
+    /// call site is what distinguishes them.
+    ///
+    /// The diagnostic on the two failure cases has no counterpart in CoreCLR, whose <c>BOOL</c> discards
+    /// which rule fired. The native handler discards it too, having only <c>FALSE</c> to report,
+    /// but it lets a test pin *why* a blob was rejected rather than merely that it was.
+    /// </remarks>
     /// Read a named argument's serialization type exactly as CoreCLR's <c>ParseEncodedType</c>
     /// (<c>md/compiler/custattr_emit.cpp</c>) reads it, returning the <em>outer</em> tag — the one
     /// its matching loop compares — and the offset of the member name that follows.
@@ -1032,11 +1055,41 @@ module CustomAttribute =
             | Error e -> AttributeUsageParse.ValidOnOnly (validOn, e)
             | Ok () ->
 
-            match readKnownCaEncodedType blob (cursor + 1) with
-            | Error e -> AttributeUsageParse.ValidOnOnly (validOn, e)
-            | Ok (typeTag, afterType) ->
+            // `ParseEncodedType` reads the argument's whole serialization type here — a further tag
+            // if this one is SZARRAY, an enum's name if the result is ENUM. None of that is
+            // observable to *this* parse: both descriptors `[AttributeUsage]` declares are BOOLEAN,
+            // so an argument whose tag is anything else matches neither and rejects the blob, and
+            // it does so whether CoreCLR rejected it while decoding the type (a truncated element
+            // tag, a null enum name) or afterwards while matching. One tag byte therefore decides
+            // it, and what follows a non-BOOLEAN one is never read.
+            //
+            // Not reading it is also what keeps this in constant stack. ECMA-335's grammar for a
+            // type is recursive, and `readFieldOrPropType` implements it that way: a blob nesting
+            // SZARRAY ten thousand deep exhausts the host's stack there, which kills the process
+            // rather than producing the parse failure CoreCLR produces.
+            let typeTagResult =
+                if cursor + 1 >= blob.Length then
+                    Error (
+                        sprintf
+                            "CustomAttrib blob: a serialization type tag was expected at offset %d but the blob has only %d bytes"
+                            (cursor + 1)
+                            blob.Length
+                    )
+                elif blob.[cursor + 1] = 0x02uy then
+                    Ok ()
+                else
+                    Error (
+                        sprintf
+                            "CustomAttrib blob: named arg at offset %d has serialization type 0x%02X, and [AttributeUsage] declares only BOOLEAN arguments"
+                            cursor
+                            blob.[cursor + 1]
+                    )
 
-            match readSerString blob afterType with
+            match typeTagResult with
+            | Error e -> AttributeUsageParse.ValidOnOnly (validOn, e)
+            | Ok () ->
+
+            match readSerString blob (cursor + 2) with
             | Error e -> AttributeUsageParse.ValidOnOnly (validOn, e)
             | Ok (declaredName, valueOffset) ->
 
@@ -1058,13 +1111,10 @@ module CustomAttribute =
             // said FIELD or PROPERTY — so a field named `AllowMultiple` sets the property. Mirrored
             // for the same reason as the signed count above.
             let matched =
-                if typeTag <> 0x02uy then
-                    None
-                else
-                    match name with
-                    | "AllowMultiple" -> Some (true, allowMultiple)
-                    | "Inherited" -> Some (false, inherited)
-                    | _ -> None
+                match name with
+                | "AllowMultiple" -> Some (true, allowMultiple)
+                | "Inherited" -> Some (false, inherited)
+                | _ -> None
 
             match matched with
             | None ->
