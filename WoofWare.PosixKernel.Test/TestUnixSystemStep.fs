@@ -1660,6 +1660,18 @@ module TestUnixSystemStep =
                 vfs
             |> orFail "/l"
 
+        // A link to a name nothing holds. Its whole purpose is to tell "the
+        // final component is not dereferenced" from "it is": a link to an
+        // *existing* file cannot, both readings landing on a name that exists.
+        let _, vfs =
+            VirtualFileSystem.createSymlink
+                rootInode
+                (FileName.parseOrFail context "dangling")
+                epoch
+                (SymlinkTarget.parseOrFail context "/d/inner/gone")
+                vfs
+            |> orFail "/dangling"
+
         inner,
         target,
         link,
@@ -1798,6 +1810,181 @@ module TestUnixSystemStep =
         match UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") asRoot with
         | Ok _ -> ()
         | Error error -> failwith $"root should have been exempt, got %O{error}"
+
+    // ------------------------------------------- mkdir / unlink / rmdir
+
+    let private completed (answer : SyscallAnswer * UnixSystem<int, string>) : UnixSystem<int, string> =
+        match answer with
+        | SyscallAnswer.Completed 0L, system -> system
+        | other -> failwith $"expected a success, got %A{other}"
+
+    let private failedAs (error : UnixError) (answer : SyscallAnswer * UnixSystem<int, string>) : unit =
+        match answer with
+        | SyscallAnswer.Failed actual, _ -> actual |> shouldEqual error
+        | other -> failwith $"expected %O{error}, got %A{other}"
+
+    [<Test>]
+    let ``mkdir binds a directory the umask has had its say over`` () : unit =
+        // The mode is raw — the shim passes it straight through — so what the
+        // directory actually gets is the kernel's business. Driven with a
+        // distinctive umask rather than the default, since a `mkdir` that ignored
+        // the umask entirely would pass a row that used 0.
+        let system =
+            { linux with
+                Process =
+                    { linux.Process with
+                        Umask = PermissionBits.parseOrFail context 0o027
+                    }
+            }
+
+        let after = UnixSystem.mkdir (statPath "/d") 0o777 system |> completed
+
+        match UnixSystem.stat SymlinkPolicy.Follow (statPath "/d") after with
+        | FileStatusAnswer.Reported status -> status.Mode |> shouldEqual 0o40750
+        | other -> failwith $"expected a status, got %A{other}"
+
+    [<Test>]
+    let ``mkdir over a name something already holds is EEXIST`` () : unit =
+        let _, _, _, system = withTree linux
+
+        UnixSystem.mkdir (statPath "/d") 0o777 system |> failedAs UnixError.EEXIST
+
+        // Including a symbolic link, which `mkdir` never dereferences — and a
+        // *dangling* one is the case that says so: following it would find a free
+        // name and bind a directory at the target, where the measured answer is
+        // EEXIST at the link itself.
+        UnixSystem.mkdir (statPath "/l") 0o777 system |> failedAs UnixError.EEXIST
+
+        UnixSystem.mkdir (statPath "/dangling") 0o777 system
+        |> failedAs UnixError.EEXIST
+
+        UnixSystem.stat SymlinkPolicy.NoFollowFinal (statPath "/d/inner/gone") system
+        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+
+    [<Test>]
+    let ``unlink removes the name, and the inode with it when nothing holds it`` () : unit =
+        let _, target, _, system = withTree linux
+
+        let after = UnixSystem.unlink (statPath "/d/inner/t") system |> completed
+
+        UnixSystem.stat SymlinkPolicy.Follow (statPath "/d/inner/t") after
+        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+
+        // The inode is gone too, which is the part `unlink` adds over the
+        // filesystem's own unbind.
+        UnixSystem.statOf target after |> shouldEqual None
+
+    [<Test>]
+    let ``unlink of a file a descriptor holds leaves it readable through that descriptor`` () : unit =
+        // The rule `forgetIfUnheld` exists for, and the one an unlink that simply
+        // freed the inode would break: a real `unlink` of an open file leaves it
+        // readable until the last descriptor closes.
+        let _, target, _, system = withTree linux
+
+        let fd, registry =
+            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly system.Process.FileDescriptors
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let after = UnixSystem.unlink (statPath "/d/inner/t") system |> completed
+
+        // The name has gone...
+        UnixSystem.stat SymlinkPolicy.Follow (statPath "/d/inner/t") after
+        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+
+        // ...and the inode has not.
+        UnixSystem.statOf target after |> shouldNotEqual None
+
+        match UnixSystem.read fd UserBuffer.Mapped 8 after with
+        | Ok (ReadAnswer.Completed bytes, _) -> List.ofSeq bytes |> shouldEqual [ 1uy ; 2uy ; 3uy ]
+        | other -> failwith $"expected the contents, got %A{other}"
+
+        // And closing that last descriptor is what finally reaps it.
+        match UnixSystem.close fd after with
+        | Ok (SyscallAnswer.Completed _, closed) -> UnixSystem.statOf target closed |> shouldEqual None
+        | other -> failwith $"expected a close, got %A{other}"
+
+    [<Test>]
+    let ``rmdir refuses a directory that still holds something`` () : unit =
+        let _, _, _, system = withTree linux
+
+        UnixSystem.rmdir (statPath "/d") system |> failedAs UnixError.ENOTEMPTY
+
+        // The leaf is empty, so it goes; and then its parent is empty too.
+        let after =
+            UnixSystem.unlink (statPath "/d/inner/t") system
+            |> completed
+            |> fun system -> UnixSystem.rmdir (statPath "/d/inner") system |> completed
+            |> fun system -> UnixSystem.rmdir (statPath "/d") system |> completed
+
+        UnixSystem.stat SymlinkPolicy.Follow (statPath "/d") after
+        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+
+    [<Test>]
+    let ``a removed directory's ctime is the flavour's own answer`` () : unit =
+        // The one field `rmdir` moves that `unlink` does not decide the same way:
+        // measured through a descriptor held across the call, Linux moves the
+        // removed directory's `ctime` and Darwin leaves it. Only a *held*
+        // descriptor can see it — an unheld inode is reaped and there is nothing
+        // left to ask.
+        for flavour, expected in [ linux, UnixTimestamp.ofMillisecondsSinceEpoch 5000L ; darwin, epoch ] do
+            let fd, system = withOpenDirectory flavour
+
+            let inode =
+                match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+                | Some (OpenFileTarget.File (inode, _)) -> inode
+                | other -> failwith $"expected a directory descriptor, got %O{other}"
+
+            // The clock has to have moved, or the two answers coincide.
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            WallClockEpochMs = 5000L
+                        }
+                }
+
+            let after = UnixSystem.rmdir (statPath "/d") system |> completed
+
+            match UnixSystem.statOf inode after with
+            | Some status -> status.StatusChangeTime |> shouldEqual expected
+            | None -> failwith "the held descriptor should have kept the inode alive"
+
+    [<Test>]
+    let ``unlink and rmdir do not do each other's job`` () : unit =
+        // Each refuses the other's target, which is what says the two entry
+        // points are not one syscall with a flag.
+        let _, _, _, system = withTree linux
+
+        match UnixSystem.unlink (statPath "/d/inner") system with
+        | SyscallAnswer.Failed _, _ -> ()
+        | other -> failwith $"unlink should not remove a directory, got %A{other}"
+
+        UnixSystem.rmdir (statPath "/d/inner/t") system |> failedAs UnixError.ENOTDIR
+
+    [<Test>]
+    let ``the three path syscalls through step agree with the primitives`` () : unit =
+        // As for `close`: the dispatcher is sugar, and a client that logs and
+        // replays through `step` must compute the same thing as one that calls
+        // the primitive.
+        let _, _, _, system = withTree linux
+
+        for call, expected in
+            [
+                // A mode the default umask does *not* reduce to the same thing
+                // as 0o777: with umask 0o022 both 0o755 and 0o777 become 0o755,
+                // so a dispatcher that dropped the mode would agree.
+                Syscall.MkDir (statPath "/new", 0o700), UnixSystem.mkdir (statPath "/new") 0o700 system
+                Syscall.Unlink (statPath "/d/inner/t"), UnixSystem.unlink (statPath "/d/inner/t") system
+                Syscall.RmDir (statPath "/d"), UnixSystem.rmdir (statPath "/d") system
+            ] do
+            UnixSystem.step call system |> shouldEqual (Ok expected)
 
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =

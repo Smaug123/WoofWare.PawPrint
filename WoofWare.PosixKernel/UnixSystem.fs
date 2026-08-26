@@ -403,6 +403,12 @@ type Syscall =
     | FLock of fd : int * operation : int
     | FTruncate of fd : int * length : int64
     | Close of fd : int
+    /// `mode` is raw: the C shim passes it straight to `mkdir(2)`, so how it
+    /// combines with the umask and with the parent's set-group-ID bit is
+    /// behaviour this kernel models, and models per flavour.
+    | MkDir of path : UnixPath * mode : int
+    | Unlink of path : UnixPath
+    | RmDir of path : UnixPath
 
 /// What the entry point returns, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -2250,6 +2256,165 @@ module UnixSystem =
             }
         )
 
+    /// `mkdir(2)`: bind a new directory at `path`.
+    ///
+    /// `mode` is raw — the shim passes it straight through — so what the created
+    /// directory's permissions actually are depends on the umask and, on one
+    /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
+    ///
+    /// Never refused: every outcome is a success or an errno, the rules having
+    /// been measured on both flavours.
+    let mkdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let rules = SimulatedUnixPlatform.mkDirRules system.Machine.UnixPlatform
+
+        // `NoFollowFinal` on both flavours: `mkdir` never dereferences the name
+        // it is about to bind, so an existing link is EEXIST whether it dangles,
+        // points at a file, or points at itself. The trailing separator is the
+        // only thing that can reach past it, and only on Darwin — see
+        // `MkDirRules.TrailingSeparator`.
+        match resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok resolution ->
+
+        match
+            MkDirRules.verdict (UnixProcessState.callerPrivilege system.Process) resolution system.Machine.FileSystem
+        with
+        | MkDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        | MkDirVerdict.Create (directory, name, parentPermissions) ->
+
+        let permissions =
+            MkDirRules.createdPermissions rules parentPermissions system.Process.Umask mode
+
+        let now = UnixMachineState.fileTimestamp system.Machine
+
+        match VirtualFileSystem.createDirectory directory name permissions now system.Machine.FileSystem with
+        | Error error ->
+            // `createDirectory` refuses a name the directory already holds, and a
+            // parent that is not a directory. The walk has just established
+            // neither is the case, so either is a broken graph rather than
+            // something the caller did.
+            failwith
+                $"UnixSystem.mkdir: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+        | Ok (_, filesystem) ->
+
+        SyscallAnswer.Completed 0L,
+        { system with
+            Machine =
+                { system.Machine with
+                    FileSystem = filesystem
+                }
+        }
+
+    /// `unlink(2)`: remove the name `path`, and the inode it named if nothing
+    /// else holds it.
+    ///
+    /// Never refused: every outcome is a success or an errno.
+    let unlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let rules = SimulatedUnixPlatform.unlinkRules system.Machine.UnixPlatform
+
+        // `NoFollowFinal` on both flavours — `unlink` removes the name it was
+        // given, never what that name points at. The trailing separator is the
+        // only thing that can reach past a final symlink, and only on Darwin;
+        // see `UnlinkRules.TrailingSeparator`.
+        match resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok resolution ->
+
+        match
+            UnlinkRules.verdict
+                (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
+                (UnixProcessState.callerPrivilege system.Process)
+                resolution
+                system.Machine.FileSystem
+        with
+        | UnlinkVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        | UnlinkVerdict.Remove (directory, name) ->
+
+        let now = UnixMachineState.fileTimestamp system.Machine
+
+        match VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name now system.Machine.FileSystem with
+        | Error error ->
+            // `unbind` refuses a directory it does not hold and a name that
+            // directory does not bind. The walk has just established both, so
+            // either is a broken graph rather than something the caller did.
+            failwith
+                $"UnixSystem.unlink: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
+        | Ok (target, filesystem) ->
+
+        // The name is gone; whether the *inode* is depends on whether any other
+        // name or any open descriptor still holds it. A real `unlink` of a file
+        // something has open leaves it readable through that descriptor until the
+        // last one closes.
+        SyscallAnswer.Completed 0L,
+        forgetIfUnheld
+            target
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+            }
+
+    /// `rmdir(2)`: remove the empty directory `path` names.
+    ///
+    /// Never refused: every outcome is a success or an errno.
+    let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let rules = SimulatedUnixPlatform.rmDirRules system.Machine.UnixPlatform
+
+        // `NoFollowFinal` on both flavours. The trailing separator is what
+        // reaches past a final symlink, and only on Darwin — which is how
+        // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
+        // Linux. See `RmDirRules.TrailingSeparator`.
+        match resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok resolution ->
+
+        match
+            RmDirRules.verdict
+                (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
+                (UnixProcessState.callerPrivilege system.Process)
+                resolution
+                system.Machine.FileSystem
+        with
+        | RmDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        | RmDirVerdict.Remove (directory, name) ->
+
+        let now = UnixMachineState.fileTimestamp system.Machine
+
+        match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now system.Machine.FileSystem with
+        | Error error ->
+            failwith
+                $"UnixSystem.rmdir: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
+        | Ok (target, filesystem) ->
+
+        // A directory has only ever had the one name, so this was the last — but
+        // a descriptor or the current directory may still hold it, and a real
+        // `rmdir` leaves such an orphan usable through what holds it.
+        // `forgetIfUnheld` also collects the ancestors this directory's ".." was
+        // keeping alive.
+        SyscallAnswer.Completed 0L,
+        forgetIfUnheld
+            target
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+            }
+
     /// Answer one syscall.
     ///
     /// Sugar over the per-syscall functions above, for a client that wants one
@@ -2278,3 +2443,6 @@ module UnixSystem =
         | Syscall.FLock (fd, operation) -> flock fd operation system |> Result.mapError SyscallRefusal.FLock
         | Syscall.FTruncate (fd, length) -> ftruncate fd length system |> Result.mapError SyscallRefusal.FTruncate
         | Syscall.Close fd -> close fd system |> Result.mapError SyscallRefusal.Close
+        | Syscall.MkDir (path, mode) -> Ok (mkdir path mode system)
+        | Syscall.Unlink path -> Ok (unlink path system)
+        | Syscall.RmDir path -> Ok (rmdir path system)

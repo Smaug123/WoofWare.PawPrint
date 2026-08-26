@@ -1059,6 +1059,60 @@ module NativeSystemNative =
 
         $"%s{operation}: fd %d{fd}: %s{FStatRefusal.describe refusal} %s{reachability}"
 
+    /// The one shape `SystemNative_MkDir`, `SystemNative_Unlink` and
+    /// `SystemNative_RmDir` share: decode a NUL-terminated path out of guest
+    /// memory, hand it to the kernel, and turn the answer into the zero or the
+    /// -1-with-errno the C returns.
+    ///
+    /// The guest-memory half is PawPrint's — the pointer, the `PATH_MAX`-bounded
+    /// scan, the byte-to-`UnixPath` parse — and the syscall itself is the
+    /// kernel's; `call` is the whole of what distinguishes the three.
+    let private pathSyscall
+        (ctx : NativeCallContext)
+        (operation : string)
+        (call : UnixPath -> UnixSystem<ThreadId, SignalHandler> -> SyscallAnswer * UnixSystem<ThreadId, SignalHandler>)
+        (state : IlMachineState)
+        : NativeHandlerResult option
+        =
+        let fail (error : UnixError) : NativeHandlerResult option =
+            withErrnoOnly ctx error state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+
+        match
+            bufferPointerArgument operation "path" ctx.Instruction.Arguments.[0]
+            |> BufferPointer.dereferenceable
+        with
+        | None -> fail UnixError.EFAULT
+        | Some pathPtr ->
+
+        let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+        let bytes =
+            NativeCall.readNullTerminatedBytesWithin
+                operation
+                ctx.BaseClassTypes
+                state
+                pathPtr
+                (PathLimits.pathMaxBytes limits)
+
+        match parseGuestPathBytes operation limits bytes with
+        | Error error -> fail error
+        | Ok path ->
+
+        match call path (EmulatedKernel.unix state.Kernel) with
+        | SyscallAnswer.Failed error, system ->
+            withErrno ctx error system state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | SyscallAnswer.Completed _, system ->
+            withAnswered system state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+
     /// Shared body of `SystemNative_Stat` and `SystemNative_LStat`, which
     /// differ only in whether a symbolic link in the final position is
     /// followed.
@@ -2814,86 +2868,12 @@ module NativeSystemNative =
           [ ConcretePointer _ ; _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             let operation = "SystemNative_MkDir"
-
-            let fail (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-
-            let rules = SimulatedUnixPlatform.mkDirRules state.Kernel.UnixPlatform
-
-            match
-                bufferPointerArgument operation "path" instruction.Arguments.[0]
-                |> BufferPointer.dereferenceable
-            with
-            | None -> fail UnixError.EFAULT
-            | Some pathPtr ->
-
-            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-            let bytes =
-                NativeCall.readNullTerminatedBytesWithin
-                    operation
-                    ctx.BaseClassTypes
-                    state
-                    pathPtr
-                    (PathLimits.pathMaxBytes limits)
-
-            match parseGuestPathBytes operation limits bytes with
-            | Error error -> fail error
-            | Ok path ->
-
-            // `NoFollowFinal` on both platforms: `mkdir` never dereferences the
-            // name it is about to bind, so an existing link is EEXIST whether it
-            // dangles, points at a file, or points at itself. The trailing
-            // separator is the only thing that can reach past it, and only on
-            // Darwin -- see `MkDirRules.TrailingSeparator`.
-            match resolveGuestPathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path with
-            | Error error -> fail error
-            | Ok resolution ->
-
-            match
-                MkDirRules.verdict
-                    (UnixProcessState.callerPrivilege state.Kernel.Process)
-                    resolution
-                    state.Kernel.FileSystem
-            with
-            | MkDirVerdict.Refuse error -> fail error
-            | MkDirVerdict.Create (directory, name, parentPermissions) ->
-
+            // Read before the path, and harmlessly so: it is an immediate rather
+            // than a pointer, so decoding it dereferences nothing and cannot
+            // pre-empt the EFAULT a bad path earns.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            let permissions =
-                MkDirRules.createdPermissions rules parentPermissions state.Kernel.Umask mode
-
-            let now = UnixMachineState.fileTimestamp state.Kernel.Machine
-
-            match VirtualFileSystem.createDirectory directory name permissions now state.Kernel.FileSystem with
-            | Error error ->
-                // `createDirectory` refuses a name the directory already holds,
-                // and a parent that is not a directory. The walk has just
-                // established neither is the case, so either is a broken graph
-                // rather than something the guest did.
-                failwith
-                    $"%s{operation}: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is an interpreter bug)."
-            | Ok (_, filesystem) ->
-
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            FileSystem = filesystem
-                        }
-                }
-            )
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
+            pathSyscall ctx operation (fun path system -> UnixSystem.mkdir path mode system) state
         // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
         // EINTR-retrying `unlink(2)` and nothing else. CoreLib declares it as
         // `int Unlink(string)` under UTF-8 marshalling, so the argument that
@@ -2902,175 +2882,14 @@ module NativeSystemNative =
         | Some "SystemNative_Unlink",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            let operation = "SystemNative_Unlink"
-
-            let fail (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-
-            let rules = SimulatedUnixPlatform.unlinkRules state.Kernel.UnixPlatform
-
-            match
-                bufferPointerArgument operation "path" instruction.Arguments.[0]
-                |> BufferPointer.dereferenceable
-            with
-            | None -> fail UnixError.EFAULT
-            | Some pathPtr ->
-
-            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-            let bytes =
-                NativeCall.readNullTerminatedBytesWithin
-                    operation
-                    ctx.BaseClassTypes
-                    state
-                    pathPtr
-                    (PathLimits.pathMaxBytes limits)
-
-            match parseGuestPathBytes operation limits bytes with
-            | Error error -> fail error
-            | Ok path ->
-
-            // `NoFollowFinal` on both platforms -- `unlink` removes the name it
-            // was given, never what that name points at. The trailing separator
-            // is the only thing that can reach past a final symlink, and only on
-            // Darwin; see `UnlinkRules.TrailingSeparator`.
-            match resolveGuestPathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path with
-            | Error error -> fail error
-            | Ok resolution ->
-
-            match
-                UnlinkRules.verdict
-                    (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
-                    (UnixProcessState.callerPrivilege state.Kernel.Process)
-                    resolution
-                    state.Kernel.FileSystem
-            with
-            | UnlinkVerdict.Refuse error -> fail error
-            | UnlinkVerdict.Remove (directory, name) ->
-
-            let now = UnixMachineState.fileTimestamp state.Kernel.Machine
-
-            match VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name now state.Kernel.FileSystem with
-            | Error error ->
-                // `unbind` refuses a directory it does not hold and a name that
-                // directory does not bind. The walk has just established both,
-                // so either is a broken graph rather than something the guest
-                // did.
-                failwith
-                    $"%s{operation}: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is an interpreter bug)."
-            | Ok (target, filesystem) ->
-
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            FileSystem = filesystem
-                        }
-                }
-                // The name is gone; whether the *inode* is depends on whether
-                // any other name or any open descriptor still holds it. A real
-                // `unlink` of a file something has open leaves it readable
-                // through that descriptor until the last one closes.
-                |> EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld target)
-            )
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
+            pathSyscall ctx "SystemNative_Unlink" UnixSystem.unlink state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
         // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
         // exactly as `SystemNative_Unlink` does.
         | Some "SystemNative_RmDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            let operation = "SystemNative_RmDir"
-
-            let fail (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-
-            let rules = SimulatedUnixPlatform.rmDirRules state.Kernel.UnixPlatform
-
-            match
-                bufferPointerArgument operation "path" instruction.Arguments.[0]
-                |> BufferPointer.dereferenceable
-            with
-            | None -> fail UnixError.EFAULT
-            | Some pathPtr ->
-
-            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
-
-            let bytes =
-                NativeCall.readNullTerminatedBytesWithin
-                    operation
-                    ctx.BaseClassTypes
-                    state
-                    pathPtr
-                    (PathLimits.pathMaxBytes limits)
-
-            match parseGuestPathBytes operation limits bytes with
-            | Error error -> fail error
-            | Ok path ->
-
-            // `NoFollowFinal` on both platforms. The trailing separator is what
-            // reaches past a final symlink, and only on Darwin -- which is how
-            // `rmdir("ld/")` removes the *link's target* there and is ENOTDIR on
-            // Linux. See `RmDirRules.TrailingSeparator`.
-            match resolveGuestPathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator state.Kernel path with
-            | Error error -> fail error
-            | Ok resolution ->
-
-            match
-                RmDirRules.verdict
-                    (SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform)
-                    (UnixProcessState.callerPrivilege state.Kernel.Process)
-                    resolution
-                    state.Kernel.FileSystem
-            with
-            | RmDirVerdict.Refuse error -> fail error
-            | RmDirVerdict.Remove (directory, name) ->
-
-            let now = UnixMachineState.fileTimestamp state.Kernel.Machine
-
-            match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now state.Kernel.FileSystem with
-            | Error error ->
-                // `unbind` refuses a directory it does not hold and a name that
-                // directory does not bind. The walk has just established both,
-                // so either is a broken graph rather than something the guest
-                // did.
-                failwith
-                    $"%s{operation}: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is an interpreter bug)."
-            | Ok (target, filesystem) ->
-
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            FileSystem = filesystem
-                        }
-                }
-                // A directory has only ever had the one name, so this was the
-                // last -- but a descriptor or the current directory may still
-                // hold it, and a real `rmdir` leaves such an orphan usable
-                // through what holds it. `forgetIfUnheld` also collects the
-                // ancestors this directory's ".." was keeping alive.
-                |> EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld target)
-            )
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
+            pathSyscall ctx "SystemNative_RmDir" UnixSystem.rmdir state
         // `DIR* SystemNative_OpenDir(const char* path)` (pal_io.c:532), an
         // EINTR-retrying `opendir(3)` and nothing else. NULL with errno set on
         // failure; the handle is opaque to the guest, which only passes it back
