@@ -146,6 +146,7 @@
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
+    <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamId.fs" />
     <Compile Include="TestTaskState.fs" />
         <Compile Include="TestUnixSystemProjection.fs" />

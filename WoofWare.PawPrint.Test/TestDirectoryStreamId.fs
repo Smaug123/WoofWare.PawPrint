@@ -78,7 +78,7 @@ module TestDirectoryStreamId =
         let stream = EmulatedKernel.directoryStream block kernel
         let kernel = EmulatedKernel.withoutDirectoryStream block kernel
 
-        match EmulatedKernel.closeFd stream.Fd kernel with
+        match KernelSyscall.close stream.Fd kernel with
         | Ok kernel -> kernel
         | Error error -> failwith $"could not close the stream's descriptor: %O{error}"
 

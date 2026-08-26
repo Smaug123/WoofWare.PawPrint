@@ -163,6 +163,24 @@ module NativeSystemNative =
     let private withAnswered (system : UnixSystem<ThreadId, SignalHandler>) (state : IlMachineState) : IlMachineState =
         state.MapKernel (EmulatedKernel.withUnix system)
 
+    /// The client's half of a refused `close`: which entry point asked, which
+    /// descriptor it named, and what PawPrint would have to build to lift the
+    /// refusal. The library's half says only what it measured.
+    ///
+    /// Shared by the three entry points that close a descriptor, so that the
+    /// same refusal reads the same way whichever of them the guest went through.
+    let private closeRefusalMessage (operation : string) (fd : int) (refusal : CloseRefusal<ThreadId>) : string =
+        let remedy =
+            match refusal with
+            | CloseRefusal.LinuxLastPortDescriptorWithWaiter _ ->
+                "Implement port retention for in-flight waits before closing one out from under a waiter."
+            | CloseRefusal.DarwinPortDescriptorWithWaiter _ ->
+                "Measure what the woken wait reports before closing a kqueue out from under a waiter, or configure a Linux platform."
+            | CloseRefusal.ListenerWouldResetUnacceptedClient _ ->
+                "Accept the connection or close the client before closing the listener."
+
+        $"%s{operation}: fd %d{fd}: %s{CloseRefusal.describe refusal} %s{remedy}"
+
     /// Decode an `nint`-shaped Unix file-descriptor argument. CoreLib passes
     /// fds across the SystemNative boundary as plain `IntPtr` values (the low
     /// 32 bits of `SafeFileHandle.handle`); PawPrint represents these as
@@ -3402,28 +3420,22 @@ module NativeSystemNative =
                 |> IlMachineState.freeNativeMemory block
 
             let state, result =
-                match EmulatedKernel.closeFd stream.Fd state.Kernel with
-                | Ok kernel -> state.MapKernel (fun _ -> kernel), 0
-                | Error FileDescriptorCloseError.BadFd ->
-                    // Reachable only if the guest closed the stream's own
+                match UnixSystem.close stream.Fd (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> failwith (closeRefusalMessage operation stream.Fd refusal)
+                | Ok (SyscallAnswer.Completed _, system) -> withAnswered system state, 0
+                | Ok (SyscallAnswer.Failed error, system) ->
+                    // EBADF, reachable only if the guest closed the stream's own
                     // descriptor behind its back, which it can do because fd
                     // numbers are guessable. `closedir` really does call
                     // `close` on that fd, so EBADF is what a real one reports.
-                    let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+                    withErrno ctx error system state, -1
 
-                    state.MapKernel (
-                        EmulatedKernel.withLastSystemError
-                            ctx.Thread
-                            (UnixError.toRawErrnoUnder numbering UnixError.EBADF)
-                    ),
-                    -1
-
-            // Reaped here rather than left to `closeFd`, which does it only for
-            // the descriptor it actually closed. Two paths reach this with the
-            // directory still in the graph and nothing holding it: the guest
-            // closed the stream's own descriptor beforehand (BadFd above), or
-            // that descriptor number has since been reused, in which case
-            // `closeFd` reaped the *replacement's* inode instead. Both are
+            // Reaped here rather than left to `UnixSystem.close`, which does it
+            // only for the descriptor it actually closed. Two paths reach this
+            // with the directory still in the graph and nothing holding it: the
+            // guest closed the stream's own descriptor beforehand (the EBADF arm
+            // above), or that descriptor number has since been reused, in which
+            // case `close` reaped the *replacement's* inode instead. Both are
             // undefined behaviour on a real libc, but neither may leave this
             // kernel with an inode no path reaches — `checkInvariants` would
             // report it, and it would be PawPrint's bookkeeping at fault rather
@@ -4558,16 +4570,14 @@ module NativeSystemNative =
             // shim silently retries EINTR (`pal_io.c` treats EINTR-on-close as
             // success); PawPrint doesn't model signals, so EINTR is unreachable
             // here. Per Unix convention, errno is left untouched on success.
-            let fd = fdArgument "SystemNative_Close" instruction.Arguments.[0]
+            let operation = "SystemNative_Close"
+            let fd = fdArgument operation instruction.Arguments.[0]
 
             let resultCode, state =
-                match EmulatedKernel.closeFd fd state.Kernel with
-                | Ok kernel -> 0, state.MapKernel (fun _ -> kernel)
-                | Error FileDescriptorCloseError.BadFd ->
-                    -1,
-                    state.MapKernel (
-                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
-                    )
+                match UnixSystem.close fd (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> failwith (closeRefusalMessage operation fd refusal)
+                | Ok (SyscallAnswer.Completed _, system) -> 0, withAnswered system state
+                | Ok (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim resultCode)) ctx.Thread
@@ -5842,16 +5852,14 @@ module NativeSystemNative =
             // after a raw P/Invoke, must see EBADF rather than whatever was there
             // before. Same failure path as `SystemNative_Close`, and errno is
             // left untouched on success by the same Unix convention.
-            let fd = fdArgument "SystemNative_CloseSocketEventPort" instruction.Arguments.[0]
+            let operation = "SystemNative_CloseSocketEventPort"
+            let fd = fdArgument operation instruction.Arguments.[0]
 
             let error, state =
-                match EmulatedKernel.closeFd fd state.Kernel with
-                | Ok kernel -> UnixError.palSuccess, state.MapKernel (fun _ -> kernel)
-                | Error FileDescriptorCloseError.BadFd ->
-                    UnixError.toPal UnixError.EBADF,
-                    state.MapKernel (
-                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF)
-                    )
+                match UnixSystem.close fd (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> failwith (closeRefusalMessage operation fd refusal)
+                | Ok (SyscallAnswer.Completed _, system) -> UnixError.palSuccess, withAnswered system state
+                | Ok (SyscallAnswer.Failed error, system) -> UnixError.toPal error, withErrno ctx error system state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim error)) ctx.Thread
@@ -6392,7 +6400,7 @@ module NativeSystemNative =
             // it captured outlive anything the guest has done to the
             // arguments since — the count cell can be overwritten, and the
             // fd the wait was called through can be closed (a dup keeps the
-            // description alive; `closeFd`'s retention refusal keeps the
+            // description alive; `UnixSystem.close`'s retention refusal keeps the
             // last descriptor from destroying it). So a re-entry consults no
             // screen and no descriptor table: it delivers from the captured
             // description, or parks again.

@@ -4,8 +4,14 @@
 #
 # This list may shrink. It may not grow: a new conversion between POSIX and a
 # .NET encoding belongs in WoofWare.PawPrint (Native/NativeSystemNative.fs holds
-# the rest of them), with the POSIX value handed to the library. Stage 7 of
-# docs/plans/2026-08-23-posix-kernel-extraction.md retires what is left.
+# the rest of them), with the POSIX value handed to the library.
+#
+# Retiring what is here is split, and docs/plans/2026-08-23-posix-kernel-
+# extraction.md says why. The `UnixError` cluster goes with stage 7, whose
+# remaining increment builds the errno adapter on PawPrint's side; the socket
+# clusters go with stages 8 and 9, alongside the syscalls that use them. Stage 7
+# as re-scoped touches none of the latter, so it cannot retire them, and saying
+# otherwise here would be a promise the plan no longer makes.
 #
 # The grouping matches that plan's table.
 

@@ -1703,6 +1703,61 @@ went into `TestUnixSystemStep` — an unnamed inode a descriptor holds, and one
 nothing holds — so that the pair is exercised by a client that is not PawPrint;
 moving the rest waits for the constructor stage.
 
+**`Close` landed last, and it is the one the design's own census under-read.**
+The stage's six syscalls carry eight `failwith`s between their match arms;
+`closeFd` carries four more, and the split between them is the whole point. Three
+are measured gaps — Linux's last port descriptor with a parked waiter, Darwin's
+any port descriptor with one, and a listener close that would RST an unaccepted
+connection's live client — and became `CloseRefusal`. The fourth, a descriptor
+naming a socket the table does not hold, stays a `failwith` inside the library:
+it is a corrupted system, and handing it back as a lawful outcome would let a
+client catch it and continue with the corruption alongside.
+
+**`CloseRefusal` is generic in `'Task`, and so `SyscallRefusal` had to become
+generic too.** Two of the three refusals are about a task parked in a wait, and
+the alternative — the refusal names only the port, and the client re-finds the
+waiter — is wrong for a measured reason: nothing stops two tasks parking on the
+same port, `Map.tryPick` chooses one, and a client repeating the search could
+name a different one from the one the refusal is about. That is a diagnostic
+naming the wrong thread, which is worse than a type parameter. The blast radius
+was two types and one test row.
+
+**Turning the refusals into data made three tests stronger.**
+`TestSocketEventDelivery` pinned all three by catching an exception and matching
+its message, which passes for any of the three; they now match the refusal's own
+case, and the two port rows assert *which* task the refusal names. The three
+`failwith` texts did not disappear: their measured half is the library's
+`describe`, and their "what to build instead" half is PawPrint's
+`closeRefusalMessage`, shared by all three entry points so that the same refusal
+reads the same way whichever one a guest went through.
+
+**The two non-syscall callers hoisted with it**, as `truncateAt` predicted:
+`SystemNative_CloseDir` and `SystemNative_CloseSocketEventPort` both call
+`close(2)` underneath, so all three entry points now call `UnixSystem.close` and
+differ only in how they encode its answer — `-1`-and-errno, `0`, or a PAL code.
+
+**One numbering changed, and it is asserted rather than assumed.** `Close` and
+`CloseSocketEventPort` reported EBADF through the portable `UnixError.toRawErrno`
+while `CloseDir` used the flavour-numbered `toRawErrnoUnder`; the shared
+`withErrno` makes all three the numbered form. Identical for every portable
+errno, which is the reason such a move is safe — so `TestUnixError` now states
+it, over every portable case and both flavours, instead of leaving it implied.
+
+**Test scaffolding: `KernelSyscall`.** Twenty-two call sites across five fixtures
+drove `EmulatedKernel.closeFd` against a whole kernel. Each would have become a
+projection, a library call and a write-back, and a copy that dropped the
+write-back would leave its own fixture asserting against a state the syscall
+never produced — silently, and only there. One definition instead, in a module
+those fixtures share.
+
+**Mutation found a hole the fast suite had.** Turning `close`'s EBADF into a
+success leaves the whole 3057-test PawPrint suite green: nothing there closes a
+descriptor that is not open. `SocketFuzz` has an EBADF arm, but its generator is
+constructive — it only closes a slot it knows holds a live fd — so that arm is
+unreachable by construction rather than merely unexercised, and it now says so.
+The row that kills the mutant is the new one at the library's altitude, which is
+the clearest instance so far of what that altitude is for.
+
 #### Correctness oracle
 
 * **A new `TestUnixSystemStep.fs` in `WoofWare.PosixKernel.Test`** driving the

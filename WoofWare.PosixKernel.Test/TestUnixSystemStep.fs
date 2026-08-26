@@ -113,6 +113,77 @@ module TestUnixSystemStep =
         | Error e -> failwith $"expected an answer, got a refusal: %O{e}"
 
     [<Test>]
+    let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
+        UnixSystem.close 7 linux
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.EBADF, linux))
+
+    [<Test>]
+    let ``close drops the descriptor and answers zero`` () : unit =
+        let fd, system = withOpenFile linux
+
+        match UnixSystem.close fd system with
+        | Ok (SyscallAnswer.Completed answer, after) ->
+            // Zero rather than the descriptor number: `close(2)` reports success,
+            // not what it closed.
+            answer |> shouldEqual 0L
+
+            FileDescriptorRegistry.tryFind fd after.Process.FileDescriptors
+            |> shouldEqual None
+        | other -> failwith $"unexpected: %O{other}"
+
+    [<Test>]
+    let ``close through step agrees with the primitive`` () : unit =
+        // As for `geteuid` above: the dispatcher is sugar, and a client that logs
+        // and replays through `step` must compute the same thing as one that
+        // calls `close` directly.
+        let fd, system = withOpenFile linux
+
+        UnixSystem.step (Syscall.Close fd) system
+        |> shouldEqual (UnixSystem.close fd system |> Result.mapError SyscallRefusal.Close)
+
+    [<Test>]
+    let ``close reaps the inode whose last name had already gone`` () : unit =
+        // The rule `close` adds over `FileDescriptorRegistry.close`: the
+        // descriptor was the last reference, so the inode goes with it. The two
+        // `forgetIfUnheld` rows below are the same rule stated on its own; this
+        // is the one that says `close` actually applies it.
+        let fd, system = withOpenFile linux
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, _)) -> inode
+            | other -> failwith $"expected a file descriptor, got %O{other}"
+
+        let unnamed =
+            match
+                VirtualFileSystem.unbind
+                    UnbindTargetEffect.LostALink
+                    rootInode
+                    (FileName.parseOrFail context "f")
+                    epoch
+                    system.Machine.FileSystem
+            with
+            | Ok (_, filesystem) ->
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+            | Error error -> failwith $"could not unlink the file: %O{error}"
+
+        // Still there while the descriptor holds it, which is what makes `read`
+        // on an unlinked file work.
+        (VirtualFileSystem.tryGet inode unnamed.Machine.FileSystem).IsSome
+        |> shouldEqual true
+
+        match UnixSystem.close fd unnamed with
+        | Ok (SyscallAnswer.Completed _, after) ->
+            (VirtualFileSystem.tryGet inode after.Machine.FileSystem).IsSome
+            |> shouldEqual false
+        | other -> failwith $"unexpected: %O{other}"
+
+    [<Test>]
     let ``an unnamed inode a descriptor still holds is not freed`` () : unit =
         // The rule that makes `read` on an unlinked file keep working: the last
         // *name* has gone, but an open file description is still a reference.

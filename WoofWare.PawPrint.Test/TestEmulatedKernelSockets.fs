@@ -138,7 +138,7 @@ module TestEmulatedKernelSockets =
 
         kernel.Sockets |> Map.count |> shouldEqual 1
 
-        match EmulatedKernel.closeFd fd kernel with
+        match KernelSyscall.close fd kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok kernel ->
 
@@ -149,7 +149,7 @@ module TestEmulatedKernelSockets =
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
     /// ...and closing one of two descriptors onto a socket destroys neither the
-    /// description nor the socket. This is the half that a `closeFd` keying off
+    /// description nor the socket. This is the half that a `close` keying off
     /// "the descriptor named a socket" rather than off "a description died"
     /// would get wrong, and it is reachable from a guest: `dup(2)` of a socket
     /// descriptor is an ordinary thing to do.
@@ -174,7 +174,7 @@ module TestEmulatedKernelSockets =
                 }
             | Error e -> failwith $"expected dup to succeed, got %O{e}"
 
-        match EmulatedKernel.closeFd duped kernel with
+        match KernelSyscall.close duped kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok kernel ->
 
@@ -191,7 +191,7 @@ module TestEmulatedKernelSockets =
         | None -> failwith "the original descriptor should still be live"
 
     /// Closing a descriptor that names something other than a socket must leave
-    /// the socket table alone. Without this, a `closeFd` that cleared the table
+    /// the socket table alone. Without this, a `close` that cleared the table
     /// on every destroyed description would pass every test above.
     [<Test>]
     let ``closing a non-socket descriptor leaves the socket table alone`` () : unit =
@@ -213,7 +213,7 @@ module TestEmulatedKernelSockets =
                     }
             }
 
-        match EmulatedKernel.closeFd port kernel with
+        match KernelSyscall.close port kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok kernel ->
 
@@ -297,7 +297,7 @@ module TestEmulatedKernelSockets =
 
     /// The allocating and closing operations interleaved at random must leave
     /// *all three* tables sound. This is what connects the hand-forged defects
-    /// above to the code paths that maintain them: a `closeFd` that forgot the
+    /// above to the code paths that maintain them: a `close` that forgot the
     /// socket table shows up here as `UnreferencedSocket`, a `createSocket` that
     /// failed to advance the counter as `NextSocketIdNotFresh`, and a `close`
     /// that reaped an inode a surviving descriptor still names as
@@ -350,7 +350,7 @@ module TestEmulatedKernelSockets =
                     let chosen = live.[rng.Next live.Length]
                     let wasSocket = namesSocket chosen
 
-                    match EmulatedKernel.closeFd chosen kernel with
+                    match KernelSyscall.close chosen kernel with
                     | Ok kernel' ->
                         kernel <- kernel'
 
@@ -1142,7 +1142,7 @@ module TestEmulatedKernelSockets =
         // The client dies; the accepted socket still references the
         // connection, so it survives.
         let kernel =
-            match EmulatedKernel.closeFd 4 kernel with
+            match KernelSyscall.close 4 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -1151,7 +1151,7 @@ module TestEmulatedKernelSockets =
 
         // The accepted socket dies too; nothing references the connection.
         let kernel =
-            match EmulatedKernel.closeFd acceptedFd kernel with
+            match KernelSyscall.close acceptedFd kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -1171,7 +1171,7 @@ module TestEmulatedKernelSockets =
             | other -> failwith $"expected Established, got %A{other}"
 
         let kernel =
-            match EmulatedKernel.closeFd 4 kernel with
+            match KernelSyscall.close 4 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -1181,7 +1181,7 @@ module TestEmulatedKernelSockets =
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
         let kernel =
-            match EmulatedKernel.closeFd 3 kernel with
+            match KernelSyscall.close 3 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -1818,7 +1818,7 @@ module TestEmulatedKernelSockets =
 
         // The client dies; its connection stays queued, so the tuple lives.
         let kernel =
-            match EmulatedKernel.closeFd 4 kernel with
+            match KernelSyscall.close 4 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 

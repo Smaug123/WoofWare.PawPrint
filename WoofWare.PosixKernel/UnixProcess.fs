@@ -365,7 +365,7 @@ module UnixProcessState =
     /// file description that names `socketId`.
     ///
     /// This is what makes a readiness change on the socket *observable*: the
-    /// client's `closeFd` consults it before destroying the peer of an
+    /// `UnixSystem.close` consults it before destroying the peer of an
     /// established pair, because the survivor's level would change to one this
     /// kernel cannot represent, and with no registration there is nothing that
     /// could deliver the difference.

@@ -25,7 +25,7 @@ type UnixMachineState =
         /// Every TCP connection the simulated kernel holds: established ends
         /// referenced from a socket's `SocketPhase`, and completed
         /// connections waiting in some listener's accept queue. An entry is
-        /// removed when nothing references it any more (`closeFd`).
+        /// removed when nothing references it any more (`UnixSystem.close`).
         Connections : Map<ConnectionId, TcpConnection>
         /// The identity the next completed connect will allocate. Monotonic
         /// and never reused, for the same replay-trace reason as

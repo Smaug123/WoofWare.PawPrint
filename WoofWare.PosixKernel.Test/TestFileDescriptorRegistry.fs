@@ -39,7 +39,7 @@ module TestFileDescriptorRegistry =
 
     /// `close`, for tests whose subject is the descriptor table rather than the
     /// kernel object a close may have destroyed. That second half is
-    /// `EmulatedKernel.closeFd`'s business, and is asserted in
+    /// `UnixSystem.close`'s business, and is asserted in
     /// `TestEmulatedKernelSockets`.
     let private closeOnly
         (fd : int)
@@ -179,7 +179,7 @@ module TestFileDescriptorRegistry =
         description.Target |> shouldEqual (OpenFileTarget.Socket (SocketId 4L))
 
     /// Closing the last descriptor destroys its description. What becomes of the
-    /// *socket* that description named is `EmulatedKernel.closeFd`'s business.
+    /// *socket* that description named is `UnixSystem.close`'s business.
     [<Test>]
     let ``closing the last descriptor destroys the description`` () : unit =
         let fd, registry =

@@ -423,7 +423,7 @@ module TestImpureCases =
     /// it must have been reaped rather than left unreachable from the root.
     ///
     /// Not a fact any guest can read. Without it, a `CloseDir` that reaped only
-    /// through `closeFd` would pass every other assertion in this slice, because
+    /// through `UnixSystem.close` would pass every other assertion in this slice, because
     /// every other path has a live descriptor to reap through.
     let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
         state.Kernel.DirectoryStreams |> shouldEqual Map.empty
