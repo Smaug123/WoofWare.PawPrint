@@ -2181,7 +2181,7 @@ Ordered so that each has an oracle before the next depends on it.
   land together once 8b exists.
 * **8g — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
   file syscalls, and `open`'s flags are PAL values.
-* **8i — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
+* **8h — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
   table and had no home in the first draft of this list, which is a drafting
   failure the census itself should have caught: an increment list that does not
   partition its own table is not a plan. All three are destination-buffer
@@ -2212,8 +2212,12 @@ Ordered so that each has an oracle before the next depends on it.
     other seven touch none of it: their only PAL contact is `UnixErrorPal`, which
     is PawPrint's own as of stage 7's last increment.
 
-  So the seven belong in stage 8 with the rest of the buffer work, as **8h**, and
-  only `Get`/`SetAddressFamily` wait for stage 9's address-family cluster.
+  Both corrections stood, and then the refusal-timing census below overtook them
+  with a third: every buffer these nine take is *wrapper*-touched, so none of
+  them crosses the boundary, and they read no mutable kernel state either. There
+  is nothing here to hoist. All nine stay in PawPrint as client-side decode; the
+  two that touch the address-family PAL cluster still wait for stage 9, but for
+  that cluster's sake rather than their own.
 
 #### Correctness oracle
 
@@ -2255,18 +2259,54 @@ guest fixtures, as before. Specifically:
   The ordering steps are what this stage is really moving, and they are the part
   no type can hold.
 
-#### The census this design still owes
+#### The census this design owed, taken
 
-One axis was not measured, and both blocking findings above live on it: **where
-each refusal fires relative to its syscall's step order, per handler.** The
-census measured the errno steps and the buffer-touch points, which is why it
-caught findings 2 and 3 — and it missed the timing of `Symbolic`/`Unstatable`
-entirely, which is the defect that would otherwise have surfaced in 8c as a
-handful of guests that used to answer and now crash.
+The missing axis was **where each refusal fires relative to its syscall's step
+order**. Measured across all thirty handlers that classify a buffer, recording
+for each argument the offsets at which it is classified, screened, dereferenced
+and transferred. Three results, and the first is the one that matters.
 
-That measurement is 8a's first task, not 8c's. Every handler that consults a
-buffer gets a row: which step screens it, which step dereferences it, and what
-answers in between.
+**(i) PawPrint already draws the line the design needs, per *argument* rather
+than per handler, and it draws it by who dereferences.** There are two policies
+for a non-null address naming no storage, and the choice between them is not
+arbitrary:
+
+* **The kernel touches it** — `read`'s buffer, `write`'s, `getcwd`'s, `bind`'s
+  address blob. `BufferPointer.dereferenceable` answers `None` and the handler
+  reports **EFAULT**, which is the kernel's own answer.
+* **The wrapper touches it** — `getsockname`'s `socketAddressLen`,
+  `CreateSocketEventPort`'s out-parameter, every socket-address codec's blob.
+  `requireStorage` **refuses**: a real run faults inside the shim, and PawPrint
+  models no such fault.
+
+`bind` and `getsockname` each use both, on different arguments, and the code says
+so where it switches: "This is the opposite of
+`SystemNative_CreateSocketEventPort`'s out-parameter, which the wrapper itself
+dereferences, and which `requireStorage` refuses for."
+
+This retires the confusion the last three revisions have been circling. Decision
+2(b) said an unmapped address `failwith`s; I said it answers EFAULT; **both are
+true, of different arguments**, and the discriminator is whose code does the
+dereference. It follows that only **kernel-touched** buffers ever cross the
+boundary — a wrapper-touched argument is decoded by the client before any
+syscall exists — so `Unmapped` means EFAULT unconditionally for everything the
+library ever sees, and `Opaque`/`Addressless` are the only cases whose timing the
+library must own.
+
+**(ii) The classify-to-dereference gap is nonzero in six handlers and zero in
+six.** `Open`, `MkDir`, `Unlink`, `RmDir`, `OpenDir` and `FStat` dereference on
+the line after they classify, so for them an eager refusal is exactly today's
+behaviour. `GetCwd` (65 lines), `Read` (68), `PRead` (62), `Write` (17), `PWrite`
+(19) and `ReadLink` have real steps in between, and those six are where finding 1
+lives. The four regressions finding 1 names are all in that second group, and
+none is in the first.
+
+**(iii) 8h should not exist.** The seven socket-address codecs read only the
+platform profile, and every buffer they take is wrapper-touched. There is no
+kernel operation to hoist and no buffer that crosses — so scheduling them as a
+stage-8 increment was a category error, not a scheduling one. They are pure
+client-side decode and they stay in PawPrint. What remains for stage 9 is the two
+that touch the address-family PAL cluster, exactly as before.
 
 #### Decision 2(b), amended in place
 
