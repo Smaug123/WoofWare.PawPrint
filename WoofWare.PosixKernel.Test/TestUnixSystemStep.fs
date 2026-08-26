@@ -226,6 +226,70 @@ module TestUnixSystemStep =
             | other -> failwith $"unexpected: %O{other}"
 
     [<Test>]
+    let ``the screen answers where the transfer would not have`` () : unit =
+        // The row that can tell "screened up front" from "faulted at the copy",
+        // and the only shape that can: a wild address on an *exhausted* file.
+        // With bytes left to move, both orders answer EFAULT and no input
+        // separates them; with none left, Linux still faults because the screen
+        // precedes the transfer window, and Darwin answers 0 because it screens
+        // nothing and the shortcut is reached.
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+
+        let exhaust (flavour : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+            let fd, system = withOpenFile flavour
+
+            match UnixSystem.read fd UserBuffer.Mapped 8 system with
+            | Ok (_, system) -> fd, system
+            | other -> failwith $"could not exhaust the file: %A{other}"
+
+        let linuxFd, linuxSystem = exhaust linux
+
+        UnixSystem.read linuxFd wild 5 linuxSystem
+        |> shouldEqual (Ok (ReadAnswer.Failed UnixError.EFAULT, linuxSystem))
+
+        let darwinFd, darwinSystem = exhaust darwin
+
+        UnixSystem.read darwinFd wild 5 darwinSystem |> readBytes |> shouldEqual []
+
+    [<Test>]
+    let ``a socket is refused, and the refusal names it`` () : unit =
+        // `read(2)` on a socket is an answer about connection state, which this
+        // kernel does not model; a constant here would become a lie the moment
+        // it did. The refusal carries the socket's domain and kind because the
+        // measured answers differ by both, and only the library can see them.
+        let socketId = SocketId 0L
+
+        let socket : SocketDescription =
+            {
+                Domain = SocketDomain.InterNetwork
+                Kind = SocketKind.Stream
+                Protocol = SocketProtocol.Tcp
+                Binding = None
+                Phase = SocketPhase.Idle
+                ReuseAddress = false
+            }
+
+        let fd, registry =
+            FileDescriptorRegistry.createSocket socketId linux.Process.FileDescriptors
+
+        let system =
+            { linux with
+                Machine =
+                    { linux.Machine with
+                        Sockets = Map.ofList [ socketId, socket ]
+                    }
+                Process =
+                    { linux.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        UnixSystem.read fd UserBuffer.Mapped 5 system
+        |> shouldEqual (
+            Error (ReadRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+        )
+
+    [<Test>]
     let ``read of a descriptor that is not open is EBADF whatever the buffer`` () : unit =
         // The descriptor precedes the buffer on both platforms, so even a buffer
         // that has no answer at all does not get one here.
