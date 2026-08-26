@@ -269,6 +269,75 @@ module LinuxEpollLimits =
     [<Literal>]
     let MaxEvents : int = 178_956_970
 
+/// Where a buffer argument to a syscall is, as far as this kernel's own address
+/// check can see.
+///
+/// Only buffers *the kernel itself* would dereference are described here. A
+/// client whose foreign-function layer dereferences a pointer on its own account
+/// — a wrapper reading a caller's length out-parameter before it makes the call
+/// — answers for that itself, because a fault there happens in the client's code
+/// and no kernel is involved.
+///
+/// There is deliberately no `Null` case. A null pointer is an ordinary low
+/// address to a kernel: it passes the range check like any other, and faults
+/// where any unmapped address would. Foreign-function layers commonly screen for
+/// null before calling, and that screen belongs to whoever wrote it.
+[<RequireQualifiedAccess>]
+type UserBuffer =
+    /// An address naming no storage the client can transfer bytes through. The
+    /// kernel's answer is EFAULT — at whichever step it first looks, which is
+    /// not necessarily the first step of the syscall.
+    | Unmapped of address : uint64
+    /// Real storage. The kernel never learns where: an address is what a range
+    /// check needs, and `Mapped` is in range by construction.
+    | Mapped
+    /// A real user address whose bytes the client cannot produce.
+    ///
+    /// Not `Unmapped`: EFAULT would be a wrong answer rather than an approximate
+    /// one, because the memory really is mapped and a real kernel really would
+    /// transfer it. Passes every address check — there is nothing out of range
+    /// about it — and has no answer only at the point of transfer.
+    | Opaque
+    /// Not an address at all: a value the client keeps symbolic because it has
+    /// no number for it.
+    ///
+    /// Distinct from `Opaque`, which names real memory whose address merely goes
+    /// unmodelled. A platform that screens addresses up front cannot be asked
+    /// about this one — the answer is not "out of range", it is unknown — while
+    /// a platform that screens nothing gets as far as the transfer before it
+    /// runs out of answer.
+    | Addressless
+
+/// Why this kernel cannot say what a syscall does with the buffer it was given.
+///
+/// Both cases are gaps in *representation* rather than in measurement: what a
+/// real kernel does is known in each, and it is the model that cannot hold the
+/// answer. That is a second genus of refusal from the measured divergences
+/// elsewhere in this library, and a message composed for one should not claim to
+/// be the other.
+[<RequireQualifiedAccess>]
+type BufferRefusal =
+    /// An `Opaque` buffer reached the transfer.
+    | OpaqueAtTransfer
+    /// An `Addressless` buffer reached an address check.
+    | AddresslessAtScreen
+    /// An `Addressless` buffer reached the transfer.
+    | AddresslessAtTransfer
+
+[<RequireQualifiedAccess>]
+module BufferRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half — which entry point, which argument, and what the value
+    /// actually was, none of which this library ever saw.
+    let describe (refusal : BufferRefusal) : string =
+        match refusal with
+        | BufferRefusal.OpaqueAtTransfer ->
+            "the buffer names memory whose bytes the caller cannot produce. A real kernel would transfer the bytes at that address, so EFAULT would be a wrong answer rather than an approximate one, and there is nothing else to give."
+        | BufferRefusal.AddresslessAtScreen ->
+            "the buffer is not an address at all, and this platform screens a buffer's address against its limit before performing the operation. There is no address to screen, so whether the kernel would accept it is unknown rather than false."
+        | BufferRefusal.AddresslessAtTransfer ->
+            "the buffer is not an address at all, and the transfer would have to dereference it. This platform screens nothing up front, so the call gets this far before running out of answer."
+
 [<RequireQualifiedAccess>]
 module UserBufferCheck =
     /// Whether this platform refuses a buffer of `length` bytes at `address`
@@ -282,6 +351,37 @@ module UserBufferCheck =
             // address the check would accept. The first disjunct is what keeps
             // the subtraction in the second from underflowing.
             length > highestRangeEnd || address > highestRangeEnd - length
+
+    /// Whether a buffer of `length` bytes faults before the operation is
+    /// performed at all, for a buffer this kernel has classified.
+    ///
+    /// `false` is not "the buffer is fine": it means this step raises no
+    /// objection, and a later one still may. `Opaque` and `Addressless` both
+    /// pass a platform that screens nothing, and both still have no answer at
+    /// the transfer.
+    ///
+    /// `length` is the count the caller asked for, not the storage's size. A
+    /// kernel bounds a range against the address space, never against the
+    /// caller's own allocation.
+    let faultsBeforeOperationFor
+        (check : UserBufferCheck)
+        (buffer : UserBuffer)
+        (length : uint64)
+        : Result<bool, BufferRefusal>
+        =
+        match buffer with
+        // In range by construction: real storage is inside the user address
+        // space of every platform this library models, so the check is not
+        // performed rather than performed and passed.
+        | UserBuffer.Mapped -> Ok false
+        // Real mapped memory, so it too is in range; it runs out of answer only
+        // where bytes are wanted.
+        | UserBuffer.Opaque -> Ok false
+        | UserBuffer.Unmapped address -> Ok (faultsBeforeOperation check address length)
+        | UserBuffer.Addressless ->
+            match check with
+            | UserBufferCheck.AtCopyTime -> Ok false
+            | UserBufferCheck.BeforeOperation _ -> Error BufferRefusal.AddresslessAtScreen
 
 /// Identity of the Unix-shaped platform the simulated process believes it is
 /// running on. Consulted by the `SystemNative_*` entry points that report
