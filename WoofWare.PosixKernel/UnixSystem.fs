@@ -1,5 +1,7 @@
 namespace WoofWare.PosixKernel
 
+open System.Collections.Immutable
+
 /// Everything one simulated POSIX process is, as a syscall sees it: the machine
 /// it runs on, its own per-process state, and its tasks.
 ///
@@ -96,6 +98,42 @@ type CloseRefusal<'Task> =
     /// holds a connection whose client is open.
     | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
 
+/// What `read(2)` moved, for a request this kernel could answer.
+[<RequireQualifiedAccess>]
+type ReadAnswer =
+    /// The bytes to place in the caller's buffer; the entry point returns how
+    /// many there are.
+    ///
+    /// Empty means the call moved nothing and **the buffer was not touched at
+    /// all**, which is measured rather than incidental: `read(f, NULL, 5)` at
+    /// end-of-file is 0 on both platforms, not EFAULT. A caller that
+    /// dereferenced its buffer before checking for empty would turn that answer
+    /// into a fault.
+    | Completed of bytes : ImmutableArray<byte>
+    /// The entry point returns -1 and the caller stores `error` wherever its
+    /// libc keeps errno. The file offset does not move.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer a `read`.
+[<RequireQualifiedAccess>]
+type ReadRefusal =
+    /// The buffer has no answer at the step the read reached.
+    | Buffer of BufferRefusal
+    /// A socket. Every answer a real kernel gives here is a claim about
+    /// connection state, which this kernel does not model.
+    | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
+
+[<RequireQualifiedAccess>]
+module ReadRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half — which entry point, which descriptor, and which of its own
+    /// callers could have reached this.
+    let describe (refusal : ReadRefusal) : string =
+        match refusal with
+        | ReadRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | ReadRefusal.SocketConnectionState (socket, domain, kind) ->
+            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Any constant here would become a lie the moment connection state is modelled."
+
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
@@ -104,6 +142,7 @@ type SyscallRefusal<'Task> =
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
     | Close of CloseRefusal<'Task>
+    | Read of ReadRefusal
 
 [<RequireQualifiedAccess>]
 module LSeekRefusal =
@@ -197,6 +236,21 @@ type SyscallAnswer =
     /// A failure still changes the system in general: `flock` advances the
     /// descriptor table before it can discover the conflict that fails it.
     | Failed of error : UnixError
+
+/// What a `read` will operate on, once the descriptor's access mode has been
+/// checked and before its buffer is screened.
+///
+/// Narrower than `OpenFileTarget`: it excludes the descriptors a read refuses
+/// outright, so a caller that screens the buffer between those two steps — as
+/// `vfs_read` does — has no unreachable arm left to write.
+[<RequireQualifiedAccess>]
+type private ReadTarget =
+    /// The read end of the pipe this kernel models standard input as.
+    | Stdin
+    /// A file, at the offset its open file description currently holds.
+    | File of inode : InodeNumber * offset : int64
+    /// A socket, which is refused rather than answered.
+    | Socket of socket : SocketId
 
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
 /// it becomes.
@@ -1003,6 +1057,169 @@ module UnixSystem =
 
         Ok (SyscallAnswer.Completed 0L, reaped)
 
+    /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
+    /// caller's buffer, and advance the offset by what actually moved.
+    ///
+    /// `count` must not be negative. A negative count is a foreign-function
+    /// layer's error rather than a kernel's — .NET's `Common_Read` returns
+    /// before it evaluates the descriptor at all, so `read(badfd, buf, -1)` is
+    /// EINVAL and not EBADF — and a client that models such a layer must answer
+    /// it before asking here.
+    ///
+    /// The buffer is consulted at three points and *not* consulted at three
+    /// others, and both sets are measured; see the comments inline.
+    let read<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadAnswer * UnixSystem<'Task, 'Handler>, ReadRefusal>
+        =
+        if count < 0 then
+            failwith
+                $"UnixSystem.read: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it answers a negative count itself, before it looks at the descriptor. Reject it there."
+
+        // The descriptor's access mode, which Linux's `vfs_read` decides before
+        // it screens the buffer: measured on both platforms,
+        // `read(wronlyFd, (void*)-1, 4)` is EBADF rather than EFAULT, and even
+        // `read(wronlyFd, buf, 0)` is EBADF rather than a no-op.
+        let target : Result<ReadTarget, UnixError> =
+            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | None -> Error UnixError.EBADF
+            | Some description ->
+
+            if not (FileAccessMode.permitsRead description.AccessMode) then
+                // A regular file opened `O_WRONLY` and a pipe's write end alike:
+                // EBADF on both platforms. `read` has no seekability
+                // requirement, so unlike `pread` there is no tie for the
+                // platforms to break differently.
+                Error UnixError.EBADF
+            else
+
+            match description.Target with
+            | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput -> Ok ReadTarget.Stdin
+            | OpenFileTarget.StandardStream role ->
+                failwith
+                    $"UnixSystem.read: fd %d{fd} names standard stream %O{role}, whose access mode permits reading. This kernel models the output streams as the write ends of pipes, so only standard input is readable (this is a bug in this library)."
+            | OpenFileTarget.SocketEventPort _ ->
+                // A socket event port has no read operation, so the read is
+                // refused for the *kind* of object rather than for the access
+                // mode — which is why the port is `ReadWrite` and still gets
+                // here rather than being EBADF above. The two platforms name
+                // that refusal differently: measured, Linux answers EINVAL
+                // (`vfs_read`'s `FMODE_CAN_READ` test) and Darwin answers ENXIO.
+                //
+                // Placed in this classification rather than after the buffer
+                // screen because it precedes it on both: measured,
+                // `read(port, (void*)-1, 8)` is EINVAL on Linux and ENXIO on
+                // Darwin, not EFAULT. Length is irrelevant too —
+                // `read(port, buf, 0)` gives the same answer as a non-zero
+                // length, unlike standard input's zero-return shortcut below.
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
+                | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
+            | OpenFileTarget.Socket socketId -> Ok (ReadTarget.Socket socketId)
+            | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
+
+        match target with
+        | Error error -> Ok (ReadAnswer.Failed error, system)
+        | Ok (ReadTarget.Socket socketId) ->
+            let socket = UnixMachineState.socket socketId system.Machine
+            Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | Ok target ->
+
+        // Everything below this point is the file operation, which on Linux the
+        // buffer screen precedes: hence EFAULT ahead of both EISDIR and standard
+        // input's end-of-file, and a fault even for a zero-length request.
+        // Darwin screens nothing here, so its answers come from the operation
+        // itself.
+        match
+            UserBufferCheck.faultsBeforeOperationFor
+                (UnixMachineState.userBufferCheck system.Machine)
+                buffer
+                (uint64 count)
+        with
+        | Error refusal -> Error (ReadRefusal.Buffer refusal)
+        | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT, system)
+        | Ok false ->
+
+        match target with
+        | ReadTarget.Socket _ ->
+            failwith "UnixSystem.read: a socket was refused above and cannot reach here (this is a bug in this library)"
+        | ReadTarget.Stdin ->
+            // **Immediate end-of-file**, and this is a claim about how the
+            // process was launched rather than a fallback: this kernel models
+            // standard input as the read end of a pipe whose write end was
+            // closed by whoever started the process, so there is nothing to read
+            // and never will be.
+            //
+            // The buffer is not consulted: measured on both platforms, a read
+            // that returns end-of-file never touches it, so `read(0, NULL, 5)`
+            // is 0 rather than EFAULT. Same rule as the transfer-window
+            // shortcut below.
+            Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+        | ReadTarget.File (inode, offset) ->
+
+        let entry =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixSystem.read: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+
+        match entry.Content with
+        | InodeContent.Directory _ ->
+            // EISDIR on both, and ahead of the buffer: measured,
+            // `read(dir, NULL, 5)` is EISDIR rather than EFAULT.
+            Ok (ReadAnswer.Failed UnixError.EISDIR, system)
+        | InodeContent.Symlink _ ->
+            failwith
+                $"UnixSystem.read: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (this is a bug in this library)."
+        | InodeContent.RegularFile (contents, _) ->
+
+        // The same window `pread` computes, from the description's offset rather
+        // than from an argument — which is the entire difference between the two
+        // syscalls.
+        let transfer = VirtualFileSystem.readTransferCount offset count contents.Length
+
+        if transfer = 0 then
+            // Nothing moves, so neither the buffer nor the offset is touched:
+            // measured, `read(f, NULL, 5)` at end-of-file is 0 on both
+            // platforms, and the offset stays where it was rather than being
+            // clamped to the file's length. A null pointer is an ordinary user
+            // address, so it reaches here rather than being screened above.
+            Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+        else
+
+        // The one point at which the buffer must actually hold bytes.
+        match buffer with
+        | UserBuffer.Unmapped _ ->
+            // Measured: an EFAULT leaves the offset alone. A kernel faults in
+            // `copy_to_user`, after deciding what it would have transferred but
+            // before consuming anything.
+            Ok (ReadAnswer.Failed UnixError.EFAULT, system)
+        | UserBuffer.Opaque -> Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped ->
+
+        let bytes =
+            ImmutableArray.CreateRange (seq { for i in 0 .. transfer - 1 -> contents.[int offset + i] })
+
+        // Advanced by what actually moved, not by what was asked for: a short
+        // read at the end of a file leaves the offset at the end rather than
+        // past it, which is what makes a subsequent read return 0 instead of a
+        // second short read.
+        Ok (
+            ReadAnswer.Completed bytes,
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.setOffset fd (offset + int64 transfer) system.Process.FileDescriptors
+                    }
+            }
+        )
+
     /// Answer one syscall.
     ///
     /// Sugar over the per-syscall functions above, for a client that wants one
@@ -1010,6 +1227,15 @@ module UnixSystem =
     /// generate them. Where a syscall's own function has a narrower type (the
     /// answer to `GetEffectiveUserId` cannot be a failure, and `Dup` cannot be
     /// refused), that type is the one to prefer.
+    ///
+    /// **Not every syscall this module answers is reachable through here.** A
+    /// syscall whose answer carries more than an integer — `read`, whose answer
+    /// carries bytes — has no case in `Syscall`, because `SyscallAnswer` would
+    /// have to grow a shape for it and nothing yet consumes that shape. Adding
+    /// one for its own sake would be inventing an encoding before there is a
+    /// client to be wrong about; the first thing that genuinely logs or replays
+    /// a buffer-carrying syscall gets to choose it. Until then those syscalls
+    /// are reached through their own functions, which lose nothing.
     let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (call : Syscall)
         (system : UnixSystem<'Task, 'Handler>)

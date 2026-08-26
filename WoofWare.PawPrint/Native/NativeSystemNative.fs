@@ -43,19 +43,6 @@ type internal BufferPointer =
     /// that never inspects its buffer still has to answer.
     | Unstatable of operation : string * argName : string * argument : CliType
 
-/// What a `read` will operate on, once the descriptor's access mode has been
-/// checked and before its buffer is screened.
-///
-/// Narrower than `OpenFileTarget`: it excludes the descriptors a read refuses
-/// outright, so a handler that screens the buffer between those two steps — as
-/// `vfs_read` does — has no unreachable arm left to write.
-[<RequireQualifiedAccess>]
-type internal ReadTarget =
-    /// The read end of the pipe PawPrint models stdin as.
-    | Stdin
-    /// A file, at the offset its open file description currently holds.
-    | File of inode : InodeNumber * offset : int64
-
 [<RequireQualifiedAccess>]
 module internal BufferPointer =
     /// How this classification looks to a kernel, which is less than PawPrint
@@ -4053,201 +4040,63 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            let fail (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-
-            let succeed (count : int) (state : IlMachineState) : NativeHandlerResult option =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim count)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-
             // `Common_Read`'s own guard, and hence *ahead of the descriptor*:
             // the C returns before `ToFileDescriptor` is ever evaluated, so
             // `Read(badfd, buf, -1)` is EINVAL rather than EBADF. That ordering
             // is a fact about the shim rather than about any kernel, which is
-            // why it can be stated without a platform.
+            // why it is answered here rather than passed on — `UnixSystem.read`
+            // refuses a negative count outright.
             //
-            // EINVAL, not ERANGE: `Common_Write` answers ERANGE for the
-            // same mistake, and the asymmetry is upstream's rather than a typo
-            // here (pal_io_common.h:41-45 against :59-63).
+            // EINVAL, not ERANGE: `Common_Write` answers ERANGE for the same
+            // mistake, and the asymmetry is upstream's rather than a typo here
+            // (pal_io_common.h:41-45 against :59-63).
             if bufferSize < 0 then
-                fail UnixError.EINVAL
+                withErrno ctx UnixError.EINVAL (EmulatedKernel.unix state.Kernel) state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
             else
-
-            // The descriptor's access mode, which `vfs_read` decides before it
-            // screens the buffer: measured on both platforms,
-            // `read(wronlyFd, (void*)-1, 4)` is EBADF rather than EFAULT, and
-            // even `read(wronlyFd, buf, 0)` is EBADF rather than a no-op.
-            let target : Result<ReadTarget, UnixError> =
-                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-                | None -> Error UnixError.EBADF
-                | Some description ->
-
-                if not (FileAccessMode.permitsRead description.AccessMode) then
-                    // A regular file opened `O_WRONLY` and a pipe's write end
-                    // alike: EBADF on both platforms. `read` has no seekability
-                    // requirement, so unlike `pread` there is no tie for the
-                    // platforms to break differently.
-                    Error UnixError.EBADF
-                else
-
-                match description.Target with
-                | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput -> Ok ReadTarget.Stdin
-                | OpenFileTarget.StandardStream role ->
-                    failwith
-                        $"%s{operation}: fd %d{fd} names standard stream %O{role}, whose access mode permits reading. PawPrint models the output streams as the write ends of pipes, so only stdin is readable (this is an interpreter bug)."
-                | OpenFileTarget.SocketEventPort _ ->
-                    // An epoll instance has no read operation, so the read is
-                    // refused for the *kind* of object rather than for the
-                    // access mode — which is why the port is `ReadWrite` and
-                    // still gets here rather than being EBADF above. The two
-                    // platforms name that refusal differently: measured, Linux
-                    // answers EINVAL (`vfs_read`'s `FMODE_CAN_READ` test) and
-                    // Darwin answers ENXIO.
-                    //
-                    // Placed in this classification rather than after the buffer
-                    // screen because it precedes it on both: measured,
-                    // `read(port, (void*)-1, 8)` is EINVAL on Linux and ENXIO on
-                    // Darwin, not EFAULT. Length is irrelevant too —
-                    // `read(port, buf, 0)` gives the same answer as a non-zero
-                    // length, unlike stdin's zero-return shortcut below.
-                    match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
-                    | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
-                    | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
-                | OpenFileTarget.Socket socketId ->
-                    let socket = UnixMachineState.socket socketId state.Kernel.Machine
-                    // Refused rather than answered, and the reason is that there
-                    // is no single answer to give. Measured on a fresh,
-                    // unbound, unconnected socket, `read` is ENOTCONN for a
-                    // TCP socket on both platforms, EINVAL on Linux but ENOTCONN
-                    // on Darwin for a Unix-domain stream socket, and for a
-                    // datagram socket it *blocks with no wake source* — the
-                    // probe saw EAGAIN only because it had set `O_NONBLOCK`, and
-                    // a socket from `socket(2)` is blocking.
-                    //
-                    // Every one of those answers is really a claim about
-                    // connection state, which PawPrint does not model yet: any
-                    // constant here would become a lie the moment `connect`
-                    // lands. Nor is anything waiting on it — CoreLib reaches a
-                    // socket through `SystemNative_Receive`, never through
-                    // `SystemNative_Read`, `SafeSocketHandle` not being a
-                    // `SafeFileHandle` — so this is a hand-rolled P/Invoke.
-                    failwith
-                        $"%s{operation}: fd %d{fd} is socket %O{socketId} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Model the connection state before answering this."
-                | OpenFileTarget.File (inode, offset) -> Ok (ReadTarget.File (inode, offset))
-
-            match target with
-            | Error error -> fail error
-            | Ok target ->
 
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            // Everything below this point is the file operation, which on Linux
-            // the buffer screen precedes: hence EFAULT ahead of both EISDIR and
-            // stdin's end-of-file, and a fault even for a zero-length request.
-            // Darwin screens nothing here, so its answers come from the
-            // operation itself.
-            if faultsBeforeOperation state.Kernel buffer bufferSize then
-                fail UnixError.EFAULT
-            else
-
-            match target with
-            | ReadTarget.Stdin ->
-                // **Immediate EOF, and this is a claim about the launch rather
-                // than a fallback.** PawPrint models stdin as the read end of a
-                // pipe whose write end was closed by whoever started the
-                // process, so there is nothing to read and never will be.
-                //
-                // That is exactly the shape the differential oracle launches
-                // guests in: `RealRuntime` redirects all three streams and then
-                // closes the child's stdin immediately, so a guest that reads fd
-                // 0 gets 0 under real .NET too. The alternative — an open write
-                // end nobody writes to — would *block*, which PawPrint has no
-                // way to represent and which would make the oracle hang rather
-                // than answer.
-                //
-                // The buffer is not resolved to storage: measured on both
-                // platforms, a read that returns end-of-file never touches it,
-                // so `read(0, NULL, 5)` is 0 rather than EFAULT. Same rule as
-                // the transfer-window shortcut below.
-                //
-                // Seeding stdin content is a separate feature; when it lands it
-                // changes this one sentence — "the write end is closed at
-                // launch" — rather than this arm's structure.
-                succeed 0 state
-            | ReadTarget.File (inode, offset) ->
-
-            let entry =
-                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
-                | Some entry -> entry
-                | None ->
-                    failwith
-                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive."
-
-            match entry.Content with
-            | InodeContent.Directory _ ->
-                // EISDIR on both, and ahead of the buffer: measured,
-                // `read(dir, NULL, 5)` is EISDIR rather than EFAULT.
-                fail UnixError.EISDIR
-            | InodeContent.Symlink _ ->
+            match
+                UnixSystem.read fd (BufferPointer.toUserBuffer buffer) bufferSize (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
+                // The library says what it measured; PawPrint says which managed
+                // caller could have reached it, which is a fact about CoreLib.
                 failwith
-                    $"%s{operation}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (issue #956)."
-            | InodeContent.RegularFile (contents, _) ->
+                    $"%s{operation}: fd %d{fd}: %s{ReadRefusal.describe refusal} Nothing in the BCL waits on this — CoreLib reaches a socket through `SystemNative_Receive`, `SafeSocketHandle` not being a `SafeFileHandle` — so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+            | Ok (ReadAnswer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (ReadAnswer.Completed bytes, system) ->
 
-            // The same window `pread` computes, from the description's offset
-            // rather than from an argument — which is the entire difference
-            // between the two syscalls.
-            let transfer = VirtualFileSystem.readTransferCount offset bufferSize contents.Length
-
-            if transfer = 0 then
-                // Nothing moves, so neither the buffer nor the offset is
-                // touched: measured, `read(f, NULL, 5)` at EOF is 0 on both
-                // platforms, and the offset stays where it was rather than being
-                // clamped to the file's length. `NULL` is an ordinary user
-                // address, so it reaches here rather than being screened above.
-                succeed 0 state
-            else
-
-            match BufferPointer.dereferenceable buffer with
-            | None ->
-                // Measured: an EFAULT leaves the offset alone. A kernel faults
-                // in `copy_to_user`, after deciding what it would have
-                // transferred but before consuming anything.
-                fail UnixError.EFAULT
-            | Some buffer ->
-
-            let bytes =
-                ImmutableArray.CreateRange (seq { for i in 0 .. transfer - 1 -> contents.[int offset + i] })
-
-            // Advanced by what actually moved, not by what was asked for: a
-            // short read at the end of a file leaves the offset at the end
-            // rather than past it, which is what makes a subsequent read return
-            // 0 instead of a second short read.
+            // Empty means the read moved nothing *and did not touch the buffer*,
+            // so the pointer must not be resolved: `read(f, NULL, 5)` at
+            // end-of-file is 0 rather than EFAULT, and resolving it here would
+            // turn that answer into a crash for a symbolic address.
             let state =
-                writeBytesThrough ctx operation buffer bytes state
-                |> fun state ->
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    FileDescriptors =
-                                        FileDescriptorRegistry.setOffset
-                                            fd
-                                            (offset + int64 transfer)
-                                            kernel.FileDescriptors
-                                }
-                        }
-                    )
+                if bytes.IsEmpty then
+                    withAnswered system state
+                else
 
-            succeed transfer state
+                let destination =
+                    match BufferPointer.dereferenceable buffer with
+                    | Some destination -> destination
+                    | None ->
+                        failwith
+                            $"%s{operation}: fd %d{fd}: the kernel produced %d{bytes.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+
+                withAnswered system state |> writeBytesThrough ctx operation destination bytes
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim bytes.Length)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         // `int64_t SystemNative_LSeek(intptr_t fd, int64_t offset, int32_t
         // whence)` (pal_io.c:767): `lseek(2)`/`lseek64(2)` verbatim, with an
         // EINTR retry and no argument validation of its own.
