@@ -1933,9 +1933,29 @@ no I/O". What actually crashes is the other two:
 Both are measured-but-unmodelled in exactly stage 7's sense, so they are
 *refusals*, and they are **the client's** refusals: only PawPrint can produce
 either, and neither is a thing a kernel has a concept of. So they never reach
-the library, and `UserBuffer` stays three-way — but for a different reason than
-the one decision 2 gave, and the corrected reason is what stops someone later
-"fixing" `Symbolic` into `Unmapped`.
+the library — with one wrinkle worth writing down, because it is not obvious:
+`Unstatable` refuses only *under a platform that screens up front*, so the
+client's refusal is conditioned on a library fact. `screensUserBufferUpFront` is
+public, so the client asks and then refuses; but the refusal is not a pure
+property of the argument, and a reader who assumes it is will put the check in
+the wrong place.
+
+**And the classification is two-way, not three.** Decision 2 gives `Null` its
+own case. Measured: every one of the sixteen places that distinguishes
+`RawAddress 0UL` from any other raw address is a **C shim's own null screen**,
+executed before it calls the kernel at all — `SystemNative_FcntlGetIsNonBlocking`
+("the C tests the pointer before its first `fcntl`, so a null pointer with a
+nonsensical descriptor is EFAULT, not EBADF"), `GetSocketAddressSizes` (all four
+out-parameters screened together, before any is written), and fourteen more in
+the same family. No *kernel* path in the modelled set tells them apart: the
+up-front range check is arithmetic that address 0 passes like any other low
+address, and `dereferenceable` collapses every raw address to EFAULT.
+
+So `Null` is a shim concept that leaked into the kernel model, and the library's
+classification should be `Unmapped of address : uint64 | Mapped`. The shim's null
+screens stay in PawPrint, where their authority — the C source — lives. This is
+the same mistake as `Symbolic`, one level up: a distinction real somewhere else
+being attributed to the kernel.
 
 **(2) The buffer is an input consulted at several measured points, not only an
 output effect.** `SystemNative_Read`'s order, every step of it measured:
@@ -2007,7 +2027,6 @@ Concretely, and mirroring stage 7's split of source and destination:
 ```fsharp
 /// A buffer the guest asked this kernel to read *from*.
 type SourceBuffer =
-    | Null
     | Unmapped of address : uint64
     | Mapped of bytes : ImmutableArray<byte>
 
@@ -2015,7 +2034,6 @@ type SourceBuffer =
 /// no address: `Mapped` storage in PawPrint has no address at all, and the
 /// client re-associates the answer with the storage it classified.
 type DestinationBuffer =
-    | Null
     | Unmapped of address : uint64
     | Mapped
 ```
@@ -2023,7 +2041,8 @@ type DestinationBuffer =
 Two types rather than one with an optional payload, because a destination
 carrying bytes and a source carrying none are both nonsense the compiler can
 refuse. `Mapped` deliberately carries no address: PawPrint's `Storage` case has
-none, and `faultsBeforeOperation` already never asks for one.
+none, and `faultsBeforeOperation` already never asks for one. No `Null` case,
+per the finding above.
 
 #### Paths force a question larger than the syscall move
 
@@ -2098,8 +2117,15 @@ guest fixtures, as before. Specifically:
   reaches the operation and answers from it — that is the cell a single-platform
   test cannot see.
 * **A row per buffer-untouched short-circuit**, since "the buffer is not touched
-  here" is invisible to any test that passes a valid buffer. `Null` is the probe:
-  `read(f, NULL, 5)` at EOF is 0, and `read(dir, NULL, 5)` is EISDIR.
+  here" is invisible to any test that passes a valid buffer. The two probes are
+  not interchangeable, and the difference is easy to get backwards: a **null**
+  pointer *passes* the Linux up-front screen, because that screen is arithmetic
+  and address 0 is a low address in range, so it reaches the short-circuits —
+  `read(f, NULL, 5)` at EOF is 0, `read(dir, NULL, 5)` is EISDIR. A **high**
+  address such as `(void*)-1` fails the range check and so probes step 3
+  instead: `read(wronlyFd, (void*)-1, 4)` is EBADF, `read(port, (void*)-1, 8)` is
+  EINVAL on Linux and ENXIO on Darwin. A test using only one of the two measures
+  only one of the two steps.
 * **`TestGuestPathBytes` for 8b**, where a byte budget and a character budget
   agree on ASCII and disagree on anything else.
 * **Mutation, per increment**: break one ordering step and confirm a row dies.
