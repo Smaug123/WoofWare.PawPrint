@@ -219,6 +219,7 @@
     <Compile Include="TestFabricatedSlotAliasing.fs" />
     <Compile Include="TestFabricatedSlotContent.fs" />
     <Compile Include="TestFabricatedInitblk.fs" />
+    <Compile Include="TestFabricatedAttributeUsage.fs" />
     <Compile Include="TestFabricatedUnaligned.fs" />
     <Compile Include="TestFabricatedCpblk.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />

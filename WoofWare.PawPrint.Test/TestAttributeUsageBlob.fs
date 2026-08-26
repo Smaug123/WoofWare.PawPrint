@@ -351,6 +351,37 @@ module TestAttributeUsageBlob =
         (parsed (withNamedArgs [ boolArg PROPERTY "AllowMultiple" 2uy ])).AllowMultiple
         |> shouldEqual true
 
+    /// Assert *why* a blob was rejected, not merely that it was.
+    ///
+    /// Several distinct rules all end in the same `FALSE` at the boundary, so the host-differential
+    /// cases above cannot tell them apart — an empty name and a null name are both rejected by
+    /// CoreCLR before matching begins, and would also be rejected (for the wrong reason) by falling
+    /// through to "matches nothing". These pin the arms that exist to give the right reason.
+    let private rejectedBecause (blob : byte array) (fragment : string) : unit =
+        match CustomAttribute.parseAttributeUsage (ImmutableArray.CreateRange blob) with
+        | Ok usage -> failwithf "expected [%s] to be rejected, but it parsed to %A" (describe blob) usage
+        | Error e ->
+            if not (e.Contains fragment) then
+                failwithf "expected the rejection of [%s] to mention '%s', but it said: %s" (describe blob) fragment e
+
+    [<Test>]
+    let ``an empty named-arg name is rejected as such`` () : unit =
+        rejectedBecause (withNamedArgs [ namedArg PROPERTY [| BOOLEAN |] [| 0x00uy |] [| 1uy |] ]) "empty name"
+
+    [<Test>]
+    let ``a null named-arg name is rejected as such`` () : unit =
+        rejectedBecause (withNamedArgs [ namedArg PROPERTY [| BOOLEAN |] [| 0xFFuy |] [| 1uy |] ]) "null name sentinel"
+
+    [<Test>]
+    let ``an unrecognised named arg is rejected as unmatched`` () : unit =
+        rejectedBecause (withNamedArgs [ boolArg PROPERTY "Nope" 1uy ]) "matches no argument"
+
+    [<Test>]
+    let ``a repeated named arg is rejected as repeated`` () : unit =
+        rejectedBecause
+            (withNamedArgs [ boolArg PROPERTY "Inherited" 0uy ; boolArg PROPERTY "Inherited" 1uy ])
+            "appears more than once"
+
     [<Test>]
     let ``an extra named argument rejects the whole blob`` () : unit =
         CustomAttribute.parseAttributeUsage (
