@@ -168,17 +168,19 @@ type WriteAdmission =
 type WriteRefusal =
     /// The buffer has no answer at the step the write reached.
     | Buffer of BufferRefusal
-    /// A socket. Every answer a real kernel gives here is a claim about
-    /// connection state, which this kernel does not model.
+    /// A socket, reached with a buffer the screen did not answer for. What a
+    /// real kernel says here depends on the socket's connection state and on its
+    /// kind — three different errnos across the two flavours — and this kernel
+    /// models none of it.
     | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
     /// The write would leave the file longer than this kernel can represent.
     | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
 
 [<RequireQualifiedAccess>]
 module WriteRefusal =
-    /// What this kernel knows about why it cannot answer. The client supplies
-    /// its own half — which entry point, which descriptor, and which of its own
-    /// callers could have reached this.
+    /// What this kernel knows about why it cannot complete a write. The client
+    /// supplies its own half — which entry point, which descriptor, and what it
+    /// would have to build or configure to lift the refusal.
     let describe (refusal : WriteRefusal) : string =
         match refusal with
         | WriteRefusal.Buffer refusal -> BufferRefusal.describe refusal
