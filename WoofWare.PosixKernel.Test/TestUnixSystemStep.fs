@@ -319,6 +319,291 @@ module TestUnixSystemStep =
 
         exn.Message |> shouldContainText "UnixSystem.read"
 
+    // ------------------------------------------------------------------- write
+
+    let private admitted (result : Result<WriteAdmission, WriteRefusal>) : WriteAdmission =
+        match result with
+        | Ok admission -> admission
+        | Error refusal -> failwith $"expected an admission, got %A{refusal}"
+
+    /// A descriptor onto the seeded file, opened read-only.
+    let private withReadOnlyFile (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let fd, system = withOpenFile system
+
+        let readOnly =
+            FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors
+            |> function
+                | Some (OpenFileTarget.File (inode, _)) -> inode
+                | other -> failwith $"expected a file descriptor, got %O{other}"
+
+        let fd, registry =
+            FileDescriptorRegistry.openFile readOnly FileAccessMode.ReadOnly system.Process.FileDescriptors
+
+        fd,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    [<Test>]
+    let ``the access mode precedes the buffer and the zero-length no-op`` () : unit =
+        // Measured: `write(rdonlyFd, buf, 0)` is EBADF rather than 0, so neither
+        // the screen nor the no-op can be reached from a descriptor that cannot
+        // be written. Driven at count 0 *and* with a buffer that would otherwise
+        // refuse, since either alone could pass against a wrong order.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withReadOnlyFile flavour
+
+            for buffer in [ UserBuffer.Mapped ; UserBuffer.Addressless ; UserBuffer.Unmapped 0UL ] do
+                for count in [ 0 ; 5 ] do
+                    UnixSystem.admitWrite fd buffer count system
+                    |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)))
+
+            UnixSystem.admitWrite 7 UserBuffer.Mapped 0 system
+            |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)))
+
+    [<Test>]
+    let ``the screen precedes the zero-length no-op, on the platform that screens`` () : unit =
+        // The pair that says the order is the order. A wild address with nothing
+        // to write is EFAULT on Linux, which screens before the operation, and 0
+        // on Darwin, which screens nothing and reaches the no-op.
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+
+        let linuxFd, linuxSystem = withOpenFile linux
+
+        UnixSystem.admitWrite linuxFd wild 0 linuxSystem
+        |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT)))
+
+        let darwinFd, darwinSystem = withOpenFile darwin
+
+        UnixSystem.admitWrite darwinFd wild 0 darwinSystem
+        |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0)))
+
+    [<Test>]
+    let ``a write that reaches the copy asks for exactly what was requested`` () : unit =
+        let fd, system = withOpenFile linux
+
+        UnixSystem.admitWrite fd UserBuffer.Mapped 3 system
+        |> admitted
+        |> shouldEqual (WriteAdmission.Transfer 3)
+
+    [<Test>]
+    let ``a buffer with no bytes is refused at the copy, not faulted`` () : unit =
+        let fd, system = withOpenFile linux
+
+        UnixSystem.admitWrite fd UserBuffer.Opaque 3 system
+        |> shouldEqual (Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
+
+        // An addressless buffer is refused at the *screen* under Linux and at
+        // the copy under Darwin, which is the same asymmetry `read` has.
+        UnixSystem.admitWrite fd UserBuffer.Addressless 3 system
+        |> shouldEqual (Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtScreen))
+
+        let darwinFd, darwinSystem = withOpenFile darwin
+
+        UnixSystem.admitWrite darwinFd UserBuffer.Addressless 3 darwinSystem
+        |> shouldEqual (Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
+
+    [<Test>]
+    let ``admitting a write changes nothing`` () : unit =
+        // Everything a write does before the copy is a question, so a caller may
+        // ask it and then decline to write. If this ever stopped holding, the
+        // two-call shape would be handing out a half-performed syscall.
+        let fd, system = withOpenFile linux
+
+        for buffer, count in [ UserBuffer.Mapped, 3 ; UserBuffer.Unmapped 0UL, 3 ; UserBuffer.Mapped, 0 ] do
+            UnixSystem.admitWrite fd buffer count system
+            |> ignore<Result<WriteAdmission, WriteRefusal>>
+
+        UnixSystem.admitWrite fd UserBuffer.Mapped 3 system
+        |> admitted
+        |> shouldEqual (WriteAdmission.Transfer 3)
+
+    [<Test>]
+    let ``a write to a file lands, and advances the offset by what moved`` () : unit =
+        let fd, system = withOpenFile linux
+
+        match UnixSystem.write fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) system with
+        | Ok (WriteAnswer.Completed written, after) ->
+            written |> shouldEqual 2
+
+            match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, offset)) ->
+                offset |> shouldEqual 2L
+
+                match VirtualFileSystem.tryGetContent inode after.Machine.FileSystem with
+                | Some (InodeContent.RegularFile (contents, _)) ->
+                    List.ofSeq contents |> shouldEqual [ 9uy ; 9uy ; 3uy ; 4uy ; 5uy ]
+                | other -> failwith $"expected a regular file, got %O{other}"
+            | other -> failwith $"expected a file descriptor, got %O{other}"
+        | other -> failwith $"unexpected: %A{other}"
+
+    [<Test>]
+    let ``a write to a standard stream is recorded rather than stored`` () : unit =
+        let bytes = ImmutableArray.CreateRange [ 0x68uy ; 0x69uy ]
+
+        match UnixSystem.write 1 bytes linux with
+        | Ok (WriteAnswer.Completed written, after) ->
+            written |> shouldEqual 2
+
+            after.Process.OutputLog
+            |> List.ofSeq
+            |> shouldEqual
+                [
+                    {
+                        OutputLogEntry.Role = FileDescriptorRole.StandardOutput
+                        OutputLogEntry.Bytes = bytes
+                    }
+                ]
+        | other -> failwith $"unexpected: %A{other}"
+
+    [<Test>]
+    let ``write answers the descriptor questions itself`` () : unit =
+        // A caller that skipped the admission gets a kernel's answer rather than
+        // an inconsistent one, which is what lets the second call take no buffer.
+        UnixSystem.write 7 (ImmutableArray.CreateRange [ 1uy ]) linux
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, linux))
+
+        let fd, system = withReadOnlyFile linux
+
+        UnixSystem.write fd (ImmutableArray.CreateRange [ 1uy ]) system
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
+
+    [<Test>]
+    let ``an empty write changes nothing, but only after the descriptor checks`` () : unit =
+        // `admitWrite` answers this case too, so the arm is unreachable for a
+        // caller that used the pair — but a caller that did not must get the
+        // same answer. Measured: a zero-length write leaves `mtime` and `ctime`
+        // where they were and does not extend the file, and
+        // `VirtualFileSystem.writeFile` asserts a non-empty write for exactly
+        // that reason.
+        let fd, system = withOpenFile linux
+
+        UnixSystem.write fd ImmutableArray<byte>.Empty system
+        |> shouldEqual (Ok (WriteAnswer.Completed 0, system))
+
+        // The standard-stream arm too, where the failure would be a phantom
+        // entry in the output log rather than a restamped inode.
+        UnixSystem.write 1 ImmutableArray<byte>.Empty linux
+        |> shouldEqual (Ok (WriteAnswer.Completed 0, linux))
+
+        // ...and it really is *after* the descriptor checks: measured,
+        // `write(rdonlyFd, buf, 0)` is EBADF rather than 0.
+        let readOnlyFd, readOnly = withReadOnlyFile linux
+
+        UnixSystem.write readOnlyFd ImmutableArray<byte>.Empty readOnly
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
+
+    [<Test>]
+    let ``a socket is refused by both halves of the write`` () : unit =
+        // `write(2)` on a socket is an answer about connection state, which this
+        // kernel does not model; EPIPE is the answer a reader of the Linux
+        // measurement would reach for, and it is wrong on Darwin. Both calls
+        // must refuse: the admission because a caller must not extract bytes for
+        // a write that cannot happen, and `write` because a caller that skipped
+        // the admission must not get a guess either.
+        let socketId = SocketId 0L
+
+        let socket : SocketDescription =
+            {
+                Domain = SocketDomain.InterNetwork
+                Kind = SocketKind.Stream
+                Protocol = SocketProtocol.Tcp
+                Binding = None
+                Phase = SocketPhase.Idle
+                ReuseAddress = false
+            }
+
+        let fd, registry =
+            FileDescriptorRegistry.createSocket socketId linux.Process.FileDescriptors
+
+        let system =
+            { linux with
+                Machine =
+                    { linux.Machine with
+                        Sockets = Map.ofList [ socketId, socket ]
+                    }
+                Process =
+                    { linux.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let expected =
+            Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+
+        UnixSystem.admitWrite fd UserBuffer.Mapped 5 system |> shouldEqual expected
+
+        // Also at length zero, where a *file* would have been the no-op:
+        // measured on both, `write(socket, buf, 0)` is the socket's own error.
+        UnixSystem.admitWrite fd UserBuffer.Mapped 0 system |> shouldEqual expected
+
+        UnixSystem.write fd (ImmutableArray.CreateRange [ 1uy ]) system
+        |> shouldEqual expected
+
+    [<Test>]
+    let ``a screening platform answers a socket's bad address before the socket`` () : unit =
+        // Measured on both. Linux screens the address before the object's own
+        // write operation, so `write(socket, (void*)-1, n)` is EFAULT for every
+        // `n` including 0 — the socket is never consulted, and refusing here
+        // would abort a call a real kernel answers. Darwin screens nothing, so
+        // the same call reaches the socket and earns a connection-state answer
+        // this kernel cannot give.
+        let socketId = SocketId 0L
+
+        let socket : SocketDescription =
+            {
+                Domain = SocketDomain.InterNetwork
+                Kind = SocketKind.Stream
+                Protocol = SocketProtocol.Tcp
+                Binding = None
+                Phase = SocketPhase.Idle
+                ReuseAddress = false
+            }
+
+        let withSocket (flavour : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+            let fd, registry =
+                FileDescriptorRegistry.createSocket socketId flavour.Process.FileDescriptors
+
+            fd,
+            { flavour with
+                Machine =
+                    { flavour.Machine with
+                        Sockets = Map.ofList [ socketId, socket ]
+                    }
+                Process =
+                    { flavour.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+        let linuxFd, linuxSystem = withSocket linux
+        let darwinFd, darwinSystem = withSocket darwin
+
+        for count in [ 0 ; 5 ] do
+            UnixSystem.admitWrite linuxFd wild count linuxSystem
+            |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT)))
+
+            UnixSystem.admitWrite darwinFd wild count darwinSystem
+            |> shouldEqual (
+                Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+            )
+
+    [<Test>]
+    let ``a defaulted byte array is rejected rather than written`` () : unit =
+        let fd, system = withOpenFile linux
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                UnixSystem.write fd Unchecked.defaultof<ImmutableArray<byte>> system
+                |> ignore<Result<WriteAnswer * UnixSystem<int, string>, WriteRefusal>>
+            )
+
+        exn.Message |> shouldContainText "ImmutableArray<byte>.Empty"
+
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
         UnixSystem.close 7 linux

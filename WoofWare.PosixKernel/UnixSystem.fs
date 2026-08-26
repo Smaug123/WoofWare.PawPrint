@@ -134,6 +134,61 @@ module ReadRefusal =
         | ReadRefusal.SocketConnectionState (socket, domain, kind) ->
             $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `read(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is ENOTCONN for a TCP socket, EINVAL on Linux against ENOTCONN on Darwin for a Unix-domain stream socket, and a block with no wake source for a datagram socket. Any constant here would become a lie the moment connection state is modelled."
 
+/// What `write(2)` did, for a request this kernel could answer.
+[<RequireQualifiedAccess>]
+type WriteAnswer =
+    /// How many bytes moved, which the entry point returns. Never short: this
+    /// kernel has nothing that could push back on a write, and its filesystem
+    /// cannot run out of space.
+    | Completed of written : int
+    /// The entry point returns -1 and the caller stores `error` wherever its
+    /// libc keeps errno.
+    | Failed of error : UnixError
+
+/// Whether a `write` reaches the point at which it reads the caller's buffer.
+///
+/// The question exists because a caller may not be able to produce the bytes
+/// without failing: a foreign-function layer whose memory is not a flat array
+/// has to resolve the pointer, and resolving it can be a mistake in itself. Every
+/// answer a `write` gives *without* reading the buffer is therefore available
+/// first, so that the caller extracts only when extraction is what a real kernel
+/// would do.
+[<RequireQualifiedAccess>]
+type WriteAdmission =
+    /// Answered without the buffer being read at all — a bad descriptor, an
+    /// object with no write operation, a faulting address, or the zero-length
+    /// no-op.
+    | Answered of answer : WriteAnswer
+    /// The copy is reached: extract exactly `count` bytes and pass them to
+    /// `write`.
+    | Transfer of count : int
+
+/// Why this kernel will not answer a `write`.
+[<RequireQualifiedAccess>]
+type WriteRefusal =
+    /// The buffer has no answer at the step the write reached.
+    | Buffer of BufferRefusal
+    /// A socket, reached with a buffer the screen did not answer for. What a
+    /// real kernel says here depends on the socket's connection state and on its
+    /// kind — three different errnos across the two flavours — and this kernel
+    /// models none of it.
+    | SocketConnectionState of socket : SocketId * domain : SocketDomain * kind : SocketKind
+    /// The write would leave the file longer than this kernel can represent.
+    | ExceedsRepresentableLength of inode : InodeNumber * offset : int64 * count : int
+
+[<RequireQualifiedAccess>]
+module WriteRefusal =
+    /// What this kernel knows about why it cannot complete a write. The client
+    /// supplies its own half — which entry point, which descriptor, and what it
+    /// would have to build or configure to lift the refusal.
+    let describe (refusal : WriteRefusal) : string =
+        match refusal with
+        | WriteRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | WriteRefusal.SocketConnectionState (socket, domain, kind) ->
+            $"the descriptor is socket %O{socket} (%O{domain}, %O{kind}). This kernel models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. The Linux TCP row also raises SIGPIPE, though a runtime that ignores that signal process-wide sees only the errno."
+        | WriteRefusal.ExceedsRepresentableLength (inode, offset, count) ->
+            $"writing %d{count} bytes at offset %d{offset} of inode %O{inode} would leave the file longer than the %d{VirtualFileSystem.maxFileLength} bytes this kernel can represent. A real filesystem answers this without difficulty -- measured on ext4 and APFS alike, a one-byte write at offset 2^40 succeeds and leaves a sparse 1 TB file -- so this is a limit of the model, and refusing beats reporting an errno no kernel would have produced."
+
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
@@ -250,6 +305,20 @@ type private ReadTarget =
     /// A file, at the offset its open file description currently holds.
     | File of inode : InodeNumber * offset : int64
     /// A socket, which is refused rather than answered.
+    | Socket of socket : SocketId
+
+/// What a `write` will operate on, once the descriptor's access mode has been
+/// checked and before its buffer is screened.
+[<RequireQualifiedAccess>]
+type private WriteTarget =
+    /// A file. The offset is the description's own, and the write advances it —
+    /// which is the whole difference from `pwrite`.
+    | File of inode : InodeNumber * offset : int64
+    /// One of the standard streams, whose bytes this kernel records rather than
+    /// storing.
+    | StandardStream of role : FileDescriptorRole
+    /// A socket, which is refused rather than answered — but only once the
+    /// buffer screen has had its say, which on one flavour answers first.
     | Socket of socket : SocketId
 
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
@@ -1216,6 +1285,213 @@ module UnixSystem =
                     { system.Process with
                         FileDescriptors =
                             FileDescriptorRegistry.setOffset fd (offset + int64 transfer) system.Process.FileDescriptors
+                    }
+            }
+        )
+
+    /// What a `write` will operate on, once the descriptor's access mode has
+    /// been checked: a file at its description's own offset, or a standard
+    /// stream.
+    let private writeTarget<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteTarget, UnixError>
+        =
+        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        | None -> Error UnixError.EBADF
+        | Some description ->
+
+        if not (FileAccessMode.permitsWrite description.AccessMode) then
+            // `write(2)` on a descriptor not open for writing is EBADF on both
+            // platforms, and this precedes both the buffer screen and the
+            // zero-size no-op: measured, `write(rdonlyFd, buf, 0)` is EBADF
+            // rather than 0. It covers standard input — which a redirected
+            // launch opens `O_RDONLY` — and a regular file opened `O_RDONLY`
+            // alike, including a directory, which can only ever be opened for
+            // reading.
+            Error UnixError.EBADF
+        else
+
+        match description.Target with
+        | OpenFileTarget.SocketEventPort _ ->
+            // A socket event port has no write operation, so the refusal is for
+            // the *kind* of object rather than for the access mode — the port
+            // permits writing and so passes the EBADF arm above. Measured, Linux
+            // answers EINVAL and Darwin ENXIO.
+            //
+            // Ahead of the buffer screen and of the zero-size no-op, on both
+            // platforms: measured, `write(port, (void*)-1, 8)` is EINVAL/ENXIO
+            // rather than EFAULT, and no length is a no-op.
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+            | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
+            | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
+        | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
+        | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
+        | OpenFileTarget.StandardStream role -> Ok (WriteTarget.StandardStream role)
+
+    /// Every answer `write(2)` gives *without* reading the caller's buffer, and
+    /// otherwise how many bytes to extract.
+    ///
+    /// Changes nothing: everything a write does before the copy is a question.
+    /// See `WriteAdmission` for why this is a separate call rather than a
+    /// `write` that takes the bytes.
+    let admitWrite<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteAdmission, WriteRefusal>
+        =
+        if count < 0 then
+            failwith
+                $"UnixSystem.admitWrite: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it answers a negative count itself, before it looks at the descriptor. Reject it there."
+
+        match writeTarget fd system with
+        | Error error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+        | Ok target ->
+
+        // `vfs_write` screens the buffer between the access mode above and the
+        // file operation, so on Linux this beats the zero-size no-op below:
+        // measured, `write(1, (void*)-1, 0)` is EFAULT there and 0 on macOS.
+        match
+            UserBufferCheck.faultsBeforeOperationFor
+                (UnixMachineState.userBufferCheck system.Machine)
+                buffer
+                (uint64 count)
+        with
+        | Error refusal -> Error (WriteRefusal.Buffer refusal)
+        | Ok true -> Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
+        | Ok false ->
+
+        // **After the screen, and before the zero-length no-op.** Both halves
+        // are measured. Linux screens the address before the object's own write
+        // operation, so `write(socket, (void*)-1, n)` there is EFAULT for every
+        // `n` including 0: the screen answers and the socket is never consulted.
+        // Darwin screens nothing, so the same call reaches the socket and earns
+        // a connection-state answer (ENOTCONN for a stream socket,
+        // EDESTADDRREQ for a datagram one), which is what this kernel cannot
+        // give.
+        //
+        // And the no-op does *not* precede it: measured on both,
+        // `write(socket, buf, 0)` is the socket's own error rather than 0.
+        match target with
+        | WriteTarget.Socket socketId ->
+            let socket = UnixMachineState.socket socketId system.Machine
+            Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | WriteTarget.File _
+        | WriteTarget.StandardStream _ ->
+
+        if count = 0 then
+            // A no-op on both platforms, and specifically one that moves no
+            // timestamp: measured, a zero-length write leaves `mtime` and
+            // `ctime` where they were and does not extend the file, even at an
+            // offset past its end. The buffer is not resolved: any address that
+            // got past the screen is permitted, because it is not dereferenced.
+            Ok (WriteAdmission.Answered (WriteAnswer.Completed 0))
+        else
+
+        match buffer with
+        | UserBuffer.Unmapped _ ->
+            // Real `write(2)` answers EFAULT for any non-dereferenceable
+            // address, null included, having performed no I/O.
+            Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
+        | UserBuffer.Opaque -> Error (WriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (WriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped -> Ok (WriteAdmission.Transfer count)
+
+    /// `write(2)`, given the bytes the caller extracted after `admitWrite` said
+    /// to.
+    ///
+    /// Takes no buffer: every question about the caller's buffer is settled by
+    /// `admitWrite`, and a signature that could not ask them again is the point.
+    /// Still answers the descriptor questions itself, so a caller that skipped
+    /// the admission gets a kernel's answer rather than an inconsistent one.
+    ///
+    /// Never short and never `EINTR`: this kernel has nothing that could push
+    /// back on a write, and its filesystem cannot run out of space.
+    let write<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (bytes : ImmutableArray<byte>)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<WriteAnswer * UnixSystem<'Task, 'Handler>, WriteRefusal>
+        =
+        if bytes.IsDefault then
+            failwith
+                "UnixSystem.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
+
+        match writeTarget fd system with
+        | Error error -> Ok (WriteAnswer.Failed error, system)
+        | Ok (WriteTarget.Socket socketId) ->
+            // There is no buffer here to screen, so the socket's own answer is
+            // all there is — and this kernel cannot give it. A caller that used
+            // `admitWrite` never reaches this: that call refused or answered
+            // first.
+            let socket = UnixMachineState.socket socketId system.Machine
+            Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | Ok _ when bytes.IsEmpty ->
+            // A no-op on both platforms, and specifically one that changes
+            // nothing: measured, a zero-length write leaves `mtime` and `ctime`
+            // where they were, does not extend the file, and does not strip the
+            // set-ID bits. `admitWrite` answers this too, so the arm is
+            // unreachable for a caller that used the pair — but a caller that
+            // did not must get the same answer, and `VirtualFileSystem.writeFile`
+            // below asserts a non-empty write precisely because it would
+            // otherwise restamp the inode.
+            //
+            // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
+            // is EBADF rather than 0, measured on both.
+            Ok (WriteAnswer.Completed 0, system)
+        | Ok (WriteTarget.StandardStream role) ->
+            Ok (
+                WriteAnswer.Completed bytes.Length,
+                { system with
+                    Process =
+                        { system.Process with
+                            OutputLog =
+                                system.Process.OutputLog.Add
+                                    {
+                                        OutputLogEntry.Role = role
+                                        OutputLogEntry.Bytes = bytes
+                                    }
+                        }
+                }
+            )
+        | Ok (WriteTarget.File (inode, offset)) ->
+
+        let now = UnixMachineState.fileTimestamp system.Machine
+
+        // A content-changing write strips a file's set-user-ID and set-group-ID
+        // bits unless the writer is root; measured on both platforms, which
+        // disagree only about `S_ISGID` on a file that is not group-executable.
+        let rule = SimulatedUnixPlatform.setGroupIdOnWrite system.Machine.UnixPlatform
+        let privilege = UnixProcessState.callerPrivilege system.Process
+
+        match VirtualFileSystem.writeFile inode offset bytes rule privilege now system.Machine.FileSystem with
+        | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
+            Error (WriteRefusal.ExceedsRepresentableLength (inode, offset, count))
+        | Ok filesystem ->
+
+        // At the description's own offset, and advancing it by what moved — the
+        // entire difference from `pwrite`, which takes the offset as an argument
+        // and leaves the description alone. Both measured.
+        //
+        // The commit comes first, so the advance cannot overflow: a write that
+        // would carry the offset past what the model can represent has already
+        // been refused there.
+        Ok (
+            WriteAnswer.Completed bytes.Length,
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+                Process =
+                    { system.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.setOffset
+                                fd
+                                (offset + int64 bytes.Length)
+                                system.Process.FileDescriptors
                     }
             }
         )

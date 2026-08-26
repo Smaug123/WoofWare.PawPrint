@@ -2215,8 +2215,63 @@ Ordered so that each has an oracle before the next depends on it.
   Two rows pin that pair, and they were written only after the first draft of
   them asserted the opposite and failed — the library was right and the test was
   wrong, which is the outcome to want from a faithful transcription.
-* **8d — `write`/`pwrite`**, the source-buffer direction, and the first and only
-  place the two-phase admission/commit surface of (C) is built.
+* **8d — `write`**, the source-buffer direction, and the only place the
+  two-phase surface of (C) is built.
+
+  **Implementing it removed the witness.** (C) proposed an admission carrying an
+  unforgeable token, so that a commit could not be reached without the checks
+  having passed. What the code wanted is simpler: `admitWrite` answers every
+  question a write settles *without reading the buffer* — the descriptor, the
+  object kind, the screen, the zero-length no-op, the faulting address — and
+  otherwise says how many bytes to extract. `write` then takes the fd and the
+  bytes and **no buffer at all**. A signature that cannot ask a buffer question
+  is a stronger guarantee than a token that says the questions were asked, and
+  it needs no private constructor. `write` still answers the descriptor
+  questions itself, so a caller that skips the admission gets a kernel's answer
+  rather than an inconsistent one.
+
+  `admitWrite` returns no system, which is the property that makes the pair
+  safe: everything a write does before the copy is a question, so a caller may
+  ask and then decline. Its own row asserts that.
+
+  `pread`/`pwrite` follow each of 8c and 8d as small increments of their own,
+  the `p`-variant being the same operation with an explicit offset and no
+  description update. Splitting them that way is what 8c did with `read`, and
+  keeps each diff about one thing.
+
+  **Review found a real ordering error, and measuring it found a second.**
+  `admitWrite` refused a socket before the buffer screen, which is what the
+  handler did before the move — so the transcription was faithful and the
+  *original* was wrong. Measured on both platforms (a small C probe over an
+  unconnected TCP, UNIX-stream and datagram socket, with `SIGPIPE` ignored,
+  run on macOS and in a Linux container):
+
+  | call | Linux | Darwin |
+  | --- | --- | --- |
+  | `write(socket, (void*)-1, 1)` | **EFAULT** | ENOTCONN / EDESTADDRREQ |
+  | `write(socket, (void*)-1, 0)` | **EFAULT** | ENOTCONN |
+  | `write(socket, buf, 0)` | EPIPE / ENOTCONN / EDESTADDRREQ | ENOTCONN / EDESTADDRREQ |
+  | `read(socket, (void*)-1, 1)` | **EFAULT** | ENOTCONN |
+  | `read(socket, (void*)-1, 0)` | **EFAULT** | ENOTCONN |
+  | `read(socket, buf, 0)` | **0** | ENOTCONN |
+
+  So Linux's screen precedes the object's own operation for sockets exactly as it
+  does for files, and the fix is the library's existing `screensUserBufferUpFront`
+  fact applied in the right order rather than a new claim. The zero-length no-op
+  does *not* move with it: `write(socket, buf, 0)` is the socket's own error on
+  both, so the socket refusal sits between the screen and the no-op.
+
+  The probe's first run looked like a broken container — exit 141 with no
+  output. That was the measurement: 141 is 128 + SIGPIPE, and Linux raises
+  SIGPIPE alongside EPIPE for a write to an unconnected TCP socket. Ignoring the
+  signal produced the table.
+
+  **`read` has the same error and is already merged.** Rows 4-6 above are not
+  what stage 8c does: it refuses the socket ahead of both the screen and the
+  zero-length shortcut, so `read(socket, buf, 0)` crashes where Linux answers 0.
+  It refuses rather than answering wrongly, so it is a "declines more than it
+  needs to" defect rather than a divergence — but it is now measured, and it gets
+  its own increment before `pread`.
 * **8e — `fstat`, then `stat`/`lstat`**, first because it is the smallest
   structured answer and it is what settles (3) against a real encoder. `stat`
   and `lstat` follow for free: they already share one `statLike`.
