@@ -2068,10 +2068,25 @@ Ordered so that each has an oracle before the next depends on it.
   land together once 8b exists.
 * **8g — `open`** (333 lines) and **`opendir`/`readdir`**, last of the file
   syscalls, because `open`'s flags are PAL values and it is the largest.
-* The **socket-address entry points** stay with stage 9, where the rest of the
-  socket PAL cluster goes: they are pure PAL encode/decode with no kernel state
-  at all, and splitting the cluster across two stages is the half-migration the
-  plan's own migration section warns against.
+* The **socket-address entry points** — nine handlers, about 600 lines — are the
+  largest homogeneous group of buffer handlers in the file, and where they go was
+  the first thing this census got wrong. Two claims had to be corrected by
+  measuring:
+
+  * "No kernel state at all" is false. All nine read `state.Kernel.UnixPlatform`.
+    The true claim is narrower and still useful: they read the *platform profile*
+    and no mutable kernel state — never the descriptor table, the filesystem, the
+    socket table or the tasks — so they are `UnixSystem`-shaped only in the way a
+    pure function of the platform is.
+  * "Splitting the socket PAL cluster across two stages is a half-migration" was
+    the argument for deferring all nine to stage 9, and it holds for **two** of
+    them. Only `GetAddressFamily` and `SetAddressFamily` touch the library's
+    remaining PAL residue (`addressFamilyPlatformToPal` and its inverse). The
+    other seven touch none of it: their only PAL contact is `UnixErrorPal`, which
+    is PawPrint's own as of stage 7's last increment.
+
+  So the seven belong in stage 8 with the rest of the buffer work, as **8h**, and
+  only `Get`/`SetAddressFamily` wait for stage 9's address-family cluster.
 
 #### Correctness oracle
 
