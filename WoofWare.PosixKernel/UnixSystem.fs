@@ -1192,16 +1192,13 @@ module UnixSystem =
 
         match target with
         | Error error -> Ok (ReadAnswer.Failed error, system)
-        | Ok (ReadTarget.Socket socketId) ->
-            let socket = UnixMachineState.socket socketId system.Machine
-            Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
         | Ok target ->
 
-        // Everything below this point is the file operation, which on Linux the
-        // buffer screen precedes: hence EFAULT ahead of both EISDIR and standard
-        // input's end-of-file, and a fault even for a zero-length request.
-        // Darwin screens nothing here, so its answers come from the operation
-        // itself.
+        // Everything below this point is the object's own read operation, which
+        // on Linux the buffer screen precedes: hence EFAULT ahead of EISDIR, of
+        // standard input's end-of-file and of a socket's connection state, and a
+        // fault even for a zero-length request. Darwin screens nothing here, so
+        // its answers come from the operation itself.
         match
             UserBufferCheck.faultsBeforeOperationFor
                 (UnixMachineState.userBufferCheck system.Machine)
@@ -1213,8 +1210,27 @@ module UnixSystem =
         | Ok false ->
 
         match target with
-        | ReadTarget.Socket _ ->
-            failwith "UnixSystem.read: a socket was refused above and cannot reach here (this is a bug in this library)"
+        | ReadTarget.Socket socketId ->
+            // A zero-length read of a socket is where the flavours part, and the
+            // rule is uniform rather than a quirk of one socket kind: measured
+            // on Linux, `read(sock, buf, 0)` is 0 for an INET stream, a
+            // UNIX-domain stream and a datagram socket alike, while
+            // `read(sock, buf, 1)` on the same descriptors is ENOTCONN. On
+            // Darwin the same call is ENOTCONN for both stream kinds (it is the
+            // *socket's* operation answering, not a generic short-circuit) and 0
+            // for a datagram one.
+            //
+            // So Linux's zero-length answer is knowable without modelling
+            // connection state and Darwin's is not, which is exactly the split
+            // this refusal draws. The socket event port does not share the rule
+            // and is answered above: measured, `read(port, buf, 0)` is EINVAL on
+            // Linux like every other length.
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, count with
+            | SimulatedUnixFlavour.Linux, 0 -> Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+            | SimulatedUnixFlavour.Linux, _
+            | SimulatedUnixFlavour.Darwin, _ ->
+                let socket = UnixMachineState.socket socketId system.Machine
+                Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
         | ReadTarget.Stdin ->
             // **Immediate end-of-file**, and this is a claim about how the
             // process was launched rather than a fallback: this kernel models

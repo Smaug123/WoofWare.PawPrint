@@ -251,43 +251,92 @@ module TestUnixSystemStep =
 
         UnixSystem.read darwinFd wild 5 darwinSystem |> readBytes |> shouldEqual []
 
+    let private socketDescription : SocketDescription =
+        {
+            Domain = SocketDomain.InterNetwork
+            Kind = SocketKind.Stream
+            Protocol = SocketProtocol.Tcp
+            Binding = None
+            Phase = SocketPhase.Idle
+            ReuseAddress = false
+        }
+
+    let private socketZero : SocketId = SocketId 0L
+
+    /// A descriptor onto one unbound, unconnected INET stream socket.
+    let private withSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let fd, registry =
+            FileDescriptorRegistry.createSocket socketZero system.Process.FileDescriptors
+
+        fd,
+        { system with
+            Machine =
+                { system.Machine with
+                    Sockets = Map.ofList [ socketZero, socketDescription ]
+                }
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    let private socketRefused : Result<ReadAnswer * UnixSystem<int, string>, ReadRefusal> =
+        Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
+
     [<Test>]
     let ``a socket is refused, and the refusal names it`` () : unit =
         // `read(2)` on a socket is an answer about connection state, which this
         // kernel does not model; a constant here would become a lie the moment
         // it did. The refusal carries the socket's domain and kind because the
         // measured answers differ by both, and only the library can see them.
-        let socketId = SocketId 0L
+        let fd, system = withSocket linux
 
-        let socket : SocketDescription =
-            {
-                Domain = SocketDomain.InterNetwork
-                Kind = SocketKind.Stream
-                Protocol = SocketProtocol.Tcp
-                Binding = None
-                Phase = SocketPhase.Idle
-                ReuseAddress = false
-            }
+        UnixSystem.read fd UserBuffer.Mapped 5 system |> shouldEqual socketRefused
 
-        let fd, registry =
-            FileDescriptorRegistry.createSocket socketId linux.Process.FileDescriptors
+    [<Test>]
+    let ``a screening platform answers a socket's bad address before the read`` () : unit =
+        // Measured on both. Linux screens the address before the object's own
+        // read operation, so `read(socket, (void*)-1, n)` is EFAULT for every `n`
+        // including 0 — the socket is never consulted, and refusing would
+        // decline a call a real kernel answers. Darwin screens nothing, so the
+        // same call reaches the socket and earns a connection-state answer this
+        // kernel cannot give.
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+        let linuxFd, linuxSystem = withSocket linux
+        let darwinFd, darwinSystem = withSocket darwin
 
-        let system =
-            { linux with
-                Machine =
-                    { linux.Machine with
-                        Sockets = Map.ofList [ socketId, socket ]
-                    }
-                Process =
-                    { linux.Process with
-                        FileDescriptors = registry
-                    }
-            }
+        for count in [ 0 ; 5 ] do
+            UnixSystem.read linuxFd wild count linuxSystem
+            |> shouldEqual (Ok (ReadAnswer.Failed UnixError.EFAULT, linuxSystem))
 
-        UnixSystem.read fd UserBuffer.Mapped 5 system
+            UnixSystem.read darwinFd wild count darwinSystem
+            |> shouldEqual (
+                Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
+            )
+
+    [<Test>]
+    let ``a zero-length read of a socket is answered on Linux and refused on Darwin`` () : unit =
+        // The one socket answer that needs no connection state, and it is a
+        // flavour fact rather than a quirk of one socket kind: measured on
+        // Linux, `read(sock, buf, 0)` is 0 for an INET stream, a UNIX-domain
+        // stream and a datagram socket alike, while the same descriptors answer
+        // ENOTCONN at length 1. Darwin has no such short-circuit — its stream
+        // sockets answer ENOTCONN at length 0 too — so there the refusal stands.
+        let linuxFd, linuxSystem = withSocket linux
+        let darwinFd, darwinSystem = withSocket darwin
+
+        UnixSystem.read linuxFd UserBuffer.Mapped 0 linuxSystem
+        |> shouldEqual (Ok (ReadAnswer.Completed ImmutableArray.Empty, linuxSystem))
+
+        UnixSystem.read darwinFd UserBuffer.Mapped 0 darwinSystem
         |> shouldEqual (
-            Error (ReadRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+            Error (ReadRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
         )
+
+        // And the rule really is about the length rather than the socket: one
+        // byte is refused on both.
+        UnixSystem.read linuxFd UserBuffer.Mapped 1 linuxSystem
+        |> shouldEqual socketRefused
 
     [<Test>]
     let ``read of a descriptor that is not open is EBADF whatever the buffer`` () : unit =
