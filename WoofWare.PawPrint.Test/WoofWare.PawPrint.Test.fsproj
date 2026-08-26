@@ -219,6 +219,7 @@
     <Compile Include="TestFabricatedSlotContent.fs" />
     <Compile Include="TestFabricatedInitblk.fs" />
     <Compile Include="TestFabricatedUnaligned.fs" />
+    <Compile Include="TestFabricatedCpblk.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
