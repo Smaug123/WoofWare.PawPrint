@@ -1750,6 +1750,14 @@ write-back would leave its own fixture asserting against a state the syscall
 never produced — silently, and only there. One definition instead, in a module
 those fixtures share.
 
+**Mutation found a hole the fast suite had.** Turning `close`'s EBADF into a
+success leaves the whole 3057-test PawPrint suite green: nothing there closes a
+descriptor that is not open. `SocketFuzz` has an EBADF arm, but its generator is
+constructive — it only closes a slot it knows holds a live fd — so that arm is
+unreachable by construction rather than merely unexercised, and it now says so.
+The row that kills the mutant is the new one at the library's altitude, which is
+the clearest instance so far of what that altitude is for.
+
 #### Correctness oracle
 
 * **A new `TestUnixSystemStep.fs` in `WoofWare.PosixKernel.Test`** driving the

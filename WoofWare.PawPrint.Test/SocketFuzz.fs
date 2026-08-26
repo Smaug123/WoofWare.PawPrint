@@ -325,7 +325,15 @@ module SocketFuzz =
                     Kernel = kernel
                     SlotFd = Map.remove slot state.SlotFd
                 }
-            | Error UnixError.EBADF -> "EBADF", state
+            | Error UnixError.EBADF ->
+                // Unreachable, and known to be: the generator is constructive,
+                // so it only ever closes a slot it knows holds a live fd (see
+                // `slotFd`, which crashes rather than inventing one). Kept
+                // because it is `close(2)`'s only errno and a generator that
+                // learned to close twice should find this arm waiting rather
+                // than a crash; measured by mutation, which turned EBADF into
+                // success here and left the whole PawPrint suite green.
+                "EBADF", state
             | Error error ->
                 // EBADF is `close(2)`'s only errno; anything else means the
                 // library grew a failure this generator does not know how to
