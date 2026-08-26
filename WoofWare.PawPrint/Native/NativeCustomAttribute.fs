@@ -869,6 +869,13 @@ module NativeCustomAttribute =
             // so how many are written depends on how far the parse got. `GetAttributeUsage` throws
             // on FALSE without reading any of them, so no guest can tell — but the slots are the
             // primitive's observable surface, and the tests hold them directly.
+            //
+            // Not modelled: CoreCLR writes `*pTargets` *between* the two halves of the parse, and
+            // parses from the caller's pointer throughout, so a caller that aimed `pTargets` into
+            // the blob would change the bytes the named-arg half then reads. This reads the blob
+            // once, up front. Reproducing the interleaving would need the parse split in two, and
+            // there is no lawful caller to serve: `pData` addresses metadata the runtime maps
+            // read-only, and `GetAttributeUsage` — the only caller — passes three stack locals.
             let state =
                 match parsed with
                 | AttributeUsageParse.Malformed _ -> state

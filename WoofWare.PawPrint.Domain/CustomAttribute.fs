@@ -880,9 +880,11 @@ module CustomAttribute =
     /// <summary>
     /// Decode a <c>CustomAttrib</c> blob as an application of <c>[AttributeUsage]</c>: one
     /// <c>AttributeTargets</c> fixed argument, plus the optional <c>AllowMultiple</c> and
-    /// <c>Inherited</c> named arguments. <c>Error</c> is every input on which CoreCLR's parser
-    /// returns <c>FALSE</c>, which its managed caller turns into a
-    /// <c>CustomAttributeFormatException</c>.
+    /// <c>Inherited</c> named arguments. Anything but <c>Parsed</c> is an input on which CoreCLR's
+    /// parser returns <c>FALSE</c>, which its managed caller turns into a
+    /// <c>CustomAttributeFormatException</c>; the two failure cases differ in how many of the
+    /// parser's out-params it had already written, which
+    /// <see cref="T:WoofWare.PawPrint.AttributeUsageParse"/> explains.
     /// </summary>
     /// <remarks>
     /// The contract here is "what CoreCLR's parser does", not "what ECMA-335 II.23.3 says" — this
@@ -900,78 +902,6 @@ module CustomAttribute =
     /// which rule fired. The native handler discards it too, having only <c>FALSE</c> to report,
     /// but it lets a test pin *why* a blob was rejected rather than merely that it was.
     /// </remarks>
-    /// <summary>
-    /// Decode a <c>CustomAttrib</c> blob as an application of <c>[AttributeUsage]</c>: one
-    /// <c>AttributeTargets</c> fixed argument, plus the optional <c>AllowMultiple</c> and
-    /// <c>Inherited</c> named arguments. <c>Error</c> is every input on which CoreCLR's parser
-    /// returns <c>FALSE</c>, which its managed caller turns into a
-    /// <c>CustomAttributeFormatException</c>.
-    /// </summary>
-    /// <remarks>
-    /// The contract here is "what CoreCLR's parser does", not "what ECMA-335 II.23.3 says" — this
-    /// exists to be that primitive, so where the two disagree this follows the parser. The
-    /// divergences from the grammar are marked at the code that makes them.
-    ///
-    /// The parse is <c>::ParseKnownCaArgs</c> and <c>::ParseKnownCaNamedArgs</c>
-    /// (<c>md/compiler/custattr_emit.cpp</c>), reached from
-    /// <c>CustomAttribute_ParseAttributeUsageAttribute</c> (<c>vm/customattribute.cpp</c>). Note
-    /// that <c>customattribute.cpp</c> also defines a VM-local <c>ParseCaNamedArgs</c> which is
-    /// *not* what this QCall uses and which behaves differently; the <c>::</c> qualification at the
-    /// call site is what distinguishes them.
-    ///
-    /// The diagnostic on the two failure cases has no counterpart in CoreCLR, whose <c>BOOL</c> discards
-    /// which rule fired. The native handler discards it too, having only <c>FALSE</c> to report,
-    /// but it lets a test pin *why* a blob was rejected rather than merely that it was.
-    /// </remarks>
-    /// Read a named argument's serialization type exactly as CoreCLR's <c>ParseEncodedType</c>
-    /// (<c>md/compiler/custattr_emit.cpp</c>) reads it, returning the <em>outer</em> tag — the one
-    /// its matching loop compares — and the offset of the member name that follows.
-    ///
-    /// This deliberately does not use <c>readFieldOrPropType</c>. That function follows ECMA-335's
-    /// grammar, which is recursive; <c>ParseEncodedType</c> is not. It reads one tag, one further
-    /// tag if the first was <c>SZARRAY</c>, and an enum's name if the resulting tag is
-    /// <c>ENUM</c> — and then stops, whatever bytes follow. The difference is observable twice
-    /// over: a blob nesting <c>SZARRAY</c> thousands deep is read in constant stack here, as it is
-    /// by CoreCLR, rather than overflowing the host's; and the member name is then read from the
-    /// offset CoreCLR reads it from rather than from one past a deeper walk.
-    let private readKnownCaEncodedType (blob : ImmutableArray<byte>) (offset : int) : Result<byte * int, string> =
-        let readTag (offset : int) : Result<byte * int, string> =
-            if offset >= blob.Length then
-                Error (
-                    sprintf
-                        "CustomAttrib blob: a serialization type tag was expected at offset %d but the blob has only %d bytes"
-                        offset
-                        blob.Length
-                )
-            else
-                Ok (blob.[offset], offset + 1)
-
-        match readTag offset with
-        | Error e -> Error e
-        | Ok (outerTag, afterOuter) ->
-
-        // SZARRAY is followed by exactly one element tag, and no further nesting is consumed.
-        let elementTag =
-            if outerTag = 0x1Duy then
-                readTag afterOuter
-            else
-                Ok (outerTag, afterOuter)
-
-        match elementTag with
-        | Error e -> Error e
-        | Ok (effectiveTag, afterTags) ->
-
-        if effectiveTag = 0x55uy then
-            // ENUM carries its type name as a SerString, and `GetNonNullString` rejects the null
-            // sentinel here rather than leaving it to fail at matching.
-            match readSerString blob afterTags with
-            | Error e -> Error e
-            | Ok (None, _) ->
-                Error (sprintf "CustomAttrib blob: ENUM-typed named arg at offset %d has a null type name" offset)
-            | Ok (Some _, afterName) -> Ok (outerTag, afterName)
-        else
-            Ok (outerTag, afterTags)
-
     let parseAttributeUsage (blob : ImmutableArray<byte>) : AttributeUsageParse =
         // `args[0].InitEnum(SERIALIZATION_TYPE_I4)`: the AttributeTargets argument is an enum whose
         // width the parser hardcodes rather than resolving, so the blob's 4 bytes are read directly.

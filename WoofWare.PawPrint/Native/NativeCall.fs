@@ -492,10 +492,13 @@ module NativeCall =
         readNullTerminatedBytes operation baseClassTypes state ptr
         |> System.Text.Encoding.UTF8.GetString
 
-    /// Read exactly <paramref name="byteCount"/> bytes of raw UTF-8 from the guest, without
-    /// looking for a null terminator. CoreCLR's metadata strings are counted rather than
-    /// terminated (see <c>MdUtf8String</c>, which carries an explicit byte length), so
-    /// entry points that receive a length must not scan past it.
+    /// Read exactly <paramref name="byteCount"/> bytes from the guest, without looking for a null
+    /// terminator, and without interpreting them. Callers that receive a length must not scan past
+    /// it: CoreCLR's metadata strings are counted rather than terminated (see <c>MdUtf8String</c>,
+    /// which carries an explicit byte length), and a custom-attribute blob is not text at all.
+    ///
+    /// Every byte must hold a number; a byte that names a native int is refused. Take
+    /// <c>readCountedNamedBytes</c> where that shape is meaningful.
     let readCountedBytes
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
