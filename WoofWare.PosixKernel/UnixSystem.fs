@@ -1192,16 +1192,13 @@ module UnixSystem =
 
         match target with
         | Error error -> Ok (ReadAnswer.Failed error, system)
-        | Ok (ReadTarget.Socket socketId) ->
-            let socket = UnixMachineState.socket socketId system.Machine
-            Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
         | Ok target ->
 
-        // Everything below this point is the file operation, which on Linux the
-        // buffer screen precedes: hence EFAULT ahead of both EISDIR and standard
-        // input's end-of-file, and a fault even for a zero-length request.
-        // Darwin screens nothing here, so its answers come from the operation
-        // itself.
+        // Everything below this point is the object's own read operation, which
+        // on Linux the buffer screen precedes: hence EFAULT ahead of EISDIR, of
+        // standard input's end-of-file and of a socket's connection state, and a
+        // fault even for a zero-length request. Darwin screens nothing here, so
+        // its answers come from the operation itself.
         match
             UserBufferCheck.faultsBeforeOperationFor
                 (UnixMachineState.userBufferCheck system.Machine)
@@ -1213,8 +1210,43 @@ module UnixSystem =
         | Ok false ->
 
         match target with
-        | ReadTarget.Socket _ ->
-            failwith "UnixSystem.read: a socket was refused above and cannot reach here (this is a bug in this library)"
+        | ReadTarget.Socket socketId ->
+            // A zero-length read of a socket is where the flavours part, and it
+            // is the one socket answer that needs no connection state — on one
+            // of them. Measured across every phase this kernel can produce and
+            // every kind it models, `read(sock, buf, 0)`:
+            //
+            //   socket state                     Linux   Darwin
+            //   INET stream, idle                0       ENOTCONN
+            //   UNIX stream, idle                0       ENOTCONN
+            //   datagram, idle                   0       0
+            //   INET stream, bound not listening 0       ENOTCONN
+            //   INET stream, listening           0       ENOTCONN
+            //   stream, connected, nothing queued 0      0
+            //   stream, connected, a byte queued  0      0
+            //   datagram, connected, empty        0      0
+            //   datagram, connected, one queued   0      0
+            //   stream, peer closed               0      0
+            //
+            // So **Linux answers 0 in every state**, which is why the flavour
+            // alone decides it here: there is no phase or kind on which the
+            // answer depends. Darwin's is 0 too except for a stream socket that
+            // is not connected, and telling those apart means modelling exactly
+            // the connection state this refusal exists to avoid — so Darwin
+            // declines the whole class, which over-refuses the connected cases
+            // and never answers wrongly.
+            //
+            // The same descriptors answer ENOTCONN (or EAGAIN, connected and
+            // empty) at length 1, so the short-circuit is about the length
+            // rather than the socket. The socket event port does not share it
+            // and is answered above: measured, `read(port, buf, 0)` is EINVAL on
+            // Linux like every other length.
+            match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, count with
+            | SimulatedUnixFlavour.Linux, 0 -> Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+            | SimulatedUnixFlavour.Linux, _
+            | SimulatedUnixFlavour.Darwin, _ ->
+                let socket = UnixMachineState.socket socketId system.Machine
+                Error (ReadRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
         | ReadTarget.Stdin ->
             // **Immediate end-of-file**, and this is a claim about how the
             // process was launched rather than a fallback: this kernel models

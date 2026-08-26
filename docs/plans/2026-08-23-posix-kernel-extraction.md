@@ -2266,12 +2266,60 @@ Ordered so that each has an oracle before the next depends on it.
   SIGPIPE alongside EPIPE for a write to an unconnected TCP socket. Ignoring the
   signal produced the table.
 
-  **`read` has the same error and is already merged.** Rows 4-6 above are not
+  **`read` had the same error and is already merged.** Rows 4-6 above are not
   what stage 8c does: it refuses the socket ahead of both the screen and the
   zero-length shortcut, so `read(socket, buf, 0)` crashes where Linux answers 0.
   It refuses rather than answering wrongly, so it is a "declines more than it
-  needs to" defect rather than a divergence — but it is now measured, and it gets
-  its own increment before `pread`.
+  needs to" defect rather than a divergence.
+
+* **8e — `read`'s socket arm moves after the screen**, applying the same measured
+  ordering. Widening the probe first, because a rule drawn from one socket kind
+  is not a rule: on Linux `read(sock, buf, 0)` is **0** for an INET stream, a
+  UNIX-domain stream *and* a datagram socket, while all three answer ENOTCONN at
+  length 1 — so the short-circuit is about the length rather than about the
+  socket. The socket event port does not share it (`read(port, buf, 0)` is EINVAL
+  on Linux, like every other length), which is why the port arm stays ahead of
+  the screen where it already was.
+
+  Darwin has no such short-circuit: its stream sockets answer ENOTCONN at length
+  0 too, and only a datagram socket answers 0. So Linux's zero-length answer is
+  knowable without modelling connection state and Darwin's is not, which is
+  exactly the split the refusal already draws — the flavour match is a
+  consequence of that rather than a new axis.
+
+  One probe row was spoiled and is not in the table: `read(file, buf, 0)` on
+  Darwin reported EBADF, because the probe opened `/etc/hostname`, which does not
+  exist on macOS, so the descriptor was -1. The Linux half of that row stands;
+  the Darwin half says nothing.
+
+  **Review then asked the right question about the wrong axis, and widening the
+  probe answered both.** The objection was that a zero-length read of a Linux
+  datagram socket with a datagram queued might not be 0 — that the rule was drawn
+  from one socket *phase* as well as one kind. Measured across every phase this
+  kernel can produce:
+
+  | socket state | Linux | Darwin |
+  | --- | --- | --- |
+  | INET stream, idle | 0 | ENOTCONN |
+  | UNIX stream, idle | 0 | ENOTCONN |
+  | datagram, idle | 0 | 0 |
+  | INET stream, bound not listening | 0 | ENOTCONN |
+  | INET stream, listening | 0 | ENOTCONN |
+  | stream, connected, nothing queued | 0 | 0 |
+  | stream, connected, a byte queued | 0 | 0 |
+  | datagram, connected, empty | 0 | 0 |
+  | datagram, connected, one queued | 0 | 0 |
+  | stream, peer closed | 0 | 0 |
+
+  **Linux answers 0 in every state**, so keying the arm on the flavour alone is
+  right and the objection is falsified — including the queued-datagram case it
+  named. Darwin's answer is 0 too except for a stream socket that is *not*
+  connected, and separating those means modelling exactly the connection state
+  this refusal exists to avoid, so Darwin declines the whole class: it
+  over-refuses the connected cases and never answers wrongly.
+
+  A row now drives all five constructible phases, at length 0 and at length 1, so
+  a future rule drawn from one phase fails.
 * **8e — `fstat`, then `stat`/`lstat`**, first because it is the smallest
   structured answer and it is what settles (3) against a real encoder. `stat`
   and `lstat` follow for free: they already share one `statLike`.
