@@ -1418,6 +1418,194 @@ module TestUnixSystemStep =
 
         exn.Message |> shouldContainText "UnixSystem.admitPWrite"
 
+    // ------------------------------------------------------------------- fstat
+
+    let private reported (result : Result<FileStatusAnswer, FStatRefusal>) : FileStatus =
+        match result with
+        | Ok (FileStatusAnswer.Reported status) -> status
+        | other -> failwith $"expected a reported status, got %A{other}"
+
+    /// A system holding one symbolic link, and its inode. There is no descriptor
+    /// onto one — `open` resolves a link — so only `statOf` can reach it.
+    let private withSymlink (system : UnixSystem<int, string>) : InodeNumber * UnixSystem<int, string> =
+        let inode, filesystem =
+            match
+                VirtualFileSystem.createSymlink
+                    rootInode
+                    (FileName.parseOrFail context "l")
+                    epoch
+                    (SymlinkTarget.parseOrFail context "abcdefg")
+                    system.Machine.FileSystem
+            with
+            | Ok pair -> pair
+            | Error error -> failwith $"could not seed the symlink: %O{error}"
+
+        inode,
+        { system with
+            Machine =
+                { system.Machine with
+                    FileSystem = filesystem
+                }
+        }
+
+    [<Test>]
+    let ``fstat reports the fields a kernel knows about a regular file`` () : unit =
+        let fd, system = withOpenFile linux
+        let status = UnixSystem.fstat fd system |> reported
+
+        // `S_IFREG ||| 0o644`, composed by the library so that the two bands are
+        // assembled in one place rather than by every client.
+        status.Mode |> shouldEqual 0o100644
+        status.Size |> shouldEqual 5L
+        // The literal, not `VirtualFileSystem.deviceId`: comparing the answer
+        // against the constant it was read from is a row a zeroed constant would
+        // pass. What matters to a guest is only that it is stable and non-zero —
+        // a runtime compares `(st_dev, st_ino)` pairs and never interprets the
+        // device — and zero is the one value that would be indistinguishable
+        // from a field nobody wrote.
+        status.DeviceId |> shouldEqual 0x1000001L
+
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | Some (OpenFileTarget.File (inode, _)) -> status.Inode |> shouldEqual inode
+        | other -> failwith $"expected a file descriptor, got %O{other}"
+
+        // All three of the timestamps a freshly-created inode has, and `atime`
+        // among them: nothing in this kernel moves it, so it is still the
+        // creation time after a read.
+        status.AccessTime |> shouldEqual epoch
+        status.ModificationTime |> shouldEqual epoch
+        status.StatusChangeTime |> shouldEqual epoch
+
+    [<Test>]
+    let ``a directory reports its type bits and the one invented field`` () : unit =
+        let fd, system = withOpenDirectory linux
+        let status = UnixSystem.fstat fd system |> reported
+
+        status.Mode |> shouldEqual 0o40755
+        // The only invented field in the whole record: this kernel has no block
+        // allocator, so a directory has no natural size, and 4096 is what ext4
+        // reports for a small one.
+        status.Size |> shouldEqual 4096L
+
+    [<Test>]
+    let ``a symlink reports its target's byte length and the platform's own bits`` () : unit =
+        // Reachable only through `statOf`: `open` resolves a link, so no
+        // descriptor ever names one and `fstat` cannot see it.
+        for flavour in [ linux ; darwin ] do
+            let inode, system = withSymlink flavour
+
+            let status =
+                match UnixSystem.statOf inode system with
+                | Some status -> status
+                | None -> failwith "expected a status"
+
+            // The target's length in bytes, which is what `readlink` would copy
+            // out — not the length of anything the link points at.
+            status.Size |> shouldEqual 7L
+
+            let expected =
+                SimulatedUnixPlatform.symlinkPermissions system.Machine.UnixPlatform
+                |> PermissionBits.toInt
+
+            status.Mode |> shouldEqual (0o120000 ||| expected)
+
+        // And the two flavours disagree about those bits, so the row above is
+        // reading the platform rather than a constant.
+        (SimulatedUnixPlatform.symlinkPermissions SimulatedUnixPlatform.linuxX64
+         |> PermissionBits.toInt)
+        |> shouldNotEqual (
+            SimulatedUnixPlatform.symlinkPermissions SimulatedUnixPlatform.macOsArm64
+            |> PermissionBits.toInt
+        )
+
+    [<Test>]
+    let ``a birth time is withheld on the flavour whose stat has no such field`` () : unit =
+        // The inode knows when it was born either way; this decides whether a
+        // guest is told. `None` rather than a zero, so that a client cannot read
+        // "not reported" as "born at the epoch" — which, for an inode created at
+        // the epoch, is a distinction no zeroed field could carry.
+        let linuxFd, linuxSystem = withOpenFile linux
+        (UnixSystem.fstat linuxFd linuxSystem |> reported).BirthTime |> shouldEqual None
+
+        let darwinFd, darwinSystem = withOpenFile darwin
+
+        (UnixSystem.fstat darwinFd darwinSystem |> reported).BirthTime
+        |> shouldEqual (Some epoch)
+
+    [<Test>]
+    let ``ownership is the calling process's, not the inode's`` () : unit =
+        // This kernel stores no per-inode ownership, so `fstat` reports whoever
+        // is asking. Asserted by *changing* the asker: a hardcoded 1000/1000
+        // would pass a row that only read the default.
+        let fd, system = withOpenFile linux
+
+        let system =
+            { system with
+                Process = UnixProcessState.withUserAndGroupId 41u 43u system.Process
+            }
+
+        let status = UnixSystem.fstat fd system |> reported
+        status.UserId |> shouldEqual 41u
+        status.GroupId |> shouldEqual 43u
+
+    [<Test>]
+    let ``fstat of a descriptor that is not open is EBADF`` () : unit =
+        UnixSystem.fstat 7 linux
+        |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.EBADF))
+
+    [<Test>]
+    let ``statOf an inode the filesystem does not hold is None`` () : unit =
+        // `None` rather than a crash, because `statOf` is public and a caller
+        // that got its inode from somewhere other than a live descriptor cannot
+        // be assumed to have checked. `fstat` is the caller that *can* assume it,
+        // and it crashes on `None` for that reason.
+        UnixSystem.statOf (InodeNumber 99L) linux |> shouldEqual None
+
+    [<Test>]
+    let ``a descriptor with no inode is refused, and the refusal names which kind`` () : unit =
+        // Three shapes of one refusal, distinguished because their measurements
+        // are different: a real kernel answers all three, and this kernel has no
+        // inode to answer them from.
+        UnixSystem.fstat 0 linux
+        |> shouldEqual (Error (FStatRefusal.StandardStream FileDescriptorRole.StandardInput))
+
+        UnixSystem.fstat 1 linux
+        |> shouldEqual (Error (FStatRefusal.StandardStream FileDescriptorRole.StandardOutput))
+
+        let portFd, portSystem = withSocketEventPort linux
+
+        UnixSystem.fstat portFd portSystem
+        |> shouldEqual (Error FStatRefusal.SocketEventPort)
+
+        let socketFd, socketSystem = withSocket linux
+
+        UnixSystem.fstat socketFd socketSystem
+        |> shouldEqual (Error (FStatRefusal.Socket socketZero))
+
+    [<Test>]
+    let ``each fstat refusal describes its own measurement`` () : unit =
+        // One `describe` per shape rather than one for the genus: the reason a
+        // pipe cannot be reported is not the reason a socket cannot, and a
+        // client rendering either must not be handed the other's evidence.
+        FStatRefusal.describe (FStatRefusal.StandardStream FileDescriptorRole.StandardInput)
+        |> shouldContainText "pipe"
+
+        FStatRefusal.describe FStatRefusal.SocketEventPort
+        |> shouldContainText "anonymous kernel object"
+
+        FStatRefusal.describe (FStatRefusal.Socket socketZero)
+        |> shouldContainText "contention key"
+
+        // And none of them names PawPrint: which client is asking, and what it
+        // would have to build, is the client's half of the message.
+        for refusal in
+            [
+                FStatRefusal.StandardStream FileDescriptorRole.StandardInput
+                FStatRefusal.SocketEventPort
+                FStatRefusal.Socket socketZero
+            ] do
+            FStatRefusal.describe refusal |> shouldNotContainText "SystemNative"
+
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
         UnixSystem.close 7 linux
