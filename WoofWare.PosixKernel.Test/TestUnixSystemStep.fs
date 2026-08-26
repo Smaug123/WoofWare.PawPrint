@@ -472,6 +472,31 @@ module TestUnixSystemStep =
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
 
     [<Test>]
+    let ``an empty write changes nothing, but only after the descriptor checks`` () : unit =
+        // `admitWrite` answers this case too, so the arm is unreachable for a
+        // caller that used the pair — but a caller that did not must get the
+        // same answer. Measured: a zero-length write leaves `mtime` and `ctime`
+        // where they were and does not extend the file, and
+        // `VirtualFileSystem.writeFile` asserts a non-empty write for exactly
+        // that reason.
+        let fd, system = withOpenFile linux
+
+        UnixSystem.write fd ImmutableArray<byte>.Empty system
+        |> shouldEqual (Ok (WriteAnswer.Completed 0, system))
+
+        // The standard-stream arm too, where the failure would be a phantom
+        // entry in the output log rather than a restamped inode.
+        UnixSystem.write 1 ImmutableArray<byte>.Empty linux
+        |> shouldEqual (Ok (WriteAnswer.Completed 0, linux))
+
+        // ...and it really is *after* the descriptor checks: measured,
+        // `write(rdonlyFd, buf, 0)` is EBADF rather than 0.
+        let readOnlyFd, readOnly = withReadOnlyFile linux
+
+        UnixSystem.write readOnlyFd ImmutableArray<byte>.Empty readOnly
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
+
+    [<Test>]
     let ``a socket is refused by both halves of the write`` () : unit =
         // `write(2)` on a socket is an answer about connection state, which this
         // kernel does not model; EPIPE is the answer a reader of the Linux

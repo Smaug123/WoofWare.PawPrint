@@ -1402,6 +1402,19 @@ module UnixSystem =
         match writeTarget fd system with
         | Error refusal -> Error refusal
         | Ok (Error error) -> Ok (WriteAnswer.Failed error, system)
+        | Ok (Ok _) when bytes.IsEmpty ->
+            // A no-op on both platforms, and specifically one that changes
+            // nothing: measured, a zero-length write leaves `mtime` and `ctime`
+            // where they were, does not extend the file, and does not strip the
+            // set-ID bits. `admitWrite` answers this too, so the arm is
+            // unreachable for a caller that used the pair — but a caller that
+            // did not must get the same answer, and `VirtualFileSystem.writeFile`
+            // below asserts a non-empty write precisely because it would
+            // otherwise restamp the inode.
+            //
+            // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
+            // is EBADF rather than 0, measured on both.
+            Ok (WriteAnswer.Completed 0, system)
         | Ok (Ok (WriteTarget.StandardStream role)) ->
             Ok (
                 WriteAnswer.Completed bytes.Length,
