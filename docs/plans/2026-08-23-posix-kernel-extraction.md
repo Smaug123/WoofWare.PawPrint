@@ -2215,8 +2215,29 @@ Ordered so that each has an oracle before the next depends on it.
   Two rows pin that pair, and they were written only after the first draft of
   them asserted the opposite and failed — the library was right and the test was
   wrong, which is the outcome to want from a faithful transcription.
-* **8d — `write`/`pwrite`**, the source-buffer direction, and the first and only
-  place the two-phase admission/commit surface of (C) is built.
+* **8d — `write`**, the source-buffer direction, and the only place the
+  two-phase surface of (C) is built.
+
+  **Implementing it removed the witness.** (C) proposed an admission carrying an
+  unforgeable token, so that a commit could not be reached without the checks
+  having passed. What the code wanted is simpler: `admitWrite` answers every
+  question a write settles *without reading the buffer* — the descriptor, the
+  object kind, the screen, the zero-length no-op, the faulting address — and
+  otherwise says how many bytes to extract. `write` then takes the fd and the
+  bytes and **no buffer at all**. A signature that cannot ask a buffer question
+  is a stronger guarantee than a token that says the questions were asked, and
+  it needs no private constructor. `write` still answers the descriptor
+  questions itself, so a caller that skips the admission gets a kernel's answer
+  rather than an inconsistent one.
+
+  `admitWrite` returns no system, which is the property that makes the pair
+  safe: everything a write does before the copy is a question, so a caller may
+  ask and then decline. Its own row asserts that.
+
+  `pread`/`pwrite` follow each of 8c and 8d as small increments of their own,
+  the `p`-variant being the same operation with an explicit offset and no
+  description update. Splitting them that way is what 8c did with `read`, and
+  keeps each diff about one thing.
 * **8e — `fstat`, then `stat`/`lstat`**, first because it is the smallest
   structured answer and it is what settles (3) against a real encoder. `stat`
   and `lstat` follow for free: they already share one `statLike`.

@@ -6634,210 +6634,103 @@ module NativeSystemNative =
             // delegates to `Common_Write` in `pal_io_common.h`. The C path:
             //   * negative `bufferSize`            -> errno = ERANGE, return -1
             //   * otherwise call real `write(2)`   -> may return short, may EINTR (retried)
-            // PawPrint writes to the standard output streams (fds 1 and 2) and to
-            // a regular file opened for writing, and never returns short, never
-            // returns EINTR, and never blocks: there is no kernel that could push
-            // back on our simulated process, and its filesystem cannot run out of
-            // space. A guest depending on EAGAIN / partial writes from a
-            // non-blocking socket would need new FileDescriptorRole entries;
-            // we'll add those when that need arises rather than guessing at the
-            // contract now.
+            // The emulated kernel never returns short, never returns EINTR and
+            // never blocks. A guest depending on EAGAIN or a partial write from
+            // a non-blocking socket would need connection state PawPrint does
+            // not model, which `UnixSystem.write` refuses rather than guesses.
             let operation = "SystemNative_Write"
-
             let fd = fdArgument operation instruction.Arguments.[0]
-
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            let setErrno (state : IlMachineState) (error : UnixError) : IlMachineState =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+            let refused (refusal : WriteRefusal) : 'a =
+                // The library says why no answer exists; PawPrint says which
+                // managed caller could have reached it.
+                let reachability =
+                    match refusal with
+                    | WriteRefusal.SocketConnectionState _ ->
+                        "Nothing in the BCL waits on this: CoreLib reaches a socket through `SystemNative_Send`, `SafeSocketHandle` not being a `SafeFileHandle`, so this is a hand-rolled P/Invoke. Model the connection state (issue #956) before answering it."
+                    | WriteRefusal.ExceedsRepresentableLength _ ->
+                        "Write less, or raise the model's file-length limit (issue #956)."
+                    | WriteRefusal.Buffer _ -> "Pass a buffer that names guest storage."
 
-            // Decoding the `buffer` pointer is deferred until we are
-            // about to dereference it. `Common_Write` is
-            // documented (in `pal_io_common.h`) to perform no dereference
-            // for `bufferSize < 0` (ERANGE bail) or `bufferSize = 0`
-            // (no-op on every Unix we model), so a guest calling e.g.
-            // `SystemNative_Write((IntPtr)1, (byte*)123, 0)` must succeed
-            // on PawPrint as it does on the real CLR — eagerly decoding
-            // `buffer` would crash here in `managedPointerOfPointerArgument`
-            // for any non-managed pointer literal.
-            // Drain `bufferSize` bytes from `buffer`. Called only after the
-            // bufferSize->0 and buffer->non-null checks succeed.
-            let readBuffer (buffer : ManagedPointerSource) (state : IlMachineState) : ImmutableArray<byte> =
-                readBytesThrough ctx operation buffer bufferSize state
+                failwith $"%s{operation}: fd %d{fd}: %s{WriteRefusal.describe refusal} %s{reachability}"
+
+            let answered
+                (answer : WriteAnswer)
+                (system : UnixSystem<ThreadId, SignalHandler>)
+                (state : IlMachineState)
+                =
+                match answer with
+                | WriteAnswer.Failed error -> -1, withErrno ctx error system state
+                | WriteAnswer.Completed written -> written, withAnswered system state
 
             let result, effect, state =
                 if bufferSize < 0 then
-                    // Matches `Common_Write`: refuse the call before any
-                    // dereference of `buffer`. CoreLib callers (`Interop.Sys.
-                    // Write`) never pass negative sizes, so this is a guest
-                    // misuse path; surface it through errno rather than
-                    // crashing so the guest's own error reporting runs.
-                    -1, StepEffect.NoEffect, setErrno state UnixError.ERANGE
+                    // `Common_Write`'s own guard, which refuses before any
+                    // dereference of `buffer`. ERANGE, where `Common_Read`
+                    // answers EINVAL for the same mistake: the asymmetry is
+                    // upstream's rather than a typo here (pal_io_common.h:41-45
+                    // against :59-63). CoreLib's own callers never pass a
+                    // negative size, so this is a guest-misuse path; surfaced
+                    // through errno rather than a crash so the guest's own error
+                    // reporting runs.
+                    let _, state =
+                        answered (WriteAnswer.Failed UnixError.ERANGE) (EmulatedKernel.unix state.Kernel) state
+
+                    -1, StepEffect.NoEffect, state
                 else
-                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+
+                // Decoding the buffer pointer is deferred until the kernel says
+                // it would be read: `Common_Write` performs no dereference for a
+                // zero size, so `SystemNative_Write((IntPtr)1, (byte*)123, 0)`
+                // must succeed here as it does on the real CLR. Classification
+                // itself is total, so it is the *extraction* below that waits.
+                let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
+
+                match
+                    UnixSystem.admitWrite
+                        fd
+                        (BufferPointer.toUserBuffer buffer)
+                        bufferSize
+                        (EmulatedKernel.unix state.Kernel)
+                with
+                | Error (WriteRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | Error refusal -> refused refusal
+                | Ok (WriteAdmission.Answered answer) ->
+                    let result, state = answered answer (EmulatedKernel.unix state.Kernel) state
+                    result, StepEffect.NoEffect, state
+                | Ok (WriteAdmission.Transfer count) ->
+
+                let source =
+                    match BufferPointer.dereferenceable buffer with
+                    | Some source -> source
                     | None ->
-                        // Unknown fd: report EBADF the same way `write(2)`
-                        // would.
-                        -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
-                    | Some description when not (FileAccessMode.permitsWrite description.AccessMode) ->
-                        // `write(2)` on a descriptor not open for writing is
-                        // EBADF on both platforms, and this precedes both the
-                        // buffer screen and the zero-size no-op: measured,
-                        // `write(rdonlyFd, buf, 0)` is EBADF rather than 0.
-                        //
-                        // Covers stdin — which a redirected launch opens
-                        // `O_RDONLY`, the shape `FileDescriptorRegistry.initial`
-                        // commits to — and a regular file opened `O_RDONLY`
-                        // alike, including a directory, which can only ever be
-                        // opened for reading.
-                        -1, StepEffect.NoEffect, setErrno state UnixError.EBADF
+                        failwith
+                            $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+
+                let bytes = readBytesThrough ctx operation source count state
+
+                match UnixSystem.write fd bytes (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> refused refusal
+                | Ok (answer, system) ->
+
+                let result, state = answered answer system state
+
+                // The host's own view of what the guest printed, which is
+                // PawPrint's business rather than the kernel's: the kernel
+                // records the bytes in its output log, and this is what makes
+                // them appear on a console.
+                let effect =
+                    match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
                     | Some description ->
                         match description.Target with
-                        | OpenFileTarget.SocketEventPort _ ->
-                            // An epoll instance has no write operation, so the
-                            // refusal is for the *kind* of object rather than
-                            // for the access mode — the port permits writing
-                            // and so passes the EBADF arm above. Measured, Linux
-                            // answers EINVAL and Darwin ENXIO.
-                            //
-                            // Ahead of the buffer screen and of the zero-size
-                            // no-op, on both platforms: measured,
-                            // `write(port, (void*)-1, 8)` is EINVAL/ENXIO rather
-                            // than EFAULT, and no length is a no-op.
-                            let error =
-                                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
-                                | SimulatedUnixFlavour.Linux -> UnixError.EINVAL
-                                | SimulatedUnixFlavour.Darwin -> UnixError.ENXIO
+                        | OpenFileTarget.StandardStream role -> StepEffect.WroteToFd (role, bytes)
+                        | OpenFileTarget.File _
+                        | OpenFileTarget.Socket _
+                        | OpenFileTarget.SocketEventPort _ -> StepEffect.NoEffect
+                    | None -> StepEffect.NoEffect
 
-                            -1, StepEffect.NoEffect, setErrno state error
-                        | OpenFileTarget.Socket socketId ->
-                            let socket = UnixMachineState.socket socketId state.Kernel.Machine
-                            // Refused for the same reason `SystemNative_Read`
-                            // refuses a socket: measured on a fresh, unbound,
-                            // unconnected socket, `write` is EPIPE on Linux but
-                            // ENOTCONN on Darwin for a TCP socket, ENOTCONN on
-                            // Linux but the same on Darwin for a Unix-domain
-                            // stream socket, and EDESTADDRREQ for a datagram
-                            // socket — all of them claims about connection state
-                            // PawPrint does not model.
-                            //
-                            // The Linux TCP row is worth recording precisely:
-                            // the syscall raises SIGPIPE as well as answering
-                            // EPIPE, but a .NET guest never sees the signal,
-                            // CoreCLR having installed `signal(SIGPIPE, SIG_IGN)`
-                            // process-wide (`src/coreclr/pal/src/exception/
-                            // signal.cpp:244`). So the guest-visible fact is the
-                            // bare errno.
-                            failwith
-                                $"%s{operation}: fd %d{fd} is socket %O{socketId} (%O{socket.Domain}, %O{socket.Kind}). PawPrint models no socket connection state, and `write(2)` on a socket is an answer about exactly that: measured on an unconnected socket it is EPIPE on Linux against ENOTCONN on Darwin for a TCP socket, ENOTCONN on both for a Unix-domain stream socket, and EDESTADDRREQ for a datagram socket. Model the connection state before answering this."
-                        | OpenFileTarget.File (inode, offset) ->
-                            let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
-
-                            // `vfs_write` screens the buffer between the access
-                            // mode above and the file operation, so on Linux this
-                            // beats the zero-size no-op below: measured,
-                            // `pwrite(f, (void*)-1, 0, 0)` is EFAULT there and 0
-                            // on macOS.
-                            if faultsBeforeOperation state.Kernel buffer bufferSize then
-                                -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
-                            elif bufferSize = 0 then
-                                // A no-op on both platforms, and specifically one
-                                // that moves no timestamp: measured, a
-                                // zero-length write leaves `mtime` and `ctime`
-                                // where they were and does not extend the file,
-                                // even at an offset past its end.
-                                0, StepEffect.NoEffect, state
-                            else
-                                match BufferPointer.dereferenceable buffer with
-                                | None -> -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
-                                | Some buffer ->
-
-                                let bytes = readBuffer buffer state
-
-                                // At the description's own offset, and advancing
-                                // it by what moved — the entire difference from
-                                // `pwrite`, which takes the offset as an argument
-                                // and leaves the description alone. Both measured.
-                                //
-                                // The commit comes first, so the advance cannot
-                                // overflow: a write that would carry the offset
-                                // past what the model can represent has already
-                                // been refused there.
-                                let state = commitFileWrite operation fd inode offset bytes state
-
-                                let state =
-                                    state.MapKernel (fun kernel ->
-                                        { kernel with
-                                            Process =
-                                                { kernel.Process with
-                                                    FileDescriptors =
-                                                        FileDescriptorRegistry.setOffset
-                                                            fd
-                                                            (offset + int64 bytes.Length)
-                                                            kernel.FileDescriptors
-                                                }
-                                        }
-                                    )
-
-                                bufferSize, StepEffect.NoEffect, state
-                        | OpenFileTarget.StandardStream role ->
-                            let bufferPointer =
-                                bufferPointerArgument operation "buffer" instruction.Arguments.[1]
-
-                            // `vfs_write` screens the buffer between the
-                            // descriptor's access mode and the file operation,
-                            // so on Linux this beats the zero-size no-op below:
-                            // measured, `write(1, (void*)-1, 0)` is EFAULT there
-                            // and 0 on macOS. The EBADF arms above still win,
-                            // being the access-mode check.
-                            if faultsBeforeOperation state.Kernel bufferPointer bufferSize then
-                                -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
-                            elif bufferSize = 0 then
-                                // `write(fd, _, 0)` is a no-op on every Unix we
-                                // model — no errno, no buffer dereference, no
-                                // observable effect. CoreLib in principle never
-                                // calls with `bufferSize = 0` (it bails in
-                                // `Stream.Write`), but honour the C contract so
-                                // guests that DllImport directly behave the same
-                                // as on the host. Do NOT resolve `buffer` to
-                                // storage here: any address that got past the
-                                // screen above is permitted, because it is not
-                                // dereferenced.
-                                0, StepEffect.NoEffect, state
-                            else
-                                // Real `write(2)` returns -1 + EFAULT for any
-                                // non-dereferenceable address (including NULL
-                                // and unmapped bit patterns); collapse both
-                                // cases to EFAULT here rather than crashing
-                                // PawPrint, so a direct P/Invoke that the BCL
-                                // would never produce (`Stream.Write`
-                                // short-circuits null upstream) observes the
-                                // same syscall failure it would on the host.
-                                match BufferPointer.dereferenceable bufferPointer with
-                                | None ->
-                                    // EFAULT: bad address. Real kernels
-                                    // perform no I/O on this path.
-                                    -1, StepEffect.NoEffect, setErrno state UnixError.EFAULT
-                                | Some buffer ->
-                                    let bytes = readBuffer buffer state
-
-                                    let logEntry =
-                                        {
-                                            OutputLogEntry.Role = role
-                                            OutputLogEntry.Bytes = bytes
-                                        }
-
-                                    let state =
-                                        state.MapKernel (fun kernel ->
-                                            { kernel with
-                                                Process =
-                                                    { kernel.Process with
-                                                        OutputLog = kernel.OutputLog.Add logEntry
-                                                    }
-                                            }
-                                        )
-
-                                    bufferSize, StepEffect.WroteToFd (role, bytes), state
+                result, effect, state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
