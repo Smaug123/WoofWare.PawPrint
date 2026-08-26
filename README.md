@@ -1,5 +1,11 @@
 # WoofWare.PawPrint
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="logos/dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="logos/light.svg">
+  <img alt="Project logo: a receding diagonal trail of minimalistic cartoon Shiba Inu faces drawn in outline, the nearest and largest raising a paw whose pad bears a paw print." src="logos/light.svg" width="300">
+</picture>
+
 ## Slop status
 
 Original architecture is by me, with only reference assistance from LLMs.
