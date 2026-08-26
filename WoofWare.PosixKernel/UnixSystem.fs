@@ -1126,6 +1126,69 @@ module UnixSystem =
 
         Ok (SyscallAnswer.Completed 0L, reaped)
 
+    /// The object's own read operation on a regular file, which `read` and
+    /// `pread` reach identically: the transfer window, the shortcut that touches
+    /// no buffer at all, and the one point at which the buffer must hold bytes.
+    /// What the two syscalls do *not* share is where `offset` comes from and
+    /// whether the description's own offset then moves.
+    ///
+    /// The buffer screen has already had its say by here, so this is reached
+    /// only with an address the flavour accepted.
+    let private readFileAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (syscall : string)
+        (fd : int)
+        (inode : InodeNumber)
+        (offset : int64)
+        (buffer : UserBuffer)
+        (count : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadAnswer, BufferRefusal>
+        =
+        let entry =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+
+        match entry.Content with
+        | InodeContent.Directory _ ->
+            // EISDIR on both, and behind the buffer screen rather than ahead of
+            // it: measured, `read(dir, NULL, 5)` is EISDIR while
+            // `read(dir, (void*)-1, 5)` is EFAULT under a screening flavour.
+            Ok (ReadAnswer.Failed UnixError.EISDIR)
+        | InodeContent.Symlink _ ->
+            failwith
+                $"UnixSystem.%s{syscall}: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (this is a bug in this library)."
+        | InodeContent.RegularFile (contents, _) ->
+
+        let transfer = VirtualFileSystem.readTransferCount offset count contents.Length
+
+        if transfer = 0 then
+            // Nothing moves, so the buffer is not consulted: measured,
+            // `read(f, NULL, 5)` at end-of-file is 0 on both platforms rather
+            // than EFAULT. A null pointer is an ordinary user address, so it
+            // reaches here rather than being screened above.
+            Ok (ReadAnswer.Completed ImmutableArray.Empty)
+        else
+
+        // The one point at which the buffer must actually hold bytes.
+        match buffer with
+        | UserBuffer.Unmapped _ ->
+            // Measured: an EFAULT leaves the file's contents and the caller's
+            // offset alone. A kernel faults in `copy_to_user`, after deciding
+            // what it would have transferred but before consuming anything.
+            Ok (ReadAnswer.Failed UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error BufferRefusal.OpaqueAtTransfer
+        | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
+        | UserBuffer.Mapped ->
+
+        // Indexed rather than `Seq.skip`, which would enumerate the whole prefix
+        // on every read and make reading a file quadratic in its length.
+        ImmutableArray.CreateRange (seq { for i in 0 .. transfer - 1 -> contents.[int offset + i] })
+        |> ReadAnswer.Completed
+        |> Ok
+
     /// `read(2)`: move up to `count` bytes from `fd`'s current offset into the
     /// caller's buffer, and advance the offset by what actually moved.
     ///
@@ -1261,50 +1324,19 @@ module UnixSystem =
             Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
         | ReadTarget.File (inode, offset) ->
 
-        let entry =
-            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
-            | Some entry -> entry
-            | None ->
-                failwith
-                    $"UnixSystem.read: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+        // The window is computed from the description's own offset, which is the
+        // whole of what `pread` does differently; everything after it is the
+        // same operation, so the two share it.
+        match readFileAt "read" fd inode offset buffer count system with
+        | Error refusal -> Error (ReadRefusal.Buffer refusal)
+        | Ok (ReadAnswer.Failed error) -> Ok (ReadAnswer.Failed error, system)
+        | Ok (ReadAnswer.Completed bytes) ->
 
-        match entry.Content with
-        | InodeContent.Directory _ ->
-            // EISDIR on both, and ahead of the buffer: measured,
-            // `read(dir, NULL, 5)` is EISDIR rather than EFAULT.
-            Ok (ReadAnswer.Failed UnixError.EISDIR, system)
-        | InodeContent.Symlink _ ->
-            failwith
-                $"UnixSystem.read: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what reading a link through a descriptor means (this is a bug in this library)."
-        | InodeContent.RegularFile (contents, _) ->
-
-        // The same window `pread` computes, from the description's offset rather
-        // than from an argument — which is the entire difference between the two
-        // syscalls.
-        let transfer = VirtualFileSystem.readTransferCount offset count contents.Length
-
-        if transfer = 0 then
-            // Nothing moves, so neither the buffer nor the offset is touched:
-            // measured, `read(f, NULL, 5)` at end-of-file is 0 on both
-            // platforms, and the offset stays where it was rather than being
-            // clamped to the file's length. A null pointer is an ordinary user
-            // address, so it reaches here rather than being screened above.
-            Ok (ReadAnswer.Completed ImmutableArray.Empty, system)
+        if bytes.IsEmpty then
+            // Nothing moved, so the offset stays exactly where it was rather
+            // than being clamped to the file's length or rewritten to itself.
+            Ok (ReadAnswer.Completed bytes, system)
         else
-
-        // The one point at which the buffer must actually hold bytes.
-        match buffer with
-        | UserBuffer.Unmapped _ ->
-            // Measured: an EFAULT leaves the offset alone. A kernel faults in
-            // `copy_to_user`, after deciding what it would have transferred but
-            // before consuming anything.
-            Ok (ReadAnswer.Failed UnixError.EFAULT, system)
-        | UserBuffer.Opaque -> Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
-        | UserBuffer.Addressless -> Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
-        | UserBuffer.Mapped ->
-
-        let bytes =
-            ImmutableArray.CreateRange (seq { for i in 0 .. transfer - 1 -> contents.[int offset + i] })
 
         // Advanced by what actually moved, not by what was asked for: a short
         // read at the end of a file leaves the offset at the end rather than
@@ -1316,10 +1348,179 @@ module UnixSystem =
                 Process =
                     { system.Process with
                         FileDescriptors =
-                            FileDescriptorRegistry.setOffset fd (offset + int64 transfer) system.Process.FileDescriptors
+                            FileDescriptorRegistry.setOffset
+                                fd
+                                (offset + int64 bytes.Length)
+                                system.Process.FileDescriptors
                     }
             }
         )
+
+    /// `pread(2)`: move up to `count` bytes from `offset` in the file `fd` names
+    /// into the caller's buffer, without consulting or moving the description's
+    /// own file offset.
+    ///
+    /// `count` must not be negative, for the reason `read`'s must not: a kernel
+    /// never sees one, so whichever foreign-function layer produced it must
+    /// answer it. That answer need not be `read`'s — a shim is free to validate
+    /// one of the two and cast the other — which is why neither is given here.
+    ///
+    /// A negative `offset`, by contrast, *is* a request a kernel sees, and is
+    /// EINVAL. Where in the order it is answered differs between the flavours,
+    /// which is what makes this more than `read` with an extra argument.
+    ///
+    /// No system comes back, because a `pread` changes nothing in one: it moves
+    /// no file offset, and nothing in this kernel moves `atime`.
+    let pread<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (buffer : UserBuffer)
+        (count : int)
+        (offset : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadAnswer, BufferRefusal>
+        =
+        if count < 0 then
+            failwith
+                $"UnixSystem.pread: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it decides what a negative count means, before it looks at the descriptor. Reject it there."
+
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        let offsetInvalid = offset < 0L
+
+        // The order of the checks below is measured, and it differs between the
+        // flavours. On a *single-fault* input they agree on every row; they part
+        // company only when two things are wrong at once, which is why an
+        // ordering has to be pinned at all:
+        //
+        //   input                          Linux    Darwin
+        //   negative offset + bad fd       EINVAL   EBADF
+        //   negative offset + pipe         EINVAL   ESPIPE
+        //   negative offset + socket       EINVAL   ESPIPE
+        //   negative offset + port         EINVAL   ESPIPE
+        //   negative offset + O_WRONLY     EINVAL   EBADF
+        //   negative offset + directory    EINVAL   EINVAL
+        //   negative offset + bad address  EINVAL   EINVAL
+        //
+        // Linux validates the offset before it even looks the descriptor up
+        // (`do_pread` checks `pos < 0` ahead of `fdget`); Darwin resolves the
+        // descriptor, its seekability and its access mode first, and only then
+        // the offset. Both orders are followed rather than one being imposed on
+        // the other, because both are fully measured.
+        //
+        // `EISDIR` and the buffer screen both follow the offset check on
+        // *both* — the last two rows — so only the descriptor steps actually
+        // move, and one flag suffices rather than two orderings.
+        let offsetCheckedBeforeDescriptor =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> true
+            | SimulatedUnixFlavour.Darwin -> false
+
+        // The inode this `pread` will read from, once every question that
+        // precedes the buffer screen has been settled. Only a file reaches it:
+        // `pread` needs a seekable object, and a directory is one, so a
+        // directory's EISDIR comes from the operation below rather than from
+        // here.
+        let target : Result<InodeNumber, UnixError> =
+            if offsetCheckedBeforeDescriptor && offsetInvalid then
+                Error UnixError.EINVAL
+            else
+
+            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | None -> Error UnixError.EBADF
+            | Some description ->
+
+            // Whether this description was opened for reading at all. Two arms
+            // below need it and neither may guess: for a standard stream it
+            // breaks the ESPIPE/EBADF tie, and for a regular file it is the
+            // whole answer.
+            let readable = FileAccessMode.permitsRead description.AccessMode
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _ ->
+                // `pread` needs a seekable object, and this kernel models the
+                // standard streams as pipes — standard input the read end,
+                // output and error the write ends. Output and error therefore
+                // fail two different tests at once: neither seekable nor open
+                // for reading. Measured, the flavours break that tie
+                // differently:
+                //
+                //   descriptor                        Linux    Darwin
+                //   pipe read end (unseekable)        ESPIPE   ESPIPE
+                //   pipe write end (also unreadable)  ESPIPE   EBADF
+                //   regular file O_WRONLY (seekable)  EBADF    EBADF
+                //
+                // So Linux lets unseekability win and Darwin lets unreadability
+                // win. The third row is the control that shows this is about the
+                // tie rather than about readability generally, and it is the
+                // `not readable` arm further down.
+                match flavour with
+                | SimulatedUnixFlavour.Darwin when not readable -> Error UnixError.EBADF
+                | SimulatedUnixFlavour.Darwin
+                | SimulatedUnixFlavour.Linux -> Error UnixError.ESPIPE
+            | OpenFileTarget.SocketEventPort _ ->
+                // Unseekable on both, with no tie to break: a port's description
+                // is `ReadWrite`, so the unreadability arm above cannot apply to
+                // it. Measured, `pread(port, buf, 8, 0)` and
+                // `pread(port, buf, 0, 0)` are both ESPIPE on both flavours, and
+                // so is `pread(port, (void*)-1, 8, 0)` — unseekability precedes
+                // the buffer screen, which is why this is classified here rather
+                // than after it.
+                //
+                // Note that this is *not* what `read` says of the same
+                // descriptor, which is EINVAL on Linux and ENXIO on Darwin: the
+                // object has no read operation at all, and `pread` never gets as
+                // far as asking, having already failed on seekability.
+                Error UnixError.ESPIPE
+            | OpenFileTarget.Socket _ ->
+                // Unseekable on both, for the same reason the port is, and
+                // measured on a TCP, a UDP and a Unix-domain socket alike.
+                //
+                // Unlike `read`, this needs no connection state and so is an
+                // answer rather than a refusal: every socket is unseekable
+                // whatever it is connected to, so `pread` never reaches the
+                // socket's own read operation.
+                Error UnixError.ESPIPE
+            | OpenFileTarget.File (inode, _) ->
+                if not readable then
+                    // A descriptor not open for reading: EBADF on both, which is
+                    // `vfs_read`'s answer for a file whose `FMODE_READ` is
+                    // clear.
+                    //
+                    // Ahead of Darwin's offset check rather than after it, and
+                    // measured: `pread(wronlyFd, buf, 4, -1)` is EBADF on Darwin
+                    // but EINVAL on Linux, so on Darwin the access mode is
+                    // settled before the offset is looked at, exactly as
+                    // seekability is above. On Linux this ordering cannot be
+                    // observed, the offset check having already run.
+                    Error UnixError.EBADF
+                elif not offsetCheckedBeforeDescriptor && offsetInvalid then
+                    // Darwin's turn to validate the offset: it has now resolved
+                    // the descriptor, its seekability and its access mode, which
+                    // is exactly the window in which it differs from Linux.
+                    Error UnixError.EINVAL
+                else
+                    Ok inode
+
+        match target with
+        | Error error -> Ok (ReadAnswer.Failed error)
+        | Ok inode ->
+
+        // Everything below is the object's own read operation, which under a
+        // screening flavour the buffer screen precedes: hence EFAULT ahead of
+        // EISDIR and of the transfer window, and a fault even for a zero-length
+        // request. The unscreened flavour discovers a bad address at the copy
+        // instead.
+        match
+            UserBufferCheck.faultsBeforeOperationFor
+                (UnixMachineState.userBufferCheck system.Machine)
+                buffer
+                (uint64 count)
+        with
+        | Error refusal -> Error refusal
+        | Ok true -> Ok (ReadAnswer.Failed UnixError.EFAULT)
+        | Ok false ->
+
+        readFileAt "pread" fd inode offset buffer count system
 
     /// What a `write` will operate on, once the descriptor's access mode has
     /// been checked: a file at its description's own offset, or a standard
