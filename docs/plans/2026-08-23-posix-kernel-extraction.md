@@ -2403,11 +2403,47 @@ Ordered so that each has an oracle before the next depends on it.
   offset, no description update, and the two-phase admission unchanged. Listed
   as its own bullet rather than left implicit in 8d's prose, for the reason the
   `getcwd` bullet below gives about itself — a list that does not partition its
-  own census table is not a plan. Its ordering has to be measured on its own
-  terms and not inherited from 8f: `pwrite` is a *source*-buffer syscall, so its
-  screen, its zero-length no-op and its EBADF-for-unwritable sit in the order
-  8d measured for `write` rather than the one 8f measured for `pread`, and the
-  negative-offset flag is the only part that transfers.
+  own census table is not a plan.
+
+  **The temptation this increment exists to resist is transcribing 8f's order
+  with the words swapped, and measuring says that would be wrong in the very
+  first step.** `pwrite` validates a negative offset *ahead of everything, on
+  both flavours*, where `pread` does so only on Linux. Nine second faults give
+  way to it on both — a bad descriptor, either end of a pipe, a read-only file,
+  a directory, a socket, a socket event port, an unscreenable address and a zero
+  length — so the per-flavour flag 8f needed is not merely unnecessary here, it
+  would fail every one of those rows.
+
+  The seekability tie *is* 8f's mirrored, with the roles swapped: standard input
+  is now the descriptor that fails two tests at once, being neither seekable nor
+  open for writing.
+
+  | descriptor | Linux | Darwin |
+  | --- | --- | --- |
+  | pipe write end (unseekable) | ESPIPE | ESPIPE |
+  | pipe read end (also unwritable) | ESPIPE | EBADF |
+  | regular file O_RDONLY (seekable) | EBADF | EBADF |
+
+  **`PWriteRefusal` is `WriteRefusal` without its socket case**, rather than the
+  same type. A socket is unseekable, so `pwrite` answers ESPIPE and never
+  reaches the socket's write operation to ask about connection state — the same
+  argument 8f made for `pread`, and the reason the plan keeps stating it is that
+  the two syscalls' refusal *sets* differ even though their answer sets look
+  alike. Sharing the type would hand every client an arm it could not reach and
+  would have to invent a message for. The length refusal's sentence is shared
+  between the two types, being one fact reached from a different offset.
+
+  It does return a system, unlike `pread`: the description's offset does not
+  move, but the file's contents and timestamps do. So the pair of signatures
+  states exactly which of the two directions writes.
+
+  PawPrint's `commitFileWrite` goes with the move. `UnixSystem.pwrite` was its
+  last caller, and it was the last place the set-ID rule and the timestamp rule
+  were applied outside the library.
+
+  Ten mutants, all killed by the row that names the rule — including the one
+  this increment is really about: giving `pwrite` `pread`'s per-flavour offset
+  flag dies on the nine-row table above.
 
 * **8h — `fstat`, then `stat`/`lstat`**, first because it is the smallest
   structured answer and it is what settles (3) against a real encoder. `stat`
