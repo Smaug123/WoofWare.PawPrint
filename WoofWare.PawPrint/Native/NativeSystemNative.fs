@@ -750,47 +750,6 @@ module NativeSystemNative =
             (ImmutableArray.CreateRange bytes)
             state
 
-    /// Commit a write of `bytes` at `offset` to the regular file `inode`,
-    /// together with the `mtime` and `ctime` it moves.
-    ///
-    /// `bytes` must not be empty: a zero-length write moves no timestamp at all,
-    /// so each caller short-circuits it rather than passing it on.
-    ///
-    /// Does not touch the description's file offset. `write(2)` advances it and
-    /// `pwrite(2)` does not, which is the whole difference between them, so it is
-    /// each caller's business.
-    let private commitFileWrite
-        (operation : string)
-        (fd : int)
-        (inode : InodeNumber)
-        (offset : int64)
-        (bytes : ImmutableArray<byte>)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        let now = UnixMachineState.fileTimestamp state.Kernel.Machine
-
-        // A content-changing write strips a file's set-user-ID and set-group-ID
-        // bits unless the writer is root; measured on both platforms, which
-        // disagree only about `S_ISGID` on a file that is not group-executable.
-        let rule = SimulatedUnixPlatform.setGroupIdOnWrite state.Kernel.UnixPlatform
-
-        let privilege = UnixProcessState.callerPrivilege state.Kernel.Process
-
-        match VirtualFileSystem.writeFile inode offset bytes rule privilege now state.Kernel.FileSystem with
-        | Ok filesystem ->
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            FileSystem = filesystem
-                        }
-                }
-            )
-        | Error (FileWriteRefusal.WouldExceedMaxLength (offset, count)) ->
-            failwith
-                $"%s{operation}: fd %d{fd} asked to write %d{count} bytes at offset %d{offset} of inode %O{inode}, which would leave the file longer than the %d{VirtualFileSystem.maxFileLength} bytes PawPrint can represent. A real filesystem answers this without difficulty — measured on ext4 and APFS alike, a one-byte write at offset 2^40 succeeds and leaves a sparse 1 TB file — so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced."
-
     /// Commit a truncation of the regular file `inode` to `length`, together with
     /// the `mtime`, `ctime` and set-ID bits it moves.
     ///
@@ -3737,131 +3696,77 @@ module NativeSystemNative =
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
             let fileOffset = NativeCall.int64Argument operation instruction.Arguments.[3]
 
-            let fail (error : UnixError) : NativeHandlerResult option =
-                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
-
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
-                )
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-
-            let succeed (count : int) (state : IlMachineState) : NativeHandlerResult option =
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim count)) ctx.Thread
-                |> NativeHandlerResult.completed
-                |> Some
-
             // Refused before anything else, for the reason `SystemNative_PRead`
-            // gives at length: the C casts a negative size to an unsigned ~4 GB
-            // count, and what a kernel then does depends on how far the guest's
-            // buffer happens to be mapped — which PawPrint does not model to that
-            // fidelity. CoreLib never sends one, every caller's size coming from a
-            // span length.
+            // gives at length, and here rather than in the library because it is
+            // this shim's cast that produces it: the C casts a negative size to
+            // an unsigned ~4 GB count, and what a kernel then does depends on how
+            // far the guest's buffer happens to be mapped — which PawPrint does
+            // not model to that fidelity. CoreLib never sends one, every caller's
+            // size coming from a span length.
             if bufferSize < 0 then
                 failwith
                     $"%s{operation}: fd %d{fd} was given bufferSize %d{bufferSize}, which is negative. The C shim casts that to an unsigned ~4 GB count rather than rejecting it (unlike SystemNative_Write, which goes through Common_Write and answers ERANGE), and what a kernel then does is not a fact PawPrint can state. Pass a non-negative size."
-
-            // **Ahead of the descriptor, on both platforms** — which is where
-            // `pwrite` differs from `pread`, and it is measured rather than
-            // assumed. Every two-fault row is EINVAL on Linux *and* Darwin:
-            //
-            //   input                          Linux    Darwin
-            //   negative offset + bad fd       EINVAL   EINVAL
-            //   negative offset + pipe         EINVAL   EINVAL
-            //   negative offset + O_RDONLY fd  EINVAL   EINVAL
-            //
-            // For `pread`, Darwin resolves the descriptor first and answers EBADF
-            // or ESPIPE for the same shapes, so `SystemNative_PRead` needs a
-            // platform flag here and this does not. Do not copy that flag over.
-            else if fileOffset < 0L then
-                fail UnixError.EINVAL
-            else
-
-            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-            | None -> fail UnixError.EBADF
-            | Some description ->
-
-            let writable = FileAccessMode.permitsWrite description.AccessMode
-
-            match description.Target with
-            | OpenFileTarget.StandardStream _ ->
-                // The mirror of `SystemNative_PRead`'s tie: `pwrite` needs a
-                // seekable object, and PawPrint models the standard streams as
-                // pipes, so stdin fails *two* tests at once — it is neither
-                // seekable nor open for writing. Measured:
-                //
-                //   descriptor                        Linux    Darwin
-                //   pipe write end (unseekable)       ESPIPE   ESPIPE
-                //   pipe read end (also unwritable)   ESPIPE   EBADF
-                //   regular file O_RDONLY (seekable)  EBADF    EBADF
-                //
-                // Linux lets unseekability win while Darwin lets unwritability
-                // win, exactly as they do for `pread`; the third row is the
-                // control showing this is about the tie rather than about
-                // writability generally.
-                match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
-                | SimulatedUnixFlavour.Darwin when not writable -> fail UnixError.EBADF
-                | SimulatedUnixFlavour.Darwin
-                | SimulatedUnixFlavour.Linux -> fail UnixError.ESPIPE
-            | OpenFileTarget.SocketEventPort _ ->
-                // A port is unseekable on both platforms, and — unlike a
-                // standard stream — there is no tie to break, because it is open
-                // for writing (`ReadWrite`, see
-                // `FileDescriptorRegistry.createSocketEventPort`). Measured,
-                // `pwrite(port, buf, 8, 0)` is ESPIPE on both, as is
-                // `pwrite(port, buf, 0, 0)` — so the zero-length shortcut does
-                // not apply either.
-                fail UnixError.ESPIPE
-            | OpenFileTarget.Socket _ ->
-                // Unseekable on both platforms, and — like the port and unlike a
-                // standard stream — with no tie to break, a socket description
-                // being `ReadWrite`. Measured, `pwrite` on a fresh socket is
-                // ESPIPE on both platforms.
-                fail UnixError.ESPIPE
-            | OpenFileTarget.File (inode, _) ->
-
-            // `vfs_write`'s EBADF for a descriptor not open for writing, which
-            // precedes both the buffer screen and the zero-size no-op: measured,
-            // `pwrite(rdonlyFd, (void*)-1, 4, 0)` is EBADF rather than EFAULT and
-            // `pwrite(rdonlyFd, buf, 0, 0)` is EBADF rather than 0.
-            //
-            // This is also what makes a directory descriptor unreachable below:
-            // one can only be opened `O_RDONLY`, `SystemNative_Open` answering
-            // EISDIR for every write access mode.
-            if not writable then
-                fail UnixError.EBADF
             else
 
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            // Linux screens the buffer's address before performing the operation,
-            // so this fires even for a zero-length write: measured,
-            // `pwrite(f, (void*)-1, 0, 0)` is EFAULT there and 0 on macOS. Darwin
-            // screens nothing and discovers a bad address at the copy.
-            if faultsBeforeOperation state.Kernel buffer bufferSize then
-                fail UnixError.EFAULT
+            let refused (refusal : PWriteRefusal) : NativeHandlerResult option =
+                match refusal with
+                | PWriteRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+                | PWriteRefusal.ExceedsRepresentableLength _ ->
+                    // The library says which limit of the model was reached;
+                    // PawPrint says which managed caller could have reached it.
+                    failwith
+                        $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal} Reachable from the BCL: `RandomAccess.WriteAtOffset` passes the guest's own offset through, so a guest writing far past the end of a file gets here. Represent file contents sparsely (issue #956) before answering it."
 
-            // A no-op on both platforms, and specifically one that leaves the
-            // inode alone: measured, a zero-length write moves neither `mtime` nor
-            // `ctime` and does not extend the file, even at an offset far past its
-            // end. The buffer is not resolved to storage, because nothing is read
-            // through it — `NULL` is an ordinary user address, so it reaches here
-            // rather than being screened above.
-            else if bufferSize = 0 then
-                succeed 0 state
-            else
+            match
+                UnixSystem.admitPWrite
+                    fd
+                    (BufferPointer.toUserBuffer buffer)
+                    bufferSize
+                    fileOffset
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error refusal -> refused refusal
+            | Ok (WriteAdmission.Answered (WriteAnswer.Failed error)) ->
+                withErrnoOnly ctx error state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (WriteAdmission.Answered (WriteAnswer.Completed written)) ->
+                // The zero-length no-op, which changes nothing at all — so there
+                // is no system to write back, and the buffer was never resolved.
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (WriteAdmission.Transfer count) ->
 
-            match BufferPointer.dereferenceable buffer with
-            | None -> fail UnixError.EFAULT
-            | Some buffer ->
+            // Only now are the guest's bytes extracted: the admission answered
+            // every question a `pwrite` settles without reading the buffer, so
+            // resolving the pointer here is what a real kernel's `copy_from_user`
+            // would do.
+            let source =
+                match BufferPointer.dereferenceable buffer with
+                | Some source -> source
+                | None ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the kernel asked for %d{count} bytes from a buffer that names no storage. Every such buffer is answered or refused by the admission (this is an interpreter bug)."
 
-            let bytes = readBytesThrough ctx operation buffer bufferSize state
+            let bytes = readBytesThrough ctx operation source count state
 
-            // Never short: PawPrint's filesystem cannot run out of space, and
-            // there is no signal that could interrupt the copy part-way.
-            commitFileWrite operation fd inode fileOffset bytes state |> succeed bufferSize
+            match UnixSystem.pwrite fd bytes fileOffset (EmulatedKernel.unix state.Kernel) with
+            | Error refusal -> refused refusal
+            | Ok (WriteAnswer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (WriteAnswer.Completed written, system) ->
+                withAnswered system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
         // `int32_t SystemNative_Read(intptr_t fd, void* buffer, int32_t
         // bufferSize)` (pal_io.c:1178) forwards to `Common_Read`
         // (pal_io_common.h:36), which rejects a negative size itself and then
