@@ -472,6 +472,51 @@ module TestUnixSystemStep =
         |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
 
     [<Test>]
+    let ``a socket is refused by both halves of the write`` () : unit =
+        // `write(2)` on a socket is an answer about connection state, which this
+        // kernel does not model; EPIPE is the answer a reader of the Linux
+        // measurement would reach for, and it is wrong on Darwin. Both calls
+        // must refuse: the admission because a caller must not extract bytes for
+        // a write that cannot happen, and `write` because a caller that skipped
+        // the admission must not get a guess either.
+        let socketId = SocketId 0L
+
+        let socket : SocketDescription =
+            {
+                Domain = SocketDomain.InterNetwork
+                Kind = SocketKind.Stream
+                Protocol = SocketProtocol.Tcp
+                Binding = None
+                Phase = SocketPhase.Idle
+                ReuseAddress = false
+            }
+
+        let fd, registry =
+            FileDescriptorRegistry.createSocket socketId linux.Process.FileDescriptors
+
+        let system =
+            { linux with
+                Machine =
+                    { linux.Machine with
+                        Sockets = Map.ofList [ socketId, socket ]
+                    }
+                Process =
+                    { linux.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let expected =
+            Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+
+        UnixSystem.admitWrite fd UserBuffer.Mapped 5 system |> shouldEqual expected
+
+        UnixSystem.write fd (ImmutableArray.CreateRange [ 1uy ]) system
+        |> shouldEqual (
+            Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+        )
+
+    [<Test>]
     let ``a defaulted byte array is rejected rather than written`` () : unit =
         let fd, system = withOpenFile linux
 
