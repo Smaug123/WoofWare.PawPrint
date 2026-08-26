@@ -853,29 +853,27 @@ module NativeCustomAttribute =
                 NativeCall.readCountedBytes operation ctx.BaseClassTypes state blobPtr byteCount
                 |> ImmutableArray.CreateRange
 
-            // CoreCLR writes the out-params only on the success path, leaving whatever the managed
-            // caller initialised them to (0, 0, 0) otherwise; `GetAttributeUsage` throws before
-            // reading them, so the values are unobservable, but not writing them is what the
-            // primitive does.
             let parsed = CustomAttribute.parseAttributeUsage blob
 
+            let write (argIndex : int) (argName : string) (value : int) (state : IlMachineState) =
+                let target =
+                    NativeCall.managedPointerOfPointerArgument operation argName instruction.Arguments.[argIndex]
+
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    target
+                    (CliType.Numeric (CliNumericType.Int32 value))
+
+            // CoreCLR writes each out-param as soon as it has the value, not all three at the end,
+            // so how many are written depends on how far the parse got. `GetAttributeUsage` throws
+            // on FALSE without reading any of them, so no guest can tell — but the slots are the
+            // primitive's observable surface, and the tests hold them directly.
             let state =
                 match parsed with
-                | Error _ -> state
-                | Ok usage ->
-                    let write (argIndex : int) (argName : string) (value : int) (state : IlMachineState) =
-                        let target =
-                            NativeCall.managedPointerOfPointerArgument
-                                operation
-                                argName
-                                instruction.Arguments.[argIndex]
-
-                        IlMachineState.writeManagedByrefWithBase
-                            ctx.BaseClassTypes
-                            state
-                            target
-                            (CliType.Numeric (CliNumericType.Int32 value))
-
+                | AttributeUsageParse.Malformed _ -> state
+                | AttributeUsageParse.ValidOnOnly (validOn, _) -> state |> write 2 "pTargets" validOn
+                | AttributeUsageParse.Parsed usage ->
                     state
                     |> write 2 "pTargets" usage.ValidOn
                     |> write 3 "pAllowMultiple" (if usage.AllowMultiple then 1 else 0)
@@ -883,8 +881,9 @@ module NativeCustomAttribute =
 
             let result =
                 match parsed with
-                | Ok _ -> 1
-                | Error _ -> 0
+                | AttributeUsageParse.Parsed _ -> 1
+                | AttributeUsageParse.Malformed _
+                | AttributeUsageParse.ValidOnOnly _ -> 0
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread

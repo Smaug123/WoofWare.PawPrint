@@ -16,12 +16,27 @@ open Microsoft.FSharp.NativeInterop
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// What the host runtime's parser made of one `[AttributeUsage]` blob.
+/// A blob rendered for a failure message.
+module private BlobDescription =
+    let describe (blob : byte array) : string =
+        blob |> Array.map (sprintf "%02X") |> String.concat " "
+
+/// The state of one of the parser's three out-param slots when it returned.
 [<RequireQualifiedAccess>]
-type HostVerdict =
-    /// The parser returned FALSE. Its managed caller turns this into a `CustomAttributeFormatException`.
-    | Rejected
-    | Parsed of AttributeUsageBlob
+type OutParam =
+    /// The parser returned without writing this slot.
+    | Untouched
+    | Written of int
+
+/// Everything one call to the parser is observable by: its BOOL result, and each of its three
+/// out-params.
+type ParseOutcome =
+    {
+        Succeeded : bool
+        ValidOn : OutParam
+        AllowMultiple : OutParam
+        Inherited : OutParam
+    }
 
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -35,8 +50,7 @@ module TestAttributeUsageBlob =
     /// This is the oracle every case below is checked against, so no expectation here encodes
     /// anyone's reading of CoreCLR's parser: the parser itself answers. It is reached by private
     /// reflection because CoreLib exposes it nowhere else — if a future runtime renames or reshapes
-    /// it, `Array.find` throws and the fixture fails loudly, which is the intended outcome rather
-    /// than a silent skip.
+    /// it, this fails loudly, which is the intended outcome rather than a silent skip.
     let private hostParse : Lazy<ParseDelegate> =
         lazy
             let declaring =
@@ -48,56 +62,93 @@ module TestAttributeUsageBlob =
 
             // There are two overloads of this name; the QCall is the five-argument one. The other
             // is its managed `ConstArray` wrapper.
-            let method =
-                declaring.GetMethods (BindingFlags.NonPublic ||| BindingFlags.Static)
-                |> Array.filter (fun m -> m.Name = "ParseAttributeUsageAttribute" && m.GetParameters().Length = 5)
-                |> Array.tryExactlyOne
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        "the host's corelib has no five-argument System.Reflection.CustomAttribute.ParseAttributeUsageAttribute; the oracle needs updating for this runtime"
-                )
+            declaring.GetMethods (BindingFlags.NonPublic ||| BindingFlags.Static)
+            |> Array.filter (fun m -> m.Name = "ParseAttributeUsageAttribute" && m.GetParameters().Length = 5)
+            |> Array.tryExactlyOne
+            |> Option.defaultWith (fun () ->
+                failwith
+                    "the host's corelib has no five-argument System.Reflection.CustomAttribute.ParseAttributeUsageAttribute; the oracle needs updating for this runtime"
+            )
+            |> fun m -> m.CreateDelegate<ParseDelegate> ()
 
-            method.CreateDelegate<ParseDelegate> ()
-
-    let private hostVerdict (blob : byte array) : HostVerdict =
+    /// One call, with the three out-params seeded to the given values.
+    let private hostCall (blob : byte array) (seeds : int * int * int) : int * (int * int * int) =
         let parse = hostParse.Force ()
         // `fixed` on an empty array yields a null pointer, which is exactly what CoreCLR's callers
         // pass for an empty blob, so the empty case needs no special handling.
         use pinned = fixed blob
-        let mutable validOn = 0
-        let mutable allowMultiple = 0
-        let mutable inherited = 0
+        let seedValidOn, seedAllowMultiple, seedInherited = seeds
+        let mutable validOn = seedValidOn
+        let mutable allowMultiple = seedAllowMultiple
+        let mutable inherited = seedInherited
 
         let result =
             parse.Invoke (NativePtr.toNativeInt pinned, blob.Length, &&validOn, &&allowMultiple, &&inherited)
 
-        if result = 0 then
-            HostVerdict.Rejected
-        else
-            HostVerdict.Parsed
-                {
-                    ValidOn = validOn
-                    AllowMultiple = allowMultiple <> 0
-                    Inherited = inherited <> 0
-                }
+        result, (validOn, allowMultiple, inherited)
 
-    let private ourVerdict (blob : byte array) : HostVerdict =
+    /// Whether the parser wrote a slot cannot be read off a single call: any sentinel it is seeded
+    /// with is a value the parser might itself have written. Calling twice with different seeds
+    /// settles it exactly — an untouched slot returns each seed in turn, and a written one returns
+    /// the same value both times.
+    let private hostOutcome (blob : byte array) : ParseOutcome =
+        let firstResult, (a1, b1, c1) = hostCall blob (0x5A5A5A5A, 0x11111111, 0x22222222)
+        let secondResult, (a2, b2, c2) = hostCall blob (0x0F0F0F0F, 0x33333333, 0x44444444)
+
+        if firstResult <> secondResult then
+            failwithf "the host's parser is not deterministic on [%s]" (BlobDescription.describe blob)
+
+        let slot (name : string) (seed1 : int) (seed2 : int) (got1 : int) (got2 : int) : OutParam =
+            if got1 = seed1 && got2 = seed2 then
+                OutParam.Untouched
+            elif got1 = got2 then
+                OutParam.Written got1
+            else
+                failwithf "the host's parser wrote %s inconsistently (%d then %d)" name got1 got2
+
+        {
+            Succeeded = firstResult <> 0
+            ValidOn = slot "pTargets" 0x5A5A5A5A 0x0F0F0F0F a1 a2
+            AllowMultiple = slot "pAllowMultiple" 0x11111111 0x33333333 b1 b2
+            Inherited = slot "pInherited" 0x22222222 0x44444444 c1 c2
+        }
+
+    /// The same, derived from PawPrint's parse: exactly the mapping the native handler performs
+    /// when it writes the guest's slots.
+    let private ourOutcome (blob : byte array) : ParseOutcome =
         match CustomAttribute.parseAttributeUsage (ImmutableArray.CreateRange blob) with
-        | Error _ -> HostVerdict.Rejected
-        | Ok usage -> HostVerdict.Parsed usage
+        | AttributeUsageParse.Malformed _ ->
+            {
+                Succeeded = false
+                ValidOn = OutParam.Untouched
+                AllowMultiple = OutParam.Untouched
+                Inherited = OutParam.Untouched
+            }
+        | AttributeUsageParse.ValidOnOnly (validOn, _) ->
+            {
+                Succeeded = false
+                ValidOn = OutParam.Written validOn
+                AllowMultiple = OutParam.Untouched
+                Inherited = OutParam.Untouched
+            }
+        | AttributeUsageParse.Parsed usage ->
+            {
+                Succeeded = true
+                ValidOn = OutParam.Written usage.ValidOn
+                AllowMultiple = OutParam.Written (if usage.AllowMultiple then 1 else 0)
+                Inherited = OutParam.Written (if usage.Inherited then 1 else 0)
+            }
 
-    let private describe (blob : byte array) : string =
-        blob |> Array.map (sprintf "%02X") |> String.concat " "
-
-    /// The assertion every case makes: we agree with the host on this blob.
+    /// The assertion every case makes: on this blob we do what the host's parser does, down to
+    /// which of its three out-params it left alone.
     let private agreesWithHost (blob : byte array) : unit =
-        let ours = ourVerdict blob
-        let theirs = hostVerdict blob
+        let ours = ourOutcome blob
+        let theirs = hostOutcome blob
 
         if ours <> theirs then
             failwithf
-                "blob [%s]\n  PawPrint: %A\n  host:     %A\n  (PawPrint's diagnostic: %A)"
-                (describe blob)
+                "blob [%s]\n  PawPrint: %A\n  host:     %A\n  (PawPrint's parse: %A)"
+                (BlobDescription.describe blob)
                 ours
                 theirs
                 (CustomAttribute.parseAttributeUsage (ImmutableArray.CreateRange blob))
@@ -295,17 +346,25 @@ module TestAttributeUsageBlob =
     /// rows — would still show every row "agreeing".
     [<Test>]
     let ``the corpus contains both accepted and rejected blobs`` () : unit =
-        let verdicts = corpus |> List.map (snd >> hostVerdict)
+        let outcomes = corpus |> List.map (snd >> hostOutcome)
 
-        verdicts
-        |> List.filter (fun v -> v = HostVerdict.Rejected)
+        outcomes
+        |> List.filter (fun o -> not o.Succeeded)
         |> List.length
         |> shouldBeGreaterThan 10
 
-        verdicts
-        |> List.filter (fun v -> v <> HostVerdict.Rejected)
+        outcomes
+        |> List.filter (fun o -> o.Succeeded)
         |> List.length
         |> shouldBeGreaterThan 10
+
+        // And that the corpus reaches the *middle* outcome, where the fixed argument parsed and a
+        // named argument did not — the case that has a written targets slot beside two untouched
+        // flag slots, and the one this fixture previously could not see at all.
+        outcomes
+        |> List.filter (fun o -> not o.Succeeded && o.ValidOn <> OutParam.Untouched)
+        |> List.length
+        |> shouldBeGreaterThan 5
 
     // ---- the rules, stated ------------------------------------------------
 
@@ -314,8 +373,10 @@ module TestAttributeUsageBlob =
 
     let private parsed (blob : byte array) : AttributeUsageBlob =
         match CustomAttribute.parseAttributeUsage (ImmutableArray.CreateRange blob) with
-        | Ok usage -> usage
-        | Error e -> failwithf "expected [%s] to parse, but: %s" (describe blob) e
+        | AttributeUsageParse.Parsed usage -> usage
+        | AttributeUsageParse.Malformed reason
+        | AttributeUsageParse.ValidOnOnly (_, reason) ->
+            failwithf "expected [%s] to parse, but: %s" (BlobDescription.describe blob) reason
 
     [<Test>]
     let ``an unnamed argument takes its default`` () : unit =
@@ -358,11 +419,19 @@ module TestAttributeUsageBlob =
     /// CoreCLR before matching begins, and would also be rejected (for the wrong reason) by falling
     /// through to "matches nothing". These pin the arms that exist to give the right reason.
     let private rejectedBecause (blob : byte array) (fragment : string) : unit =
-        match CustomAttribute.parseAttributeUsage (ImmutableArray.CreateRange blob) with
-        | Ok usage -> failwithf "expected [%s] to be rejected, but it parsed to %A" (describe blob) usage
-        | Error e ->
-            if not (e.Contains fragment) then
-                failwithf "expected the rejection of [%s] to mention '%s', but it said: %s" (describe blob) fragment e
+        let reason =
+            match CustomAttribute.parseAttributeUsage (ImmutableArray.CreateRange blob) with
+            | AttributeUsageParse.Parsed usage ->
+                failwithf "expected [%s] to be rejected, but it parsed to %A" (BlobDescription.describe blob) usage
+            | AttributeUsageParse.Malformed reason
+            | AttributeUsageParse.ValidOnOnly (_, reason) -> reason
+
+        if not (reason.Contains fragment) then
+            failwithf
+                "expected the rejection of [%s] to mention '%s', but it said: %s"
+                (BlobDescription.describe blob)
+                fragment
+                reason
 
     [<Test>]
     let ``an empty named-arg name is rejected as such`` () : unit =
@@ -384,12 +453,7 @@ module TestAttributeUsageBlob =
 
     [<Test>]
     let ``an extra named argument rejects the whole blob`` () : unit =
-        CustomAttribute.parseAttributeUsage (
-            ImmutableArray.CreateRange (
-                withNamedArgs [ boolArg PROPERTY "Inherited" 0uy ; boolArg PROPERTY "Nope" 1uy ]
-            )
-        )
-        |> Result.isOk
+        (ourOutcome (withNamedArgs [ boolArg PROPERTY "Inherited" 0uy ; boolArg PROPERTY "Nope" 1uy ])).Succeeded
         |> shouldEqual false
 
     // ---- differential property --------------------------------------------
@@ -482,6 +546,6 @@ module TestAttributeUsageBlob =
     /// runtime's own parser reach the same verdict, and where they accept, the same three values.
     [<Test>]
     let ``agrees with the host runtime on generated blobs`` () : unit =
-        let property (blob : byte array) : bool = ourVerdict blob = hostVerdict blob
+        let property (blob : byte array) : bool = ourOutcome blob = hostOutcome blob
 
         property |> Prop.forAll (Arb.fromGen blobGen) |> Check.QuickThrowOnFailure

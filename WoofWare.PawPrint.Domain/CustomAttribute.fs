@@ -210,6 +210,26 @@ type AttributeUsageBlob =
     }
 
 /// <summary>
+/// The outcome of parsing one <c>[AttributeUsage]</c> blob.
+/// </summary>
+/// <remarks>
+/// Three cases rather than two because CoreCLR's parser writes its out-params as it goes: it fills
+/// <c>*pTargets</c> as soon as the fixed argument decodes, and only then attempts the named
+/// arguments. A blob whose named arguments are malformed therefore returns <c>FALSE</c> with the
+/// targets slot already overwritten and the two flag slots untouched, which a caller holding those
+/// three slots can tell apart from a blob that failed earlier.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type AttributeUsageParse =
+    /// The prolog or the fixed argument was malformed; nothing has been written.
+    | Malformed of reason : string
+    /// The fixed argument decoded, but a named argument did not; the targets are written and the
+    /// two flags are not.
+    | ValidOnOnly of validOn : int32 * reason : string
+    /// Everything decoded; all three are written.
+    | Parsed of AttributeUsageBlob
+
+/// <summary>
 /// Represents a custom attribute applied to a type, method, field, or other metadata entity.
 /// This is a strongly-typed representation of CustomAttribute from System.Reflection.Metadata.
 /// </summary>
@@ -876,16 +896,16 @@ module CustomAttribute =
     /// *not* what this QCall uses and which behaves differently; the <c>::</c> qualification at the
     /// call site is what distinguishes them.
     ///
-    /// The diagnostic in <c>Error</c> has no counterpart in CoreCLR, whose <c>BOOL</c> discards
+    /// The diagnostic on the two failure cases has no counterpart in CoreCLR, whose <c>BOOL</c> discards
     /// which rule fired. The native handler discards it too, having only <c>FALSE</c> to report,
     /// but it lets a test pin *why* a blob was rejected rather than merely that it was.
     /// </remarks>
-    let parseAttributeUsage (blob : ImmutableArray<byte>) : Result<AttributeUsageBlob, string> =
+    let parseAttributeUsage (blob : ImmutableArray<byte>) : AttributeUsageParse =
         // `args[0].InitEnum(SERIALIZATION_TYPE_I4)`: the AttributeTargets argument is an enum whose
         // width the parser hardcodes rather than resolving, so the blob's 4 bytes are read directly.
         // `readFixedArgs` performs the 0x0001 prolog check that `ValidateProlog` does.
         match readFixedArgs [ CustomAttribArgShape.Enum EnumUnderlyingType.Int32 ] blob with
-        | Error e -> Error e
+        | Error e -> AttributeUsageParse.Malformed e
         | Ok (fixedArgs, afterFixed) ->
 
         let validOn =
@@ -921,11 +941,11 @@ module CustomAttribute =
             (cursor : int)
             (allowMultiple : bool option)
             (inherited : bool option)
-            : Result<AttributeUsageBlob, string>
+            : AttributeUsageParse
             =
             if remainingArgs <= 0 then
                 // Nothing checks that the blob was fully consumed, so trailing bytes are ignored.
-                Ok
+                AttributeUsageParse.Parsed
                     {
                         ValidOn = validOn
                         // The descriptor table's starting values, which stand for any argument the
@@ -947,13 +967,21 @@ module CustomAttribute =
             // end in `FALSE` either way, because only a BOOLEAN-tagged argument can match either
             // descriptor.
             match readNamedArgHeader blob cursor with
-            | Error e -> Error e
+            | Error e -> AttributeUsageParse.ValidOnOnly (validOn, e)
             | Ok (header, valueOffset) ->
 
             // `GetNonEmptyString` rejects the null sentinel and the empty string alike.
             match header.Name with
-            | None -> Error $"CustomAttrib blob: named arg at offset %d{cursor} has the null name sentinel"
-            | Some "" -> Error $"CustomAttrib blob: named arg at offset %d{cursor} has an empty name"
+            | None ->
+                AttributeUsageParse.ValidOnOnly (
+                    validOn,
+                    $"CustomAttrib blob: named arg at offset %d{cursor} has the null name sentinel"
+                )
+            | Some "" ->
+                AttributeUsageParse.ValidOnOnly (
+                    validOn,
+                    $"CustomAttrib blob: named arg at offset %d{cursor} has an empty name"
+                )
             | Some name ->
 
             // Matching compares the serialization type and the name, and *not* whether the blob
@@ -970,14 +998,19 @@ module CustomAttribute =
 
             match matched with
             | None ->
-                Error
+                AttributeUsageParse.ValidOnOnly (
+                    validOn,
                     $"CustomAttrib blob: named arg '%s{name}' at offset %d{cursor} matches no argument of [AttributeUsage]"
+                )
             | Some (_, Some _) ->
-                Error $"CustomAttrib blob: named arg '%s{name}' at offset %d{cursor} appears more than once"
+                AttributeUsageParse.ValidOnOnly (
+                    validOn,
+                    $"CustomAttrib blob: named arg '%s{name}' at offset %d{cursor} appears more than once"
+                )
             | Some (isAllowMultiple, None) ->
 
             match readElem (CustomAttribArgShape.Primitive PrimitiveType.Boolean) blob valueOffset with
-            | Error e -> Error e
+            | Error e -> AttributeUsageParse.ValidOnOnly (validOn, e)
             | Ok (CustomAttribFixedArg.Bool value, next) ->
                 if isAllowMultiple then
                     loop (remainingArgs - 1) next (Some value) inherited
