@@ -191,6 +191,25 @@ type CustomAttribNamedArgHeader =
     }
 
 /// <summary>
+/// The three values CoreCLR's <c>CustomAttribute_ParseAttributeUsageAttribute</c> writes out for
+/// one <c>[AttributeUsage]</c> application.
+/// </summary>
+type AttributeUsageBlob =
+    {
+        /// The sole fixed constructor argument, an <c>AttributeTargets</c>. CoreCLR reads these
+        /// bits unsigned into a <c>ULONG*</c> and the managed caller casts the same 32 bits to
+        /// <c>AttributeTargets</c>, so the signedness is never observable.
+        ///
+        /// Nothing in CoreLib reads the resulting <c>AttributeUsageAttribute.ValidOn</c> — a guest
+        /// that wants an attribute's targets goes through the general attribute-instance decoder
+        /// instead, never this parse — so no guest can observe this field. It is decoded because it
+        /// is what the primitive returns, not because a caller consults it.
+        ValidOn : int32
+        AllowMultiple : bool
+        Inherited : bool
+    }
+
+/// <summary>
 /// Represents a custom attribute applied to a type, method, field, or other metadata entity.
 /// This is a strongly-typed representation of CustomAttribute from System.Reflection.Metadata.
 /// </summary>
@@ -837,3 +856,134 @@ module CustomAttribute =
             }
 
         Ok (header, afterName)
+
+    /// <summary>
+    /// Decode a <c>CustomAttrib</c> blob as an application of <c>[AttributeUsage]</c>: one
+    /// <c>AttributeTargets</c> fixed argument, plus the optional <c>AllowMultiple</c> and
+    /// <c>Inherited</c> named arguments. <c>Error</c> is every input on which CoreCLR's parser
+    /// returns <c>FALSE</c>, which its managed caller turns into a
+    /// <c>CustomAttributeFormatException</c>.
+    /// </summary>
+    /// <remarks>
+    /// The contract here is "what CoreCLR's parser does", not "what ECMA-335 II.23.3 says" — this
+    /// exists to be that primitive, so where the two disagree this follows the parser. The
+    /// divergences from the grammar are marked at the code that makes them.
+    ///
+    /// The parse is <c>::ParseKnownCaArgs</c> and <c>::ParseKnownCaNamedArgs</c>
+    /// (<c>md/compiler/custattr_emit.cpp</c>), reached from
+    /// <c>CustomAttribute_ParseAttributeUsageAttribute</c> (<c>vm/customattribute.cpp</c>). Note
+    /// that <c>customattribute.cpp</c> also defines a VM-local <c>ParseCaNamedArgs</c> which is
+    /// *not* what this QCall uses and which behaves differently; the <c>::</c> qualification at the
+    /// call site is what distinguishes them.
+    ///
+    /// The diagnostic in <c>Error</c> has no counterpart in CoreCLR, whose <c>BOOL</c> discards
+    /// which rule fired. The native handler discards it too, having only <c>FALSE</c> to report,
+    /// but it lets a test pin *why* a blob was rejected rather than merely that it was.
+    /// </remarks>
+    let parseAttributeUsage (blob : ImmutableArray<byte>) : Result<AttributeUsageBlob, string> =
+        // `args[0].InitEnum(SERIALIZATION_TYPE_I4)`: the AttributeTargets argument is an enum whose
+        // width the parser hardcodes rather than resolving, so the blob's 4 bytes are read directly.
+        // `readFixedArgs` performs the 0x0001 prolog check that `ValidateProlog` does.
+        match readFixedArgs [ CustomAttribArgShape.Enum EnumUnderlyingType.Int32 ] blob with
+        | Error e -> Error e
+        | Ok (fixedArgs, afterFixed) ->
+
+        let validOn =
+            match fixedArgs with
+            | [ CustomAttribFixedArg.Enum (CustomAttribFixedArg.I4 v) ] -> v
+            | other ->
+                // `readElem` on `Enum Int32` can only produce `Enum (I4 _)`, so this is a logic
+                // error in the decoder rather than anything the blob could have said.
+                failwith
+                    $"logic error: reading one Int32-underlain enum fixed arg produced %A{other} rather than a single Enum(I4 _)"
+
+        // The named-arg count is read with `GetI2`, and a *failed* read yields 0 rather than an
+        // error (custattr_emit.cpp, commented "Everett behavior"). `GetI2` fails whenever fewer
+        // than two bytes remain, so a blob that ends after the fixed arg and one that has a single
+        // stray byte left both land here with "no named arguments".
+        let remaining = blob.Length - afterFixed
+
+        let namedCount, afterCount =
+            if remaining < 2 then
+                0s, afterFixed
+            else
+                let count =
+                    int16 (uint16 blob.[afterFixed] ||| (uint16 blob.[afterFixed + 1] <<< 8))
+
+                count, afterFixed + 2
+
+        // The count is a *signed* int16 compared against a widened int32 loop counter, so a count
+        // with its high bit set runs no iterations at all and the parse succeeds with both
+        // defaults. Mirrored rather than refused: this is the primitive's behaviour, and real .NET
+        // accepts such a blob.
+        let rec loop
+            (remainingArgs : int)
+            (cursor : int)
+            (allowMultiple : bool option)
+            (inherited : bool option)
+            : Result<AttributeUsageBlob, string>
+            =
+            if remainingArgs <= 0 then
+                // Nothing checks that the blob was fully consumed, so trailing bytes are ignored.
+                Ok
+                    {
+                        ValidOn = validOn
+                        // The descriptor table's starting values, which stand for any argument the
+                        // blob did not name.
+                        AllowMultiple = Option.defaultValue false allowMultiple
+                        Inherited = Option.defaultValue true inherited
+                    }
+            else
+
+            // Checks the FIELD (0x53) / PROPERTY (0x54) tag, then the serialization type, then the
+            // name, in that order — the order `ParseKnownCaNamedArgs` reads them, so a blob that is
+            // malformed in more than one way is rejected for the same reason CoreCLR rejects it.
+            //
+            // The two decoders disagree on *which* step rejects some inputs, never on whether:
+            // CoreCLR's `ParseEncodedType` validates no type tag at all, so an unknown tag reaches
+            // its matching loop and fails there as an unknown argument, whereas `readFieldOrPropType`
+            // rejects it outright; and an ENUM tag with a null type name fails in CoreCLR's
+            // `GetNonNullString` but decodes here to `Enum None` and then fails to match. Both paths
+            // end in `FALSE` either way, because only a BOOLEAN-tagged argument can match either
+            // descriptor.
+            match readNamedArgHeader blob cursor with
+            | Error e -> Error e
+            | Ok (header, valueOffset) ->
+
+            // `GetNonEmptyString` rejects the null sentinel and the empty string alike.
+            match header.Name with
+            | None -> Error $"CustomAttrib blob: named arg at offset %d{cursor} has the null name sentinel"
+            | Some "" -> Error $"CustomAttrib blob: named arg at offset %d{cursor} has an empty name"
+            | Some name ->
+
+            // Matching compares the serialization type and the name, and *not* whether the blob
+            // said FIELD or PROPERTY — so a field named `AllowMultiple` sets the property. Mirrored
+            // for the same reason as the signed count above.
+            let matched =
+                match header.ElemType with
+                | CustomAttribFieldOrPropType.Primitive PrimitiveType.Boolean ->
+                    match name with
+                    | "AllowMultiple" -> Some (true, allowMultiple)
+                    | "Inherited" -> Some (false, inherited)
+                    | _ -> None
+                | _ -> None
+
+            match matched with
+            | None ->
+                Error
+                    $"CustomAttrib blob: named arg '%s{name}' at offset %d{cursor} matches no argument of [AttributeUsage]"
+            | Some (_, Some _) ->
+                Error $"CustomAttrib blob: named arg '%s{name}' at offset %d{cursor} appears more than once"
+            | Some (isAllowMultiple, None) ->
+
+            match readElem (CustomAttribArgShape.Primitive PrimitiveType.Boolean) blob valueOffset with
+            | Error e -> Error e
+            | Ok (CustomAttribFixedArg.Bool value, next) ->
+                if isAllowMultiple then
+                    loop (remainingArgs - 1) next (Some value) inherited
+                else
+                    loop (remainingArgs - 1) next allowMultiple (Some value)
+            | Ok (other, _) ->
+                failwith $"logic error: reading a Boolean-shaped named arg value produced %A{other} rather than a Bool"
+
+        loop (int namedCount) afterCount None None

@@ -16,6 +16,7 @@
     <Compile Include="TestAssemblyReadCache.fs" />
     <Compile Include="TestSequencePoints.fs" />
     <Compile Include="TestCustomAttributeBlob.fs" />
+    <Compile Include="TestAttributeUsageBlob.fs" />
     <Compile Include="TestCustomAttribValueLowering.fs" />
     <Compile Include="TestAttributeFormatting.fs" />
     <Compile Include="TestIlDumpRendering.fs" />

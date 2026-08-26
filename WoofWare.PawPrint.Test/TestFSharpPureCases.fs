@@ -143,14 +143,7 @@ module TestFSharpPureCases =
     /// so the case cannot pass the differential comparison, and should not — its passing would mean
     /// PawPrint had started accepting IL it is designed to reject. The refusal is asserted by
     /// `PawPrint refuses the unverifiable call in PrintfCacheHit` instead.
-    ///
-    /// `SprintfPercentA` and `SprintfPercentO` are both parked on the same missing primitive: the
-    /// QCall `CustomAttribute_ParseAttributeUsageAttribute`, reached five frames out from
-    /// `FSharp.Core.ObjectGraphFormatter.objL`. `%O` shares the blocker with `%A` because a union
-    /// with no hand-written `ToString` inherits FSharp.Core's reflective one, which is the same
-    /// `sformat` object-graph formatter that `%A` uses.
-    let unimplemented : Set<string> =
-        Set.ofList [ "PrintfCacheHit" ; "SprintfPercentA" ; "SprintfPercentO" ]
+    let unimplemented : Set<string> = Set.ofList [ "PrintfCacheHit" ]
 
     // F# test cases that legitimately throw under both runtimes. Without this set, a test
     // that crashes both runtimes would silently pass — see TestPureCases.fs for the same
