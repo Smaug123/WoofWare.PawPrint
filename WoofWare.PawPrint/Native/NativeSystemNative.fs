@@ -1358,7 +1358,7 @@ module NativeSystemNative =
                 // untouched.
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.EFAULT)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -1385,7 +1385,7 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -1411,7 +1411,7 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal error)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -1449,7 +1449,7 @@ module NativeSystemNative =
 
             writeBytesThrough ctx operation familyStorage (ImmutableArray.CreateRange bytes) state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -1471,7 +1471,7 @@ module NativeSystemNative =
             let fail (error : UnixError) : NativeHandlerResult option =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal error)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -1504,14 +1504,14 @@ module NativeSystemNative =
             | Some _ ->
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
             | None ->
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EAFNOSUPPORT)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.EAFNOSUPPORT)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -1542,9 +1542,9 @@ module NativeSystemNative =
                 |> Some
 
             if blob = BufferPointer.RawAddress 0UL then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             elif not (sockaddrFamilyIsInBounds platform socketAddressLen) then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
@@ -1565,11 +1565,11 @@ module NativeSystemNative =
             | None ->
                 // The switch's default. `port` is never touched, so a caller that
                 // passed nothing to write through is not refused here.
-                complete (UnixError.toPal UnixError.EAFNOSUPPORT) state
+                complete (UnixErrorPal.toPal UnixError.EAFNOSUPPORT) state
             | Some minimumLength ->
 
             if socketAddressLen < minimumLength then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let portStorage = requireUnscreenedStorage operation "port" portOut
@@ -1590,7 +1590,7 @@ module NativeSystemNative =
             BinaryPrimitives.WriteUInt16LittleEndian (Span<byte> output, port)
 
             writeBytesThrough ctx operation portStorage (ImmutableArray.CreateRange output) state
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_SetPort",
           [ ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
@@ -1613,9 +1613,9 @@ module NativeSystemNative =
                 |> Some
 
             if blob = BufferPointer.RawAddress 0UL then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             elif not (sockaddrFamilyIsInBounds platform socketAddressLen) then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
@@ -1633,11 +1633,11 @@ module NativeSystemNative =
                     None
 
             match required with
-            | None -> complete (UnixError.toPal UnixError.EAFNOSUPPORT) state
+            | None -> complete (UnixErrorPal.toPal UnixError.EAFNOSUPPORT) state
             | Some minimumLength ->
 
             if socketAddressLen < minimumLength then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             // `htons`.
@@ -1650,7 +1650,7 @@ module NativeSystemNative =
                 (bufferFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
                 (ImmutableArray.CreateRange bytes)
                 state
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_GetIPv4Address",
           [ ConcretePointer _ ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; ConcretePointer _ ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
@@ -1684,7 +1684,7 @@ module NativeSystemNative =
                 || socketAddressLen < sizes.InterNetwork
                 || not (sockaddrFamilyIsInBounds platform socketAddressLen)
             then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
@@ -1693,7 +1693,7 @@ module NativeSystemNative =
                 readSockaddrFamily ctx operation platform blobStorage state
                 <> SimulatedUnixPlatform.internetAddressFamily
             then
-                complete (UnixError.toPal UnixError.EINVAL) state
+                complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
             // `*address = sin_addr.s_addr`, a whole-word copy with no `ntohl`:
@@ -1707,7 +1707,7 @@ module NativeSystemNative =
                     state
 
             writeBytesThrough ctx operation (requireStorage operation "address" addressOut) bytes state
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_SetIPv4Address",
           [ ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
@@ -1736,7 +1736,7 @@ module NativeSystemNative =
                 || socketAddressLen < sizes.InterNetwork
                 || not (sockaddrFamilyIsInBounds platform socketAddressLen)
             then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
@@ -1745,7 +1745,7 @@ module NativeSystemNative =
                 readSockaddrFamily ctx operation platform blobStorage state
                 <> SimulatedUnixPlatform.internetAddressFamily
             then
-                complete (UnixError.toPal UnixError.EINVAL) state
+                complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
             // Upstream also assigns `sin_family = AF_INET` here. The guard above
@@ -1761,7 +1761,7 @@ module NativeSystemNative =
                 (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
                 (ImmutableArray.CreateRange bytes)
                 state
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_GetIPv6Address",
           [ ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
@@ -1798,7 +1798,7 @@ module NativeSystemNative =
                 || addressLen < SockaddrOffsets.InternetV6AddressLength
                 || not (sockaddrFamilyIsInBounds platform socketAddressLen)
             then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
@@ -1807,7 +1807,7 @@ module NativeSystemNative =
                 readSockaddrFamily ctx operation platform blobStorage state
                 <> SimulatedUnixPlatform.internetV6AddressFamily platform
             then
-                complete (UnixError.toPal UnixError.EINVAL) state
+                complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
             // `memcpy_s` of exactly `NUM_BYTES_IN_IPV6_ADDRESS`, whatever the
@@ -1844,7 +1844,7 @@ module NativeSystemNative =
 
             state
             |> writeBytesThrough ctx operation (requireStorage operation "scopeId" scopeIdOut) scopeIdBytes
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_SetIPv6Address",
           [ ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
@@ -1880,7 +1880,7 @@ module NativeSystemNative =
                 || addressLen < SockaddrOffsets.InternetV6AddressLength
                 || not (sockaddrFamilyIsInBounds platform socketAddressLen)
             then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let blobStorage = requireStorage operation "socketAddress" blob
@@ -1889,7 +1889,7 @@ module NativeSystemNative =
                 readSockaddrFamily ctx operation platform blobStorage state
                 <> SimulatedUnixPlatform.internetV6AddressFamily platform
             then
-                complete (UnixError.toPal UnixError.EINVAL) state
+                complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
             // `memcpy_s(&sin6_addr, 16, address, addressLen)`, whose failure mode
@@ -1940,7 +1940,7 @@ module NativeSystemNative =
                 operation
                 (bufferFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
                 (ImmutableArray.CreateRange scopeIdBytes)
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_GetMaximumAddressSize",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -2014,7 +2014,7 @@ module NativeSystemNative =
             // PawPrint's raw errno vocabulary becomes something the BCL can
             // branch on.
             //
-            // `UnixError.palOfRawErrno` refuses errnos whose meaning is
+            // `UnixErrorPal.ofRawErrno` refuses errnos whose meaning is
             // platform-dependent rather than answering `ENONSTANDARD` as the C
             // does; see its doc comment for why that divergence is the honest
             // one. In practice the only raw values reaching this are ones
@@ -2032,7 +2032,7 @@ module NativeSystemNative =
             // bare `palOfRawErrno` refuses to complete.
             let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-            pushInt32 (UnixError.palOfRawErrnoUnder numbering raw) ctx |> Some
+            pushInt32 (UnixErrorPal.ofRawErrnoUnder numbering raw) ctx |> Some
         | Some "SystemNative_GetCpuUtilization",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Double) ->
@@ -4697,7 +4697,7 @@ module NativeSystemNative =
             // the C tests the pointer before its first `fcntl`, so a null
             // pointer with a nonsensical descriptor is EFAULT, not EBADF.
             match outArgument with
-            | BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
             | _ ->
 
             let fd = fdArgument operation instruction.Arguments.[0]
@@ -4746,7 +4746,7 @@ module NativeSystemNative =
                 // belong to the three conversion failures, not to this.
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.EFAULT)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -4805,14 +4805,14 @@ module NativeSystemNative =
                 // Each of the three conversion failures stores -1 before
                 // returning, so a caller that ignores the return code sees an
                 // invalid handle rather than whatever was in the variable.
-                state |> storeCreatedSocket -1L |> completeWith (UnixError.toPal error)
+                state |> storeCreatedSocket -1L |> completeWith (UnixErrorPal.toPal error)
             | Ok (domain, kind, protocol) ->
 
             let fd, kernel = EmulatedKernel.createSocket domain kind protocol state.Kernel
 
             state.MapKernel (fun _ -> kernel)
             |> storeCreatedSocket (int64 fd)
-            |> completeWith UnixError.palSuccess
+            |> completeWith UnixErrorPal.palSuccess
         // `int32_t SystemNative_Bind(intptr_t socket, int32_t protocolType,
         // uint8_t* socketAddress, int32_t socketAddressLen)`
         // (pal_networking.c:1760).
@@ -4841,11 +4841,11 @@ module NativeSystemNative =
                 |> Some
 
             match addressArgument with
-            | BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
             | _ ->
 
             if declaredLength < 0 then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let platform = state.Kernel.UnixPlatform
@@ -4859,7 +4859,7 @@ module NativeSystemNative =
                         ctx.Thread
                         (UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error)
                 )
-                |> complete (UnixError.toPal error)
+                |> complete (UnixErrorPal.toPal error)
             | Ok (socketId, socket) ->
 
             // The `setsockopt` runs before `bind(2)` and no failure of it undoes
@@ -4907,7 +4907,7 @@ module NativeSystemNative =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
 
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
-                |> complete (UnixError.toPal error)
+                |> complete (UnixErrorPal.toPal error)
 
             let lengthVerdict =
                 SimulatedUnixPlatform.bindAddressLength
@@ -4937,7 +4937,7 @@ module NativeSystemNative =
             match resolvedBlob with
             | None when copiesFromPointer ->
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EFAULT))
-                |> complete (UnixError.toPal UnixError.EFAULT)
+                |> complete (UnixErrorPal.toPal UnixError.EFAULT)
             | _ ->
 
             // The other half of the same question, and gated on the same
@@ -5196,7 +5196,7 @@ module NativeSystemNative =
                         }
                 }
             )
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         // `int32_t SystemNative_Listen(intptr_t socket, int32_t backlog)`
         // (pal_networking.c:1892). No screens of its own: it is `listen(2)`.
         | Some "SystemNative_Listen",
@@ -5226,7 +5226,7 @@ module NativeSystemNative =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
 
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
-                |> complete (UnixError.toPal error)
+                |> complete (UnixErrorPal.toPal error)
 
             match socketOfFd operation fd state with
             | Error error -> failFromSyscall error state
@@ -5347,7 +5347,7 @@ module NativeSystemNative =
                         }
                 }
             )
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         // `int32_t SystemNative_Accept(intptr_t socket, uint8_t* socketAddress,
         // int32_t* socketAddressLen, intptr_t* acceptedSocket)`
         // (pal_networking.c:1705).
@@ -5379,7 +5379,7 @@ module NativeSystemNative =
             match addressArgument, lengthArgument, acceptedArgument with
             | BufferPointer.RawAddress 0UL, _, _
             | _, BufferPointer.RawAddress 0UL, _
-            | _, _, BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _, _, BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
             | _, _, _ ->
 
             let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
@@ -5388,7 +5388,7 @@ module NativeSystemNative =
                 BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
 
             if declaredLength < 0 then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let fd = fdArgument operation instruction.Arguments.[0]
@@ -5411,7 +5411,7 @@ module NativeSystemNative =
 
                 writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange bytes) state
                 |> fun state -> state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
-                |> complete (UnixError.toPal error)
+                |> complete (UnixErrorPal.toPal error)
 
             match socketOfFd operation fd state with
             | Error error -> failFromSyscall error state
@@ -5514,7 +5514,7 @@ module NativeSystemNative =
             state
             |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)
             |> writeBytesThrough ctx operation acceptedCell (ImmutableArray.CreateRange acceptedBytes)
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         // `int32_t SystemNative_Connect(intptr_t socket, uint8_t* socketAddress,
         // int32_t socketAddressLen)` (pal_networking.c:1785):
         //
@@ -5543,11 +5543,11 @@ module NativeSystemNative =
                 |> Some
 
             match addressArgument with
-            | BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
             | _ ->
 
             if declaredLength < 0 then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             let fd = fdArgument operation instruction.Arguments.[0]
@@ -5561,7 +5561,7 @@ module NativeSystemNative =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
 
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
-                |> complete (UnixError.toPal error)
+                |> complete (UnixErrorPal.toPal error)
 
             match socketOfFd operation fd state with
             | Error error -> failFromSyscall error state
@@ -5598,7 +5598,7 @@ module NativeSystemNative =
             match resolvedBlob with
             | None when copiesFromPointer ->
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EFAULT))
-                |> complete (UnixError.toPal UnixError.EFAULT)
+                |> complete (UnixErrorPal.toPal UnixError.EFAULT)
             | _ ->
 
             match resolvedBlob with
@@ -5653,7 +5653,7 @@ module NativeSystemNative =
             match EmulatedKernel.connectSocket socketId nonBlocking declaredLength family destination state.Kernel with
             | EmulatedKernel.ConnectOutcome.Completed, kernel ->
                 // A successful connect leaves errno alone.
-                state.MapKernel (fun _ -> kernel) |> complete UnixError.palSuccess
+                state.MapKernel (fun _ -> kernel) |> complete UnixErrorPal.palSuccess
             | EmulatedKernel.ConnectOutcome.Failed error, kernel ->
                 state.MapKernel (fun _ -> kernel) |> failFromSyscall error
 
@@ -5679,7 +5679,7 @@ module NativeSystemNative =
 
             match addressArgument, lengthArgument with
             | BufferPointer.RawAddress 0UL, _
-            | _, BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _, BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
             | _, _ ->
 
             let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
@@ -5688,7 +5688,7 @@ module NativeSystemNative =
                 BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
 
             if declaredLength < 0 then
-                complete (UnixError.toPal UnixError.EFAULT) state
+                complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
 
             // `toRawErrnoUnder` rather than `toRawErrno`: ENOTSOCK's raw number
@@ -5701,7 +5701,7 @@ module NativeSystemNative =
                             (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform)
                             error)
                 )
-                |> complete (UnixError.toPal error)
+                |> complete (UnixErrorPal.toPal error)
 
             match socketOfFd operation fd state with
             | Error error -> failFromSyscall error state
@@ -5759,7 +5759,7 @@ module NativeSystemNative =
 
             state
             |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_CreateSocketEventPort",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
@@ -5785,7 +5785,7 @@ module NativeSystemNative =
                 // before creating anything, so no descriptor leaks here.
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.EFAULT)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -5828,7 +5828,7 @@ module NativeSystemNative =
 
             writeBytesThrough ctx operation port (ImmutableArray.CreateRange bytes) state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -5858,8 +5858,8 @@ module NativeSystemNative =
             let error, state =
                 match UnixSystem.close fd (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> failwith (closeRefusalMessage operation fd refusal)
-                | Ok (SyscallAnswer.Completed _, system) -> UnixError.palSuccess, withAnswered system state
-                | Ok (SyscallAnswer.Failed error, system) -> UnixError.toPal error, withErrno ctx error system state
+                | Ok (SyscallAnswer.Completed _, system) -> UnixErrorPal.palSuccess, withAnswered system state
+                | Ok (SyscallAnswer.Failed error, system) -> UnixErrorPal.toPal error, withErrno ctx error system state
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim error)) ctx.Thread
@@ -5896,7 +5896,7 @@ module NativeSystemNative =
             let refuseBeforeAllocating () : NativeHandlerResult option =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.EFAULT)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -5979,7 +5979,7 @@ module NativeSystemNative =
 
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.ENOMEM))
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.ENOMEM)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.ENOMEM)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -5998,7 +5998,7 @@ module NativeSystemNative =
 
             storePointer allocated state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -6032,7 +6032,7 @@ module NativeSystemNative =
 
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -6077,9 +6077,9 @@ module NativeSystemNative =
                 currentEvents &&& ~~~supportedEvents <> 0
                 || newEvents &&& ~~~supportedEvents <> 0
             then
-                complete (UnixError.toPal UnixError.EINVAL) state
+                complete (UnixErrorPal.toPal UnixError.EINVAL) state
             elif currentEvents = newEvents then
-                complete UnixError.palSuccess state
+                complete UnixErrorPal.palSuccess state
             else
 
             // Past the wrapper: the call consults its descriptors now.
@@ -6164,7 +6164,7 @@ module NativeSystemNative =
                 // pending inside the kernel change, and if a waiter is
                 // parked on the port, `Program`'s readiness sweep wakes it
                 // before the next scheduling decision.
-                state.MapKernel (fun _ -> kernel) |> complete UnixError.palSuccess
+                state.MapKernel (fun _ -> kernel) |> complete UnixErrorPal.palSuccess
             | Error error ->
                 let unixError =
                     match error with
@@ -6178,7 +6178,7 @@ module NativeSystemNative =
                 // The syscall failed, so it set errno on the way past. All five
                 // numbers are portable, but only Linux reaches here anyway.
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno unixError))
-                |> complete (UnixError.toPal unixError)
+                |> complete (UnixErrorPal.toPal unixError)
         | Some "SystemNative_WaitForSocketEvents",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
@@ -6229,7 +6229,7 @@ module NativeSystemNative =
             let refuseBeforeSyscall () : NativeHandlerResult option =
                 state
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal UnixError.EFAULT)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal UnixError.EFAULT)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -6280,7 +6280,7 @@ module NativeSystemNative =
                         EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
                     )
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixError.toPal error)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (UnixErrorPal.toPal error)))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -6378,7 +6378,7 @@ module NativeSystemNative =
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
                 |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                 |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                     ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
@@ -6507,7 +6507,7 @@ module NativeSystemNative =
 
                     writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
                     |> IlMachineState.pushToEvalStack'
-                        (EvalStackValue.Int32 (Int32Source.Verbatim UnixError.palSuccess))
+                        (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
                         ctx.Thread
                     |> NativeHandlerResult.completed
                     |> Some
@@ -6574,13 +6574,13 @@ module NativeSystemNative =
 
             match pollEvents, triggeredPointer with
             | BufferPointer.RawAddress 0UL, _
-            | _, BufferPointer.RawAddress 0UL -> complete (UnixError.toPal UnixError.EFAULT) state
+            | _, BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
             | _ ->
 
             let milliseconds = NativeCall.int32Argument operation instruction.Arguments.[2]
 
             if milliseconds < -1 then
-                complete (UnixError.toPal UnixError.EINVAL) state
+                complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
             match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
@@ -6757,7 +6757,7 @@ module NativeSystemNative =
                 (requireStorage operation "triggered" triggeredPointer)
                 (ImmutableArray.CreateRange triggeredBytes)
                 state
-            |> complete UnixError.palSuccess
+            |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_IsATty",
           [ ConcreteIntPtr state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->

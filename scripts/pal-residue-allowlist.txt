@@ -7,25 +7,13 @@
 # the rest of them), with the POSIX value handed to the library.
 #
 # Retiring what is here is split, and docs/plans/2026-08-23-posix-kernel-
-# extraction.md says why. The `UnixError` cluster goes with stage 7, whose
-# remaining increment builds the errno adapter on PawPrint's side; the socket
-# clusters go with stages 8 and 9, alongside the syscalls that use them. Stage 7
-# as re-scoped touches none of the latter, so it cannot retire them, and saying
-# otherwise here would be a promise the plan no longer makes.
+# extraction.md says why. The `UnixError` cluster is gone: stage 7 moved the PAL
+# numbering to WoofWare.PawPrint's `UnixErrorPal`, leaving the library stating
+# only the raw `<errno.h>` number. The socket clusters go with stages 8 and 9,
+# alongside the syscalls that use them; stage 7 as re-scoped touches none of
+# them, so it could not retire them.
 #
 # The grouping matches that plan's table.
-
-# PAL numbering of a POSIX concept: one table carrying the raw errno and the
-# `Interop.Error` number together, plus its two sentinels and its accessors.
-UnixError.fs:UnixErrorNumbering.Pal
-UnixError.fs:UnixError.portable
-UnixError.fs:UnixError.platformDependent
-UnixError.fs:UnixError.numbering
-UnixError.fs:UnixError.palSuccess
-UnixError.fs:UnixError.palNonStandard
-UnixError.fs:UnixError.toPal
-UnixError.fs:UnixError.palOfRawErrno
-UnixError.fs:UnixError.palOfRawErrnoUnder
 
 # Managed-enum mapping: `System.Runtime.InteropServices.PosixSignal` values,
 # which carry no kernel content whatever.
