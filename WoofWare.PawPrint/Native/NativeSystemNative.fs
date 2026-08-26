@@ -58,6 +58,39 @@ type internal ReadTarget =
 
 [<RequireQualifiedAccess>]
 module internal BufferPointer =
+    /// How this classification looks to a kernel, which is less than PawPrint
+    /// knows.
+    ///
+    /// `Symbolic` and `Unstatable` carry diagnostic payloads only so that a
+    /// refusal can name the value the guest passed; a kernel has no concept of
+    /// either, and what it does have a concept of — mapped, unmapped, and the
+    /// two shapes it cannot answer about — is what crosses.
+    let toUserBuffer (pointer : BufferPointer) : UserBuffer =
+        match pointer with
+        | BufferPointer.Storage _ -> UserBuffer.Mapped
+        | BufferPointer.RawAddress address -> UserBuffer.Unmapped address
+        | BufferPointer.Symbolic _ -> UserBuffer.Opaque
+        | BufferPointer.Unstatable _ -> UserBuffer.Addressless
+
+    /// PawPrint's half of a refused buffer: which entry point asked, which
+    /// argument it was, what the guest actually passed, and what PawPrint would
+    /// have to represent to answer. The library's half says why no kernel answer
+    /// exists.
+    ///
+    /// Total rather than partial, and loudly so for the two answerable cases:
+    /// storage and a raw address are both things a kernel answers about, so a
+    /// refusal naming one is an interpreter bug rather than a message to render.
+    let refusalMessage (pointer : BufferPointer) (refusal : BufferRefusal) : string =
+        match pointer with
+        | BufferPointer.Symbolic (operation, argName, argument) ->
+            $"%s{operation}: %s{argName} is %O{argument}, the address of a runtime data structure PawPrint models symbolically rather than as bytes. %s{BufferRefusal.describe refusal} Pass a buffer that names guest storage."
+        | BufferPointer.Unstatable (operation, argName, argument) ->
+            $"%s{operation}: %s{argName} is %O{argument}, the difference of two pointers into separate storages. %s{BufferRefusal.describe refusal} Subtracting pointers that do not point into one object does not produce a buffer."
+        | BufferPointer.Storage _
+        | BufferPointer.RawAddress _ ->
+            failwith
+                $"BufferPointer.refusalMessage: %O{pointer} names a buffer a kernel can answer about, so there is no refusal to describe (this is an interpreter bug)."
+
     /// The pointer this classification names, for a caller about to transfer
     /// bytes through it.
     ///
@@ -75,12 +108,8 @@ module internal BufferPointer =
         match pointer with
         | BufferPointer.Storage (root, projections) -> Some (ManagedPointerSource.Byref (root, projections))
         | BufferPointer.RawAddress _ -> None
-        | BufferPointer.Symbolic (operation, argName, argument) ->
-            failwith
-                $"%s{operation}: %s{argName} is %O{argument}, the address of a runtime data structure PawPrint models symbolically rather than as bytes. A real kernel would transfer the bytes at that address; PawPrint has none to transfer, so it cannot answer. Pass a buffer that names guest storage."
-        | BufferPointer.Unstatable (operation, argName, argument) ->
-            failwith
-                $"%s{operation}: %s{argName} is %O{argument}, the difference of two pointers into separate storages, which names no address. Subtracting pointers that do not point into one object does not produce a buffer."
+        | BufferPointer.Symbolic _ -> failwith (refusalMessage pointer BufferRefusal.OpaqueAtTransfer)
+        | BufferPointer.Unstatable _ -> failwith (refusalMessage pointer BufferRefusal.AddresslessAtTransfer)
 
 [<RequireQualifiedAccess>]
 module NativeSystemNative =
@@ -331,31 +360,24 @@ module NativeSystemNative =
     ///
     /// Only a raw address is ever refused: `BufferPointer.Storage` names real
     /// allocated guest memory, which is a user address by construction.
+    ///
+    /// `false` means this step raises no objection, not that the buffer is
+    /// usable: a symbolic address passes here on both platforms and still has no
+    /// answer at the transfer.
     let internal faultsBeforeOperation (kernel : EmulatedKernel) (buffer : BufferPointer) (bufferSize : int) : bool =
         System.Diagnostics.Debug.Assert (
             bufferSize >= 0,
             "faultsBeforeOperation: a negative size is the shim's own error and is refused before the kernel sees it"
         )
 
-        match buffer with
-        | BufferPointer.Storage _
-        | BufferPointer.Symbolic _ -> false
-        | BufferPointer.Unstatable (operation, argName, argument) ->
-            // A kernel that screens up front compares this address against its
-            // limit, and there is no address to compare — so the answer is not
-            // "in range", it is unknown. A kernel that screens nothing asks
-            // nothing, and the call proceeds to whatever short-circuit or
-            // dereference comes next.
-            if SimulatedUnixPlatform.screensUserBufferUpFront kernel.UnixPlatform then
-                failwith
-                    $"%s{operation}: %s{argName} is %O{argument}, the difference of two pointers into separate storages, and this platform screens a buffer's address before performing the operation. There is no address to screen, so PawPrint cannot say whether the kernel would accept it."
-            else
-                false
-        | BufferPointer.RawAddress address ->
-            UserBufferCheck.faultsBeforeOperation
+        match
+            UserBufferCheck.faultsBeforeOperationFor
                 (UnixMachineState.userBufferCheck kernel.Machine)
-                address
+                (BufferPointer.toUserBuffer buffer)
                 (uint64 bufferSize)
+        with
+        | Ok faults -> faults
+        | Error refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
 
     /// Which way bytes move through a caller-supplied buffer.
     [<RequireQualifiedAccess>]
