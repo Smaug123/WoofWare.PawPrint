@@ -2189,6 +2189,32 @@ Ordered so that each has an oracle before the next depends on it.
   socket connection state, and `read(2)` on a socket is an answer about exactly
   that". After the move that gap is the library's own, so a socket-shaped
   refusal lands here, ahead of stage 9's socket work.
+
+  Three things implementing it settled.
+
+  **`read` is not reachable through `step`, and that is the (B) cost arriving.**
+  Its answer carries bytes, so `SyscallAnswer` would have to grow a shape for
+  them — and nothing consumes that shape, because no client logs or replays a
+  buffer-carrying syscall yet. Inventing an encoding before there is a client to
+  be wrong about is the speculative generality this plan keeps refusing; the
+  first thing that genuinely needs it chooses it. `step`'s docstring now says so
+  rather than implying total coverage.
+
+  **The empty answer is load-bearing, and the type does not enforce it.**
+  `ReadAnswer.Completed ImmutableArray.Empty` means "moved nothing *and did not
+  touch the buffer*", which is three of `read`'s measured steps. A client that
+  resolved its pointer before checking for empty turns `read(f, NULL, 5)` at
+  end-of-file from 0 into EFAULT, and a symbolic buffer from 0 into a crash. The
+  docstring states it and the client guards on it; a shape that made it
+  structural would need a third case for what is otherwise the same answer.
+
+  **The screen really does precede the shortcuts, and only one buffer can show
+  it.** An addressless buffer under Linux is refused *even for a read that would
+  have moved nothing*, because the address check runs before the transfer window
+  is computed; under Darwin the same call reaches the shortcut and answers 0.
+  Two rows pin that pair, and they were written only after the first draft of
+  them asserted the opposite and failed — the library was right and the test was
+  wrong, which is the outcome to want from a faithful transcription.
 * **8d — `write`/`pwrite`**, the source-buffer direction, and the first and only
   place the two-phase admission/commit surface of (C) is built.
 * **8e — `fstat`, then `stat`/`lstat`**, first because it is the smallest
