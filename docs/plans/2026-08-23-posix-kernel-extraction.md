@@ -2557,8 +2557,62 @@ Ordered so that each has an oracle before the next depends on it.
   not — is visible only through a descriptor *held across the call*, an unheld
   inode being reaped with nothing left to ask. Each of those is the same trap in
   a different costume: an input whose two candidate rules agree.
-* **8k — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
-  file syscalls, and `open`'s flags are PAL values.
+* **8k — `open`** (333 lines), the largest of the file syscalls, and the one
+  whose flags are PAL values. **`opendir`/`readdir` are not bundled with it**:
+  8h taught that this list's bundlings are worth re-checking, and those two
+  return an opaque `DIR*` that PawPrint materialises as guest memory, which is a
+  different boundary question from `open`'s. They are 8l.
+
+  Most of the handler is kernel behaviour that simply moves — `CreatingOpenRules`
+  and its verdict are already the library's, and 8i's walk is across. What needs
+  a decision first is the *flags*, and the plan's own raw-versus-parsed rule
+  says only half of it: raw means raw kernel ABI, never PAL, so
+  `Interop.Sys.OpenFlags` cannot cross as an integer. What shape it crosses in
+  is open. **This needs confirming before the code is written**, because it adds
+  a public vocabulary type to a package that is about to be released.
+
+  **(A) Raw POSIX flag bits cross as an `int`.** PawPrint translates the PAL enum
+  to the simulated platform's own `<fcntl.h>` numbering, and the library decodes
+  that. Faithful to a real `open(2)`, and it is the shape a future `fcntl`
+  (`F_GETFL`) would want, that syscall handing a guest its raw flags back.
+  Against it: the per-flavour numbering *is* platform knowledge — `O_CREAT` is
+  0o100 on Linux and 0x200 on Darwin — and `SimulatedUnixPlatform` is the
+  library. (A) puts that knowledge on the client's side, or else exports it for
+  the client to apply, both of which invert the split the rest of stage 8 has
+  drawn.
+
+  **(B) A parsed `OpenFlags` record crosses**: access mode, and a bool per
+  `O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_NOFOLLOW`/`O_CLOEXEC`/`O_SYNC`. PawPrint maps
+  PAL bits onto it and the library never sees a numbering at all. This is what
+  `UserBuffer` does, and for the same reason the rule gives: only the client can
+  classify (it holds the PAL enum), and the library owns the consequence. It
+  also makes the two shim-level rejections stay where they belong — an
+  unrecognised *bit* is EINVAL and so is an access mode that is none of the
+  three, both of which are the C's own checks rather than any kernel's, and
+  neither of which is expressible once the flags are parsed. Against it: a
+  future `fcntl(F_GETFL)` would have to invent a numbering, and this makes the
+  library unable to model a kernel that rejects a flag *combination* by its bits.
+
+  **Recommended: (B).** The `fcntl` objection is the only real cost and it is
+  speculative — nothing needs it, and if it arrives it wants a per-flavour
+  numbering *in the library*, which is where (B) leaves room for it. (A)'s cost
+  is not speculative: it would either move platform knowledge to the client or
+  export the numbering, and the whole extraction has been moving that knowledge
+  the other way.
+
+  Either way the `mode` argument crosses raw and unvalidated, which is settled
+  and measured: `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only
+  open of an existing file, so a handler rejecting a nonzero mode without
+  `O_CREAT` would refuse the BCL's own read path; and `mode` 0o10777 creates
+  0o0755 on both kernels, so a bit above the permission word is dropped rather
+  than refused.
+
+* **8l — `opendir` and `readdir`**, split out of the old 8k for the reason given
+  there. Their own question is where the directory stream lives: PawPrint today
+  materialises the `DIR*` as guest memory whose address *is* the handle, and the
+  `d_name` buffer inside it is sized by an ABI constant — so the stream's
+  identity and its bytes are on different sides of the boundary, which none of
+  stage 8's other syscalls has had to arrange.
 * **8l — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
   table and had no home in the first draft of this list, which is a drafting
   failure the census itself should have caught: an increment list that does not
