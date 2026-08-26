@@ -1141,6 +1141,76 @@ module PathLimits =
 
         limits
 
+/// What the bytes of a syscall's path argument name, once this kernel has
+/// copied them in.
+[<RequireQualifiedAccess>]
+type PathArgument =
+    | Parsed of path : UnixPath
+    /// The entry point returns its failure sentinel, and the caller stores
+    /// `error` wherever its libc keeps errno. Only ever `ENAMETOOLONG`: a
+    /// pathname's *bytes* have no other way to be wrong, everything else being
+    /// a question about what they resolve to.
+    | Failed of error : UnixError
+
+/// Why this kernel cannot say what a path argument names.
+///
+/// A gap in *representation* rather than in measurement — what a real kernel
+/// does is not in doubt — so a message composed for this should not claim to
+/// report a measurement.
+[<RequireQualifiedAccess>]
+type PathArgumentRefusal =
+    /// The bytes are not valid UTF-8. A real kernel looks up the raw bytes, so
+    /// byte 0xFF names a file no valid UTF-8 name can; this kernel models a
+    /// filename as a string of characters and has no such name to look up.
+    | NotUtf8
+
+[<RequireQualifiedAccess>]
+module PathArgument =
+    /// What a real kernel would look up, given the bytes of a path argument
+    /// **without its NUL terminator** — which is what a caller that stopped at
+    /// the NUL holds.
+    ///
+    /// The three stages run in this order, and the order is measured rather than
+    /// arbitrary:
+    ///
+    ///  1. **Length first.** `PATH_MAX` is enforced by `getname()`/`copyinstr`
+    ///     when the kernel copies the string in, before anything looks at what
+    ///     it says. So a path that is *both* over-long and not valid UTF-8 is
+    ///     `ENAMETOOLONG`, not a refusal — if the decode ran first, a path a real
+    ///     kernel rejects cheaply would instead have no answer at all.
+    ///  2. **Strict decode**, never a lenient one: substituting U+FFFD would
+    ///     silently name a *different* file, one literally called "�".
+    ///  3. **Parse.**
+    ///
+    /// The limit counts the NUL and these bytes do not, so the comparison is
+    /// against `pathMaxBytes - 1`; and the limit is per-flavour (Darwin 1024,
+    /// Linux 4096), which is why it arrives as `PathLimits` rather than as a
+    /// constant.
+    let parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : Result<PathArgument, PathArgumentRefusal> =
+        if bytes.Length > PathLimits.pathMaxBytes limits - 1 then
+            Ok (PathArgument.Failed UnixError.ENAMETOOLONG)
+        else
+
+        let decoded =
+            try
+                Some (UnixPathText.utf8.GetString (bytes.AsSpan ()))
+            with :? System.Text.DecoderFallbackException ->
+                None
+
+        match decoded with
+        | None -> Error PathArgumentRefusal.NotUtf8
+        | Some decoded ->
+
+        match UnixPath.parse decoded with
+        | Ok path -> Ok (PathArgument.Parsed path)
+        | Error error ->
+            // Unreachable: the only rejections are a null candidate — impossible,
+            // we have just decoded a string — and text that cannot survive the
+            // `char*` boundary, which a string decoded *from* that boundary
+            // cannot contain.
+            failwith
+                $"PathArgument.parse: the path did not survive parsing: %s{UnixPath.describe error}. The value was decoded from a NUL-free byte string, so it can contain neither an embedded NUL nor a null reference (this is a bug in this library)."
+
 /// Where `lseek(2)` measures its offset from.
 ///
 /// Exactly the three `Interop.Sys.SeekWhence` values (`Interop.LSeek.cs`), which

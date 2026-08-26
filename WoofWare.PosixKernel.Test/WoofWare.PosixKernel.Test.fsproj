@@ -13,6 +13,7 @@
     <Compile Include="TestUnixProcessState.fs" />
         <Compile Include="TestUnixSystemStep.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
+    <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixPath.fs" />
