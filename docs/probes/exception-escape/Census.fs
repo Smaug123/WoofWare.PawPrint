@@ -3,16 +3,10 @@ namespace ExnSpike
 open System.Collections.Generic
 open WoofWare.PawPrint
 
-/// A census of the raw material an exception-escape analysis has to work from, measured against
-/// a real assembly. Answers "how much of the answer is syntactically apparent, and where exactly
+/// A census of the raw material an exception-escape analysis has to work from, measured against a
+/// real assembly. Answers "how much of the answer is syntactically apparent, and where exactly
 /// does the analysis need something it does not have?"
 module Census =
-
-    let private calleeOf (op : IlOp) : MetadataToken option =
-        match op with
-        | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj),
-                                   MetadataOperand.FromMetadata t) -> Some t.Token
-        | _ -> None
 
     type private Counters () =
         let d = Dictionary<string, int> ()
@@ -44,6 +38,7 @@ module Census =
         let calleeKinds = Counters ()
         let thrownTypes = Counters ()
         let implicitCounts = Counters ()
+        let opcodeKinds = Counters ()
 
         let mutable methodsTotal = 0
         let mutable ilMethods = 0
@@ -51,8 +46,8 @@ module Census =
         let mutable rethrowSites = 0
         let mutable methodsWithHandlers = 0
         let mutable callSites = 0
+        let mutable indirectSites = 0
         let mutable methodsWithImplicit = 0
-        let mutable methodsWithNoRaisingOp = 0
 
         let nameOfTypeToken (t : MetadataToken) : string option =
             match t with
@@ -113,15 +108,22 @@ module Census =
                     | ExceptionRegion.Fault _ -> catchKinds.Bump "fault"
 
                 let mutable sawImplicit = false
-                let mutable sawAnyRaising = false
 
                 for i in 0 .. ops.Length - 1 do
                     let op, _off = ops.[i]
 
+                    match Implicit.ofIlOp op with
+                    | Faults.Unmodelled -> opcodeKinds.Bump "unmodelled opcode"
+                    | Faults.Raises [] -> ()
+                    | Faults.Raises xs ->
+                        sawImplicit <- true
+
+                        for x in xs do
+                            implicitCounts.Bump x
+
                     match op with
                     | IlOp.Nullary NullaryIlOp.Throw ->
                         throwSites <- throwSites + 1
-                        sawAnyRaising <- true
                         let prev = if i > 0 then Some (fst ops.[i - 1]) else None
 
                         match prev with
@@ -144,53 +146,58 @@ module Census =
                             throwOperandKinds.Bump "ldsfld (needs dataflow)"
                         | Some other -> throwOperandKinds.Bump $"other: %O{other}"
                         | None -> throwOperandKinds.Bump "no predecessor"
-                    | IlOp.Nullary NullaryIlOp.Rethrow ->
-                        rethrowSites <- rethrowSites + 1
-                        sawAnyRaising <- true
-                    | IlOp.Nullary n ->
-                        match Implicit.ofNullary n with
-                        | [] -> ()
-                        | xs ->
-                            sawImplicit <- true
-                            sawAnyRaising <- true
+                    | IlOp.Nullary NullaryIlOp.Rethrow -> rethrowSites <- rethrowSites + 1
+                    | IlOp.UnaryMetadataToken (mop, operand) ->
+                        match mop with
+                        | UnaryMetadataTokenIlOp.Calli
+                        | UnaryMetadataTokenIlOp.Jmp ->
+                            indirectSites <- indirectSites + 1
+                            calleeKinds.Bump $"%O{mop} (indirect: no metadata target)"
+                        | UnaryMetadataTokenIlOp.Call
+                        | UnaryMetadataTokenIlOp.Callvirt
+                        | UnaryMetadataTokenIlOp.Newobj ->
+                            callSites <- callSites + 1
 
-                            for x in xs do
-                                implicitCounts.Bump x
-                    | IlOp.UnaryMetadataToken (mop, _) ->
-                        match Implicit.ofUnaryMetadata mop with
-                        | [] -> ()
-                        | xs ->
-                            sawImplicit <- true
-                            sawAnyRaising <- true
+                            match operand with
+                            | MetadataOperand.FromDynamicScope _ -> calleeKinds.Bump "dynamic-scope operand"
+                            | MetadataOperand.FromMetadata t ->
+                                calleeKinds.Bump (
+                                    match t.Token with
+                                    | MetadataToken.MethodDef _ -> "MethodDef (same assembly)"
+                                    | MetadataToken.MemberReference _ -> "MemberRef (parent decides; see below)"
+                                    | MetadataToken.MethodSpecification _ -> "MethodSpec (generic instantiation)"
+                                    | _ -> "other"
+                                )
 
-                            for x in xs do
-                                implicitCounts.Bump x
-                    | _ -> ()
-
-                    match calleeOf op with
-                    | Some t ->
-                        callSites <- callSites + 1
-                        sawAnyRaising <- true
-
-                        calleeKinds.Bump (
-                            match t with
-                            | MetadataToken.MethodDef _ -> "MethodDef (same assembly)"
-                            | MetadataToken.MemberReference _ -> "MemberRef (needs cross-assembly resolution)"
-                            | MetadataToken.MethodSpecification _ -> "MethodSpec (generic instantiation)"
-                            | _ -> "other"
-                        )
-
-                        match op with
-                        | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, _) ->
-                            calleeKinds.Bump "  ...of which callvirt (needs devirtualisation)"
+                            match mop with
+                            | UnaryMetadataTokenIlOp.Callvirt -> calleeKinds.Bump "  ...of which callvirt"
+                            | _ -> ()
                         | _ -> ()
-                    | None -> ()
+                    | _ -> ()
 
                 if sawImplicit then
                     methodsWithImplicit <- methodsWithImplicit + 1
 
-                if not sawAnyRaising then
-                    methodsWithNoRaisingOp <- methodsWithNoRaisingOp + 1
+        // MemberRef parents, which is what decides whether a MemberRef callee is a foreign call or
+        // merely an instantiation of a local type.
+        let memberRefParents = Counters ()
+
+        for KeyValue (_, mr) in assy.Members do
+            match mr.Parent with
+            | MetadataToken.TypeDefinition _ -> memberRefParents.Bump "TypeDef (this assembly)"
+            | MetadataToken.TypeReference h ->
+                match assy.TypeRefs.TryGetValue h with
+                | true, tr ->
+                    match tr.ResolutionScope with
+                    | TypeRefResolutionScope.Assembly _ -> memberRefParents.Bump "TypeRef scoped to an AssemblyRef"
+                    | TypeRefResolutionScope.ModuleDef _
+                    | TypeRefResolutionScope.ModuleRef _ -> memberRefParents.Bump "TypeRef scoped to a module"
+                    | TypeRefResolutionScope.TypeRef _ -> memberRefParents.Bump "TypeRef nested in a TypeRef"
+                | _ -> memberRefParents.Bump "TypeRef (unresolvable)"
+            | MetadataToken.TypeSpecification _ -> memberRefParents.Bump "TypeSpec (an instantiation)"
+            | MetadataToken.MethodDef _ -> memberRefParents.Bump "MethodDef (vararg call site)"
+            | MetadataToken.ModuleReference _ -> memberRefParents.Bump "ModuleRef"
+            | _ -> memberRefParents.Bump "other"
 
         let pct (n : int) (d : int) =
             if d = 0 then 0.0 else 100.0 * float n / float d
@@ -205,11 +212,6 @@ module Census =
         printfn ""
 
         printfn
-            "IL methods with no raising op at all: %d (%.1f%% of IL methods)"
-            methodsWithNoRaisingOp
-            (pct methodsWithNoRaisingOp ilMethods)
-
-        printfn
             "IL methods with at least one implicitly-raising opcode: %d (%.1f%%)"
             methodsWithImplicit
             (pct methodsWithImplicit ilMethods)
@@ -219,7 +221,13 @@ module Census =
             methodsWithHandlers
             (pct methodsWithHandlers ilMethods)
 
-        printfn "throw sites: %d ; rethrow sites: %d ; call-ish sites: %d" throwSites rethrowSites callSites
+        printfn
+            "throw sites: %d ; rethrow sites: %d ; call sites: %d ; indirect transfers: %d"
+            throwSites
+            rethrowSites
+            callSites
+            indirectSites
+
         printfn ""
         printfn "-- what precedes a `throw` (can we name the thrown type syntactically?) --"
 
@@ -248,9 +256,18 @@ module Census =
             printfn "  %-50s %6d  %5.1f%%" k v (pct v callSites)
 
         printfn ""
+        printfn "-- MemberRef parents, over the whole MemberRef table --"
+
+        for k, v in memberRefParents.Items do
+            printfn "  %-45s %6d" k v
+
+        printfn ""
         printfn "-- implicit (opcode-raised) exception site counts --"
 
         for k, v in implicitCounts.Items do
+            printfn "  %-45s %6d" k v
+
+        for k, v in opcodeKinds.Items do
             printfn "  %-45s %6d" k v
 
         printfn ""

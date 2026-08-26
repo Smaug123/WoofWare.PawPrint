@@ -1,4 +1,5 @@
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1178ms
+warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1142ms
 methods: 41561 (IL bodies: 39466, 95.0%)
 
 -- body kinds --
@@ -18,10 +19,9 @@ methods: 41561 (IL bodies: 39466, 95.0%)
   RuntimeProvided(UnsafeAccessor (Method, None))      1    0.0%
   RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetInstance"))      1    0.0%
 
-IL methods with no raising op at all: 2030 (5.1% of IL methods)
-IL methods with at least one implicitly-raising opcode: 23104 (58.5%)
+IL methods with at least one implicitly-raising opcode: 23922 (60.6%)
 IL methods with any exception region: 947 (2.4%)
-throw sites: 8704 ; rethrow sites: 41 ; call-ish sites: 117535
+throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers: 33
 
 -- what precedes a `throw` (can we name the thrown type syntactically?) --
   newobj immediately before                            8460   97.2%
@@ -56,19 +56,25 @@ throw sites: 8704 ; rethrow sites: 41 ; call-ish sites: 117535
 
 -- callee token kinds --
   MethodDef (same assembly)                           82815   70.5%
-  MemberRef (needs cross-assembly resolution)         19588   16.7%
-    ...of which callvirt (needs devirtualisation)     17021   14.5%
+  MemberRef (parent decides; see below)               19588   16.7%
+    ...of which callvirt                              17021   14.5%
   MethodSpec (generic instantiation)                  15132   12.9%
+  Calli (indirect: no metadata target)                   33    0.0%
+
+-- MemberRef parents, over the whole MemberRef table --
+  TypeSpec (an instantiation)                     8214
 
 -- implicit (opcode-raised) exception site counts --
-  System.NullReferenceException                  63196
+  System.NullReferenceException                  77304
   System.OutOfMemoryException                    17827
   System.TypeInitializationException              3952
+  System.IndexOutOfRangeException                 2951
   System.InvalidCastException                     2945
-  System.IndexOutOfRangeException                 2161
-  System.OverflowException                        1967
-  System.ArrayTypeMismatchException               1063
+  System.OverflowException                        1892
+  System.ArrayTypeMismatchException               1712
   System.DivideByZeroException                     911
+  System.StackOverflowException                    343
+  unmodelled opcode                                 41
 
 -- top 12 directly-thrown types (newobj;throw) --
   System.PlatformNotSupportedException                      5530
@@ -84,36 +90,38 @@ throw sites: 8704 ; rethrow sites: 41 ; call-ish sites: 117535
   System.BadImageFormatException                              49
   System.IndexOutOfRangeException                             36
 
-escape analysis (implicit on) took 1919ms
+escape analysis (implicit on) took 1629ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 23
 methods: 41561
-  provably throws nothing:              6355   15.3%
-  exact non-empty escaping set:         4322   10.4%
-  Unknown (analysis envelope hit):     30884   74.3%
+  provably throws nothing:              6295   15.1%
+  exact non-empty escaping set:         4369   10.5%
+  Unknown (analysis envelope hit):     30897   74.3%
   escaping-set size (exact answers): median 0, p90 1, max 7
   incompleteness reasons (site counts):
-    ForeignCallee               19588
-    GenericInstantiation        15132
-    VirtualCall                 13760
-    NoIlBody                     2095
+    GenericInstantiation        34720
+    VirtualCall                 17027
+    AbstractBody                 1116
+    NativeBody                    979
     UntypedThrow                  244
     Rethrow                        41
+    IndirectCall                   33
 
-escape analysis (implicit off) took 658ms
+escape analysis (implicit off) took 608ms
 
-===== unsound control: only explicit `throw`s and propagation =====
+===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 20
 methods: 41561
-  provably throws nothing:             10677   25.7%
+  provably throws nothing:             10664   25.7%
   exact non-empty escaping set:            0    0.0%
-  Unknown (analysis envelope hit):     30884   74.3%
+  Unknown (analysis envelope hit):     30897   74.3%
   escaping-set size (exact answers): median 0, p90 0, max 0
   incompleteness reasons (site counts):
-    ForeignCallee               19588
-    GenericInstantiation        15132
-    VirtualCall                 13760
-    NoIlBody                     2095
+    GenericInstantiation        34720
+    VirtualCall                 17027
+    AbstractBody                 1116
+    NativeBody                    979
     UntypedThrow                  244
     Rethrow                        41
+    IndirectCall                   33
