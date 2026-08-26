@@ -530,14 +530,14 @@ module TestSocketEventDelivery =
         // queued connection survives its client, so the pending entry is
         // still there to sweep.
         let kernel =
-            match EmulatedKernel.closeFd clientFd kernel with
+            match KernelSyscall.close clientFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
         readyOf portId kernel |> List.length |> shouldEqual 1
 
         let kernel =
-            match EmulatedKernel.closeFd listenerFd kernel with
+            match KernelSyscall.close listenerFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -593,7 +593,7 @@ module TestSocketEventDelivery =
             ]
 
         let kernel =
-            match EmulatedKernel.closeFd serverFd kernel with
+            match KernelSyscall.close serverFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -640,7 +640,7 @@ module TestSocketEventDelivery =
         readyOf portId kernel |> shouldEqual []
 
         let kernel =
-            match EmulatedKernel.closeFd serverFd kernel with
+            match KernelSyscall.close serverFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -683,7 +683,7 @@ module TestSocketEventDelivery =
         let serverFd, _, kernel = EmulatedKernel.acceptConnection listenerId kernel
 
         let kernel =
-            match EmulatedKernel.closeFd serverFd kernel with
+            match KernelSyscall.close serverFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -716,10 +716,12 @@ module TestSocketEventDelivery =
         let _, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
 
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd listenerFd kernel |> ignore)
-
-        exc.Message |> shouldContainText "RSTs the unaccepted client"
+        // Asserted as the refusal's own case rather than as a crash: the
+        // library now says which measured gap it declined to answer across, and
+        // a message match would pass for any of the three.
+        match UnixSystem.close listenerFd (EmulatedKernel.unix kernel) with
+        | Error (CloseRefusal.ListenerWouldResetUnacceptedClient _) -> ()
+        | other -> failwith $"expected a listener-reset refusal, got %O{other}"
 
     /// The connect's two edges enter in the measured order (`order7.c`): the
     /// client's completion before the listener's accept edge.
@@ -966,15 +968,14 @@ module TestSocketEventDelivery =
         let portFd, dupFd, kernel = build ()
 
         let kernel =
-            match EmulatedKernel.closeFd dupFd kernel with
+            match KernelSyscall.close dupFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
         // ...and destroying the description refuses.
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd portFd kernel |> ignore)
-
-        exc.Message |> shouldContainText "Implement port retention"
+        match UnixSystem.close portFd (EmulatedKernel.unix kernel) with
+        | Error (CloseRefusal.LinuxLastPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual (ThreadId 1)
+        | other -> failwith $"expected a Linux port-retention refusal, got %O{other}"
 
         // Darwin: even the dup-survived close refuses.
         let _, dupFd, kernel = build ()
@@ -987,10 +988,9 @@ module TestSocketEventDelivery =
                     }
             }
 
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd dupFd kernel |> ignore)
-
-        exc.Message |> shouldContainText "closing a kqueue out from under a waiter"
+        match UnixSystem.close dupFd (EmulatedKernel.unix kernel) with
+        | Error (CloseRefusal.DarwinPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual (ThreadId 1)
+        | other -> failwith $"expected a Darwin kqueue refusal, got %O{other}"
 
     // --- forged invariants ---
 

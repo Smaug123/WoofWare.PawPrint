@@ -311,6 +311,24 @@ module TestUnixError =
                 |> shouldEqual (UnixError.toPal error)
 
     [<Test>]
+    let ``a portable errno is the same number under either numbering`` () : unit =
+        // Two ways to reach a raw errno coexist -- `toRawErrno`, which answers
+        // only where the platforms agree, and `toRawErrnoUnder`, which asks the
+        // flavour. A handler moving from the first to the second must not change
+        // what a guest reads, and for the portable errnos it cannot; asserted
+        // rather than assumed, because "they agree" is the reason such a move is
+        // safe and nothing else in the suite states it.
+        for error in UnixError.all do
+            match (UnixError.numbering error).Raw with
+            | RawErrnoPortability.PlatformDependent _ -> ()
+            | RawErrnoPortability.Portable _ ->
+                let portable = UnixError.toRawErrno error
+
+                for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+                    UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+                    |> shouldEqual portable
+
+    [<Test>]
     let ``toRawErrno refuses a platform-dependent error, naming both candidates`` () : unit =
         // The whole point of admitting ELOOP: its PAL value is usable, and is
         // what CoreLib switches on, but its raw number is not answerable.

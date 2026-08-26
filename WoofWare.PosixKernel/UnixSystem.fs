@@ -78,13 +78,32 @@ type TruncationRefusal =
     /// that length.
     | ExceedsRepresentableLength of inode : InodeNumber * length : int64
 
+/// Why this kernel will not close a descriptor.
+///
+/// Generic in what names a task because two of the three are about a task
+/// parked in a wait, and which one that is cannot be recomputed by the client:
+/// nothing stops two tasks parking on the same port, so a client repeating the
+/// search could name a different one from the one this refusal is about.
+[<RequireQualifiedAccess>]
+type CloseRefusal<'Task> =
+    /// The last descriptor onto a socket event port that `task` is parked in a
+    /// wait on, under the Linux flavour.
+    | LinuxLastPortDescriptorWithWaiter of port : OpenFileDescriptionId * task : 'Task
+    /// Any descriptor onto a socket event port that `task` is parked in a wait
+    /// on, under the Darwin flavour.
+    | DarwinPortDescriptorWithWaiter of port : OpenFileDescriptionId * task : 'Task
+    /// The last descriptor onto a listening socket whose accept queue still
+    /// holds a connection whose client is open.
+    | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
+
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
-type SyscallRefusal =
+type SyscallRefusal<'Task> =
     | LSeek of LSeekRefusal
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
+    | Close of CloseRefusal<'Task>
 
 [<RequireQualifiedAccess>]
 module LSeekRefusal =
@@ -130,6 +149,20 @@ module FLockRefusal =
             $"a blocking %s{requested} lock was requested, and another open file description holds a conflicting one. This library cannot block a caller on a lock: that needs a scheduler to park it and wake it when the holder releases. If the holder is the same task, a real kernel would deadlock here rather than return. Pass LOCK_NB to get EWOULDBLOCK instead."
 
 [<RequireQualifiedAccess>]
+module CloseRefusal =
+    /// What this kernel knows about why it cannot close the descriptor. The
+    /// client supplies its own half — which entry point, which descriptor
+    /// number, and what it would have to build to lift the refusal.
+    let describe (refusal : CloseRefusal<'Task>) : string =
+        match refusal with
+        | CloseRefusal.LinuxLastPortDescriptorWithWaiter (port, task) ->
+            $"it is the last descriptor onto socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Linux's epoll_wait holds the port by file reference: the last close leaves the in-flight wait's registrations live, and a later edge can still complete it. Representing that needs the port to outlive its last descriptor, which this kernel's descriptor table cannot express."
+        | CloseRefusal.DarwinPortDescriptorWithWaiter (port, task) ->
+            $"the descriptor names socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Darwin's kevent *ends* such a wait with an error when the fd it was entered through closes -- but which error is not measured precisely, and what a close of a *different* descriptor onto the same kqueue does is not measured at all."
+        | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
+            $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
+
+[<RequireQualifiedAccess>]
 module TruncationRefusal =
     let describe (refusal : TruncationRefusal) : string =
         match refusal with
@@ -151,6 +184,7 @@ type Syscall =
     /// and models per flavour.
     | FLock of fd : int * operation : int
     | FTruncate of fd : int * length : int64
+    | Close of fd : int
 
 /// What the entry point returns, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -721,6 +755,254 @@ module UnixSystem =
                 Error (FLockRefusal.WouldBlockIndefinitely requested)
         | None -> Ok (SyscallAnswer.Completed 0L, advanced)
 
+    /// `close(2)`: drop `fd` from the process's table, together with the kernel
+    /// objects the description it named was the last reference to — the socket,
+    /// the connections nothing else references, and the inode whose last name
+    /// had already gone.
+    ///
+    /// `FileDescriptorRegistry.close` cannot do this itself: the socket table is
+    /// the machine's rather than the process's, and whether an inode is still
+    /// named is a question about the filesystem. Closing one of several
+    /// descriptors onto a description destroys nothing, and so frees neither.
+    ///
+    /// EBADF is its only errno; see `CloseRefusal` for the three inputs it
+    /// declines to answer at all.
+    let close<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloseRefusal<'Task>>
+        =
+        // Resolved before the close so both port refusals below can name what the
+        // fd referred to.
+        let closing = FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors
+
+        match FileDescriptorRegistry.close fd system.Process.FileDescriptors with
+        | Error FileDescriptorCloseError.BadFd -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Ok (registry, destroyed) ->
+
+        // Closing a descriptor onto a port with a task parked in a wait on it is
+        // where the flavours part, and each side is measured (PawPrint's
+        // SocketEventWaitSurvivesCloseLinux.cs and its macOS run):
+        //
+        //   * Linux's epoll_wait holds the port by file reference — a close that
+        //     leaves a dup changes nothing, and even the last close leaves the
+        //     in-flight syscall's registrations alive for a later edge to
+        //     complete. The dup case is modelled (the description survives and
+        //     the wait completes); the last-close case would need retention this
+        //     table does not represent, so it refuses.
+        //   * Darwin's kevent *ends* with an error when the fd it was entered
+        //     through closes (measured; which error, and what a close of a
+        //     different descriptor onto the same kqueue does, are not), so any
+        //     such close refuses.
+        //
+        // Checked against the parked-wait record rather than a task's run state,
+        // so the window between a wake and the woken task's re-entry is covered
+        // too.
+        let portRefusal : CloseRefusal<'Task> option =
+            match closing with
+            | None -> None
+            | Some (closingId, description) ->
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.File _
+            | OpenFileTarget.Socket _ -> None
+            | OpenFileTarget.SocketEventPort _ ->
+
+            let waiter =
+                system.Tasks
+                |> Map.tryPick (fun task state ->
+                    match state.ParkedSocketWait with
+                    | Some wait when wait.Port = closingId -> Some task
+                    | Some _
+                    | None -> None
+                )
+
+            match waiter with
+            | None -> None
+            | Some task ->
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux ->
+                    if destroyed.IsSome then
+                        Some (CloseRefusal.LinuxLastPortDescriptorWithWaiter (closingId, task))
+                    else
+                        None
+                | SimulatedUnixFlavour.Darwin -> Some (CloseRefusal.DarwinPortDescriptorWithWaiter (closingId, task))
+
+        match portRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        let socketEffects
+            : Result<
+                  Map<SocketId, SocketDescription> * Map<ConnectionId, TcpConnection> * SocketId list,
+                  CloseRefusal<'Task>
+               > =
+            match destroyed with
+            | None -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.File _ -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
+            | OpenFileTarget.Socket socketId ->
+
+            let dying =
+                match Map.tryFind socketId system.Machine.Sockets with
+                | Some socket -> socket
+                | None ->
+                    failwith
+                        $"UnixSystem.close: fd %d{fd}'s description names socket %O{socketId}, which this system's socket table does not hold. Closing is the only operation here that removes a socket, and it removes it together with the description that named it, so a live descriptor onto an absent socket means the two tables were built out of step. There is nothing to repair it with: the objects this close would have released cannot be found (this is a bug in this library or in whatever assembled this system)."
+
+            let sockets = Map.remove socketId system.Machine.Sockets
+
+            // A connection lives while any socket phase or accept queue
+            // references it. The dying socket may have been the last such
+            // reference — directly, or by being the listener whose queue held it
+            // (the queue dies with the listener, as Linux's
+            // inet_csk_listen_stop discards a closed listener's accept queue).
+            let candidates =
+                match dying.Phase with
+                | SocketPhase.Established connection
+                | SocketPhase.EstablishedPendingReport connection -> [ connection ]
+                | SocketPhase.Listening listenState -> listenState.Queue
+                | SocketPhase.Idle
+                | SocketPhase.RefusedPendingDelivery
+                | SocketPhase.Dead
+                | SocketPhase.DatagramPeer _ -> []
+
+            let stillReferenced (connection : ConnectionId) : bool =
+                sockets
+                |> Map.exists (fun _ survivor ->
+                    match survivor.Phase with
+                    | SocketPhase.Established c
+                    | SocketPhase.EstablishedPendingReport c -> c = connection
+                    | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
+                    | SocketPhase.Idle
+                    | SocketPhase.RefusedPendingDelivery
+                    | SocketPhase.Dead
+                    | SocketPhase.DatagramPeer _ -> false
+                )
+
+            // What this close does to the sockets sharing the dying socket's
+            // connections splits by which end is dying. The peer of an
+            // established pair sees the FIN: its level becomes the measured
+            // half-closed IN|OUT|RDHUP and the driver signals it (`order3.c` row
+            // Q) — collected here and signalled below, once the socket table
+            // reflects the close, so the level the signal filters against is the
+            // survivor's new one. A dying *listener* instead RSTs its unaccepted
+            // queue entries' clients, whose resulting level is unmeasured — that
+            // case refuses when a registration could observe it, and an RST
+            // raises ERR, which no interest mask can hide, so any registration
+            // could.
+            let establishedSurvivors : Result<SocketId list, CloseRefusal<'Task>> =
+                match dying.Phase with
+                | SocketPhase.Established _
+                | SocketPhase.EstablishedPendingReport _ ->
+                    sockets
+                    |> Map.toList
+                    |> List.choose (fun (survivorId, survivor) ->
+                        match survivor.Phase with
+                        | SocketPhase.Established c
+                        | SocketPhase.EstablishedPendingReport c when List.contains c candidates -> Some survivorId
+                        | _ -> None
+                    )
+                    |> Ok
+                | SocketPhase.Listening _ ->
+                    // The first candidate with a live client, which is the one
+                    // the old `for`-and-crash reported.
+                    let refusal =
+                        candidates
+                        |> List.tryPick (fun candidate ->
+                            sockets
+                            |> Map.toSeq
+                            |> Seq.filter (fun (_, survivor) ->
+                                match survivor.Phase with
+                                | SocketPhase.Established c
+                                | SocketPhase.EstablishedPendingReport c -> c = candidate
+                                | SocketPhase.Listening _
+                                | SocketPhase.Idle
+                                | SocketPhase.RefusedPendingDelivery
+                                | SocketPhase.Dead
+                                | SocketPhase.DatagramPeer _ -> false
+                            )
+                            |> Seq.map fst
+                            |> Seq.tryHead
+                            |> Option.map (fun survivor ->
+                                CloseRefusal.ListenerWouldResetUnacceptedClient (socketId, candidate, survivor)
+                            )
+                        )
+
+                    match refusal with
+                    | Some refusal -> Error refusal
+                    | None -> Ok []
+                | SocketPhase.Idle
+                | SocketPhase.RefusedPendingDelivery
+                | SocketPhase.Dead
+                | SocketPhase.DatagramPeer _ -> Ok []
+
+            match establishedSurvivors with
+            | Error refusal -> Error refusal
+            | Ok establishedSurvivors ->
+
+            let connections =
+                (system.Machine.Connections, candidates)
+                ||> List.fold (fun connections connection ->
+                    if stillReferenced connection then
+                        connections
+                    else
+                        Map.remove connection connections
+                )
+
+            Ok (sockets, connections, establishedSurvivors)
+
+        match socketEffects with
+        | Error refusal -> Error refusal
+        | Ok (sockets, connections, establishedSurvivors) ->
+
+        let closed =
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets = sockets
+                        Connections = connections
+                    }
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        // The FIN's edge, raised now that the survivor's level is the
+        // half-closed one. The signal filters by each registration's interest,
+        // so a survivor nobody watches — or one watched only for conditions the
+        // half-closed level does not meet — records nothing.
+        let closed =
+            (closed, establishedSurvivors)
+            ||> List.fold (fun system survivor ->
+                { system with
+                    Process = UnixProcessState.signalSocketStateChange survivor system.Process
+                }
+            )
+
+        // The close may have been the last reference to an inode whose last name
+        // went away earlier, which is what keeps `read` on an unlinked descriptor
+        // working right up until the descriptor goes. Reaped against the *closed*
+        // system, so this description no longer counts as holding it.
+        let reaped =
+            match destroyed with
+            | None -> closed
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.File (inode, _) -> forgetIfUnheld inode closed
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.Socket _ -> closed
+
+        Ok (SyscallAnswer.Completed 0L, reaped)
+
     /// Answer one syscall.
     ///
     /// Sugar over the per-syscall functions above, for a client that wants one
@@ -731,7 +1013,7 @@ module UnixSystem =
     let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (call : Syscall)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SyscallRefusal>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SyscallRefusal<'Task>>
         =
         match call with
         | Syscall.GetEffectiveUserId -> Ok (SyscallAnswer.Completed (int64 (effectiveUserId system)), system)
@@ -739,3 +1021,4 @@ module UnixSystem =
         | Syscall.LSeek (fd, offset, whence) -> lseek fd offset whence system |> Result.mapError SyscallRefusal.LSeek
         | Syscall.FLock (fd, operation) -> flock fd operation system |> Result.mapError SyscallRefusal.FLock
         | Syscall.FTruncate (fd, length) -> ftruncate fd length system |> Result.mapError SyscallRefusal.FTruncate
+        | Syscall.Close fd -> close fd system |> Result.mapError SyscallRefusal.Close

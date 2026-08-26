@@ -119,7 +119,7 @@ module TestEmulatedKernelInodeLifetime =
             }
 
     let private closed (fd : int) (kernel : EmulatedKernel) : EmulatedKernel =
-        match EmulatedKernel.closeFd fd kernel with
+        match KernelSyscall.close fd kernel with
         | Ok kernel -> kernel
         | Error error -> failwith $"could not close fd %d{fd}: %O{error}"
 
@@ -262,14 +262,14 @@ module TestEmulatedKernelInodeLifetime =
     [<Test>]
     let ``forgetIfUnheld leaves an inode that is already gone`` () : unit =
         // Total, so that a caller need not know whether some earlier step
-        // already reaped it — which is exactly the position `closeFd` is in.
+        // already reaped it — which is exactly the position `close` is in.
         let kernel = kernel ()
         let a, unbound = unbound "/outer/inner" "a" kernel
         let once = EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld a) unbound
 
         EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld a) once |> shouldEqual once
 
-    // ---------------------------------------------------------------- closeFd
+    // ------------------------------------------------------------------ close
 
     [<Test>]
     let ``closing the last descriptor reaps an unbound inode`` () : unit =

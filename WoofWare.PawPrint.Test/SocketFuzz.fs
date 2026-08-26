@@ -318,14 +318,19 @@ module SocketFuzz =
         | FuzzOp.Close slot ->
             let fd = slotFd slot state
 
-            match EmulatedKernel.closeFd fd state.Kernel with
+            match KernelSyscall.close fd state.Kernel with
             | Ok kernel ->
                 "ok",
                 { state with
                     Kernel = kernel
                     SlotFd = Map.remove slot state.SlotFd
                 }
-            | Error FileDescriptorCloseError.BadFd -> "EBADF", state
+            | Error UnixError.EBADF -> "EBADF", state
+            | Error error ->
+                // EBADF is `close(2)`'s only errno; anything else means the
+                // library grew a failure this generator does not know how to
+                // shrink towards.
+                failwith $"close of fd %d{fd} answered %O{error}, which is not EBADF"
         | FuzzOp.Dup (slot, newSlot) ->
             match FileDescriptorRegistry.dup (slotFd slot state) state.Kernel.FileDescriptors with
             | Ok (fd, registry) ->
