@@ -12,6 +12,7 @@
         <RepositoryUrl>https://github.com/Smaug123/WoofWare.PawPrint</RepositoryUrl>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageReadmeFile>README.md</PackageReadmeFile>
+        <PackageIcon>light.png</PackageIcon>
         <PackageTags>dotnet;il;interpreter;metadata;fsharp;woofware</PackageTags>
     </PropertyGroup>
 
@@ -73,7 +74,60 @@
     </ItemGroup>
 
     <ItemGroup>
-        <None Include="..\README.md" Pack="true" PackagePath="\" />
+        <None Include="..\logos\light.png" Pack="true" PackagePath="\" />
     </ItemGroup>
+
+    <!--
+        This project packs the repository readme, which carries a <picture> element so that GitHub
+        can theme-switch the logo. nuget.org renders the packed readme through Markdig with
+        DisableHtml(), which escapes raw HTML instead of dropping it, so that element would appear
+        on the package page as literal tags. Pack a copy with it removed.
+    -->
+    <UsingTask TaskName="WriteReadmeWithoutLogo"
+               TaskFactory="RoslynCodeTaskFactory"
+               AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+        <ParameterGroup>
+            <Source ParameterType="System.String" Required="true" />
+            <Destination ParameterType="System.String" Required="true" />
+        </ParameterGroup>
+        <Task>
+            <Using Namespace="System.Text.RegularExpressions" />
+            <Code Type="Fragment" Language="cs"><![CDATA[
+string readme = File.ReadAllText(Source);
+string stripped = Regex.Replace(readme, "<picture[^>]*>[\\s\\S]*?</picture>\\s*", "", RegexOptions.IgnoreCase);
+
+// A <picture> the pattern above failed to match would reach the package page as literal tags, so
+// check the strip did the job it claims to. Any other raw HTML in the readme leaks the same way,
+// but recognising it reliably would mean reimplementing CommonMark's block grammar here.
+if (Regex.IsMatch(stripped, "</?picture", RegexOptions.IgnoreCase))
+{
+    Log.LogError(
+        "{0} still contains a <picture> element after the logo strip, so the packed readme would "
+        + "show it on nuget.org as literal tags. Write the logo as a plain <picture> ... "
+        + "</picture> block, or teach this task to match the form used.",
+        Source);
+}
+else
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(Destination));
+    if (!File.Exists(Destination) || File.ReadAllText(Destination) != stripped)
+    {
+        File.WriteAllText(Destination, stripped);
+    }
+}
+]]></Code>
+        </Task>
+    </UsingTask>
+    <Target Name="PackReadmeWithoutLogo" BeforeTargets="_GetPackageFiles">
+        <PropertyGroup>
+            <!-- IntermediateOutputPath is relative to the project by default but absolute under
+                 UseArtifactsOutput, so combine rather than prepend. -->
+            <_NuGetReadme>$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'nuget-readme', 'README.md'))</_NuGetReadme>
+        </PropertyGroup>
+        <WriteReadmeWithoutLogo Source="$(MSBuildProjectDirectory)/../README.md" Destination="$(_NuGetReadme)" />
+        <ItemGroup>
+            <None Include="$(_NuGetReadme)" Pack="true" PackagePath="\" />
+        </ItemGroup>
+    </Target>
 
 </Project>
