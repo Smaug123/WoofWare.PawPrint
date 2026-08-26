@@ -2507,6 +2507,24 @@ Ordered so that each has an oracle before the next depends on it.
   that is its memory and not a kernel's. Once it exists, `mkdir`/`rmdir`/
   `unlink` and `open` all want it, which is why it is its own increment rather
   than a rider on one of them.
+
+  `stat` is `resolvePath` plus `statOf`, the symlink policy being the entire
+  difference between it and `lstat`. It **cannot be refused**, unlike `fstat`:
+  every inode a path resolves to is one this filesystem holds, so the three
+  inode-free descriptors `fstat` refuses for are unreachable from a path. The
+  signature says so by returning a bare `FileStatusAnswer` rather than a
+  `Result` — the same move 8f and 8g each made for their own refusal sets, and
+  the third time the plan has found that two syscalls with matching *answers*
+  have different *refusals*.
+
+  **A branch did not survive the move, and mutation testing is what found it.**
+  Replacing the start directory in the rooted arm changed no test, and reading
+  `resolveFull` says why: it asks `isRooted` itself and starts at the root
+  regardless of what it is handed. So the `if isRooted then root else cwd` that
+  PawPrint had been computing was choosing a value the walk discards. Deleted
+  rather than given an invented test, with the reason recorded at the call —
+  which is the outcome to want from a surviving mutant, and worth stating
+  because the first instinct on one is to reach for another row.
 * **8j — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
   land together once 8b exists.
 * **8k — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
