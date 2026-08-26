@@ -112,6 +112,149 @@ module TestUnixSystemStep =
         | Ok (answer, _) -> answer
         | Error e -> failwith $"expected an answer, got a refusal: %O{e}"
 
+    // -------------------------------------------------------------------- read
+
+    let private readBytes (result : Result<ReadAnswer * UnixSystem<int, string>, ReadRefusal>) : byte list =
+        match result with
+        | Ok (ReadAnswer.Completed bytes, _) -> List.ofSeq bytes
+        | other -> failwith $"expected a completed read, got %A{other}"
+
+    [<Test>]
+    let ``read moves the window it says it moved, and advances the offset by it`` () : unit =
+        let fd, system = withOpenFile linux
+
+        // The seeded file is five bytes, so this is a short read: the offset
+        // must land at the end rather than past it, which is what makes the
+        // second read report end-of-file instead of a second short read.
+        match UnixSystem.read fd UserBuffer.Mapped 8 system with
+        | Ok (ReadAnswer.Completed bytes, after) ->
+            List.ofSeq bytes |> shouldEqual [ 1uy ; 2uy ; 3uy ; 4uy ; 5uy ]
+
+            match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (_, offset)) -> offset |> shouldEqual 5L
+            | other -> failwith $"expected a file descriptor, got %O{other}"
+
+            UnixSystem.read fd UserBuffer.Mapped 8 after |> readBytes |> shouldEqual []
+        | other -> failwith $"unexpected: %O{other}"
+
+    [<Test>]
+    let ``a read that moves nothing does not consult its buffer`` () : unit =
+        // The measured rule: `read(f, NULL, 5)` at end-of-file is 0 rather than
+        // EFAULT, and the same holds for every buffer that has no bytes to give.
+        // A `Completed` with no bytes is how that reaches the caller, and a
+        // caller that resolved its pointer first would turn each of these into a
+        // fault or a crash.
+        let fd, system = withOpenFile linux
+
+        let system =
+            match UnixSystem.read fd UserBuffer.Mapped 8 system with
+            | Ok (_, system) -> system
+            | other -> failwith $"could not exhaust the file: %A{other}"
+
+        // Not `Addressless`, which never reaches the shortcut on this flavour:
+        // see the row below, which is where that asymmetry is pinned.
+        for buffer in [ UserBuffer.Unmapped 0UL ; UserBuffer.Opaque ; UserBuffer.Mapped ] do
+            UnixSystem.read fd buffer 5 system |> readBytes |> shouldEqual []
+
+    [<Test>]
+    let ``a zero-length read does not consult its buffer either`` () : unit =
+        // Distinct from the row above: there the *file* had nothing left, here
+        // the *caller* asked for nothing, and only the second is reachable
+        // without first exhausting the file.
+        let fd, system = withOpenFile linux
+
+        for buffer in [ UserBuffer.Unmapped 0UL ; UserBuffer.Opaque ; UserBuffer.Mapped ] do
+            UnixSystem.read fd buffer 0 system |> readBytes |> shouldEqual []
+
+    [<Test>]
+    let ``an addressless buffer is refused before the shortcuts on a screening platform`` () : unit =
+        // The one buffer whose answer depends on the flavour rather than on what
+        // the read would have done. Linux screens the address before the
+        // operation, and an addressless buffer cannot be screened — so it is
+        // refused even for a read that would have moved nothing and never
+        // touched it. Darwin screens nothing, so the same call reaches the
+        // shortcut and answers 0.
+        //
+        // Both halves matter: the Linux one says the screen really does precede
+        // the shortcuts, and the Darwin one says the refusal is the screen's
+        // rather than a property of the buffer.
+        let fd, system = withOpenFile linux
+
+        UnixSystem.read fd UserBuffer.Addressless 0 system
+        |> shouldEqual (Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtScreen))
+
+        let darwinFd, darwinSystem = withOpenFile darwin
+
+        UnixSystem.read darwinFd UserBuffer.Addressless 0 darwinSystem
+        |> readBytes
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a transfer through a buffer with no bytes is refused, not faulted`` () : unit =
+        // EFAULT would be a wrong answer for an opaque address rather than an
+        // approximate one; and an addressless buffer has nothing to fault about.
+        let fd, system = withOpenFile linux
+
+        UnixSystem.read fd UserBuffer.Opaque 5 system
+        |> shouldEqual (Error (ReadRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
+
+        // Under Darwin, which screens nothing up front, an addressless buffer
+        // survives to the transfer; under Linux it is refused at the screen.
+        let darwinFd, darwinSystem = withOpenFile darwin
+
+        UnixSystem.read darwinFd UserBuffer.Addressless 5 darwinSystem
+        |> shouldEqual (Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
+
+        UnixSystem.read fd UserBuffer.Addressless 5 system
+        |> shouldEqual (Error (ReadRefusal.Buffer BufferRefusal.AddresslessAtScreen))
+
+    [<Test>]
+    let ``an unmapped buffer faults where the platform says it does`` () : unit =
+        // Linux screens before the operation, so a wild address faults even
+        // though the file has bytes to give; Darwin discovers it at the copy.
+        // Either way the offset does not move.
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withOpenFile flavour
+
+            match UnixSystem.read fd wild 5 system with
+            | Ok (ReadAnswer.Failed UnixError.EFAULT, after) ->
+                match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+                | Some (OpenFileTarget.File (_, offset)) -> offset |> shouldEqual 0L
+                | other -> failwith $"expected a file descriptor, got %O{other}"
+            | other -> failwith $"unexpected: %O{other}"
+
+    [<Test>]
+    let ``read of a descriptor that is not open is EBADF whatever the buffer`` () : unit =
+        // The descriptor precedes the buffer on both platforms, so even a buffer
+        // that has no answer at all does not get one here.
+        for buffer in
+            [
+                UserBuffer.Mapped
+                UserBuffer.Unmapped 0UL
+                UserBuffer.Opaque
+                UserBuffer.Addressless
+            ] do
+            UnixSystem.read 7 buffer 5 linux
+            |> shouldEqual (Ok (ReadAnswer.Failed UnixError.EBADF, linux))
+
+    [<Test>]
+    let ``a negative count is refused as the caller's own mistake`` () : unit =
+        // Not an errno: a kernel never sees a negative count, because the
+        // foreign-function layer that would produce one answers it first. A
+        // library that returned EINVAL here would be inventing a kernel
+        // behaviour to cover a client's bug.
+        let fd, system = withOpenFile linux
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                UnixSystem.read fd UserBuffer.Mapped -1 system
+                |> ignore<Result<ReadAnswer * UnixSystem<int, string>, ReadRefusal>>
+            )
+
+        exn.Message |> shouldContainText "UnixSystem.read"
+
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
         UnixSystem.close 7 linux
