@@ -322,6 +322,41 @@ module TestAttributeUsageBlob =
                     [| PROPERTY ; BOOLEAN ; 0x0Duy ; 0x41uy ; 0x6Cuy |]
                 ]
 
+            // `ParseEncodedType` consumes one tag, plus one more if the first was SZARRAY, and then
+            // stops — so the member name is read from the third byte of the type here, whatever
+            // follows. These pin that PawPrint stops in the same place rather than walking the
+            // ECMA-335 grammar's recursion to the bottom.
+            "doubly-nested SZARRAY",
+            withNamedArgs
+                [
+                    namedArg PROPERTY [| SZARRAY ; SZARRAY ; BOOLEAN |] (serString "Inherited") [| 0uy |]
+                ]
+
+            "SZARRAY nested 32 deep",
+            withNamedArgs
+                [
+                    namedArg
+                        PROPERTY
+                        (Array.append (Array.create 32 SZARRAY) [| BOOLEAN |])
+                        (serString "Inherited")
+                        [| 0uy |]
+                ]
+
+            // The shape that overflowed the host's stack while this was built on the recursive
+            // grammar decoder: deep enough that a per-level frame cannot survive it.
+            "SZARRAY nested 20000 deep",
+            withNamedArgs
+                [
+                    namedArg
+                        PROPERTY
+                        (Array.append (Array.create 20000 SZARRAY) [| BOOLEAN |])
+                        (serString "Inherited")
+                        [| 0uy |]
+                ]
+
+            "SZARRAY with the blob ending before its element tag",
+            Array.concat [ prolog ; someTargets ; int16Bytes 1s ; [| PROPERTY ; SZARRAY |] ]
+
             "matched named arg missing its value byte",
             Array.concat
                 [
@@ -475,13 +510,25 @@ module TestAttributeUsageBlob =
                     "Nope"
                 ]
 
+        // Nesting depth is drawn rather than fixed: the recursive decoder this replaced consumed
+        // one stack frame per level, so a generator that only ever emitted one level could not see
+        // the difference between stopping after two tags and walking to the bottom.
+        let nestedArrayGen =
+            gen {
+                let! depth = Gen.frequency [ 3, Gen.constant 2 ; 2, Gen.choose (3, 8) ; 1, Gen.choose (9, 400) ]
+                let! leaf = Gen.elements [ BOOLEAN ; I4 ; 0x2Auy ]
+                return Array.append (Array.create depth SZARRAY) [| leaf |]
+            }
+
         let elemTypeGen =
             Gen.frequency
                 [
                     6, Gen.constant [| BOOLEAN |]
                     1, Gen.constant [| I4 |]
                     1, Gen.constant [| SZARRAY ; BOOLEAN |]
+                    1, nestedArrayGen
                     1, Gen.constant (Array.append [| ENUM |] (serString "E"))
+                    1, Gen.constant [| ENUM ; 0xFFuy |]
                 ]
 
         let argGen =
