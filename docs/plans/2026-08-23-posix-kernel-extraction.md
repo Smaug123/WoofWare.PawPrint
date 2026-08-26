@@ -1890,7 +1890,8 @@ the revision.
 #### What is actually there
 
 The stage names thirteen syscalls plus "the socket-address entry points".
-Measured in `Native/NativeSystemNative.fs`, which holds 73 handlers:
+Measured in `Native/NativeSystemNative.fs`, which holds 73 match arms over 66
+distinct entry points (several entry points have more than one signature arm):
 
 | handler | lines | what it carries |
 | --- | --- | --- |
@@ -1931,14 +1932,41 @@ no I/O". What actually crashes is the other two:
   is unknown.
 
 Both are measured-but-unmodelled in exactly stage 7's sense, so they are
-*refusals*, and they are **the client's** refusals: only PawPrint can produce
-either, and neither is a thing a kernel has a concept of. So they never reach
-the library — with one wrinkle worth writing down, because it is not obvious:
-`Unstatable` refuses only *under a platform that screens up front*, so the
-client's refusal is conditioned on a library fact. `screensUserBufferUpFront` is
-public, so the client asks and then refuses; but the refusal is not a pure
-property of the argument, and a reader who assumes it is will put the check in
-the wrong place.
+*refusals*. My first draft concluded they were therefore **the client's**
+refusals — only PawPrint can produce either — and that they never reach the
+library. **That is wrong, and the review that found it also found the
+counter-examples.** Production is client-side; *timing* is not, and after the
+move the library owns the order these fire in:
+
+| call today | today's answer | eager client refusal |
+| --- | --- | --- |
+| `read(badfd, symbolic, n)` | EBADF — the buffer is never even classified | crash |
+| `read(stdin, symbolic, n)` | **0** — the stdin arm precedes any dereference | crash |
+| `read(dir, symbolic, n)` | EISDIR | crash |
+| `write(rdonlyFd, unstatable, n)` | EBADF — the access-mode arm precedes the screen | crash |
+
+Every one of those is a currently-working call that a classification-time
+refusal would break, and conditioning the refusal on `screensUserBufferUpFront`
+does not help: it fixes *whether* and not *when*, and the descriptor checks that
+must precede it are exactly what moves into the library. **You cannot condition
+your way out of an ordering problem once you no longer own the order.**
+
+So the classification is four-way after all, and the two extra cases are library
+vocabulary rather than PawPrint's — a client whose memory is not byte-addressable
+is a general situation, not a CLR one:
+
+* `Opaque` — a real user address the client cannot name or transfer bytes
+  through. Passes every screen (`faultsBeforeOperation` already answers `false`
+  for it), and refuses at the transfer, which is where PawPrint runs out of
+  bytes.
+* `Addressless` — no address at all. Refuses at the *screen* on a screening
+  platform, because there is nothing to compare against the limit, and at the
+  transfer otherwise.
+
+Both refusals are the library's `Error`, returned at the step where the buffer is
+consulted, so every arm above keeps its answer. Both still satisfy "a refusal
+carries no state": for `read` and `write` the refusal points precede every state
+change, the offset advancing only after the copy.
 
 **And the classification is two-way, not three.** Decision 2 gives `Null` its
 own case. Measured: every one of the sixteen places that distinguishes
@@ -2015,34 +2043,84 @@ than one shape with an effect list. Costs: `step`'s uniform surface weakens —
 a client logging or replaying through it must match on more cases — and the case
 set grows as syscalls land, which is a closed-set-that-grows.
 
-**Recommended: (B)**, on the strength of finding 3. The generic effects list was
-proposed when the only imagined copy-out was opaque bytes; against the measured
-set it covers half the cases and forces the library to learn a .NET struct
-layout for the other half. (B) also keeps the "no illegal states" property that
-made stage 7's per-syscall functions the primitives and `step` the sugar: a
-`read` that returned a `FileStatus` would not typecheck.
+**(C) (B), plus a two-phase surface for the source direction.** Forced by a
+defect in (B) that review found and that the code states outright. `Write`'s
+handler defers decoding its buffer on purpose:
 
-Concretely, and mirroring stage 7's split of source and destination:
+> Decoding the `buffer` pointer is deferred until we are about to dereference it.
+> `Common_Write` is documented to perform no dereference for `bufferSize < 0`
+> (ERANGE bail) or `bufferSize = 0` (no-op on every Unix we model), so a guest
+> calling e.g. `SystemNative_Write((IntPtr)1, (byte*)123, 0)` must succeed on
+> PawPrint as it does on the real CLR — eagerly decoding `buffer` would crash
+> here.
+
+A `Mapped of bytes` case forces the client to extract *before* it calls, so
+`write(badfd, threeByteBuf, 10)` — today EBADF, because the room check runs only
+after every descriptor check passes — becomes a host crash, as does every
+byte-addressability failure in the per-byte walk. So for source-carrying
+syscalls the surface is two calls: an **admission** (`fd`, count, classification)
+answering how many bytes the kernel will take, and a **commit** taking the bytes
+the client then extracted. The admission's answer is a value the library
+constructs and the client cannot forge — `private` on a record is assembly-scoped
+in F#, which is exactly the boundary here — so a commit cannot be reached without
+the checks having passed.
+
+**Recommended: (C)**, which is (B) everywhere except the source direction. (B)'s
+argument stands on finding 3: the generic effects list was proposed when the only
+imagined copy-out was opaque bytes, and against the measured set it covers half
+the cases while forcing the library to learn a .NET struct layout for the other
+half. Its defect is confined to buffers the client reads *from*, and two-phase is
+the smallest thing that keeps extraction after the checks. Both keep the "no
+illegal states" property that made stage 7's per-syscall functions the primitives
+and `step` the sugar: a `read` that returned a `FileStatus` would not typecheck,
+and a commit without an admission would not either.
+
+**One asymmetry left open on purpose.** Stage 7 recorded that a failed
+`epoll_wait` writes 0 through `*count` on Linux and −1 on Darwin — so `Failed`
+carries writes too. (B)/(C) type the *success* payloads per syscall and leave
+`Failed of UnixError` untyped, which that evidence falsifies. Nothing in stage 8
+needs it: the first syscall with a failure-write is `poll`/`epoll`, which is
+stage 9's. Written down so that stage 9 finds a known gap rather than a surprise.
+
+Concretely:
 
 ```fsharp
-/// A buffer the guest asked this kernel to read *from*.
-type SourceBuffer =
+/// Where a buffer argument is, as far as this kernel's own address check can
+/// see. No `Null` case — that is the shim's concept, above — and no address on
+/// `Mapped`, because `faultsBeforeOperation` never asks for one.
+type UserBuffer =
+    /// A raw address naming no storage: EFAULT, whenever the syscall gets round
+    /// to looking.
     | Unmapped of address : uint64
-    | Mapped of bytes : ImmutableArray<byte>
-
-/// A buffer the guest asked this kernel to write *into*. Carries no content and
-/// no address: `Mapped` storage in PawPrint has no address at all, and the
-/// client re-associates the answer with the storage it classified.
-type DestinationBuffer =
-    | Unmapped of address : uint64
+    /// Real storage the client can transfer bytes through.
     | Mapped
+    /// A real user address the client can neither name nor transfer through.
+    /// Passes every screen; refuses at the transfer.
+    | Opaque
+    /// Not an address at all. Refuses at the screen where there is one, at the
+    /// transfer otherwise.
+    | Addressless
 ```
 
-Two types rather than one with an optional payload, because a destination
-carrying bytes and a source carrying none are both nonsense the compiler can
-refuse. `Mapped` deliberately carries no address: PawPrint's `Storage` case has
-none, and `faultsBeforeOperation` already never asks for one. No `Null` case,
-per the finding above.
+One type, not two. My draft had a `SourceBuffer` carrying bytes and a
+`DestinationBuffer` carrying none, on a make-illegal-states-unrepresentable
+argument — but a source buffer must not carry its bytes, so the asymmetry that
+justified the split does not exist.
+
+#### A second genus of refusal, which should be named rather than absorbed
+
+Stage 7's definition of a refusal is "this library has measured what real kernels
+do here and found no single answer to give". Three of stage 8's refusals do not
+fit it. For `Opaque`, for `Addressless`, and for 8b's invalid-UTF-8 path, the
+kernel's answer is perfectly well known — transfer the bytes at that address;
+look up those raw bytes — and what is missing is a *representation*, in the
+library's model or in the client's memory.
+
+The stretch is right: both genera are "no answer to give", both must not be
+errnos, and both must carry no state. But `describe`'s contract says the library
+reports what it *measured*, and for these it reports what its model cannot say.
+Naming the second genus is what stops the messages overclaiming a measurement
+they do not have.
 
 #### Paths force a question larger than the syscall move
 
@@ -2064,13 +2142,21 @@ path syscall rather than inside one.
 
 Ordered so that each has an oracle before the next depends on it.
 
-* **8a — the buffer vocabulary.** `SourceBuffer`/`DestinationBuffer` and the
-  screen (`faultsBeforeOperation`) move into the library; PawPrint maps its
-  four-way `BufferPointer` onto the three-way classification and keeps
-  `Symbolic`/`Unstatable` as its own refusals. No syscall moves, but it is not
-  dead code: the two existing `faultsBeforeOperation` call sites consume it
-  immediately. Oracle: `TestUserBufferCheckAgainstHost` at the new altitude, and
-  a row per classification arm.
+* **8a — the buffer vocabulary, and the six call sites that already use it.**
+  My draft said "the screen moves into the library" and "two existing call sites
+  consume it". Both were wrong. `UserBufferCheck.faultsBeforeOperation` is
+  *already* in the library (`SimulatedUnixPlatform.fs:276`), and PawPrint's
+  same-named function is a thin typed adapter over it; and there are **six**
+  call sites, not two — `PRead` (`:3819`), `PWrite` (`:4008`), `Read` (`:4170`),
+  `Poll` (`:6456`) and `Write` (`:6904`, `:6956`). So 8a as drafted was
+  vocabulary with no library consumer until 8c, which is speculative generality
+  by this plan's own standard.
+
+  Redefined: 8a introduces `UserBuffer` with the four cases above, gives the
+  library the two refusals *with their timing*, and re-plumbs those six sites
+  onto it. That is real, testable work — the finding-1 table is its oracle — and
+  it must land before 8c, because `read` is where a wrong classification arity
+  becomes unfixable without a surface break.
 * **8b — paths cross raw.** `UnixPath` gains a bytes-shaped entry point, and the
   non-UTF-8 refusal moves into the library as a refusal case. Oracle:
   `TestGuestPathBytes`, plus the ENAMETOOLONG boundary rows, which are the ones
@@ -2079,14 +2165,36 @@ Ordered so that each has an oracle before the next depends on it.
   (2): three buffer-untouched short-circuits, a platform-dependent up-front
   screen, and a copy-out. `pread` follows as the same operation with an explicit
   offset, which is the whole difference between them.
-* **8d — `write`/`pwrite`**, the source-buffer direction.
+
+  Worth saying in advance, because it looks like scope creep when it arrives:
+  moving `read` also moves its epoll-port arm (EINVAL on Linux, ENXIO on Darwin)
+  and its socket arm, and the socket arm is a *refusal* — "PawPrint models no
+  socket connection state, and `read(2)` on a socket is an answer about exactly
+  that". After the move that gap is the library's own, so a socket-shaped
+  refusal lands here, ahead of stage 9's socket work.
+* **8d — `write`/`pwrite`**, the source-buffer direction, and the first and only
+  place the two-phase admission/commit surface of (C) is built.
 * **8e — `fstat`, then `stat`/`lstat`**, first because it is the smallest
   structured answer and it is what settles (3) against a real encoder. `stat`
   and `lstat` follow for free: they already share one `statLike`.
 * **8f — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
   land together once 8b exists.
-* **8g — `open`** (333 lines) and **`opendir`/`readdir`**, last of the file
-  syscalls, because `open`'s flags are PAL values and it is the largest.
+* **8g — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
+  file syscalls, and `open`'s flags are PAL values.
+* **8i — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
+  table and had no home in the first draft of this list, which is a drafting
+  failure the census itself should have caught: an increment list that does not
+  partition its own table is not a plan. All three are destination-buffer
+  syscalls and all three land after 8c has settled that shape. `getcwd` is the
+  one that needs the honesty note stage 7 wrote down: its success value is the
+  caller's own buffer pointer, which the library never possesses, so the client
+  composes it.
+* **`poll` defers to stage 9**, and not for the reason the others do. It carries
+  an array in *and* out, it is the syscall whose failure path writes (the
+  asymmetry left open above), and it is where blocking becomes unavoidable — it
+  needs `WouldBlock`, which stage 9 defines. It is also already entangled with
+  8a: it is one of the six `faultsBeforeOperation` call sites, so 8a must re-plumb
+  it even though the syscall itself does not move.
 * The **socket-address entry points** — nine handlers, about 600 lines — are the
   largest homogeneous group of buffer handlers in the file, and where they go was
   the first thing this census got wrong. Two claims had to be corrected by
@@ -2115,7 +2223,11 @@ guest fixtures, as before. Specifically:
 * **A row per buffer classification, per screening platform.** The interesting
   cell is `Unmapped` under Darwin, which does *not* screen up front and so
   reaches the operation and answers from it — that is the cell a single-platform
-  test cannot see.
+  test cannot see. Note where it can run: the host-differential fixtures cover
+  one column per host by construction, CI being Linux, so a Darwin-only cell is
+  exercised on Patrick's laptop and nowhere else. Say so at the row, as
+  `TestVirtualFileSystemAgainstHost` already does for its own halves, rather than
+  letting a green CI imply both columns were checked.
 * **A row per buffer-untouched short-circuit**, since "the buffer is not touched
   here" is invisible to any test that passes a valid buffer. The two probes are
   not interchangeable, and the difference is easy to get backwards: a **null**
@@ -2126,11 +2238,35 @@ guest fixtures, as before. Specifically:
   instead: `read(wronlyFd, (void*)-1, 4)` is EBADF, `read(port, (void*)-1, 8)` is
   EINVAL on Linux and ENXIO on Darwin. A test using only one of the two measures
   only one of the two steps.
+* **A row pinning what an unrepresentable buffer does at each short-circuit.**
+  The finding-1 table is that row set, and without it the regression it names
+  lands green: nothing in the suite today asserts that `read(stdin, symbolic, n)`
+  answers 0.
 * **`TestGuestPathBytes` for 8b**, where a byte budget and a character budget
-  agree on ASCII and disagree on anything else.
+  agree on ASCII and disagree on anything else — plus the *ordering* row, which
+  is a separate claim: a path that is both over-long and invalid UTF-8 must be
+  ENAMETOOLONG rather than a refusal, because `PATH_MAX` is enforced by
+  `getname()`/`copyinstr` when the kernel copies the string in, before anything
+  looks at what it says. `parseGuestPathBytes` records this and its measurement
+  (1023 bytes resolves on macOS, 1024 does not); the byte entry point must state
+  that the bytes exclude the terminating NUL, that the comparison is therefore
+  against `pathMaxBytes - 1`, and that the limit is per-flavour.
 * **Mutation, per increment**: break one ordering step and confirm a row dies.
   The ordering steps are what this stage is really moving, and they are the part
   no type can hold.
+
+#### The census this design still owes
+
+One axis was not measured, and both blocking findings above live on it: **where
+each refusal fires relative to its syscall's step order, per handler.** The
+census measured the errno steps and the buffer-touch points, which is why it
+caught findings 2 and 3 — and it missed the timing of `Symbolic`/`Unstatable`
+entirely, which is the defect that would otherwise have surfaced in 8c as a
+handful of guests that used to answer and now crash.
+
+That measurement is 8a's first task, not 8c's. Every handler that consults a
+buffer gets a row: which step screens it, which step dereferences it, and what
+answers in between.
 
 #### Decision 2(b), amended in place
 
