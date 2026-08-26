@@ -329,11 +329,10 @@ class Program
     /// The refusal for a symbolic address fires at the *transfer*, and every
     /// check that precedes the transfer still answers.
     ///
-    /// These four rows are the ones that say the refusal's position matters, and
-    /// they exist because a design review found the position was about to be
-    /// lost: a classification-time refusal — refusing as soon as the argument is
-    /// seen to be symbolic — passes every other row in this fixture and turns
-    /// each of these from an answer into a crash.
+    /// These four rows are what pins the refusal's position. A
+    /// classification-time refusal — refusing as soon as the argument is seen to
+    /// be symbolic — passes every other row in this fixture, and turns each of
+    /// these four from an answer into a crash.
     [<Test>]
     let ``every check before the transfer still answers a symbolic address`` () : unit =
         let source =
