@@ -315,6 +315,9 @@ type private WriteTarget =
     /// One of the standard streams, whose bytes this kernel records rather than
     /// storing.
     | StandardStream of role : FileDescriptorRole
+    /// A socket, which is refused rather than answered — but only once the
+    /// buffer screen has had its say, which on one flavour answers first.
+    | Socket of socket : SocketId
 
 /// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
 /// it becomes.
@@ -1290,10 +1293,10 @@ module UnixSystem =
     let private writeTarget<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<Result<WriteTarget, UnixError>, WriteRefusal>
+        : Result<WriteTarget, UnixError>
         =
         match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
-        | None -> Ok (Error UnixError.EBADF)
+        | None -> Error UnixError.EBADF
         | Some description ->
 
         if not (FileAccessMode.permitsWrite description.AccessMode) then
@@ -1304,7 +1307,7 @@ module UnixSystem =
             // launch opens `O_RDONLY` — and a regular file opened `O_RDONLY`
             // alike, including a directory, which can only ever be opened for
             // reading.
-            Ok (Error UnixError.EBADF)
+            Error UnixError.EBADF
         else
 
         match description.Target with
@@ -1318,13 +1321,11 @@ module UnixSystem =
             // platforms: measured, `write(port, (void*)-1, 8)` is EINVAL/ENXIO
             // rather than EFAULT, and no length is a no-op.
             match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
-            | SimulatedUnixFlavour.Linux -> Ok (Error UnixError.EINVAL)
-            | SimulatedUnixFlavour.Darwin -> Ok (Error UnixError.ENXIO)
-        | OpenFileTarget.Socket socketId ->
-            let socket = UnixMachineState.socket socketId system.Machine
-            Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
-        | OpenFileTarget.File (inode, offset) -> Ok (Ok (WriteTarget.File (inode, offset)))
-        | OpenFileTarget.StandardStream role -> Ok (Ok (WriteTarget.StandardStream role))
+            | SimulatedUnixFlavour.Linux -> Error UnixError.EINVAL
+            | SimulatedUnixFlavour.Darwin -> Error UnixError.ENXIO
+        | OpenFileTarget.Socket socketId -> Ok (WriteTarget.Socket socketId)
+        | OpenFileTarget.File (inode, offset) -> Ok (WriteTarget.File (inode, offset))
+        | OpenFileTarget.StandardStream role -> Ok (WriteTarget.StandardStream role)
 
     /// Every answer `write(2)` gives *without* reading the caller's buffer, and
     /// otherwise how many bytes to extract.
@@ -1344,9 +1345,8 @@ module UnixSystem =
                 $"UnixSystem.admitWrite: a count of %d{count} is not a request a kernel ever sees — the foreign-function layer that produced it answers a negative count itself, before it looks at the descriptor. Reject it there."
 
         match writeTarget fd system with
-        | Error refusal -> Error refusal
-        | Ok (Error error) -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
-        | Ok (Ok _) ->
+        | Error error -> Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+        | Ok target ->
 
         // `vfs_write` screens the buffer between the access mode above and the
         // file operation, so on Linux this beats the zero-size no-op below:
@@ -1360,6 +1360,24 @@ module UnixSystem =
         | Error refusal -> Error (WriteRefusal.Buffer refusal)
         | Ok true -> Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT))
         | Ok false ->
+
+        // **After the screen, and before the zero-length no-op.** Both halves
+        // are measured. Linux screens the address before the object's own write
+        // operation, so `write(socket, (void*)-1, n)` there is EFAULT for every
+        // `n` including 0: the screen answers and the socket is never consulted.
+        // Darwin screens nothing, so the same call reaches the socket and earns
+        // a connection-state answer (ENOTCONN for a stream socket,
+        // EDESTADDRREQ for a datagram one), which is what this kernel cannot
+        // give.
+        //
+        // And the no-op does *not* precede it: measured on both,
+        // `write(socket, buf, 0)` is the socket's own error rather than 0.
+        match target with
+        | WriteTarget.Socket socketId ->
+            let socket = UnixMachineState.socket socketId system.Machine
+            Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | WriteTarget.File _
+        | WriteTarget.StandardStream _ ->
 
         if count = 0 then
             // A no-op on both platforms, and specifically one that moves no
@@ -1400,9 +1418,15 @@ module UnixSystem =
                 "UnixSystem.write: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
         match writeTarget fd system with
-        | Error refusal -> Error refusal
-        | Ok (Error error) -> Ok (WriteAnswer.Failed error, system)
-        | Ok (Ok _) when bytes.IsEmpty ->
+        | Error error -> Ok (WriteAnswer.Failed error, system)
+        | Ok (WriteTarget.Socket socketId) ->
+            // There is no buffer here to screen, so the socket's own answer is
+            // all there is — and this kernel cannot give it. A caller that used
+            // `admitWrite` never reaches this: that call refused or answered
+            // first.
+            let socket = UnixMachineState.socket socketId system.Machine
+            Error (WriteRefusal.SocketConnectionState (socketId, socket.Domain, socket.Kind))
+        | Ok _ when bytes.IsEmpty ->
             // A no-op on both platforms, and specifically one that changes
             // nothing: measured, a zero-length write leaves `mtime` and `ctime`
             // where they were, does not extend the file, and does not strip the
@@ -1415,7 +1439,7 @@ module UnixSystem =
             // After the descriptor checks, not before: `write(rdonlyFd, buf, 0)`
             // is EBADF rather than 0, measured on both.
             Ok (WriteAnswer.Completed 0, system)
-        | Ok (Ok (WriteTarget.StandardStream role)) ->
+        | Ok (WriteTarget.StandardStream role) ->
             Ok (
                 WriteAnswer.Completed bytes.Length,
                 { system with
@@ -1430,7 +1454,7 @@ module UnixSystem =
                         }
                 }
             )
-        | Ok (Ok (WriteTarget.File (inode, offset))) ->
+        | Ok (WriteTarget.File (inode, offset)) ->
 
         let now = UnixMachineState.fileTimestamp system.Machine
 

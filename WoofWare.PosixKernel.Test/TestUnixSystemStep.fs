@@ -536,10 +536,61 @@ module TestUnixSystemStep =
 
         UnixSystem.admitWrite fd UserBuffer.Mapped 5 system |> shouldEqual expected
 
+        // Also at length zero, where a *file* would have been the no-op:
+        // measured on both, `write(socket, buf, 0)` is the socket's own error.
+        UnixSystem.admitWrite fd UserBuffer.Mapped 0 system |> shouldEqual expected
+
         UnixSystem.write fd (ImmutableArray.CreateRange [ 1uy ]) system
-        |> shouldEqual (
-            Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
-        )
+        |> shouldEqual expected
+
+    [<Test>]
+    let ``a screening platform answers a socket's bad address before the socket`` () : unit =
+        // Measured on both. Linux screens the address before the object's own
+        // write operation, so `write(socket, (void*)-1, n)` is EFAULT for every
+        // `n` including 0 — the socket is never consulted, and refusing here
+        // would abort a call a real kernel answers. Darwin screens nothing, so
+        // the same call reaches the socket and earns a connection-state answer
+        // this kernel cannot give.
+        let socketId = SocketId 0L
+
+        let socket : SocketDescription =
+            {
+                Domain = SocketDomain.InterNetwork
+                Kind = SocketKind.Stream
+                Protocol = SocketProtocol.Tcp
+                Binding = None
+                Phase = SocketPhase.Idle
+                ReuseAddress = false
+            }
+
+        let withSocket (flavour : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+            let fd, registry =
+                FileDescriptorRegistry.createSocket socketId flavour.Process.FileDescriptors
+
+            fd,
+            { flavour with
+                Machine =
+                    { flavour.Machine with
+                        Sockets = Map.ofList [ socketId, socket ]
+                    }
+                Process =
+                    { flavour.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+        let linuxFd, linuxSystem = withSocket linux
+        let darwinFd, darwinSystem = withSocket darwin
+
+        for count in [ 0 ; 5 ] do
+            UnixSystem.admitWrite linuxFd wild count linuxSystem
+            |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EFAULT)))
+
+            UnixSystem.admitWrite darwinFd wild count darwinSystem
+            |> shouldEqual (
+                Error (WriteRefusal.SocketConnectionState (socketId, SocketDomain.InterNetwork, SocketKind.Stream))
+            )
 
     [<Test>]
     let ``a defaulted byte array is rejected rather than written`` () : unit =
