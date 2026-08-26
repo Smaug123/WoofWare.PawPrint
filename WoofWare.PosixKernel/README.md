@@ -34,13 +34,15 @@ I expect it may be of independent interest, so it is now extracted as a standalo
 
 ## Status
 
-A handful of leaf functions still convert to and from the encodings designed for WoofWare.PawPrint's CoreCLR platform abstraction.
-(For example, errno, signals, address families, socket-event masks.)
-They are on the way out.
+A handful of leaf functions still convert to and from the encodings designed for WoofWare.PawPrint's CoreCLR platform abstraction:
+signals, address families, socket-event masks.
+They are on the way out; errno has already gone, and the library now states the raw `<errno.h>` number alone.
 
 The simulation is incomplete and expected to change wildly during development.
-In particular, the syscall request/response layer is not yet built, so today the library exposes its state
-modules directly rather than through a `syscall`-shaped API.
+The syscall request/response layer has started: `UnixSystem` exposes a handful of syscalls
+(`geteuid`, `dup`, `lseek`, `flock`, `ftruncate`, `close`) both individually and through a `step` dispatcher.
+Everything else is still reached through the state modules directly.
+There is also no constructor for a fresh `UnixSystem` yet, so a client must assemble one field by field.
 
 ### Slop status
 

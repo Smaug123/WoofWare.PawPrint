@@ -42,24 +42,19 @@ type RawErrnoPortability =
 /// The errors PawPrint's emulated `SystemNative_*` shims can report, as a closed
 /// vocabulary rather than bare integers.
 ///
-/// Each case carries two numbers, which must not be confused (the BCL's own
-/// comment in `Interop.Errors.cs` warns about exactly this):
+/// Each case carries one number here: the raw `<errno.h>` value, which is what
+/// a real kernel's `errno` would hold. Portability of that number is not a
+/// membership criterion — it is recorded per case, in `RawErrnoPortability`.
 ///
-///   * the **raw** `<errno.h>` number, which is what the host's `errno` would
-///     hold and what a guest sees through `Marshal.GetLastSystemError` /
-///     `Marshal.GetLastPInvokeError`; and
-///   * the **PAL** value from the BCL's `Interop.Error` enum, deliberately
-///     numbered outside the errno range (`0x1xxxx`) so the two cannot be mixed
-///     up silently. This is what CoreLib actually switches on, after converting
-///     via `SystemNative_ConvertErrorPlatformToPal`.
+/// A client that needs its own encoding of these — .NET's `Interop.Error`, say
+/// — holds that table itself, keyed by this type. This library states only what
+/// a kernel states.
 ///
-/// A case earns its place by being an error PawPrint's own emulation actually
-/// raises, *and* by having a name in the BCL's PAL enum. `ENOTBLK` (raw 15) is
-/// excluded despite being portable, because `Interop.Error` has no entry for
-/// it, so there would be nothing for CoreLib to switch on.
-///
-/// Portability of the *raw* number is not a membership criterion — it is
-/// recorded per case, in `RawErrnoPortability`.
+/// The *vocabulary* was nevertheless chosen against one client, and one visible
+/// consequence is recorded rather than hidden: `ENOTBLK` (raw 15) is absent
+/// despite being portable, because .NET's PAL enum has no name for it, so
+/// nothing there could switch on it. A second client wanting `ENOTBLK` adds the
+/// case; nothing about the design refuses it.
 [<RequireQualifiedAccess>]
 type UnixError =
     /// `EPERM` — Operation not permitted.
@@ -341,38 +336,11 @@ type UnixError =
     /// it 61, which Linux reads as `ENODATA`.
     | ECONNREFUSED
 
-/// The raw and PAL numbering of one `UnixError`.
-type UnixErrorNumbering =
-    {
-        /// Value from the BCL's `Interop.Error` enum. Platform-independent by
-        /// construction — upstream chose `0x1xxxx` precisely so that this
-        /// number means the same thing everywhere.
-        Pal : int
-        /// The `<errno.h>` number, together with whether PawPrint is in a
-        /// position to state it.
-        Raw : RawErrnoPortability
-    }
-
 [<RequireQualifiedAccess>]
 module UnixError =
-    /// `Interop.Error.SUCCESS`, which is also raw errno 0. Not a `UnixError`
-    /// case: "no error" is not an error.
-    [<Literal>]
-    let palSuccess : int = 0
-
-    /// `Interop.Error.ENONSTANDARD`, which upstream's
-    /// `ConvertErrorPlatformToPal` returns for any errno it does not recognise.
-    /// PawPrint returns it only where "unrecognised" is platform-independent —
-    /// a raw errno inside the portable range that the PAL enum has no name for,
-    /// today only `ENOTBLK`. Where "unrecognised" instead means "means
-    /// different things on different Unixes", `palOfRawErrno` fails rather than
-    /// answering this; see there.
-    [<Literal>]
-    let palNonStandard : int = 0x1FFFF
-
     /// Every case of `UnixError`. The property tests fold over this to check the
     /// table against the pinned upstream sources, so it must stay exhaustive;
-    /// `numbering` below is a total match, so the compiler catches a case added
+    /// `rawNumbering` below is a total match, so the compiler catches a case added
     /// here and forgotten there, and `allCasesAreListed` catches the reverse.
     let all : UnixError list =
         [
@@ -425,105 +393,91 @@ module UnixError =
             UnixError.ECONNREFUSED
         ]
 
-    let private portable (pal : int) (raw : int) : UnixErrorNumbering =
-        {
-            Pal = pal
-            Raw = RawErrnoPortability.Portable raw
-        }
+    let private portable (raw : int) : RawErrnoPortability = RawErrnoPortability.Portable raw
 
-    let private platformDependent (pal : int) (linux : int) (darwin : int) : UnixErrorNumbering =
-        {
-            Pal = pal
-            Raw = RawErrnoPortability.PlatformDependent (linux, darwin)
-        }
+    let private platformDependent (linux : int) (darwin : int) : RawErrnoPortability =
+        RawErrnoPortability.PlatformDependent (linux, darwin)
 
-    /// The single table. Both conversion directions and both projections below
-    /// are derived from it, so they cannot drift apart.
+    /// The single table. Every conversion below is derived from it, so they
+    /// cannot drift apart.
     ///
-    /// PAL values are transcribed from `Interop.Errors.cs` and raw values from
-    /// the kernel ABI headers; `TestUnixError` re-derives the PAL column from
-    /// the pinned `$DOTNET_RUNTIME_SRC` and fails if this disagrees.
-    let numbering (error : UnixError) : UnixErrorNumbering =
+    /// Transcribed from the kernel ABI headers, and checked against the host's
+    /// own `<errno.h>` by `TestUnixError`.
+    let rawNumbering (error : UnixError) : RawErrnoPortability =
         match error with
-        | UnixError.EPERM -> portable 0x10042 1
-        | UnixError.ENOENT -> portable 0x1002D 2
-        | UnixError.ESRCH -> portable 0x1004A 3
-        | UnixError.EINTR -> portable 0x1001B 4
-        | UnixError.EIO -> portable 0x1001D 5
-        | UnixError.ENXIO -> portable 0x1003F 6
-        | UnixError.E2BIG -> portable 0x10001 7
-        | UnixError.ENOEXEC -> portable 0x1002E 8
-        | UnixError.EBADF -> portable 0x10008 9
-        | UnixError.ECHILD -> portable 0x1000C 10
-        | UnixError.ENOMEM -> portable 0x10031 12
-        | UnixError.EACCES -> portable 0x10002 13
-        | UnixError.EFAULT -> portable 0x10015 14
-        | UnixError.EBUSY -> portable 0x1000A 16
-        | UnixError.EEXIST -> portable 0x10014 17
-        | UnixError.EXDEV -> portable 0x1004F 18
-        | UnixError.ENODEV -> portable 0x1002C 19
-        | UnixError.ENOTDIR -> portable 0x10039 20
-        | UnixError.EISDIR -> portable 0x1001F 21
-        | UnixError.EINVAL -> portable 0x1001C 22
-        | UnixError.ENFILE -> portable 0x10029 23
-        | UnixError.EMFILE -> portable 0x10021 24
-        | UnixError.ENOTTY -> portable 0x1003E 25
-        | UnixError.ETXTBSY -> portable 0x1004E 26
-        | UnixError.EFBIG -> portable 0x10016 27
-        | UnixError.ENOSPC -> portable 0x10034 28
-        | UnixError.ESPIPE -> portable 0x10049 29
-        | UnixError.EROFS -> portable 0x10048 30
-        | UnixError.EMLINK -> portable 0x10022 31
-        | UnixError.EPIPE -> portable 0x10043 32
-        | UnixError.EDOM -> portable 0x10012 33
-        | UnixError.ERANGE -> portable 0x10047 34
+        | UnixError.EPERM -> portable 1
+        | UnixError.ENOENT -> portable 2
+        | UnixError.ESRCH -> portable 3
+        | UnixError.EINTR -> portable 4
+        | UnixError.EIO -> portable 5
+        | UnixError.ENXIO -> portable 6
+        | UnixError.E2BIG -> portable 7
+        | UnixError.ENOEXEC -> portable 8
+        | UnixError.EBADF -> portable 9
+        | UnixError.ECHILD -> portable 10
+        | UnixError.ENOMEM -> portable 12
+        | UnixError.EACCES -> portable 13
+        | UnixError.EFAULT -> portable 14
+        | UnixError.EBUSY -> portable 16
+        | UnixError.EEXIST -> portable 17
+        | UnixError.EXDEV -> portable 18
+        | UnixError.ENODEV -> portable 19
+        | UnixError.ENOTDIR -> portable 20
+        | UnixError.EISDIR -> portable 21
+        | UnixError.EINVAL -> portable 22
+        | UnixError.ENFILE -> portable 23
+        | UnixError.EMFILE -> portable 24
+        | UnixError.ENOTTY -> portable 25
+        | UnixError.ETXTBSY -> portable 26
+        | UnixError.EFBIG -> portable 27
+        | UnixError.ENOSPC -> portable 28
+        | UnixError.ESPIPE -> portable 29
+        | UnixError.EROFS -> portable 30
+        | UnixError.EMLINK -> portable 31
+        | UnixError.EPIPE -> portable 32
+        | UnixError.EDOM -> portable 33
+        | UnixError.ERANGE -> portable 34
         // Raw 40 is EMSGSIZE on Darwin, and raw 62 is ETIME on Linux, so either
         // number would silently name a different error on the other platform.
-        | UnixError.ELOOP -> platformDependent 0x10020 40 62
+        | UnixError.ELOOP -> platformDependent 40 62
         // Likewise: raw 36 is EINPROGRESS on Darwin, and raw 63 is ENOSR on
         // Linux.
-        | UnixError.ENAMETOOLONG -> platformDependent 0x10025 36 63
+        | UnixError.ENAMETOOLONG -> platformDependent 36 63
         // Measured on both: raw 39 is ENOTEMPTY on Linux and EDESTADDRREQ on
         // Darwin; raw 66 is ENOTEMPTY on Darwin and EREMOTE on Linux.
-        | UnixError.ENOTEMPTY -> platformDependent 0x1003A 39 66
+        | UnixError.ENOTEMPTY -> platformDependent 39 66
         // The V7 transposition itself: raw 11 is EAGAIN on Linux but EDEADLK on
         // Darwin, and raw 35 is EAGAIN on Darwin but EDEADLK on Linux.
-        | UnixError.EAGAIN -> platformDependent 0x10006 11 35
+        | UnixError.EAGAIN -> platformDependent 11 35
         // Measured on both: raw 75 is EOVERFLOW on Linux and EPROGMISMATCH on
         // Darwin; raw 84 is EOVERFLOW on Darwin and EILSEQ on Linux.
-        | UnixError.EOVERFLOW -> platformDependent 0x10040 75 84
+        | UnixError.EOVERFLOW -> platformDependent 75 84
         // Measured on both: raw 97 is EAFNOSUPPORT on Linux and ENOLINK on
         // Darwin; raw 47 is EAFNOSUPPORT on Darwin and EL3RST on Linux.
-        | UnixError.EAFNOSUPPORT -> platformDependent 0x10005 97 47
+        | UnixError.EAFNOSUPPORT -> platformDependent 97 47
         // Likewise: raw 91 is EPROTOTYPE on Linux and ENOMSG on Darwin, while
         // raw 41 is EPROTOTYPE on Darwin and unnamed on Linux.
-        | UnixError.EPROTOTYPE -> platformDependent 0x10046 91 41
+        | UnixError.EPROTOTYPE -> platformDependent 91 41
         // Likewise: raw 93 is EPROTONOSUPPORT on Linux and ENOATTR on Darwin,
         // while raw 43 is EPROTONOSUPPORT on Darwin and EIDRM on Linux.
-        | UnixError.EPROTONOSUPPORT -> platformDependent 0x10045 93 43
-        | UnixError.EADDRINUSE -> platformDependent 0x10003 98 48
-        | UnixError.EADDRNOTAVAIL -> platformDependent 0x10004 99 49
-        | UnixError.EOPNOTSUPP -> platformDependent 0x1003D 95 102
+        | UnixError.EPROTONOSUPPORT -> platformDependent 93 43
+        | UnixError.EADDRINUSE -> platformDependent 98 48
+        | UnixError.EADDRNOTAVAIL -> platformDependent 99 49
+        | UnixError.EOPNOTSUPP -> platformDependent 95 102
         // Measured on both: raw 88 is ENOTSOCK on Linux and EBADMACHO on
         // Darwin, while raw 38 is ENOTSOCK on Darwin and ENOSYS on Linux.
-        | UnixError.ENOTSOCK -> platformDependent 0x1003C 88 38
-        | UnixError.EISCONN -> platformDependent 0x1001E 106 56
-        | UnixError.EINPROGRESS -> platformDependent 0x1001A 115 36
-        | UnixError.ECONNREFUSED -> platformDependent 0x1000E 111 61
-
-    /// The `Interop.Error` value CoreLib switches on. Total: the PAL numbering is
-    /// platform-independent, so it is always answerable.
-    let toPal (error : UnixError) : int = (numbering error).Pal
+        | UnixError.ENOTSOCK -> platformDependent 88 38
+        | UnixError.EISCONN -> platformDependent 106 56
+        | UnixError.EINPROGRESS -> platformDependent 115 36
+        | UnixError.ECONNREFUSED -> platformDependent 111 61
 
     /// The raw `<errno.h>` number to store in `EmulatedKernel.LastSystemError`.
     ///
     /// Partial: a `PlatformDependent` case (e.g. `ELOOP`) has no
     /// platform-independent number, so this fails for it rather than letting a
     /// Linux number reach a guest that was told it is running on Darwin.
-    /// Callers that only need the value CoreLib switches on should use `toPal`,
-    /// which is total.
     let toRawErrno (error : UnixError) : int =
-        match (numbering error).Raw with
+        match rawNumbering error with
         | RawErrnoPortability.Portable value -> value
         | RawErrnoPortability.PlatformDependent (linux, darwin) ->
             failwith
@@ -533,7 +487,7 @@ module UnixError =
     /// `toRawErrno`, this is total on the platform-dependent errors too,
     /// because the caller has said which Unix it impersonates.
     let toRawErrnoUnder (reporting : RawErrnoNumbering) (error : UnixError) : int =
-        match (numbering error).Raw with
+        match rawNumbering error with
         | RawErrnoPortability.Portable value -> value
         | RawErrnoPortability.PlatformDependent (linux, darwin) ->
             match reporting with
@@ -556,27 +510,28 @@ module UnixError =
     /// positive, so no platform defines a negative one and both fall through to
     /// `ENONSTANDARD`, with no per-platform table needed. See
     /// `isUnambiguouslyNonStandardRawErrno`.
-    let private isPortableRawErrno (raw : int) : bool = raw >= 1 && raw <= 34 && raw <> 11
+    let isPortableRawErrno (raw : int) : bool = raw >= 1 && raw <= 34 && raw <> 11
 
     /// Raw values every Unix agrees are meaningless, and hence agrees convert to
     /// `ENONSTANDARD`. POSIX errnos are positive, so a negative number names an
     /// error on no platform we model and needs no platform choice to reject.
-    let private isUnambiguouslyNonStandardRawErrno (raw : int) : bool = raw < 0
+    let isUnambiguouslyNonStandardRawErrno (raw : int) : bool = raw < 0
 
-    /// The error a raw `<errno.h>` number denotes, or `None` when this build
-    /// cannot say. `None` means undecidable, not merely unmapped: see
-    /// `palOfRawErrno`.
+    /// The error a raw `<errno.h>` number denotes, or `None` when this library
+    /// cannot say. `None` means *undecidable*, not merely unmapped, and a caller
+    /// must not read it as "no such error": use `ofRawErrnoUnder` if the
+    /// platform is known.
     ///
     /// A `PlatformDependent` case is *not* matched, even though the table
     /// records both its candidate numbers: matching raw 40 to `ELOOP` would be
     /// right on Linux and wrong on Darwin, where 40 is `EMSGSIZE`, and matching
     /// 62 would be wrong the other way round. Answering "which error is this
-    /// number" requires the platform choice PawPrint has not made, so both
-    /// numbers stay unmapped and reach `palOfRawErrno`'s loud failure.
+    /// number" needs a platform choice this function has not been given, so both
+    /// numbers stay unmapped.
     let ofRawErrno (raw : int) : UnixError option =
         all
         |> List.tryFind (fun error ->
-            match (numbering error).Raw with
+            match rawNumbering error with
             | RawErrnoPortability.Portable value -> value = raw
             | RawErrnoPortability.PlatformDependent _ -> false
         )
@@ -586,66 +541,3 @@ module UnixError =
     /// caller has supplied the fact that made it ambiguous.
     let ofRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : UnixError option =
         all |> List.tryFind (fun error -> toRawErrnoUnder reporting error = raw)
-
-    /// PawPrint's `SystemNative_ConvertErrorPlatformToPal`: raw errno to PAL
-    /// `Interop.Error`.
-    ///
-    ///   * **Portable and named** — answer its PAL value.
-    ///   * **Portable but unnamed** — the number means the same thing on every
-    ///     Unix we model, but the BCL's `Interop.Error` has no entry for it.
-    ///     `ENOTBLK` (15) is the only such value. Upstream's switch has no case
-    ///     for it either, so it falls through to `Error_ENONSTANDARD` — and that
-    ///     answer is platform-independent, so we can give it too.
-    ///   * **Negative** — POSIX errnos are positive, so every Unix we model
-    ///     falls through to `ENONSTANDARD` for these; that is unambiguous and
-    ///     needs no platform table, so we answer it. Reachable through
-    ///     `Marshal.SetLastSystemError`, and through the synthetic
-    ///     `EHOSTNOTFOUND` / `ESOCKETERROR` pseudo-errnos, which upstream
-    ///     defines as the fixed negatives `-0x20001` / `-0x20002`.
-    ///   * **Not portable** — 11, and everything from 35 up. Upstream answers
-    ///     these from whichever platform's `<errno.h>` it was compiled against;
-    ///     PawPrint has chosen no platform, so it cannot. Answering
-    ///     `ENONSTANDARD` for raw 39 would be silently wrong on Linux, where
-    ///     upstream returns `Error_ENOTEMPTY`, so this fails loudly instead.
-    ///
-    /// Only the last case diverges from upstream; the others answer exactly what
-    /// the C does.
-    let palOfRawErrno (raw : int) : int =
-        if raw = 0 then
-            palSuccess
-        else
-
-        match ofRawErrno raw with
-        | Some error -> toPal error
-        | None when isPortableRawErrno raw ->
-            // ENOTBLK, today the only member of this class.
-            palNonStandard
-        | None when isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
-        | None ->
-
-        failwith
-            $"UnixError.palOfRawErrno: cannot convert raw errno %d{raw} to a PAL Interop.Error value. PawPrint only maps the errnos that name the same error on every Unix it models (1-34 except 11); outside that set a raw number is platform-dependent — 39 is ENOTEMPTY on Linux but EDESTADDRREQ on Darwin, and 11 is EAGAIN on Linux but EDEADLK on Darwin. Upstream's ConvertErrorPlatformToPal answers ENONSTANDARD here because it was compiled against one platform's <errno.h> and PawPrint has not chosen one. If a guest legitimately needs this errno, decide the numbering (see issue #956); if it reached here via Marshal.SetLastSystemError, the guest is asserting a platform PawPrint does not model."
-
-    /// `palOfRawErrno` for a caller that knows which numbering the kernel
-    /// reports — which is every caller inside the emulated kernel.
-    ///
-    /// A table entry whose raw number is platform-dependent becomes matchable,
-    /// so raw 40 answers `ELOOP` under Linux and raw 39 answers `ENOTEMPTY`. A
-    /// number the table does not contain at all still fails loudly rather than
-    /// falling through to `ENONSTANDARD`: raw 35 under Linux really is
-    /// `EDEADLK`, which PawPrint has not modelled, and `ENONSTANDARD` would
-    /// silently take a guest down the wrong branch of an
-    /// `if (errorInfo.Error == Interop.Error.EDEADLK)`. Knowing the platform
-    /// does not conjure a table entry.
-    let palOfRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : int =
-        if raw = 0 then
-            palSuccess
-        else
-
-        match ofRawErrnoUnder reporting raw with
-        | Some error -> toPal error
-        | None when isPortableRawErrno raw -> palNonStandard
-        | None when isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
-        | None ->
-            failwith
-                $"UnixError.palOfRawErrnoUnder: cannot convert raw errno %d{raw} to a PAL Interop.Error value under the %O{reporting} numbering. The number is outside the portable set (1-34 except 11) and PawPrint's table has no entry for it on this platform — raw 35 under Linux is EDEADLK, which is not yet modelled. Answering ENONSTANDARD would silently take a guest down the wrong branch of an `if (errorInfo.Error == Interop.Error.EDEADLK)`, so this fails instead. Add the error to UnixError's table (with RawErrnoPortability.PlatformDependent if the two Unixes disagree); if it reached here via Marshal.SetLastSystemError, the guest is asserting an errno PawPrint does not model."

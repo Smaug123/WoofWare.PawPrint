@@ -8,10 +8,11 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixError`'s table is a transcription of two upstream authorities, so the
-/// tests that matter here re-derive it from those authorities rather than
-/// restating it. The PAL column comes from the pinned `Interop.Errors.cs`; the
-/// raw column is checked against the *host's own* `<errno.h>`.
+/// `UnixError`'s table is a transcription of the kernel ABI headers, so the
+/// tests that matter here re-derive it from the *host's own* `<errno.h>` rather
+/// than restating it. (.NET's PAL numbering of these errors is a client's
+/// business: it lives in `WoofWare.PawPrint.Test.TestUnixErrorPal`, checked
+/// against its own upstream authority.)
 ///
 /// The host header is a valid oracle for a `Portable` case precisely because
 /// the table claims its number is platform-independent — so it must match
@@ -31,97 +32,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixError =
 
-    let private runtimeSrc : string option =
-        match Environment.GetEnvironmentVariable "DOTNET_RUNTIME_SRC" with
-        | null
-        | "" -> None
-        | dir -> Some dir
-
-    /// The pinned runtime source only exists inside the Nix devshell, so a plain
-    /// `dotnet test` in a non-Nix checkout skips rather than fails.
-    let private requireRuntimeSrc () : string =
-        match runtimeSrc with
-        | Some dir -> dir
-        | None ->
-            Assert.Ignore
-                "DOTNET_RUNTIME_SRC is unset; run under `nix develop` to check against pinned upstream sources."
-
-            failwith "unreachable: Assert.Ignore did not throw"
-
     let private caseName (error : UnixError) : string = sprintf "%O" error
-
-    // ---------------------------------------------------------------------
-    // The PAL column, against the pinned `Interop.Errors.cs`.
-    // ---------------------------------------------------------------------
-
-    /// `EPERM = 0x10042,   // Operation not permitted.` and friends.
-    let private palEntry : Regex =
-        Regex (@"^\s+(?<name>E[A-Z0-9]+)\s*=\s*0x(?<value>[0-9A-Fa-f]+),", RegexOptions.Multiline)
-
-    /// `EOPNOTSUPP      = ENOTSUP,` and friends: the members the enum defines by
-    /// naming another member rather than a literal. They are as real as the rest
-    /// — CoreLib switches on the value either way — so a `UnixError` named after
-    /// one still has an oracle, and resolving them here is what lets it.
-    let private palAlias : Regex =
-        Regex (@"^\s+(?<name>E[A-Z0-9]+)\s*=\s*(?<target>E[A-Z0-9]+),", RegexOptions.Multiline)
-
-    let private pinnedPalValues () : Map<string, int> =
-        let path =
-            Path.Combine (
-                requireRuntimeSrc (),
-                "src",
-                "libraries",
-                "Common",
-                "src",
-                "Interop",
-                "Unix",
-                "Interop.Errors.cs"
-            )
-
-        if not (File.Exists path) then
-            failwith
-                $"TestUnixError: expected the pinned PAL error enum at %s{path}. If the sparse checkout in flake.nix no longer includes src/libraries/Common/src/Interop/Unix, UnixError's PAL column has lost its oracle."
-
-        let text = File.ReadAllText path
-
-        let literals =
-            palEntry.Matches text
-            |> Seq.map (fun m -> m.Groups.["name"].Value, Convert.ToInt32 (m.Groups.["value"].Value, 16))
-            |> Map.ofSeq
-
-        // One pass is enough: the enum defines no alias of an alias, and an
-        // unresolvable target would mean the file changed shape, so it fails
-        // loudly rather than quietly dropping the member.
-        palAlias.Matches text
-        |> Seq.fold
-            (fun (acc : Map<string, int>) m ->
-                let name = m.Groups.["name"].Value
-                let target = m.Groups.["target"].Value
-
-                match Map.tryFind target literals with
-                | Some value -> Map.add name value acc
-                | None ->
-                    failwith
-                        $"TestUnixError: the pinned enum aliases %s{name} to %s{target}, which has no literal value. The enum's shape has changed; teach this test to resolve it."
-            )
-            literals
-
-    [<Test>]
-    let ``PAL values agree with the pinned Interop.Errors.cs`` () : unit =
-        let pinned = pinnedPalValues ()
-
-        // Guard against the regex silently matching nothing and the test then
-        // passing vacuously.
-        pinned |> Map.count |> shouldBeGreaterThan 50
-
-        for error in UnixError.all do
-            let name = caseName error
-
-            match Map.tryFind name pinned with
-            | None ->
-                failwith
-                    $"TestUnixError: UnixError.%s{name} has no counterpart in the pinned Interop.Error enum, so PawPrint would be reporting a PAL value CoreLib never switches on."
-            | Some expected -> UnixError.toPal error |> shouldEqual expected
 
     // ---------------------------------------------------------------------
     // The raw column, against the host's own <errno.h>.
@@ -185,7 +96,7 @@ module TestUnixError =
             | None -> () // Header split we did not find; the PAL test still covers the case.
             | Some expected ->
 
-            match (UnixError.numbering error).Raw with
+            match UnixError.rawNumbering error with
             | RawErrnoPortability.Portable actual ->
                 // The whole content of the portability claim: it has to hold on
                 // every host the suite ever runs on.
@@ -227,7 +138,7 @@ module TestUnixError =
     /// willing to pick one. Only for the structural checks below: production
     /// code goes through `toRawErrno`, which refuses rather than choosing.
     let private rawOn (darwin : bool) (error : UnixError) : int =
-        match (UnixError.numbering error).Raw with
+        match UnixError.rawNumbering error with
         | RawErrnoPortability.Portable value -> value
         | RawErrnoPortability.PlatformDependent (linux, darwinValue) -> if darwin then darwinValue else linux
 
@@ -255,11 +166,6 @@ module TestUnixError =
 
                 failwith $"TestUnixError: raw errno numbering collides on %s{platform}: %s{collisions}"
 
-    [<Test>]
-    let ``PAL numbering is injective`` () : unit =
-        let pals = UnixError.all |> List.map UnixError.toPal
-        pals |> List.distinct |> List.length |> shouldEqual pals.Length
-
     /// Linux and Darwin agree on 1-34 except 11, where `EAGAIN` and `EDEADLK`
     /// are transposed, so a case claiming `Portable` must land inside that set.
     /// This is the check that stops a genuinely platform-dependent number being
@@ -268,7 +174,7 @@ module TestUnixError =
     [<Test>]
     let ``every portable raw errno lies in the platform-independent range`` () : unit =
         for error in UnixError.all do
-            match (UnixError.numbering error).Raw with
+            match UnixError.rawNumbering error with
             | RawErrnoPortability.PlatformDependent _ -> ()
             | RawErrnoPortability.Portable raw ->
                 if raw < 1 || raw > 34 || raw = 11 then
@@ -282,7 +188,7 @@ module TestUnixError =
     [<Test>]
     let ``no platform-dependent raw errno lies inside the agreed range`` () : unit =
         for error in UnixError.all do
-            match (UnixError.numbering error).Raw with
+            match UnixError.rawNumbering error with
             | RawErrnoPortability.Portable _ -> ()
             | RawErrnoPortability.PlatformDependent (linux, darwin) ->
                 for raw, platform in [ linux, "Linux" ; darwin, "Darwin" ] do
@@ -295,22 +201,6 @@ module TestUnixError =
     // ---------------------------------------------------------------------
 
     [<Test>]
-    let ``palOfRawErrno maps zero to SUCCESS`` () : unit =
-        UnixError.palOfRawErrno 0 |> shouldEqual UnixError.palSuccess
-
-    [<Test>]
-    let ``palOfRawErrno inverts toRawErrno wherever toRawErrno answers`` () : unit =
-        for error in UnixError.all do
-            match (UnixError.numbering error).Raw with
-            | RawErrnoPortability.PlatformDependent _ ->
-                // Not invertible, and deliberately so: see the refusal test
-                // below, which drives both of ELOOP's candidate numbers.
-                ()
-            | RawErrnoPortability.Portable _ ->
-                UnixError.palOfRawErrno (UnixError.toRawErrno error)
-                |> shouldEqual (UnixError.toPal error)
-
-    [<Test>]
     let ``a portable errno is the same number under either numbering`` () : unit =
         // Two ways to reach a raw errno coexist -- `toRawErrno`, which answers
         // only where the platforms agree, and `toRawErrnoUnder`, which asks the
@@ -319,7 +209,7 @@ module TestUnixError =
         // rather than assumed, because "they agree" is the reason such a move is
         // safe and nothing else in the suite states it.
         for error in UnixError.all do
-            match (UnixError.numbering error).Raw with
+            match UnixError.rawNumbering error with
             | RawErrnoPortability.PlatformDependent _ -> ()
             | RawErrnoPortability.Portable _ ->
                 let portable = UnixError.toRawErrno error
@@ -330,10 +220,9 @@ module TestUnixError =
 
     [<Test>]
     let ``toRawErrno refuses a platform-dependent error, naming both candidates`` () : unit =
-        // The whole point of admitting ELOOP: its PAL value is usable, and is
-        // what CoreLib switches on, but its raw number is not answerable.
-        UnixError.toPal UnixError.ELOOP |> shouldEqual 0x10020
-
+        // ELOOP is admitted despite having no answerable raw number, because a
+        // client's own encoding of it may still be usable —
+        // `TestUnixErrorPal` asserts that half.
         let exn =
             Assert.Throws<Exception> (fun () -> UnixError.toRawErrno UnixError.ELOOP |> ignore<int>)
 
@@ -349,44 +238,6 @@ module TestUnixError =
         // where 40 is EMSGSIZE; mapping 62 would be wrong the other way round.
         UnixError.ofRawErrno 40 |> shouldEqual None
         UnixError.ofRawErrno 62 |> shouldEqual None
-
-    /// ENOTBLK is 15 on both Linux and Darwin, so its meaning needs no platform
-    /// choice — but `Interop.Error` has no entry for it, so upstream's switch
-    /// falls through to ENONSTANDARD. We must do the same rather than crash:
-    /// this conversion is unambiguous, it just has no PAL name. Today this is
-    /// the only raw errno in that class.
-    [<Test>]
-    let ``palOfRawErrno reports ENONSTANDARD for a portable errno with no PAL name`` () : unit =
-        UnixError.palOfRawErrno 15 |> shouldEqual UnixError.palNonStandard
-
-    /// POSIX requires errno values to be positive, so a negative number names an
-    /// error on no Unix we model and every platform's switch falls through to
-    /// ENONSTANDARD. Answering that needs no platform choice, so it must not
-    /// crash. -0x20001 and -0x20002 are upstream's synthetic EHOSTNOTFOUND and
-    /// ESOCKETERROR, which is how a negative most plausibly reaches here.
-    [<TestCase -1>]
-    [<TestCase -34>]
-    [<TestCase 0x80000000>]
-    [<TestCase -0x20001>]
-    [<TestCase -0x20002>]
-    let ``palOfRawErrno reports ENONSTANDARD for a negative errno`` (raw : int) : unit =
-        UnixError.palOfRawErrno raw |> shouldEqual UnixError.palNonStandard
-
-    /// An errno whose meaning depends on the platform
-    /// must not be silently resolved. 11 and 35 are the transposed
-    /// EAGAIN/EDEADLK pair; 39 is ENOTEMPTY on Linux and EDESTADDRREQ on Darwin;
-    /// 40 is ELOOP on Linux and EMSGSIZE on Darwin.
-    [<TestCase 11>]
-    [<TestCase 35>]
-    [<TestCase 39>]
-    [<TestCase 40>]
-    [<TestCase 62>]
-    [<TestCase 66>]
-    let ``palOfRawErrno refuses a platform-dependent errno`` (raw : int) : unit =
-        let exn =
-            Assert.Throws<Exception> (fun () -> UnixError.palOfRawErrno raw |> ignore<int>)
-
-        exn.Message |> shouldContainText "platform-dependent"
 
     [<Test>]
     let ``ofRawErrno declines a platform-dependent errno`` () : unit =

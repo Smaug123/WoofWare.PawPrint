@@ -1758,6 +1758,53 @@ unreachable by construction rather than merely unexercised, and it now says so.
 The row that kills the mutant is the new one at the library's altitude, which is
 the clearest instance so far of what that altitude is for.
 
+#### The errno PAL cluster, retired
+
+Stage 3.5 chose containment over splitting on the strength of a promise that
+stage 7 would retire the residue, and the re-scoped stage 7 could keep only the
+`UnixError` part of it. This is that part: nine of the seventeen allowlisted
+definitions, and the whole cluster the plan assigned here.
+
+`UnixError` carried two numbers per case — the raw `<errno.h>` value, which is
+what a kernel states, and .NET's `Interop.Error` value, which is one client's
+encoding. The PAL half is now `WoofWare.PawPrint`'s `UnixErrorPal`.
+`palOfRawErrno`/`palOfRawErrnoUnder` moved whole rather than being split: they
+are `SystemNative_ConvertErrorPlatformToPal`, a shim function rather than a
+kernel one. Two measurements made the cut clean — **the library read the PAL
+column in exactly zero places**, and all 75 production uses of it were in one
+file.
+
+`isPortableRawErrno` and `isUnambiguouslyNonStandardRawErrno` became public.
+They state which errno numbers every Unix agrees on, which is POSIX content
+rather than PAL content, and the converter cannot be written without them.
+
+**The mirrored-table cost, and why it is not the cost it looked like.** Stage
+3.5's option (a) was rejected partly because splitting leaves two exhaustive
+matches over `UnixError` that the compiler keeps *complete* but cannot keep *in
+agreement*. That framing had the oracle wrong. Agreement with the library was
+never the property that mattered: the PAL column's authority is upstream's
+`Interop.Errors.cs`, and `TestUnixErrorPal` re-derives all 47 values from the
+pinned source exactly as the joint table's test did. A wrong number is caught by
+the same authority as before, and a missing case by the compiler. Confirmed by
+mutation: a single wrong PAL row is caught by the upstream-derived row and by
+nothing else in either suite.
+
+Audited by parsing both columns out of the old file and the two new ones — the
+PAL values and the raw values are each identical to what the branch point held.
+
+**One thing the move exposed rather than fixed.** The `UnixError` docstring
+claimed the type carried two numbers; rewriting it forced the question of what
+the type's *membership* rule is, and the honest answer is that the vocabulary
+was chosen against one client too: `ENOTBLK` is absent because .NET's enum has
+no name for it. That is now stated in the docstring rather than left implicit. A
+second client wanting `ENOTBLK` adds the case; nothing about the design refuses
+it.
+
+**And one it did not touch.** The library's prose still says "PawPrint" in 106
+places, which is a different residue from the encodings this check counts and
+needs its own sweep. The `pal-residue` check cannot see it — a docstring is not
+a definition — so it is recorded here instead.
+
 #### Correctness oracle
 
 * **A new `TestUnixSystemStep.fs` in `WoofWare.PosixKernel.Test`** driving the
