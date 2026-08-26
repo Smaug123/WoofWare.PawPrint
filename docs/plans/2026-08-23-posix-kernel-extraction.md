@@ -1800,10 +1800,13 @@ no name for it. That is now stated in the docstring rather than left implicit. A
 second client wanting `ENOTBLK` adds the case; nothing about the design refuses
 it.
 
-**And one it did not touch.** The library's prose still says "PawPrint" in 106
-places, which is a different residue from the encodings this check counts and
-needs its own sweep. The `pal-residue` check cannot see it — a docstring is not
-a definition — so it is recorded here instead.
+**And one it deliberately did not touch.** The library's prose still says
+"PawPrint" in 106 places, which is a different residue from the encodings this
+check counts, and the `pal-residue` check cannot see it — a docstring is not a
+definition. **It is not to be swept.** Patrick will read the whole library by
+hand once the extraction finishes, ahead of releasing it, and the wrong names
+are the marker for what he has not yet checked; removing them mechanically would
+destroy that marker while leaving the prose unread.
 
 #### Correctness oracle
 
@@ -1877,6 +1880,227 @@ altitude, plus the existing guest fixtures. `TestGuestPathBytes.fs` and the
 `ENAMETOOLONG`/`EFAULT` rows are the interesting cases: they are exactly where
 the `UserBuffer` three-way classification earns its place, and each of the
 three cases needs a row that only it can satisfy.
+
+### Stage 8 design (proposed)
+
+Stage 8's specification above was written before stage 6, and — as with stage 7
+— measuring it against today's code moves several things. This is the census and
+the revision.
+
+#### What is actually there
+
+The stage names thirteen syscalls plus "the socket-address entry points".
+Measured in `Native/NativeSystemNative.fs`, which holds 73 handlers:
+
+| handler | lines | what it carries |
+| --- | --- | --- |
+| `Open` | 333 | path in |
+| `PRead` | 237 | buffer out, explicit offset |
+| `Poll` | 230 | array in *and* out |
+| `Read` / `Write` | 214 / 217 | buffer out / buffer in |
+| `ReadLink` | 178 | path in, buffer out |
+| `PWrite` | 164 | buffer in |
+| `GetCwd` | 133 | buffer out |
+| `OpenDir` / `ReadDir` | 114 / 102 | path in / struct out |
+| `GetSockName` | 100 | socket address out |
+| `MkDir` / `RmDir` / `Unlink` | 88 / 88 / 86 | path in |
+| `FStat` | 88 | struct out |
+| `Stat` / `LStat` | 3 / 8 | both delegate to one `statLike` |
+
+Across the whole file there are **47 buffer-pointer arguments and 39
+write-throughs**, so the named list is roughly a third of the eventual surface.
+
+#### Three findings that change the specification
+
+**(1) The buffer classification is four-way, and two of the four are refusals
+rather than EFAULT.** Decision 2(b) sketches `UserBuffer` as `Null | Unmapped |
+Mapped`, and says of `Unmapped` that "a real run takes SIGSEGV; today PawPrint
+`failwith`s at each such site". That is false today. `BufferPointer`
+(`NativeSystemNative.fs:16`) has four cases, and `BufferPointer.dereferenceable`
+answers `None` — hence EFAULT — for *every* raw address, null or not, because
+"real `write(2)` and `getcwd(3)` alike answer EFAULT for both, having performed
+no I/O". What actually crashes is the other two:
+
+* `Symbolic` — the address of a method table or type handle. A real runtime has
+  that memory mapped and readable, so the host transfers those bytes; **EFAULT
+  would be a wrong answer rather than an approximate one**, and PawPrint has no
+  bytes to transfer.
+* `Unstatable` — the difference of two pointers into separate storages, which
+  names no address at all. Under a platform that screens up front there is
+  nothing to compare against the limit, so the answer is not "out of range", it
+  is unknown.
+
+Both are measured-but-unmodelled in exactly stage 7's sense, so they are
+*refusals*, and they are **the client's** refusals: only PawPrint can produce
+either, and neither is a thing a kernel has a concept of. So they never reach
+the library, and `UserBuffer` stays three-way — but for a different reason than
+the one decision 2 gave, and the corrected reason is what stops someone later
+"fixing" `Symbolic` into `Unmapped`.
+
+**(2) The buffer is an input consulted at several measured points, not only an
+output effect.** `SystemNative_Read`'s order, every step of it measured:
+
+1. `bufferSize < 0` → EINVAL — the shim's guard, ahead of the descriptor
+2. descriptor, access mode, object kind → EBADF / EINVAL / ENXIO
+3. **the up-front buffer screen — Linux only** (`screensUserBufferUpFront`)
+4. stdin → 0, *without touching the buffer*
+5. `EISDIR`, *without touching the buffer*
+6. the transfer window
+7. a zero-length transfer → 0, *without touching the buffer*
+8. dereference → EFAULT
+9. the copy-out, and only then the offset advance
+
+Three of those steps are "the buffer is not touched here", one is "it is screened
+here on one platform only", and one is the transfer. A design in which the buffer
+appears only in the *response* can express step 9 and none of the rest. So the
+classification crosses **in**, and is consulted; the bytes come **out**. That is
+decision 2(b)'s intent, confirmed, but the plan's phrasing ("the response carries
+an ordered list of effects") describes only half of it.
+
+`faultsBeforeOperation` (`:334`) is already most of the library function this
+needs: it consults `UserBufferCheck` and `screensUserBufferUpFront`, both
+library, and differs only in being typed over PawPrint's four-way DU.
+
+**(3) There are two kinds of copy-out, and conflating them would grow the PAL
+residue this work is supposed to shrink.**
+
+* **Opaque bytes at a caller-supplied address** — `read`, `pread`, `readlink`,
+  `getcwd`. The library knows the bytes; the client knows where they go.
+* **A structured value the client encodes to its own ABI** — `fstat`/`stat`/
+  `lstat` fill a guest `Interop.Sys.FileStatus`; `readdir` fills a `dirent`;
+  `getsockname` fills a `sockaddr`. `writeFileStatus` (`:1055`) writes at ABI
+  offsets, checks `CliType.sizeOf` against the guest's own struct, and resolves
+  it through a `ConcreteTypeHandle` — a CLR concept end to end.
+
+If stage 8 gave the library one generic `writes : (address, bytes)` component,
+`fstat` would have to emit `FileStatus` bytes, and the library would acquire a
+.NET struct layout — a **new** entry in `scripts/pal-residue-allowlist.txt`, in
+the stage whose job is to empty it. So the second kind must cross as a typed
+value and be encoded by the client.
+
+#### The open decision: how the answer carries a payload
+
+**(A) One `SyscallAnswer`, with a generic `writes` component**, as decision 2(b)
+sketches. Uniform, and `step` keeps one surface. Costs: every write needs a
+destination tag once a syscall has two output buffers (`getsockname` has address
+and length; `poll` and `recvfrom` likewise), and finding 3 means a *second*
+mechanism is needed anyway for the structured answers — so the generic list buys
+uniformity for one of the two kinds and no uniformity overall.
+
+**(B) Per-syscall typed answers, and no generic writes.** `read` answers
+`ImmutableArray<byte>`; `fstat` answers a `FileStatusAnswer` record; `getcwd`
+answers a path. The client places every one of them, which it must do anyway.
+`SyscallAnswer` becomes a DU whose cases enumerate the *shapes* of answer rather
+than one shape with an effect list. Costs: `step`'s uniform surface weakens —
+a client logging or replaying through it must match on more cases — and the case
+set grows as syscalls land, which is a closed-set-that-grows.
+
+**Recommended: (B)**, on the strength of finding 3. The generic effects list was
+proposed when the only imagined copy-out was opaque bytes; against the measured
+set it covers half the cases and forces the library to learn a .NET struct
+layout for the other half. (B) also keeps the "no illegal states" property that
+made stage 7's per-syscall functions the primitives and `step` the sugar: a
+`read` that returned a `FileStatus` would not typecheck.
+
+Concretely, and mirroring stage 7's split of source and destination:
+
+```fsharp
+/// A buffer the guest asked this kernel to read *from*.
+type SourceBuffer =
+    | Null
+    | Unmapped of address : uint64
+    | Mapped of bytes : ImmutableArray<byte>
+
+/// A buffer the guest asked this kernel to write *into*. Carries no content and
+/// no address: `Mapped` storage in PawPrint has no address at all, and the
+/// client re-associates the answer with the storage it classified.
+type DestinationBuffer =
+    | Null
+    | Unmapped of address : uint64
+    | Mapped
+```
+
+Two types rather than one with an optional payload, because a destination
+carrying bytes and a source carrying none are both nonsense the compiler can
+refuse. `Mapped` deliberately carries no address: PawPrint's `Storage` case has
+none, and `faultsBeforeOperation` already never asks for one.
+
+#### Paths force a question larger than the syscall move
+
+`parseGuestPathBytes` (`:827`) does two things. ENAMETOOLONG is a library rule
+(`PathLimits.pathMaxBytes`). The other is a UTF-8 decode, with a `failwith` for
+invalid input whose message says it plainly: "a Unix kernel looks up the raw
+bytes, but PawPrint models a filename as a .NET string". That model is the
+*library's* — `UnixPath.parse` takes a string — so the limitation is the
+library's too, and the `failwith` is sitting on the wrong side of the boundary.
+
+By the raw-versus-parsed rule a path should cross **raw**, as
+`ImmutableArray<byte>`: the library can classify it (it owns `PathLimits`) and
+owns the consequence (ENAMETOOLONG). Doing that hands the library the non-UTF-8
+refusal, which is correct — but it is a change to the stated contract of the
+library's filename model, not a syscall move, and it should land **before** any
+path syscall rather than inside one.
+
+#### The increments
+
+Ordered so that each has an oracle before the next depends on it.
+
+* **8a — the buffer vocabulary.** `SourceBuffer`/`DestinationBuffer` and the
+  screen (`faultsBeforeOperation`) move into the library; PawPrint maps its
+  four-way `BufferPointer` onto the three-way classification and keeps
+  `Symbolic`/`Unstatable` as its own refusals. No syscall moves, but it is not
+  dead code: the two existing `faultsBeforeOperation` call sites consume it
+  immediately. Oracle: `TestUserBufferCheckAgainstHost` at the new altitude, and
+  a row per classification arm.
+* **8b — paths cross raw.** `UnixPath` gains a bytes-shaped entry point, and the
+  non-UTF-8 refusal moves into the library as a refusal case. Oracle:
+  `TestGuestPathBytes`, plus the ENAMETOOLONG boundary rows, which are the ones
+  that can tell a byte budget from a character budget.
+* **8c — `read`**, first because its measured ordering exercises every part of
+  (2): three buffer-untouched short-circuits, a platform-dependent up-front
+  screen, and a copy-out. `pread` follows as the same operation with an explicit
+  offset, which is the whole difference between them.
+* **8d — `write`/`pwrite`**, the source-buffer direction.
+* **8e — `fstat`, then `stat`/`lstat`**, first because it is the smallest
+  structured answer and it is what settles (3) against a real encoder. `stat`
+  and `lstat` follow for free: they already share one `statLike`.
+* **8f — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
+  land together once 8b exists.
+* **8g — `open`** (333 lines) and **`opendir`/`readdir`**, last of the file
+  syscalls, because `open`'s flags are PAL values and it is the largest.
+* The **socket-address entry points** stay with stage 9, where the rest of the
+  socket PAL cluster goes: they are pure PAL encode/decode with no kernel state
+  at all, and splitting the cluster across two stages is the half-migration the
+  plan's own migration section warns against.
+
+#### Correctness oracle
+
+Per increment, the host-differential test at the new altitude plus the existing
+guest fixtures, as before. Specifically:
+
+* **A row per buffer classification, per screening platform.** The interesting
+  cell is `Unmapped` under Darwin, which does *not* screen up front and so
+  reaches the operation and answers from it — that is the cell a single-platform
+  test cannot see.
+* **A row per buffer-untouched short-circuit**, since "the buffer is not touched
+  here" is invisible to any test that passes a valid buffer. `Null` is the probe:
+  `read(f, NULL, 5)` at EOF is 0, and `read(dir, NULL, 5)` is EISDIR.
+* **`TestGuestPathBytes` for 8b**, where a byte budget and a character budget
+  agree on ASCII and disagree on anything else.
+* **Mutation, per increment**: break one ordering step and confirm a row dies.
+  The ordering steps are what this stage is really moving, and they are the part
+  no type can hold.
+
+#### Decision 2(b), amended in place
+
+Stage 7 committed to `SyscallAnswer` gaining a writes component and left the
+ordered-versus-unordered question for measurement here. The census answers it by
+dissolving it: under option (B) there is no generic writes component to order.
+The claim stage 7 wanted tested — that a syscall is atomic with respect to
+PawPrint's scheduler, so no guest thread can observe an interleaving — is still
+true and is what lets a *typed* answer be applied in whatever order the client
+likes. Decision 2(b)'s "ordered list of effects" is superseded, and the sentence
+in stage 7's section that promised the amendment is discharged here.
 
 ### Stage 9: blocking syscalls, and packaging
 
