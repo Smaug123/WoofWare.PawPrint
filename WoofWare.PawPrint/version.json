@@ -8,6 +8,7 @@
     ":/WoofWare.PawPrint.Domain",
     ":/WoofWare.PosixKernel",
     ":/Directory.Build.props",
-    ":/README.md"
+    ":/README.md",
+    ":/logos/light.png"
   ]
 }

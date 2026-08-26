@@ -6,6 +6,7 @@
   "pathFilters": [
     "./",
     ":/Directory.Build.props",
-    ":/README.md"
+    ":/README.md",
+    ":/logos/light.png"
   ]
 }
