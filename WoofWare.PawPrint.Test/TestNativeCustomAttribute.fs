@@ -1059,7 +1059,10 @@ public sealed class CctorAttribute : System.Attribute
         |> shouldEqual (prep2.BlobArr, blob.Length)
 
     /// Each out-of-scope serialization type fails with its own message, naming the construct and
-    /// the capability it needs, so a diagnostic identifies which feature the blob required.
+    /// the capability it needs, so a diagnostic identifies which feature the blob required. An
+    /// array names its element type too, which takes one row per kind an element can be: that is
+    /// the only position those kinds are described from, a scalar TYPE or TAGGED_OBJECT being
+    /// refused by a message of its own before any description is asked for.
     [<Test>]
     let ``out-of-scope serialization types each fail with their own message`` () : unit =
         let cases =
@@ -1076,7 +1079,18 @@ public sealed class CctorAttribute : System.Attribute
                     0x00uy
                     0x00uy
                 |],
-                "SZARRAY"
+                "SZARRAY type (element int32)"
+                // SZARRAY of each remaining element kind. The refusal precedes the value, so these
+                // need no bytes past the member name.
+                [| 0x53uy ; 0x1Duy ; 0x50uy ; 0x01uy ; byte 'F' |], "(element TYPE (0x50))"
+                [| 0x53uy ; 0x1Duy ; 0x51uy ; 0x01uy ; byte 'F' |], "(element TAGGED_OBJECT (0x51))"
+                Array.concat
+                    [
+                        [| 0x53uy ; 0x1Duy ; 0x55uy ; 0x04uy |]
+                        System.Text.Encoding.UTF8.GetBytes "MyEn"
+                        [| 0x01uy ; byte 'F' |]
+                    ],
+                "(element ENUM (0x55) named \"MyEn\")"
                 // ENUM naming its type by a SerString.
                 Array.concat
                     [
@@ -1087,6 +1101,21 @@ public sealed class CctorAttribute : System.Attribute
                 "ENUM"
                 [| 0x53uy ; 0x50uy ; 0x01uy ; byte 'F' ; 0xFFuy |], "TYPE (0x50)"
                 [| 0x53uy ; 0x51uy ; 0x01uy ; byte 'F' ; 0x0Euy ; 0xFFuy |], "TAGGED_OBJECT (0x51)"
+                // SZARRAY whose element tag is itself SZARRAY. The reader takes that second byte
+                // as the element tag and stops, so this reaches the SZARRAY refusal rather than
+                // spending a host stack frame per 0x1D; the refusal names the tag it kept.
+                [|
+                    0x53uy
+                    0x1Duy
+                    0x1Duy
+                    0x01uy
+                    byte 'F'
+                    0xFFuy
+                    0xFFuy
+                    0xFFuy
+                    0xFFuy
+                |],
+                "0x1D, which names no serialization type"
             ]
 
         for blob, expectedFragment in cases do
