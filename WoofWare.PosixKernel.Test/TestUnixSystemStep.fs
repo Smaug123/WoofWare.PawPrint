@@ -2553,6 +2553,14 @@ module TestUnixSystemStep =
         UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1000 (atOrphan darwin)
         |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
 
+        // Capacity 2 exactly, which is where the refusal starts and therefore
+        // the only capacity that can tell a floor of 2 from a floor of 3. It is
+        // the removed-directory case that establishes it: measured, that flavour
+        // stores its first byte at capacity 2 and dies for an unmapped
+        // destination, where capacity 1 is a clean ERANGE.
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 2 (atOrphan darwin)
+        |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
+
     [<Test>]
     let ``below capacity 2 even a user-space getcwd answers an unwritable destination`` () : unit =
         // The floor the refusal starts at, and it is measured rather than
