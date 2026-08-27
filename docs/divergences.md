@@ -845,7 +845,7 @@ try { var a = new string[Neg()]; } catch (OverflowException e) { Console.WriteLi
 //                    Arithmetic operation resulted in an overflow.
 ```
 
-**Where this lives in code**: `SzArrayAllocation.exceptionFor` chooses the exception and message
+**Where this lives in code**: `SzArrayAllocation.faultFor` chooses the fault and message
 for both routes into a single-dimensional allocation (`UnaryMetadataArrayOps.executeNewarr` and
 `NativeGc`'s `GCInterface_AllocateNewArray`). `sourcesPure/NewarrLengthValidation.cs` asserts the
 exception *type* differentially across element types on both sides of the split, and
