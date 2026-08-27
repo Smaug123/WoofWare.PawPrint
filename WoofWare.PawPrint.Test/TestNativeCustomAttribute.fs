@@ -1098,6 +1098,22 @@ public sealed class CctorAttribute : System.Attribute
 
             exn.Message |> shouldContainText expectedFragment
 
+    /// A blob of nothing but SZARRAY bytes is bounded work for the reader, which takes one element
+    /// tag and rejects a second 0x1D where it sits. Reading ECMA-335's "0x1D followed by the
+    /// FieldOrPropType of the element type" as a recursive grammar instead spends one host stack
+    /// frame per byte here, on bytes the guest assembly chose; a host stack overflow is uncatchable,
+    /// so it takes the interpreter down rather than producing a diagnostic.
+    [<Test>]
+    let ``a deeply nested array is refused, not descended into`` () : unit =
+        let fixture = makeFixture ()
+        let blob = Array.append [| 0x53uy |] (Array.create 100_000 0x1Duy)
+        let prep = prepareNamedArgInvocation fixture blob 0
+
+        let exn =
+            Assert.Throws (fun () -> invokeNamedArgHandler fixture prep.Thread prep.State |> ignore)
+
+        exn.Message |> shouldContainText "not a valid serialization type"
+
     [<Test>]
     let ``a malformed kind tag fails loudly`` () : unit =
         let fixture = makeFixture ()

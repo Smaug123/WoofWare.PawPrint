@@ -174,8 +174,16 @@ module NativeCustomAttribute =
     /// rather than in the blob.
     /// </remarks>
     let private resolveNamedArgPrimitive (operation : string) (elemType : CustomAttribFieldOrPropType) : PrimitiveType =
+        let describeElem (elem : CustomAttribSerializationType) : string =
+            match elem with
+            | CustomAttribSerializationType.Primitive pt -> $"%O{pt}"
+            | CustomAttribSerializationType.Type -> "TYPE (0x50)"
+            | CustomAttribSerializationType.TaggedObject -> "TAGGED_OBJECT (0x51)"
+            | CustomAttribSerializationType.Enum (Some name) -> $"ENUM (0x55) named \"%s{name}\""
+            | CustomAttribSerializationType.Enum None -> "ENUM (0x55) named by the SerString null sentinel"
+
         match elemType with
-        | CustomAttribFieldOrPropType.Primitive pt -> pt
+        | CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive pt) -> pt
         | CustomAttribFieldOrPropType.SzArray elt ->
             // The fixed-arg path serves SZARRAY, but a named arg needs two things it does not:
             // the element type comes from the blob's serialization-type byte rather than from a
@@ -183,21 +191,16 @@ module NativeCustomAttribute =
             // the *array* type into `pType` so the managed caller picks the type-filtered
             // `GetProperty` overload (`customattribute.cpp:1136`).
             failwith
-                $"TODO: %s{operation}: named argument has SZARRAY type (element %O{elt}); resolving a named arg's element type from the blob, and reporting the array type for a null value, are not implemented"
-        | CustomAttribFieldOrPropType.Enum typeName ->
-            let described =
-                match typeName with
-                | Some name -> $"\"%s{name}\""
-                | None -> "the SerString null sentinel"
-
+                $"TODO: %s{operation}: named argument has SZARRAY type (element %s{describeElem elt}); resolving a named arg's element type from the blob, and reporting the array type for a null value, are not implemented"
+        | CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Enum _ as elem) ->
             failwith
-                $"TODO: %s{operation}: named argument has ENUM type named by %s{described}; resolving a custom-attribute type name needs the reflection type-name parser (CoreCLR's TypeName::GetTypeReferencedByCustomAttribute), which PawPrint does not have"
-        | CustomAttribFieldOrPropType.Type ->
+                $"TODO: %s{operation}: named argument has %s{describeElem elem} type; resolving a custom-attribute type name needs the reflection type-name parser (CoreCLR's TypeName::GetTypeReferencedByCustomAttribute), which PawPrint does not have"
+        | CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.Type ->
             failwith
                 $"TODO: %s{operation}: named argument has TYPE (0x50) type; its value is a reflection type name, so it needs the same type-name parser as the ENUM case"
-        | CustomAttribFieldOrPropType.TaggedObject ->
+        | CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.TaggedObject ->
             failwith
-                $"TODO: %s{operation}: named argument has TAGGED_OBJECT (0x51) type; its value carries its own FieldOrPropType recursively, so it depends on the SZARRAY and TYPE cases first"
+                $"TODO: %s{operation}: named argument has TAGGED_OBJECT (0x51) type; its value carries its own FieldOrPropType in front of the value, so it depends on the SZARRAY and TYPE cases first"
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State

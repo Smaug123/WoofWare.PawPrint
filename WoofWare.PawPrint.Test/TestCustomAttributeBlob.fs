@@ -688,11 +688,11 @@ module TestCustomAttributeBlob =
     // Named args (ECMA-335 II.23.3 `NamedArg`)
     // ------------------------------------------------------------------
 
-    /// Encode a `FieldOrPropType`. Byte values are `CorSerializationType` (corhdr.h), which
-    /// aliases `CorElementType` for BOOLEAN..R8, STRING and SZARRAY.
-    let rec private encodeFieldOrPropType (t : CustomAttribFieldOrPropType) : byte array =
+    /// Encode a `CorSerializationType` (corhdr.h), which aliases `CorElementType` for
+    /// BOOLEAN..R8 and STRING.
+    let private encodeSerializationType (t : CustomAttribSerializationType) : byte array =
         match t with
-        | CustomAttribFieldOrPropType.Primitive pt ->
+        | CustomAttribSerializationType.Primitive pt ->
             let b =
                 match pt with
                 | PrimitiveType.Boolean -> 0x02uy
@@ -711,10 +711,9 @@ module TestCustomAttributeBlob =
                 | other -> failwithf "%O has no CorSerializationType byte, so it is not encodable here" other
 
             [| b |]
-        | CustomAttribFieldOrPropType.SzArray elt -> Array.append [| 0x1Duy |] (encodeFieldOrPropType elt)
-        | CustomAttribFieldOrPropType.Type -> [| 0x50uy |]
-        | CustomAttribFieldOrPropType.TaggedObject -> [| 0x51uy |]
-        | CustomAttribFieldOrPropType.Enum typeName ->
+        | CustomAttribSerializationType.Type -> [| 0x50uy |]
+        | CustomAttribSerializationType.TaggedObject -> [| 0x51uy |]
+        | CustomAttribSerializationType.Enum typeName ->
             let name =
                 match typeName with
                 | None -> [| 0xFFuy |]
@@ -723,6 +722,12 @@ module TestCustomAttributeBlob =
                     Array.append (encodePackedLen utf8.Length) utf8
 
             Array.append [| 0x55uy |] name
+
+    /// Encode a `FieldOrPropType`: an optional SZARRAY (0x1D) prefix, then one serialization type.
+    let private encodeFieldOrPropType (t : CustomAttribFieldOrPropType) : byte array =
+        match t with
+        | CustomAttribFieldOrPropType.Scalar elt -> encodeSerializationType elt
+        | CustomAttribFieldOrPropType.SzArray elt -> Array.append [| 0x1Duy |] (encodeSerializationType elt)
 
     let private encodeSerString (s : string option) : byte array =
         match s with
@@ -770,7 +775,9 @@ module TestCustomAttributeBlob =
         for tag, expected in cases do
             match CustomAttribute.readFieldOrPropType (immutable [| tag |]) 0 with
             | Ok (decoded, next) ->
-                decoded |> shouldEqual (CustomAttribFieldOrPropType.Primitive expected)
+                decoded
+                |> shouldEqual (CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive expected))
+
                 next |> shouldEqual 1
             | Error e -> failwithf "byte 0x%02X: expected Ok, got Error %s" tag e
 
@@ -778,41 +785,72 @@ module TestCustomAttributeBlob =
     let ``readFieldOrPropType decodes Type and TaggedObject`` () : unit =
         match CustomAttribute.readFieldOrPropType (immutable [| 0x50uy |]) 0 with
         | Ok (decoded, next) ->
-            decoded |> shouldEqual CustomAttribFieldOrPropType.Type
+            decoded
+            |> shouldEqual (CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.Type)
+
             next |> shouldEqual 1
         | Error e -> failwithf "expected Ok Type, got Error %s" e
 
         match CustomAttribute.readFieldOrPropType (immutable [| 0x51uy |]) 0 with
         | Ok (decoded, next) ->
-            decoded |> shouldEqual CustomAttribFieldOrPropType.TaggedObject
+            decoded
+            |> shouldEqual (CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.TaggedObject)
+
             next |> shouldEqual 1
         | Error e -> failwithf "expected Ok TaggedObject, got Error %s" e
 
+    /// Every element type CoreCLR admits after SZARRAY: a primitive, a TYPE, a TAGGED_OBJECT, or
+    /// an ENUM with its name. Each is one tag byte after the 0x1D, except the enum, which carries
+    /// its SerString too.
     [<Test>]
-    let ``readFieldOrPropType decodes SzArray and nests`` () : unit =
-        let single =
-            CustomAttribFieldOrPropType.SzArray (CustomAttribFieldOrPropType.Primitive PrimitiveType.Int32)
+    let ``readFieldOrPropType decodes SzArray of each element type`` () : unit =
+        let cases =
+            [
+                CustomAttribSerializationType.Primitive PrimitiveType.Int32
+                CustomAttribSerializationType.Primitive PrimitiveType.String
+                CustomAttribSerializationType.Type
+                CustomAttribSerializationType.TaggedObject
+                CustomAttribSerializationType.Enum (Some "MyNs.MyEnum, MyAsm")
+                CustomAttribSerializationType.Enum None
+            ]
 
-        match CustomAttribute.readFieldOrPropType (immutable (encodeFieldOrPropType single)) 0 with
-        | Ok (decoded, next) ->
-            decoded |> shouldEqual single
-            next |> shouldEqual 2
-        | Error e -> failwithf "expected Ok, got Error %s" e
+        for elt in cases do
+            let expected = CustomAttribFieldOrPropType.SzArray elt
+            let encoded = encodeFieldOrPropType expected
 
-        // ECMA-335's grammar is recursive here; CoreCLR's named-arg path admits only one level.
-        // This reader follows the grammar, and the resolution step is where arrays are refused.
-        let nested = CustomAttribFieldOrPropType.SzArray single
+            match CustomAttribute.readFieldOrPropType (immutable encoded) 0 with
+            | Ok (decoded, next) ->
+                decoded |> shouldEqual expected
+                next |> shouldEqual encoded.Length
+            | Error e -> failwithf "element %O: expected Ok, got Error %s" elt e
 
-        match CustomAttribute.readFieldOrPropType (immutable (encodeFieldOrPropType nested)) 0 with
-        | Ok (decoded, next) ->
-            decoded |> shouldEqual nested
-            next |> shouldEqual 3
-        | Error e -> failwithf "expected Ok nested, got Error %s" e
+    /// The reader consumes at most two tag bytes, so a second SZARRAY is rejected where it sits
+    /// rather than descended into. That is what keeps its stack depth independent of the bytes it
+    /// is decoding: reading ECMA-335's "0x1D followed by the FieldOrPropType of the element type"
+    /// as a recursive grammar instead puts one stack frame per byte under the guest's control, and
+    /// a host stack overflow cannot be caught.
+    [<Test>]
+    let ``readFieldOrPropType refuses to nest arrays, however deep`` () : unit =
+        match CustomAttribute.readFieldOrPropType (immutable [| 0x1Duy ; 0x1Duy ; 0x08uy |]) 0 with
+        | Ok other -> failwithf "expected Error for a nested array, got Ok %A" other
+        | Error e ->
+            e |> shouldContainText "0x1D"
+            e |> shouldContainText "at offset 1"
+            e |> shouldContainText "not a valid serialization type"
+
+        let deep = Array.create 4_000_000 0x1Duy
+
+        match CustomAttribute.readFieldOrPropType (immutable deep) 0 with
+        | Ok other -> failwithf "expected Error for a 4MB array nest, got Ok %A" other
+        | Error e -> e |> shouldContainText "at offset 1"
 
     [<Test>]
     let ``readFieldOrPropType decodes Enum with its type name`` () : unit =
         let name = "MyNs.MyEnum, MyAsm, Version=1.0.0.0"
-        let t = CustomAttribFieldOrPropType.Enum (Some name)
+
+        let t =
+            CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Enum (Some name))
+
         let encoded = encodeFieldOrPropType t
 
         match CustomAttribute.readFieldOrPropType (immutable encoded) 0 with
@@ -825,7 +863,13 @@ module TestCustomAttributeBlob =
     let ``readFieldOrPropType rejects an unknown tag`` () : unit =
         match CustomAttribute.readFieldOrPropType (immutable [| 0x99uy |]) 0 with
         | Ok other -> failwithf "expected Error for tag 0x99, got Ok %A" other
-        | Error e -> e |> shouldContainText "not a valid FieldOrPropType"
+        | Error e -> e |> shouldContainText "not a valid serialization type"
+
+    [<Test>]
+    let ``readSerializationType rejects SZARRAY`` () : unit =
+        match CustomAttribute.readSerializationType (immutable [| 0x1Duy ; 0x08uy |]) 0 with
+        | Ok other -> failwithf "expected Error for tag 0x1D, got Ok %A" other
+        | Error e -> e |> shouldContainText "not a valid serialization type"
 
     [<Test>]
     let ``readFieldOrPropType rejects an empty slice`` () : unit =
@@ -847,7 +891,9 @@ module TestCustomAttributeBlob =
                 header.Kind |> shouldEqual expected
 
                 header.ElemType
-                |> shouldEqual (CustomAttribFieldOrPropType.Primitive PrimitiveType.Int32)
+                |> shouldEqual (
+                    CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive PrimitiveType.Int32)
+                )
 
                 header.Name |> shouldEqual (Some "N")
                 next |> shouldEqual bytes.Length
@@ -861,7 +907,8 @@ module TestCustomAttributeBlob =
         let header =
             {
                 Kind = CustomAttribNamedArgKind.Property
-                ElemType = CustomAttribFieldOrPropType.Enum (Some "Some.Enum.Type")
+                ElemType =
+                    CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Enum (Some "Some.Enum.Type"))
                 Name = Some "TheMemberName"
             }
 
@@ -876,7 +923,9 @@ module TestCustomAttributeBlob =
         match CustomAttribute.readNamedArgHeader (immutable bytes) 0 with
         | Ok (decoded, next) ->
             decoded.ElemType
-            |> shouldEqual (CustomAttribFieldOrPropType.Enum (Some "Some.Enum.Type"))
+            |> shouldEqual (
+                CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Enum (Some "Some.Enum.Type"))
+            )
 
             decoded.Name |> shouldEqual (Some "TheMemberName")
             next |> shouldEqual bytes.Length
@@ -907,7 +956,8 @@ module TestCustomAttributeBlob =
         let header =
             {
                 Kind = CustomAttribNamedArgKind.Property
-                ElemType = CustomAttribFieldOrPropType.Primitive PrimitiveType.String
+                ElemType =
+                    CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive PrimitiveType.String)
                 Name = Some "Label"
             }
 
@@ -983,7 +1033,7 @@ module TestCustomAttributeBlob =
             let header =
                 {
                     Kind = kind
-                    ElemType = CustomAttribFieldOrPropType.Primitive primitive
+                    ElemType = CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive primitive)
                     Name = name
                 }
 
@@ -1140,7 +1190,8 @@ public static class Program { public static int Main() => 0; }
 
             let shape =
                 match header.ElemType with
-                | CustomAttribFieldOrPropType.Primitive pt -> CustomAttribArgShape.Primitive pt
+                | CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive pt) ->
+                    CustomAttribArgShape.Primitive pt
                 | other -> failwithf "named arg %d (%s): corpus should be primitives only, got %O" i expected.Name other
 
             match CustomAttribute.readElem shape blob valueOffset with
