@@ -750,27 +750,6 @@ module NativeSystemNative =
             (ImmutableArray.CreateRange bytes)
             state
 
-    /// Commit a truncation of the regular file `inode` to `length`, together with
-    /// the `mtime`, `ctime` and set-ID bits it moves.
-    ///
-    /// Shared by `SystemNative_FTruncate` and by `SystemNative_Open`'s `O_TRUNC`,
-    /// which are the same operation with the same measured consequences — the
-    /// mode rule, the timestamp rule and the truncate-to-the-same-length rule all
-    /// agree between them on both platforms.
-    ///
-    /// Not short-circuited when the file is already that length: unlike a write of
-    /// no bytes, a truncation that moves no bytes still stamps the inode.
-    let private commitTruncation
-        (operation : string)
-        (inode : InodeNumber)
-        (length : int64)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        match UnixSystem.truncateAt inode length (EmulatedKernel.unix state.Kernel) with
-        | Ok system -> state.MapKernel (EmulatedKernel.withUnix system)
-        | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
-
     /// Turn the NUL-terminated bytes a guest passed as a pathname into a
     /// `UnixPath`, applying the length rule a kernel applies at *its* boundary.
     ///
@@ -2561,7 +2540,9 @@ module NativeSystemNative =
                 ||| palSync
                 ||| palNoFollow
 
-            // The shim's own rejection, in the order the C makes it: an
+            // The shim's own rejections, in the order the C makes them, and both
+            // stay here rather than crossing: neither is a kernel's decision, and
+            // neither is expressible once the flags are a record. An
             // unrecognised *bit* is EINVAL (it `assert`s first, so a checked
             // build aborts instead — the same retail-behaviour-only reasoning
             // `SystemNative_GetCwd` records), and so is an access mode that is
@@ -2576,62 +2557,23 @@ module NativeSystemNative =
                 fail UnixError.EINVAL
             else
 
-            let creating = flags &&& palCreat <> 0
-
-            // `O_TRUNC` truncates a regular file to zero once every other check
-            // has passed. It is *not* confined to a write access mode: measured on
-            // both platforms, `open(f, O_RDONLY | O_TRUNC)` on a writable file
-            // succeeds and empties it. What it does instead is demand the write
-            // permission bit; see `neededBits` below.
-            let truncating = flags &&& palTrunc <> 0
-
-            // `O_EXCL` without `O_CREAT` is not an error and not a refusal: the
-            // shim passes it through and both kernels ignore it entirely
-            // (measured: `open(existing, O_WRONLY|O_EXCL)` succeeds and
-            // `open(missing, O_WRONLY|O_EXCL)` is ENOENT, exactly as without it).
-            // So it is read only when `creating` is set.
-            let exclusive = creating && flags &&& palExcl <> 0
-
-            let requestedAccess =
-                if accessMode = palWrOnly then FileAccessMode.WriteOnly
-                elif accessMode = palRdWr then FileAccessMode.ReadWrite
-                else FileAccessMode.ReadOnly
-
-            // `O_CLOEXEC` is accepted and ignored: it sets `FD_CLOEXEC`, which
-            // matters only across `exec`, and PawPrint models neither `fork`
-            // nor `exec` (see `FileDescriptorRegistry`). `O_SYNC` likewise — it
-            // governs when a write reaches storage rather than whether it is
-            // visible, and this filesystem holds its bytes in memory, so every
-            // write is already as durable as the model gets.
-            //
-            // The `mode` argument is *not* validated, and must not be:
-            // `SafeFileHandle.OpenReadOnly` passes `DefaultCreateMode` (0666)
-            // even for a read-only open of an existing file
-            // (SafeFileHandle.Unix.cs:168), so a handler that refused a nonzero
-            // mode without `O_CREAT` would refuse the BCL's own read path. It is
-            // read only when a file is actually created, and then masked rather
-            // than rejected: measured, `mode` 0o10777 creates 0o0755 on both
-            // kernels, so a bit above the permission word is dropped exactly as
-            // the platform's own mask drops it.
-            let rules = SimulatedUnixPlatform.creatingOpenRules state.Kernel.UnixPlatform
-
-            // `O_CREAT|O_EXCL` does not follow a final symlink -- measured
-            // unanimously: an existing link is EEXIST whether it dangles, points
-            // at a file, or points at itself, and nothing is created. Selecting
-            // `Follow` here would create the *target* of a dangling link, and
-            // would answer ELOOP for a cyclic one, where both kernels answer
-            // EEXIST.
-            let policy =
-                if flags &&& palNoFollow <> 0 || exclusive then
-                    SymlinkPolicy.NoFollowFinal
-                else
-                    SymlinkPolicy.Follow
-
-            let trailingSeparatorPolicy =
-                if creating then
-                    rules.TrailingSeparator
-                else
-                    TrailingSeparatorPolicy.Demand
+            // Each bit becomes the fact it stands for. `O_EXCL` is passed
+            // through exactly as the guest set it rather than combined with
+            // `O_CREAT` here: that it does nothing on its own is the kernel's
+            // rule, and `UnixSystem.openPath` owns it.
+            let openFlags : OpenFlags =
+                {
+                    Access =
+                        if accessMode = palWrOnly then FileAccessMode.WriteOnly
+                        elif accessMode = palRdWr then FileAccessMode.ReadWrite
+                        else FileAccessMode.ReadOnly
+                    Create = flags &&& palCreat <> 0
+                    Exclusive = flags &&& palExcl <> 0
+                    Truncate = flags &&& palTrunc <> 0
+                    NoFollow = flags &&& palNoFollow <> 0
+                    CloseOnExec = flags &&& palCloExec <> 0
+                    Synchronous = flags &&& palSync <> 0
+                }
 
             match
                 bufferPointerArgument operation "path" instruction.Arguments.[0]
@@ -2654,198 +2596,21 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok path ->
 
-            match resolveGuestPathFull policy trailingSeparatorPolicy state.Kernel path with
-            | Error error -> fail error
-            | Ok resolution ->
+            // The `mode` argument crosses raw and unvalidated; see
+            // `UnixSystem.openPath` for why refusing a nonzero one without
+            // `O_CREAT` would refuse the BCL's own read path.
+            let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            // The whole creating decision is `CreatingOpenRules.verdict`, which is
-            // pure and so is compared against a real kernel in
-            // TestVirtualFileSystemAgainstHost. What is left here is only what
-            // cannot be pure: allocating the inode and registering a descriptor.
-            match
-                CreatingOpenRules.verdict
-                    rules
-                    (UnixProcessState.callerPrivilege state.Kernel.Process)
-                    creating
-                    exclusive
-                    resolution
-                    state.Kernel.FileSystem
-            with
-            | CreatingOpenVerdict.Refuse error -> fail error
-            | CreatingOpenVerdict.Create (directory, name) ->
-                let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
-                let permissions = CreatingOpenRules.createdPermissions rules state.Kernel.Umask mode
-                let now = UnixMachineState.fileTimestamp state.Kernel.Machine
-
-                match
-                    VirtualFileSystem.createFile
-                        directory
-                        name
-                        permissions
-                        now
-                        ImmutableArray<byte>.Empty
-                        state.Kernel.FileSystem
-                with
-                | Error error ->
-                    // `createFile` refuses a name the directory already holds,
-                    // and a parent that is not a directory. The walk has just
-                    // established neither is the case, so either is a broken
-                    // graph rather than something the guest did.
-                    failwith
-                        $"%s{operation}: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is an interpreter bug)."
-                | Ok (inode, filesystem) ->
-
-                let fd, registry =
-                    FileDescriptorRegistry.openFile inode requestedAccess state.Kernel.FileDescriptors
-
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Machine =
-                            { kernel.Machine with
-                                FileSystem = filesystem
-                            }
-                        Process =
-                            { kernel.Process with
-                                FileDescriptors = registry
-                            }
-                    }
-                )
-                |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 fd)))
-                    ctx.Thread
+            match UnixSystem.openPath openFlags path mode (EmulatedKernel.unix state.Kernel) with
+            | SyscallAnswer.Failed error, system ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | CreatingOpenVerdict.OpenExisting inode ->
+            | SyscallAnswer.Completed fd, system ->
 
-            let entry =
-                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
-                | Some entry -> entry
-                | None ->
-                    failwith
-                        $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
-
-            match entry.Content with
-            | InodeContent.Symlink _ ->
-                // Only reachable under `O_NOFOLLOW`, which is what
-                // `NoFollowFinal` above selects: without it the resolver would
-                // have followed the link (or failed ENOENT on a dangling one).
-                // ELOOP rather than anything more specific is what both Unixes
-                // answer, and is what `SafeFileHandle.OpenNoFollowSymlink`
-                // reads back to decide a path was a symlink without racing.
-                fail UnixError.ELOOP
-            | InodeContent.Directory _ when FileAccessMode.permitsWrite requestedAccess || truncating ->
-                // Measured on both platforms, for `O_WRONLY` and `O_RDWR` alike,
-                // and at uid 0 as well as uid 1000: a directory cannot be opened
-                // for writing, and this beats the EACCES check below (a
-                // mode-0000 directory opened `O_WRONLY` is EISDIR, not EACCES).
-                // CoreLib *depends* on it rather than merely tolerating it —
-                // `SafeFileHandle.Init` skips its own directory check entirely
-                // when write access was asked for, on the strength of "open will
-                // have failed with EISDIR" (SafeFileHandle.Unix.cs:319).
-                //
-                // This is also what makes every writable descriptor name a
-                // regular file, which `VirtualFileSystem.writeFile` relies on.
-                //
-                // `O_TRUNC` earns the same refusal whatever the access mode:
-                // measured, `open(d, O_RDONLY | O_TRUNC)` is EISDIR on both, so
-                // this is the one row where the arm fires for a *read-only* open.
-                // That includes `O_CREAT | O_RDONLY | O_TRUNC` on Darwin, where
-                // `CreatingOpenRules.RefusesExistingDirectory` is false and the
-                // verdict is therefore `OpenExisting` on the directory itself.
-                fail UnixError.EISDIR
-            | InodeContent.RegularFile _
-            | InodeContent.Directory _ ->
-
-            // A directory opens perfectly well for *reading*, and CoreLib
-            // *depends* on that: `SafeFileHandle.Init` opens, then `FStat`s,
-            // and raises `UnauthorizedAccessException` on seeing `S_IFDIR`, so
-            // refusing here would give `File.ReadAllBytes("d")` the wrong
-            // exception. The type check belongs in what `FStat` reports.
-            let permissionBits =
-                match VirtualFileSystem.permissions entry with
-                | InodePermissions.Stored bits -> bits
-                | InodePermissions.PlatformSymlinkDefault ->
-                    failwith
-                        $"%s{operation}: inode %O{inode} reports platform-default symlink permissions, but the symlink arm above answered ELOOP for every link (this is an interpreter bug)."
-
-            // What `open(2)` itself checks: whether this process may open *this
-            // object* for the access it asked for. Measured identically on macOS
-            // and Linux, at uid 1000:
-            //
-            //   mode   O_RDONLY  O_WRONLY  O_RDWR
-            //   0644   ok        ok        ok
-            //   0444   ok        EACCES    EACCES
-            //   0200   EACCES    ok        EACCES
-            //   0000   EACCES    EACCES    EACCES
-            //
-            // Only the owner triple is ever consulted, and that is exact rather
-            // than a simplification: `stat` reports `Kernel.UserId` as *every*
-            // inode's `st_uid`, so the emulated process owns everything it can
-            // see and the group and other triples can never be the applicable
-            // ones.
-            //
-            // `O_TRUNC` adds the write bit to whatever the access mode already
-            // asked for, and adds nothing else. Measured at uid 1000 on both:
-            //
-            //   mode   flags               answer
-            //   0444   RDONLY|TRUNC        EACCES
-            //   0400   RDONLY|TRUNC        EACCES
-            //   0200   RDONLY|TRUNC        EACCES   (the read bit is still owed)
-            //   0600   RDONLY|TRUNC        ok
-            //   0200   WRONLY|TRUNC        ok
-            //   0400   WRONLY|TRUNC        EACCES
-            let neededBits =
-                (if FileAccessMode.permitsRead requestedAccess then
-                     0o400
-                 else
-                     0)
-                ||| (if FileAccessMode.permitsWrite requestedAccess || truncating then
-                         0o200
-                     else
-                         0)
-
-            let lacksNeededBits =
-                PermissionBits.deniedTo
-                    (UnixProcessState.callerPrivilege state.Kernel.Process)
-                    neededBits
-                    permissionBits
-
-            if lacksNeededBits then
-                fail UnixError.EACCES
-            else
-
-            // Only now, with every refusal discharged: measured, a refused open
-            // leaves the bytes alone, and specifically `O_CREAT | O_EXCL | O_TRUNC`
-            // on an existing file is EEXIST with its contents intact, while
-            // `O_NOFOLLOW | O_TRUNC` on a symbolic link is ELOOP with its target
-            // intact.
-            //
-            // Unconditional rather than skipped for an already-empty file: the
-            // inode's timestamps move and its set-ID bits go regardless. Only a
-            // regular file is truncated — a directory cannot reach here at all
-            // (the arm above refuses every truncating open of one), so the match
-            // is over what the descriptor may still name rather than a filter.
-            let state =
-                match entry.Content with
-                | InodeContent.RegularFile _ when truncating -> commitTruncation operation inode 0L state
-                | InodeContent.RegularFile _
-                | InodeContent.Directory _
-                | InodeContent.Symlink _ -> state
-
-            let fd, registry =
-                FileDescriptorRegistry.openFile inode requestedAccess state.Kernel.FileDescriptors
-
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors = registry
-                        }
-                }
-            )
-            |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 fd)))
-                ctx.Thread
+            withAnswered system state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim fd)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         // `int32_t SystemNative_MkDir(const char* path, int32_t mode)`
