@@ -3253,6 +3253,14 @@ module TestUnixSystemStep =
             |> readLinkBytes
             |> shouldEqual expected
 
+            // And one byte below it, which is the other side of the boundary:
+            // a capacity of exactly the target's length must not truncate, and a
+            // capacity one below it must. Only this pair pins the comparison —
+            // either row alone passes for an off-by-one.
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped (expected.Length - 1) system
+            |> readLinkBytes
+            |> shouldEqual (List.truncate (expected.Length - 1) expected)
+
     [<Test>]
     let ``a short buffer truncates rather than failing`` () : unit =
         // Truncation is how the BCL *sizes* its allocation: `Interop.Sys.ReadLink`
