@@ -2527,16 +2527,151 @@ Ordered so that each has an oracle before the next depends on it.
   because the first instinct on one is to reach for another row.
 * **8j — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
   land together once 8b exists.
-* **8k — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
-  file syscalls, and `open`'s flags are PAL values.
-* **8l — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
-  table and had no home in the first draft of this list, which is a drafting
-  failure the census itself should have caught: an increment list that does not
-  partition its own table is not a plan. All three are destination-buffer
-  syscalls and all three land after 8c has settled that shape. `getcwd` is the
-  one that needs the honesty note stage 7 wrote down: its success value is the
-  caller's own buffer pointer, which the library never possesses, so the client
-  composes it.
+
+  Their rules were already the library's — `MkDirRules`, `UnlinkRules`,
+  `RmDirRules` and their verdicts — so what was left standing between those
+  rules and the syscall boundary was three handler bodies. With 8i's walk
+  across, each is now resolve, verdict, commit, reap.
+
+  **None of the three can be refused**, every outcome being a success or an
+  errno, so they return a bare `SyscallAnswer * system`. Being payload-free they
+  also join `step`, which the buffer-carrying syscalls could not: that is the
+  first time since stage 7 that the dispatcher has grown, and it is the shape
+  the `step` docstring predicted would be able to.
+
+  `unlink` and `rmdir` carry `forgetIfUnheld` with them, which is the part they
+  add over the filesystem's own `unbind`.
+
+  On PawPrint's side the three handlers collapse into one `pathSyscall` — decode
+  a NUL-terminated path out of guest memory, hand it to the kernel, turn the
+  answer into the zero or the -1-with-errno the C returns. That is the shape
+  they always shared, and the syscall itself is now the only parameter.
+
+  **Three of the seven mutants survived the first battery, and all three were
+  rows that could not discriminate rather than rules that were untested.** A
+  `mkdir` onto a symbolic link to an *existing* file is EEXIST whether the final
+  component is dereferenced or not, so only a *dangling* link separates the two
+  readings. `Syscall.MkDir` at mode 0o755 and at 0o777 both become 0o755 under
+  the default umask, so a dispatcher that dropped the mode agreed. And the
+  `rmdir` ctime divergence — Linux moves the removed directory's, Darwin does
+  not — is visible only through a descriptor *held across the call*, an unheld
+  inode being reaped with nothing left to ask. Each of those is the same trap in
+  a different costume: an input whose two candidate rules agree.
+* **8k — `open`** (333 lines), the largest of the file syscalls, and the one
+  whose flags are PAL values. **`opendir`/`readdir` are not bundled with it**:
+  8h taught that this list's bundlings are worth re-checking, and those two
+  return an opaque `DIR*` that PawPrint materialises as guest memory, which is a
+  different boundary question from `open`'s. They are 8l.
+
+  Most of the handler is kernel behaviour that simply moves — `CreatingOpenRules`
+  and its verdict are already the library's, and 8i's walk is across. What needs
+  a decision first is the *flags*, and the plan's own raw-versus-parsed rule
+  says only half of it: raw means raw kernel ABI, never PAL, so
+  `Interop.Sys.OpenFlags` cannot cross as an integer. What shape it crosses in
+  is open. **This needs confirming before the code is written**, because it adds
+  a public vocabulary type to a package that is about to be released.
+
+  **(A) Raw POSIX flag bits cross as an `int`.** PawPrint translates the PAL enum
+  to the simulated platform's own `<fcntl.h>` numbering, and the library decodes
+  that. Faithful to a real `open(2)`, and it is the shape a future `fcntl`
+  (`F_GETFL`) would want, that syscall handing a guest its raw flags back.
+  Against it: the per-flavour numbering *is* platform knowledge — `O_CREAT` is
+  0o100 on Linux and 0x200 on Darwin — and `SimulatedUnixPlatform` is the
+  library. (A) puts that knowledge on the client's side, or else exports it for
+  the client to apply, both of which invert the split the rest of stage 8 has
+  drawn.
+
+  **(B) A parsed `OpenFlags` record crosses**: access mode, and a bool per
+  `O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_NOFOLLOW`/`O_CLOEXEC`/`O_SYNC`. PawPrint maps
+  PAL bits onto it and the library never sees a numbering at all. This is what
+  `UserBuffer` does, and for the same reason the rule gives: only the client can
+  classify (it holds the PAL enum), and the library owns the consequence. It
+  also makes the two shim-level rejections stay where they belong — an
+  unrecognised *bit* is EINVAL and so is an access mode that is none of the
+  three, both of which are the C's own checks rather than any kernel's, and
+  neither of which is expressible once the flags are parsed. Against it: a
+  future `fcntl(F_GETFL)` would have to invent a numbering, and this makes the
+  library unable to model a kernel that rejects a flag *combination* by its bits.
+
+  **Recommended: (B).** The `fcntl` objection is the only real cost and it is
+  speculative — nothing needs it, and if it arrives it wants a per-flavour
+  numbering *in the library*, which is where (B) leaves room for it. (A)'s cost
+  is not speculative: it would either move platform knowledge to the client or
+  export the numbering, and the whole extraction has been moving that knowledge
+  the other way.
+
+  Either way the `mode` argument crosses raw and unvalidated, which is settled
+  and measured: `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only
+  open of an existing file, so a handler rejecting a nonzero mode without
+  `O_CREAT` would refuse the BCL's own read path; and `mode` 0o10777 creates
+  0o0755 on both kernels, so a bit above the permission word is dropped rather
+  than refused.
+
+* **8l — `opendir` and `readdir`**, split out of the old 8k for the reason given
+  there. Their own question is where the directory stream lives: PawPrint today
+  materialises the `DIR*` as guest memory whose address *is* the handle, and the
+  `d_name` buffer inside it is sized by an ABI constant — so the stream's
+  identity and its bytes are on different sides of the boundary, which none of
+  stage 8's other syscalls has had to arrange.
+* **8m — `getcwd`** (done), and then **`readlink` and `getsockname`**. These
+  three appear in the census table and had no home in the first draft of this
+  list, which is a drafting failure the census itself should have caught: an
+  increment list that does not partition its own table is not a plan. All three
+  are destination-buffer syscalls and all three land after 8c has settled that
+  shape. `getcwd` is the one that needs the honesty note stage 7 wrote down: its
+  success value is the caller's own buffer pointer, which the library never
+  possesses, so the client composes it.
+
+  `getcwd` went first and took the increment on its own, because measuring it
+  turned up two things the shipped handler had wrong, neither of which a probe
+  passing a valid buffer can see:
+
+  * **An unwritable destination is not EFAULT everywhere.** Linux's `getcwd` is
+    a syscall whose `copy_to_user` reports one; Darwin's assembles the path with
+    stores executed in the caller's own context, so a destination it cannot
+    write kills the process — SIGSEGV unmapped, SIGBUS read-only. A `PROT_READ`
+    page is the probe that discriminates the two mechanisms, an unmapped address
+    being consistent with either, and `readlink` answers EFAULT on *both* in the
+    same probe, so this is `getcwd`'s own property rather than a general one.
+    The handler answered EFAULT for both flavours. `GetCwdRefusal` says so
+    instead, on the reasoning `requireStorage` already had written down: a dead
+    process is not an errno, and answering one turns a crash into a plausible
+    wrong answer.
+  * **A user-space `getcwd` stores before it decides, so its unwritable
+    destination refuses more widely than the success path.** Darwin can die on a
+    call that would otherwise report ERANGE or ENOENT, and whether it does turns
+    on the current directory's length against a libc threshold measured at 1016
+    bytes — neither PATH_MAX (1024) nor any documented constant, but one build's
+    internal slack selecting between the `__getcwd` syscall and the user-space
+    backward assembly. This library models kernels, not that route selection, so
+    it refuses from capacity 2 up whatever the path length, deliberately
+    over-refusing the cells where the real call answers without storing.
+    Capacity 0 and 1 still answer, that flavour having been measured to write
+    nothing there on either side of the threshold.
+
+  * **Darwin's failing `getcwd` scribbles on the caller's buffer, and this
+    library does not reproduce it.** This looked at first like the answer to the
+    asymmetry the `poll` bullet below leaves open — `Failed` carrying writes,
+    arriving on a syscall small enough to hold in view — and it is not. Two
+    successive attempts to model it from partial measurements were wrong in
+    different ways, the first writing past the caller's declared capacity, and
+    what the sweep eventually showed is BSD `getcwd(3)` assembling the path
+    *backwards* from the end of the buffer and moving it to the front once it
+    fits. The residue is a function of libc's internal progress, not of anything
+    a kernel decides. `GetCwdAnswer.Failed` therefore carries an errno and says
+    nothing about the destination; `docs/divergences.md` records the measured
+    table and the reasoning, and `Interop.Sys.GetCwd` cannot observe any of it.
+
+    So the `poll` asymmetry is still open, and this increment is evidence about
+    *how* to close it: a `Failed` that carries writes wants a syscall whose
+    failure writes are a kernel's decision. `poll`'s are. `getcwd`'s are libc's,
+    which is a different thing wearing the same shape.
+
+  The ordering the handler already had is otherwise confirmed exactly, including
+  two cells that only a size sweep reaches: a too-small buffer is ERANGE
+  whatever the destination is, on both flavours, and a removed current directory
+  outranks even that on Linux, where an unmapped destination is ENOENT rather
+  than EFAULT.
 * **`poll` defers to stage 9**, and not for the reason the others do. It carries
   an array in *and* out, it is the syscall whose failure path writes (the
   asymmetry left open above), and it is where blocking becomes unavoidable — it

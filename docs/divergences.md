@@ -1122,3 +1122,60 @@ the interpreter's own bookkeeping survives a guest closing it.
 **Where this lives in code**: the `SystemNative_OpenDir` arm of `Native/NativeSystemNative.fs`
 opens the descriptor; `SystemNative_ReadDir` advances `DirectoryStream.Cursor` and deliberately
 leaves the descriptor's offset alone.
+
+## A failing `getcwd` leaves the caller's buffer untouched
+
+**Darwin**: `getcwd(3)` writes to the destination *before* it knows whether it will succeed, so
+several of its failure paths leave bytes behind and still return NULL. Measured on macOS 26.6 with
+the destination prefilled `0xAA`, exactly sized by `mmap`, sweeping the capacity and reporting every
+byte that changed:
+
+| state | capacity | returns | what changed |
+| --- | --- | --- | --- |
+| current directory removed | 1 | ERANGE | nothing |
+| current directory removed | 2 ≤ cap < 1024 | ENOENT | one NUL, at `buf[cap-1]` |
+| current directory removed | ≥ 1024 (PATH_MAX) | ENOENT | that NUL, **and** the stale path at offset 0 |
+| path 1418 bytes, buffer 1024 | 1024 | ERANGE | 976 bytes at offsets 48..1023 — a *suffix* of the path |
+| path 1418 bytes, buffer 1400 | 1400 | ERANGE | 1342 bytes at offsets 58..1399 |
+
+**Linux**: writes nothing on any failure path, at any capacity, in either state. Its `getcwd` is a
+syscall that assembles the path in kernel memory and copies it out only on success.
+
+**PawPrint** reports the errno — which is exact, and is the only thing any caller in the BCL reads —
+and leaves the destination alone, matching the Linux flavour on both.
+
+There is a second consequence, and it is not about residue. Because Darwin stores *before* it
+decides which answer to give, a destination it cannot write kills the process on calls that would
+otherwise report ERANGE or ENOENT, not only on the ones that would succeed. Whether it has stored
+yet turns on the current directory's length against a libc threshold, measured at capacity 8 with an
+unmapped destination on macOS 26.6:
+
+| cwd path length | outcome |
+| --- | --- |
+| 80 … 1015 bytes | ERANGE, destination never touched |
+| 1016 … 1418 bytes | SIGSEGV |
+
+1016 is neither PATH_MAX (1024) nor any documented constant — it is one libc build's internal slack,
+selecting between the `__getcwd` syscall and the user-space backward assembly. PawPrint models
+kernels, not that route selection, so `UnixSystem.getcwd` **refuses** an unwritable destination for
+any capacity of two or more, on that flavour, whatever the path length. This deliberately
+over-refuses the top row, where the real call answers ERANGE: a refusal says "this library cannot
+tell you", where encoding 1016 would answer ERANGE for calls that really die. At capacity 0 and 1 it
+answers normally, Darwin having been measured to write nothing there on either side of the
+threshold.
+
+*Why not model it*: the last two rows are BSD `getcwd(3)` building the path **backwards** from the
+end of the buffer and moving it to the front once it is known to fit. The residue is therefore a
+function of libc's internal progress — how far the climb got, which of its paths the capacity
+selected, what a `memmove` left behind — rather than of anything a kernel decides. Reproducing it
+faithfully means reproducing that algorithm; reproducing it approximately means inventing bytes a
+guest can read back, which is worse than writing none. Two successive attempts to model it from
+partial measurements were wrong in different ways, one of them writing past the caller's capacity.
+
+*Reachability*: `Interop.Sys.GetCwd` tests the return against NULL and decodes the buffer only on
+success, so no BCL caller can see this. It takes a hand-rolled P/Invoke that ignores a NULL return
+and reads its buffer anyway.
+
+**Where this lives in code**: `UnixSystem.getcwd` in `WoofWare.PosixKernel/UnixSystem.fs` returns
+`GetCwdAnswer.Failed` carrying an errno and nothing else; the measurements are recorded on
+`GetCwdOrphanAnswer.ShortestPathFirst` in `SimulatedUnixPlatform.fs`.
