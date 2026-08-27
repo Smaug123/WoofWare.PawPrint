@@ -8,19 +8,24 @@ open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `SystemNative_FLock` refuses a *blocking* request that cannot be granted, because waiting for
-/// the holder needs the scheduler to park and wake a thread. That refusal has no guest that can
-/// assert it — a `failwith` aborts the interpreter rather than reaching the guest's exit code — so
-/// it would otherwise be a claim with nothing behind it. These tests drive it directly.
+/// `SystemNative_FLock` aborts on a *blocking* request that cannot be granted. The kernel answers
+/// it perfectly well — `UnixSystem.flock` reports a park, and which lock is being waited for — but
+/// performing the park needs PawPrint's scheduler to hold a thread on a predicate and wake it when
+/// the holder releases, and it has no such status. So the diagnostic is PawPrint's own missing
+/// feature rather than anything the kernel declined to say.
+///
+/// That abort has no guest that can assert it — a `failwith` aborts the interpreter rather than
+/// reaching the guest's exit code — so it would otherwise be a claim with nothing behind it. These
+/// tests drive it directly.
 ///
 /// The distinction being pinned is *narrow* and easy to get wrong in the permissive direction: a
 /// blocking request that can be satisfied must still succeed, since that is what a hand-rolled
-/// P/Invoke most naturally writes. Only genuine contention is refused. CoreLib never reaches
-/// either, because `SafeFileHandle.Init` always sets `LOCK_NB`.
+/// P/Invoke most naturally writes. Only genuine contention parks. CoreLib never reaches either,
+/// because `SafeFileHandle.Init` always sets `LOCK_NB`.
 ///
 /// The guests below are single-threaded and hold the conflicting lock themselves, so on a real
 /// Linux kernel they would *hang forever* rather than return anything. That is not a defect in the
-/// tests: it is why the refusal is worth having, and it is also why these cannot be differential
+/// tests: it is why the abort is worth having, and it is also why these cannot be differential
 /// cases — the oracle would never terminate.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -120,10 +125,10 @@ class Program
             UnixPlatform = SimulatedUnixPlatform.macOsArm64
         }
 
-    /// The refusal itself: two descriptions on one file, the first holding an exclusive lock, and
+    /// The abort itself: two descriptions on one file, the first holding an exclusive lock, and
     /// the second asking for one *without* `LOCK_NB`.
     [<Test>]
-    let ``a blocking request that conflicts is refused loudly`` () : unit =
+    let ``a blocking request that conflicts aborts, because PawPrint cannot park`` () : unit =
         let source =
             guest
                 """
@@ -139,19 +144,20 @@ class Program
         // Named precisely enough that a failing run says which fd wanted what, rather than merely
         // that flock was unhappy.
         exn.Message |> shouldContainText "SystemNative_FLock"
-        exn.Message |> shouldContainText "blocking exclusive lock"
+        exn.Message |> shouldContainText "the call blocks on"
+        exn.Message |> shouldContainText "Exclusive"
         exn.Message |> shouldContainText "issue #956"
 
-    /// The other half, and the reason the refusal is conditional rather than "no `LOCK_NB` is
+    /// The other half, and the reason the abort is conditional rather than "no `LOCK_NB` is
     /// unsupported": an uncontended blocking request is an ordinary success. Without this, the
-    /// simplest wrong implementation — refuse whenever `LOCK_NB` is absent — passes the test above.
+    /// simplest wrong implementation — abort whenever `LOCK_NB` is absent — passes the test above.
     [<Test>]
     let ``a blocking request that can be granted succeeds`` () : unit =
         let source =
             guest
                 """
         IntPtr a = OpenF();
-        // Nothing else holds a lock, so this is grantable and must not be refused.
+        // Nothing else holds a lock, so this is grantable and must not park.
         if (FLock(a, LOCK_EX) != 0) return 1;
         // Downgrading to shared is also grantable: a description's own lock is not an obstacle.
         if (FLock(a, LOCK_SH) != 0) return 2;
@@ -161,7 +167,7 @@ class Program
 
         run "FlockBlockingGranted.cs" source |> exitCodeOf |> shouldEqual 0
 
-    /// A blocking *shared* request refused for the same reason, so the message is not
+    /// A blocking *shared* request parks for the same reason, so the message is not
     /// exclusive-only, and a compatible shared/shared pair is still granted.
     [<Test>]
     let ``a blocking shared request conflicts only with an exclusive holder`` () : unit =
@@ -177,7 +183,8 @@ class Program
         let exn =
             Assert.Catch (fun () -> run "FlockBlocksShared.cs" conflicting |> ignore<RunOutcome>)
 
-        exn.Message |> shouldContainText "blocking shared lock"
+        exn.Message |> shouldContainText "the call blocks on"
+        exn.Message |> shouldContainText "Shared"
 
         let compatible =
             guest

@@ -3047,27 +3047,28 @@ module NativeSystemNative =
                 // The library says which measured divergence it will not answer
                 // across; PawPrint says which managed caller could have asked,
                 // which is a fact about CoreLib rather than about any kernel.
-                let reachability =
-                    match refusal with
-                    | FLockRefusal.WouldBlockIndefinitely _ ->
-                        // Parking the caller is PawPrint's scheduler's job, so
-                        // PawPrint owns the issue tracking it — the library has
-                        // no scheduler to point at.
-                        "Parking a thread on a lock is a scheduler feature PawPrint has not built (issue #956). CoreLib never reaches this: SafeFileHandle.Init always sets LOCK_NB."
-                    | FLockRefusal.DarwinMalformedOperation _
-                    | FLockRefusal.DarwinStandardStream _
-                    | FLockRefusal.DarwinSocketEventPort
-                    | FLockRefusal.DarwinSocket _
-                    | FLockRefusal.DarwinConversion ->
-                        "Configure a Linux platform, or model Darwin's flock (issue #956)."
-
-                failwith $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal} %s{reachability}"
-            | Ok (SyscallAnswer.Failed error, system) ->
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal} Configure a Linux platform, or model Darwin's flock (issue #956)."
+            | Ok (SyscallOutcome.WouldBlock condition, _) ->
+                // The library has answered: this call parks, in a system whose
+                // descriptor table has already dropped the caller's old lock.
+                // Acting on that is PawPrint's own missing feature rather than
+                // anything the library declined to say, so the diagnostic and
+                // the issue are PawPrint's — and the advanced system is dropped
+                // with them, because a park PawPrint cannot perform must not
+                // leave the kernel looking as though it had.
+                //
+                // CoreLib never reaches this: SafeFileHandle.Init always sets
+                // LOCK_NB. A guest hand-rolling the P/Invoke can, which is why
+                // it is a diagnostic rather than an unreachable arm.
+                failwith
+                    $"%s{operation}: fd %d{fd}: the call blocks on %O{condition}, and parking a thread on a lock is a scheduler feature PawPrint has not built (issue #956). Pass LOCK_NB to get EWOULDBLOCK instead."
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Ok (SyscallAnswer.Completed _, system) ->
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed _), system) ->
                 withAnswered system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed

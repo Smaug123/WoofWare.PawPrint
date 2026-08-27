@@ -1215,6 +1215,41 @@ module FileDescriptorRegistry =
         | FlockMode.Shared, FlockMode.Shared -> false
         | _, _ -> true
 
+    /// Would an `flock` acquisition of `mode`, by the open file description
+    /// `requester` onto `object`, have to wait? True exactly when some *other*
+    /// description naming `object` holds a lock that could not be held
+    /// alongside it.
+    ///
+    /// `requester`'s own lock is never an obstacle: `Acquire` replaces it, which
+    /// is how `flock(2)` spells conversion. `requester` need not still be a live
+    /// description — a caller polling this on behalf of a parked waiter is
+    /// asking whether the lock *would* be granted, and the answer does not
+    /// depend on the requester holding anything.
+    ///
+    /// The acquire path is the primary caller, and a client's wake predicate is
+    /// the other: parking on a lock means waiting for exactly the condition the
+    /// acquire tested, so the two must be one function rather than two that
+    /// agree.
+    let flockConflicts
+        (object : OpenFileObject)
+        (requester : OpenFileDescriptionId)
+        (mode : FlockMode)
+        (registry : FileDescriptorRegistry)
+        : bool
+        =
+        registry.Descriptions
+        |> Map.exists (fun otherId (other : OpenFileDescription) ->
+            otherId <> requester
+            // Identity, not the whole description: two descriptions on one
+            // file contend however far apart their offsets are.
+            && OpenFileDescription.object other = object
+            && (
+                match other.Flock with
+                | None -> false
+                | Some held -> locksConflict mode held
+            )
+        )
+
     /// Mirrors `flock(2)`.
     ///
     /// The lock belongs to the open file description `fd` names, so two
@@ -1287,20 +1322,7 @@ module FileDescriptorRegistry =
         | FlockRequest.Acquire mode ->
 
         let blocked =
-            registry.Descriptions
-            |> Map.exists (fun otherId (other : OpenFileDescription) ->
-                // `otherId <> id` is what makes conversion work: this
-                // description's own lock is not an obstacle to replacing it.
-                otherId <> id
-                // Identity, not the whole description: two descriptions on one
-                // file contend however far apart their offsets are.
-                && OpenFileDescription.object other = OpenFileDescription.object description
-                && (
-                    match other.Flock with
-                    | None -> false
-                    | Some held -> locksConflict mode held
-                )
-            )
+            flockConflicts (OpenFileDescription.object description) id mode registry
 
         if blocked then
             // The old lock is gone either way — see the note above.
