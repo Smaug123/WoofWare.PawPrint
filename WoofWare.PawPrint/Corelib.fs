@@ -137,6 +137,9 @@ module Corelib =
         let verificationException =
             findCorelibType corelib "System.Security" "VerificationException"
 
+        let ambiguousMatchException =
+            findCorelibType corelib "System.Reflection" "AmbiguousMatchException"
+
         let duplicateWaitObjectException =
             findCorelibType corelib "System" "DuplicateWaitObjectException"
 
@@ -235,6 +238,7 @@ module Corelib =
             NotSupportedException = notSupportedException
             InvalidOperationException = invalidOperationException
             VerificationException = verificationException
+            AmbiguousMatchException = ambiguousMatchException
             DuplicateWaitObjectException = duplicateWaitObjectException
             NullReferenceException = nullReferenceException
             OutOfMemoryException = outOfMemoryException

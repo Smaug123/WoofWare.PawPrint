@@ -68,6 +68,10 @@ type internal UnsafeAccessorRefusal =
     /// the class cannot be instantiated.
     | InvalidOperation of message : string
 
+    /// `kAmbiguousMatchException` with `Arg_AmbiguousMatchException_UnsafeAccessor`, from
+    /// `TrySetTargetMethod` finding more than one match it cannot separate.
+    | Ambiguous
+
     /// `IDS_EE_METHOD_CONSTRAINTS_VIOLATION` from `TypeVarTypeDesc::SatisfiesConstraints`: the
     /// accessor's own type argument does not satisfy the target method's type parameter. Carries
     /// the three names CoreCLR's message interpolates, so the message is built where the exception
@@ -265,8 +269,18 @@ module internal UnsafeAccessorDispatch =
         SignatureHeader (SignatureKind.Method, SignatureCallingConvention.Default, SignatureAttributes.None)
         |> ComparableSignatureHeader.Make
 
-    /// A name for the target type in the message CoreCLR's `ThrowMissingMethodException` builds.
-    let private describeTargetType (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string = typeInfo.Name
+    /// A name for the target type in the messages CoreCLR builds -- `ThrowMissingMethodException`,
+    /// `ThrowMissingFieldException` and the constraint violation all name it the same way.
+    ///
+    /// Namespace-qualified but not nesting-qualified: measured on real .NET 10, a missing member of
+    /// `Outer.Inner.Namespaced` reports `'Outer.Inner.Namespaced.NoSuch'`, while one of a type
+    /// nested in a namespace-less class reports the bare nested name. A nested type's metadata
+    /// `Namespace` is empty, so taking the namespace when there is one gives both.
+    let private describeTargetType (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : string =
+        if System.String.IsNullOrEmpty typeInfo.Namespace then
+            typeInfo.Name
+        else
+            $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
     /// Find the one declared method on the target type that the declaration names, in the sense of
     /// `TrySetTargetMethod` (unsafeaccessors.cpp:584): the type's *own* methods only -- no
@@ -380,7 +394,25 @@ module internal UnsafeAccessorDispatch =
             )
 
         match matching with
-        | [ single ] -> state, Ok single
+        | [ single ] ->
+            // A value type's *virtual* method is two candidates to CoreCLR, not one: it generates
+            // an unboxing stub beside every such method, and `IntroducedMethodIterator` yields
+            // both. They are the same declaration, so no comparison separates them and the
+            // modifier retry cannot either -- the lookup is simply ambiguous. Measured on real .NET
+            // 10: an accessor over `ref S` naming either an `override ToString` or an implicitly
+            // implemented interface method raises `AmbiguousMatchException`, while a non-virtual
+            // instance method and a static one bind.
+            //
+            // A non-virtual method has no stub, and no `.ctor` is virtual, so only the instance
+            // -method kind reaches this.
+            let isVirtualOnValueType =
+                DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
+                && single.IsVirtual
+
+            if isVirtualOnValueType then
+                state, Error UnsafeAccessorRefusal.Ambiguous
+            else
+                state, Ok single
         | [] -> state, Error (UnsafeAccessorRefusal.MissingMethod (describeTargetType targetTypeInfo, name))
         | _ :: _ :: _ ->
             // ECMA-335 II.22.26 makes (name, signature) unique within a type, and a custom modifier
@@ -573,6 +605,7 @@ module internal UnsafeAccessorDispatch =
         (state : IlMachineState)
         (describe : string)
         (targetType : ConcreteType<ConcreteTypeHandle>)
+        (targetTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (accessorMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (target : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
         : Result<unit, UnsafeAccessorRefusal>
@@ -602,7 +635,7 @@ module internal UnsafeAccessorDispatch =
         | Some ((parameter, _), argument, _) ->
             Error (
                 UnsafeAccessorRefusal.ConstraintViolation (
-                    $"%s{(MethodOwner.requireDeclaringType describe target.Owner).Name}.%s{target.Name}",
+                    $"%s{describeTargetType targetTypeInfo}.%s{target.Name}",
                     renderTypeArgument state argument,
                     parameter.Name
                 )
@@ -751,7 +784,9 @@ module internal UnsafeAccessorDispatch =
             | Error refusal -> state, Error refusal
             | Ok target ->
 
-            match verifyConstraints baseClassTypes state describe targetType accessor.Generics target with
+            match
+                verifyConstraints baseClassTypes state describe targetType targetTypeInfo accessor.Generics target
+            with
             | Error refusal -> state, Error refusal
             | Ok () ->
 
@@ -861,9 +896,18 @@ module internal UnsafeAccessorDispatch =
         | UnsafeAccessorRefusal.InvalidProgram message -> baseClassTypes.InvalidProgramException, message
         | UnsafeAccessorRefusal.AbstractStaticTarget -> baseClassTypes.BadImageFormatException, "Bad IL format."
         | UnsafeAccessorRefusal.InvalidOperation message -> baseClassTypes.InvalidOperationException, message
+        | UnsafeAccessorRefusal.Ambiguous ->
+            baseClassTypes.AmbiguousMatchException, "Ambiguity in binding of UnsafeAccessorAttribute."
         | UnsafeAccessorRefusal.ConstraintViolation (targetMethod, typeArgument, parameterName) ->
             baseClassTypes.VerificationException,
             $"Method %s{targetMethod}: type argument '%s{typeArgument}' violates the constraint of type parameter '%s{parameterName}'."
+
+    /// The program counter an accessor's frame carries once it has dispatched to its target.
+    ///
+    /// An accessor's frame has no IL, so nothing else moves its program counter and any non-zero
+    /// value means "the target has already run". Zero is what a fresh frame carries.
+    [<Literal>]
+    let private dispatchedProgramCounter = 1
 
     /// Run an `[UnsafeAccessor]` accessor's synthesised body.
     ///
@@ -890,13 +934,6 @@ module internal UnsafeAccessorDispatch =
         let describe =
             $"[UnsafeAccessor] %s{MethodOwner.describe accessor.Owner}::%s{accessor.Name}"
 
-        // The call that entered the accessor has already advanced past itself, so the target's
-        // frame must record the original call site rather than the caller's resume point: exception
-        // dispatch reads that offset both to decide which of the caller's `try` regions cover a
-        // throw and to name the frame.
-        let originalCallSitePC =
-            instruction.ReturnState |> Option.map (fun rs -> rs.CallSiteIlOpIndex)
-
         /// Raise into the guest from the accessor's own frame, which stays on the stack.
         let raiseFromAccessor
             (exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -915,9 +952,36 @@ module internal UnsafeAccessorDispatch =
 
             ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
 
-        /// Pop the accessor's frame and call `target`, having pushed the arguments from
-        /// `firstArgument` onwards. `StaticMethod` skips argument 0, whose only job was to name the
-        /// type; every other calling kind passes the lot.
+        /// Push the arguments from `firstArgument` onwards onto the accessor's *own* evaluation
+        /// stack. `StaticMethod` skips argument 0, whose only job was to name the type; every other
+        /// calling kind passes the lot.
+        let pushArguments (firstArgument : int) (state : IlMachineState) : IlMachineState =
+            let mutable s = state
+
+            for i = firstArgument to instruction.Arguments.Length - 1 do
+                s <- IlMachineState.pushToEvalStack instruction.Arguments.[i] thread s
+
+            s
+
+        /// Mark the accessor's frame as having dispatched, so the re-entry that follows the target's
+        /// return is distinguishable from the first pass.
+        ///
+        /// The frame has no IL, so its program counter is otherwise unused and stays at zero; a
+        /// void target leaves nothing on the evaluation stack, so there is nothing else to read.
+        let markDispatched (state : IlMachineState) : IlMachineState =
+            state
+            |> IlMachineState.mapFrame
+                thread
+                state.ThreadState.[thread].ActiveMethodState
+                (MethodState.setProgramCounter dispatchedProgramCounter)
+
+        /// Call `target`, leaving the accessor's frame on the stack beneath it.
+        ///
+        /// Real .NET keeps that frame: measured on .NET 10, an exception out of a target reports
+        /// `Target.Boom -> Program.Access -> Program.Caller` with the accessor between the target
+        /// and whoever called it. The frame is therefore returned when the target returns, not
+        /// before, which also puts the target's return value on the accessor's own stack rather
+        /// than on its caller's.
         let callTarget
             (target : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
             (firstArgument : int)
@@ -925,20 +989,7 @@ module internal UnsafeAccessorDispatch =
             (state : IlMachineState)
             : ExecutionResult
             =
-            match state |> IlMachineState.returnFromSyntheticStackFrame thread with
-            | ReturnFrameResult.NoFrameToReturn -> failwith $"unexpectedly nowhere to return from %s{describe}"
-            | ReturnFrameResult.DispatchException _ ->
-                failwith $"unexpected exception dispatch from %s{describe} frame pop"
-            | ReturnFrameResult.NormalReturn state ->
-
-            let state =
-                let mutable s = state
-
-                for i = firstArgument to instruction.Arguments.Length - 1 do
-                    s <- IlMachineState.pushToEvalStack instruction.Arguments.[i] thread s
-
-                s
-
+            let state = state |> pushArguments firstArgument |> markDispatched
             let threadState = state.ThreadState.[thread]
 
             let state, commitment =
@@ -949,13 +1000,13 @@ module internal UnsafeAccessorDispatch =
                     ConstructionState.NotConstructing
                     virtualDispatch
                     false
-                    false // the accessor frame is gone; there is no program counter to advance
+                    false // `markDispatched` has already moved this frame's program counter
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative
                     target.Generics
                     target
                     thread
                     threadState
-                    originalCallSitePC
+                    None
                     ReturnValueDisposition.PushToCaller
                     false // wrapExceptionInTargetInvocation
                     state
@@ -964,7 +1015,8 @@ module internal UnsafeAccessorDispatch =
             | IlMachineStateExecution.CallCommitment.Aborted fatal ->
                 ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
             | IlMachineStateExecution.CallCommitment.Committed
-            | IlMachineStateExecution.CallCommitment.Raised -> ExecutionResult.stepped (state, WhatWeDid.Executed)
+            | IlMachineStateExecution.CallCommitment.Raised ->
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
 
         /// Return the accessor's frame with `pointer` as its result -- the shape both field kinds
         /// take, whose declared return is a byref.
@@ -976,6 +1028,14 @@ module internal UnsafeAccessorDispatch =
             | ReturnFrameResult.NormalReturn state -> ExecutionResult.stepped (state, WhatWeDid.Executed)
             | result -> failwith $"unexpected ReturnFrameResult from %s{describe}: %A{result}"
 
+        if instruction.IlOpIndex = dispatchedProgramCounter then
+            // The target has run and returned into this frame; the only thing left is to hand its
+            // result to whoever called the accessor.
+            match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
+            | ReturnFrameResult.NormalReturn state -> ExecutionResult.stepped (state, WhatWeDid.Executed)
+            | result -> failwith $"unexpected ReturnFrameResult returning %s{describe}: %A{result}"
+        else
+
         let state, plan =
             resolve loggerFactory baseClassTypes kind targetName hasTypeNameOverrides accessor state
 
@@ -985,19 +1045,7 @@ module internal UnsafeAccessorDispatch =
             raiseFromAccessor exceptionType (Some message) state
         | Ok (UnsafeAccessorPlan.CallStatic target) -> callTarget target 1 false state
         | Ok (UnsafeAccessorPlan.Construct (ctor, targetType)) ->
-            match state |> IlMachineState.returnFromSyntheticStackFrame thread with
-            | ReturnFrameResult.NoFrameToReturn -> failwith $"unexpectedly nowhere to return from %s{describe}"
-            | ReturnFrameResult.DispatchException _ ->
-                failwith $"unexpected exception dispatch from %s{describe} frame pop"
-            | ReturnFrameResult.NormalReturn state ->
-
-            let state =
-                let mutable s = state
-
-                for i = 0 to instruction.Arguments.Length - 1 do
-                    s <- IlMachineState.pushToEvalStack instruction.Arguments.[i] thread s
-
-                s
+            let state = state |> pushArguments 0 |> markDispatched
 
             UnaryMetadataObjectOps.constructObject
                 loggerFactory
@@ -1005,10 +1053,10 @@ module internal UnsafeAccessorDispatch =
                 thread
                 ctor
                 targetType
-                false // the accessor frame is gone; there is no program counter to advance
-                originalCallSitePC
+                false // `markDispatched` has already moved this frame's program counter
+                None
                 state
-            |> fun state -> ExecutionResult.stepped (state, WhatWeDid.Executed)
+            |> fun state -> ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
         | Ok (UnsafeAccessorPlan.CallInstance target) ->
             // CoreCLR emits `callvirt` for the instance-method kind (unsafeaccessors.cpp:968), so a
             // null receiver faults here rather than inside the target.
