@@ -2523,12 +2523,6 @@ module NativeRuntimeTypeHelpers =
             |> Some
         | other -> failwith $"%s{operation}: expected %s{argName} to hold an array reference, got %O{other}"
 
-    /// Why `RuntimeTypeHandle_GetActivationInfo` refused to describe a type. Each case names the
-    /// check in CoreCLR's `ValidateTypeAbleToBeInstantiated` (reflectioninvocation.cpp) that it
-    /// corresponds to, and carries the guest exception CoreCLR throws for it. Message text is not
-    /// carried: PawPrint's runtime-exception path constructs through a parameterless ctor, and
-    /// `RuntimeType.ActivatorCache` rewraps the message with its own text regardless, so the
-    /// guest-observable fact is the exception *type*.
     /// The declaring type CoreCLR reports for a MethodDef token: the *typical* one, which is the
     /// generic type definition when the method's declaring type has type parameters and the closed
     /// type otherwise.
@@ -2550,6 +2544,20 @@ module NativeRuntimeTypeHelpers =
         (state : IlMachineState)
         : IlMachineState * RuntimeTypeHandleTarget
         =
+        // `lookupTypeDefn` walks the declaring type's base chain and cannot load, so the chain has
+        // to be closed first: a MethodDef token may name a type whose base class lives in an
+        // assembly this run has not touched, and `Module.ResolveMethod` is allowed to be the first
+        // thing that touches it. Same discharge as `ExecutionConcretization.concretizeFieldDeclaringType`.
+        let state =
+            { state with
+                _LoadedAssemblies =
+                    Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+                        (IlMachineState.loader loggerFactory state)
+                        state._LoadedAssemblies
+                        assembly
+                        method.RequiredDeclaringType.Definition.Get
+            }
+
         let state, declaringTypeDefn =
             IlMachineState.lookupTypeDefn baseClassTypes state assembly method.RequiredDeclaringType.Definition.Get
 
@@ -2563,6 +2571,12 @@ module NativeRuntimeTypeHelpers =
             declaringTypeDefn
             state
 
+/// Why `RuntimeTypeHandle_GetActivationInfo` refused to describe a type. Each case names the
+/// check in CoreCLR's `ValidateTypeAbleToBeInstantiated` (reflectioninvocation.cpp) that it
+/// corresponds to, and carries the guest exception CoreCLR throws for it. Message text is not
+/// carried: PawPrint's runtime-exception path constructs through a parameterless ctor, and
+/// `RuntimeType.ActivatorCache` rewraps the message with its own text regardless, so the
+/// guest-observable fact is the exception *type*.
 [<RequireQualifiedAccess>]
 type ActivationRejection =
     /// Arrays and TypeDescs (byref, pointer, function pointer). CoreCLR:
