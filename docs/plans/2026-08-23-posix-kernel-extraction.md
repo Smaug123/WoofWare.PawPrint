@@ -2637,30 +2637,23 @@ Ordered so that each has an oracle before the next depends on it.
     instead, on the reasoning `requireStorage` already had written down: a dead
     process is not an errno, and answering one turns a crash into a plausible
     wrong answer.
-  * **`getcwd` is the first syscall here whose failure path writes**, which this
-    list had predicted would be `poll`. Darwin, climbing out of a removed
-    current directory, writes before it discovers there is no path to report,
-    and *then* returns NULL with ENOENT. `GetCwdAnswer.Failed` therefore carries
-    the bytes the call leaves, as `BufferWrite`s with offsets — because the
-    write is not at the front. Sweeping the capacity with the destination
-    prefilled `0xAA` and reporting every changed byte: a NUL lands at the *last*
-    byte of the buffer whatever its size, and once the buffer is at least
-    PATH_MAX the stale path appears at offset 0 as well. The switch is sharp
-    between 1023 and 1024, Darwin's own PATH_MAX; Linux writes nothing at any
-    capacity, so there is no second flavour to confirm the threshold is PATH_MAX
-    rather than the number.
+  * **Darwin's failing `getcwd` scribbles on the caller's buffer, and this
+    library does not reproduce it.** This looked at first like the answer to the
+    asymmetry the `poll` bullet below leaves open — `Failed` carrying writes,
+    arriving on a syscall small enough to hold in view — and it is not. Two
+    successive attempts to model it from partial measurements were wrong in
+    different ways, the first writing past the caller's declared capacity, and
+    what the sweep eventually showed is BSD `getcwd(3)` assembling the path
+    *backwards* from the end of the buffer and moving it to the front once it
+    fits. The residue is a function of libc's internal progress, not of anything
+    a kernel decides. `GetCwdAnswer.Failed` therefore carries an errno and says
+    nothing about the destination; `docs/divergences.md` records the measured
+    table and the reasoning, and `Interop.Sys.GetCwd` cannot observe any of it.
 
-    The first revision of this got it wrong in a way worth recording, because
-    the probe that produced it was itself buggy: it declared a 512-byte
-    destination and passed a capacity of 4096, so the only capacity it ever
-    really measured was one above PATH_MAX, and it read back "the stale path at
-    offset 0" as the whole rule. Modelling that would have written the path at
-    offset 0 for *every* capacity — past the end of any buffer shorter than the
-    path. An exactly-sized destination and a capacity sweep is what separates
-    the two writes; Codex's review caught the overflow.
-
-    That settles the asymmetry the `poll` bullet below left open, and settles it
-    on a syscall small enough to hold the whole thing in view.
+    So the `poll` asymmetry is still open, and this increment is evidence about
+    *how* to close it: a `Failed` that carries writes wants a syscall whose
+    failure writes are a kernel's decision. `poll`'s are. `getcwd`'s are libc's,
+    which is a different thing wearing the same shape.
 
   The ordering the handler already had is otherwise confirmed exactly, including
   two cells that only a size sweep reaches: a too-small buffer is ERANGE

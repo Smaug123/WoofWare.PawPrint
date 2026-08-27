@@ -1119,3 +1119,40 @@ the interpreter's own bookkeeping survives a guest closing it.
 **Where this lives in code**: the `SystemNative_OpenDir` arm of `Native/NativeSystemNative.fs`
 opens the descriptor; `SystemNative_ReadDir` advances `DirectoryStream.Cursor` and deliberately
 leaves the descriptor's offset alone.
+
+## A failing `getcwd` leaves the caller's buffer untouched
+
+**Darwin**: `getcwd(3)` writes to the destination *before* it knows whether it will succeed, so
+several of its failure paths leave bytes behind and still return NULL. Measured on macOS 26.6 with
+the destination prefilled `0xAA`, exactly sized by `mmap`, sweeping the capacity and reporting every
+byte that changed:
+
+| state | capacity | returns | what changed |
+| --- | --- | --- | --- |
+| current directory removed | 1 | ERANGE | nothing |
+| current directory removed | 2 ≤ cap < 1024 | ENOENT | one NUL, at `buf[cap-1]` |
+| current directory removed | ≥ 1024 (PATH_MAX) | ENOENT | that NUL, **and** the stale path at offset 0 |
+| path 1418 bytes, buffer 1024 | 1024 | ERANGE | 976 bytes at offsets 48..1023 — a *suffix* of the path |
+| path 1418 bytes, buffer 1400 | 1400 | ERANGE | 1342 bytes at offsets 58..1399 |
+
+**Linux**: writes nothing on any failure path, at any capacity, in either state. Its `getcwd` is a
+syscall that assembles the path in kernel memory and copies it out only on success.
+
+**PawPrint** reports the errno — which is exact, and is the only thing any caller in the BCL reads —
+and leaves the destination alone, matching the Linux flavour on both.
+
+*Why not model it*: the last two rows are BSD `getcwd(3)` building the path **backwards** from the
+end of the buffer and moving it to the front once it is known to fit. The residue is therefore a
+function of libc's internal progress — how far the climb got, which of its paths the capacity
+selected, what a `memmove` left behind — rather than of anything a kernel decides. Reproducing it
+faithfully means reproducing that algorithm; reproducing it approximately means inventing bytes a
+guest can read back, which is worse than writing none. Two successive attempts to model it from
+partial measurements were wrong in different ways, one of them writing past the caller's capacity.
+
+*Reachability*: `Interop.Sys.GetCwd` tests the return against NULL and decodes the buffer only on
+success, so no BCL caller can see this. It takes a hand-rolled P/Invoke that ignores a NULL return
+and reads its buffer anyway.
+
+**Where this lives in code**: `UnixSystem.getcwd` in `WoofWare.PosixKernel/UnixSystem.fs` returns
+`GetCwdAnswer.Failed` carrying an errno and nothing else; the measurements are recorded on
+`GetCwdOrphanAnswer.ShortestPathFirst` in `SimulatedUnixPlatform.fs`.

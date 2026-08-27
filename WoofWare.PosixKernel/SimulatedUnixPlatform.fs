@@ -1161,25 +1161,32 @@ type GetCwdOrphanAnswer =
     /// length of the path that used to be there. It is a minimum, not a
     /// comparison against a path that no longer exists.
     ///
-    /// This is the one failure path in this library that **writes to the
-    /// caller's buffer**, and it does not write from the front. Measured by
-    /// sweeping the capacity with the destination prefilled `0xAA` and
-    /// reporting every byte that changed:
+    /// **This flavour's failing `getcwd` scribbles on the caller's buffer, and
+    /// this library does not reproduce what it leaves.** `GetCwdAnswer.Failed`
+    /// carries an errno and says nothing about the destination's contents; the
+    /// errno itself is exact. Measured by sweeping the capacity with the
+    /// destination prefilled `0xAA` and reporting every byte that changed:
     ///
-    /// * a NUL lands at the *last* byte of the buffer, whatever its size;
-    /// * once the buffer is at least PATH_MAX, the stale path appears at offset
-    ///   0 as well — the two are not alternatives — NUL-terminated, and stable
-    ///   across ten samples, so it is the path the directory had rather than
-    ///   whatever a name cache happened to hold.
+    /// * orphaned, capacity 1: nothing written, ERANGE;
+    /// * orphaned, 2 ≤ capacity < PATH_MAX: a NUL at the buffer's *last* byte;
+    /// * orphaned, capacity ≥ PATH_MAX: that NUL, and the stale path at offset
+    ///   0 as well;
+    /// * intact but the path does not fit: a *suffix* of the path, filled
+    ///   backwards from the last byte — 976 bytes at offsets 48..1023 for a
+    ///   1418-byte path in a 1024-byte buffer — and ERANGE.
     ///
-    /// The switch is sharp between 1023 and 1024, which is this flavour's own
-    /// PATH_MAX. Linux writes nothing on any failure path at any capacity, so
-    /// there is no second flavour to confirm that the threshold is PATH_MAX
-    /// rather than the number 1024.
+    /// That last shape is BSD `getcwd(3)` assembling the path backwards from
+    /// the end of the buffer and moving it to the front once it fits, so the
+    /// residue is a function of libc's internal progress rather than of
+    /// anything a kernel decides. Reproducing it faithfully means reproducing
+    /// that algorithm, including which of its paths a given capacity takes;
+    /// reproducing it approximately means inventing bytes a guest can read. No
+    /// caller in the BCL reads the destination after a NULL return, so this
+    /// library reports the errno and leaves the buffer alone — recorded in
+    /// `docs/divergences.md` rather than left to be discovered.
     ///
-    /// Every Linux failure path, and every other Darwin one, leaves the
-    /// destination exactly as it was — including this flavour's own ERANGE at
-    /// capacity 1, which is why that case reports no write at all.
+    /// Linux writes nothing on any failure path at any capacity, which is why
+    /// only this case needs the note.
     | ShortestPathFirst
 
 /// What an unwritable destination does to a `getcwd(3)` that has got as far as

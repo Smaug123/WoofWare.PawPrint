@@ -2510,7 +2510,7 @@ module TestUnixSystemStep =
     let ``getcwd needs room for the terminator as well as the path`` () : unit =
         for system in [ atInner linux ; atInner darwin ] do
             UnixSystem.getcwd UserBuffer.Mapped 8 system
-            |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ERANGE, [])))
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
 
     [<Test>]
     let ``getcwd answers a zero capacity EINVAL, and that beats a removed directory`` () : unit =
@@ -2520,7 +2520,7 @@ module TestUnixSystemStep =
         // the current directory removed, `getcwd(buf, 0)` is still EINVAL.
         for system in [ atInner linux ; atInner darwin ; atOrphan linux ; atOrphan darwin ] do
             UnixSystem.getcwd UserBuffer.Mapped 0 system
-            |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.EINVAL, [])))
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.EINVAL))
 
     [<Test>]
     let ``getcwd consults the destination only after the size comparison`` () : unit =
@@ -2530,7 +2530,7 @@ module TestUnixSystemStep =
         // ERANGE, not EFAULT and not a signal.
         for system in [ atInner linux ; atInner darwin ] do
             UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 8 system
-            |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ERANGE, [])))
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
 
     [<Test>]
     let ``an unwritable destination is EFAULT on Linux and fatal on Darwin`` () : unit =
@@ -2542,7 +2542,7 @@ module TestUnixSystemStep =
         // and `readlink` answers EFAULT on *both* in the same probe, so this is
         // `getcwd`'s own property rather than a general one.
         UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 9 (atInner linux)
-        |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.EFAULT, [])))
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.EFAULT))
 
         UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 9 (atInner darwin)
         |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
@@ -2579,113 +2579,25 @@ module TestUnixSystemStep =
         // up. Darwin's climbs from the root downwards and so needs two bytes
         // before it can start, which makes size 1 ERANGE there.
         UnixSystem.getcwd UserBuffer.Mapped 1 (atOrphan linux)
-        |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ENOENT, [])))
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
 
         UnixSystem.getcwd UserBuffer.Mapped 1 (atOrphan darwin)
-        |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ERANGE, [])))
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
 
     [<Test>]
-    let ``Darwin's orphan terminates the buffer's last byte, wherever that is`` () : unit =
-        // The one failure path in this library that writes, and it does not
-        // write from the front. Measured by sweeping the capacity with the
-        // destination prefilled `0xAA` and reporting every byte that changed:
-        // below PATH_MAX the *only* change is a NUL at the last byte of the
-        // buffer the caller declared.
-        //
-        // Two capacities, because one cannot tell "the last byte" from any
-        // particular index.
-        let terminator =
-            {
-                Offset = 63
-                Bytes = ImmutableArray.Create 0uy
-            }
+    let ``a removed current directory is ENOENT at every capacity that reaches it`` () : unit =
+        // Swept rather than sampled, because the two flavours split on capacity
+        // 1 alone and a single sample cannot see that. Darwin's `getcwd` does
+        // write to the destination on these paths -- a NUL at the last byte, and
+        // the stale path too once the buffer reaches PATH_MAX -- and this
+        // library deliberately reports none of it: see
+        // `GetCwdOrphanAnswer.ShortestPathFirst` and docs/divergences.md.
+        for capacity in [ 2 ; 3 ; 8 ; 64 ; 1023 ; 1024 ; 1025 ; 4096 ] do
+            UnixSystem.getcwd UserBuffer.Mapped capacity (atOrphan darwin)
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
 
-        UnixSystem.getcwd UserBuffer.Mapped 64 (atOrphan darwin)
-        |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ENOENT, [ terminator ])))
-
-        UnixSystem.getcwd UserBuffer.Mapped 100 (atOrphan darwin)
-        |> shouldEqual (
-            Ok (
-                GetCwdAnswer.Failed (
-                    UnixError.ENOENT,
-                    [
-                        {
-                            Offset = 99
-                            Bytes = ImmutableArray.Create 0uy
-                        }
-                    ]
-                )
-            )
-        )
-
-        // Linux writes nothing on any failure path at any capacity. Asserted
-        // alongside rather than apart: the two answers differ only in this
-        // field.
-        UnixSystem.getcwd UserBuffer.Mapped 64 (atOrphan linux)
-        |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ENOENT, [])))
-
-    [<Test>]
-    let ``a buffer of PATH_MAX or more also gets the stale path at the front`` () : unit =
-        // The threshold, measured sharply between 1023 and 1024 — Darwin's own
-        // PATH_MAX. At or above it the stale path appears at offset 0 *as well
-        // as* the terminator at the end, so the two writes are not alternatives.
-        let staleAtFront =
-            {
-                Offset = 0
-                Bytes = cwdBytes
-            }
-
-        UnixSystem.getcwd UserBuffer.Mapped 1023 (atOrphan darwin)
-        |> shouldEqual (
-            Ok (
-                GetCwdAnswer.Failed (
-                    UnixError.ENOENT,
-                    [
-                        {
-                            Offset = 1022
-                            Bytes = ImmutableArray.Create 0uy
-                        }
-                    ]
-                )
-            )
-        )
-
-        UnixSystem.getcwd UserBuffer.Mapped 1024 (atOrphan darwin)
-        |> shouldEqual (
-            Ok (
-                GetCwdAnswer.Failed (
-                    UnixError.ENOENT,
-                    [
-                        staleAtFront
-                        {
-                            Offset = 1023
-                            Bytes = ImmutableArray.Create 0uy
-                        }
-                    ]
-                )
-            )
-        )
-
-        // Linux's PATH_MAX is 4096, and it writes nothing at any capacity — so
-        // 1024 is not a number this library applies to every flavour.
-        UnixSystem.getcwd UserBuffer.Mapped 4096 (atOrphan linux)
-        |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ENOENT, [])))
-
-    [<Test>]
-    let ``every byte a failing getcwd leaves is inside the declared capacity`` () : unit =
-        // The invariant a client relies on to apply the writes without
-        // re-checking them, and the one an earlier revision broke: it wrote the
-        // stale path at offset 0 for every capacity, which runs past a buffer
-        // shorter than the path. Swept rather than sampled, across the
-        // threshold and both flavours.
-        for system in [ atOrphan darwin ; atOrphan linux ] do
-            for capacity in [ 2 ; 3 ; 8 ; 64 ; 1023 ; 1024 ; 1025 ; 4096 ] do
-                match UnixSystem.getcwd UserBuffer.Mapped capacity system with
-                | Ok (GetCwdAnswer.Failed (_, leaves)) ->
-                    for write in leaves do
-                        (write.Offset >= 0 && write.Offset + write.Bytes.Length <= capacity)
-                        |> shouldEqual true
-                | other -> failwith $"expected a failure with writes, got %O{other}"
+            UnixSystem.getcwd UserBuffer.Mapped capacity (atOrphan linux)
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
 
     [<Test>]
     let ``reaching the store is what makes an unwritable destination fatal, orphan or not`` () : unit =
@@ -2698,4 +2610,4 @@ module TestUnixSystemStep =
         |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
 
         UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1000 (atOrphan linux)
-        |> shouldEqual (Ok (GetCwdAnswer.Failed (UnixError.ENOENT, [])))
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))

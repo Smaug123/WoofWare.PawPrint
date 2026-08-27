@@ -313,20 +313,6 @@ module PWriteRefusal =
             // from the description's offset, so it says the same sentence.
             WriteRefusal.describeExceedsRepresentableLength inode offset count
 
-/// Bytes a syscall leaves in the caller's buffer, and where in it.
-///
-/// An offset rather than bare bytes because a failing call does not
-/// necessarily write from the start: Darwin's `getcwd` puts a terminator at the
-/// *last* byte of the buffer it was given, wherever that is.
-type BufferWrite =
-    {
-        /// Index into the caller's buffer. Always within the capacity the caller
-        /// declared, so a client can apply the write without re-checking.
-        Offset : int
-        /// The bytes to place at `Offset`.
-        Bytes : ImmutableArray<byte>
-    }
-
 /// What `getcwd(3)` does to the caller's buffer and what it returns.
 ///
 /// The success value of a real `getcwd` is the caller's own buffer pointer,
@@ -342,13 +328,11 @@ type GetCwdAnswer =
     /// The call returns NULL and the caller stores `error` wherever its libc
     /// keeps errno.
     ///
-    /// `leaves` is what the call puts in the destination *before* failing, and
-    /// is empty on every path but one: Darwin, climbing out of a removed current
-    /// directory, writes before it discovers there is no path to report. A
-    /// caller that skipped the write because the call failed would diverge from
-    /// a real one there. Every write is inside the declared capacity. See
-    /// `GetCwdOrphanAnswer.ShortestPathFirst` for the measured shape.
-    | Failed of error : UnixError * leaves : BufferWrite list
+    /// Says nothing about the destination's *contents*. Every Linux failure
+    /// path leaves it untouched, and Darwin's do not: see
+    /// `GetCwdOrphanAnswer.ShortestPathFirst` for what was measured there and
+    /// why this library does not reproduce it.
+    | Failed of error : UnixError
 
 /// Why this kernel will not answer a `getcwd`.
 [<RequireQualifiedAccess>]
@@ -1525,70 +1509,38 @@ module UnixSystem =
             | UserBuffer.Addressless -> Error (GetCwdRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
             | UserBuffer.Unmapped _ ->
                 match SimulatedUnixPlatform.getCwdDestinationFault system.Machine.UnixPlatform with
-                | GetCwdDestinationFault.ReportedAsEfault -> Ok (GetCwdAnswer.Failed (UnixError.EFAULT, []))
+                | GetCwdDestinationFault.ReportedAsEfault -> Ok (GetCwdAnswer.Failed UnixError.EFAULT)
                 | GetCwdDestinationFault.FatalToTheProcess -> Error GetCwdRefusal.FatalToTheProcess
 
         // Measured first on both, and it beats the removed-directory case below:
         // with the current directory gone, `getcwd(buf, 0)` is still EINVAL.
         if capacity = 0 then
-            Ok (GetCwdAnswer.Failed (UnixError.EINVAL, []))
+            Ok (GetCwdAnswer.Failed UnixError.EINVAL)
         elif VirtualFileSystem.isOrphanedDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem then
             // The stored path is stale -- nothing reaches it any more -- so it is
             // not measured against the buffer. What the buffer can still change
             // is per-flavour; see `GetCwdOrphanAnswer`.
             match SimulatedUnixPlatform.getCwdOrphanAnswer system.Machine.UnixPlatform with
-            | GetCwdOrphanAnswer.AlwaysDetached -> Ok (GetCwdAnswer.Failed (UnixError.ENOENT, []))
+            | GetCwdOrphanAnswer.AlwaysDetached -> Ok (GetCwdAnswer.Failed UnixError.ENOENT)
             | GetCwdOrphanAnswer.ShortestPathFirst ->
                 // Room for "/" and its terminator, which is what this flavour
                 // writes before it starts climbing. Two bytes, not the length of
                 // the path that used to be here.
                 if capacity < 2 then
-                    Ok (GetCwdAnswer.Failed (UnixError.ERANGE, []))
+                    Ok (GetCwdAnswer.Failed UnixError.ERANGE)
                 else
-
-                // It climbs, and so it writes -- which is both why reaching the
-                // store makes an unwritable destination fatal here, exactly as
-                // on the success path, and why this failure leaves bytes behind.
-                //
-                // Measured by sweeping the capacity with the destination
-                // prefilled `0xAA` and reporting every byte that changed: a
-                // terminator lands at the last byte of the buffer whatever its
-                // size, and the stale path additionally appears at the front
-                // once the buffer is at least PATH_MAX. The switch is sharp
-                // between 1023 and 1024, which is this flavour's own PATH_MAX;
-                // Linux writes nothing on any failure path at any capacity, so
-                // there is no second flavour to confirm it is PATH_MAX rather
-                // than the number 1024.
-                let pathMax =
-                    PathLimits.pathMaxBytes (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
-
-                let leaves =
-                    [
-                        if capacity >= pathMax then
-                            if terminated.Length > capacity then
-                                failwith
-                                    $"UnixSystem.getcwd: the stale path is %d{terminated.Length} bytes and would not fit the %d{capacity} the caller declared, though the caller declared at least PATH_MAX (%d{pathMax}). A path longer than PATH_MAX cannot have been created (this is a bug in this library)."
-
-                            {
-                                Offset = 0
-                                Bytes = terminated
-                            }
-
-                        {
-                            Offset = capacity - 1
-                            Bytes = ImmutableArray.Create 0uy
-                        }
-                    ]
-
-                transfer (GetCwdAnswer.Failed (UnixError.ENOENT, leaves))
+                    // It climbs, and so it writes -- which is why reaching the
+                    // store makes an unwritable destination fatal here, exactly
+                    // as on the success path, even though the call is going to
+                    // fail. What it leaves behind is not modelled; see
+                    // `GetCwdOrphanAnswer.ShortestPathFirst`.
+                    transfer (GetCwdAnswer.Failed UnixError.ENOENT)
         elif capacity < terminated.Length then
             // `getcwd` needs room for the path *and* its NUL, which is why a
             // buffer of the path's own length is one byte short rather than an
             // exact fit. Measured with an unwritable destination too: this
-            // answers before the destination is looked at, and -- unlike the
-            // removed-directory case above -- it writes nothing on either
-            // flavour, at any capacity.
-            Ok (GetCwdAnswer.Failed (UnixError.ERANGE, []))
+            // answers before the destination is looked at.
+            Ok (GetCwdAnswer.Failed UnixError.ERANGE)
         else
             transfer (GetCwdAnswer.Reported terminated)
 
