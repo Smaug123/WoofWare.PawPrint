@@ -3220,3 +3220,173 @@ module TestUnixSystemStep =
             )
 
         exn.Message |> shouldContainText "not a directory stream this kernel issued"
+
+    // ---- `readlink` --------------------------------------------------------
+
+    let private readLinkBytes (answer : Result<ReadLinkAnswer, BufferRefusal>) : byte list =
+        match answer with
+        | Ok (ReadLinkAnswer.Reported bytes) -> List.ofSeq bytes
+        | other -> failwith $"expected a target, got %O{other}"
+
+    let private readLinkFailed (answer : Result<ReadLinkAnswer, BufferRefusal>) : UnixError =
+        match answer with
+        | Ok (ReadLinkAnswer.Failed error) -> error
+        | other -> failwith $"expected a failure, got %O{other}"
+
+    let private targetOf (path : string) : byte list =
+        List.ofSeq (System.Text.Encoding.UTF8.GetBytes path)
+
+    [<Test>]
+    let ``readlink reports the target without a terminator`` () : unit =
+        // No terminator: `readlink` writes exactly the bytes it reports, so a
+        // NUL would corrupt the byte after a target that exactly fits. Asserted
+        // at exactly the target's length, which is where that would show.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let expected = targetOf "/d/inner/t"
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped 4096 system
+            |> readLinkBytes
+            |> shouldEqual expected
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped expected.Length system
+            |> readLinkBytes
+            |> shouldEqual expected
+
+            // And one byte below it, which is the other side of the boundary:
+            // a capacity of exactly the target's length must not truncate, and a
+            // capacity one below it must. Only this pair pins the comparison —
+            // either row alone passes for an off-by-one.
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped (expected.Length - 1) system
+            |> readLinkBytes
+            |> shouldEqual (List.truncate (expected.Length - 1) expected)
+
+    [<Test>]
+    let ``a short buffer truncates rather than failing`` () : unit =
+        // Truncation is how the BCL *sizes* its allocation: `Interop.Sys.ReadLink`
+        // starts with a 256-byte `stackalloc` and doubles while the result fills
+        // the buffer, so refusing here would break `FileInfo.LinkTarget` for
+        // every target of 256 bytes or more.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped 4 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/d/i")
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped 1 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/")
+
+    [<Test>]
+    let ``a target is truncated in bytes rather than characters`` () : unit =
+        // A symlink target is a byte string. Truncating by character count would
+        // write two bytes where the caller allowed one for any non-ASCII target,
+        // which only a multi-byte target can detect.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let vfs =
+                match
+                    VirtualFileSystem.createSymlink
+                        (VirtualFileSystem.root system.Machine.FileSystem)
+                        (FileName.parseOrFail context "wide")
+                        epoch
+                        (SymlinkTarget.parseOrFail context "/éé")
+                        system.Machine.FileSystem
+                with
+                | Ok (_, vfs) -> vfs
+                | Error error -> failwith $"could not seed: %O{error}"
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = vfs
+                        }
+                }
+
+            // "/ee" is five bytes but three characters. A capacity of three
+            // must yield three *bytes* — the slash and the first é.
+            UnixSystem.readlink (statPath "/wide") UserBuffer.Mapped 4096 system
+            |> readLinkBytes
+            |> List.length
+            |> shouldEqual 5
+
+            UnixSystem.readlink (statPath "/wide") UserBuffer.Mapped 3 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/é")
+
+    [<Test>]
+    let ``a path that is not a link is EINVAL, before the destination is looked at`` () : unit =
+        // It must be EINVAL and no other errno: `FileSystem.ResolveLinkTarget`
+        // answers *null* for EINVAL and rethrows everything else, so this single
+        // choice is the difference between `File.ResolveLinkTarget` reporting
+        // "not a link" and it throwing.
+        //
+        // Asked with an unusable destination too, which is what pins the order:
+        // measured, `readlink("f", (char*)8, 16)` is EINVAL rather than EFAULT.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/d/inner/t") UserBuffer.Mapped 4096 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+            UnixSystem.readlink (statPath "/d/inner/t") (UserBuffer.Unmapped 8UL) 16 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+            UnixSystem.readlink (statPath "/d/inner") UserBuffer.Mapped 4096 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+    [<Test>]
+    let ``an unusable destination is EFAULT on both flavours`` () : unit =
+        // Unlike `getcwd`, whose copy is a user-space store on one flavour and
+        // so kills the process. `readlink`'s target is built in the kernel and
+        // handed over with a single `copy_to_user`, so a `PROT_READ` destination
+        // is EFAULT on both — measured in the same probe that showed `getcwd`
+        // taking a signal.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/l") (UserBuffer.Unmapped 8UL) 16 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EFAULT
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Opaque 16 system
+            |> shouldEqual (Error BufferRefusal.OpaqueAtTransfer)
+
+            // At the transfer rather than at a screen: neither flavour checks
+            // the destination's address up front.
+            UnixSystem.readlink (statPath "/l") UserBuffer.Addressless 16 system
+            |> shouldEqual (Error BufferRefusal.AddresslessAtTransfer)
+
+    [<Test>]
+    let ``readlink does not step through the final link`` () : unit =
+        // `NoFollowFinal` is what makes this `readlink` rather than an expensive
+        // way of asking about the target. `/dangling` names nothing, so a walk
+        // that followed it would be ENOENT where this reports the target.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/dangling") UserBuffer.Mapped 4096 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/d/inner/gone")
+
+    [<Test>]
+    let ``readlink refuses a capacity no kernel it models was ever asked`` () : unit =
+        // Zero and negative are the shim's guard, and the only reason this
+        // syscall is cross-platform: the raw one answers 0 on Darwin and EINVAL
+        // on Linux for a zero size.
+        let _, _, _, system = withTree linux
+
+        for capacity in [ 0 ; -1 ] do
+            let exn =
+                Assert.Throws<exn> (fun () ->
+                    UnixSystem.readlink (statPath "/l") UserBuffer.Mapped capacity system
+                    |> ignore<Result<ReadLinkAnswer, BufferRefusal>>
+                )
+
+            exn.Message |> shouldContainText "not positive"

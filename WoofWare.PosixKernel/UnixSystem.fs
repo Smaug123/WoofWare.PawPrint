@@ -313,6 +313,23 @@ module PWriteRefusal =
             // from the description's offset, so it says the same sentence.
             WriteRefusal.describeExceedsRepresentableLength inode offset count
 
+/// What `readlink(2)` puts in the caller's buffer and what it returns.
+[<RequireQualifiedAccess>]
+type ReadLinkAnswer =
+    /// Place these bytes in the caller's buffer; the entry point returns how
+    /// many there are.
+    ///
+    /// **No terminator**, and truncated to the capacity rather than refused:
+    /// `readlink` writes exactly the bytes it reports and reports success by a
+    /// non-negative count, so a NUL would corrupt the byte after a target that
+    /// exactly fits. Truncation is not an error path — `Interop.Sys.ReadLink`
+    /// starts with a 256-byte `stackalloc` and doubles while the result fills
+    /// the buffer, so a short buffer is how the BCL *sizes* its allocation.
+    | Reported of bytes : ImmutableArray<byte>
+    /// The entry point returns -1 and the caller stores `error` wherever its
+    /// libc keeps errno.
+    | Failed of error : UnixError
+
 /// What kind of object one directory entry names.
 ///
 /// Not `InodeContent`, which carries the payload as well — a caller enumerating
@@ -2741,6 +2758,87 @@ module UnixSystem =
             | InodeContent.Symlink _ -> system
 
         opened inode system
+
+    /// `readlink(2)`: report what the symbolic link at `path` points at.
+    ///
+    /// Changes nothing and returns no system. That is *not* quite what POSIX
+    /// says: a successful `readlink` marks the link's access time for update,
+    /// and this kernel does not move it. Whether it would move is a property of
+    /// the mount rather than of this syscall, and the two flavours disagree —
+    /// measured on macOS (lstat, sleep, readlink, lstat) `st_atime` does not
+    /// move, while Linux's default `relatime` updates whenever `mtime` or
+    /// `ctime` is at or after the old `atime`, and a freshly seeded inode has
+    /// all three equal, so the first read there *would* move it. Deciding it
+    /// inside one entry point would set mount semantics for every future read
+    /// by accident, and would make `readlink` the only syscall obeying them.
+    ///
+    /// `capacity` is the caller's buffer size and must be positive. Zero and
+    /// negative are the shim's own guard, and it is the only reason this
+    /// syscall is cross-platform at all: measured, the raw syscall answers 0 on
+    /// Darwin and EINVAL on Linux for a zero size, and the guard means neither
+    /// answer escapes. So a caller that has not screened it is asking a question
+    /// no kernel this library models was ever asked.
+    let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (destination : UserBuffer)
+        (capacity : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadLinkAnswer, BufferRefusal>
+        =
+        if capacity <= 0 then
+            failwith
+                $"UnixSystem.readlink: capacity %d{capacity} is not positive, and the two flavours do not agree on what such a call does -- Darwin answers 0 where Linux answers EINVAL. Screen this in the client, where the shim that rejects it lives (this is a bug in the caller)."
+
+        // `NoFollowFinal` is what makes this `readlink` rather than an expensive
+        // way of asking about the target: a final symlink is the thing being
+        // read, not something to step through. A trailing separator still
+        // overrides that -- "lf/" demands that `lf` be a directory -- and the
+        // resolver owns that rule, answering ENOTDIR.
+        match resolvePath SymlinkPolicy.NoFollowFinal path system with
+        | Error error -> Ok (ReadLinkAnswer.Failed error)
+        | Ok inode ->
+
+        match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+        | None ->
+            failwith
+                $"UnixSystem.readlink: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+        | Some (InodeContent.Directory _)
+        | Some (InodeContent.RegularFile _) ->
+            // Not a link. It must be EINVAL and no other errno:
+            // `FileSystem.ResolveLinkTarget` answers *null* for EINVAL and
+            // rethrows every other errno as an exception, so this single choice
+            // is the difference between `File.ResolveLinkTarget` reporting "not
+            // a link" and it throwing.
+            //
+            // Decided before the destination is looked at, which is what a real
+            // kernel does -- `vfs_readlink` refuses on the inode's operations
+            // before it copies anything out. Measured on the host:
+            // `readlink("f", (char*)8, 16)` is EINVAL, not EFAULT.
+            Ok (ReadLinkAnswer.Failed UnixError.EINVAL)
+        | Some (InodeContent.Symlink target) ->
+
+        // The destination is consulted only here, on the path that actually
+        // writes through it. `readlink(2)` runs no up-front address check on
+        // either flavour: the target is built in the kernel and handed over with
+        // a single `copy_to_user`, so an unusable buffer is discovered at the
+        // copy and every earlier refusal wins. Measured against a `PROT_READ`
+        // page, both flavours answer EFAULT -- unlike `getcwd`, whose copy is a
+        // user-space store on one of them.
+        match destination with
+        | UserBuffer.Unmapped _ -> Ok (ReadLinkAnswer.Failed UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error BufferRefusal.OpaqueAtTransfer
+        | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
+        | UserBuffer.Mapped ->
+
+        let all = SymlinkTarget.toUtf8 target
+
+        // Truncated in *bytes*, not in characters: a symlink target is a byte
+        // string, and truncating by character count would write two bytes where
+        // the caller allowed one for any non-ASCII target.
+        if all.Length <= capacity then
+            Ok (ReadLinkAnswer.Reported all)
+        else
+            Ok (ReadLinkAnswer.Reported (ImmutableArray.CreateRange (Seq.truncate capacity all)))
 
     /// `opendir(3)`: resolve `path` and start a stream over the directory it
     /// names.

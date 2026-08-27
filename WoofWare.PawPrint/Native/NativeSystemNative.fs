@@ -3464,103 +3464,37 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok path ->
 
-            // `NoFollowFinal` plus "and then it had better be a symlink" is
-            // the same composition `TestVirtualFileSystemAgainstHost`'s
-            // `modelOutcome` already checks against a real kernel over
-            // generated symlink trees, which is why it is composed here rather
-            // than extracted into `VirtualFileSystem`: the rule is verified
-            // where it lives, and this arm's own job is the wire format.
-            //
-            // `NoFollowFinal`, which is what makes this `readlink` rather than
-            // an expensive way of asking about the target: a final symlink is
-            // the thing being read, not something to step through. A trailing
-            // separator still overrides that — "lf/" demands that `lf` be a
-            // directory — and the resolver owns that rule, answering ENOTDIR.
-            match resolveGuestPath SymlinkPolicy.NoFollowFinal state.Kernel path with
-            | Error error -> fail error
-            | Ok inode ->
+            // The whole ordering below `bufferSize` and the pathname is the
+            // library's, including the composition `NoFollowFinal` plus "and
+            // then it had better be a symlink" that
+            // `TestVirtualFileSystemAgainstHost`'s `modelOutcome` checks against
+            // a real kernel over generated symlink trees. What is left here is
+            // the wire format.
+            let destination = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            match VirtualFileSystem.tryGetContent inode state.Kernel.FileSystem with
-            | None ->
-                failwith
-                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
-            | Some (InodeContent.Directory _)
-            | Some (InodeContent.RegularFile _) ->
-                // Not a link. It must be EINVAL and no other errno:
-                // `FileSystem.ResolveLinkTarget`
-                // (FileSystem.Unix.cs:679) answers *null* for EINVAL and
-                // rethrows every other errno as an exception, so this single
-                // choice is the difference between `File.ResolveLinkTarget`
-                // reporting "not a link" and it throwing.
-                //
-                // Decided here, before the output pointer is looked at, which
-                // is what a real kernel does — `vfs_readlink` refuses on the
-                // inode's operations before it copies anything out. Measured
-                // on the host: `readlink("f", (char*)8, 16)` is EINVAL, not
-                // EFAULT.
-                fail UnixError.EINVAL
-            | Some (InodeContent.Symlink target) ->
-
-            // The output pointer is only resolved to storage here, on the path
-            // that actually writes through it. `readlink(2)` runs no up-front
-            // address check on either platform: the target is built in the
-            // kernel and handed over with a single `copy_to_user`, so an
-            // unusable buffer is discovered at the copy and every earlier
-            // refusal wins.
             match
-                bufferPointerArgument operation "buffer" instruction.Arguments.[1]
-                |> BufferPointer.dereferenceable
+                UnixSystem.readlink
+                    path
+                    (BufferPointer.toUserBuffer destination)
+                    bufferSize
+                    (EmulatedKernel.unix state.Kernel)
             with
-            | None -> fail UnixError.EFAULT
-            | Some buffer ->
+            | Error refusal -> failwith (BufferPointer.refusalMessage destination refusal)
+            | Ok (ReadLinkAnswer.Failed error) -> fail error
+            | Ok (ReadLinkAnswer.Reported written) ->
 
-            let all = SymlinkTarget.toUtf8 target
-            let count = min all.Length bufferSize
+            let storage =
+                match BufferPointer.dereferenceable destination with
+                | Some storage -> storage
+                | None ->
+                    failwith
+                        $"%s{operation}: the kernel produced %d{written.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
 
-            // Truncated in *bytes*, not in characters: a symlink target is a
-            // byte string, and truncating a .NET string by `String.Length`
-            // would write two bytes where the caller allowed one for any
-            // non-ASCII target. `sourcesImpure/ReadLinkRawSeeded.cs` is the
-            // only test that can tell the two apart, because the differential
-            // oracle's seed validator permits only ASCII targets.
-            let written =
-                if count = all.Length then
-                    all
-                else
-                    ImmutableArray.CreateRange (Seq.truncate count all)
-
-            // **Known omission: the link's `atime` does not move**, though
-            // POSIX says a successful `readlink` marks it for update. The
-            // virtual clock advances as the driver loop runs, so a guest that
-            // `LStat`s a link before and after reading it really could see the
-            // difference.
-            //
-            // Deferred because it cannot be settled *here*. Whether the
-            // access time moves is a property of the mount, not of this
-            // syscall, and the two platforms modelled disagree: measured on
-            // macOS — lstat, sleep, readlink, lstat — `st_atime` does not
-            // move, while Linux's default `relatime` updates whenever `mtime`
-            // or `ctime` is at or after the old `atime`, or it is a day stale
-            // (`relatime_need_update`, fs/inode.c) — and a freshly seeded
-            // inode has all three equal, so the first read *would* move it.
-            // Deciding that inside one entry point would set mount semantics
-            // for every future read by accident, and would make `readlink` the
-            // only syscall obeying them.
-            //
-            // It would also be the first mutation of the emulated filesystem
-            // in the interpreter: the graph is built once from the seed
-            // (`EmulatedKernel.fs`) and no handler writes back
-            // `Kernel.FileSystem` today, so there is no write-back path to
-            // reuse. The divergence is also not something the differential
-            // oracle can arbitrate, since the answer depends on which host ran
-            // it.
-            //
-            // No terminator, and errno left alone: `readlink` writes exactly
-            // the bytes it reports and reports success by a non-negative
-            // count, so a NUL here would corrupt the byte after a target that
-            // exactly fits.
-            writeBytesThrough ctx operation buffer written state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim count)) ctx.Thread
+            // No terminator, and errno left alone: `readlink` writes exactly the
+            // bytes it reports and reports success by a non-negative count, so a
+            // NUL here would corrupt the byte after a target that exactly fits.
+            writeBytesThrough ctx operation storage written state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written.Length)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_SetErrNo",
