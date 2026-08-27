@@ -46,7 +46,7 @@ public class TestUnsafeAccessorValueTypeTarget
     [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "Scaled")]
     private static extern int Scaled(Counter c, int x);
 
-    public static int Main()
+    private static int Run()
     {
         // A value type's constructor through the Constructor kind: the accessor returns the value.
         Counter c = NewCounter(5, 900L);
@@ -78,4 +78,10 @@ public class TestUnsafeAccessorValueTypeTarget
 
         return 0;
     }
+
+    // `Main` only delegates. An accessor that pushed the wrong number of arguments would leave the
+    // extra one on its *caller's* evaluation stack, and the entry frame is never checked for a
+    // clean stack on return -- it has nowhere to return to -- so the leak would go unnoticed if the
+    // accessors were called from `Main` itself.
+    public static int Main() => Run();
 }

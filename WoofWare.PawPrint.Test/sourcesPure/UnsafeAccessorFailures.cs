@@ -84,7 +84,7 @@ public class TestUnsafeAccessorFailures
         }
     }
 
-    public static int Main()
+    private static int Run()
     {
         int r;
 
@@ -130,4 +130,10 @@ public class TestUnsafeAccessorFailures
 
         return 0;
     }
+
+    // `Main` only delegates. An accessor that pushed the wrong number of arguments would leave the
+    // extra one on its *caller's* evaluation stack, and the entry frame is never checked for a
+    // clean stack on return -- it has nowhere to return to -- so the leak would go unnoticed if the
+    // accessors were called from `Main` itself.
+    public static int Main() => Run();
 }

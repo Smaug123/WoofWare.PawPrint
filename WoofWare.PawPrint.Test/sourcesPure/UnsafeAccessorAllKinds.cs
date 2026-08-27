@@ -19,6 +19,11 @@ public class TestUnsafeAccessorAllKinds
             _field = seed;
         }
 
+        private Target()
+        {
+            _field = -99;
+        }
+
         private int Instance(int x) => _field + x;
 
         private static int Static(int x) => _staticField + x;
@@ -28,6 +33,11 @@ public class TestUnsafeAccessorAllKinds
 
     [UnsafeAccessor(UnsafeAccessorKind.Constructor)]
     private static extern Target NewTarget(int seed);
+
+    // A constructor accessor taking no arguments at all: the overload set is what makes the
+    // signature comparison pick between the two, rather than the name alone.
+    [UnsafeAccessor(UnsafeAccessorKind.Constructor)]
+    private static extern Target NewDefaultTarget();
 
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Instance")]
     private static extern int CallInstance(Target t, int x);
@@ -44,7 +54,7 @@ public class TestUnsafeAccessorAllKinds
     [UnsafeAccessor(UnsafeAccessorKind.StaticField, Name = "_staticField")]
     private static extern ref int StaticField(Target t);
 
-    public static int Main()
+    private static int Run()
     {
         Target t = NewTarget(7);
         if (t == null) return 1;
@@ -71,6 +81,10 @@ public class TestUnsafeAccessorAllKinds
         StaticField(null) = 200;
         if (CallStatic(null, 0) != 200) return 9;
 
+        // The zero-argument overload of the same private constructor.
+        Target defaulted = NewDefaultTarget();
+        if (Field(defaulted) != -99) return 12;
+
         // A second instance is independent of the first.
         Target other = NewTarget(-4);
         if (Field(other) != -4) return 10;
@@ -78,4 +92,10 @@ public class TestUnsafeAccessorAllKinds
 
         return 0;
     }
+
+    // `Main` only delegates. An accessor that pushed the wrong number of arguments would leave the
+    // extra one on its *caller's* evaluation stack, and the entry frame is never checked for a
+    // clean stack on return -- it has nowhere to return to -- so the leak would go unnoticed if the
+    // accessors were called from `Main` itself.
+    public static int Main() => Run();
 }

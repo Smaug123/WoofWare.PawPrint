@@ -40,7 +40,7 @@ public class TestUnsafeAccessorNoBaseClassWalk
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "BaseMethod")]
     private static extern int DeclaredMethod(Base b, int x);
 
-    public static int Main()
+    private static int Run()
     {
         Derived d = new Derived();
 
@@ -73,4 +73,10 @@ public class TestUnsafeAccessorNoBaseClassWalk
 
         return 0;
     }
+
+    // `Main` only delegates. An accessor that pushed the wrong number of arguments would leave the
+    // extra one on its *caller's* evaluation stack, and the entry frame is never checked for a
+    // clean stack on return -- it has nowhere to return to -- so the leak would go unnoticed if the
+    // accessors were called from `Main` itself.
+    public static int Main() => Run();
 }

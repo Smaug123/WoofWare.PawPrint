@@ -43,7 +43,7 @@ public class TestUnsafeAccessorOnGenericType
         public static extern U Convert<U>(Boxed<T> b, U u);
     }
 
-    public static int Main()
+    private static int Run()
     {
         Boxed<int> ints = Accessors<int>.New(4);
         if (Accessors<int>.Get(ints) != 4) return 1;
@@ -66,4 +66,10 @@ public class TestUnsafeAccessorOnGenericType
 
         return 0;
     }
+
+    // `Main` only delegates. An accessor that pushed the wrong number of arguments would leave the
+    // extra one on its *caller's* evaluation stack, and the entry frame is never checked for a
+    // clean stack on return -- it has nowhere to return to -- so the leak would go unnoticed if the
+    // accessors were called from `Main` itself.
+    public static int Main() => Run();
 }

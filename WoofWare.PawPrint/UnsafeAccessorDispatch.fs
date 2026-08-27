@@ -13,7 +13,7 @@ open Microsoft.Extensions.Logging
 /// `UnsafeAccessorDispatch.execute` is its interpreter -- the same shape `StructMarshalPlan` takes
 /// for the struct-marshalling stub.
 [<RequireQualifiedAccess>]
-type UnsafeAccessorPlan =
+type internal UnsafeAccessorPlan =
     /// `newobj`, over every declared argument. The handle is the type being constructed.
     | Construct of
         ctor : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
@@ -41,7 +41,7 @@ type UnsafeAccessorPlan =
 /// the accessor's first invocation, where the guest's own `try`/`catch` can see them, and CoreLib's
 /// own accessors are written expecting exactly that.
 [<RequireQualifiedAccess>]
-type UnsafeAccessorRefusal =
+type internal UnsafeAccessorRefusal =
     /// `COR_E_BADIMAGEFORMAT`, which CoreCLR raises for a declaration whose signature cannot
     /// describe an accessor at all.
     | BadImageFormat
@@ -136,6 +136,64 @@ module internal UnsafeAccessorDispatch =
         | TypeDefn.Modified m -> byrefElement m.Unmodified
         | _ -> None
 
+    /// The type this signature element describes with every `modreq`/`modopt` deleted, at every
+    /// depth.
+    ///
+    /// CoreCLR compares an accessor's signature with `MetaSig::CompareState.IgnoreCustomModifiers`
+    /// set: always for a field (`TrySetTargetField` asserts it, unsafeaccessors.cpp:750) and on the
+    /// first pass for a method (`TrySetTargetMethod`, :587). `CompareElementType` then consumes
+    /// modifiers wherever it meets them rather than only at the top, so the strip has to recurse.
+    /// Measured against real .NET 10: an accessor spelling `ref int` binds a `private volatile int`
+    /// field, whose signature is `int32 modreq(IsVolatile)`, and one spelling a `void` return binds
+    /// an `init` accessor, whose return is `void modreq(IsExternalInit)`.
+    ///
+    /// `TypeDefn.stripCustomModifiers` is deliberately shallow -- it answers "what type does this
+    /// element name", for which a modifier on an array's element is not in the way -- so it is not
+    /// this.
+    let rec private stripModifiersDeep (ty : TypeDefn) : TypeDefn =
+        match ty with
+        | TypeDefn.Modified m -> stripModifiersDeep m.Unmodified
+        | TypeDefn.Array (element, shape) -> TypeDefn.Array (stripModifiersDeep element, shape)
+        | TypeDefn.Pinned element -> TypeDefn.Pinned (stripModifiersDeep element)
+        | TypeDefn.Pointer element -> TypeDefn.Pointer (stripModifiersDeep element)
+        | TypeDefn.Byref element -> TypeDefn.Byref (stripModifiersDeep element)
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
+            TypeDefn.OneDimensionalArrayLowerBoundZero (stripModifiersDeep element)
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            TypeDefn.GenericInstantiation (stripModifiersDeep generic, args |> ImmutableArray.map stripModifiersDeep)
+        | TypeDefn.FunctionPointer signature -> TypeDefn.FunctionPointer (stripSignatureModifiersDeep signature)
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.GenericMethodParameter _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.Void -> ty
+
+    /// A return column with its custom modifiers deleted.
+    ///
+    /// The `Returns Void` fold is not cosmetic. A return spelled `void` *under* a custom modifier
+    /// decodes as `Returns TypeDefn.Void` rather than `Void` -- `TypeMethodSignature.make` keeps
+    /// the blob's spelling -- and every C# `init` accessor is spelled exactly that way, as
+    /// `void modreq(IsExternalInit)`. Deleting the modifier without folding would leave a
+    /// `Returns Void` that no accessor's own `void` return could ever equal, so an `init` setter
+    /// would be unreachable.
+    and private stripReturnModifiersDeep (returnType : MethodReturnType<TypeDefn>) : MethodReturnType<TypeDefn> =
+        match returnType with
+        | MethodReturnType.Void -> MethodReturnType.Void
+        | MethodReturnType.Returns ty ->
+            match stripModifiersDeep ty with
+            | TypeDefn.Void -> MethodReturnType.Void
+            | stripped -> MethodReturnType.Returns stripped
+
+    and private stripSignatureModifiersDeep
+        (signature : TypeMethodSignature<TypeDefn>)
+        : TypeMethodSignature<TypeDefn>
+        =
+        { signature with
+            ParameterTypes = signature.ParameterTypes |> List.map stripModifiersDeep
+            ReturnType = stripReturnModifiersDeep signature.ReturnType
+        }
+
     /// A method signature holding exactly the types to be compared, spelled with the header the
     /// comparison should use. `compareSignatureTypes` compares `Header` and `GenericParameterCount`
     /// as CoreCLR compares the leading bytes of a blob, so both are part of the comparand rather
@@ -151,7 +209,7 @@ module internal UnsafeAccessorDispatch =
             Header = header
             ParameterTypes = parameterTypes
             GenericParameterCount = genericParameterCount
-            // Accessors are never vararg -- `readDeclaration` refuses one -- so there is no
+            // Accessors are never vararg -- `resolve` refuses one -- so there is no
             // sentinel and every parameter is required.
             RequiredParameterCount = List.length parameterTypes
             ReturnType = returnType
@@ -231,7 +289,7 @@ module internal UnsafeAccessorDispatch =
                 match declarationSignature.ParameterTypes with
                 | [] ->
                     failwith
-                        "BUG: findTargetMethod reached a non-constructor accessor with no parameters; readDeclaration refuses that as BadImageFormat"
+                        "BUG: findTargetMethod reached a non-constructor accessor with no parameters; `resolve` refuses that as BadImageFormat"
                 | _ :: rest -> rest
 
         let candidates =
@@ -243,9 +301,13 @@ module internal UnsafeAccessorDispatch =
             ||> List.fold (fun (state, acc) candidate ->
                 let candidateSignature =
                     MethodInfo.requireRawSignature "[UnsafeAccessor] target lookup" candidate
+                    |> stripSignatureModifiersDeep
 
                 // A constructor candidate must return void; CoreCLR checks that in place of
-                // comparing the return column (unsafeaccessors.cpp:481).
+                // comparing the return column (unsafeaccessors.cpp:481), which is skipped for this
+                // kind. No C# compiler emits a non-void `.ctor` and no guest here reaches this
+                // arm, but the check is what makes skipping the return column safe on an image
+                // that does.
                 let returnAcceptable =
                     if not isConstructor then
                         true
@@ -266,10 +328,10 @@ module internal UnsafeAccessorDispatch =
                             comparandSignature
                                 header
                                 declarationSignature.GenericParameterCount
-                                declarationSignature.ReturnType
-                                declarationParameters
+                                (stripReturnModifiersDeep declarationSignature.ReturnType)
+                                (declarationParameters |> List.map stripModifiersDeep)
                         AssemblyFullName = accessorAssemblyFullName
-                        // The accessor's declaring type is non-generic (`readDeclaration` refuses
+                        // The accessor's declaring type is non-generic (`resolve` refuses
                         // otherwise), so no `!i` can appear on this side at all.
                         DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
                     }
@@ -306,16 +368,17 @@ module internal UnsafeAccessorDispatch =
         | [ single ] -> state, Ok single
         | [] -> state, Error (UnsafeAccessorRefusal.MissingMethod (describeTargetType targetTypeInfo, name))
         | _ :: _ :: _ ->
-            // CoreCLR reaches this only when the first pass ignored custom modifiers, and it
-            // retries requiring them to match exactly before giving up with an
-            // `AmbiguousMatchException` (unsafeaccessors.cpp:625-637). PawPrint cannot run that
-            // second pass: `signaturesEquivalent` already compares custom modifiers, so two
-            // candidates surviving it are indistinguishable to every comparison available here.
-            // ECMA-335 II.22.26 makes (name, signature) unique within a type, so two survivors
-            // means the signature comparison is answering something weaker than CoreCLR's --
-            // which is a bug to find, not an ambiguity to report.
+            // ECMA-335 II.22.26 makes (name, signature) unique within a type, and a custom modifier
+            // is part of the signature -- so two survivors of a modifier-blind comparison differ in
+            // their modifiers and nothing else. That is exactly where CoreCLR retries the search
+            // requiring modifiers to match the declaration exactly, and reports
+            // `AmbiguousMatchException` only if the retry does not settle on one
+            // (unsafeaccessors.cpp:625-637). Reproducing the retry needs a comparison that carries
+            // an ignore-modifiers *flag* rather than one over stripped signatures, which is what
+            // `stripSignatureModifiersDeep` gives; without it, "ambiguous" and "the retry would
+            // have picked one" are indistinguishable here, so neither answer can be given.
             failwith
-                $"BUG: [UnsafeAccessor] found %d{List.length matching} declared methods named %s{name} on %s{targetTypeInfo.Namespace}.%s{targetTypeInfo.Name} matching the declaration's signature; ECMA-335 II.22.26 makes (name, signature) unique within a type, so the signature comparison is too weak"
+                $"TODO: [UnsafeAccessor] found %d{List.length matching} declared methods named %s{name} on %s{targetTypeInfo.Namespace}.%s{targetTypeInfo.Name} matching the declaration's signature once custom modifiers are ignored; CoreCLR would retry requiring them to match exactly (unsafeaccessors.cpp:625-637), which needs a comparison this does not have"
 
     /// Find the one declared field on the target type that the declaration names, in the sense of
     /// `TrySetTargetField` (unsafeaccessors.cpp:723): the type's own fields only, filtered by name
@@ -342,7 +405,12 @@ module internal UnsafeAccessorDispatch =
             ||> List.fold (fun (state, acc) candidate ->
                 let declarationComparand : TypeConcretization.SignatureComparand =
                     {
-                        Signature = comparandSignature fieldComparisonHeader 0 MethodReturnType.Void [ returnedType ]
+                        Signature =
+                            comparandSignature
+                                fieldComparisonHeader
+                                0
+                                MethodReturnType.Void
+                                [ stripModifiersDeep returnedType ]
                         AssemblyFullName = accessorAssemblyFullName
                         DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
                     }
@@ -350,7 +418,11 @@ module internal UnsafeAccessorDispatch =
                 let candidateComparand : TypeConcretization.SignatureComparand =
                     {
                         Signature =
-                            comparandSignature fieldComparisonHeader 0 MethodReturnType.Void [ candidate.Signature ]
+                            comparandSignature
+                                fieldComparisonHeader
+                                0
+                                MethodReturnType.Void
+                                [ stripModifiersDeep candidate.Signature ]
                         AssemblyFullName = targetType.AssemblyFullName
                         DeclaringTypeGenerics =
                             TypeConcretization.SubstitutionContext.forDefinition
@@ -375,7 +447,7 @@ module internal UnsafeAccessorDispatch =
         | [] -> state, Error (UnsafeAccessorRefusal.MissingField (describeTargetType targetTypeInfo, name))
         | _ :: _ :: _ ->
             failwith
-                $"BUG: [UnsafeAccessor] found %d{List.length matching} declared fields named %s{name} on %s{targetTypeInfo.Namespace}.%s{targetTypeInfo.Name}; a field name is unique within a type"
+                $"BUG: [UnsafeAccessor] found %d{List.length matching} declared fields named %s{name} on %s{targetTypeInfo.Namespace}.%s{targetTypeInfo.Name}; a field name is unique within a type, so the candidate filter is wrong"
 
     /// Is this generic parameter unconstrained, so that `TypeVarTypeDesc::SatisfiesConstraints`
     /// would accept anything for it?
@@ -419,6 +491,11 @@ module internal UnsafeAccessorDispatch =
     /// Read an `[UnsafeAccessor]` declaration and resolve the member it names, reproducing
     /// `MethodDesc::TryGenerateUnsafeAccessor` (unsafeaccessors.cpp:1027) down to the point where
     /// CoreCLR would emit IL.
+    ///
+    /// Runs on every invocation, where CoreCLR resolves once as it JITs the stub. That is only a
+    /// cost: resolution reads metadata and registers concrete types, both idempotent, and a
+    /// declaration that cannot be resolved raises on every call in CoreCLR too, since every call
+    /// re-enters the prestub.
     let resolve
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
