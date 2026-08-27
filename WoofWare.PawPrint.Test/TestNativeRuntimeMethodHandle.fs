@@ -589,3 +589,61 @@ module TestNativeRuntimeMethodHandle =
             genericMethodInfoBranch = (declaredCount > 0 && not handleInstantiation.IsEmpty)
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen consistentInstantiation) property)
+
+    /// `RuntimeMethodHandle.GetImplAttributes` is one of the few natives declared over
+    /// `IRuntimeMethodInfo` rather than over a `RuntimeMethodHandleInternal`, so its handler has to
+    /// get the handle out of the argument *object*. CoreCLR reads a fixed offset
+    /// (`ReflectMethodObject::m_pMD`, object.h:1120), which the three implementers are laid out to
+    /// permit -- `RuntimeMethodInfoStub` carries eight unused `object?` fields whose comment says
+    /// they exist "to ensure that this class has the same layout as RuntimeMethodInfo". PawPrint
+    /// reads fields by name instead, so its handler names the three types one at a time, and a
+    /// fourth implementer would reach it as a refusal.
+    ///
+    /// This asks the host CLR's own CoreLib whether three is still the whole set. It is an outside
+    /// oracle rather than a restatement of the handler: it goes red when a future .NET adds an
+    /// implementer, which is the moment the handler needs a new arm, instead of leaving that to be
+    /// discovered by a guest.
+    [<Test>]
+    let ``CoreLib has exactly the three IRuntimeMethodInfo implementers the handler names`` () : unit =
+        let corelib = typeof<obj>.Assembly
+
+        let iRuntimeMethodInfo =
+            corelib.GetType ("System.IRuntimeMethodInfo", throwOnError = true)
+
+        let implementers =
+            corelib.GetTypes ()
+            |> Array.filter (fun candidate ->
+                not candidate.IsInterface && iRuntimeMethodInfo.IsAssignableFrom candidate
+            )
+            |> Array.map _.FullName
+            |> Array.sort
+            |> List.ofArray
+
+        implementers
+        |> shouldEqual
+            [
+                "System.Reflection.RuntimeConstructorInfo"
+                "System.Reflection.RuntimeMethodInfo"
+                "System.RuntimeMethodInfoStub"
+            ]
+
+    /// The field each of those three keeps its `RuntimeMethodHandleInternal` in, which is the other
+    /// half of what the handler hardcodes: CoreCLR's offset read does not care what the slot is
+    /// called, and a name-based read does.
+    [<Test>]
+    let ``the IRuntimeMethodInfo implementers spell their handle field as the handler expects`` () : unit =
+        let corelib = typeof<obj>.Assembly
+
+        let fieldNames (typeName : string) : string list =
+            let ty = corelib.GetType (typeName, throwOnError = true)
+
+            ty.GetFields (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
+            |> Array.map _.Name
+            |> List.ofArray
+
+        fieldNames "System.Reflection.RuntimeMethodInfo" |> shouldContain "m_handle"
+
+        fieldNames "System.Reflection.RuntimeConstructorInfo"
+        |> shouldContain "m_handle"
+
+        fieldNames "System.RuntimeMethodInfoStub" |> shouldContain "m_value"

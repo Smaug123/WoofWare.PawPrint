@@ -434,6 +434,46 @@ public static class Entry
         | Some result -> failwith $"unexpected GetMethodDef execution result: %O{result}"
         | None -> failwith "GetMethodDef did not match any native handler"
 
+    /// Drives the `RuntimeMethodHandle.GetImplAttributes` FCall and hands back what it pushed.
+    ///
+    /// Takes the `RuntimeMethodInfoStub` *object* rather than the `RuntimeMethodHandleInternal`
+    /// inside it: this FCall is one of the few declared over `IRuntimeMethodInfo`, so the handle it
+    /// reads comes out of the heap.
+    let private invokeGetImplAttributes
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (methodInfo : CliType)
+        (state : IlMachineState)
+        : EvalStackValue
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let state, declaringTypeInfo, method =
+            fcallMethod loggerFactory baseClassTypes runtimeMethodHandle "GetImplAttributes" state
+
+        let instruction =
+            { state.ThreadState.[prepared.EntryThread].MethodState with
+                ExecutingMethod = method
+                Arguments = ImmutableArray.CreateRange [ methodInfo ]
+            }
+
+        let ctx : NativeCallContext =
+            {
+                LoggerFactory = loggerFactory
+                BaseClassTypes = baseClassTypes
+                Thread = prepared.EntryThread
+                State = state
+                Instruction = instruction
+                TargetAssembly = baseClassTypes.Corelib
+                TargetType = declaringTypeInfo
+            }
+
+        match NativeDispatch.tryExecute ctx with
+        | Some (NativeHandlerResult.Completed (state, _)) ->
+            IlMachineState.popEvalStack prepared.EntryThread state |> fst
+        | Some result -> failwith $"unexpected GetImplAttributes execution result: %O{result}"
+        | None -> failwith "GetImplAttributes did not match any native handler"
+
     /// A signature blob deliberately containing interior zero bytes. A real method signature does:
     /// `void` is `ELEMENT_TYPE_VOID` = 0x01, but `ELEMENT_TYPE_END` is 0x00 and padded blobs and
     /// nested type tokens routinely carry zeroes, so a handler that read `sig` with a
@@ -2641,6 +2681,31 @@ public static class Entry
 
         // Spelled out, so that a change to `mdMethodDefNil` cannot silently carry this test with it.
         NativeRuntimeMethodHandle.mdMethodDefNil |> shouldEqual 0x06000000
+
+    /// `RuntimeMethodHandle.GetImplAttributes` answers 0 for a method no MethodDef row names,
+    /// rather than reading flags off one: `IsNilToken(pMethod->GetMemberDef())` short-circuits
+    /// ahead of `GetImplAttrs()` (runtimehandles.cpp:1330-1341). CoreCLR reaches that arm for array
+    /// `Get`/`Set`/`Address` as well as for a `DynamicMethodDesc`; PawPrint reaches it only for the
+    /// latter, because minting a handle for an array's intrinsic methods is refused outright.
+    ///
+    /// No guest can observe it. `DynamicMethod` overrides `GetMethodImplementationFlags` with a
+    /// constant `IL | NoInlining` (DynamicMethod.cs:337) and so never calls in, and the other route
+    /// to a `MethodBase` over a dynamic method -- `MethodBase.GetMethodFromHandle` -- is closed
+    /// because `DynamicMethod.MethodHandle` throws (DynamicMethod.cs:324, measured on real .NET).
+    /// So it is driven directly, with the `RuntimeMethodInfoStub` that `ModuleHandle_GetDynamicMethod`
+    /// wrote back: that stub is an `IRuntimeMethodInfo`, which is what this FCall takes.
+    ///
+    /// The assertion is on the exact value. `mdMethodDefNil` (0x06000000) must fail here as much as
+    /// a refusal must: this native reports flags, and its nil-token answer is a literal zero.
+    [<Test>]
+    let ``GetImplAttributes answers zero for a dynamic method`` () : unit =
+        let loggerFactory, prepared, state = loadFixture ()
+
+        let stubAddress, _, state =
+            mintOne loggerFactory prepared "Probe" [| 0x01uy |] doublingBody state
+
+        invokeGetImplAttributes loggerFactory prepared (CliType.ObjectRef (Some stubAddress)) state
+        |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
 
     /// Why the synthetic case exists, rather than the scope module's `<Module>` type
     /// standing in for it: `TypeHandleRegistry` keys guest `Type` object identity on
