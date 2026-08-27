@@ -76,6 +76,7 @@
     <Compile Include="TestNamedByteView.fs" />
     <Compile Include="TestByrefComparison.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
+    <Compile Include="TestOpcodeFaults.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
     <Compile Include="TestIlDecoding.fs" />
     <Compile Include="TestStackMemoryPool.fs" />

@@ -305,7 +305,8 @@ module NativeGc =
             // leave `ret` at whatever the caller initialised it to (null, in both callers).
             match SzArrayAllocation.checkLength length with
             | Some err ->
-                let exceptionType, message = SzArrayAllocation.exceptionFor ctx.BaseClassTypes err
+                let fault, message = SzArrayAllocation.faultFor err
+                let exceptionType = OpcodeFault.resolve ctx.BaseClassTypes fault
 
                 NativeHandlerResult.raiseExceptionWithMessage exceptionType message state
                 |> Some

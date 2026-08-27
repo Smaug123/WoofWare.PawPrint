@@ -55,10 +55,10 @@ module internal UnaryMetadataObjectOps =
 
                 state, WhatWeDid.Executed
             else
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.InvalidCastException
+                    OpcodeFault.InvalidCast
                     thread
                     state
         | other -> failwith $"%s{opName}: unexpected eval stack value {other}"
@@ -974,10 +974,10 @@ module internal UnaryMetadataObjectOps =
                         $"Unbox_Any: operand at %O{addr} is a boxed Nullable`1 (%O{targetConcreteTypeHandle}), which no PawPrint boxing path can create; CoreCLR's Nullable::UnBox copies it through, but that arm is deliberately unmodelled here"
                 | Some _
                 | None ->
-                    IlMachineStateExecution.raiseRuntimeException
+                    IlMachineStateExecution.raiseOpcodeFault
                         loggerFactory
                         baseClassTypes
-                        baseClassTypes.InvalidCastException
+                        OpcodeFault.InvalidCast
                         thread
                         state
             | other -> failwith $"Unbox_Any (Nullable`1 target): unexpected eval stack value {other}"
@@ -1004,17 +1004,17 @@ module internal UnaryMetadataObjectOps =
 
             match typeTest with
             | UnboxTypeTest.NullOperand ->
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.NullReferenceException
+                    OpcodeFault.NullReference
                     thread
                     state
             | UnboxTypeTest.WrongType ->
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.InvalidCastException
+                    OpcodeFault.InvalidCast
                     thread
                     state
             | UnboxTypeTest.Accepted (_addr, boxed) ->
@@ -1109,19 +1109,9 @@ module internal UnaryMetadataObjectOps =
 
         match typeTest with
         | UnboxTypeTest.NullOperand ->
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | UnboxTypeTest.WrongType ->
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.InvalidCastException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.InvalidCast thread state
         | UnboxTypeTest.Accepted (addr, boxed) ->
             // `HeapValue` denotes the whole boxed value (see `CellAwareMemOps`), so the aliasing
             // III.4.32 requires falls out: reads and writes through this pointer go to the box

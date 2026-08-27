@@ -1,0 +1,11 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AssemblyName>Fixture</AssemblyName>
+    <!-- CS0436: `Shadow.cs` declares a type that conflicts with an imported one. That is the whole
+         point of `ShadowCases`, and the compiler's own message confirms the premise it tests:
+         "Using the type defined in Shadow.cs". -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
+  </PropertyGroup>
+</Project>

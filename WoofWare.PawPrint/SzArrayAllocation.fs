@@ -52,23 +52,20 @@ module SzArrayAllocation =
         else
             None
 
-    /// The exception CoreCLR raises for this rejection: the type, plus a message override
-    /// (`None` meaning the parameterless constructor's own default message, which is what
+    /// The fault CoreCLR raises for this rejection, plus a message override (`None` meaning the
+    /// parameterless constructor's own default message, which is what
     /// `COMPlusThrow(kOverflowException)` produces).
     ///
-    /// The pair is exactly the shape both raise paths take —
-    /// `IlMachineStateExecution.raiseRuntimeExceptionWithMessage` and
-    /// `NativeHandlerResult.RaiseException` — so neither call site re-decides anything.
-    let exceptionFor
-        (baseClassTypes : BaseClassTypes<'corelib>)
-        (error : SzArrayLengthError)
-        : TypeInfo<GenericParamFromMetadata, TypeDefn> * string option
-        =
+    /// Names the fault rather than resolving it, because the two callers must raise it by
+    /// different routes: `newarr` is an instruction and goes through the `OpcodeFaults`-checked
+    /// path, while `NativeGc`'s allocation helper is not and cannot. Both faults are in `newarr`'s
+    /// table entry, which is what makes the checked route available to it at all.
+    let faultFor (error : SzArrayLengthError) : OpcodeFault * string option =
         match error with
         | SzArrayLengthError.Negative ->
             // `COMPlusThrow(kOverflowException)`, with no message.
-            baseClassTypes.OverflowException, None
-        | SzArrayLengthError.ExceedsMaxLength -> baseClassTypes.OutOfMemoryException, Some dimensionsExceededMessage
+            OpcodeFault.Overflow, None
+        | SzArrayLengthError.ExceedsMaxLength -> OpcodeFault.OutOfMemory, Some dimensionsExceededMessage
 
     /// A description of the violation for interpreter-facing diagnostics — an
     /// `allocateArray` precondition failure, not a guest exception.

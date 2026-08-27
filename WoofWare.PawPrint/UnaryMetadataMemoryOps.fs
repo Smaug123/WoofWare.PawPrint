@@ -105,12 +105,7 @@ module internal UnaryMetadataMemoryOps =
             // `ldc.i4.0; conv.u; ...; stobj S` — and is also what a null managed pointer
             // normalises to on a `conv` round-trip. Without it a null store faults the
             // interpreter instead of the guest. `executeLdobj` guards the same four spellings.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | EvalStackValue.ManagedPointer src
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) ->
             writeAt src
@@ -168,12 +163,7 @@ module internal UnaryMetadataMemoryOps =
             // No `advanceProgramCounter`: dispatch reads the faulting
             // instruction's PC to decide which handler regions are active and to build the
             // stack trace.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
 
         // The type token need not denote a nominal type: `ldobj !!T` with `T = int[]` — which

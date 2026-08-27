@@ -66,6 +66,13 @@ module internal UnaryMetadataCallOps =
     /// indices (top-of-stack is the rightmost), then the array reference. Per-dimension
     /// bounds violations raise `IndexOutOfRangeException`; on success the coerced value
     /// is written into the row-major backing store at the computed flat offset.
+    ///
+    /// This and its `Get`/`Address` siblings raise through `raiseRuntimeException` rather than
+    /// `raiseOpcodeFault`, though they are reached from an opcode. What faults here is the
+    /// synthesized *callee* — real .NET dispatches to a JIT-generated method — and the executing
+    /// instruction is a plain `call`, whose `OpcodeFaults` entry is empty precisely because callee
+    /// faults are excluded from it. Routing these through the opcode checker asks it a question
+    /// about the wrong instruction, and it correctly refuses to answer.
     let private executeMultiDimArraySet
         (ctx : UnaryMetadataIlOpContext)
         (state : IlMachineState)
@@ -157,7 +164,15 @@ module internal UnaryMetadataCallOps =
         match
             IlMachineStateExecution.checkArrayStoreVariance loggerFactory baseClassTypes thread arrAddr value state
         with
-        | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state -> state, WhatWeDid.Executed
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Refused state ->
+            // Unchecked, as the other faults of this synthesized member are: what faults here is
+            // the callee, and the executing instruction is a plain `call`.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.ArrayTypeMismatchException
+                thread
+                state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value
@@ -1198,12 +1213,7 @@ module internal UnaryMetadataCallOps =
                 | _ -> false
             )
         then
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         else
 
         let state =
@@ -1568,12 +1578,7 @@ module internal UnaryMetadataCallOps =
             // ECMA-335 III.3.20: calli throws NullReferenceException if the function
             // pointer is null. Don't advance the PC; exception dispatch needs the
             // faulting instruction's offset.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | Some FunctionPointerTarget.RuntimeAllocator -> executeAllocatorCalli ctx callSiteSignature state
         | Some (FunctionPointerTarget.Dynamic handle) ->
             // The same boundary `FunctionPointerTarget.requireManaged` enforces on the delegate

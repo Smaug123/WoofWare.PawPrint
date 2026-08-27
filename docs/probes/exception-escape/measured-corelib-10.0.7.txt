@@ -1,0 +1,305 @@
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1033ms
+methods: 41561 (IL bodies: 39466, 95.0%)
+
+-- body kinds --
+  Il                                        39466   95.0%
+  Abstract                                   1116    2.7%
+  PInvoke                                     490    1.2%
+  InternalCall                                205    0.5%
+  RuntimeProvided(DelegateCtor)                73    0.2%
+  RuntimeProvided(DelegateInvoke)              73    0.2%
+  RuntimeProvided(Unrecognised "BeginInvoke")     65    0.2%
+  RuntimeProvided(Unrecognised "EndInvoke")     65    0.2%
+  RuntimeProvided(UnsafeAccessor (Constructor, None))      2    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetDefaultInstance"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (Method, Some "Deserialize"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "ConvertFromInvariantString"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetAssemblyName"))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (Method, None))      1    0.0%
+  RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetInstance"))      1    0.0%
+
+IL methods with at least one implicitly-raising opcode: 37502 (95.0%)
+IL methods with any exception region: 947 (2.4%)
+throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers: 33
+
+-- what precedes a `throw` (can we name the thrown type syntactically?) --
+  newobj immediately before                            8460   97.2%
+  call (needs callee return type)                       228    2.6%
+  other: Nullary Ldloc_0                                  4    0.0%
+  other: Nullary LdNull                                   3    0.0%
+  other: Nullary Ldloc_3                                  2    0.0%
+  other: UnaryConst.Ldloc_s 4                             2    0.0%
+  other: Nullary Ldloc_2                                  1    0.0%
+  other: Nullary Ldloc_1                                  1    0.0%
+  other: UnaryConst.Ldloc_s 7                             1    0.0%
+  ldfld (needs dataflow)                                  1    0.0%
+  other: UnaryMetadataToken.Callvirt                      1    0.0%
+
+-- exception regions --
+  finally                                     796
+  resolved-to-name                            396
+  filter                                       24
+  fault                                         3
+
+-- top 10 catch types --
+  System.Exception                                 180
+  System.Object                                     52
+  System.ArgumentException                          26
+  System.ArgumentOutOfRangeException                14
+  System.InvalidCastException                       11
+  System.OverflowException                          10
+  System.NullReferenceException                      9
+  System.ArrayTypeMismatchException                  9
+  System.IndexOutOfRangeException                    8
+  System.MissingMethodException                      8
+
+-- callee token kinds --
+  MethodDef (same assembly)                           82815   70.5%
+  MemberRef (parent decides; see below)               19588   16.7%
+    ...of which callvirt                              17021   14.5%
+  MethodSpec (generic instantiation)                  15132   12.9%
+  Calli (indirect: no metadata target)                   33    0.0%
+
+-- MemberRef parents, over the whole MemberRef table --
+  TypeSpec (an instantiation)                     8214
+
+-- implicit (opcode-raised) exception site counts --
+  System.TypeInitializationException            154544
+  System.NullReferenceException                  77337
+  System.OutOfMemoryException                    24722
+  System.IndexOutOfRangeException                 2951
+  System.InvalidCastException                     2945
+  System.OverflowException                        1892
+  System.ArrayTypeMismatchException               1712
+  System.DivideByZeroException                     911
+  System.StackOverflowException                    343
+  unmodelled opcode                                 41
+
+-- top 12 directly-thrown types (newobj;throw) --
+  System.PlatformNotSupportedException                      5530
+  System.ArgumentException                                   867
+  System.NotSupportedException                               488
+  System.ArgumentOutOfRangeException                         458
+  System.InvalidOperationException                           285
+  System.NotImplementedException                             150
+  System.FormatException                                      78
+  System.Runtime.Serialization.SerializationException         60
+  System.ArgumentNullException                                51
+  System.InvalidCastException                                 50
+  System.BadImageFormatException                              49
+  System.IndexOutOfRangeException                             36
+
+escape analysis (implicit on) took 1739ms
+
+===== sound: opcode-raised exceptions included =====
+fixpoint rounds: 23
+methods: 41561
+  provably throws nothing:              6275   15.1%
+  exact non-empty escaping set:         4389   10.6%
+  Unknown (analysis envelope hit):     30897   74.3%
+  escaping-set size (exact answers): median 0, p90 2, max 7
+  incompleteness reasons (site counts):
+    GenericInstantiation        34720
+    VirtualCall                 17021
+    AbstractBody                 1116
+    NativeBody                    979
+    UntypedThrow                  248
+    Rethrow                        41
+    IndirectCall                   33
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 2759, of which 275 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (117568 sites)
+  NoInitializer                   45929   39.1%
+  TargetNotLocal                  31492   26.8%
+  InitializerMayThrow             23122   19.7%
+  TargetNotDecidedByToken         17021   14.5%
+  InitializerCannotThrow              4    0.0%
+
+-- the .cctors themselves --
+    ...of which beforefieldinit             270
+  Unknown (analysis envelope)               158
+  can throw a named type                    116
+    ...of which NOT beforefieldinit           5
+  provably raises nothing                     1
+
+-- what the throwing .cctors carry (exact answers only) --
+      72  System.OutOfMemoryException, System.TypeInitializationException
+      16  System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+      10  System.TypeInitializationException
+       9  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       4  System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       1  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.InvalidCastException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       1  System.InvalidCastException, System.NullReferenceException, System.TypeInitializationException
+       1  System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       1  System.NullReferenceException, System.TypeInitializationException
+       1  System.DivideByZeroException, System.OverflowException, System.TypeInitializationException
+
+-- types whose initializer can throw: 116 in all, 67 of them hand-written --
+  System.Array+EmptyArray`1                                System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+  System.AttributeUsageAttribute                           System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+  System.BitConverter                                      System.TypeInitializationException
+  System.Boolean                                           System.OutOfMemoryException, System.TypeInitializationException
+  System.Collections.ArrayList+ArrayListEnumeratorSimple   System.OutOfMemoryException, System.TypeInitializationException
+  System.Collections.BitArray+BitArrayEnumeratorSimple     System.OutOfMemoryException, System.TypeInitializationException
+  System.Collections.Generic.List`1                        System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+  System.Collections.Generic.ReferenceEqualityComparer     System.OutOfMemoryException, System.TypeInitializationException
+  System.Convert                                           System.TypeInitializationException
+  System.DBNull                                            System.OutOfMemoryException, System.TypeInitializationException
+  System.DateTimeOffset                                    System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+  System.Decimal+DecCalc                                   System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+  System.Diagnostics.Debug                                 System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+  System.Diagnostics.Stopwatch                             System.DivideByZeroException, System.OverflowException, System.TypeInitializationException
+  System.Diagnostics.Tracing.ActivityTracker               System.OutOfMemoryException, System.TypeInitializationException
+  System.Diagnostics.Tracing.EventPipeMetadataGenerator    System.OutOfMemoryException, System.TypeInitializationException
+
+===== sound, with both type-initialisation prunes =====
+fixpoint rounds: 23
+methods: 41561
+  provably throws nothing:              6281   15.1%
+  exact non-empty escaping set:         4383   10.5%
+  Unknown (analysis envelope hit):     30897   74.3%
+  escaping-set size (exact answers): median 0, p90 2, max 7
+  incompleteness reasons (site counts):
+    GenericInstantiation        34720
+    VirtualCall                 17021
+    AbstractBody                 1116
+    NativeBody                    979
+    UntypedThrow                  248
+    Rethrow                        41
+    IndirectCall                   33
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 2759, of which 275 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (117568 sites)
+  NoInitializer                   45929   39.1%
+  TargetNotLocal                  31492   26.8%
+  InitializerMayThrow             22371   19.0%
+  TargetNotDecidedByToken         17021   14.5%
+  InitializerCannotThrow            755    0.6%
+
+-- the .cctors themselves --
+    ...of which beforefieldinit             270
+  Unknown (analysis envelope)               158
+  can throw a named type                    110
+  provably raises nothing                     7
+    ...of which NOT beforefieldinit           5
+
+-- what the throwing .cctors carry (exact answers only) --
+      71  System.OutOfMemoryException
+      11  System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+       7  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException
+       5  System.NullReferenceException, System.OutOfMemoryException
+       4  System.TypeInitializationException
+       2  System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       2  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       2  System.OutOfMemoryException, System.OverflowException
+       1  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.InvalidCastException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       1  System.InvalidCastException, System.NullReferenceException, System.TypeInitializationException
+       1  System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+       1  System.NullReferenceException, System.TypeInitializationException
+
+-- types whose initializer can throw: 110 in all, 61 of them hand-written --
+  System.Array+EmptyArray`1                                System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+  System.AttributeUsageAttribute                           System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+  System.Boolean                                           System.OutOfMemoryException
+  System.Collections.ArrayList+ArrayListEnumeratorSimple   System.OutOfMemoryException
+  System.Collections.BitArray+BitArrayEnumeratorSimple     System.OutOfMemoryException
+  System.Collections.Generic.List`1                        System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+  System.Collections.Generic.ReferenceEqualityComparer     System.OutOfMemoryException
+  System.Convert                                           System.TypeInitializationException
+  System.DBNull                                            System.OutOfMemoryException
+  System.DateTimeOffset                                    System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+  System.Decimal+DecCalc                                   System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException
+  System.Diagnostics.Debug                                 System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+  System.Diagnostics.Stopwatch                             System.DivideByZeroException, System.OverflowException
+  System.Diagnostics.Tracing.ActivityTracker               System.OutOfMemoryException
+  System.Diagnostics.Tracing.EventPipeMetadataGenerator    System.OutOfMemoryException
+  System.Diagnostics.Tracing.ManifestBuilder               System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException
+
+===== practical: sound, minus resource exhaustion (UNSOUND by choice) =====
+fixpoint rounds: 23
+methods: 41561
+  provably throws nothing:              6382   15.4%
+  exact non-empty escaping set:         4282   10.3%
+  Unknown (analysis envelope hit):     30897   74.3%
+  escaping-set size (exact answers): median 0, p90 2, max 6
+  incompleteness reasons (site counts):
+    GenericInstantiation        34720
+    VirtualCall                 17021
+    AbstractBody                 1116
+    NativeBody                    979
+    UntypedThrow                  248
+    Rethrow                        41
+    IndirectCall                   33
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 2759, of which 275 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (117568 sites)
+  NoInitializer                   45929   39.1%
+  TargetNotLocal                  31492   26.8%
+  InitializerMayThrow             21971   18.7%
+  TargetNotDecidedByToken         17021   14.5%
+  InitializerCannotThrow           1155    1.0%
+
+-- the .cctors themselves --
+    ...of which beforefieldinit             270
+  Unknown (analysis envelope)               158
+  provably raises nothing                    78
+  can throw a named type                     39
+    ...of which NOT beforefieldinit           5
+
+-- what the throwing .cctors carry (exact answers only) --
+      12  System.NullReferenceException, System.TypeInitializationException
+       7  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
+       5  System.TypeInitializationException
+       5  System.NullReferenceException
+       2  System.OverflowException, System.TypeInitializationException
+       2  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException, System.TypeInitializationException
+       2  System.OverflowException
+       1  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.InvalidCastException, System.NullReferenceException, System.OverflowException, System.TypeInitializationException
+       1  System.InvalidCastException, System.NullReferenceException, System.TypeInitializationException
+       1  System.NullReferenceException, System.OverflowException, System.TypeInitializationException
+       1  System.DivideByZeroException, System.OverflowException
+
+-- types whose initializer can throw: 39 in all, 39 of them hand-written --
+  System.Array+EmptyArray`1                                System.OverflowException, System.TypeInitializationException
+  System.AttributeUsageAttribute                           System.NullReferenceException, System.TypeInitializationException
+  System.Collections.Generic.List`1                        System.OverflowException, System.TypeInitializationException
+  System.Convert                                           System.TypeInitializationException
+  System.DateTimeOffset                                    System.NullReferenceException, System.TypeInitializationException
+  System.Decimal+DecCalc                                   System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
+  System.Diagnostics.Debug                                 System.NullReferenceException, System.TypeInitializationException
+  System.Diagnostics.Stopwatch                             System.DivideByZeroException, System.OverflowException
+  System.Diagnostics.Tracing.ManifestBuilder               System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
+  System.Enum                                              System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.InvalidCastException, System.NullReferenceException, System.OverflowException, System.TypeInitializationException
+  System.Globalization.CalendarData                        System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException, System.TypeInitializationException
+  System.Globalization.NumberFormatInfo                    System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
+  System.Globalization.TimeSpanFormat                      System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
+  System.IO.BinaryWriter                                   System.NullReferenceException, System.TypeInitializationException
+  System.IO.Path                                           System.OverflowException
+  System.IO.Stream                                         System.TypeInitializationException
+
+escape analysis (implicit off) took 580ms
+
+===== control: opcode-raised exceptions suppressed =====
+fixpoint rounds: 20
+methods: 41561
+  provably throws nothing:             10664   25.7%
+  exact non-empty escaping set:            0    0.0%
+  Unknown (analysis envelope hit):     30897   74.3%
+  escaping-set size (exact answers): median 0, p90 0, max 0
+  incompleteness reasons (site counts):
+    GenericInstantiation        34720
+    VirtualCall                 17021
+    AbstractBody                 1116
+    NativeBody                    979
+    UntypedThrow                  248
+    Rethrow                        41
+    IndirectCall                   33

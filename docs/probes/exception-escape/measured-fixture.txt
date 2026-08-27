@@ -1,0 +1,162 @@
+read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 84ms
+methods: 22 (IL bodies: 22, 100.0%)
+
+-- body kinds --
+  Il                                           22  100.0%
+
+IL methods with at least one implicitly-raising opcode: 21 (95.5%)
+IL methods with any exception region: 8 (36.4%)
+throw sites: 3 ; rethrow sites: 1 ; call sites: 23 ; indirect transfers: 0
+
+-- what precedes a `throw` (can we name the thrown type syntactically?) --
+  newobj immediately before                               3  100.0%
+
+-- exception regions --
+  resolved-to-name                              7
+  finally                                       1
+
+-- top 10 catch types --
+  System.Exception                                   2
+  System.InvalidOperationException                   1
+  System.SystemException                             1
+  System.ArgumentException                           1
+  Fixture.LocalBase                                  1
+  System.NullReferenceException                      1
+
+-- callee token kinds --
+  MethodDef (same assembly)                              14   60.9%
+  MemberRef (parent decides; see below)                   9   39.1%
+
+-- MemberRef parents, over the whole MemberRef table --
+  TypeRef scoped to an AssemblyRef                  20
+
+-- implicit (opcode-raised) exception site counts --
+  System.TypeInitializationException                28
+  System.OutOfMemoryException                        7
+  System.NullReferenceException                      4
+  unmodelled opcode                                  1
+
+-- top 12 directly-thrown types (newobj;throw) --
+  System.InvalidOperationException                             1
+  System.FormatException                                       1
+  Fixture.Derived                                              1
+
+escape analysis (implicit on) took 12ms
+
+===== sound: opcode-raised exceptions included =====
+fixpoint rounds: 3
+methods: 22
+  provably throws nothing:                 2    9.1%
+  exact non-empty escaping set:            3   13.6%
+  Unknown (analysis envelope hit):        17   77.3%
+  escaping-set size (exact answers): median 1, p90 1, max 1
+  incompleteness reasons (site counts):
+    ForeignCallee                   9
+    Rethrow                         1
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 10, of which 2 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (23 sites)
+  NoInitializer                      13   56.5%
+  TargetNotLocal                      9   39.1%
+  InitializerMayThrow                 1    4.3%
+
+-- the .cctors themselves --
+  Unknown (analysis envelope)                 2
+    ...of which beforefieldinit               2
+
+-- what the throwing .cctors carry (exact answers only) --
+
+-- types whose initializer can throw: 0 in all, 0 of them hand-written --
+
+===== sound, with both type-initialisation prunes =====
+fixpoint rounds: 3
+methods: 22
+  provably throws nothing:                 2    9.1%
+  exact non-empty escaping set:            3   13.6%
+  Unknown (analysis envelope hit):        17   77.3%
+  escaping-set size (exact answers): median 1, p90 1, max 1
+  incompleteness reasons (site counts):
+    ForeignCallee                   9
+    Rethrow                         1
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 10, of which 2 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (23 sites)
+  NoInitializer                      13   56.5%
+  TargetNotLocal                      9   39.1%
+  InitializerMayThrow                 1    4.3%
+
+-- the .cctors themselves --
+  Unknown (analysis envelope)                 2
+    ...of which beforefieldinit               2
+
+-- what the throwing .cctors carry (exact answers only) --
+
+-- types whose initializer can throw: 0 in all, 0 of them hand-written --
+
+===== practical: sound, minus resource exhaustion (UNSOUND by choice) =====
+fixpoint rounds: 3
+methods: 22
+  provably throws nothing:                 2    9.1%
+  exact non-empty escaping set:            3   13.6%
+  Unknown (analysis envelope hit):        17   77.3%
+  escaping-set size (exact answers): median 1, p90 1, max 1
+  incompleteness reasons (site counts):
+    ForeignCallee                   9
+    Rethrow                         1
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 10, of which 2 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (23 sites)
+  NoInitializer                      13   56.5%
+  TargetNotLocal                      9   39.1%
+  InitializerMayThrow                 1    4.3%
+
+-- the .cctors themselves --
+  Unknown (analysis envelope)                 2
+    ...of which beforefieldinit               2
+
+-- what the throwing .cctors carry (exact answers only) --
+
+-- types whose initializer can throw: 0 in all, 0 of them hand-written --
+
+escape analysis (implicit off) took 0ms
+
+===== control: opcode-raised exceptions suppressed =====
+fixpoint rounds: 3
+methods: 22
+  provably throws nothing:                 5   22.7%
+  exact non-empty escaping set:            0    0.0%
+  Unknown (analysis envelope hit):        17   77.3%
+  escaping-set size (exact answers): median 0, p90 0, max 0
+  incompleteness reasons (site counts):
+    ForeignCallee                   9
+    Rethrow                         1
+
+===== fixture oracle =====
+  ok       Fixture.Cases::ThrowsDirectly                System.InvalidOperationException, + UNKNOWN
+  ok       Fixture.Cases::CaughtExactly                 UNKNOWN
+  ok       Fixture.Cases::CaughtByBase                  System.InvalidOperationException, + UNKNOWN
+  ok       Fixture.Cases::UnrelatedCatch                System.InvalidOperationException, + UNKNOWN
+  ok       Fixture.Cases::FinallyDoesNotCatch           System.InvalidOperationException, + UNKNOWN
+  ok       Fixture.Cases::PropagatesOneHop              System.InvalidOperationException, + UNKNOWN
+  ok       Fixture.Cases::TwoSources                    System.FormatException, System.InvalidOperationException, + UNKNOWN
+  ok       Fixture.Cases::CatchesBoth                   (nothing)
+  ok       Fixture.Cases::Leaf                          (nothing)
+  ok       Fixture.Cases::Recursive                     System.InvalidOperationException, + UNKNOWN
+  ok       Fixture.Cases::Rethrows                      UNKNOWN
+  ok       Fixture.Cases::ThrowsLocalDerived            Fixture.Derived, + UNKNOWN
+  ok       Fixture.Cases::CaughtByLocalBase             UNKNOWN
+  all 13 expectations hold
+
+===== fixture oracle, against the sound run =====
+  ok       Fixture.CctorCases::CallsBoom                System.TypeInitializationException
+  ok       Fixture.ShadowCases::DereferencesNull        System.NullReferenceException
+  all 2 expectations hold
