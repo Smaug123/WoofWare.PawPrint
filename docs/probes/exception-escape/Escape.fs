@@ -239,13 +239,31 @@ module Escape =
             | true, h -> TyKey.Local (ComparableTypeDefinitionHandle.Make h)
             | _ -> TyKey.Foreign (ns, n)
 
-        let keyOfQualifiedName (qualified : string) : TyKey =
-            let idx = qualified.LastIndexOf '.'
+        // Is the image under analysis the one that *defines* the exceptions an opcode raises?
+        let analysingCorelib = thisAssembly.Name = "System.Private.CoreLib"
 
-            if idx < 0 then
-                keyOfName "" qualified
+        /// The identity of a type named by an `OpcodeFault` -- always a corelib type.
+        ///
+        /// Canonicalised to a local `TypeDef` only when this image is corelib. Elsewhere it stays
+        /// `Foreign`, so that an assembly *shadowing* one of these names with a type of its own
+        /// does not absorb the real fault: a `catch` for a local `System.NullReferenceException`
+        /// keys to that local `TypeDef`, the fault keys to the foreign name, and they correctly do
+        /// not match. An ordinary `catch (NullReferenceException)` in a normal assembly names the
+        /// type by TypeRef, which keys foreign too, and still matches.
+        ///
+        /// A residual imprecision this does not fix: two different assemblies' same-named types
+        /// still key alike. Distinguishing them means recording the *defining* assembly, which
+        /// type forwarding puts out of reach without the cross-assembly resolution the probe
+        /// deliberately lacks -- a TypeRef in System.Text.Json names System.Runtime, while the
+        /// definition is in System.Private.CoreLib.
+        let keyOfFaultName (qualified : string) : TyKey =
+            let idx = qualified.LastIndexOf '.'
+            let ns, n = qualified.Substring (0, idx), qualified.Substring (idx + 1)
+
+            if analysingCorelib then
+                keyOfName ns n
             else
-                keyOfName (qualified.Substring (0, idx)) (qualified.Substring (idx + 1))
+                TyKey.Foreign (ns, n)
 
         // Base chain of every local TypeDef, keyed by handle. A chain leaves the assembly at its
         // first TypeRef base, which is recorded and then terminates the walk: a base type we
@@ -494,6 +512,13 @@ module Escape =
                             // touches has no initializer to trigger.
                             let noTypeInit =
                                 match op with
+                                // A `callvirt`'s token names where dispatch starts, not where it
+                                // lands, so neither prune may read the owner off it: an interface
+                                // has no `.cctor`, and pruning on that would be exactly wrong when
+                                // the implementation is a value type whose initializer fails.
+                                // `CctorCensus` refuses this for the same reason.
+                                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, _)
+                                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldvirtftn, _) -> false
                                 | IlOp.UnaryMetadataToken (_, operand) ->
                                     touchesOwnType operand || touchesTypeWithoutInitialiser operand
                                 | _ -> false
@@ -507,7 +532,7 @@ module Escape =
                                             Some x
 
                                     match x with
-                                    | Some x -> raises.Add (off, Some (keyOfQualifiedName (OpcodeFault.typeName x)))
+                                    | Some x -> raises.Add (off, Some (keyOfFaultName (OpcodeFault.typeName x)))
                                     | None -> ()
 
                     // 2. What the instruction throws explicitly.

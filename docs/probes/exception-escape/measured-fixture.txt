@@ -1,19 +1,19 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 133ms
-methods: 19 (IL bodies: 19, 100.0%)
+read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 71ms
+methods: 22 (IL bodies: 22, 100.0%)
 
 -- body kinds --
-  Il                                           19  100.0%
+  Il                                           22  100.0%
 
-IL methods with at least one implicitly-raising opcode: 18 (94.7%)
-IL methods with any exception region: 7 (36.8%)
-throw sites: 3 ; rethrow sites: 1 ; call sites: 21 ; indirect transfers: 0
+IL methods with at least one implicitly-raising opcode: 21 (95.5%)
+IL methods with any exception region: 8 (36.4%)
+throw sites: 3 ; rethrow sites: 1 ; call sites: 23 ; indirect transfers: 0
 
 -- what precedes a `throw` (can we name the thrown type syntactically?) --
   newobj immediately before                               3  100.0%
 
 -- exception regions --
-  resolved-to-name                              6
+  resolved-to-name                              7
   finally                                       1
 
 -- top 10 catch types --
@@ -22,18 +22,19 @@ throw sites: 3 ; rethrow sites: 1 ; call sites: 21 ; indirect transfers: 0
   System.SystemException                             1
   System.ArgumentException                           1
   Fixture.LocalBase                                  1
+  System.NullReferenceException                      1
 
 -- callee token kinds --
-  MethodDef (same assembly)                              14   66.7%
-  MemberRef (parent decides; see below)                   7   33.3%
+  MethodDef (same assembly)                              14   60.9%
+  MemberRef (parent decides; see below)                   9   39.1%
 
 -- MemberRef parents, over the whole MemberRef table --
-  TypeRef scoped to an AssemblyRef                  19
+  TypeRef scoped to an AssemblyRef                  20
 
 -- implicit (opcode-raised) exception site counts --
-  System.TypeInitializationException                25
+  System.TypeInitializationException                27
   System.OutOfMemoryException                        7
-  System.NullReferenceException                      3
+  System.NullReferenceException                      4
   unmodelled opcode                                  1
 
 -- top 12 directly-thrown types (newobj;throw) --
@@ -41,27 +42,27 @@ throw sites: 3 ; rethrow sites: 1 ; call sites: 21 ; indirect transfers: 0
   System.FormatException                                       1
   Fixture.Derived                                              1
 
-escape analysis (implicit on) took 25ms
+escape analysis (implicit on) took 12ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 3
-methods: 19
-  provably throws nothing:                 2   10.5%
-  exact non-empty escaping set:            2   10.5%
-  Unknown (analysis envelope hit):        15   78.9%
+methods: 22
+  provably throws nothing:                 2    9.1%
+  exact non-empty escaping set:            3   13.6%
+  Unknown (analysis envelope hit):        17   77.3%
   escaping-set size (exact answers): median 1, p90 1, max 1
   incompleteness reasons (site counts):
-    ForeignCallee                   7
+    ForeignCallee                   9
     Rethrow                         1
 
 ===== can a static checker discharge the TypeInitializationException load? =====
-types: 7, of which 2 have a .cctor
+types: 10, of which 2 have a .cctor
 
 -- invoking instructions, by what their target type's initializer could do --
-   (21 sites)
-  NoInitializer                      13   61.9%
-  TargetNotLocal                      7   33.3%
-  InitializerMayThrow                 1    4.8%
+   (23 sites)
+  NoInitializer                      13   56.5%
+  TargetNotLocal                      9   39.1%
+  InitializerMayThrow                 1    4.3%
 
 -- the .cctors themselves --
   Unknown (analysis envelope)                 2
@@ -73,23 +74,23 @@ types: 7, of which 2 have a .cctor
 
 ===== sound, with both type-initialisation prunes =====
 fixpoint rounds: 3
-methods: 19
-  provably throws nothing:                 2   10.5%
-  exact non-empty escaping set:            2   10.5%
-  Unknown (analysis envelope hit):        15   78.9%
+methods: 22
+  provably throws nothing:                 2    9.1%
+  exact non-empty escaping set:            3   13.6%
+  Unknown (analysis envelope hit):        17   77.3%
   escaping-set size (exact answers): median 1, p90 1, max 1
   incompleteness reasons (site counts):
-    ForeignCallee                   7
+    ForeignCallee                   9
     Rethrow                         1
 
 ===== can a static checker discharge the TypeInitializationException load? =====
-types: 7, of which 2 have a .cctor
+types: 10, of which 2 have a .cctor
 
 -- invoking instructions, by what their target type's initializer could do --
-   (21 sites)
-  NoInitializer                      13   61.9%
-  TargetNotLocal                      7   33.3%
-  InitializerMayThrow                 1    4.8%
+   (23 sites)
+  NoInitializer                      13   56.5%
+  TargetNotLocal                      9   39.1%
+  InitializerMayThrow                 1    4.3%
 
 -- the .cctors themselves --
   Unknown (analysis envelope)                 2
@@ -101,23 +102,23 @@ types: 7, of which 2 have a .cctor
 
 ===== practical: sound, minus resource exhaustion (UNSOUND by choice) =====
 fixpoint rounds: 3
-methods: 19
-  provably throws nothing:                 2   10.5%
-  exact non-empty escaping set:            2   10.5%
-  Unknown (analysis envelope hit):        15   78.9%
+methods: 22
+  provably throws nothing:                 2    9.1%
+  exact non-empty escaping set:            3   13.6%
+  Unknown (analysis envelope hit):        17   77.3%
   escaping-set size (exact answers): median 1, p90 1, max 1
   incompleteness reasons (site counts):
-    ForeignCallee                   7
+    ForeignCallee                   9
     Rethrow                         1
 
 ===== can a static checker discharge the TypeInitializationException load? =====
-types: 7, of which 2 have a .cctor
+types: 10, of which 2 have a .cctor
 
 -- invoking instructions, by what their target type's initializer could do --
-   (21 sites)
-  NoInitializer                      13   61.9%
-  TargetNotLocal                      7   33.3%
-  InitializerMayThrow                 1    4.8%
+   (23 sites)
+  NoInitializer                      13   56.5%
+  TargetNotLocal                      9   39.1%
+  InitializerMayThrow                 1    4.3%
 
 -- the .cctors themselves --
   Unknown (analysis envelope)                 2
@@ -131,13 +132,13 @@ escape analysis (implicit off) took 0ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 3
-methods: 19
-  provably throws nothing:                 4   21.1%
+methods: 22
+  provably throws nothing:                 5   22.7%
   exact non-empty escaping set:            0    0.0%
-  Unknown (analysis envelope hit):        15   78.9%
+  Unknown (analysis envelope hit):        17   77.3%
   escaping-set size (exact answers): median 0, p90 0, max 0
   incompleteness reasons (site counts):
-    ForeignCallee                   7
+    ForeignCallee                   9
     Rethrow                         1
 
 ===== fixture oracle =====
@@ -158,4 +159,5 @@ methods: 19
 
 ===== fixture oracle, against the sound run =====
   ok       Fixture.CctorCases::CallsBoom                System.TypeInitializationException
-  all 1 expectations hold
+  ok       Fixture.ShadowCases::DereferencesNull        System.NullReferenceException
+  all 2 expectations hold

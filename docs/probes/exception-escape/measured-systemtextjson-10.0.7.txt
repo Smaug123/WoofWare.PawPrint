@@ -1,5 +1,5 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 457ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 199ms
 methods: 4067 (IL bodies: 3975, 97.7%)
 
 -- body kinds --
@@ -76,7 +76,7 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
   System.ObjectDisposedException                               2
   System.OperationCanceledException                            2
 
-escape analysis (implicit on) took 339ms
+escape analysis (implicit on) took 169ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 11
@@ -195,7 +195,7 @@ types: 378, of which 40 have a .cctor
   System.Text.Json.JsonHelpers                             System.TypeInitializationException
   System.Text.Json.Utf8JsonWriter                          System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
 
-escape analysis (implicit off) took 77ms
+escape analysis (implicit off) took 43ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 9

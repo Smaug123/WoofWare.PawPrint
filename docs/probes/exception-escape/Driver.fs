@@ -121,6 +121,14 @@ module Driver =
             // also the one fixture method that shows the instrument giving a complete answer
             // rather than an answer plus an admission.
             "Fixture.CctorCases::CallsBoom", "System.TypeInitializationException"
+            // The `catch` names a *locally declared* `System.NullReferenceException`, which is a
+            // different type from the one the runtime throws, so it must not absorb the fault.
+            //
+            // The expected string does not name which of the two types is escaping — both display
+            // the same — but it discriminates the bug exactly: an analysis that canonicalised
+            // opcode faults by name would key this one to the local shadow, the clause would
+            // absorb it, and this would read "(nothing)".
+            "Fixture.ShadowCases::DereferencesNull", "System.NullReferenceException"
         ]
 
     /// Returns the number of mismatches.

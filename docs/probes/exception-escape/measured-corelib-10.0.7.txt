@@ -1,5 +1,5 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 2213ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1263ms
 methods: 41561 (IL bodies: 39466, 95.0%)
 
 -- body kinds --
@@ -90,7 +90,7 @@ throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers:
   System.BadImageFormatException                              49
   System.IndexOutOfRangeException                             36
 
-escape analysis (implicit on) took 4455ms
+escape analysis (implicit on) took 2033ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 23
@@ -287,7 +287,7 @@ types: 2759, of which 275 have a .cctor
   System.IO.Path                                           System.OverflowException
   System.IO.Stream                                         System.TypeInitializationException
 
-escape analysis (implicit off) took 1416ms
+escape analysis (implicit off) took 658ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 20

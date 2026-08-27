@@ -149,12 +149,14 @@ module Census =
                     | IlOp.Nullary NullaryIlOp.Rethrow -> rethrowSites <- rethrowSites + 1
                     | IlOp.UnaryMetadataToken (mop, operand) ->
                         match mop with
-                        | UnaryMetadataTokenIlOp.Calli
-                        | UnaryMetadataTokenIlOp.Jmp ->
+                        // Only `calli` is indirect. `jmp` carries a method token like any other
+                        // named call, and `Escape.run` follows it as one.
+                        | UnaryMetadataTokenIlOp.Calli ->
                             indirectSites <- indirectSites + 1
                             calleeKinds.Bump $"%O{mop} (indirect: no metadata target)"
                         | UnaryMetadataTokenIlOp.Call
                         | UnaryMetadataTokenIlOp.Callvirt
+                        | UnaryMetadataTokenIlOp.Jmp
                         | UnaryMetadataTokenIlOp.Newobj ->
                             callSites <- callSites + 1
 

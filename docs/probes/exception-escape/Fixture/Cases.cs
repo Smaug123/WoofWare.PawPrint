@@ -112,3 +112,21 @@ public static class CctorCases
 {
     public static int CallsBoom() => Boom.M();
 }
+
+public class Shadowed
+{
+    public int Field;
+}
+
+public static class ShadowCases
+{
+    /// A `catch` for a *locally declared* `System.NullReferenceException`, which is a different
+    /// type from the one the runtime throws for a null dereference. The clause must not absorb the
+    /// real fault. An analysis that canonicalised faults by name would say it does — and this is
+    /// not a hypothetical shape when the analysis is pointed at a package somebody else wrote.
+    public static int DereferencesNull(Shadowed s)
+    {
+        try { return s.Field; }
+        catch (System.NullReferenceException) { return -1; }
+    }
+}
