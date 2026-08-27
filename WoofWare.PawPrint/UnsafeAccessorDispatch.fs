@@ -68,6 +68,12 @@ type internal UnsafeAccessorRefusal =
     /// the class cannot be instantiated.
     | InvalidOperation of message : string
 
+    /// `IDS_EE_METHOD_CONSTRAINTS_VIOLATION` from `TypeVarTypeDesc::SatisfiesConstraints`: the
+    /// accessor's own type argument does not satisfy the target method's type parameter. Carries
+    /// the three names CoreCLR's message interpolates, so the message is built where the exception
+    /// is rather than where the violation is found.
+    | ConstraintViolation of targetMethod : string * typeArgument : string * parameterName : string
+
 [<RequireQualifiedAccess>]
 module internal UnsafeAccessorDispatch =
 
@@ -470,20 +476,35 @@ module internal UnsafeAccessorDispatch =
             failwith
                 $"BUG: [UnsafeAccessor] found %d{List.length matching} declared fields named %s{name} on %s{targetTypeInfo.Namespace}.%s{targetTypeInfo.Name}; a field name is unique within a type, so the candidate filter is wrong"
 
-    /// Would `TypeVarTypeDesc::SatisfiesConstraints` accept `argument` for this generic parameter
-    /// without a real check?
+    /// What `TypeVarTypeDesc::SatisfiesConstraints` would say about one (parameter, argument) pair,
+    /// for the pairs PawPrint can decide.
+    [<RequireQualifiedAccess>]
+    type private ConstraintVerdict =
+        /// The parameter constrains nothing that this argument could violate.
+        | Satisfied
+        /// The argument is byref-like and the parameter has no `allows ref struct`.
+        | ByRefLikeRefused
+        /// The parameter carries constraints PawPrint cannot check.
+        | Undecidable
+
+    /// Would `TypeVarTypeDesc::SatisfiesConstraints` accept `argument` for this generic parameter?
     ///
     /// Declaring no constraints is not the same as accepting everything: a parameter without
     /// `allows ref struct` (`gpAllowByRefLike`) refuses a byref-like argument, so the *absence* of
-    /// that anti-constraint is itself a constraint (typedesc.cpp:1606). Measured on real .NET 10:
-    /// an accessor whose own parameter says `allows ref struct`, over a target parameter that does
-    /// not, raises `VerificationException` when instantiated with a `Span<int>`.
-    let private acceptsWithoutChecking
+    /// that anti-constraint is itself a constraint (typedesc.cpp:1606). That one is decidable here,
+    /// because "is this type byref-like" is a fact about the argument alone; every other constraint
+    /// needs an assignability walk PawPrint does not have, so a parameter carrying one makes the
+    /// pair undecidable rather than accepted.
+    ///
+    /// Measured on real .NET 10: an accessor whose own parameter says `allows ref struct`, over a
+    /// target parameter that does not, raises `VerificationException` when instantiated with a
+    /// `Span<int>` and runs the target when instantiated with an `int`.
+    let private constraintVerdict
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         ((_, metadata) : GenericParamFromMetadata)
         (argument : ConcreteTypeHandle)
-        : bool
+        : ConstraintVerdict
         =
         let argumentIsByRefLike =
             match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
@@ -494,10 +515,52 @@ module internal UnsafeAccessorDispatch =
                 // bear on them.
                 false
 
-        metadata.Constraint.IsNone
-        && not metadata.RequiresParameterlessConstructor
-        && metadata.Constraints.IsEmpty
-        && (metadata.AllowsByRefLike || not argumentIsByRefLike)
+        if
+            metadata.Constraint.IsSome
+            || metadata.RequiresParameterlessConstructor
+            || not metadata.Constraints.IsEmpty
+        then
+            ConstraintVerdict.Undecidable
+        elif argumentIsByRefLike && not metadata.AllowsByRefLike then
+            ConstraintVerdict.ByRefLikeRefused
+        else
+            ConstraintVerdict.Satisfied
+
+    /// A type argument's name, as CoreCLR's constraint-violation message interpolates it.
+    ///
+    /// Reflection's rendering, not the IL keyword form: `System.Span`1[System.Int32]`. A handle
+    /// that is not one of the shapes a type argument takes falls back to the diagnostic rendering,
+    /// whose `#handle` marks it as not having come from here.
+    let rec private renderTypeArgument (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        let recurse = renderTypeArgument state
+
+        match handle with
+        | ConcreteTypeHandle.Byref inner -> recurse inner + "&"
+        | ConcreteTypeHandle.Pointer inner -> recurse inner + "*"
+        | ConcreteTypeHandle.OneDimArrayZero element -> recurse element + "[]"
+        | ConcreteTypeHandle.Array (element, rank) ->
+            let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+
+            recurse element + "[" + inside + "]"
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+        | ConcreteTypeHandle.Concrete _ ->
+
+        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle with
+        | None -> AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+        | Some (concreteType, typeInfo) ->
+
+        let bare =
+            if System.String.IsNullOrEmpty typeInfo.Namespace then
+                typeInfo.Name
+            else
+                $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
+
+        if concreteType.Generics.IsEmpty then
+            bare
+        else
+            let args = concreteType.Generics |> Seq.map recurse |> String.concat ","
+            $"%s{bare}[%s{args}]"
 
     /// `VerifyDeclarationSatisfiesTargetConstraints` (unsafeaccessors.cpp:513) for the shapes this
     /// dispatcher accepts. The accessor's declaring type is non-generic, so the declaration
@@ -523,18 +586,41 @@ module internal UnsafeAccessorDispatch =
             // Unreachable after a successful signature match, which compares the generic-parameter
             // counts as CoreCLR compares the blobs' leading bytes; stated rather than assumed.
             Error (UnsafeAccessorRefusal.InvalidProgram "Generic method constraints do not match.")
-        elif
+        else
+
+        let verdicts =
             Seq.zip target.Generics accessorMethodGenerics
-            |> Seq.forall (fun (parameter, argument) -> acceptsWithoutChecking baseClassTypes state parameter argument)
+            |> Seq.map (fun (parameter, argument) ->
+                parameter, argument, constraintVerdict baseClassTypes state parameter argument
+            )
+            |> List.ofSeq
+
+        match
+            verdicts
+            |> List.tryFind (fun (_, _, verdict) -> verdict = ConstraintVerdict.ByRefLikeRefused)
+        with
+        | Some ((parameter, _), argument, _) ->
+            Error (
+                UnsafeAccessorRefusal.ConstraintViolation (
+                    $"%s{(MethodOwner.requireDeclaringType describe target.Owner).Name}.%s{target.Name}",
+                    renderTypeArgument state argument,
+                    parameter.Name
+                )
+            )
+        | None ->
+
+        if
+            verdicts
+            |> List.forall (fun (_, _, verdict) -> verdict = ConstraintVerdict.Satisfied)
         then
             Ok ()
         else
             // Every remaining case needs `TypeVarTypeDesc::SatisfiesConstraints`: whether the
-            // accessor's own type arguments satisfy the target method's constraints. PawPrint has
-            // no constraint-satisfaction check, and answering "yes" would run a target the real
+            // accessor's own type arguments satisfy constraints that name *types*. PawPrint has no
+            // assignability walk to answer that, and answering "yes" would run a target the real
             // runtime refuses to bind.
             failwith
-                $"TODO: %s{describe} names a generic method whose type parameters do not accept the accessor's own type arguments outright -- they carry constraints, or an argument is byref-like where the parameter has no `allows ref struct`. Deciding whether the arguments satisfy them needs the constraint check of CoreCLR's VerifyDeclarationSatisfiesTargetConstraints, which PawPrint does not have"
+                $"TODO: %s{describe} names a generic method whose type parameters carry constraints beyond `allows ref struct`; deciding whether the accessor's own type arguments satisfy them needs the assignability walk of CoreCLR's TypeVarTypeDesc::SatisfiesConstraints, which PawPrint does not have"
 
     /// Read an `[UnsafeAccessor]` declaration and resolve the member it names, reproducing
     /// `MethodDesc::TryGenerateUnsafeAccessor` (unsafeaccessors.cpp:1027) down to the point where
@@ -775,6 +861,9 @@ module internal UnsafeAccessorDispatch =
         | UnsafeAccessorRefusal.InvalidProgram message -> baseClassTypes.InvalidProgramException, message
         | UnsafeAccessorRefusal.AbstractStaticTarget -> baseClassTypes.BadImageFormatException, "Bad IL format."
         | UnsafeAccessorRefusal.InvalidOperation message -> baseClassTypes.InvalidOperationException, message
+        | UnsafeAccessorRefusal.ConstraintViolation (targetMethod, typeArgument, parameterName) ->
+            baseClassTypes.VerificationException,
+            $"Method %s{targetMethod}: type argument '%s{typeArgument}' violates the constraint of type parameter '%s{parameterName}'."
 
     /// Run an `[UnsafeAccessor]` accessor's synthesised body.
     ///

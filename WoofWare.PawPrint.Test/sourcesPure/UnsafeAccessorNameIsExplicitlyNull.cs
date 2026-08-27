@@ -26,14 +26,24 @@ public class TestUnsafeAccessorNameIsExplicitlyNull
     [UnsafeAccessor(UnsafeAccessorKind.Method)]
     private static extern int Same(Target t);
 
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = null)]
-    private static extern int SameNullName(Target t);
+    // The null-named and empty-named accessors are *also* called `Same`, which is the whole point:
+    // if an explicit null read as "absent", they would fall back to their own name and bind
+    // `Target.Same`. They live in nested classes because one class cannot declare three methods of
+    // that name. The same trick gives the field accessor the name of a real field.
+    private static class NullName
+    {
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = null)]
+        public static extern int Same(Target t);
 
-    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "")]
-    private static extern int SameEmptyName(Target t);
+        [UnsafeAccessor(UnsafeAccessorKind.Field, Name = null)]
+        public static extern ref int Field(Target t);
+    }
 
-    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = null)]
-    private static extern ref int FieldNullName(Target t);
+    private static class EmptyName
+    {
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "")]
+        public static extern int Same(Target t);
+    }
 
     // A constructor's name is the runtime's to choose, so an *empty* one -- supplied or absent --
     // is accepted where a non-empty one is refused.
@@ -68,13 +78,16 @@ public class TestUnsafeAccessorNameIsExplicitlyNull
 
         int r;
 
-        r = Check<MissingMethodException>(4, () => SameNullName(t));
+        // Explicitly null: the accessor is called `Same` and `Target.Same` exists, so a reading
+        // that treated null as absent would call it and return 11.
+        r = Check<MissingMethodException>(4, () => NullName.Same(t));
         if (r != 0) return r;
 
-        r = Check<MissingMethodException>(5, () => SameEmptyName(t));
+        r = Check<MissingMethodException>(5, () => EmptyName.Same(t));
         if (r != 0) return r;
 
-        r = Check<MissingFieldException>(6, () => FieldNullName(t));
+        // Likewise the field: `Target.Field` exists and the accessor is called `Field`.
+        r = Check<MissingFieldException>(6, () => NullName.Field(t));
         if (r != 0) return r;
 
         return 0;

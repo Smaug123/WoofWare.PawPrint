@@ -362,6 +362,10 @@ type BaseClassTypes<'corelib> =
         /// compile error, and `[UnsafeAccessor(UnsafeAccessorKind.Constructor)]` naming an abstract
         /// class's constructor is the route that gets there.
         InvalidOperationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Raised where a generic instantiation violates a type parameter's constraints, which
+        /// CoreCLR reports as `IDS_EE_METHOD_CONSTRAINTS_VIOLATION`. Only one constraint is decided
+        /// here today: a parameter without `allows ref struct` refuses a byref-like type argument.
+        VerificationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Thrown by the runtime — not the BCL — when a wait-all names the same
         /// handle twice: CoreCLR's `Thread::DoAppropriateWait` turns the PAL's
         /// `WAIT_FAILED` + `ERROR_INVALID_PARAMETER` into this before the managed
