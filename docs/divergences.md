@@ -458,6 +458,55 @@ The managed observables agree with CoreCLR for every shape a dynamic method can 
 
 **Where this lives in code**: `IlMachineRuntimeMetadata.executeDelegateConstructor` for the `newobj` path, `NativeDelegate.tryExecuteQCall` for the `CreateDelegate` path, and `AbstractMachine.dispatchDelegateInvoke` for the consumer that makes the convention work.
 
+## A method handle is per-instantiation, where CoreCLR shares one per canonical form
+
+This predates any one change and is not specific to delegates: it is what PawPrint modelling no `__Canon` sharing amounts to, wherever a method handle is asked about. `Delegate::GetInvokeMethod` is the worked example below because that is where it was measured, but `MethodInfo.MethodHandle` on any generic type shows the same thing.
+
+**CoreCLR**: a `MethodDesc` belongs to an `EEClass`, and an `EEClass` is shared between instantiations that canonicalise alike. Canonicalisation is per *position*: each reference-type argument is replaced by `__Canon` and each value-type argument is kept exact, and two instantiations share exactly when their canonical forms are equal. Measured on .NET 10 by comparing handles for `Func<_, _>.Invoke` — through `Delegate.GetInvokeMethod`, which reads `((DelegateEEClass*)pDelegateMT->GetClass())->GetInvokeMethod()` (`comdelegate.cpp:2156`), and through the public `MethodInfo.MethodHandle`, which agrees:
+
+| pair | canonical forms | shares |
+| --- | --- | --- |
+| `Func<string, int>`, `Func<object, int>` | `Func<__Canon, int>` both | yes |
+| `Func<string, string>`, `Func<object, object>` | `Func<__Canon, __Canon>` both | yes |
+| `Func<string, int>`, `Func<string, string>` | `Func<__Canon, int>`, `Func<__Canon, __Canon>` | no |
+| `Func<string, int>`, `Func<string, long>` | differ in the value position | no |
+| `Func<int, int>`, `Func<int, string>` | `Func<int, int>`, `Func<int, __Canon>` | no |
+
+So a wholly value-type instantiation such as `Func<int, int>` is its own canonical form and shares with nothing.
+
+**PawPrint**: models no canonical sharing anywhere. `MethodHandleRegistry` keys a handle on a fully closed `ConcreteTypeHandle` declaring type, so each instantiation is minted its own registry id. PawPrint therefore answers "no" to every row of the table above — agreeing on the three that CoreCLR does not share, and disagreeing on the two it does.
+
+**Spec status**: legal, checked against ECMA-335 6th edition (June 2012). `System.RuntimeMethodHandle` appears in the standard's five partitions exactly once: III.4.17 `ldtoken`, which says the instruction "pushes a `RuntimeMethodHandle`" for a `methoddef`, `methodref` or `methodspec`, and that "the value pushed on the stack can be used in calls to reflection methods in the system class library". That is the whole of it — no identity semantics, no equality contract, nothing relating two handles to the methods they denote. `GetMethodFromHandle` does not appear at all, and neither does any notion of canonical sharing; `__Canon` is a CoreCLR code-sharing strategy, not a standard one.
+
+Two further reasons the standard does not decide this. Reflection is an *optional* Library — part of the Compact Profile, not of the minimal Kernel Profile (IV.5.5) — so a conforming implementation need not answer the question at all. And per-member semantics live in the companion `CLILibrary.xml`, "considered to be part of this Partition, but distributed in XML format" (Partition IV), which is not part of the PDF; the claim above is therefore about the five partitions, and does not rule out that the XML constrains `RuntimeMethodHandle` further.
+
+`ldtoken`'s "runtime representation of a metadata token" does not favour CoreCLR's answer either, though it reads that way at first: a method on a generic instantiation is named by a `MemberRef` whose parent is a `TypeSpec` (II.24.2.6; II.22.25's rule 11 requires exactly that), so `List<string>::Add` and `List<object>::Add` are *different* tokens, and distinct runtime representations of them are as consistent with III.4.17 as a shared one.
+
+Measured rather than derived, and where the two runtimes stand: `MethodInfo.Equals` is false on both, `DeclaringType` differs on both, `MetadataToken` is equal on both — only the handle disagrees. The platform's own API says a bare handle is not a method identity: `MethodBase.GetMethodFromHandle(RuntimeMethodHandle)` throws `ArgumentException` for a method whose declaring type is generic, on both runtimes. On CoreCLR the cost of sharing is visible directly — two `MethodInfo`s that are `.Equals`-unequal, with different `DeclaringType`s, nonetheless report equal `MethodHandle`s — whereas PawPrint's finer handle keeps handle equality tracking method equality.
+
+**Why we chose this**: exact instantiations are the interpreter's only currency, and answering exactly is what makes the *consumer* right rather than merely convenient. `Delegate.DynamicInvokeImpl` hands the handle to `RuntimeType.GetMethodBase` together with the delegate's exact `RuntimeType` (`Delegate.CoreCLR.cs:82`), and CoreCLR's `GetMethodBase` walks that reflected type's base chain for a type sharing the declaring type's generic definition and then rebinds the handle onto it, via `RuntimeMethodHandle.GetMethodFromCanonical` (`RuntimeType.CoreCLR.cs:1871-1911`). PawPrint hands over the answer that rebind would arrive at, and skips a step it has no shared form to perform. Answering the *open definition* instead would not merely be less exact: it would not run at all. `GetMethodBase` consumes the handle before any invocation, and an open declaring type sends it down the remap branch above, where it reaches `RuntimeMethodHandle.GetMethodFromCanonical` — an InternalCall PawPrint does not implement. So the guest would die there, loudly, and never reach the invoke path.
+
+Reproducing the sharing would mean giving PawPrint a canonical method identity and a remap on every consumer of a method handle — a change to the whole type system in order to make one private field of one InternalCall agree, and one whose only visible effect would be to make two distinct methods answer as one.
+
+**Observable example**: public, and with no delegate in sight.
+
+```csharp
+// CoreCLR:  True  — one MethodDesc, List<__Canon>.Add's.
+// PawPrint: False — two registry ids, one per exact instantiation.
+Console.WriteLine (typeof (List<string>).GetMethod ("Add").MethodHandle
+    .Equals (typeof (List<object>).GetMethod ("Add").MethodHandle));
+
+// Both runtimes: False, False, True respectively. Only the handle disagrees.
+Console.WriteLine (typeof (List<string>).GetMethod ("Add")
+    .Equals (typeof (List<object>).GetMethod ("Add")));
+```
+
+**What this costs**: one reachable consequence beyond the comparison itself. The two-argument `MethodBase.GetMethodFromHandle(handle, declaringTypeHandle)` exists to re-attach a canonical handle to an instantiation, and on CoreCLR it accepts `List<string>.Add`'s handle together with `typeof(List<object>).TypeHandle` and answers `List<object>.Add`. That presupposes the sharing. Under PawPrint the handle is already exact, and the call reaches the unimplemented `RuntimeMethodHandle::GetMethodFromCanonical` and fails loudly rather than answering — measured, and the same InternalCall named above. Whoever wants that overload has to decide what rebinding an exact handle onto a different instantiation should mean.
+
+`sourcesPure/DelegateDynamicInvoke.cs` asserts handle distinctness only for pairs CoreCLR shares nothing between — a value-type instantiation against a reference-type one, and two unrelated delegate definitions — and says at the assertion why the reference/reference pair cannot join it. `sourcesImpure/DelegateInvokeHandlePerInstantiation.cs` pins PawPrint's own answer for that pair, which is what keeps this entry from being a claim nothing checks.
+
+**Where this lives in code**: `MethodHandleRegistry`, whose `MethodHandle` keys on a closed `ConcreteTypeHandle` declaring type — every minting path inherits the choice. `NativeDelegate.tryExecute`'s `Delegate.GetInvokeMethod` arm is one such path.
+
 ## A delegate invocation that fails before entering its target names no frame for it
 
 **CoreCLR**: when invoking a delegate fails *because of the target itself*, the failure happens

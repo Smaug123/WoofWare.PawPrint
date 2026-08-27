@@ -2650,7 +2650,7 @@ Ordered so that each has an oracle before the next depends on it.
   `UnixSystem.forgetIfUnheld`; what is left of it is block bookkeeping and the
   ordering that reaps a directory whose last name went while a stream held it,
   which is client-side by the same rule.
-* **8m — `getcwd`** (done), and then **`readlink` and `getsockname`**. These
+* **8m — `getcwd` and `readlink`** (done), and then **`getsockname`**. These
   three appear in the census table and had no home in the first draft of this
   list, which is a drafting failure the census itself should have caught: an
   increment list that does not partition its own table is not a plan. All three
@@ -2704,7 +2704,23 @@ Ordered so that each has an oracle before the next depends on it.
     failure writes are a kernel's decision. `poll`'s are. `getcwd`'s are libc's,
     which is a different thing wearing the same shape.
 
-  The ordering the handler already had is otherwise confirmed exactly, including
+  `readlink` followed and was uneventful by comparison, which is itself worth
+  recording: the same `PROT_READ` probe that showed `getcwd` taking a signal
+  showed `readlink` answering EFAULT on both flavours, so it needs no refusal at
+  all beyond the buffer vocabulary's own. Its one subtlety is that truncation is
+  **not** an error path — `Interop.Sys.ReadLink` starts with a 256-byte
+  `stackalloc` and doubles while the result fills the buffer, so a kernel that
+  refused to truncate would break `FileInfo.LinkTarget` for every target of 256
+  bytes or more — and that the truncation is in *bytes*, which only a multi-byte
+  target can detect.
+
+  Moving it also dropped a claim that had gone stale where it stood: the
+  handler's note on the unmoved `atime` said this would be "the first mutation
+  of the emulated filesystem in the interpreter", and that no handler writes
+  back `Kernel.FileSystem`. Several do now. The contract half of that note is on
+  `UnixSystem.readlink`; the falsified half is gone rather than carried across.
+
+    The ordering the handler already had is otherwise confirmed exactly, including
   two cells that only a size sweep reaches: a too-small buffer is ERANGE
   whatever the destination is, on both flavours, and a removed current directory
   outranks even that on Linux, where an unmapped destination is ENOENT rather

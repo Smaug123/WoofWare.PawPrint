@@ -270,28 +270,34 @@ module TestBinaryArithmetic =
                 }
         }
 
-    let private genByteOffsetNormalisationCase : Gen<ByteOffsetNormalisationCase> =
-        gen {
-            let! kind =
-                Gen.elements
-                    [
-                        NormalisableRootKind.StackMemory
-                        NormalisableRootKind.Array
-                        NormalisableRootKind.String
-                    ]
+    /// The whole space of byte-offset normalisation cases: every root kind, crossed with
+    /// every root offset in [-8, 8], every array cell size in [1, 8], and every byte offset
+    /// in [-32, 32]. `ArrayCellSize` is read only for `Array` roots, so it is pinned to 1
+    /// for the other two kinds rather than repeating each of their walks eight times.
+    let private allByteOffsetNormalisationCases : ByteOffsetNormalisationCase list =
+        [
+            for kind in
+                [
+                    NormalisableRootKind.StackMemory
+                    NormalisableRootKind.Array
+                    NormalisableRootKind.String
+                ] do
+                let cellSizes =
+                    match kind with
+                    | NormalisableRootKind.Array -> [ 1..8 ]
+                    | NormalisableRootKind.StackMemory
+                    | NormalisableRootKind.String -> [ 1 ]
 
-            let! rootOffset = Gen.choose (-8, 8)
-            let! arrayCellSize = Gen.choose (1, 8)
-            let! byteOffset = Gen.choose (-32, 32)
-
-            return
-                {
-                    Kind = kind
-                    RootOffset = rootOffset
-                    ArrayCellSize = arrayCellSize
-                    ByteOffset = byteOffset
-                }
-        }
+                for rootOffset in -8 .. 8 do
+                    for arrayCellSize in cellSizes do
+                        for byteOffset in -32 .. 32 do
+                            {
+                                Kind = kind
+                                RootOffset = rootOffset
+                                ArrayCellSize = arrayCellSize
+                                ByteOffset = byteOffset
+                            }
+        ]
 
     let private floorDivRem (value : int) (divisor : int) : int * int =
         let q = value / divisor
@@ -341,7 +347,7 @@ module TestBinaryArithmetic =
         ManagedPointerSource.Byref (root, projs)
 
     [<Test>]
-    let ``byte offset helper normalises every byte-addressable root with generated offsets`` () : unit =
+    let ``byte offset helper normalises every byte-addressable root`` () : unit =
         let mutable stackMemoryCases = 0
         let mutable arrayCases = 0
         let mutable stringCases = 0
@@ -350,7 +356,7 @@ module TestBinaryArithmetic =
         let mutable positiveOffsets = 0
         let mutable residualOffsets = 0
 
-        let property (case : ByteOffsetNormalisationCase) : bool =
+        for case in allByteOffsetNormalisationCases do
             match case.Kind with
             | NormalisableRootKind.StackMemory -> stackMemoryCases <- stackMemoryCases + 1
             | NormalisableRootKind.Array -> arrayCases <- arrayCases + 1
@@ -387,37 +393,41 @@ module TestBinaryArithmetic =
 
             let expected = expectedNormalisedPointer case
 
-            smart |> shouldEqual expected
+            // The walk has no counterexample reporting of its own, so each case names itself.
+            try
+                smart |> shouldEqual expected
 
-            byteViewSmart |> shouldEqual expected
+                byteViewSmart |> shouldEqual expected
 
-            ManagedPointerSource.normaliseForComparison context raw
-            |> NormalisedManagedPointerSource.value
-            |> shouldEqual expected
+                ManagedPointerSource.normaliseForComparison context raw
+                |> NormalisedManagedPointerSource.value
+                |> shouldEqual expected
 
-            ManagedPointerSource.normaliseForComparison context smart
-            |> NormalisedManagedPointerSource.value
-            |> shouldEqual smart
+                ManagedPointerSource.normaliseForComparison context smart
+                |> NormalisedManagedPointerSource.value
+                |> shouldEqual smart
+            with e ->
+                raise (System.Exception ($"%O{case}: %s{e.Message}", e))
 
             match expected with
             | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset _ ]) ->
                 residualOffsets <- residualOffsets + 1
             | _ -> ()
 
-            true
+        // Exact counts, so narrowing any range in the enumeration is a failure rather than
+        // a silently smaller walk.
+        stackMemoryCases |> shouldEqual 1105
+        arrayCases |> shouldEqual 8840
+        stringCases |> shouldEqual 1105
 
-        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genByteOffsetNormalisationCase) property)
+        negativeOffsets |> shouldEqual 5440
+        zeroOffsets |> shouldEqual 170
+        positiveOffsets |> shouldEqual 5440
 
-        if stackMemoryCases = 0 || arrayCases = 0 || stringCases = 0 then
-            failwith
-                $"generator missed normalisable roots: local-memory=%d{stackMemoryCases}, array=%d{arrayCases}, string=%d{stringCases}"
-
-        if negativeOffsets = 0 || zeroOffsets = 0 || positiveOffsets = 0 then
-            failwith
-                $"generator missed offset signs: negative=%d{negativeOffsets}, zero=%d{zeroOffsets}, positive=%d{positiveOffsets}"
-
-        if residualOffsets = 0 then
-            failwith "generator did not exercise non-zero in-cell residual offsets"
+        // A residual is an offset that does not land on a cell boundary, so it survives
+        // normalisation as a trailing ByteOffset projection. Stack-memory roots have
+        // one-byte cells and so never produce one.
+        residualOffsets |> shouldEqual 6358
 
     [<Test>]
     let ``add advances plain array byrefs by element offset`` () : unit =

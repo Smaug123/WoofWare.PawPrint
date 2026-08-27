@@ -2311,6 +2311,23 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // PawPrint's side of a recorded divergence -- `Delegate::GetInvokeMethod` answers
+                // per exact instantiation where CoreCLR answers per canonical form, so two
+                // reference-type instantiations of one generic delegate definition get two
+                // handles here and one there. Impure because the differential oracle disagrees by
+                // construction: the guest's check 3 returns 3 on real .NET. The pairs both
+                // runtimes agree on are asserted in `sourcesPure/DelegateDynamicInvoke.cs`.
+                FileName = "DelegateInvokeHandlePerInstantiation.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                // Measured: the guest exits 3 on real .NET and 0 here, which is the divergence
+                // itself rather than a PawPrint bug.
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // `Delegate_BindToMethodInfo`, the QCall behind `DynamicMethod.CreateDelegate`.
                 // Registered with the dynamic-code switch overridden to true, like its
                 // `ModuleHandle_GetDynamicMethod` sibling above. The guest walks every binding
