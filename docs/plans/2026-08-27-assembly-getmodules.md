@@ -301,6 +301,13 @@ goes red:
 Read which test each mutant actually killed rather than assuming
 ([[mutants-of-one-site-cannot-test-another]]).
 
+**Measured outcome.** All eight mutants run were killed. Two of the killings are the ones worth
+recording, because they are what the extra `getResourceModules` rows bought: the argument-position
+swap and "skip resource-only `File` rows when `getResourceModules` is false" were each killed
+*only* by the linked-resource fixture's `(loadIfNotFound = 1, getResourceModules = 0)` row. Every
+other test in the file stayed green for both. Two further mutants — allocating a zero-length array,
+and leaving the handle at null — were killed broadly, as expected.
+
 One mutant deliberately **not** in that table: keying the module cache on the handle's name rather
 than `assembly.DefinitionFullName`. Per D4's second paragraph the two are the same string past the
 lookup, so that mutant is behaviourally equivalent and no test can kill it. It is listed here so
