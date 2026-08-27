@@ -283,10 +283,14 @@ The overlap is real but narrow, and entirely in the native-registry increment:
 In order, each its own branch:
 
 1. **Hoist the opcode fault table** out of the sixteen files that currently hold the knowledge, and
-   make the interpreter's raise sites consume it. Where it lives is decided in "Where the fault
-   table lives" below. Oracle: the existing guest suite, unchanged, plus a check that the table is
-   a superset of what the interpreter can actually raise. Care needed — hoisting a classifier makes
-   previously unreachable arms reachable.
+   make the interpreter's raise sites consume it. **Done**, as `WoofWare.PawPrint.Semantics`'
+   `OpcodeFaults`. The anti-drift mechanism turned out not to be "derive it from the bodies" but
+   "check it against them": `raiseOpcodeFault` reads the instruction from the raising thread's own
+   frame and fails if the fault is not in that instruction's entry. That check found a real table
+   error on its first run against the guest corpus — `calli` through a null function pointer —
+   which is the evidence that it is load-bearing rather than decorative.
+   `executeFaultingArithmetic`'s private `ArithmeticFaults` DU, a local restatement of the same
+   table, is gone.
 2. **Name the program universe.** A record holding `LoadedAssemblies`, `AllConcreteTypes` and the
    handle registries; `IlMachineState` holds one; `VirtualSlotLayout` and the resolution cluster
    take it instead of the whole state. Oracle: rename-only discipline plus the full suite. This is
@@ -346,18 +350,17 @@ The options:
 | **(b)** | new `WoofWare.PawPrint.Semantics`, fault table only | a fourth package | two per-opcode classifiers in two packages; the third one gets added to whichever the author happened to look at |
 | **(c)** | new `WoofWare.PawPrint.Semantics`, and move `ContextSwitchPrior` into it | a fourth package, plus a public type leaving a published package | one home for CLI execution rules; the project graph enforces "semantics cannot see `IlMachineState`", which today only F# compile order does, and weakly |
 
-**Recommendation: (c).** The principle that Domain is for reading images is worth enforcing rather
-than eroding, and (b) creates precisely the two-versions-of-the-truth split this repository's own
-migration guidance warns against. (c) also gives the native registry a home it will need, and
-upgrades the "semantics may not see the machine state" constraint from a compile-order convention
-inside one project to a fact the project graph checks.
+**Decided: (c), and done.** The principle that Domain is for reading images is worth enforcing
+rather than eroding, and (b) creates precisely the two-versions-of-the-truth split this
+repository's own migration guidance warns against. (c) also gives the native registry a home it
+will need, and upgrades the "semantics may not see the machine state" constraint from a
+compile-order convention inside one project to a fact the project graph checks. Both outward-facing
+costs were accepted: a fourth `PackageId`, and `ContextSwitchPrior` leaving the published
+`WoofWare.PawPrint.Domain` surface.
 
-Two things (c) needs a decision on, being outward-facing: the fourth `PackageId`, and removing a
-public type from the published `WoofWare.PawPrint.Domain`.
-
-Not proposed: moving `AccessCheck.fs` or `VtableSlot.fs`. Both are rules for *interpreting
-metadata* — visibility, slot layout — which is closer to reading an image than to running one.
-`ContextSwitchPrior` is the clear outlier, being about execution and nothing else.
+Not moved: `AccessCheck.fs` or `VtableSlot.fs`. Both are rules for *interpreting metadata* —
+visibility, slot layout — which is closer to reading an image than to running one.
+`ContextSwitchPrior` was the clear outlier, being about execution and nothing else.
 
 ## Still open
 
@@ -365,6 +368,17 @@ metadata* — visibility, slot layout — which is closer to reading an image th
   `.ctor`/`Invoke`/`BeginInvoke`/`EndInvoke`, and 8 `[UnsafeAccessor]`s. Delegate `Invoke` in
   particular is a dispatch edge the call graph cannot see at all, and it is not obvious whether the
   answer is "summarise it" or "make delegate targets a first-class edge kind".
+* **`docs/divergences.md:92` cites a section that does not say what it claims.** It justifies
+  PawPrint's catchable `NullReferenceException` for `calli` through a null function pointer with
+  "ECMA-335 III.3.20 lists `NullReferenceException` as the exception `calli` throws when the
+  function pointer is null". III.3.20's "Exceptions" lists `System.SecurityException` and nothing
+  else, where III.4.2 for `callvirt` says in as many words that "System.NullReferenceException is
+  thrown if obj is null" (6th edition, June 2012). III.3.20's "Correctness" requires the pointer to
+  hold a method address, so a null one is incorrect CIL whose behaviour the specification leaves
+  open. The *behaviour* looks right either way — PawPrint has no address space to fault in, and a
+  deterministic catchable exception beats emulating a segfault — but the "Spec status: Compliant,
+  and strictly closer to the specification than CoreCLR" verdict rests on the misreading and wants
+  re-wording by someone willing to re-classify the divergence.
 * **Does the fault table want to be an effect table from the start?** The general engine will
   eventually want "which opcodes write memory", "which allocate", "which can block". Adding
   dimensions later churns every caller; adding them now is speculative generality. My inclination
