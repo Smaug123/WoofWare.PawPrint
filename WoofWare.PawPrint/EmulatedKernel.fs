@@ -698,7 +698,7 @@ type EmulatedKernel =
         /// whatever its client hands out. A second client could key its own
         /// streams on anything at all.
         ///
-        /// The two are maintained together by `withNewDirectoryStream` and
+        /// The two are maintained together by `withDirectoryStreamBlock` and
         /// `withoutDirectoryStream`, and `checkInvariants` refuses a state in
         /// which they disagree in either direction.
         DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>
@@ -2000,50 +2000,22 @@ module EmulatedKernel =
             failwith
                 $"EmulatedKernel.directoryStream: %O{block} names directory stream %O{id}, which the stream table does not hold. This is an interpreter bug: the two maps are maintained together."
 
-    /// Record a newly-opened stream, minting its id and binding `block` — the
-    /// native block whose address the guest holds as its `DIR*` — to it.
-    let withNewDirectoryStream
+    /// Bind `block` — the native block whose address the guest holds as its
+    /// `DIR*` — to a stream `UnixSystem.opendir` has just minted.
+    ///
+    /// The address is PawPrint's half of the stream and the identity is the
+    /// library's, so opening one takes both steps. A client that took only this
+    /// one, or only the library's, is caught rather than left to drift:
+    /// `checkInvariants` refuses a state in which the two maps disagree in
+    /// either direction.
+    let withDirectoryStreamBlock
         (block : NativeMemoryBlockId)
-        (stream : DirectoryStream)
+        (id : DirectoryStreamId)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        let id = kernel.NextDirectoryStreamId
-        let (DirectoryStreamId raw) = id
-
         { kernel with
             DirectoryStreamBlocks = Map.add block id kernel.DirectoryStreamBlocks
-            Process =
-                { kernel.Process with
-                    DirectoryStreams = Map.add id stream kernel.DirectoryStreams
-                    NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
-                }
-        }
-
-    /// Move a stream's cursor on, leaving everything else about it alone.
-    // Updates the stream in place under its existing id rather than going
-    // through `withNewDirectoryStream`: a `readdir` must not mint a second id
-    // for a stream that is already open.
-    let withDirectoryCursor
-        (block : NativeMemoryBlockId)
-        (cursor : DirectoryCursor)
-        (kernel : EmulatedKernel)
-        : EmulatedKernel
-        =
-        let id = directoryStreamId block kernel
-        let stream = directoryStream block kernel
-
-        { kernel with
-            Process =
-                { kernel.Process with
-                    DirectoryStreams =
-                        Map.add
-                            id
-                            { stream with
-                                Cursor = cursor
-                            }
-                            kernel.DirectoryStreams
-                }
         }
 
     /// Forget a stream, which `SystemNative_CloseDir` does before closing the

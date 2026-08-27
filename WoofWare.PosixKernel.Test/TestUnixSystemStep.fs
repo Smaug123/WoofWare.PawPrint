@@ -3009,3 +3009,164 @@ module TestUnixSystemStep =
             match UnixSystem.admitWrite readOnlyFd UserBuffer.Mapped 3 afterReadOnly with
             | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)) -> ()
             | other -> failwith $"a read-only descriptor should refuse write: %O{other}"
+
+    // ---- `opendir` / `readdir` ---------------------------------------------
+
+    let private openedStream
+        (system : UnixSystem<int, string>)
+        (path : string)
+        : DirectoryStreamId * UnixSystem<int, string>
+        =
+        match UnixSystem.opendir (statPath path) system with
+        | OpenDirAnswer.Opened id, after -> id, after
+        | other -> failwith $"expected a stream, got %O{other}"
+
+    /// Everything the stream yields, as (name, kind) pairs in the order it
+    /// yielded them.
+    let private drain
+        (id : DirectoryStreamId)
+        (system : UnixSystem<int, string>)
+        : (string * DirectoryEntryKind) list * UnixSystem<int, string>
+        =
+        let rec go acc system =
+            match UnixSystem.readdir id system with
+            | ReadDirAnswer.EndOfStream, system -> List.rev acc, system
+            | ReadDirAnswer.Entry (name, kind), system ->
+                let text = System.Text.Encoding.UTF8.GetString (name.AsSpan ())
+                go ((text, kind) :: acc) system
+
+        go [] system
+
+    [<Test>]
+    let ``a stream yields every binding, then dotdot, then dot`` () : unit =
+        // The whole order in one row, because the cursor's states are only
+        // meaningful as a sequence: names in ascending order, then `..`, then
+        // `.`, then end-of-stream. Asserting a set would pass for a cursor that
+        // never advanced past the first name.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let id, system = openedStream system "/d/inner"
+
+            drain id system
+            |> fst
+            |> shouldEqual
+                [
+                    "t", DirectoryEntryKind.RegularFile
+                    "..", DirectoryEntryKind.Directory
+                    ".", DirectoryEntryKind.Directory
+                ]
+
+    [<Test>]
+    let ``the kind reported is the entry's own, not the stream's`` () : unit =
+        // A directory holding one of each, so a `readdir` that reported the
+        // *directory's* kind for every entry — or the first entry's for all of
+        // them — is distinguishable. `/l` is a symbolic link and is reported as
+        // one: `readdir` does not follow it.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let id, system = openedStream system "/"
+
+            let entries, _ = drain id system
+
+            entries
+            |> List.filter (fun (name, _) -> name <> "." && name <> "..")
+            |> shouldEqual
+                [
+                    "d", DirectoryEntryKind.Directory
+                    "dangling", DirectoryEntryKind.Symlink
+                    "l", DirectoryEntryKind.Symlink
+                ]
+
+    [<Test>]
+    let ``two streams over one directory advance independently`` () : unit =
+        // The cursor belongs to the stream rather than to the directory, which
+        // a single-stream test cannot tell. Draining one leaves the other at the
+        // start.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let first, system = openedStream system "/d/inner"
+            let second, system = openedStream system "/d/inner"
+
+            let drained, system = drain first system
+            drained |> List.length |> shouldEqual 3
+
+            drain second system |> fst |> List.length |> shouldEqual 3
+
+    [<Test>]
+    let ``opendir follows a final symlink and demands a directory`` () : unit =
+        // Measured on both: `opendir` follows a final symbolic link, and a
+        // trailing separator changes no row — "ld" and "ld/" both succeed, "f"
+        // and "f/" are both ENOTDIR.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            match UnixSystem.opendir (statPath "/l") system with
+            | OpenDirAnswer.Failed UnixError.ENOTDIR, _ -> ()
+            | other -> failwith $"a link to a regular file should be ENOTDIR: %O{other}"
+
+            match UnixSystem.opendir (statPath "/d/inner/t") system with
+            | OpenDirAnswer.Failed UnixError.ENOTDIR, _ -> ()
+            | other -> failwith $"a regular file should be ENOTDIR: %O{other}"
+
+            match UnixSystem.opendir (statPath "/d/inner/nope") system with
+            | OpenDirAnswer.Failed UnixError.ENOENT, _ -> ()
+            | other -> failwith $"a free name should be ENOENT: %O{other}"
+
+    [<Test>]
+    let ``opendir consumes a descriptor that pins the directory`` () : unit =
+        // A real `opendir` takes a file descriptor, and `dirfd(3)` hands it
+        // back. Nothing in the PAL calls `dirfd`, so the only way a guest sees
+        // it is in the *numbering* of a later open — which is what this asserts,
+        // rather than reading the stream's own field.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let withoutStream =
+                match UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
+                | SyscallAnswer.Completed fd, _ -> int fd
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            let _, afterStream = openedStream system "/d/inner"
+
+            let withStream =
+                match UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 afterStream with
+                | SyscallAnswer.Completed fd, _ -> int fd
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            withStream |> shouldEqual (withoutStream + 1)
+
+    [<Test>]
+    let ``a stream over a removed directory is at end-of-stream at once`` () : unit =
+        // Dots included, which is the whole of the choice recorded on
+        // `nextDirectoryEntry`: probed on both kernels, `opendir` then `rmdir`
+        // then `readdir` answers NULL without yielding either dot.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let id, system = openedStream system "/d/inner"
+
+            let system =
+                match UnixSystem.unlink (statPath "/d/inner/t") system with
+                | SyscallAnswer.Completed 0L, system -> system
+                | other -> failwith $"could not empty the directory: %O{other}"
+
+            let system =
+                match UnixSystem.rmdir (statPath "/d/inner") system with
+                | SyscallAnswer.Completed 0L, system -> system
+                | other -> failwith $"could not remove the directory: %O{other}"
+
+            drain id system |> fst |> shouldEqual []
+
+    [<Test>]
+    let ``readdir refuses a stream this kernel never issued`` () : unit =
+        // A real libc calls this undefined behaviour rather than reporting an
+        // errno, so there is nothing to answer and inventing EBADF would be a
+        // plausible wrong answer.
+        let _, _, _, system = withTree linux
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixSystem.readdir (DirectoryStreamId 99L) system
+                |> ignore<ReadDirAnswer * UnixSystem<int, string>>
+            )
+
+        exn.Message |> shouldContainText "not a directory stream this kernel issued"
