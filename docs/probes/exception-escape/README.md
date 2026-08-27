@@ -90,6 +90,27 @@ what makes the corresponding count meaningful:
   `CaughtByLocalBase` correctly absorbs its exception. That contrast is the cross-assembly wall
   visible in two adjacent methods, and it is why both are in the fixture.
 
+## Type identity is by name, and that is where it can go wrong
+
+`TyKey` distinguishes a local `TypeDef` from a foreign `(namespace, name)` pair, so an assembly that
+declares a type with the same name as one it references can make the two collide. The direction that
+matters is the unsafe one: a `catch` for the local shadow absorbing the real, external exception —
+a false negative, which is the one kind of error that makes the instrument's answers worthless.
+
+Two routes in, closed separately:
+
+* the type an `OpcodeFault` names is canonicalised to a local `TypeDef` only when the analysed image
+  *is* corelib (`keyOfFaultName`), and `Fixture.ShadowCases::DereferencesNull` demonstrates it;
+* a name that arrived from a TypeRef row is canonicalised only when that row's resolution scope is
+  `ModuleDef`, i.e. this module (`keyOfTypeRef`). This one is reasoned from the metadata rule rather
+  than shown by the fixture, because C# cannot express the divergence: a shadow makes source
+  resolution prefer the local type for the `throw` *and* the `catch` alike, so both sides key the
+  same way and no C# the fixture could contain will separate them.
+
+The residual imprecision runs the safe way: two different assemblies' same-named types still key
+alike, and a TypeRef reaching a local type through a facade now fails to match its own TypeDef.
+Both over-report escapes.
+
 ## The oracle is falsifiable
 
 Checked rather than assumed: making the universal-clause test (`catch (Exception)` / `catch

@@ -234,10 +234,35 @@ module Escape =
         /// Canonicalise a type named by namespace and name: prefer this assembly's own TypeDef, so
         /// that an exception this table names by string and a `catch` clause naming the same type
         /// by token compare equal.
+        ///
+        /// Only correct for a name that is *known* to denote a local type. A name that arrived from
+        /// a TypeRef has a resolution scope saying otherwise, and `keyOfTypeRef` is what respects
+        /// it.
         let keyOfName (ns : string) (n : string) : TyKey =
             match byName.TryGetValue ((ns, n)) with
             | true, h -> TyKey.Local (ComparableTypeDefinitionHandle.Make h)
             | _ -> TyKey.Foreign (ns, n)
+
+        /// The identity of the type a TypeRef row names.
+        ///
+        /// A TypeRef carries a resolution scope, and only `ModuleDef` — "this module" — says the
+        /// definition is here. Canonicalising on the name alone would key an *external*
+        /// `System.NullReferenceException` to a same-named type the analysed assembly happens to
+        /// declare, so a `catch` for that local shadow would absorb the real exception and the
+        /// probe would report a false negative. A shadow named `System.Exception` would be worse
+        /// still: `isSubtypeOf` treats that name as universal, so one local declaration would make
+        /// every `catch` absorb everything.
+        ///
+        /// Declining to canonicalise costs precision in the other direction — a TypeRef through a
+        /// facade to a type this assembly does define keys `Foreign` and no longer matches its own
+        /// TypeDef — but that direction over-reports escapes, which is the safe one for an
+        /// instrument whose whole purpose is to bound what escapes.
+        let keyOfTypeRef (tr : TypeRef) : TyKey =
+            match tr.ResolutionScope with
+            | TypeRefResolutionScope.ModuleDef _ -> keyOfName tr.Namespace tr.Name
+            | TypeRefResolutionScope.Assembly _
+            | TypeRefResolutionScope.ModuleRef _
+            | TypeRefResolutionScope.TypeRef _ -> TyKey.Foreign (tr.Namespace, tr.Name)
 
         // Is the image under analysis the one that *defines* the exceptions an opcode raises?
         let analysingCorelib = thisAssembly.Name = "System.Private.CoreLib"
@@ -288,11 +313,7 @@ module Escape =
                     | Some (BaseTypeInfo.TypeRef rh) ->
                         match assy.TypeRefs.TryGetValue rh with
                         | true, tr ->
-                            Set.ofList
-                                [
-                                    TyKey.Local (ComparableTypeDefinitionHandle.Make h)
-                                    keyOfName tr.Namespace tr.Name
-                                ]
+                            Set.ofList [ TyKey.Local (ComparableTypeDefinitionHandle.Make h) ; keyOfTypeRef tr ]
                         | _ -> Set.singleton (TyKey.Local (ComparableTypeDefinitionHandle.Make h))
                     | Some (BaseTypeInfo.TypeSpec _)
                     | None -> Set.singleton (TyKey.Local (ComparableTypeDefinitionHandle.Make h))
@@ -303,8 +324,10 @@ module Escape =
         for KeyValue (h, _) in assy.TypeDefs do
             chain h |> ignore
 
-        let systemException = keyOfName "System" "Exception"
-        let systemObject = keyOfName "System" "Object"
+        // Through `keyOfFaultName`, so that an assembly declaring its own `System.Exception` does
+        // not have every `catch` for it read as universal. Only corelib's own is.
+        let systemException = keyOfFaultName "System.Exception"
+        let systemObject = keyOfFaultName "System.Object"
 
         /// Does an exception whose type is `candidate` reach a `catch (catchType)`?
         let isSubtypeOf (candidate : TyKey) (catchType : TyKey) : bool =
@@ -339,13 +362,13 @@ module Escape =
             | MetadataToken.TypeDefinition h -> Some (TyKey.Local (ComparableTypeDefinitionHandle.Make h))
             | MetadataToken.TypeReference h ->
                 match assy.TypeRefs.TryGetValue h with
-                | true, tr -> Some (keyOfName tr.Namespace tr.Name)
+                | true, tr -> Some (keyOfTypeRef tr)
                 | _ -> None
             | MetadataToken.TypeSpecification h ->
                 match assy.TypeSpecs.TryGetValue h with
                 | true, spec ->
                     match rootOf spec.Signature with
-                    | Some (Choice1Of2 tr) -> Some (keyOfName tr.Namespace tr.Name)
+                    | Some (Choice1Of2 tr) -> Some (keyOfTypeRef tr)
                     | Some (Choice2Of2 _)
                     | None -> None
                 | _ -> None
