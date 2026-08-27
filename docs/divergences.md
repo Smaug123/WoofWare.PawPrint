@@ -1141,6 +1141,26 @@ syscall that assembles the path in kernel memory and copies it out only on succe
 **PawPrint** reports the errno — which is exact, and is the only thing any caller in the BCL reads —
 and leaves the destination alone, matching the Linux flavour on both.
 
+There is a second consequence, and it is not about residue. Because Darwin stores *before* it
+decides which answer to give, a destination it cannot write kills the process on calls that would
+otherwise report ERANGE or ENOENT, not only on the ones that would succeed. Whether it has stored
+yet turns on the current directory's length against a libc threshold, measured at capacity 8 with an
+unmapped destination on macOS 26.6:
+
+| cwd path length | outcome |
+| --- | --- |
+| 80 … 1015 bytes | ERANGE, destination never touched |
+| 1016 … 1418 bytes | SIGSEGV |
+
+1016 is neither PATH_MAX (1024) nor any documented constant — it is one libc build's internal slack,
+selecting between the `__getcwd` syscall and the user-space backward assembly. PawPrint models
+kernels, not that route selection, so `UnixSystem.getcwd` **refuses** an unwritable destination for
+any capacity of two or more, on that flavour, whatever the path length. This deliberately
+over-refuses the top row, where the real call answers ERANGE: a refusal says "this library cannot
+tell you", where encoding 1016 would answer ERANGE for calls that really die. At capacity 0 and 1 it
+answers normally, Darwin having been measured to write nothing there on either side of the
+threshold.
+
 *Why not model it*: the last two rows are BSD `getcwd(3)` building the path **backwards** from the
 end of the buffer and moving it to the front once it is known to fit. The residue is therefore a
 function of libc's internal progress — how far the climb got, which of its paths the capacity

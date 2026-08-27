@@ -2637,6 +2637,18 @@ Ordered so that each has an oracle before the next depends on it.
     instead, on the reasoning `requireStorage` already had written down: a dead
     process is not an errno, and answering one turns a crash into a plausible
     wrong answer.
+  * **A user-space `getcwd` stores before it decides, so its unwritable
+    destination refuses more widely than the success path.** Darwin can die on a
+    call that would otherwise report ERANGE or ENOENT, and whether it does turns
+    on the current directory's length against a libc threshold measured at 1016
+    bytes — neither PATH_MAX (1024) nor any documented constant, but one build's
+    internal slack selecting between the `__getcwd` syscall and the user-space
+    backward assembly. This library models kernels, not that route selection, so
+    it refuses from capacity 2 up whatever the path length, deliberately
+    over-refusing the cells where the real call answers without storing.
+    Capacity 0 and 1 still answer, that flavour having been measured to write
+    nothing there on either side of the threshold.
+
   * **Darwin's failing `getcwd` scribbles on the caller's buffer, and this
     library does not reproduce it.** This looked at first like the answer to the
     asymmetry the `poll` bullet below leaves open — `Failed` carrying writes,
