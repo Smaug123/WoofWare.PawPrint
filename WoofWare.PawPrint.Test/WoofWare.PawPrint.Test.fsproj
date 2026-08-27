@@ -101,6 +101,7 @@
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
     <Compile Include="TestCrossAssemblyLdsflda.fs" />
+    <Compile Include="TestCrossAssemblyUnsafeAccessor.fs" />
     <Compile Include="TestCrossAssemblyFieldScope.fs" />
     <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
     <Compile Include="TestCrossAssemblyStructZero.fs" />
