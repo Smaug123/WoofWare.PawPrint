@@ -364,11 +364,10 @@ module OpcodeFaults =
         // where III.4.2's `callvirt` says in as many words that "System.NullReferenceException is
         // thrown if obj is null"; and III.3.20's "Correctness" requires the pointer to hold the
         // address of a method, so a null one is incorrect CIL whose behaviour the specification
-        // does not fix. It comes instead from what PawPrint does, which `TestPureCases`' "calli
-        // through a null function pointer throws NullReferenceException" pins, and which is a
-        // deliberate divergence from CoreCLR (that segfaults). Note that `docs/divergences.md`
-        // attributes the choice to III.3.20 listing `NullReferenceException`, which that section
-        // does not.
+        // does not fix. It comes instead from what PawPrint chooses to do there — a deliberate
+        // divergence from CoreCLR, which segfaults — recorded in `docs/divergences.md` and pinned
+        // by `TestPureCases`' "calli through a null function pointer throws
+        // NullReferenceException".
         | UnaryMetadataTokenIlOp.Callvirt
         | UnaryMetadataTokenIlOp.Calli ->
             OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.TypeInitialization ]

@@ -413,6 +413,15 @@ Only then, and only after stage 9: the native registry.
   have to be addressed eventually regardless.
 * **The A-versus-B architectural choice is deferred**, on the grounds above that the first two
   increments belong to both.
+* **The `calli`-through-null divergence is reclassified.** Its entry justified PawPrint's
+  catchable `NullReferenceException` by citing ECMA-335 III.3.20 as listing that exception. It does
+  not: III.3.20's "Exceptions" clause lists `System.SecurityException` alone, where III.4.2 for
+  `callvirt` says in as many words that "System.NullReferenceException is thrown if obj is null"
+  (6th edition, June 2012). III.3.20's "Correctness" clause requires the pointer to hold a method
+  address, so a null one is not correct CIL and the CLI does not say what happens to it. The
+  behaviour is unchanged and still the right one; the status is now "unspecified, so both are
+  permitted" rather than "strictly closer to the specification than CoreCLR", and the reason given
+  is the one that actually holds.
 * **Resource exhaustion is tagged, not dropped.** `OutOfMemoryException` and
   `StackOverflowException` are `FaultKind.ResourceExhaustion` and stay in the model, because they
   are genuinely possible and a model that hid them would be lying. What filters is the *report*:
@@ -482,17 +491,6 @@ visibility, slot layout — which is closer to reading an image than to running 
   `.ctor`/`Invoke`/`BeginInvoke`/`EndInvoke`, and 8 `[UnsafeAccessor]`s. Delegate `Invoke` in
   particular is a dispatch edge the call graph cannot see at all, and it is not obvious whether the
   answer is "summarise it" or "make delegate targets a first-class edge kind".
-* **`docs/divergences.md:92` cites a section that does not say what it claims.** It justifies
-  PawPrint's catchable `NullReferenceException` for `calli` through a null function pointer with
-  "ECMA-335 III.3.20 lists `NullReferenceException` as the exception `calli` throws when the
-  function pointer is null". III.3.20's "Exceptions" lists `System.SecurityException` and nothing
-  else, where III.4.2 for `callvirt` says in as many words that "System.NullReferenceException is
-  thrown if obj is null" (6th edition, June 2012). III.3.20's "Correctness" requires the pointer to
-  hold a method address, so a null one is incorrect CIL whose behaviour the specification leaves
-  open. The *behaviour* looks right either way — PawPrint has no address space to fault in, and a
-  deterministic catchable exception beats emulating a segfault — but the "Spec status: Compliant,
-  and strictly closer to the specification than CoreCLR" verdict rests on the misreading and wants
-  re-wording by someone willing to re-classify the divergence.
 * **Does the fault table want to be an effect table from the start?** The general engine will
   eventually want "which opcodes write memory", "which allocate", "which can block". Adding
   dimensions later churns every caller; adding them now is speculative generality. My inclination
