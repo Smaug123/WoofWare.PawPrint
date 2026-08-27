@@ -16,6 +16,8 @@
     <Compile Include="UnionVirtualSlots.fs" />
     <Compile Include="UnionReflection.fs" />
     <Compile Include="PrintfCacheHit.fs" />
+    <Compile Include="SprintfPercentA.fs" />
+    <Compile Include="SprintfPercentO.fs" />
     <Compile Include="Main.fs" />
   </ItemGroup>
 

@@ -383,7 +383,7 @@ module NativeCall =
         | CliType.Numeric (CliNumericType.UInt8 b) -> b
         | other -> failwith $"%s{operation}: byte read returned non-byte value %O{other}"
 
-    let private readUtf8Byte
+    let private readNumericByte
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -393,7 +393,7 @@ module NativeCall =
         : byte
         =
         readNamedByte operation baseClassTypes state byteConcreteType ptr byteIndex
-        |> UInt8Source.value $"%s{operation}: UTF-8 byte read"
+        |> UInt8Source.value $"%s{operation}: byte read"
 
     /// The bytes of a NUL-terminated C string, without the terminator and
     /// without interpreting them.
@@ -425,7 +425,8 @@ module NativeCall =
                     // forever for unterminated strings.
                     failwith $"%s{operation}: unterminated UTF-8 string exceeded PawPrint's 65535-byte scan limit"
 
-                let b = readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex
+                let b =
+                    readNumericByte operation baseClassTypes state byteConcreteType ptr byteIndex
 
                 if b = 0uy then
                     bytes |> List.rev |> Array.ofList
@@ -471,7 +472,8 @@ module NativeCall =
                     bytes |> List.rev |> Array.ofList
                 else
 
-                let b = readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex
+                let b =
+                    readNumericByte operation baseClassTypes state byteConcreteType ptr byteIndex
 
                 if b = 0uy then
                     bytes |> List.rev |> Array.ofList
@@ -490,11 +492,14 @@ module NativeCall =
         readNullTerminatedBytes operation baseClassTypes state ptr
         |> System.Text.Encoding.UTF8.GetString
 
-    /// Read exactly <paramref name="byteCount"/> bytes of raw UTF-8 from the guest, without
-    /// looking for a null terminator. CoreCLR's metadata strings are counted rather than
-    /// terminated (see <c>MdUtf8String</c>, which carries an explicit byte length), so
-    /// entry points that receive a length must not scan past it.
-    let readCountedUtf8Bytes
+    /// Read exactly <paramref name="byteCount"/> bytes from the guest, without looking for a null
+    /// terminator, and without interpreting them. Callers that receive a length must not scan past
+    /// it: CoreCLR's metadata strings are counted rather than terminated (see <c>MdUtf8String</c>,
+    /// which carries an explicit byte length), and a custom-attribute blob is not text at all.
+    ///
+    /// Every byte must hold a number; a byte that names a native int is refused. Take
+    /// <c>readCountedNamedBytes</c> where that shape is meaningful.
+    let readCountedBytes
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -503,7 +508,7 @@ module NativeCall =
         : byte array
         =
         if byteCount < 0 then
-            failwith $"%s{operation}: negative UTF-8 byte count %d{byteCount}"
+            failwith $"%s{operation}: negative byte count %d{byteCount}"
         elif byteCount = 0 then
             // A zero-length buffer is legitimately pinned from an empty span, which the
             // guest presents as a null pointer; don't dereference it.
@@ -513,16 +518,16 @@ module NativeCall =
         match ptr with
         | ManagedPointerSource.Null ->
             failwith
-                $"%s{operation}: cannot read %d{byteCount} UTF-8 bytes from a null pointer; callers must pass byteCount=0 when the pointer is null"
+                $"%s{operation}: cannot read %d{byteCount} bytes from a null pointer; callers must pass byteCount=0 when the pointer is null"
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith
-                $"%s{operation}: cannot read UTF-8 bytes from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+                $"%s{operation}: cannot read bytes from fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref _ ->
             let byteConcreteType = requiredByteConcreteType operation baseClassTypes state
 
             Array.init
                 byteCount
-                (fun byteIndex -> readUtf8Byte operation baseClassTypes state byteConcreteType ptr byteIndex)
+                (fun byteIndex -> readNumericByte operation baseClassTypes state byteConcreteType ptr byteIndex)
 
     /// Read exactly <paramref name="byteCount"/> bytes from the guest without demanding that
     /// every one of them be a number.
@@ -530,7 +535,7 @@ module NativeCall =
     /// A byte that names a native int rather than holding a number is how a `Reflection.Emit`
     /// signature blob carries a type its `SignatureHelper` had no module to spell as a token
     /// (`ELEMENT_TYPE_INTERNAL`). Callers that can say something useful about such a byte take
-    /// this; everything else takes <c>readCountedUtf8Bytes</c>, which refuses one by name.
+    /// this; everything else takes <c>readCountedBytes</c>, which refuses one by name.
     let readCountedNamedBytes
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

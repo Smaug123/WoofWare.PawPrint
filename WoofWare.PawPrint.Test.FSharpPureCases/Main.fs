@@ -12,4 +12,6 @@ let main (argv : string array) : int =
     | "UnionVirtualSlots" -> UnionVirtualSlots.main argv.[1..]
     | "UnionReflection" -> UnionReflection.main argv.[1..]
     | "PrintfCacheHit" -> PrintfCacheHit.main argv.[1..]
+    | "SprintfPercentA" -> SprintfPercentA.main argv.[1..]
+    | "SprintfPercentO" -> SprintfPercentO.main argv.[1..]
     | name -> failwith $"Unknown test case: {name}"

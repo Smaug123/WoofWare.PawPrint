@@ -138,6 +138,8 @@ module NativeQCall =
             NativeCustomAttribute.tryExecuteQCall "CustomAttribute_CreateCustomAttributeInstance"
             "CustomAttribute_CreatePropertyOrFieldData",
             NativeCustomAttribute.tryExecuteQCall "CustomAttribute_CreatePropertyOrFieldData"
+            "CustomAttribute_ParseAttributeUsageAttribute",
+            NativeCustomAttribute.tryExecuteQCall "CustomAttribute_ParseAttributeUsageAttribute"
             // The primitive underneath every `BindingFlags.IgnoreCase` reflection
             // member lookup: `RuntimeType.RuntimeTypeCache.Filter.Match` routes a
             // case-insensitive list type through `MdUtf8String.EqualsCaseInsensitive`.

@@ -126,6 +126,8 @@ module TestFSharpPureCases =
             "UnionVirtualSlots"
             "UnionReflection"
             "PrintfCacheHit"
+            "SprintfPercentA"
+            "SprintfPercentO"
         ]
 
     /// F# cases not expected to pass under PawPrint.
