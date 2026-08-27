@@ -55,6 +55,13 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 - `EmulatedKernel.fs`: the simulated process's kernel-visible state (virtual clock, seeded PRNG, fd table, env vars, processor count), most of which is by now held in `WoofWare.PosixKernel` and aggregated here. Values the real runtime would read from the host belong here as *data*, never as a host read: the library must not call `System.Environment`, `DateTime.Now`, `Guid.NewGuid` or similar, because a replay would then depend on the machine that produced it
 - `HostConfig.fs`: everything the host supplies to configure one run — where to find framework assemblies, the `KernelConfig` above, the scheduler seed, guest argv, and the AppContext properties. Distinct from `KernelConfig`: that is what the guest could learn by asking the OS, this is how the host launches the process at all
 
+**WoofWare.PawPrint.Semantics**
+- Rules of the CLI execution model, kept as inspectable data rather than as control flow inside the interpreter. `ContextSwitchPrior.fs` (how likely interleaving an opcode is to matter, consumed by the PCT scheduler) is the first resident
+- The distinction from `WoofWare.PawPrint.Domain` is what the two are *for*. Domain answers "what is in this DLL?" — opcodes, the type system, metadata handles. Semantics answers "what does running this opcode do?". A fact kept here can be consumed by the interpreter *and* read by something that never executes anything; a fact kept as interpreter control flow is available to the interpreter alone
+- **It sees `WoofWare.PawPrint.Domain` and never `WoofWare.PawPrint`**, so nothing here can reach `IlMachineState`. That is enforced by the project graph, which is stronger than the F# compile-order convention that enforces the same thing *within* the main project
+- It is a published package because `WoofWare.PawPrint` references it, and a `ProjectReference` to a non-packable project silently produces a nupkg naming a dependency that does not exist. Any further project the main library references needs the same treatment: its own `PackageId`, its own `version.json`, and entries in the `nuget-pack`, `expected-pack` and `github-release-dry-run` CI jobs
+- The motivating consumer is an analyser that answers questions about a method without running it — which exceptions can escape it, whether it is pure, which files it can reach. Such a thing needs the execution model's rules but must never see `IlMachineState`, and that is exactly the shape this package has
+
 **WoofWare.PosixKernel** (and **WoofWare.PosixKernel.Test**)
 - A general POSIX process simulator published as its own package. It owns the filesystem (`VirtualFileSystem.fs`), the descriptor table and socket vocabulary (`FileDescriptorRegistry.fs`), paths and errno (`UnixPath.fs`, `UnixError.fs`), signals (`Signal.fs`), and the Unix platform profile with its measured Linux/Darwin divergences (`SimulatedUnixPlatform.fs`)
 - **It must not reference `WoofWare.PawPrint` or `WoofWare.PawPrint.Domain`.** `TestNoPawPrintReference.fs` asserts that mechanically. The intent is that a second client could use it in some other context without meeting a PawPrint concept
@@ -96,7 +103,7 @@ nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.
 
 ### Target Frameworks
 
-- `WoofWare.PawPrint` and `WoofWare.PawPrint.Domain` intentionally target `net8.0` for compatibility with future consumers
+- `WoofWare.PawPrint`, `WoofWare.PawPrint.Domain`, `WoofWare.PawPrint.Semantics` and `WoofWare.PosixKernel` intentionally target `net8.0` for compatibility with future consumers
 - `WoofWare.PawPrint.App`, `WoofWare.PawPrint.Test`, and playground/example executables target `net10.0`
 - When diagnosing build/runtime issues, keep the cross-target split in mind; it is deliberate, not drift
 

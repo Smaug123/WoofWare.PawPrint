@@ -193,6 +193,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WoofWare.PawPrint.Domain\WoofWare.PawPrint.Domain.fsproj" />
+    <ProjectReference Include="..\WoofWare.PawPrint.Semantics\WoofWare.PawPrint.Semantics.fsproj" />
     <ProjectReference Include="..\WoofWare.PosixKernel\WoofWare.PosixKernel.fsproj" />
   </ItemGroup>
 
