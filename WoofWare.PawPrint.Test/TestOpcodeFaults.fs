@@ -195,7 +195,7 @@ module TestOpcodeFaults =
                 UnaryMetadataTokenIlOp.Stsfld
             ] do
             OpcodeFaults.ofUnaryMetadata op
-            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ])
+            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ])
 
         for op in
             [
@@ -204,7 +204,14 @@ module TestOpcodeFaults =
                 UnaryMetadataTokenIlOp.Stfld
             ] do
             OpcodeFaults.ofUnaryMetadata op
-            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.TypeInitialization ])
+            |> shouldEqual (
+                OpcodeFaults.Raises
+                    [
+                        OpcodeFault.NullReference
+                        OpcodeFault.StackOverflow
+                        OpcodeFault.TypeInitialization
+                    ]
+            )
 
         // `ldtoken` can name a field without accessing it, so nothing is initialized. This is the
         // arm that stops the rule above being read as "anything naming a field".
@@ -250,16 +257,51 @@ module TestOpcodeFaults =
                 ]
         )
 
-        // `jmp` is the arm that stops "invokes" being read as "pushes a frame": it replaces the
-        // current activation rather than stacking one (ECMA-335 III.3.37), so it can still surface
-        // a `.cctor` that threw and cannot exhaust the stack.
+        // `jmp` stacks no frame of its own — it replaces the current activation rather than
+        // pushing one (ECMA-335 III.3.37) — but the `.cctor` it can trigger is a frame, which is
+        // why it carries `StackOverflow` all the same.
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Jmp
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ])
+        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ])
 
         // `ldftn` names a method without invoking it, so no `.cctor` runs. This is the arm that
         // stops the rule above being read as "anything naming a method".
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Ldftn
         |> shouldEqual (OpcodeFaults.Raises [])
+
+    /// Running an initializer means entering a frame, so anything that can raise
+    /// `TypeInitialization` can also exhaust the stack. Checked over the whole table rather than
+    /// per entry: this is the property that keeps a future entry from carrying one without the
+    /// other, which is how the two got out of step in the first place.
+    [<Test>]
+    let ``anything that can run a cctor can also overflow the stack`` () : unit =
+        let entries : (string * OpcodeFaults) list =
+            [
+                yield!
+                    allCasesOf<NullaryIlOp> ()
+                    |> List.map (fun op -> $"%O{op}", OpcodeFaults.ofNullary op)
+                yield!
+                    allCasesOf<UnaryMetadataTokenIlOp> ()
+                    |> List.map (fun op -> $"%O{op}", OpcodeFaults.ofUnaryMetadata op)
+                // `UnaryConstIlOp` is absent because `allCasesOf` cannot build its cases: every one
+                // carries a payload. It could not offend regardless — `ofUnaryConst` is a single
+                // arm returning `none` for the whole DU, so no case of it raises anything at all.
+                yield!
+                    allCasesOf<UnaryStringTokenIlOp> ()
+                    |> List.map (fun op -> $"%O{op}", OpcodeFaults.ofUnaryStringToken op)
+            ]
+
+        let offenders =
+            entries
+            |> List.filter (fun (_, faults) ->
+                match faults with
+                | OpcodeFaults.Unmodelled -> false
+                | OpcodeFaults.Raises fs ->
+                    List.contains OpcodeFault.TypeInitialization fs
+                    && not (List.contains OpcodeFault.StackOverflow fs)
+            )
+            |> List.map fst
+
+        offenders |> shouldEqual []
 
     /// `ofIlOp` must agree with the per-shape functions rather than being a second opinion.
     [<Test>]

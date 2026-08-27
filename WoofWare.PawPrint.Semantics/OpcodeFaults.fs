@@ -30,6 +30,10 @@ type OpcodeFault =
     /// `System.TypeInitializationException`, from a `.cctor` that threw. Triggered by a
     /// static-field access or by an invocation, per ECMA-335 I.8.9.5 — so it is not confined to the
     /// instructions that name a static field.
+    ///
+    /// Every instruction that can raise this can also raise <see cref="StackOverflow"/>, because
+    /// running an initializer means entering a frame. `TestOpcodeFaults` checks that over the whole
+    /// table rather than leaving it to each entry.
     | TypeInitialization
 
 /// What performing one instruction can raise by itself.
@@ -43,14 +47,23 @@ type OpcodeFaults =
     /// * What a callee raises. `call`, `callvirt`, `newobj`, `calli` and `jmp` transfer control,
     ///   and whatever the target does reaches the caller; that belongs to the call graph. The
     ///   entries here are only what the transfer itself can fault on — a null receiver, say.
-    /// * Faults from *resolving* the instruction's metadata token: `TypeLoadException`,
-    ///   `MissingFieldException`, `MissingMethodException`, `BadImageFormatException`,
-    ///   `InvalidProgramException`. These attach uniformly to every token-bearing instruction
-    ///   rather than distinguishing between them, so listing them per-opcode would add the same
-    ///   five entries to most of the table while telling a reader nothing. `IlOp` already says
-    ///   which instructions bear a token: exactly `UnaryMetadataToken` and `UnaryStringToken`. A
-    ///   consumer analysing a well-formed, fully-resolvable closure may ignore them; one analysing
-    ///   an arbitrary package may not.
+    /// * Faults from *binding* the instruction's metadata token, in both of its halves. Finding
+    ///   the target: `TypeLoadException`, `MissingFieldException`, `MissingMethodException`,
+    ///   `BadImageFormatException`, `InvalidProgramException`. And being allowed to touch it once
+    ///   found: `MethodAccessException`, `FieldAccessException`, `TypeAccessException`, which
+    ///   ECMA-335 does list per-instruction (III.4.10's `ldfld`, for one, throws
+    ///   `System.FieldAccessException` "if field is not accessible"). Access is worth naming
+    ///   separately because it is easy to mistake for the security-policy exclusion below and is
+    ///   not that: it is live on .NET Core, and an assembly compiled against an
+    ///   `InternalsVisibleTo` that a later version withdraws hits it at runtime.
+    ///
+    ///   Both halves attach uniformly to every token-bearing instruction rather than
+    ///   distinguishing between them, so listing them per-opcode would add the same eight entries
+    ///   to most of the table while telling a reader nothing; and both depend on the *referencing
+    ///   context* as much as on the token, which an opcode-keyed table has no way to see. `IlOp`
+    ///   already says which instructions bear a token: exactly `UnaryMetadataToken` and
+    ///   `UnaryStringToken`. A consumer analysing a well-formed, fully-resolvable closure may
+    ///   ignore them; one analysing an arbitrary package may not.
     /// * Faults from CLI *security policy*: `System.Security.SecurityException`, which ECMA-335
     ///   lists against `calli` (III.3.20) and the `ldftn` family. Code Access Security was removed
     ///   in .NET Core, so on any runtime an analyser will meet there is no policy to reject a call
@@ -373,7 +386,12 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Ldfld
         | UnaryMetadataTokenIlOp.Ldflda
         | UnaryMetadataTokenIlOp.Stfld ->
-            OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.TypeInitialization ]
+            OpcodeFaults.Raises
+                [
+                    OpcodeFault.NullReference
+                    OpcodeFault.StackOverflow
+                    OpcodeFault.TypeInitialization
+                ]
         | UnaryMetadataTokenIlOp.Ldvirtftn
         | UnaryMetadataTokenIlOp.Initobj
         | UnaryMetadataTokenIlOp.Stobj
@@ -410,7 +428,8 @@ module OpcodeFaults =
         // surfaces here on this and every later access.
         | UnaryMetadataTokenIlOp.Ldsfld
         | UnaryMetadataTokenIlOp.Ldsflda
-        | UnaryMetadataTokenIlOp.Stsfld -> OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ]
+        | UnaryMetadataTokenIlOp.Stsfld ->
+            OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
         // A `.cctor` is triggered by "first invocation of any static method of that type", "any
         // instance or virtual method of that type if it is a value type", and "any constructor for
         // that type" (ECMA-335 I.8.9.5), so every instruction that invokes can surface one that
@@ -425,11 +444,13 @@ module OpcodeFaults =
         // harmless. `FaultKind.ResourceExhaustion` is what keeps this from swamping a report.
         | UnaryMetadataTokenIlOp.Call ->
             OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
-        // `jmp` alone among the invoking instructions does not push a frame: it "exit[s] current
-        // method and jump[s] to the specified method" (ECMA-335 III.3.37), transferring the current
-        // arguments rather than stacking a new activation, and its "Exceptions" clause is "None".
-        // So it can still surface a `.cctor` that threw, and cannot exhaust the stack.
-        | UnaryMetadataTokenIlOp.Jmp -> OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ]
+        // `jmp` alone among the invoking instructions does not stack a frame of its own: it
+        // "exit[s] current method and jump[s] to the specified method" (ECMA-335 III.3.37),
+        // transferring the current arguments rather than pushing a new activation, and its
+        // "Exceptions" clause is "None". It still carries `StackOverflow`, because the `.cctor` it
+        // can trigger is itself a frame — which is the rule stated against `OpcodeFault`.
+        | UnaryMetadataTokenIlOp.Jmp ->
+            OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ]
         // These fault on nothing themselves and invoke nothing.
         | UnaryMetadataTokenIlOp.Mkrefany
         | UnaryMetadataTokenIlOp.Isinst
