@@ -131,6 +131,9 @@ module Corelib =
 
         let notSupportedException = findCorelibType corelib "System" "NotSupportedException"
 
+        let invalidOperationException =
+            findCorelibType corelib "System" "InvalidOperationException"
+
         let duplicateWaitObjectException =
             findCorelibType corelib "System" "DuplicateWaitObjectException"
 
@@ -227,6 +230,7 @@ module Corelib =
             FieldAccessException = fieldAccessException
             MissingMethodException = missingMethodException
             NotSupportedException = notSupportedException
+            InvalidOperationException = invalidOperationException
             DuplicateWaitObjectException = duplicateWaitObjectException
             NullReferenceException = nullReferenceException
             OutOfMemoryException = outOfMemoryException

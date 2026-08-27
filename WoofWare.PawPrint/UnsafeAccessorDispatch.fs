@@ -56,6 +56,18 @@ type internal UnsafeAccessorRefusal =
     /// `kInvalidProgramException` from `VerifyDeclarationSatisfiesTargetConstraints`.
     | InvalidProgram of message : string
 
+    /// `COR_E_BADIMAGEFORMAT` again, but raised where the *stub* is compiled rather than where it
+    /// is generated: the `StaticMethod` kind's body is a `call`, and a `call` to an abstract method
+    /// is not valid IL. A `static abstract` interface member is the one static method that can be
+    /// abstract, so it is the only way here. Its message is the JIT's rather than the attribute's,
+    /// which is why it is not `BadImageFormat`.
+    | AbstractStaticTarget
+
+    /// `kInvalidOperationException` with `Acc_CreateAbst`, from the `newobj` the `Constructor`
+    /// kind's body performs: a constructor accessor may name an abstract class's constructor, and
+    /// the class cannot be instantiated.
+    | InvalidOperation of message : string
+
 [<RequireQualifiedAccess>]
 module internal UnsafeAccessorDispatch =
 
@@ -395,7 +407,19 @@ module internal UnsafeAccessorDispatch =
         =
         let candidates =
             targetTypeInfo.Fields
-            |> List.filter (fun candidate -> candidate.Name = name && candidate.IsStatic = isTargetStatic kind)
+            |> List.filter (fun candidate ->
+                candidate.Name = name
+                && candidate.IsStatic = isTargetStatic kind
+                // A literal (`const`) has a Field row and no storage: its value lives in the
+                // Constant table and every read of it was folded away at compile time. CoreCLR's
+                // `ApproxFieldDescIterator` walks `FieldDesc`s rather than metadata rows, and a
+                // literal has none, so it is simply not a candidate. Measured on real .NET 10: an
+                // accessor naming a `private const int` gets `MissingFieldException`. Admitting it
+                // here would be worse than a wrong answer -- `staticFieldAddress` would mint a
+                // zero-initialised slot and hand the guest a writable byref to a field that has no
+                // storage at all.
+                && not (candidate.Attributes.HasFlag FieldAttributes.Literal)
+            )
 
         let state, matching =
             ((state, []), candidates)
@@ -446,12 +470,34 @@ module internal UnsafeAccessorDispatch =
             failwith
                 $"BUG: [UnsafeAccessor] found %d{List.length matching} declared fields named %s{name} on %s{targetTypeInfo.Namespace}.%s{targetTypeInfo.Name}; a field name is unique within a type, so the candidate filter is wrong"
 
-    /// Is this generic parameter unconstrained, so that `TypeVarTypeDesc::SatisfiesConstraints`
-    /// would accept anything for it?
-    let private isUnconstrained ((_, metadata) : GenericParamFromMetadata) : bool =
+    /// Would `TypeVarTypeDesc::SatisfiesConstraints` accept `argument` for this generic parameter
+    /// without a real check?
+    ///
+    /// Declaring no constraints is not the same as accepting everything: a parameter without
+    /// `allows ref struct` (`gpAllowByRefLike`) refuses a byref-like argument, so the *absence* of
+    /// that anti-constraint is itself a constraint (typedesc.cpp:1606). Measured on real .NET 10:
+    /// an accessor whose own parameter says `allows ref struct`, over a target parameter that does
+    /// not, raises `VerificationException` when instantiated with a `Span<int>`.
+    let private acceptsWithoutChecking
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        ((_, metadata) : GenericParamFromMetadata)
+        (argument : ConcreteTypeHandle)
+        : bool
+        =
+        let argumentIsByRefLike =
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
+            | Some (_, typeInfo) -> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
+            | None ->
+                // A structural handle: a byref, pointer, array or function pointer. None of those is
+                // a byref-like *type* -- `Span<T>` is nominal -- so the anti-constraint does not
+                // bear on them.
+                false
+
         metadata.Constraint.IsNone
         && not metadata.RequiresParameterlessConstructor
         && metadata.Constraints.IsEmpty
+        && (metadata.AllowsByRefLike || not argumentIsByRefLike)
 
     /// `VerifyDeclarationSatisfiesTargetConstraints` (unsafeaccessors.cpp:513) for the shapes this
     /// dispatcher accepts. The accessor's declaring type is non-generic, so the declaration
@@ -460,6 +506,8 @@ module internal UnsafeAccessorDispatch =
     /// Measured against real .NET 10: a non-generic accessor whose signature does match a member
     /// of a generic type gets `InvalidProgramException`, not `MissingMethodException`.
     let private verifyConstraints
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
         (describe : string)
         (targetType : ConcreteType<ConcreteTypeHandle>)
         (accessorMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
@@ -475,7 +523,10 @@ module internal UnsafeAccessorDispatch =
             // Unreachable after a successful signature match, which compares the generic-parameter
             // counts as CoreCLR compares the blobs' leading bytes; stated rather than assumed.
             Error (UnsafeAccessorRefusal.InvalidProgram "Generic method constraints do not match.")
-        elif target.Generics |> Seq.forall isUnconstrained then
+        elif
+            Seq.zip target.Generics accessorMethodGenerics
+            |> Seq.forall (fun (parameter, argument) -> acceptsWithoutChecking baseClassTypes state parameter argument)
+        then
             Ok ()
         else
             // Every remaining case needs `TypeVarTypeDesc::SatisfiesConstraints`: whether the
@@ -483,7 +534,7 @@ module internal UnsafeAccessorDispatch =
             // no constraint-satisfaction check, and answering "yes" would run a target the real
             // runtime refuses to bind.
             failwith
-                $"TODO: %s{describe} names a generic method whose type parameters carry constraints; deciding whether the accessor's own type arguments satisfy them needs the constraint check of CoreCLR's VerifyDeclarationSatisfiesTargetConstraints, which PawPrint does not have"
+                $"TODO: %s{describe} names a generic method whose type parameters do not accept the accessor's own type arguments outright -- they carry constraints, or an argument is byref-like where the parameter has no `allows ref struct`. Deciding whether the arguments satisfy them needs the constraint check of CoreCLR's VerifyDeclarationSatisfiesTargetConstraints, which PawPrint does not have"
 
     /// Read an `[UnsafeAccessor]` declaration and resolve the member it names, reproducing
     /// `MethodDesc::TryGenerateUnsafeAccessor` (unsafeaccessors.cpp:1027) down to the point where
@@ -614,9 +665,35 @@ module internal UnsafeAccessorDispatch =
             | Error refusal -> state, Error refusal
             | Ok target ->
 
-            match verifyConstraints describe targetType accessor.Generics target with
+            match verifyConstraints baseClassTypes state describe targetType accessor.Generics target with
             | Error refusal -> state, Error refusal
             | Ok () ->
+
+            // Two shapes the *body* CoreCLR emits refuses, both of them after the lookup has
+            // succeeded -- measured on real .NET 10, where an abstract class with no matching
+            // constructor reports the missing constructor rather than the abstract class.
+            let bodyRefusal =
+                match kind with
+                | UnsafeAccessorKind.StaticMethod ->
+                    // The body is a `call`, and a `call` to an abstract method is not valid IL.
+                    match target.Body with
+                    | MethodBody.Abstract -> Some UnsafeAccessorRefusal.AbstractStaticTarget
+                    | _ -> None
+                | UnsafeAccessorKind.Constructor ->
+                    // The body is a `newobj`, which cannot allocate an abstract class.
+                    if targetTypeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract then
+                        Some (UnsafeAccessorRefusal.InvalidOperation "Instances of abstract classes cannot be created.")
+                    else
+                        None
+                | UnsafeAccessorKind.Method ->
+                    // The body is a `callvirt`, which an abstract target is exactly what dispatches.
+                    None
+                | UnsafeAccessorKind.Field
+                | UnsafeAccessorKind.StaticField -> None
+
+            match bodyRefusal with
+            | Some refusal -> state, Error refusal
+            | None ->
 
             let state, concretizedTarget, _declaringTypeHandle =
                 ExecutionConcretization.concretizeMethodWithAllGenerics
@@ -696,6 +773,8 @@ module internal UnsafeAccessorDispatch =
         | UnsafeAccessorRefusal.MissingField (targetType, name) ->
             baseClassTypes.MissingFieldException, $"Field not found: '%s{targetType}.%s{name}'."
         | UnsafeAccessorRefusal.InvalidProgram message -> baseClassTypes.InvalidProgramException, message
+        | UnsafeAccessorRefusal.AbstractStaticTarget -> baseClassTypes.BadImageFormatException, "Bad IL format."
+        | UnsafeAccessorRefusal.InvalidOperation message -> baseClassTypes.InvalidOperationException, message
 
     /// Run an `[UnsafeAccessor]` accessor's synthesised body.
     ///

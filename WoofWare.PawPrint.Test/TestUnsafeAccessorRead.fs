@@ -31,6 +31,12 @@ namespace UnsafeAccessorTest
 
         [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_field")]
         public static extern ref int GetField(object obj);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = null)]
+        public static extern void ExplicitlyNullName(object obj);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "")]
+        public static extern void ExplicitlyEmptyName(object obj);
     }
 }
 """
@@ -153,3 +159,25 @@ namespace UnsafeAccessorTest
     let ``A declaration with no UnsafeAccessorType is not flagged`` () =
         compileWithTypeNameOverrides ()
         |> fun assy -> typeNameOverrideOf assy "Plain" |> shouldEqual false
+
+    /// An explicitly supplied `Name = null` is not the same as an absent `Name`: CoreCLR's
+    /// `TryParseUnsafeAccessorAttribute` keys the "use the attributed method's name" default off the
+    /// named argument's *presence*, and copies a supplied value verbatim -- copying a null yields
+    /// the empty string. So the two must not both read as `None`, or an explicitly-null accessor
+    /// would silently bind its own name. `sourcesPure/UnsafeAccessorNameIsExplicitlyNull.cs` pins
+    /// what the difference does at dispatch.
+    [<Test>]
+    let ``an explicitly null Name reads as the empty string, not as absent`` () =
+        let assy = compileWithAccessors ()
+
+        match (findMethod assy "ExplicitlyNullName").Body with
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (_, name, _)) -> name |> shouldEqual (Some "")
+        | other -> failwithf "Expected UnsafeAccessor but got %A" other
+
+    [<Test>]
+    let ``an explicitly empty Name reads as the empty string`` () =
+        let assy = compileWithAccessors ()
+
+        match (findMethod assy "ExplicitlyEmptyName").Body with
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (_, name, _)) -> name |> shouldEqual (Some "")
+        | other -> failwithf "Expected UnsafeAccessor but got %A" other

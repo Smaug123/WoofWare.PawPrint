@@ -200,8 +200,11 @@ type RuntimeBehaviour =
     /// type given by the attributed method's first parameter (or, for
     /// <see cref="UnsafeAccessorKind.StaticField"/>/<see cref="UnsafeAccessorKind.StaticMethod"/>,
     /// the parameter's static type). <c>TargetName</c> is the value of the
-    /// <c>Name</c> property on the attribute; <c>None</c> means "use the attributed
-    /// method's name", per the attribute's documented default.
+    /// <c>Name</c> property on the attribute; <c>None</c> means the property was not supplied at
+    /// all, which is what selects the attribute's documented default of "use the attributed
+    /// method's name". An explicitly supplied <c>null</c> is <em>not</em> that: it arrives here as
+    /// <c>Some ""</c>, because CoreLib's parse copies the supplied value verbatim and a null copies
+    /// as empty.
     /// </summary>
     /// <remarks>
     /// <c>HasTypeNameOverrides</c> says that at least one of the declaration's parameters, or its
@@ -1128,7 +1131,7 @@ module MethodInfo =
             | Some kind ->
                 let namedCount = int (reader.ReadUInt16 ())
 
-                let mutable parsedName = None
+                let mutable parsedName : string option = None
                 let mutable malformed = false
                 let mutable i = 0
 
@@ -1146,23 +1149,22 @@ module MethodInfo =
                         let argValue = reader.ReadSerializedString ()
 
                         if argName = "Name" then
-                            // ReadSerializedString returns null for the explicit-null
-                            // encoding (0xFF); treat that the same as "Name not set".
-                            parsedName <- if isNull argValue then Some None else Some (Some argValue)
+                            // `ReadSerializedString` returns null for the explicit-null encoding
+                            // (0xFF), which is *not* the same as the property being absent.
+                            // CoreCLR's `TryParseUnsafeAccessorAttribute` keys the default off the
+                            // named argument's presence -- an undefined argument takes the
+                            // attributed method's own name, while a supplied one is copied
+                            // verbatim, and copying a null yields the empty string. So an explicit
+                            // `Name = null` asks for a member called "", which no type declares.
+                            // Measured on real .NET 10: `[UnsafeAccessor(Method, Name = null)]`
+                            // raises `MissingMethodException`, not a call to the same-named member.
+                            parsedName <- Some (if isNull argValue then "" else argValue)
                         else
                             malformed <- true
 
                     i <- i + 1
 
-                if malformed then
-                    None
-                else
-                    let name =
-                        match parsedName with
-                        | Some n -> n
-                        | None -> None
-
-                    Some (kind, name)
+                if malformed then None else Some (kind, parsedName)
 
     /// Does any of the method's Param rows carry <c>[UnsafeAccessorType("...")]</c>?
     ///

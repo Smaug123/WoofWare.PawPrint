@@ -355,6 +355,13 @@ type BaseClassTypes<'corelib> =
         FieldAccessException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Raised where the runtime refuses an operation the *program* is well-formed to express
+        /// but the object model forbids -- allocating an instance of an abstract class, which
+        /// CoreCLR reports as `Acc_CreateAbst` ("Instances of abstract classes cannot be
+        /// created."). No IL a C# compiler emits reaches that: `newobj` on an abstract class is a
+        /// compile error, and `[UnsafeAccessor(UnsafeAccessorKind.Constructor)]` naming an abstract
+        /// class's constructor is the route that gets there.
+        InvalidOperationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Thrown by the runtime — not the BCL — when a wait-all names the same
         /// handle twice: CoreCLR's `Thread::DoAppropriateWait` turns the PAL's
         /// `WAIT_FAILED` + `ERROR_INVALID_PARAMETER` into this before the managed
