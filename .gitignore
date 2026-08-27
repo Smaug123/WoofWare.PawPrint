@@ -21,3 +21,5 @@ BenchmarkDotNet.Artifacts/
 # Python bytecode, e.g. from importing a probe under docs/probes/
 __pycache__/
 *.py[cod]
+
+.DS_Store

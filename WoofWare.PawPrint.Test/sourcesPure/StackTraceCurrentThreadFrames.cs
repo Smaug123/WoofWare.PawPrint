@@ -4,30 +4,21 @@ using System.Reflection;
 
 // A current-thread capture with real frames in it: `new StackTrace()` from a known call chain.
 //
-// PARKED, blocked at an InternalCall one step past the QCall this file exercises. Measured, not
-// predicted: with `StackTrace_GetStackFramesInternal` implemented, this guest stops at
-// "Unimplemented native method (InternalCall): System.RuntimeMethodHandle::IsTypicalMethodDefinition
-// (System.IRuntimeMethodInfo) -> System.Boolean".
+// What this file pins is the one property PawPrint's frame walk leans on. Real .NET inlines
+// CoreLib's own capture frames and PawPrint does not, so PawPrint's raw capture is several frames
+// deeper -- seven `System.Diagnostics` frames when the walk was written, where real .NET has
+// fewer. That is
+// harmless only because `CalculateFramesToSkip` (StackTrace.CoreCLR.cs:18-44) skips the leading run
+// of frames whose declaring type's namespace is *ordinal-equal* to "System.Diagnostics" and stops at
+// the first that is not, so the extra frames are absorbed and the first reported frame is the same
+// on both runtimes. Frame *counts* are therefore deliberately not asserted -- they legitimately
+// differ -- but the identity and order of the reported frames are, which is what would go red if the
+// walk started omitting CoreLib frames itself (making the skip run eat real guest frames) or
+// reported them in the wrong order.
 //
-// That is unavoidable for any capture with one or more frames: `CaptureStackTrace` builds a
-// `StackFrame` for every captured frame before computing any skips (StackTrace.CoreCLR.cs:73-85),
-// and the `StackFrame(StackFrameHelper, ...)` constructor calls `GetMethodBase` unconditionally
-// (StackFrame.CoreCLR.cs:18), which reaches `RuntimeMethodHandle.GetTypicalMethodDefinition` and so
-// that predicate. Un-park when `IsTypicalMethodDefinition` and its
-// `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall fallback both land — they belong together,
-// because a frame on a method of a *generic* declaring type answers false to the predicate and
-// genuinely needs the QCall.
-//
-// What this file is for, beyond un-parking: it pins the one property PawPrint's frame walk leans
-// on. Real .NET inlines CoreLib's own capture frames and PawPrint does not, so PawPrint's raw
-// capture is several frames deeper — measured as seven `System.Diagnostics` frames where real .NET
-// has fewer. That is harmless only because `CalculateFramesToSkip` (StackTrace.CoreCLR.cs:18-44)
-// skips the leading run of frames whose declaring type's namespace is *ordinal-equal* to
-// "System.Diagnostics" and stops at the first that is not, so the extra frames are absorbed and
-// the first reported frame is the same on both runtimes. Frame *counts* are therefore deliberately
-// not asserted — they legitimately differ — but the identity and order of the reported frames are,
-// which is what would go red if the walk started omitting CoreLib frames itself (making the skip
-// run eat real guest frames) or reported them in the wrong order.
+// Every frame this guest captures is declared on a non-generic type, so every one is already the
+// typical method definition and `RuntimeMethodHandle.GetTypicalMethodDefinition` never reaches its
+// QCall. `StackTraceGenericDeclaringFrame.cs` is the sibling that does, and is parked on it.
 class StackTraceCurrentThreadFrames
 {
     static StackTrace Innermost()
