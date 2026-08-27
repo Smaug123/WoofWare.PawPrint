@@ -1179,3 +1179,39 @@ and reads its buffer anyway.
 **Where this lives in code**: `UnixSystem.getcwd` in `WoofWare.PosixKernel/UnixSystem.fs` returns
 `GetCwdAnswer.Failed` carrying an errno and nothing else; the measurements are recorded on
 `GetCwdOrphanAnswer.ShortestPathFirst` in `SimulatedUnixPlatform.fs`.
+## A faulting `getsockname` copies out no partial address
+
+**Both flavours** copy the address towards the caller before they discover that the destination
+cannot take all of it, so a destination that is writable for only its first few bytes keeps whatever
+got there. Measured against a destination writable for its leading `prefix` bytes and `PROT_NONE`
+after, prefilled `0xAA`, declaring 13 bytes to a socket bound on loopback:
+
+| prefix | macOS 26.6 leaves | Linux 6.18.5 leaves |
+| --- | --- | --- |
+| 0 | nothing | nothing |
+| 4 | all four bytes of the address | its first byte only |
+| 8 | all eight | all eight |
+| 12 | all twelve | all twelve |
+
+The two disagree at 4 because `copy_to_user` and Darwin's equivalent fault at different granularities,
+which is a property of the copy routine rather than of the syscall.
+
+**PawPrint** writes nothing when the call faults. Its buffer vocabulary has no partially-writable
+destination in it — a `BufferPointer.Storage` names storage that is wholly there and a
+`BufferPointer.RawAddress` names none at all — so the state these rows measure is not one a guest can
+put PawPrint in, and the residue has no representable case to land in.
+
+*Contrast the length cell*, which **is** modelled: on a fault Linux has already stored the
+untruncated length where Darwin has stored nothing, and `GetSockNameAnswer.Failed` carries that as
+`lengthOverwritten`. The difference is that the length is one value a kernel decides, where the
+residue above is a partial copy's leftovers. This is the distinction `getcwd`'s entry above draws
+between what a kernel decides and what an algorithm leaves behind, and `getsockname` is the syscall
+that has one of each.
+
+*Reachability*: `SystemNative_GetSockName` returns the PAL error and its managed callers decode the
+blob only on success, so no BCL caller reads either. The length store is unreachable even to a
+hand-rolled P/Invoke: the shim passes `getsockname(2)` a local `socklen_t` and copies it back to the
+caller only when the call succeeded.
+
+**Where this lives in code**: `UnixSystem.getsockname` in `WoofWare.PosixKernel/UnixSystem.fs`; the
+length divergence is recorded on `GetSockNameFaultLength` in `SimulatedUnixPlatform.fs`.

@@ -1212,6 +1212,34 @@ type GetCwdDestinationFault =
     /// `GetCwdRefusal.FatalToTheProcess` for what it says instead.
     | FatalToTheProcess
 
+/// What a `getsockname(2)` that faults copying the address out has already put
+/// in the caller's length cell.
+///
+/// The two kernels order the two stores differently, so a call that fails
+/// leaves the caller's `socklen_t` reading different things. Measured against a
+/// wholly unmapped destination and against one writable for its first few bytes
+/// only, with sentinel lengths of 7, 13, 100 and 4096 so that a value that came
+/// back changed can only have been written: on Linux 6.18.5 every one of them
+/// reads 16 afterwards, and on macOS 26.6 every one still reads what it went in
+/// with. A descriptor that fails earlier -- EBADF, ENOTSOCK -- touches the cell
+/// on neither, so this is the fault path's property rather than the failure
+/// path's in general.
+///
+/// Whether a *client* can see this is a separate question, and for the .NET PAL
+/// the answer is no: `SystemNative_GetSockName` copies the caller's length into
+/// a local `socklen_t`, passes that, and writes it back only when the call
+/// succeeded, so the kernel's store lands on the shim's stack. A client speaking
+/// raw POSIX does see it.
+[<RequireQualifiedAccess>]
+type GetSockNameFaultLength =
+    /// The cell still holds what the caller put there. Darwin copies the address
+    /// out first and reports the length only once that has succeeded.
+    | Untouched
+    /// The cell holds the address's *untruncated* length -- what a successful
+    /// call would have reported -- because the kernel stored that before
+    /// attempting the copy that then faulted.
+    | AlreadyReported
+
 /// Everything a kernel does differently when `rmdir(2)` removes a directory.
 ///
 /// Two fields, and the rest of the divergence — the *order* of the refusals and
@@ -2083,6 +2111,13 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> GetCwdDestinationFault.ReportedAsEfault
         | SimulatedUnixFlavour.Darwin -> GetCwdDestinationFault.FatalToTheProcess
+
+    /// What this platform's `getsockname(2)` has already stored in the caller's
+    /// length cell when the address copy faults. See `GetSockNameFaultLength`.
+    let getSockNameFaultLength (platform : SimulatedUnixPlatform) : GetSockNameFaultLength =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> GetSockNameFaultLength.AlreadyReported
+        | SimulatedUnixFlavour.Darwin -> GetSockNameFaultLength.Untouched
 
     /// What this platform's PAL puts in `DirectoryEntry.NameLength`. See
     /// `DirectoryEntryNameLength`.
