@@ -291,15 +291,15 @@ module Escape =
                     // 1. What the instruction raises by itself. An opcode this table declines to
                     //    classify is opaque whether or not implicit faults are switched on:
                     //    "unmodelled" is never a claim of safety.
-                    match Implicit.ofIlOp op with
-                    | Faults.Unmodelled ->
+                    match OpcodeFaults.ofIlOp op with
+                    | OpcodeFaults.Unmodelled ->
                         match op with
                         | IlOp.Nullary NullaryIlOp.Rethrow -> opaqueHere off Incompleteness.Rethrow
                         | _ -> opaqueHere off Incompleteness.UntypedThrow
-                    | Faults.Raises xs ->
+                    | OpcodeFaults.Raises xs ->
                         if includeImplicit then
                             for x in xs do
-                                raises.Add (off, Some (keyOfQualifiedName x))
+                                raises.Add (off, Some (keyOfQualifiedName (OpcodeFault.typeName x)))
 
                     // 2. What the instruction throws explicitly.
                     match op with

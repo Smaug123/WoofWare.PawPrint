@@ -1,5 +1,5 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 185ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 275ms
 methods: 4067 (IL bodies: 3975, 97.7%)
 
 -- body kinds --
@@ -8,7 +8,7 @@ methods: 4067 (IL bodies: 3975, 97.7%)
   RuntimeProvided(DelegateCtor)                 3    0.1%
   RuntimeProvided(DelegateInvoke)               3    0.1%
 
-IL methods with at least one implicitly-raising opcode: 3054 (76.8%)
+IL methods with at least one implicitly-raising opcode: 3861 (97.1%)
 IL methods with any exception region: 113 (2.8%)
 throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
 
@@ -51,9 +51,9 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
   TypeRef nested in a TypeRef                        7
 
 -- implicit (opcode-raised) exception site counts --
+  System.TypeInitializationException             18330
   System.NullReferenceException                  12340
   System.OutOfMemoryException                     1386
-  System.TypeInitializationException               443
   System.InvalidCastException                      229
   System.IndexOutOfRangeException                  218
   System.ArrayTypeMismatchException                140
@@ -76,13 +76,13 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
   System.ObjectDisposedException                               2
   System.OperationCanceledException                            2
 
-escape analysis (implicit on) took 138ms
+escape analysis (implicit on) took 245ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 11
 methods: 4067
-  provably throws nothing:               118    2.9%
-  exact non-empty escaping set:          597   14.7%
+  provably throws nothing:               115    2.8%
+  exact non-empty escaping set:          600   14.8%
   Unknown (analysis envelope hit):      3352   82.4%
   escaping-set size (exact answers): median 1, p90 1, max 6
   incompleteness reasons (site counts):
@@ -94,7 +94,7 @@ methods: 4067
     Rethrow                        16
     NativeBody                      6
 
-escape analysis (implicit off) took 43ms
+escape analysis (implicit off) took 69ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 9

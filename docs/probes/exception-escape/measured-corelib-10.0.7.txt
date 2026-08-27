@@ -1,5 +1,5 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1142ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1763ms
 methods: 41561 (IL bodies: 39466, 95.0%)
 
 -- body kinds --
@@ -19,7 +19,7 @@ methods: 41561 (IL bodies: 39466, 95.0%)
   RuntimeProvided(UnsafeAccessor (Method, None))      1    0.0%
   RuntimeProvided(UnsafeAccessor (StaticMethod, Some "GetInstance"))      1    0.0%
 
-IL methods with at least one implicitly-raising opcode: 23922 (60.6%)
+IL methods with at least one implicitly-raising opcode: 37486 (95.0%)
 IL methods with any exception region: 947 (2.4%)
 throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers: 33
 
@@ -65,9 +65,9 @@ throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers:
   TypeSpec (an instantiation)                     8214
 
 -- implicit (opcode-raised) exception site counts --
-  System.NullReferenceException                  77304
+  System.TypeInitializationException            121520
+  System.NullReferenceException                  77337
   System.OutOfMemoryException                    17827
-  System.TypeInitializationException              3952
   System.IndexOutOfRangeException                 2951
   System.InvalidCastException                     2945
   System.OverflowException                        1892
@@ -90,15 +90,15 @@ throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers:
   System.BadImageFormatException                              49
   System.IndexOutOfRangeException                             36
 
-escape analysis (implicit on) took 1629ms
+escape analysis (implicit on) took 2961ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 23
 methods: 41561
-  provably throws nothing:              6295   15.1%
-  exact non-empty escaping set:         4369   10.5%
+  provably throws nothing:              1996    4.8%
+  exact non-empty escaping set:         8668   20.9%
   Unknown (analysis envelope hit):     30897   74.3%
-  escaping-set size (exact answers): median 0, p90 1, max 7
+  escaping-set size (exact answers): median 1, p90 2, max 7
   incompleteness reasons (site counts):
     GenericInstantiation        34720
     VirtualCall                 17027
@@ -108,7 +108,7 @@ methods: 41561
     Rethrow                        41
     IndirectCall                   33
 
-escape analysis (implicit off) took 608ms
+escape analysis (implicit off) took 1021ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 20

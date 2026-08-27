@@ -31,8 +31,8 @@ values and memory, and an escape analysis needs those only for precision, never 
 | `WoofWare.PawPrint`, from `IlMachineStateModel.fs` on | 98 compile units, 79,900 lines | No, as written. |
 | `WoofWare.PosixKernel` | 13,144 lines | Yes; it may not even reference PawPrint, and a test asserts it. |
 
-Domain carries everything the *front half* of an analyser needs, and the probe proves it by using
-nothing else:
+Domain carries everything the *front half* of an analyser needs — every one of these was read by
+the probe with no help from the interpreter:
 
 * decoded IL, offset-indexed (`MethodInstructions`);
 * exception regions with their clause kinds and catch types (`ExceptionRegion`);
@@ -73,7 +73,7 @@ helper rather than by naming a field. Each file must be checked before it is lif
 
 The probe implements a real interprocedural fixpoint — local raises, filtered through the method's
 own handlers with a handle-keyed subtype test, joined with each callee's escaping set, iterated to
-stability. Over CoreLib it converges in 23 rounds and 1.6 seconds. **Tractability is not the
+stability. Over CoreLib it converges in 23 rounds and about 3 seconds. **Tractability is not the
 problem.** Here is what is.
 
 ### It needs almost no IL semantics
@@ -87,19 +87,22 @@ Catching is rarer still: only 947 IL methods (2.4%) have any exception region �
 named `catch`, 24 `filter`, 3 `fault`.
 
 The semantics that *is* needed is the classification of which opcodes can raise what by themselves.
-That is a table, not an interpreter — `docs/probes/exception-escape/Implicit.fs` is one, 250 lines,
-exhaustive over all four opcode DUs.
+That is a table, not an interpreter.
 
-PawPrint already knows this, and knows it in more than one shape: `BaseClassTypes` (`Corelib.fs`)
-names 23 exception types; `raiseRuntimeException` is referenced 73 times across 16 files, covering
-7 distinct types from the opcode files; and `div`/`rem` do not use that route at all, reaching the
-guest through `executeFaultingArithmetic`'s `Error corelib.DivideByZeroException`. So the knowledge
-exists, in at least two mechanisms and sixteen files, and there is no single list to hand an
-analyser.
+PawPrint already knew this before the table existed, and knew it in more than one shape:
+`BaseClassTypes` (`Corelib.fs`) names 23 exception types; `raiseRuntimeException` was referenced 73
+times across 16 files, covering 7 distinct types from the opcode files; and `div`/`rem` did not use
+that route at all, reaching the guest through `executeFaultingArithmetic`'s
+`Error corelib.DivideByZeroException`. So the knowledge existed, in two mechanisms and sixteen
+files, with no single list to hand an analyser.
+
+That list is now `WoofWare.PawPrint.Semantics`' `OpcodeFaults`, which the interpreter and the probe
+both consume — the probe's own copy is gone, which is the point: an analyser and the runtime
+reading one table is the thing that stops them drifting.
 
 ### The walls it hits, and how their sizes flip by assembly
 
-The probe widens to `Unknown` at seven named walls and counts each by site. The counts are not
+The probe widens to `Unknown` at eight named walls and counts each by site. The counts are not
 stable across assemblies, and the difference is the most useful thing the probe measured:
 
 | wall | CoreLib | System.Text.Json | what would remove it |
@@ -122,18 +125,22 @@ distant third.
 The upshot is that generics and dispatch are the universal walls, cross-assembly resolution is the
 wall for everything that is not the framework's root, and both must be dealt with.
 
-Result: **74.3% of CoreLib methods and 82.4% of System.Text.Json's come back `Unknown`.** For
-CoreLib, 15.1% are proved to throw nothing and 10.5% get an exact non-empty set. This is accepted
-as a starting point rather than a problem — the walls are known, countable, and each has a named
-remedy.
+Result: **74.3% of CoreLib methods and 82.4% of System.Text.Json's come back `Unknown`.** Of the
+rest of CoreLib, 20.9% get an exact non-empty set and only 4.8% are proved to throw nothing — that
+last figure being small precisely because the `.cctor` rule above puts
+`TypeInitializationException` on almost every call. This is accepted as a starting point rather
+than a problem: the walls are known, countable, and each has a named remedy.
 
 ### It needs a value domain to be *useful*, as opposed to *sound*
 
-A sound answer must include what the opcodes themselves can raise. In CoreLib that is 77,304 sites
-that can raise `NullReferenceException`, 17,827 `OutOfMemoryException`, 3,952
-`TypeInitializationException`, and smaller counts down to 343 `StackOverflowException` from
-`localloc`; 60.6% of IL methods contain at least one. So a sound analysis with no value domain
-reports "may throw `NullReferenceException`" for most of the BCL, which is true and worthless.
+A sound answer must include what the opcodes themselves can raise. In CoreLib that is 121,520 sites
+that can raise `TypeInitializationException` — every instruction that invokes can trigger a
+`.cctor` (ECMA-335 I.8.9.5), and the `.cctor` is not the callee the call edge names — 77,337 that
+can raise `NullReferenceException`, 17,827 `OutOfMemoryException`, and smaller counts down to 343
+`StackOverflowException` from `localloc`. **95.0%** of CoreLib's IL methods contain at least one,
+and 97.1% of System.Text.Json's. So a sound analysis with no value domain reports "may throw
+`NullReferenceException` or `TypeInitializationException`" for essentially the whole BCL, which is
+true and worthless.
 
 This is where sharing real semantics with the concrete interpreter genuinely bites: a nullness
 domain is the first abstract domain, and every abstract domain wants a transfer function per

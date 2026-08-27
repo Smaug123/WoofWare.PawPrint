@@ -1,13 +1,13 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 72ms
-methods: 16 (IL bodies: 16, 100.0%)
+read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 135ms
+methods: 19 (IL bodies: 19, 100.0%)
 
 -- body kinds --
-  Il                                           16  100.0%
+  Il                                           19  100.0%
 
-IL methods with at least one implicitly-raising opcode: 4 (25.0%)
-IL methods with any exception region: 7 (43.8%)
-throw sites: 3 ; rethrow sites: 1 ; call sites: 19 ; indirect transfers: 0
+IL methods with at least one implicitly-raising opcode: 18 (94.7%)
+IL methods with any exception region: 7 (36.8%)
+throw sites: 3 ; rethrow sites: 1 ; call sites: 21 ; indirect transfers: 0
 
 -- what precedes a `throw` (can we name the thrown type syntactically?) --
   newobj immediately before                               3  100.0%
@@ -24,16 +24,16 @@ throw sites: 3 ; rethrow sites: 1 ; call sites: 19 ; indirect transfers: 0
   Fixture.LocalBase                                  1
 
 -- callee token kinds --
-  MethodDef (same assembly)                              13   68.4%
-  MemberRef (parent decides; see below)                   6   31.6%
+  MethodDef (same assembly)                              14   66.7%
+  MemberRef (parent decides; see below)                   7   33.3%
 
 -- MemberRef parents, over the whole MemberRef table --
-  TypeRef scoped to an AssemblyRef                  18
+  TypeRef scoped to an AssemblyRef                  19
 
 -- implicit (opcode-raised) exception site counts --
+  System.TypeInitializationException                25
   System.OutOfMemoryException                        5
   System.NullReferenceException                      3
-  System.TypeInitializationException                 2
   unmodelled opcode                                  1
 
 -- top 12 directly-thrown types (newobj;throw) --
@@ -41,30 +41,30 @@ throw sites: 3 ; rethrow sites: 1 ; call sites: 19 ; indirect transfers: 0
   System.FormatException                                       1
   Fixture.Derived                                              1
 
-escape analysis (implicit on) took 11ms
+escape analysis (implicit on) took 18ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 3
-methods: 16
-  provably throws nothing:                 2   12.5%
-  exact non-empty escaping set:            0    0.0%
-  Unknown (analysis envelope hit):        14   87.5%
-  escaping-set size (exact answers): median 0, p90 0, max 0
+methods: 19
+  provably throws nothing:                 2   10.5%
+  exact non-empty escaping set:            2   10.5%
+  Unknown (analysis envelope hit):        15   78.9%
+  escaping-set size (exact answers): median 1, p90 1, max 1
   incompleteness reasons (site counts):
-    ForeignCallee                   6
+    ForeignCallee                   7
     Rethrow                         1
 
 escape analysis (implicit off) took 0ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 3
-methods: 16
-  provably throws nothing:                 2   12.5%
+methods: 19
+  provably throws nothing:                 4   21.1%
   exact non-empty escaping set:            0    0.0%
-  Unknown (analysis envelope hit):        14   87.5%
+  Unknown (analysis envelope hit):        15   78.9%
   escaping-set size (exact answers): median 0, p90 0, max 0
   incompleteness reasons (site counts):
-    ForeignCallee                   6
+    ForeignCallee                   7
     Rethrow                         1
 
 ===== fixture oracle =====
@@ -82,3 +82,7 @@ methods: 16
   ok       Fixture.Cases::ThrowsLocalDerived            Fixture.Derived, + UNKNOWN
   ok       Fixture.Cases::CaughtByLocalBase             UNKNOWN
   all 13 expectations hold
+
+===== fixture oracle, against the sound run =====
+  ok       Fixture.CctorCases::CallsBoom                System.TypeInitializationException
+  all 1 expectations hold

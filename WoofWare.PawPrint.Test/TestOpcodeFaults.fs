@@ -173,23 +173,36 @@ module TestOpcodeFaults =
             OpcodeFaults.ofUnaryMetadata op
             |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ])
 
-    /// The control-transfer instructions carry nothing of their own except where the transfer has
-    /// something to dereference: what the *target* raises is the call graph's business, not this
-    /// table's. `callvirt` has a receiver and `calli` has a function pointer, so those two differ
-    /// from `call` and `jmp`, which name their target by token and have nothing to fault on.
+    /// What a *target* raises is the call graph's business, not this table's — but two things an
+    /// invoking instruction does are its own, and neither travels by the call edge.
     ///
-    /// `calli`'s entry is the one to be careful with: ECMA-335 III.3.20 lists only
+    /// Every invoking instruction can trigger the declaring type's `.cctor` (ECMA-335 I.8.9.5),
+    /// which is a different method from the named callee: an analyser following only the target
+    /// would miss it. And `callvirt` and `calli` dereference something first — a receiver and a
+    /// function pointer — where `call` and `jmp` name their target by token and have nothing to
+    /// fault on.
+    ///
+    /// `calli`'s null entry is the one to be careful with: ECMA-335 III.3.20 lists only
     /// `SecurityException` against it, so reading the specification alone gives the wrong answer
     /// here. What pins it is `TestPureCases`' "calli through a null function pointer throws
     /// NullReferenceException", which is PawPrint's own deliberate divergence from CoreCLR.
     [<Test>]
-    let ``control transfers carry only their own faults`` () : unit =
+    let ``invoking instructions carry the cctor, and a dereference where they have one`` () : unit =
         for op in [ UnaryMetadataTokenIlOp.Call ; UnaryMetadataTokenIlOp.Jmp ] do
-            OpcodeFaults.ofUnaryMetadata op |> shouldEqual (OpcodeFaults.Raises [])
+            OpcodeFaults.ofUnaryMetadata op
+            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ])
 
         for op in [ UnaryMetadataTokenIlOp.Callvirt ; UnaryMetadataTokenIlOp.Calli ] do
             OpcodeFaults.ofUnaryMetadata op
-            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ])
+            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.TypeInitialization ])
+
+        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Newobj
+        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ; OpcodeFault.TypeInitialization ])
+
+        // `ldftn` names a method without invoking it, so no `.cctor` runs. This is the arm that
+        // stops the rule above being read as "anything naming a method".
+        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Ldftn
+        |> shouldEqual (OpcodeFaults.Raises [])
 
     /// `ofIlOp` must agree with the per-shape functions rather than being a second opinion.
     [<Test>]
@@ -203,6 +216,31 @@ module TestOpcodeFaults =
         for op in allCasesOf<UnaryMetadataTokenIlOp> () do
             OpcodeFaults.ofIlOp (IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata dummy))
             |> shouldEqual (OpcodeFaults.ofUnaryMetadata op)
+
+    // ---------- The two spellings of "which type is this fault?" agree ----------
+
+    /// `OpcodeFault.typeName` and `OpcodeFault.resolve` answer the same question for two different
+    /// consumers — one holding no assemblies, one holding a corelib — and nothing but this ties
+    /// them together. A fault whose two answers disagreed would have an analyser reporting one
+    /// type where the interpreter raised another, which is precisely the drift the table exists to
+    /// prevent.
+    ///
+    /// Resolved against the *host's* corelib rather than a fabricated one: the point is that these
+    /// ten names exist and are the types they claim to be, which a stub could not establish.
+    [<Test>]
+    let ``typeName and resolve agree for every fault`` () : unit =
+        // Factory intentionally undisposed: corelib.Logger outlives this scope.
+        let corelib =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+
+        let bct = Corelib.getBaseTypes corelib
+
+        for fault in allCasesOf<OpcodeFault> () do
+            let resolved = OpcodeFault.resolve bct fault
+
+            $"{resolved.Namespace}.{resolved.Name}"
+            |> shouldEqual (OpcodeFault.typeName fault)
 
     /// `switch` falls through when the index is out of range rather than faulting, which is the
     /// one thing about it a reader is likely to get wrong.

@@ -252,30 +252,36 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Refanyval -> OpcodeFaults.Raises [ OpcodeFault.InvalidCast ]
         // A negative length is the overflow; the allocation itself is the OOM.
         | UnaryMetadataTokenIlOp.Newarr -> OpcodeFaults.Raises [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ]
-        // What the constructor raises travels by the call edge, not by this entry.
-        | UnaryMetadataTokenIlOp.Newobj
         | UnaryMetadataTokenIlOp.Box -> OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ]
+        // What the constructor itself raises travels by the call edge, not by this entry; running
+        // the declaring type's `.cctor` first does not, for the reason given against `call` below.
+        | UnaryMetadataTokenIlOp.Newobj ->
+            OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ; OpcodeFault.TypeInitialization ]
         | UnaryMetadataTokenIlOp.Ldfld
         | UnaryMetadataTokenIlOp.Ldflda
         | UnaryMetadataTokenIlOp.Stfld
-        | UnaryMetadataTokenIlOp.Callvirt
-        // `calli` faults on a null *target*, as `callvirt` does on a null receiver.
-        //
-        // This entry does not come from the specification. ECMA-335 (6th edition) III.3.20 lists
-        // only `System.SecurityException` under `calli`'s "Exceptions", where III.4.2's `callvirt`
-        // says in as many words that "System.NullReferenceException is thrown if obj is null"; and
-        // III.3.20's "Correctness" requires the pointer to hold the address of a method, so a null
-        // one is incorrect CIL whose behaviour the specification does not fix. It comes instead
-        // from what PawPrint does, which `TestPureCases`' "calli through a null function pointer
-        // throws NullReferenceException" pins, and which is a deliberate divergence from CoreCLR
-        // (that segfaults). Note that `docs/divergences.md` attributes the choice to III.3.20
-        // listing `NullReferenceException`, which that section does not.
-        | UnaryMetadataTokenIlOp.Calli
         | UnaryMetadataTokenIlOp.Ldvirtftn
         | UnaryMetadataTokenIlOp.Initobj
         | UnaryMetadataTokenIlOp.Stobj
         | UnaryMetadataTokenIlOp.Cpobj
         | UnaryMetadataTokenIlOp.Ldobj -> nullDeref
+        // The two invoking instructions that also dereference: a receiver for `callvirt`, a
+        // function pointer for `calli`. Both can trigger a `.cctor` as well, for the reason given
+        // against `call` below.
+        //
+        // `calli`'s null-dereference entry does not come from the specification. ECMA-335 (6th
+        // edition) III.3.20 lists only `System.SecurityException` under `calli`'s "Exceptions",
+        // where III.4.2's `callvirt` says in as many words that "System.NullReferenceException is
+        // thrown if obj is null"; and III.3.20's "Correctness" requires the pointer to hold the
+        // address of a method, so a null one is incorrect CIL whose behaviour the specification
+        // does not fix. It comes instead from what PawPrint does, which `TestPureCases`' "calli
+        // through a null function pointer throws NullReferenceException" pins, and which is a
+        // deliberate divergence from CoreCLR (that segfaults). Note that `docs/divergences.md`
+        // attributes the choice to III.3.20 listing `NullReferenceException`, which that section
+        // does not.
+        | UnaryMetadataTokenIlOp.Callvirt
+        | UnaryMetadataTokenIlOp.Calli ->
+            OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.TypeInitialization ]
         | UnaryMetadataTokenIlOp.Ldelem -> arrayLoad
         // `ldelema` takes the covariance check too: handing out a writable address to an element
         // of an array whose element type is not the one named would defeat the check `stelem`
@@ -287,10 +293,15 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Ldsfld
         | UnaryMetadataTokenIlOp.Ldsflda
         | UnaryMetadataTokenIlOp.Stsfld -> OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ]
-        // These fault on nothing themselves. For the two that transfer control, what the target
-        // raises reaches the caller by the call graph rather than from here.
+        // A `.cctor` is triggered by "first invocation of any static method of that type", "any
+        // instance or virtual method of that type if it is a value type", and "any constructor for
+        // that type" (ECMA-335 I.8.9.5), so every instruction that invokes can surface one that
+        // threw. The `.cctor` is a *different* method from the named callee, so this is not
+        // something the call edge carries: an analyser that only followed the named target would
+        // miss it entirely, which is why it belongs here.
         | UnaryMetadataTokenIlOp.Call
-        | UnaryMetadataTokenIlOp.Jmp
+        | UnaryMetadataTokenIlOp.Jmp -> OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ]
+        // These fault on nothing themselves and invoke nothing.
         | UnaryMetadataTokenIlOp.Isinst
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Constrained
@@ -372,6 +383,25 @@ module OpcodeFaults =
 /// The bridge from a fault named abstractly to the corelib type that stands for it.
 [<RequireQualifiedAccess>]
 module OpcodeFault =
+
+    /// The fully-qualified name of the corelib type this fault stands for.
+    ///
+    /// For a consumer with no assemblies loaded, which cannot use `resolve`: an analyser reporting
+    /// what a method may throw wants to name the type without having resolved it. The two are kept
+    /// in step by `TestOpcodeFaults`, which resolves every fault against a real corelib and checks
+    /// the type it gets back is the one named here.
+    let typeName (fault : OpcodeFault) : string =
+        match fault with
+        | OpcodeFault.NullReference -> "System.NullReferenceException"
+        | OpcodeFault.IndexOutOfRange -> "System.IndexOutOfRangeException"
+        | OpcodeFault.ArrayTypeMismatch -> "System.ArrayTypeMismatchException"
+        | OpcodeFault.InvalidCast -> "System.InvalidCastException"
+        | OpcodeFault.Overflow -> "System.OverflowException"
+        | OpcodeFault.DivideByZero -> "System.DivideByZeroException"
+        | OpcodeFault.Arithmetic -> "System.ArithmeticException"
+        | OpcodeFault.OutOfMemory -> "System.OutOfMemoryException"
+        | OpcodeFault.StackOverflow -> "System.StackOverflowException"
+        | OpcodeFault.TypeInitialization -> "System.TypeInitializationException"
 
     /// The corelib type an execution engine raises for this fault.
     ///

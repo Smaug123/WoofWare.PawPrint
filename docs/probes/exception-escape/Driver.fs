@@ -108,35 +108,73 @@ module Driver =
             "Fixture.Cases::CaughtByLocalBase", "UNKNOWN"
         ]
 
+    /// Expectations checked against the *sound* run instead, because what they are about is an
+    /// opcode-raised fault, which the control run suppresses by construction.
+    let private soundFixtureExpectations : (string * string) list =
+        [
+            // `Boom.M()` is a plain `call` whose declaring type's `.cctor` throws. The `.cctor` is
+            // not the callee the edge names, so this is carried by `call`'s own entry or not at
+            // all: with `call` classified as raising nothing, this method came back "(nothing)".
+            //
+            // Exact, with no `UNKNOWN`: everything on the path is local and resolvable — the call
+            // is a MethodDef edge, and `M`'s own body is an `ldsfld` of a local static. So this is
+            // also the one fixture method that shows the instrument giving a complete answer
+            // rather than an answer plus an admission.
+            "Fixture.CctorCases::CallsBoom", "System.TypeInitializationException"
+        ]
+
     /// Returns the number of mismatches.
+    let private checkOne (assy : DumpedAssembly) (a : Escape.Analysis) (name : string) (expected : string) : int =
+        let found =
+            a.Names |> Seq.tryPick (fun kv -> if kv.Value = name then Some kv.Key else None)
+
+        match found with
+        | None ->
+            printfn "  MISSING  %s" name
+            1
+        | Some h ->
+            let actual = render assy a.Escaping.[h]
+
+            if actual = expected then
+                printfn "  ok       %-44s %s" name actual
+                0
+            else
+                printfn "  MISMATCH %s" name
+                printfn "             expected: %s" expected
+                printfn "             actual:   %s" actual
+                1
+
     let private checkFixture (assy : DumpedAssembly) (a : Escape.Analysis) : int =
         printfn ""
         printfn "===== fixture oracle ====="
         let mutable failures = 0
 
         for name, expected in fixtureExpectations do
-            let found =
-                a.Names |> Seq.tryPick (fun kv -> if kv.Value = name then Some kv.Key else None)
+            failures <- failures + checkOne assy a name expected
 
-            match found with
-            | None ->
-                printfn "  MISSING  %s" name
-                failures <- failures + 1
-            | Some h ->
-                let actual = render assy a.Escaping.[h]
-
-                if actual = expected then
-                    printfn "  ok       %-44s %s" name actual
-                else
-                    printfn "  MISMATCH %s" name
-                    printfn "             expected: %s" expected
-                    printfn "             actual:   %s" actual
-                    failures <- failures + 1
+        let total = List.length fixtureExpectations
 
         if failures = 0 then
-            printfn "  all %d expectations hold" (List.length fixtureExpectations)
+            printfn "  all %d expectations hold" total
         else
-            printfn "  %d of %d expectations FAILED" failures (List.length fixtureExpectations)
+            printfn "  %d of %d expectations FAILED" failures total
+
+        failures
+
+    let private checkSoundFixture (assy : DumpedAssembly) (a : Escape.Analysis) : int =
+        printfn ""
+        printfn "===== fixture oracle, against the sound run ====="
+        let mutable failures = 0
+
+        for name, expected in soundFixtureExpectations do
+            failures <- failures + checkOne assy a name expected
+
+        let total = List.length soundFixtureExpectations
+
+        if failures = 0 then
+            printfn "  all %d expectations hold" total
+        else
+            printfn "  %d of %d expectations FAILED" failures total
 
         failures
 
@@ -166,7 +204,7 @@ module Driver =
             // The oracle's expectations are written against the fixture, so only check when that
             // is what we were pointed at.
             if assy.ThisAssemblyDefinition.Name.Name = "Fixture" then
-                checkFixture assy withoutImplicit
+                checkFixture assy withoutImplicit + checkSoundFixture assy withImplicit
             else
                 0
 

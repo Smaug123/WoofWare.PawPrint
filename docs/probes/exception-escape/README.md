@@ -1,14 +1,15 @@
-# Probe: how far does "what exceptions escape this method?" get from `WoofWare.PawPrint.Domain` alone?
+# Probe: how far does "what exceptions escape this method?" get without the interpreter?
 
 This probe exists to put numbers under
 `docs/plans/2026-08-26-exception-escape-analysis.md`. It answers the question that plan turns on:
 **what does an escaping-exception analysis actually need, and which of those things does the
 repository already have?**
 
-It references `WoofWare.PawPrint.Domain` and nothing else. Everything it manages to do is therefore
-something an analyser could do today without seeing `IlMachineState`; every `Unknown` it reports is
-a place where an analyser would need something more, and each one is counted under a named reason
-so the size of that wall is a number rather than an impression.
+It references `WoofWare.PawPrint.Domain` and `WoofWare.PawPrint.Semantics`, and nothing else —
+never the interpreter. Everything it manages to do is therefore something an analyser could do
+today without seeing `IlMachineState`; every `Unknown` it reports is a place where an analyser
+would need something more, and each one is counted under a named reason so the size of that wall
+is a number rather than an impression.
 
 ## Running it
 
@@ -32,19 +33,19 @@ trusting them if the pin moves.
 
 ## What is in here
 
-* `Implicit.fs` — which exceptions each IL opcode can raise *by itself*, with no callee involved.
-  This is the entire "IL semantics" an escape analysis needs: a classification, not an interpreter.
-  `Faults.Unmodelled` is a distinct case from `Faults.Raises []`, because the second is a positive
-  claim of safety and a wrong one is a false negative. Every match is exhaustive with
-  `TreatWarningsAsErrors` on and FS0025 unsuppressed, so an opcode added to `IlOp` fails this build
-  rather than silently acquiring "cannot raise".
+* Which exceptions each IL opcode can raise by itself comes from `OpcodeFaults`, in
+  `WoofWare.PawPrint.Semantics` — the same table the interpreter raises through. The probe had its
+  own copy until that table existed; sharing it is what makes the interpreter's own guest corpus an
+  oracle for the analyser's semantics.
 * `Census.fs` — counts the raw material: body kinds, `throw` sites and what precedes them, exception
   regions and their clause types, callee token kinds, and MemberRef parents.
 * `Escape.fs` — the interprocedural fixpoint. `Unknown` is the top element, reached at eight named
   walls, each counted by site.
 * `Driver.fs` — reporting, and the oracle: `fixtureExpectations` states what each fixture method's
-  escaping set must be, and the process exits non-zero on any mismatch.
-* `Fixture/Cases.cs` — thirteen cases whose expected answer is stated in the driver.
+  escaping set must be, and the process exits non-zero on any mismatch. A second, smaller table is
+  checked against the *sound* run, for the one case that is about an opcode-raised fault the
+  control run suppresses by construction.
+* `Fixture/Cases.cs` — fourteen cases whose expected answer is stated in the driver.
 
 ## Reading the results
 

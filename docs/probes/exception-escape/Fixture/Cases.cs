@@ -95,3 +95,20 @@ public static class Cases
 public class LocalBase : Exception { }
 
 public class Derived : LocalBase { }
+
+/// A type whose initializer throws. Calling `M` runs `.cctor` first (ECMA-335 I.8.9.5), so
+/// `TypeInitializationException` can escape `CallsBoom` even though nothing in either body throws
+/// it — and the `.cctor` is not the callee the call edge names, so an analyser following only the
+/// named target sees nothing at all. That is the shape a `call` entry carrying
+/// `TypeInitialization` exists for.
+public static class Boom
+{
+    public static readonly int Value = int.Parse("not a number");
+
+    public static int M() => Value;
+}
+
+public static class CctorCases
+{
+    public static int CallsBoom() => Boom.M();
+}

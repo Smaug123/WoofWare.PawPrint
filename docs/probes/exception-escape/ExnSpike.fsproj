@@ -9,12 +9,11 @@
     <NoWarn>$(NoWarn);FS0064;FS3370</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Implicit.fs" />
     <Compile Include="Census.fs" />
     <Compile Include="Escape.fs" />
     <Compile Include="Driver.fs" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="../../../WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj" />
+    <ProjectReference Include="../../../WoofWare.PawPrint.Semantics/WoofWare.PawPrint.Semantics.fsproj" />
   </ItemGroup>
 </Project>

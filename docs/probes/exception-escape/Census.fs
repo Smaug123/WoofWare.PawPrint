@@ -112,14 +112,14 @@ module Census =
                 for i in 0 .. ops.Length - 1 do
                     let op, _off = ops.[i]
 
-                    match Implicit.ofIlOp op with
-                    | Faults.Unmodelled -> opcodeKinds.Bump "unmodelled opcode"
-                    | Faults.Raises [] -> ()
-                    | Faults.Raises xs ->
+                    match OpcodeFaults.ofIlOp op with
+                    | OpcodeFaults.Unmodelled -> opcodeKinds.Bump "unmodelled opcode"
+                    | OpcodeFaults.Raises [] -> ()
+                    | OpcodeFaults.Raises xs ->
                         sawImplicit <- true
 
                         for x in xs do
-                            implicitCounts.Bump x
+                            implicitCounts.Bump (OpcodeFault.typeName x)
 
                     match op with
                     | IlOp.Nullary NullaryIlOp.Throw ->

@@ -66,6 +66,13 @@ module internal UnaryMetadataCallOps =
     /// indices (top-of-stack is the rightmost), then the array reference. Per-dimension
     /// bounds violations raise `IndexOutOfRangeException`; on success the coerced value
     /// is written into the row-major backing store at the computed flat offset.
+    ///
+    /// This and its `Get`/`Address` siblings raise through `raiseRuntimeException` rather than
+    /// `raiseOpcodeFault`, though they are reached from an opcode. What faults here is the
+    /// synthesized *callee* — real .NET dispatches to a JIT-generated method — and the executing
+    /// instruction is a plain `call`, whose `OpcodeFaults` entry is empty precisely because callee
+    /// faults are excluded from it. Routing these through the opcode checker asks it a question
+    /// about the wrong instruction, and it correctly refuses to answer.
     let private executeMultiDimArraySet
         (ctx : UnaryMetadataIlOpContext)
         (state : IlMachineState)
@@ -108,7 +115,12 @@ module internal UnaryMetadataCallOps =
         match arrAddrOpt with
         | None ->
             // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
         | Some arrAddr ->
 
         let arrObj =
@@ -121,10 +133,10 @@ module internal UnaryMetadataCallOps =
                 $"multi-dim array Set: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
 
         if indicesOutOfRange arrObj.Lengths indices then
-            IlMachineStateExecution.raiseOpcodeFault
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                OpcodeFault.IndexOutOfRange
+                baseClassTypes.IndexOutOfRangeException
                 thread
                 state
         else
@@ -199,7 +211,12 @@ module internal UnaryMetadataCallOps =
         match arrAddrOpt with
         | None ->
             // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
         | Some arrAddr ->
 
         let arrObj =
@@ -212,10 +229,10 @@ module internal UnaryMetadataCallOps =
                 $"multi-dim array Get: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
 
         if indicesOutOfRange arrObj.Lengths indices then
-            IlMachineStateExecution.raiseOpcodeFault
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                OpcodeFault.IndexOutOfRange
+                baseClassTypes.IndexOutOfRangeException
                 thread
                 state
         else
@@ -298,7 +315,12 @@ module internal UnaryMetadataCallOps =
         match arrAddrOpt with
         | None ->
             // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.NullReferenceException
+                thread
+                state
         | Some arrAddr ->
 
         let arrObj =
@@ -311,10 +333,10 @@ module internal UnaryMetadataCallOps =
                 $"multi-dim array Address: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
 
         if indicesOutOfRange arrObj.Lengths indices then
-            IlMachineStateExecution.raiseOpcodeFault
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                OpcodeFault.IndexOutOfRange
+                baseClassTypes.IndexOutOfRangeException
                 thread
                 state
         else
@@ -358,10 +380,10 @@ module internal UnaryMetadataCallOps =
                 failwith $"BUG: multi-dim array Address: array at %O{arrAddr} has non-Array ConcreteType %O{other}"
 
         if tokenElementHandle <> arrayElementHandle then
-            IlMachineStateExecution.raiseOpcodeFault
+            IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
-                OpcodeFault.ArrayTypeMismatch
+                baseClassTypes.ArrayTypeMismatchException
                 thread
                 state
         else
