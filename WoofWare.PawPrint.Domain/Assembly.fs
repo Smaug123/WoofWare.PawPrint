@@ -1536,13 +1536,19 @@ module Assembly =
                     Console.WriteLine "<runtime-provided: delegate Invoke>"
                 | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
                     Console.WriteLine "<runtime-provided: struct-marshal stub>"
-                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
                     let nameStr =
                         match targetName with
                         | Some n -> $"\"%s{n}\""
                         | None -> "<inherits attributed name>"
 
-                    Console.WriteLine $"<runtime-provided: UnsafeAccessor %O{kind}, target=%s{nameStr}>"
+                    let overrides =
+                        if hasTypeNameOverrides then
+                            ", types named by [UnsafeAccessorType]"
+                        else
+                            ""
+
+                    Console.WriteLine $"<runtime-provided: UnsafeAccessor %O{kind}, target=%s{nameStr}%s{overrides}>"
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
                     Console.WriteLine $"<runtime-provided: unclassified ({name})>"
                 | MethodBody.Abstract -> Console.WriteLine "<abstract: no IL>"

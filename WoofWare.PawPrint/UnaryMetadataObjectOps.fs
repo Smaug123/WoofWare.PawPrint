@@ -184,6 +184,186 @@ module internal UnaryMetadataObjectOps =
 
         state, WhatWeDid.Executed
 
+    /// Allocate the object a `newobj` names and enter its constructor: everything the opcode does
+    /// once its operand has been resolved and concretized.
+    ///
+    /// Shared with `[UnsafeAccessor(UnsafeAccessorKind.Constructor)]` dispatch, whose synthesised
+    /// body CoreCLR builds as exactly `ldarg`s followed by `newobj` (`vm/unsafeaccessors.cpp`,
+    /// `GenerateAccessor`). One implementation, so an accessor constructs exactly as the opcode
+    /// does -- value types included, and `System.String` included, whose constructors are
+    /// redirected here to their managed `Ctor` siblings.
+    ///
+    /// The constructor arguments must already be on the calling frame's evaluation stack; the
+    /// receiver is pushed beneath them. `advanceProgramCounterOfCaller` and
+    /// `callSiteIlOpIndexOverride` are the two ways the call sites differ: the opcode advances past
+    /// itself and has no override, while accessor dispatch has already advanced (at the call that
+    /// entered the accessor) and must name that original call site.
+    let constructObject
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (concretizedCtor : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (declaringTypeHandle : ConcreteTypeHandle)
+        (advanceProgramCounterOfCaller : bool)
+        (callSiteIlOpIndexOverride : int option)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let logger = loggerFactory.CreateLogger "Newobj"
+
+        let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
+            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
+
+        let ctorAssembly =
+            state.LoadedAssembly concretizedCtor.DeclaringAssemblyFullName |> Option.get
+
+        let ctorType =
+            ctorAssembly.TypeDefs.[concretizedCtor.RequiredDeclaringType.Definition.Get]
+
+        do
+            logger.LogDebug (
+                "Creating object of type {ConstructorAssembly}.{ConstructorType}",
+                ctorAssembly.Name.Name,
+                ctorType.Name
+            )
+
+        // The CLI's variable-size-object case: types whose instance size depends on the
+        // constructor arguments, which CoreCLR flags `CORINFO_FLG_VAROBJSIZE` (set whenever
+        // the MethodTable `HasComponentSize` — see `vm/jitinterface.cpp`). The runtime cannot
+        // allocate before the constructor runs, so it allocates nothing and passes no `this`
+        // (`jit/importer.cpp`, CEE_NEWOBJ: "At present this can only be String",
+        // `newObjThisPtr = nullptr`; `interpreter/compiler.cpp`, `doCallInsteadOfNew = true`).
+        //
+        // Arrays are the CLI's only other variable-size case and never reach here:
+        // multi-dimensional array constructors were diverted to `executeMultiDimArrayNewobj`
+        // above, and szarrays go through `newarr` rather than `newobj`. So, exactly as CoreCLR
+        // asserts, this is System.String and nothing else.
+        //
+        // Every `System.String` constructor is declared `extern` with
+        // `MethodImplOptions.InternalCall` and has an empty body; the *implementation* is the
+        // sibling managed static `String.Ctor` of the same parameter signature, returning
+        // `string`. CoreCLR wires the two together in `vm/ecall.cpp`
+        // (`PopulateManagedStringConstructors`), which walks the nine `METHOD__STRING__CTORF_*`
+        // binder entries and dynamically assigns each `Ctor` method's own compiled code as the
+        // ctor's FCall implementation. So a `newobj` on String really does execute CoreLib IL —
+        // `Ctor`'s — and we reproduce that by redirecting the call here rather than
+        // hand-implementing each overload at the native boundary.
+        //
+        // The stack shapes line up exactly: `newobj` has pushed the N constructor arguments and
+        // no `this`, which is precisely what a static N-ary `Ctor` pops, and `Ctor`'s `string`
+        // return value is pushed to the caller by the ordinary `NotConstructing` return path —
+        // which is what `newobj` must leave behind.
+        if TypeInfo.NominallyEqual ctorType baseClassTypes.String then
+            let ctorImplementation =
+                ctorType.Methods
+                |> List.filter (fun candidate ->
+                    candidate.Name = "Ctor"
+                    && candidate.IsStatic
+                    && (MethodInfo.requireRawSignature "String ctor redirection" candidate).ParameterTypes = (MethodInfo.requireRawSignature
+                        "String ctor redirection"
+                        concretizedCtor)
+                        .ParameterTypes
+                )
+
+            let describedSignature : string =
+                (MethodInfo.requireRawSignature "String ctor redirection" concretizedCtor).ParameterTypes
+                |> List.map string
+                |> String.concat ", "
+
+            let ctorImplementation =
+                match ctorImplementation with
+                | [ single ] -> single
+                | [] ->
+                    failwith
+                        $"newobj on System.String::.ctor(%s{describedSignature}) found no matching static String.Ctor to redirect to. CoreCLR implements every string constructor as its same-signature `Ctor` sibling (vm/ecall.cpp, PopulateManagedStringConstructors); a missing one means this CoreLib declares a constructor overload we do not know about."
+                | _ :: _ :: _ ->
+                    failwith
+                        $"newobj on System.String::.ctor(%s{describedSignature}) found several matching static String.Ctor overloads; the parameter signature should identify exactly one."
+
+            match (MethodInfo.requireRawSignature "String ctor redirection" ctorImplementation).ReturnType with
+            | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String) -> ()
+            | other ->
+                failwith
+                    $"String.Ctor selected for newobj returns %O{other}; every String.Ctor overload must return String, because its return value is what newobj pushes."
+
+            // String is non-generic, so there are no type generics to substitute, and no
+            // `Ctor` overload is itself generic.
+            let state, concretizedCtorImplementation, _ =
+                ExecutionConcretization.concretizeMethodWithTypeGenerics
+                    loggerFactory
+                    baseClassTypes
+                    ImmutableArray.Empty
+                    ctorImplementation
+                    None
+                    ctorAssembly.DefinitionFullName
+                    ImmutableArray.Empty
+                    state
+
+            let threadState = state.ThreadState.[thread]
+
+            IlMachineStateExecution.callMethod
+                loggerFactory
+                baseClassTypes
+                None
+                ConstructionState.NotConstructing
+                false
+                false
+                advanceProgramCounterOfCaller
+                concretizedCtorImplementation.Generics
+                concretizedCtorImplementation
+                thread
+                threadState
+                callSiteIlOpIndexOverride
+                ReturnValueDisposition.PushToCaller
+                false // wrapExceptionInTargetInvocation
+                state
+        else
+
+        let state, fields =
+            IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state declaringTypeHandle
+
+        // This is a bit unorthodox for value types, which *aren't* heap-allocated.
+        // We'll perform their construction on the heap, though, to keep the interface
+        // of Newobj uniform.
+        // On completion of the constructor, we'll copy the value back off the heap,
+        // and put it on the eval stack directly.
+        let allocatedAddr, state =
+            let ty =
+                AllConcreteTypes.findExistingConcreteType
+                    state.ConcreteTypes
+                    concretizedCtor.RequiredDeclaringType.Identity
+                    concretizedCtor.DeclaringTypeGenerics
+                |> Option.get
+
+            IlMachineState.allocateManagedObject ty fields state
+
+        let state =
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ctorType then
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr)) thread
+            else
+                state
+                |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
+
+        let threadState = state.ThreadState.[thread]
+
+        IlMachineStateExecution.callMethod
+            loggerFactory
+            baseClassTypes
+            None
+            (ConstructionState.Constructing allocatedAddr)
+            false
+            false
+            advanceProgramCounterOfCaller
+            concretizedCtor.Generics
+            concretizedCtor
+            thread
+            threadState
+            callSiteIlOpIndexOverride
+            ReturnValueDisposition.PushToCaller
+            false // wrapExceptionInTargetInvocation
+            state
+
     let executeNewobj (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -191,9 +371,6 @@ module internal UnaryMetadataObjectOps =
         let metadataToken = ctx.MetadataToken
         let thread = ctx.Thread
         let logger = ctx.Logger
-
-        let heapValueByref (addr : ManagedHeapAddress) : ManagedPointerSource =
-            ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
 
         // Multi-dimensional array constructors are runtime-synthesized (ECMA-335 II.14.2): the
         // metadata token is a MemberReference whose parent is a TypeSpec of TypeDefn.Array.
@@ -255,153 +432,7 @@ module internal UnaryMetadataObjectOps =
         // An allocation whose `.cctor` then throws is therefore garbage, exactly as on the real
         // runtime: the `newobj` never completes and nothing can reach the object.
 
-        let ctorAssembly = state.LoadedAssembly ctor.DeclaringAssemblyFullName |> Option.get
-        let ctorType = ctorAssembly.TypeDefs.[ctor.RequiredDeclaringType.Definition.Get]
-
-        do
-            logger.LogDebug (
-                "Creating object of type {ConstructorAssembly}.{ConstructorType}",
-                ctorAssembly.Name.Name,
-                ctorType.Name
-            )
-
-        // The CLI's variable-size-object case: types whose instance size depends on the
-        // constructor arguments, which CoreCLR flags `CORINFO_FLG_VAROBJSIZE` (set whenever
-        // the MethodTable `HasComponentSize` — see `vm/jitinterface.cpp`). The runtime cannot
-        // allocate before the constructor runs, so it allocates nothing and passes no `this`
-        // (`jit/importer.cpp`, CEE_NEWOBJ: "At present this can only be String",
-        // `newObjThisPtr = nullptr`; `interpreter/compiler.cpp`, `doCallInsteadOfNew = true`).
-        //
-        // Arrays are the CLI's only other variable-size case and never reach here:
-        // multi-dimensional array constructors were diverted to `executeMultiDimArrayNewobj`
-        // above, and szarrays go through `newarr` rather than `newobj`. So, exactly as CoreCLR
-        // asserts, this is System.String and nothing else.
-        //
-        // Every `System.String` constructor is declared `extern` with
-        // `MethodImplOptions.InternalCall` and has an empty body; the *implementation* is the
-        // sibling managed static `String.Ctor` of the same parameter signature, returning
-        // `string`. CoreCLR wires the two together in `vm/ecall.cpp`
-        // (`PopulateManagedStringConstructors`), which walks the nine `METHOD__STRING__CTORF_*`
-        // binder entries and dynamically assigns each `Ctor` method's own compiled code as the
-        // ctor's FCall implementation. So a `newobj` on String really does execute CoreLib IL —
-        // `Ctor`'s — and we reproduce that by redirecting the call here rather than
-        // hand-implementing each overload at the native boundary.
-        //
-        // The stack shapes line up exactly: `newobj` has pushed the N constructor arguments and
-        // no `this`, which is precisely what a static N-ary `Ctor` pops, and `Ctor`'s `string`
-        // return value is pushed to the caller by the ordinary `NotConstructing` return path —
-        // which is what `newobj` must leave behind.
-        if TypeInfo.NominallyEqual ctorType baseClassTypes.String then
-            let ctorImplementation =
-                ctorType.Methods
-                |> List.filter (fun candidate ->
-                    candidate.Name = "Ctor"
-                    && candidate.IsStatic
-                    && (MethodInfo.requireRawSignature "String ctor redirection" candidate).ParameterTypes = (MethodInfo.requireRawSignature
-                        "String ctor redirection"
-                        ctor)
-                        .ParameterTypes
-                )
-
-            let describedSignature : string =
-                (MethodInfo.requireRawSignature "String ctor redirection" ctor).ParameterTypes
-                |> List.map string
-                |> String.concat ", "
-
-            let ctorImplementation =
-                match ctorImplementation with
-                | [ single ] -> single
-                | [] ->
-                    failwith
-                        $"newobj on System.String::.ctor(%s{describedSignature}) found no matching static String.Ctor to redirect to. CoreCLR implements every string constructor as its same-signature `Ctor` sibling (vm/ecall.cpp, PopulateManagedStringConstructors); a missing one means this CoreLib declares a constructor overload we do not know about."
-                | _ :: _ :: _ ->
-                    failwith
-                        $"newobj on System.String::.ctor(%s{describedSignature}) found several matching static String.Ctor overloads; the parameter signature should identify exactly one."
-
-            match (MethodInfo.requireRawSignature "String ctor redirection" ctorImplementation).ReturnType with
-            | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String) -> ()
-            | other ->
-                failwith
-                    $"String.Ctor selected for newobj returns %O{other}; every String.Ctor overload must return String, because its return value is what newobj pushes."
-
-            // String is non-generic, so there are no type generics to substitute, and no
-            // `Ctor` overload is itself generic.
-            let state, concretizedCtorImplementation, _ =
-                ExecutionConcretization.concretizeMethodWithTypeGenerics
-                    loggerFactory
-                    baseClassTypes
-                    ImmutableArray.Empty
-                    ctorImplementation
-                    None
-                    ctorAssembly.DefinitionFullName
-                    ImmutableArray.Empty
-                    state
-
-            let threadState = state.ThreadState.[thread]
-
-            IlMachineStateExecution.callMethod
-                loggerFactory
-                baseClassTypes
-                None
-                ConstructionState.NotConstructing
-                false
-                false
-                true
-                concretizedCtorImplementation.Generics
-                concretizedCtorImplementation
-                thread
-                threadState
-                None
-                ReturnValueDisposition.PushToCaller
-                false // wrapExceptionInTargetInvocation
-                state,
-            WhatWeDid.Executed
-        else
-
-        let state, fields =
-            IlMachineState.buildInstanceStorage loggerFactory baseClassTypes state declaringTypeHandle
-
-        // This is a bit unorthodox for value types, which *aren't* heap-allocated.
-        // We'll perform their construction on the heap, though, to keep the interface
-        // of Newobj uniform.
-        // On completion of the constructor, we'll copy the value back off the heap,
-        // and put it on the eval stack directly.
-        let allocatedAddr, state =
-            let ty =
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    concretizedCtor.RequiredDeclaringType.Identity
-                    concretizedCtor.DeclaringTypeGenerics
-                |> Option.get
-
-            IlMachineState.allocateManagedObject ty fields state
-
-        let state =
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ctorType then
-                state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer (heapValueByref allocatedAddr)) thread
-            else
-                state
-                |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some allocatedAddr)) thread
-
-        let threadState = state.ThreadState.[thread]
-
-        IlMachineStateExecution.callMethod
-            loggerFactory
-            baseClassTypes
-            None
-            (ConstructionState.Constructing allocatedAddr)
-            false
-            false
-            true
-            concretizedCtor.Generics
-            concretizedCtor
-            thread
-            threadState
-            None
-            ReturnValueDisposition.PushToCaller
-            false // wrapExceptionInTargetInvocation
-            state,
+        constructObject loggerFactory baseClassTypes thread concretizedCtor declaringTypeHandle true None state,
         WhatWeDid.Executed
 
     /// Wrap a value-type value in a fresh heap object, returning the box's address.

@@ -464,15 +464,21 @@ module IlFormatting =
             [ header ; "  // No IL body (runtime-provided delegate Invoke)" ]
         | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
             [ header ; "  // No IL body (runtime-provided struct-marshal stub)" ]
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
             let nameStr =
                 match targetName with
                 | Some n -> $"\"{n}\""
                 | None -> "<attributed method name>"
 
+            let overrides =
+                if hasTypeNameOverrides then
+                    ", types named by [UnsafeAccessorType]"
+                else
+                    ""
+
             [
                 header
-                $"  // No IL body (runtime-provided UnsafeAccessor: {kind}, target={nameStr})"
+                $"  // No IL body (runtime-provided UnsafeAccessor: {kind}, target={nameStr}{overrides})"
             ]
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             [ header ; $"  // No IL body (runtime-provided, unclassified: {name})" ]

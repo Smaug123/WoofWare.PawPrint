@@ -203,7 +203,17 @@ type RuntimeBehaviour =
     /// <c>Name</c> property on the attribute; <c>None</c> means "use the attributed
     /// method's name", per the attribute's documented default.
     /// </summary>
-    | UnsafeAccessor of kind : UnsafeAccessorKind * targetName : string option
+    /// <remarks>
+    /// <c>HasTypeNameOverrides</c> says that at least one of the declaration's parameters, or its
+    /// return, carries <c>[UnsafeAccessorType("...")]</c> — the .NET 10 attribute that names the
+    /// type by assembly-qualified string rather than by signature, so that a member of a type the
+    /// declaring assembly cannot reference can still be reached. Every one of CoreLib's own
+    /// <c>[UnsafeAccessor]</c> declarations is of that shape. Such a declaration's *signature*
+    /// therefore does not name the types dispatch must use, so a dispatcher reading the signature
+    /// would resolve against the wrong type (usually <c>System.Object</c>) and silently miss the
+    /// target; the flag exists so that it refuses instead.
+    /// </remarks>
+    | UnsafeAccessor of kind : UnsafeAccessorKind * targetName : string option * hasTypeNameOverrides : bool
 
     /// <summary>
     /// The Runtime-impl flag is set but PawPrint has no specific handler. This currently
@@ -1154,15 +1164,34 @@ module MethodInfo =
 
                     Some (kind, name)
 
+    /// Does any of the method's Param rows carry <c>[UnsafeAccessorType("...")]</c>?
+    ///
+    /// Every Param row is scanned, sequence number 0 included: that row is where a
+    /// <c>[return: UnsafeAccessorType]</c> lands, and it is the row
+    /// <see cref="UnsafeAccessorKind.Constructor"/> names the target type through.
+    let private hasUnsafeAccessorTypeAttribute (metadataReader : MetadataReader) (methodDef : MethodDefinition) : bool =
+        methodDef.GetParameters ()
+        |> Seq.exists (fun paramHandle ->
+            metadataReader.GetParameter(paramHandle).GetCustomAttributes ()
+            |> Seq.exists (fun attrHandle ->
+                let attr = metadataReader.GetCustomAttribute attrHandle
+
+                match tryReadAttributeTypeName metadataReader attr.Constructor with
+                | Some ("System.Runtime.CompilerServices", "UnsafeAccessorTypeAttribute") -> true
+                | _ -> false
+            )
+        )
+
     /// <summary>
     /// Scan a method's custom attributes for <c>[UnsafeAccessor]</c> and parse the
-    /// kind and (optional) target name. Returns <c>None</c> when the attribute is
+    /// kind and (optional) target name, together with whether any parameter or the return
+    /// carries <c>[UnsafeAccessorType]</c>. Returns <c>None</c> when the attribute is
     /// absent or the blob fails to match the expected shape.
     /// </summary>
     let private tryReadUnsafeAccessor
         (metadataReader : MetadataReader)
         (methodDef : MethodDefinition)
-        : (UnsafeAccessorKind * string option) option
+        : (UnsafeAccessorKind * string option * bool) option
         =
         let mutable result = None
 
@@ -1178,6 +1207,9 @@ module MethodInfo =
                 | _ -> ()
 
         result
+        |> Option.map (fun (kind, targetName) ->
+            kind, targetName, hasUnsafeAccessorTypeAttribute metadataReader methodDef
+        )
 
     /// Does this method carry `[System.Runtime.InteropServices.UnmanagedCallersOnly]`?
     ///
@@ -1261,8 +1293,10 @@ module MethodInfo =
                     // is genuinely unexpected and we fail loudly so we surface the gap rather
                     // than silently synthesising an Abstract method.
                     match tryReadUnsafeAccessor metadataReader methodDef with
-                    | Some (kind, targetName) ->
-                        MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName))
+                    | Some (kind, targetName, hasTypeNameOverrides) ->
+                        MethodBody.RuntimeProvided (
+                            RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)
+                        )
                     | None ->
                         failwith
                             $"%s{assemblyName.Name}::%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag and no [UnsafeAccessor] attribute (ImplAttributes=%O{implAttrs}, MethodAttributes=%O{methodAttrs}); malformed metadata or unhandled body classification"

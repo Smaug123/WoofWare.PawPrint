@@ -109,6 +109,8 @@
     <Compile Include="UnaryMetadataArrayOps.fs" />
     <Compile Include="UnaryMetadataMemoryOps.fs" />
     <Compile Include="UnaryMetadataTokenOps.fs" />
+    <!-- After the field and object ops, whose `ldflda`/`ldsflda`/`newobj` bodies it shares. -->
+    <Compile Include="UnsafeAccessorDispatch.fs" />
     <Compile Include="UnaryMetadataIlOp.fs" />
     <Compile Include="UnaryStringTokenIlOp.fs" />
     <Compile Include="UnaryConstIlOp.fs" />

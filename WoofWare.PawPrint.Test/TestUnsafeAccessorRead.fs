@@ -58,9 +58,10 @@ namespace UnsafeAccessorTest
         let method = findMethod assy "CallStatic"
 
         match method.Body with
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, hasTypeNameOverrides)) ->
             kind |> shouldEqual UnsafeAccessorKind.StaticMethod
             name |> shouldEqual (Some "TargetStatic")
+            hasTypeNameOverrides |> shouldEqual false
         | other -> failwithf "Expected UnsafeAccessor (StaticMethod, Some \"TargetStatic\") but got %A" other
 
     [<Test>]
@@ -69,9 +70,10 @@ namespace UnsafeAccessorTest
         let method = findMethod assy "CallInstance"
 
         match method.Body with
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, hasTypeNameOverrides)) ->
             kind |> shouldEqual UnsafeAccessorKind.Method
             name |> shouldEqual None
+            hasTypeNameOverrides |> shouldEqual false
         | other -> failwithf "Expected UnsafeAccessor (Method, None) but got %A" other
 
     [<Test>]
@@ -80,7 +82,74 @@ namespace UnsafeAccessorTest
         let method = findMethod assy "GetField"
 
         match method.Body with
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, name, hasTypeNameOverrides)) ->
             kind |> shouldEqual UnsafeAccessorKind.Field
             name |> shouldEqual (Some "_field")
+            hasTypeNameOverrides |> shouldEqual false
         | other -> failwithf "Expected UnsafeAccessor (Field, Some \"_field\") but got %A" other
+
+    /// A `[UnsafeAccessorType("...")]` on a parameter or on the return names the target type by
+    /// assembly-qualified string, so the declaration's *signature* does not name the types dispatch
+    /// must use. Every one of CoreLib's own `[UnsafeAccessor]` declarations is of that shape, so a
+    /// dispatcher that could not tell the difference would resolve them against `System.Object`.
+    let private compileWithTypeNameOverrides () : DumpedAssembly =
+        let source =
+            """
+using System.Runtime.CompilerServices;
+
+namespace UnsafeAccessorTest
+{
+    public class Overridden
+    {
+        [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "Get")]
+        public static extern int OnParameter([UnsafeAccessorType("Some.Other.Type, Some.Other.Assembly")] object obj);
+
+        [UnsafeAccessor(UnsafeAccessorKind.Constructor)]
+        [return: UnsafeAccessorType("Some.Other.Type, Some.Other.Assembly")]
+        public static extern object OnReturn();
+
+        [UnsafeAccessor(UnsafeAccessorKind.StaticMethod, Name = "Get")]
+        public static extern int Plain(object obj);
+    }
+}
+"""
+
+        let bytes =
+            Roslyn.compileAssembly
+                "UnsafeAccessorTypeNameTest"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ source ]
+
+        TypeIdentityTestHelpers.dumpedAssembly None bytes
+
+    let private typeNameOverrideOf (assy : DumpedAssembly) (methodName : string) : bool =
+        let ty =
+            TypeIdentityTestHelpers.getTopLevelTypeDef assy "UnsafeAccessorTest" "Overridden"
+
+        let method =
+            ty.Methods
+            |> List.tryFind (fun m -> m.Name = methodName)
+            |> Option.defaultWith (fun () -> failwithf "Missing method %s" methodName)
+
+        match method.Body with
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (_, _, hasTypeNameOverrides)) ->
+            hasTypeNameOverrides
+        | other -> failwithf "Expected UnsafeAccessor but got %A" other
+
+    [<Test>]
+    let ``UnsafeAccessorType on a parameter is detected`` () =
+        compileWithTypeNameOverrides ()
+        |> fun assy -> typeNameOverrideOf assy "OnParameter" |> shouldEqual true
+
+    [<Test>]
+    let ``UnsafeAccessorType on the return is detected`` () =
+        // The return's attributes live on the Param row with sequence number 0, which
+        // `Parameter.readAll` drops; the scan must read the raw rows rather than that list.
+        compileWithTypeNameOverrides ()
+        |> fun assy -> typeNameOverrideOf assy "OnReturn" |> shouldEqual true
+
+    [<Test>]
+    let ``A declaration with no UnsafeAccessorType is not flagged`` () =
+        compileWithTypeNameOverrides ()
+        |> fun assy -> typeNameOverrideOf assy "Plain" |> shouldEqual false

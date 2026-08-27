@@ -444,14 +444,16 @@ module AbstractMachine =
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> dispatchDelegateInvoke ()
         | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
             StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
-            let nameStr =
-                match targetName with
-                | Some n -> $"\"{n}\""
-                | None -> "<attributed method name>"
-
-            failwith
-                $"TODO: dispatch [UnsafeAccessor] is unimplemented for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} (kind={kind}, target={nameStr})"
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
+            UnsafeAccessorDispatch.execute
+                loggerFactory
+                baseClassTypes
+                thread
+                instruction
+                kind
+                targetName
+                hasTypeNameOverrides
+                state
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             failwith
                 $"BUG: reached executeOneStep for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"
