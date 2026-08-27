@@ -902,6 +902,21 @@ module internal UnsafeAccessorDispatch =
             baseClassTypes.VerificationException,
             $"Method %s{targetMethod}: type argument '%s{typeArgument}' violates the constraint of type parameter '%s{parameterName}'."
 
+    /// Is this receiver null, in either of the two ways an accessor's first argument can be?
+    ///
+    /// A reference-typed target's receiver arrives as `NullObjectRef`; a value type's arrives as a
+    /// managed pointer, and the null one of those is `ManagedPointerSource.Null` --
+    /// `Unsafe.NullRef<S>()` is how a guest produces it. Both are null to the `callvirt` and the
+    /// `ldflda` CoreCLR's stub emits: measured on real .NET 10, an accessor handed
+    /// `ref Unsafe.NullRef<S>()` raises `NullReferenceException` from the accessor itself, for the
+    /// method kind and for the field kind alike -- including a field at a non-zero offset, whose
+    /// address is merely taken and never read.
+    let private receiverIsNull (receiver : EvalStackValue) : bool =
+        match receiver with
+        | EvalStackValue.NullObjectRef -> true
+        | EvalStackValue.ManagedPointer ManagedPointerSource.Null -> true
+        | _ -> false
+
     /// The program counter an accessor's frame carries once it has dispatched to its target.
     ///
     /// An accessor's frame has no IL, so nothing else moves its program counter and any non-zero
@@ -1060,15 +1075,16 @@ module internal UnsafeAccessorDispatch =
         | Ok (UnsafeAccessorPlan.CallInstance target) ->
             // CoreCLR emits `callvirt` for the instance-method kind (unsafeaccessors.cpp:968), so a
             // null receiver faults here rather than inside the target.
-            match EvalStackValue.ofCliType instruction.Arguments.[0] with
-            | EvalStackValue.NullObjectRef -> raiseFromAccessor baseClassTypes.NullReferenceException None state
-            | _ -> callTarget target 0 true state
+            if receiverIsNull (EvalStackValue.ofCliType instruction.Arguments.[0]) then
+                raiseFromAccessor baseClassTypes.NullReferenceException None state
+            else
+                callTarget target 0 true state
         | Ok (UnsafeAccessorPlan.InstanceFieldAddress (field, declaringType)) ->
             let receiver = EvalStackValue.ofCliType instruction.Arguments.[0]
 
-            match receiver with
-            | EvalStackValue.NullObjectRef -> raiseFromAccessor baseClassTypes.NullReferenceException None state
-            | _ ->
+            if receiverIsNull receiver then
+                raiseFromAccessor baseClassTypes.NullReferenceException None state
+            else
 
             let fieldId = FieldId.metadata declaringType field.Handle field.Name
 
