@@ -86,17 +86,27 @@ module Program =
 
     /// Where a `Startup` has got to, together with whatever that phase needs to hand on.
     ///
-    /// Startup runs guest code twice before `Main`, and the two runs are not interchangeable:
-    /// the AppContext seed must finish before the entry type's `.cctor` starts, because BCL
-    /// feature switches latch into `static readonly` fields on first read. Modelled as a DU
-    /// carrying each phase's own data so the pair cannot drift apart — there is no way to be
-    /// initialising classes without having allocated argv, nor to be seeding without knowing
-    /// what to do when the seed returns.
+    /// Startup runs guest code up to three times before `Main`, and the runs are not
+    /// interchangeable. They are in the order CoreCLR runs them: the AppContext seed is
+    /// `CorHost2::CreateAppDomainWithManager`, and the command line is
+    /// `CorHost2::ExecuteAssembly` calling `SetCommandLineArgs` immediately before
+    /// `ExecuteMainMethod` — which is what triggers the entry type's `.cctor`. Both deadlines
+    /// bite: BCL feature switches latch into `static readonly` fields on first read, and a
+    /// `.cctor` may call `Environment.GetCommandLineArgs` itself.
+    ///
+    /// Modelled as a DU carrying each phase's own data so the phases cannot drift apart —
+    /// there is no way to be initialising classes without `Main`'s arguments in hand, nor to
+    /// be pumping a call without knowing what to do when it returns. Each pumped phase names
+    /// its successor rather than always yielding to class initialisation, so inserting or
+    /// skipping one is a local change.
     type private StartupPhase =
-        /// Pumping `AppContext.Setup`. `onReturn` reinstates the startup frame the seed
-        /// consumed, loads the entry class, and allocates argv.
-        | SeedingAppContext of onReturn : (IlMachineState -> IlMachineState * ImmutableArray<CliType>)
-        /// Pumping class initialisers, the entry type's included, with argv already allocated.
+        /// Pumping `AppContext.Setup`.
+        | SeedingAppContext of onReturn : (IlMachineState -> IlMachineState * StartupPhase)
+        /// Pumping `Environment.InitializeCommandLineArgs`, whose return value is the array
+        /// `Main` must receive.
+        | InitialisingCommandLine of onReturn : (IlMachineState -> IlMachineState * StartupPhase)
+        /// Pumping class initialisers, the entry type's included, with `Main`'s arguments
+        /// already in hand.
         | InitialisingClasses of mainArgs : ImmutableArray<CliType>
 
     /// Startup in progress. Holds the machine state as a `PreparedProgram`, so the same
@@ -1202,12 +1212,21 @@ module Program =
                 failwith
                     "logic error: initial loadClass for entry point cannot block on another thread (no other threads exist yet)"
 
-        /// Everything between the two guest-code phases: load the entry class and allocate argv.
-        /// Runs no guest instructions of its own — `loadClass` only pushes cctor frames, which
-        /// the class-initialisation phase then pumps.
-        let enterClassInit (state : IlMachineState) : IlMachineState * ImmutableArray<CliType> =
-            let state = loadInitialState state
+        /// Load the entry class, so that the class-initialisation phase has its `.cctor` to
+        /// pump. Runs no guest instructions of its own — `loadClass` only pushes cctor frames.
+        let enterClassInit
+            (mainArgs : ImmutableArray<CliType>)
+            (state : IlMachineState)
+            : IlMachineState * StartupPhase
+            =
+            loadInitialState state, StartupPhase.InitialisingClasses mainArgs
 
+        /// `Main`'s arguments built by PawPrint rather than obtained from CoreLib.
+        ///
+        /// Only for the case where there is no command line to install, which is the one shape
+        /// in which upstream's `InitializeCommandLineArgs` does not run either — so this is not
+        /// a second way of answering the same question, and cannot disagree with the first.
+        let allocateMainArgsDirectly (state : IlMachineState) : IlMachineState * ImmutableArray<CliType> =
             if mainTakesStringArrayArg then
                 let arrayAllocation, state = allocateArgs loggerFactory argv baseClassTypes state
                 state, ImmutableArray.Create (CliType.ofManagedObject arrayAllocation)
@@ -1298,48 +1317,104 @@ module Program =
                 InstallMain = installMain
             }
 
-        match AppContextSeed.prepareCall loggerFactory baseClassTypes propertiesToSeed state with
-        | None ->
-            // Nothing to seed, so there is no first phase to pump: go straight to class
-            // initialisation. The startup frame `computeState` installed is still in place,
-            // never having been consumed.
-            let state, mainArgs = enterClassInit state
-            atPhase state (StartupPhase.InitialisingClasses mainArgs)
-        | Some (state, setupFrame) ->
-            logger.LogInformation "Seeding AppContext from the host's configuration properties"
-
+        /// Run `methodState` on the entry thread in place of whatever frame it currently holds.
+        /// Every phase that pumps a call installs it this way, and every such call consumes the
+        /// frame by terminating the thread, so `reinstateStartupFrame` is its counterpart.
+        let installCall (methodState : MethodState) (state : IlMachineState) : IlMachineState =
             let threadState =
                 state.ThreadState.[mainThread]
-                |> ThreadState.replaceFrames setupFrame
+                |> ThreadState.replaceFrames methodState
                 |> fun threadState ->
                     { threadState with
                         Status = ThreadStatus.Runnable
                     }
 
-            let state =
-                { state with
-                    ThreadState = state.ThreadState |> Map.add mainThread threadState
-                }
+            { state with
+                ThreadState = state.ThreadState |> Map.add mainThread threadState
+            }
 
-            let onSeeded (state : IlMachineState) : IlMachineState * ImmutableArray<CliType> =
-                // The seed ran the entry thread to completion, consuming its startup frame; put
-                // a fresh one back so the class-initialisation pump that follows is unaffected.
-                let state, startupFrame = buildStartupFrame baseClassTypes state
+        /// Put a fresh startup frame on the entry thread, which a pumped call consumed by
+        /// running the thread to completion.
+        ///
+        /// The invariant every phase-entry function below relies on: on entry, the entry thread
+        /// holds a startup frame. `computeState` establishes it, and each `onReturn` restores it.
+        let reinstateStartupFrame (state : IlMachineState) : IlMachineState =
+            let state, startupFrame = buildStartupFrame baseClassTypes state
+            installCall startupFrame state
 
-                let threadState =
-                    state.ThreadState.[mainThread]
-                    |> ThreadState.replaceFrames startupFrame
-                    |> fun threadState ->
-                        { threadState with
-                            Status = ThreadStatus.Runnable
-                        }
+        /// Install the guest's command line, the way `CorHost2::ExecuteAssembly` does
+        /// immediately before it runs `Main`. The array CoreLib returns is the one `Main`
+        /// receives, so there is no second construction of it to disagree.
+        let enterCommandLineInit (state : IlMachineState) : IlMachineState * StartupPhase =
+            match CommandLineArgsInit.prepareCall loggerFactory baseClassTypes originalPath argv state with
+            | None ->
+                // The host named no assembly path, so there is no command line to install and
+                // `Environment.GetCommandLineArgs` will answer from CoreLib's empty-array
+                // fallback — exactly as it does upstream for a runtime not entered through
+                // `ExecuteAssembly`. `Main` still needs its arguments.
+                let state, mainArgs = allocateMainArgsDirectly state
+                enterClassInit mainArgs state
+            | Some (state, initFrame) ->
+                logger.LogInformation "Installing the guest's command line"
 
-                { state with
-                    ThreadState = state.ThreadState |> Map.add mainThread threadState
-                }
-                |> enterClassInit
+                let onInitialised (state : IlMachineState) : IlMachineState * StartupPhase =
+                    // `InitializeCommandLineArgs` returns the arguments `Main` is to be given,
+                    // having just built `s_commandLineArgs` from the same input in the same
+                    // pass. The entry thread has terminated, so its eval stack holds the return
+                    // value the way it holds `Main`'s exit code.
+                    let returned =
+                        match state.ThreadState.[mainThread].MethodState.EvaluationStack.Values with
+                        | EvalStackValue.ObjectRef addr :: _ -> addr
+                        | [] ->
+                            failwith
+                                "System.Environment::InitializeCommandLineArgs returned without leaving its string[] on the eval stack."
+                        | other :: _ ->
+                            failwith
+                                $"System.Environment::InitializeCommandLineArgs left %O{other} on the eval stack; expected the string[] of Main's arguments."
 
-            atPhase state (StartupPhase.SeedingAppContext onSeeded)
+                    let mainArgs =
+                        if mainTakesStringArrayArg then
+                            ImmutableArray.Create (CliType.ofManagedObject returned)
+                        else
+                            // The call is made regardless — `ExecuteAssembly` makes it before
+                            // it knows the entry point's signature, and `GetCommandLineArgs`
+                            // must work for a `Main` that takes nothing — so the array is
+                            // simply not passed on.
+                            ImmutableArray.Empty
+
+                    state |> reinstateStartupFrame |> enterClassInit mainArgs
+
+                installCall initFrame state, StartupPhase.InitialisingCommandLine onInitialised
+
+        match AppContextSeed.prepareCall loggerFactory baseClassTypes propertiesToSeed state with
+        | None ->
+            // Nothing to seed, so there is no first phase to pump. The startup frame
+            // `computeState` installed is still in place, never having been consumed.
+            let state, phase = enterCommandLineInit state
+            atPhase state phase
+        | Some (state, setupFrame) ->
+            logger.LogInformation "Seeding AppContext from the host's configuration properties"
+
+            let onSeeded (state : IlMachineState) : IlMachineState * StartupPhase =
+                state |> reinstateStartupFrame |> enterCommandLineInit
+
+            atPhase (installCall setupFrame state) (StartupPhase.SeedingAppContext onSeeded)
+
+    /// How a startup call that was pumped to completion ended, as the tail of a sentence
+    /// naming what was being run: "Seeding AppContext <this>."
+    ///
+    /// By case rather than with `%O`: every `RunOutcome` carries an `IlMachineState`, so
+    /// structural formatting would render the entire heap into the exception message.
+    let private describeStartupOutcome (outcome : RunOutcome) : string =
+        match outcome with
+        | RunOutcome.NormalExit _ -> "returned normally"
+        | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
+        | RunOutcome.Aborted (_, thread, fatal) ->
+            let message = fatal.Message |> Option.defaultValue "<no message>"
+            $"aborted on %O{thread} with %O{fatal.Code}: %s{message}"
+        | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
+        | RunOutcome.GuestUnhandledException (_, thread, exn) ->
+            $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
 
     /// Advance startup by one guest instruction, crossing a phase boundary when the entry
     /// thread's current frame returns.
@@ -1374,8 +1449,9 @@ module Program =
         // during startup means the frame this phase was pumping has returned rather than that
         // the program is over.
         match startup.Phase, outcome with
-        | StartupPhase.SeedingAppContext onReturn, RunOutcome.NormalExit (state, _) ->
-            let state, mainArgs = onReturn state
+        | StartupPhase.SeedingAppContext onReturn, RunOutcome.NormalExit (state, _)
+        | StartupPhase.InitialisingCommandLine onReturn, RunOutcome.NormalExit (state, _) ->
+            let state, phase = onReturn state
 
             StartupStepOutcome.PhaseAdvanced
                 { startup with
@@ -1383,29 +1459,20 @@ module Program =
                         { startup.Prepared with
                             State = state
                         }
-                    Phase = StartupPhase.InitialisingClasses mainArgs
+                    Phase = phase
                 }
+        | StartupPhase.InitialisingCommandLine _, outcome ->
+            // `InitializeCommandLineArgs` news up two arrays and copies strings out of buffers
+            // we ourselves just wrote; it has no other way to end. Anything else means a cctor
+            // dragged in by that work misbehaved, and pressing on would run Main with an
+            // unpopulated command line.
+            failwith $"Installing the guest's command line %s{describeStartupOutcome outcome}."
         | StartupPhase.SeedingAppContext _, outcome ->
             // Nothing in `AppContext.Setup` can legitimately exit, fail fast or throw: it
             // allocates a Dictionary and copies strings out of buffers we ourselves just
             // wrote. Anything else means a cctor dragged in by that work misbehaved, and
             // pressing on would run Main against a half-seeded AppContext.
-            //
-            // Describe the outcome by case rather than with `%O`: every `RunOutcome` carries
-            // an `IlMachineState`, so structural formatting would render the entire heap into
-            // the exception message.
-            let described =
-                match outcome with
-                | RunOutcome.NormalExit _ -> "returned normally" // unreachable, matched above
-                | RunOutcome.ProcessExit (_, thread) -> $"called Environment.Exit on %O{thread}"
-                | RunOutcome.Aborted (_, thread, fatal) ->
-                    let message = fatal.Message |> Option.defaultValue "<no message>"
-                    $"aborted on %O{thread} with %O{fatal.Code}: %s{message}"
-                | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, thread, exn) ->
-                    $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
-
-            failwith $"Seeding AppContext %s{described}."
+            failwith $"Seeding AppContext %s{describeStartupOutcome outcome}."
         | StartupPhase.InitialisingClasses mainArgs, RunOutcome.NormalExit (state, _) ->
             StartupStepOutcome.Completed (startup.InstallMain state mainArgs)
         | StartupPhase.InitialisingClasses _, RunOutcome.GuestUnhandledException _
