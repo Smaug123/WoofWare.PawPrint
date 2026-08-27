@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
+
 /// The scheduler owns every ThreadStatus transition and the decision of which thread
 /// runs next. It is a pure function of `IlMachineState`: the driver loop hands us an
 /// outcome from `AbstractMachine.executeOneStep`, we fold that back into the thread

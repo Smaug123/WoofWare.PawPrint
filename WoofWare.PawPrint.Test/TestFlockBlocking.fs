@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `SystemNative_FLock` refuses a *blocking* request that cannot be granted, because waiting for
 /// the holder needs the scheduler to park and wake a thread. That refusal has no guest that can

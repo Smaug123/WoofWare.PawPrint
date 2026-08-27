@@ -41,11 +41,6 @@ module TestWaitHandle =
             IsBackground = false
             IsRaisingForeignException = false
             Name = None
-            Cpu = CpuId 0
-            // Inert here: a frameless stub cannot execute the `SystemNative_*OSThreadId`
-            // P/Invoke that reads it. Do not reuse this literal for a stub standing in
-            // for more than one thread -- guest OS thread ids must be distinct.
-            OsThreadId = OsThreadId 1u
         }
 
     let private withThreads (threads : ThreadId list) (state : IlMachineState) : IlMachineState =
@@ -111,7 +106,7 @@ module TestWaitHandle =
                 // Distinct OS thread ids, minted by the same policy the real
                 // allocation sites use: these stand in for guest threads, and
                 // no two threads may share an id.
-                tid, ThreadState.New (CpuId 0) (EmulatedKernel.osThreadId tid) methodState
+                tid, ThreadState.New methodState
             )
             |> Map.ofList
 

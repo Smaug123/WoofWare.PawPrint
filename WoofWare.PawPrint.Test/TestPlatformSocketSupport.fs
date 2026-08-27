@@ -7,6 +7,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `SystemNative_PlatformSupportsDualModeIPv4PacketInfo`, which is a compile-time
 /// constant of the native shim and differs between the two Unixes PawPrint models.

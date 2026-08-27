@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// End-to-end coverage for the `SystemNative_HandleNonCanceledPosixSignal`
 /// `DefaultDisposition.Terminate` branch: a guest that DllImports the

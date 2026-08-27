@@ -12,6 +12,7 @@
     <RepositoryUrl>https://github.com/Smaug123/WoofWare.PawPrint</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>light.png</PackageIcon>
     <PackageTags>dotnet;runtime;il-interpreter;deterministic;net10;time-travel;fsharp;woofware</PackageTags>
   </PropertyGroup>
 
@@ -39,14 +40,6 @@
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
-    <Compile Include="UnixError.fs" />
-    <Compile Include="UnixPathText.fs" />
-    <Compile Include="AbsoluteUnixPath.fs" />
-    <Compile Include="UnixPath.fs" />
-    <Compile Include="VirtualFileSystem.fs" />
-    <Compile Include="FileSystemSeed.fs" />
-    <Compile Include="InternetEndpoint.fs" />
-    <Compile Include="FileDescriptorRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
@@ -70,8 +63,7 @@
     <Compile Include="TypeResolution.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
-    <Compile Include="Signal.fs" />
-    <Compile Include="SignalState.fs" />
+    <Compile Include="SignalHandler.fs" />
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="RuntimeConfig.fs" />
     <Compile Include="HostConfig.fs" />
@@ -126,6 +118,7 @@
     <Compile Include="WaitHandle.fs" />
     <Compile Include="SyncBlockMonitor.fs" />
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
+    <Compile Include="Native\UnixErrorPal.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeGc.fs" />
     <Compile Include="Native\NativeGcFrameRegistration.fs" />
@@ -200,9 +193,64 @@
 
   <ItemGroup>
     <ProjectReference Include="..\WoofWare.PawPrint.Domain\WoofWare.PawPrint.Domain.fsproj" />
+    <ProjectReference Include="..\WoofWare.PosixKernel\WoofWare.PosixKernel.fsproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\logos\light.png" Pack="true" PackagePath="\" />
   </ItemGroup>
+
+  <!--
+    nuget.org renders the packed readme through Markdig with DisableHtml(), which escapes raw
+    HTML instead of dropping it, and it does not resolve relative image paths at all. The
+    <picture> element that gives GitHub its light/dark logo would therefore appear on the
+    package page as literal tags. Pack a copy with that element removed; on nuget.org the logo
+    is carried by PackageIcon instead.
+  -->
+  <UsingTask TaskName="WriteReadmeWithoutLogo"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Source ParameterType="System.String" Required="true" />
+      <Destination ParameterType="System.String" Required="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+string readme = File.ReadAllText(Source);
+string stripped = Regex.Replace(readme, "<picture[^>]*>[\\s\\S]*?</picture>\\s*", "", RegexOptions.IgnoreCase);
+
+// A <picture> the pattern above failed to match would reach the package page as literal tags, so
+// check the strip did the job it claims to. Any other raw HTML in the readme leaks the same way,
+// but recognising it reliably would mean reimplementing CommonMark's block grammar here.
+if (Regex.IsMatch(stripped, "</?picture", RegexOptions.IgnoreCase))
+{
+    Log.LogError(
+        "{0} still contains a <picture> element after the logo strip, so the packed readme would "
+        + "show it on nuget.org as literal tags. Write the logo as a plain <picture> ... "
+        + "</picture> block, or teach this task to match the form used.",
+        Source);
+}
+else
+{
+    Directory.CreateDirectory(Path.GetDirectoryName(Destination));
+    if (!File.Exists(Destination) || File.ReadAllText(Destination) != stripped)
+    {
+        File.WriteAllText(Destination, stripped);
+    }
+}
+]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="PackReadmeWithoutLogo" BeforeTargets="_GetPackageFiles">
+    <PropertyGroup>
+      <!-- IntermediateOutputPath is relative to the project by default but absolute under
+           UseArtifactsOutput, so combine rather than prepend. -->
+      <_NuGetReadme>$([System.IO.Path]::Combine('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'nuget-readme', 'README.md'))</_NuGetReadme>
+    </PropertyGroup>
+    <WriteReadmeWithoutLogo Source="$(MSBuildProjectDirectory)/../README.md" Destination="$(_NuGetReadme)" />
+    <ItemGroup>
+      <None Include="$(_NuGetReadme)" Pack="true" PackagePath="\" />
+    </ItemGroup>
+  </Target>
 </Project>

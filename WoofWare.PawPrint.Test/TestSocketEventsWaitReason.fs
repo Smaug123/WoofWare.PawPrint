@@ -4,6 +4,7 @@ open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `ThreadStatus.BlockedOnSocketEvents` is the representation of a thread parked inside
 /// `SystemNative_WaitForSocketEvents`. Nothing constructs it yet — the native handler that would
@@ -46,8 +47,6 @@ module TestSocketEventsWaitReason =
             IsBackground = false
             IsRaisingForeignException = false
             Name = None
-            Cpu = CpuId 0
-            OsThreadId = OsThreadId osThreadId
         }
 
     let private withThreads (threads : (ThreadId * ThreadStatus) list) (state : IlMachineState) : IlMachineState =

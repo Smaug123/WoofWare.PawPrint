@@ -460,6 +460,70 @@ earlier draft of this plan claimed the composition had an unreachable-subtree
 window and disagreeing timestamps. Neither is true: `hardLink`-then-`unbind`
 never detaches anything, and the file-case timestamps agree exactly.)
 
+## What implementing Stage 2a changed — read this before the tables above
+
+The tables above were measured by an earlier session and are right about
+everything they say. They are also **incomplete in three ways that each change
+the design**, and one section of them is **wrong**. Found while implementing the
+verdict (2026-08-23); the probe that settles all of it is committed at
+`docs/probes/rename/`, with four measured columns beside it.
+
+**Three findings the tables do not contain:**
+
+1. **The flavours disagree about *which object* a check is about**, not only
+   about the order of checks. When a directory replaces a directory, Darwin
+   consults the write bit of the **displaced directory** and never looks at the
+   directory holding it; Linux does the exact opposite. Measured eight ways with
+   a control. No record of flags can express this, which settles the
+   "two whole functions" question the design section leaves open.
+2. **There are three permission checks at three positions**, not one: the two
+   parents' write bits, and the moved directory's own write bit for the `..`
+   rewrite — which sits *below* the type rule on both kernels, where the
+   parents' sit above it on Linux.
+3. **Linux's subtree EINVAL beats both write checks.**
+
+**The section that is wrong: "Trailing separators".** It says a separator on the
+destination "demands that *the source* be a directory **and** that any existing
+destination be one". The second half does not exist. Only an unwritable parent
+can see it, because with a writable one both readings answer ENOTDIR — the
+demand if it asked, and the ordinary type rule below if it did not:
+`rename(d, "q/l/")` with `l` a symlink to a directory is ENOTDIR when `q` is
+writable and **EACCES** when it is not.
+
+**The `.`/`..`/`/` rows needed three attempts and are not what they look like.**
+The plan records `rename("/", x)` as EISDIR on Darwin and stops there. Whether
+Darwin gives the *root* its own arm — as its `unlink` and `rmdir` both do — is a
+separate question, and the obvious measurement is masked: a filesystem root that
+is not `/` is a *mount* root, and renaming one is liable to EXDEV. The
+discriminator turned out to be neither `.` nor `..` but whether the source's and
+destination's parent directories coincide; where EXDEV stays quiet the root
+answers EINVAL for both, exactly as an ordinary directory does. **The root is
+not a special case**, and no arm exists for it. See `docs/probes/rename/README.md`.
+
+**One row is nondeterministic on macOS** and must never enter the host-equality
+tier: `rename("l/", "g")` with `l` a symlink to a regular file and an
+**absolute** target succeeds 1–20% of the time, moving the link's target. A
+relative target is stable, which is why the corpus uses one.
+
+**Stage 2 split into three PRs**, not the two this plan proposes, and
+`RenameRules` carries only `TrailingSeparator` for now:
+
+- **Stage 2a** (done): `RenameRules`, `RenameVerdict`, both verdicts,
+  `TestRenameRules`, and the probe. No guest can see any of it.
+- **Stage 2b**: `VirtualFileSystem.resolveParent` / `completeResolution` as a
+  *pure* refactor, with a property asserting they compose back to `resolveFull`.
+- **Stage 2c**: `WalkOrder`, the handler, the guests.
+
+**Why 2b exists**, which this plan does not anticipate: Linux's four-phase walk
+order cannot be built out of `resolveFull`, which does the parent walk and the
+final lookup in one indivisible call. `<300 bytes>` × `nodir/x` is ENOENT while
+`nope` × `<300 bytes>` is ENOENT the other way round, and one `Result` cannot say
+which phase failed. Synthesising `dirname` and resolving it as its own path
+looks cheap and is wrong: `src parent unsearchable × dst parent absent` is
+EACCES, so the parent's own search check happens in phase 1, which a `dirname`
+resolution does not perform.
+
+
 ## The option set for splitting this up
 
 Rename is bigger than any prior slice in this workstream: `unlink` was 3106

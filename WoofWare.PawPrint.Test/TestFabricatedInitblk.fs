@@ -1,15 +1,10 @@
 namespace WoofWare.PawPrint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open System.Reflection
 open System.Reflection.Emit
-open FsUnitTyped
-open Microsoft.CodeAnalysis
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
-open WoofWare.PawPrint
 
 /// `initblk` (ECMA-335 III.3.36) against the real runtime, over the operand shapes and
 /// destinations no C# source can spell.
@@ -237,78 +232,8 @@ public static class Driver
 }
 """
 
-    /// Lay the fabricated assembly and a C# driver compiled against it side by side, run the
-    /// driver on both runtimes, and require they agree.
     let private runFabricated (expectedOnHost : int) : unit =
-        let fabricated = fabricate ()
-
-        let driver =
-            Roslyn.compileAssembly
-                "InitblkDriver"
-                OutputKind.ConsoleApplication
-                [ MetadataReference.CreateFromImage (ImmutableArray.CreateRange fabricated) ]
-                [ driverSource ]
-
-        let tempDir = Path.Combine (Path.GetTempPath (), Path.GetRandomFileName ())
-
-        Directory.CreateDirectory tempDir |> ignore<DirectoryInfo>
-
-        try
-            File.WriteAllBytes (Path.Combine (tempDir, "Blk.dll"), fabricated)
-            let driverPath = Path.Combine (tempDir, "InitblkDriver.dll")
-            File.WriteAllBytes (driverPath, driver)
-
-            let expected =
-                match RealRuntime.executeAssemblyInPlace [||] driverPath with
-                | RealRuntimeResult.NormalExit code -> code
-                | other -> failwith $"real runtime did not exit normally: %O{other}"
-
-            expected |> shouldEqual expectedOnHost
-
-            let messages, loggerFactory =
-                LoggerFactory.makeTestWithProperties [ "entry_assembly", driverPath ]
-
-            use _loggerFactoryResource = loggerFactory
-
-            let dotnetRuntimeDirs =
-                seq {
-                    yield tempDir
-                    yield! DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
-                }
-                |> ImmutableArray.CreateRange
-
-            use peImage = new MemoryStream (driver)
-
-            let actual =
-                try
-                    match
-                        Program.run loggerFactory (Some driverPath) peImage (HostConfig.Default dotnetRuntimeDirs)
-                    with
-                    | RunOutcome.NormalExit (state, thread)
-                    | RunOutcome.ProcessExit (state, thread) ->
-                        match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-                        | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> code
-                        | [] -> failwith "guest returned no value"
-                        | head :: _ -> failwith $"guest returned a non-int: %O{head}"
-                    | RunOutcome.GuestUnhandledException (_, _, exn) -> failwith $"guest threw: %O{exn.ExceptionObject}"
-                    | RunOutcome.Aborted (_, _, fatal) ->
-                        let message = fatal.Message |> Option.defaultValue "<none>"
-                        failwith $"guest aborted (%O{fatal.Code}): %s{message}"
-                    | RunOutcome.SignalTerminated (_, signal) -> failwith $"guest was signalled: %O{signal}"
-                with _ ->
-                    for message in messages () do
-                        Console.Error.WriteLine $"{message}"
-
-                    reraise ()
-
-            actual |> shouldEqual expected
-        finally
-            try
-                if Directory.Exists tempDir then
-                    Directory.Delete (tempDir, true)
-            with
-            | :? IOException
-            | :? UnauthorizedAccessException -> ()
+        FabricatedGuest.run "Blk" (fabricate ()) "InitblkDriver" driverSource expectedOnHost
 
     [<Test>]
     let ``initblk agrees with the real runtime on operands C# cannot spell`` () : unit = runFabricated 0

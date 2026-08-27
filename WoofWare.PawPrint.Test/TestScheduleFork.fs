@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Pins the contract of the fork-point snapshot: a guest's execution up to its first *contended*
 /// scheduling decision is identical under every PCT seed, so it can be computed once and each

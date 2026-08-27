@@ -8,6 +8,7 @@ open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
+open WoofWare.PosixKernel
 
 /// A `[UnmanagedCallersOnly]` method may be entered only from native code. CoreCLR compiles one
 /// with `CORJIT_FLAG_REVERSE_PINVOKE` (jitinterface.cpp), whose prologue performs a reverse

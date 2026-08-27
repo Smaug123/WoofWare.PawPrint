@@ -432,9 +432,7 @@ public sealed class MethodSignatureHost
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         let ctx : NativeCallContext =
@@ -1034,9 +1032,7 @@ public sealed class MethodSignatureHost
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         let ctx : NativeCallContext =

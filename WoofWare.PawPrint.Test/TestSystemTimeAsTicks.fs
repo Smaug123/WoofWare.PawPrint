@@ -6,8 +6,9 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
-/// `EmulatedKernel.systemTimeAsTicks` is the value
+/// `UnixMachineState.systemTimeAsTicks` is the value
 /// `SystemNative_GetSystemTimeAsTicks` returns: 100ns ticks since the Unix
 /// epoch, derived affinely from the deterministic virtual clock. CoreLib turns
 /// it into `DateTime.UtcNow` with
@@ -21,7 +22,7 @@ module TestSystemTimeAsTicks =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    let private maxEpochMs : int64 = EmulatedKernel.maxWallClockEpochMs
+    let private maxEpochMs : int64 = UnixMachineState.maxWallClockEpochMs
 
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
     /// throws on `Int64.MinValue` — a value FsCheck does generate.
@@ -34,19 +35,24 @@ module TestSystemTimeAsTicks =
     /// offset (that is what `KernelConfig` takes), while the clock is in the
     /// 100 ns ticks it is denominated in.
     let private kernelWith (epochMs : int64) (clockTicks : int64) : EmulatedKernel =
-        let kernel = EmulatedKernel.initial |> EmulatedKernel.withWallClockEpochMs epochMs
+        let kernel =
+            EmulatedKernel.initial
+            |> EmulatedKernel.mapMachine (UnixMachineState.withWallClockEpochMs epochMs)
 
         // The clock is set by record-copy because the driver loop is its only
         // production writer.
         { kernel with
-            VirtualClockTicks = clockTicks
+            Machine =
+                { kernel.Machine with
+                    VirtualClockTicks = clockTicks
+                }
         }
 
     /// The guest-visible instant, computed exactly as CoreLib does but through
     /// the range-*checking* `DateTime` ctor, so a reading the private ctor would
     /// have silently corrupted surfaces here as an exception instead.
     let private guestUtcNow (kernel : EmulatedKernel) : DateTime =
-        DateTime (DateTime.UnixEpoch.Ticks + EmulatedKernel.systemTimeAsTicks kernel, DateTimeKind.Utc)
+        DateTime (DateTime.UnixEpoch.Ticks + UnixMachineState.systemTimeAsTicks kernel.Machine, DateTimeKind.Utc)
 
     /// Draw an epoch (ms) and a virtual-clock reading (100 ns ticks) whose
     /// combination is still representable — i.e. exactly the states a
@@ -55,7 +61,7 @@ module TestSystemTimeAsTicks =
         let epochMs = intoRange maxEpochMs epochSeed
 
         let clockTicks =
-            intoRange ((maxEpochMs - epochMs) * EmulatedKernel.ticksPerMillisecond) clockSeed
+            intoRange ((maxEpochMs - epochMs) * UnixMachineState.ticksPerMillisecond) clockSeed
 
         epochMs, clockTicks
 
@@ -66,8 +72,8 @@ module TestSystemTimeAsTicks =
         // Pinned against the BCL rather than against the arithmetic that
         // produced the literal, so a slip in that arithmetic is caught here.
         (DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks)
-        / EmulatedKernel.ticksPerMillisecond
-        |> shouldEqual EmulatedKernel.maxWallClockEpochMs
+        / UnixMachineState.ticksPerMillisecond
+        |> shouldEqual UnixMachineState.maxWallClockEpochMs
 
         guestUtcNow (kernelWith maxEpochMs 0L)
         |> shouldEqual (DateTime (9999, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc))
@@ -80,23 +86,25 @@ module TestSystemTimeAsTicks =
         // than that, so deriving it would reject the final sub-millisecond of
         // representable time.
         DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks
-        |> shouldEqual EmulatedKernel.maxWallClockTicks
+        |> shouldEqual UnixMachineState.maxWallClockTicks
 
-        EmulatedKernel.maxWallClockTicks
-        - maxEpochMs * EmulatedKernel.ticksPerMillisecond
-        |> shouldEqual (EmulatedKernel.ticksPerMillisecond - 1L)
+        UnixMachineState.maxWallClockTicks
+        - maxEpochMs * UnixMachineState.ticksPerMillisecond
+        |> shouldEqual (UnixMachineState.ticksPerMillisecond - 1L)
 
         // The last representable instant really is accepted, not rejected one
         // sub-millisecond early: this is the exact case the derived ceiling got
         // wrong, so assert the boundary itself rather than only the constant.
-        guestUtcNow (kernelWith maxEpochMs (EmulatedKernel.ticksPerMillisecond - 1L))
+        guestUtcNow (kernelWith maxEpochMs (UnixMachineState.ticksPerMillisecond - 1L))
         |> shouldEqual DateTime.MaxValue
 
     [<Test>]
     let ``a default kernel boots at the Unix epoch`` () =
         // The replay contract: change this and every recorded trace's timestamps
         // change with it.
-        EmulatedKernel.systemTimeAsTicks EmulatedKernel.initial |> shouldEqual 0L
+        UnixMachineState.systemTimeAsTicks EmulatedKernel.initial.Machine
+        |> shouldEqual 0L
+
         guestUtcNow EmulatedKernel.initial |> shouldEqual DateTime.UnixEpoch
 
     [<Test>]
@@ -119,7 +127,7 @@ module TestSystemTimeAsTicks =
             let epochMs, clockTicks = reachable seeds
 
             guestUtcNow (kernelWith epochMs clockTicks) = DateTime.UnixEpoch
-                .AddTicks(epochMs * EmulatedKernel.ticksPerMillisecond)
+                .AddTicks(epochMs * UnixMachineState.ticksPerMillisecond)
                 .AddTicks (clockTicks)
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
@@ -137,12 +145,11 @@ module TestSystemTimeAsTicks =
         // that the reading is unchanged, is the substance of the property.
         let property (seeds : int64 * int64) : bool =
             let epochMs, clockTicks = reachable seeds
-            let wholeMs = clockTicks / EmulatedKernel.ticksPerMillisecond
-            let remainder = clockTicks % EmulatedKernel.ticksPerMillisecond
+            let wholeMs = clockTicks / UnixMachineState.ticksPerMillisecond
+            let remainder = clockTicks % UnixMachineState.ticksPerMillisecond
 
-            EmulatedKernel.systemTimeAsTicks (kernelWith epochMs clockTicks) = EmulatedKernel.systemTimeAsTicks (
-                kernelWith (epochMs + wholeMs) remainder
-            )
+            UnixMachineState.systemTimeAsTicks (kernelWith epochMs clockTicks).Machine = UnixMachineState.systemTimeAsTicks
+                (kernelWith (epochMs + wholeMs) remainder).Machine
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
@@ -157,8 +164,11 @@ module TestSystemTimeAsTicks =
             let first = intoRange headroom firstSeed
             let second = intoRange headroom secondSeed
 
-            let firstTicks = EmulatedKernel.systemTimeAsTicks (kernelWith epochMs first)
-            let secondTicks = EmulatedKernel.systemTimeAsTicks (kernelWith epochMs second)
+            let firstTicks =
+                UnixMachineState.systemTimeAsTicks (kernelWith epochMs first).Machine
+
+            let secondTicks =
+                UnixMachineState.systemTimeAsTicks (kernelWith epochMs second).Machine
 
             compare firstTicks secondTicks = compare first second
 
@@ -174,8 +184,10 @@ module TestSystemTimeAsTicks =
         let property (seeds : int64 * int64) : bool =
             let epochMs, clockTicks = reachable seeds
 
-            let ticks = EmulatedKernel.systemTimeAsTicks (kernelWith epochMs clockTicks)
-            ticks % EmulatedKernel.ticksPerMillisecond = clockTicks % EmulatedKernel.ticksPerMillisecond
+            let ticks =
+                UnixMachineState.systemTimeAsTicks (kernelWith epochMs clockTicks).Machine
+
+            ticks % UnixMachineState.ticksPerMillisecond = clockTicks % UnixMachineState.ticksPerMillisecond
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
@@ -192,29 +204,29 @@ module TestSystemTimeAsTicks =
             let epochMs, clockTicks = reachable seeds
             let kernel = kernelWith epochMs clockTicks
 
-            let ticks = EmulatedKernel.systemTimeAsTicks kernel
-            let stamp = EmulatedKernel.fileTimestamp kernel
+            let ticks = UnixMachineState.systemTimeAsTicks kernel.Machine
+            let stamp = UnixMachineState.fileTimestamp kernel.Machine
 
             // Reassembled with the BCL's own arithmetic rather than by inverting
             // the implementation's division.
             let reassembled =
                 DateTime.UnixEpoch
                     .AddSeconds(float (UnixTimestamp.seconds stamp))
-                    .AddTicks (int64 (UnixTimestamp.nanoseconds stamp) / EmulatedKernel.nanosecondsPerTick)
+                    .AddTicks (int64 (UnixTimestamp.nanoseconds stamp) / UnixMachineState.nanosecondsPerTick)
 
             UnixTimestamp.seconds stamp >= 0L
             && UnixTimestamp.nanoseconds stamp >= 0
             && UnixTimestamp.nanoseconds stamp < 1_000_000_000
             // 100 ns is the clock's own quantum, so the nanosecond part can never
             // carry a finer digit.
-            && int64 (UnixTimestamp.nanoseconds stamp) % EmulatedKernel.nanosecondsPerTick = 0L
+            && int64 (UnixTimestamp.nanoseconds stamp) % UnixMachineState.nanosecondsPerTick = 0L
             && reassembled = DateTime.UnixEpoch.AddTicks ticks
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
     [<Test>]
     let ``a default kernel stamps inodes at the Unix epoch`` () =
-        EmulatedKernel.fileTimestamp EmulatedKernel.initial
+        UnixMachineState.fileTimestamp EmulatedKernel.initial.Machine
         |> shouldEqual UnixTimestamp.epoch
 
     /// Did the thunk complete, rather than failing the way PawPrint reports a
@@ -232,7 +244,10 @@ module TestSystemTimeAsTicks =
             let representable = epochMs >= 0L && epochMs <= maxEpochMs
 
             let accepted =
-                succeeds (fun () -> EmulatedKernel.initial |> EmulatedKernel.withWallClockEpochMs epochMs)
+                succeeds (fun () ->
+                    EmulatedKernel.initial
+                    |> EmulatedKernel.mapMachine (UnixMachineState.withWallClockEpochMs epochMs)
+                )
 
             accepted = representable
 
@@ -247,16 +262,20 @@ module TestSystemTimeAsTicks =
             let epochMs = intoRange maxEpochMs epochSeed
 
             let headroom =
-                EmulatedKernel.maxWallClockTicks - epochMs * EmulatedKernel.ticksPerMillisecond
+                UnixMachineState.maxWallClockTicks
+                - epochMs * UnixMachineState.ticksPerMillisecond
             // Strictly past the representable end of time.
             let clockTicks = headroom + 1L + intoRange 1_000_000L overshootSeed
 
             let kernel =
                 { EmulatedKernel.initial with
-                    WallClockEpochMs = epochMs
-                    VirtualClockTicks = clockTicks
+                    Machine =
+                        { EmulatedKernel.initial.Machine with
+                            WallClockEpochMs = epochMs
+                            VirtualClockTicks = clockTicks
+                        }
                 }
 
-            not (succeeds (fun () -> EmulatedKernel.systemTimeAsTicks kernel))
+            not (succeeds (fun () -> UnixMachineState.systemTimeAsTicks kernel.Machine))
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)

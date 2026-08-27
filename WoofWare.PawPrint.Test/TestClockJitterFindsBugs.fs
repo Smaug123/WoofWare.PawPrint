@@ -7,6 +7,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The claim `ClockJitterStrategy` exists to support, stated as a test:
 /// there are bugs that exploring the *schedule* space cannot reach, because
@@ -229,7 +230,8 @@ module TestClockJitterFindsBugs =
 
     /// Comfortably more than the 50 ms gap between the lease guest's wait and
     /// its lease, so that some draw in a sweep exceeds it.
-    let private leaseOvershootTicks : int64 = 100L * EmulatedKernel.ticksPerMillisecond
+    let private leaseOvershootTicks : int64 =
+        100L * UnixMachineState.ticksPerMillisecond
 
     let private jitterSeeds : uint64 list = [ 0UL .. 63UL ]
 
@@ -276,7 +278,7 @@ module TestClockJitterFindsBugs =
         // script and fails loudly by design.
         let ladder =
             [ 1L .. 40L ]
-            |> List.map (fun rung -> rung * 2_000L, rung * 400L * EmulatedKernel.ticksPerMillisecond)
+            |> List.map (fun rung -> rung * 2_000L, rung * 400L * UnixMachineState.ticksPerMillisecond)
 
         runFromScratch joinGuest (ClockJitterStrategy.Scripted ladder) None
         |> shouldEqual (Ending.ExitCode sentinel)

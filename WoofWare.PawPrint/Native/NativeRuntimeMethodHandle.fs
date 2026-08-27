@@ -4,11 +4,19 @@ open System.Collections.Immutable
 open System.Reflection
 open Microsoft.Extensions.Logging
 
-/// The properties of a MethodTable-backed declaring type that CoreCLR's
-/// `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233) and its
+/// The properties of a MethodTable-backed declaring type that the `RuntimeMethodHandle` natives
+/// consult. Two of them do: CoreCLR's
+/// `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233), with its
 /// duplicated fast-path predicate in `RuntimeMethodHandle::GetStubIfNeededInternal`
-/// (runtimehandles.cpp:1901-1906) consult when deciding whether reflection needs an
-/// instantiating stub.
+/// (runtimehandles.cpp:1901-1906), reads all four to decide whether reflection needs an
+/// instantiating stub; `MethodDesc::IsTypicalMethodDefinition` (method.cpp:1685) reads
+/// `HasInstantiation` and `IsGenericTypeDefinition` alone.
+///
+/// `HasInstantiation = false` with `IsGenericTypeDefinition = true` is not a state CoreCLR can be
+/// in: both read the same two-bit generics field, where `HasInstantiation` is "not NonGeneric (0)"
+/// and `IsGenericTypeDefinition` is "TypicalInst (0x30)" (methodtable.h:3666-3670), so a generic
+/// type definition always has an instantiation. The record admits the combination because it is
+/// four independent bools; no producer here emits it.
 type MethodTableStubFacts =
     {
         IsValueType : bool
@@ -19,7 +27,7 @@ type MethodTableStubFacts =
         IsInterface : bool
     }
 
-/// A declaring type as the `GetStubIfNeeded` decision sees it. CoreCLR splits on
+/// A declaring type as CoreCLR's `TypeHandle` sees it. CoreCLR splits on
 /// `TypeHandle::IsTypeDesc()` first, and a TypeDesc carries none of the MethodTable properties, so
 /// the split is modelled as a DU rather than a record with meaningless fields.
 [<RequireQualifiedAccess>]
@@ -85,6 +93,47 @@ module NativeRuntimeMethodHandle =
     /// why `RuntimeType.GetMethodBase` (RuntimeType.CoreCLR.cs:1940) needs both to decide between
     /// `Cache.GetGenericMethodInfo` and `Cache.GetMethod`.
     let hasMethodInstantiation (methodGenericParamCount : int) : bool = methodGenericParamCount > 0
+
+    /// CoreCLR's `MethodDesc::IsTypicalMethodDefinition` (method.cpp:1685), which
+    /// `RuntimeMethodHandle::IsTypicalMethodDefinition` (runtimehandles.cpp:1798) returns verbatim:
+    ///
+    ///     if (HasMethodInstantiation() &amp;&amp; !IsGenericMethodDefinition())  return FALSE;
+    ///     if (HasClassInstantiation() &amp;&amp; !GetMethodTable()->IsGenericTypeDefinition())  return FALSE;
+    ///     return TRUE;
+    ///
+    /// "Typical" is the form whose generic parameters -- the method's own and its declaring type's
+    /// alike -- are still the unbound formals: `Gen&lt;T&gt;.Map&lt;U&gt;` rather than
+    /// `Gen&lt;int&gt;.Map&lt;string&gt;`. The two halves are independent, so a handle must be typical in
+    /// both to be typical at all.
+    ///
+    /// The first two inputs are the two counts `isGenericMethodDefinition` above consumes, and are
+    /// used through it rather than re-derived, exactly as CoreCLR phrases this test in terms of its
+    /// own two predicates. The declaring type arrives as facts rather than as two positional bools
+    /// so that `HasInstantiation` and `IsGenericTypeDefinition` cannot be silently exchanged;
+    /// `IsValueType` and `IsInterface` bear on the stub decision, not on this one.
+    ///
+    /// `HasClassInstantiation` is `GetMethodTable()->HasInstantiation()` (method.hpp:567), i.e. it
+    /// asks about the *declaring* type and not about the reflected or element type. Note the second
+    /// guard is what makes a frame captured inside `Gen&lt;int&gt;.M` answer false: CoreCLR's stack
+    /// walk strips the method instantiation from each frame's `MethodDesc` but leaves the class
+    /// instantiation alone (debugdebugger.cpp:449-452), so `StackFrameHelper.GetMethodBase` really
+    /// does fall through to the `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall for such a
+    /// frame.
+    let isTypicalMethodDefinition
+        (methodGenericParamCount : int)
+        (handleInstantiationCount : int)
+        (declaringType : MethodTableStubFacts)
+        : bool
+        =
+        if
+            hasMethodInstantiation methodGenericParamCount
+            && not (isGenericMethodDefinition methodGenericParamCount handleInstantiationCount)
+        then
+            false
+        elif declaringType.HasInstantiation && not declaringType.IsGenericTypeDefinition then
+            false
+        else
+            true
 
     /// The predicate behind CoreCLR's `MethodDesc::IsNoMetadata` (method.hpp:1932), which
     /// `RuntimeMethodHandle::IsDynamicMethod` (runtimehandles.cpp:1746) returns verbatim:
@@ -358,9 +407,12 @@ module NativeRuntimeMethodHandle =
             else
                 StubOutcome.Original
 
-    /// Project a `RuntimeTypeHandleTarget` onto the facts `stubOutcome` consumes, i.e. classify it
-    /// the way CoreCLR's `TypeHandle` would.
-    let private stubDeclaringTypeOfTarget
+    /// Classify a `RuntimeTypeHandleTarget` the way CoreCLR's `TypeHandle` would, projecting it
+    /// onto the facts the `RuntimeMethodHandle` natives read off a declaring type: `stubOutcome`
+    /// consumes all four, `isTypicalMethodDefinition` two of them. One classifier serves both so
+    /// that the answer to "is this type generic, and is it the definition" cannot differ between
+    /// them.
+    let stubDeclaringTypeOfTarget
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -451,7 +503,6 @@ module NativeRuntimeMethodHandle =
             failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
         )
 
-    /// The metadata `MethodInfo` the given identity's MethodDef token names.
     /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
     ///
     /// For consumers that can only work under a concrete instantiation. An open generic type
@@ -473,6 +524,7 @@ module NativeRuntimeMethodHandle =
             failwith
                 $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
 
+    /// The metadata `MethodInfo` the given identity's MethodDef token names.
     let methodInfoOfMetadataIdentity
         (operation : string)
         (state : IlMachineState)
@@ -530,6 +582,65 @@ module NativeRuntimeMethodHandle =
         =
         resolveMetadataIdentityFromArg operation state arg
         |> methodInfoOfMetadataIdentity operation state
+
+    /// Resolve an <c>IRuntimeMethodInfo</c> object-reference argument to the <c>MethodHandle</c> it
+    /// names. The sibling of <c>resolveMethodHandleFromArg</c> for the handful of natives CoreCLR
+    /// declares over the reflection object rather than over a <c>RuntimeMethodHandleInternal</c>.
+    ///
+    /// Accepts each of the three CoreLib types that implement the interface, and refuses anything
+    /// else by name; a null reference is a contract violation rather than an answer, as it is in
+    /// CoreCLR.
+    let private resolveMethodHandleFromMethodInfoObject
+        (operation : string)
+        (state : IlMachineState)
+        (arg : CliType)
+        : MethodHandle
+        =
+        let address =
+            match arg with
+            | CliType.ObjectRef (Some address) -> address
+            | CliType.ObjectRef None ->
+                // CoreCLR asserts the argument non-null, and both of its managed callers pass
+                // `this`, so a null here is a contract violation rather than a case to answer.
+                failwith $"%s{operation}: null IRuntimeMethodInfo"
+            | other -> failwith $"%s{operation}: expected an IRuntimeMethodInfo object reference, got %O{other}"
+
+        let object' = ManagedHeap.get address state.ManagedHeap
+
+        // CoreCLR reads the `MethodDesc*` at a fixed offset (`ReflectMethodObject::m_pMD`,
+        // object.h:1120); the three implementers are laid out so that this is legal, which is why
+        // `RuntimeMethodInfoStub` carries eight unused `object?` fields whose comment says they are
+        // there "to ensure that this class has the same layout as RuntimeMethodInfo"
+        // (RuntimeHandles.cs:930-940). Reading by name instead means naming the three, and means
+        // that the two spellings CoreLib gives that one slot both have to be handled:
+        // `RuntimeMethodInfo` and `RuntimeConstructorInfo` call it `m_handle` and declare it
+        // `IntPtr`; the stub calls it `m_value` and declares it `RuntimeMethodHandleInternal`.
+        //
+        // Matched against CoreLib's own types rather than against the namespace and name alone, so
+        // that a guest which declares a type of the same name is not mistaken for one of these.
+        // Nothing reachable exercises that: `IRuntimeMethodInfo` is internal to CoreLib, so no
+        // guest-authored object can arrive typed as this parameter.
+        let fieldName =
+            match object'.ConcreteType with
+            | CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeMethodInfo", generics) when generics.IsEmpty ->
+                "m_handle"
+            | CorelibType state.ConcreteTypes ("System.Reflection", "RuntimeConstructorInfo", generics) when
+                generics.IsEmpty
+                ->
+                "m_handle"
+            | CorelibType state.ConcreteTypes ("System", "RuntimeMethodInfoStub", generics) when generics.IsEmpty ->
+                "m_value"
+            | other ->
+                let described =
+                    match AllConcreteTypes.lookup other state.ConcreteTypes with
+                    | Some concrete -> $"%s{concrete.Namespace}.%s{concrete.Name} in %O{concrete.AssemblyFullName}"
+                    | None -> string other
+
+                failwith
+                    $"%s{operation}: object at %O{address} is a %s{described}, which is not one of CoreLib's three IRuntimeMethodInfo implementers (System.Reflection.RuntimeMethodInfo, System.Reflection.RuntimeConstructorInfo, System.RuntimeMethodInfoStub); a fourth implementer needs its handle field naming here"
+
+        // Both declared types reach the registry id through the same reader.
+        resolveMethodHandleFromArg operation state (AllocatedNonArrayObject.DereferenceField fieldName object')
 
     /// Resolve a <c>QCallTypeHandle</c>-encoded type to its
     /// <c>(DumpedAssembly, TypeInfo)</c>, accepting the MethodTable-backed
@@ -1241,6 +1352,48 @@ module NativeRuntimeMethodHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
+          "GetImplAttributes",
+          [ CorelibType state.ConcreteTypes ("System", "IRuntimeMethodInfo", generics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System.Reflection",
+                                                                     "MethodImplAttributes",
+                                                                     retGenerics)) when
+            generics.IsEmpty && retGenerics.IsEmpty
+            ->
+            // CoreCLR (runtimehandles.cpp:1330): asserts non-null, answers 0 outright when no
+            // MethodDef row names the method, and otherwise returns (INT32)pMethod->GetImplAttrs().
+            // The managed wrapper is `MethodBase.GetMethodImplementationFlags()`; CoreLib calls it
+            // from `RuntimeMethodInfo` (RuntimeMethodInfo.CoreCLR.cs:262) and
+            // `RuntimeConstructorInfo` (RuntimeConstructorInfo.CoreCLR.cs:192), each passing `this`.
+            //
+            // Unlike its neighbours this one takes the reflection *object* rather than a
+            // `RuntimeMethodHandleInternal`, so the handle comes out of the heap.
+            let operation = "RuntimeMethodHandle.GetImplAttributes"
+
+            let attributes =
+                match resolveMethodHandleFromMethodInfoObject operation state instruction.Arguments.[0] with
+                | MethodHandle.FromDynamic _ ->
+                    // CoreCLR's `IsNilToken(pMethod->GetMemberDef())` arm. Under PawPrint the
+                    // handles with a nil MethodDef token are exactly the dynamic ones -- see
+                    // `methodDefToken` -- so this is that test, spelled over the handle so the
+                    // match stays total. Note the answer is a literal 0 and not `mdMethodDefNil`'s
+                    // shape: this reports flags, not a token.
+                    0
+                | MethodHandle.FromMetadata identity ->
+                    // `ImplAttributes` is read straight out of the MethodDef row when the assembly
+                    // is loaded, so there is nothing to derive: this is the row's own column.
+                    let facts =
+                        methodInfoOfMetadataIdentity operation state identity
+                        |> MethodInfo.requireMetadata operation
+
+                    int32 facts.ImplAttributes
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 attributes)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
           "GetSlot",
           [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when generics.IsEmpty ->
@@ -1368,6 +1521,64 @@ module NativeRuntimeMethodHandle =
 
             let result =
                 isGenericMethodDefinition methodInfo.Generics.Length (identity.GetMethodGenerics ()).Length
+
+            let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "IsTypicalMethodDefinition",
+          [ CorelibType state.ConcreteTypes ("System", "IRuntimeMethodInfo", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+            // CoreCLR (runtimehandles.cpp:1798):
+            // FC_RETURN_BOOL(pMethodUNSAFE->GetMethod()->IsTypicalMethodDefinition()).
+            // See `isTypicalMethodDefinition` above for the predicate.
+            //
+            // Like `GetImplAttributes` above, this is declared over the whole `IRuntimeMethodInfo`
+            // rather than a bare `RuntimeMethodHandleInternal`, so it shares that native's resolver;
+            // see `resolveMethodHandleFromMethodInfoObject` for why naming three classes is what
+            // reading fields by name costs.
+            let operation = "RuntimeMethodHandle.IsTypicalMethodDefinition"
+
+            let result =
+                match resolveMethodHandleFromMethodInfoObject operation state instruction.Arguments.[0] with
+                | MethodHandle.FromDynamic _ ->
+                    // A `DynamicMethodDesc` is classified `mcDynamic` (dynamicmethod.cpp:163),
+                    // never `mcInstantiated`, so `HasMethodInstantiation()` is false; and it is
+                    // allocated from the per-module minimal MethodTable
+                    // (`CreateMinimalMethodTable`, dynamicmethod.cpp:113), which is non-generic, so
+                    // `HasClassInstantiation()` is false too. Both guards fall through and CoreCLR
+                    // answers TRUE.
+                    //
+                    // Answered here rather than through the metadata resolvers, which have no token
+                    // to read for such a handle: a `DynamicMethod` frame in a captured trace is
+                    // legal and reaches this native like any other
+                    // (`NativeStackTrace.methodHandleIdOfFrame`).
+                    true
+                | MethodHandle.FromMetadata identity ->
+
+                let methodInfo = methodInfoOfMetadataIdentity operation state identity
+
+                let declaringType =
+                    match
+                        stubDeclaringTypeOfTarget operation ctx.BaseClassTypes state (identity.GetDeclaringType ())
+                    with
+                    | StubDeclaringType.MethodTable facts -> facts
+                    | StubDeclaringType.TypeDesc ->
+                        // `HasClassInstantiation` reads `GetMethodTable()->HasInstantiation()`
+                        // (method.hpp:567), and a MethodDesc always lives in a MethodTable chunk:
+                        // no byref, pointer, function pointer or type variable declares methods.
+                        // `MethodHandleRegistry` refuses to mint such a handle
+                        // (`requireMethodBearingDeclaringType`), so this means one was built
+                        // outside that chokepoint.
+                        failwith
+                            $"%s{operation}: declaring type %O{identity.GetDeclaringType ()} of %O{methodInfo} is a TypeDesc, which cannot declare a method"
+
+                isTypicalMethodDefinition
+                    methodInfo.Generics.Length
+                    (identity.GetMethodGenerics ()).Length
+                    declaringType
 
             let state = IlMachineState.pushToEvalStack (CliType.ofBool result) ctx.Thread state
 

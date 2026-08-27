@@ -7,6 +7,7 @@ open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `SimulatedUnixPlatform.socketCreation` is a transcription of two things at
 /// once: the native shim's three argument screens, which are C we can read, and
@@ -297,9 +298,9 @@ module TestSocketCreation =
         // `Interop.Error`, as `socketCreation`'s refusals map onto it.
         let palOf (refusal : SocketCreationRefusal) : int option =
             match refusal with
-            | SocketCreationRefusal.AddressFamily -> Some (UnixError.toPal UnixError.EAFNOSUPPORT)
-            | SocketCreationRefusal.SocketType -> Some (UnixError.toPal UnixError.EPROTOTYPE)
-            | SocketCreationRefusal.Protocol -> Some (UnixError.toPal UnixError.EPROTONOSUPPORT)
+            | SocketCreationRefusal.AddressFamily -> Some (UnixErrorPal.toPal UnixError.EAFNOSUPPORT)
+            | SocketCreationRefusal.SocketType -> Some (UnixErrorPal.toPal UnixError.EPROTOTYPE)
+            | SocketCreationRefusal.Protocol -> Some (UnixErrorPal.toPal UnixError.EPROTONOSUPPORT)
             | SocketCreationRefusal.Unmodelled -> None
 
         let checkedRows, disagreements =

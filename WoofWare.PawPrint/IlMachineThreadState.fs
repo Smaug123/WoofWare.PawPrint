@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
+open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module IlMachineThreadState =
@@ -364,9 +365,8 @@ module IlMachineThreadState =
             { state with
                 NextThreadId = state.NextThreadId + 1
                 NextCpuRotation = state.NextCpuRotation + 1
-                ThreadState =
-                    state.ThreadState
-                    |> Map.add thread (ThreadState.New cpu osThreadId newThreadState)
+                ThreadState = state.ThreadState |> Map.add thread (ThreadState.New newThreadState)
+                Kernel = EmulatedKernel.mapTasks (UnixTaskTable.register thread cpu osThreadId) state.Kernel
             }
 
         newState, thread
@@ -395,13 +395,6 @@ module IlMachineThreadState =
                 Status = ThreadStatus.NotStarted
                 IsBackground = false
                 Name = None
-                // Guest-visible, so it takes the next slot in the CPU rotation
-                // — here at construction time, before any `Start`, matching
-                // real .NET's eager `ManagedThreadId` assignment in the `Thread`
-                // constructor. A guest that constructs a thread and never starts
-                // it therefore still consumes a rotation slot.
-                Cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
-                OsThreadId = EmulatedKernel.osThreadId thread
                 YieldDebt = Set.empty
                 // No IL has run on this thread, so nothing can have asked to raise a foreign
                 // exception on it.
@@ -414,6 +407,18 @@ module IlMachineThreadState =
                 NextCpuRotation = state.NextCpuRotation + 1
                 ThreadState = state.ThreadState |> Map.add thread unstartedState
                 ManagedThreadObjects = state.ManagedThreadObjects |> Map.add thread threadAddr
+                // Guest-visible, so it takes the next slot in the CPU rotation —
+                // here at construction time, before any `Start`, matching real
+                // .NET's eager `ManagedThreadId` assignment in the `Thread`
+                // constructor. A guest that constructs a thread and never starts
+                // it therefore still consumes a rotation slot.
+                Kernel =
+                    EmulatedKernel.mapTasks
+                        (UnixTaskTable.register
+                            thread
+                            (EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel)
+                            (EmulatedKernel.osThreadId thread))
+                        state.Kernel
             }
 
         newState, thread
@@ -445,23 +450,6 @@ module IlMachineThreadState =
                 Status = ThreadStatus.Parked
                 IsBackground = false
                 Name = None
-                // Core 0 as a placeholder, and deliberately *not* drawn from
-                // `NextCpuRotation` (which this function must leave alone).
-                // This thread is PawPrint-internal: no guest can name it, so no
-                // guest can call `sched_getcpu` on it. Consuming a rotation
-                // slot here would let the interpreter's own thread bookkeeping
-                // shift which core every subsequently created guest thread
-                // lands on.
-                Cpu = CpuId 0
-                // The OS thread id, by contrast, is *not* a placeholder and
-                // must not alias a guest thread's. This thread does run guest
-                // code — `SignalDispatch` wakes it onto a managed signal
-                // handler — and that handler may take a `System.Threading.Lock`,
-                // which treats a matching thread id as the same thread
-                // re-entering. It needs no special-casing to stay distinct:
-                // `osThreadId` is a function of the `ThreadId` allocated just
-                // above, which is unique to this thread like any other's.
-                OsThreadId = EmulatedKernel.osThreadId thread
                 YieldDebt = Set.empty
                 // As above: this thread has run no IL yet.
                 IsRaisingForeignException = false
@@ -471,6 +459,27 @@ module IlMachineThreadState =
             { state with
                 NextThreadId = state.NextThreadId + 1
                 ThreadState = state.ThreadState |> Map.add thread parkedState
+                Kernel =
+                    // Core 0 as a placeholder, and deliberately *not* drawn from
+                    // `NextCpuRotation` (which this function must leave alone).
+                    // This thread is PawPrint-internal: no guest can name it, so
+                    // no guest can call `sched_getcpu` on it. Consuming a
+                    // rotation slot here would let the interpreter's own thread
+                    // bookkeeping shift which core every subsequently created
+                    // guest thread lands on.
+                    //
+                    // The OS thread id, by contrast, is *not* a placeholder and
+                    // must not alias a guest thread's. This thread does run guest
+                    // code — `SignalDispatch` wakes it onto a managed signal
+                    // handler — and that handler may take a
+                    // `System.Threading.Lock`, which treats a matching thread id
+                    // as the same thread re-entering. It needs no special-casing
+                    // to stay distinct: `osThreadId` is a function of the
+                    // `ThreadId` allocated just above, which is unique to this
+                    // thread like any other's.
+                    EmulatedKernel.mapTasks
+                        (UnixTaskTable.register thread (CpuId 0) (EmulatedKernel.osThreadId thread))
+                        state.Kernel
             }
 
         newState, thread
@@ -550,15 +559,6 @@ module IlMachineThreadState =
                 Status = ThreadStatus.Parked
                 IsBackground = existing.IsBackground
                 Name = existing.Name
-                // Re-parking is a status transition, not a new thread: the
-                // dispatcher keeps the core it was placed on, exactly as it
-                // keeps its name and background flag.
-                Cpu = existing.Cpu
-                // Likewise its OS thread id. A real kernel gives a thread one
-                // tid for its whole lifetime, and the dispatcher's lifetime
-                // spans every signal it handles — this transition is between
-                // handler invocations, not between threads.
-                OsThreadId = existing.OsThreadId
                 YieldDebt = Set.empty
                 // Carried forward for the same reason as the fields above: re-parking is a
                 // status transition on one thread, and it does not cancel a pending

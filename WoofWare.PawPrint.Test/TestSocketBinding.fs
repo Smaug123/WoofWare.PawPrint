@@ -5,6 +5,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The rules behind `SystemNative_Bind`, at the level the guests cannot reach:
 /// the fault ordering as an object, the conflict relation across the whole
@@ -295,24 +296,24 @@ module TestSocketBinding =
             let low = uint16 (1024 + rng.Next 1000)
             let high = low + uint16 (rng.Next 50)
 
-            let kernel =
-                EmulatedKernel.initial |> EmulatedKernel.withEphemeralPortRange (low, high)
+            let machine =
+                UnixMachineState.withEphemeralPortRange (low, high) EmulatedKernel.initial.Machine
 
             // An arbitrary subset of the range is already taken.
             let taken = [ low..high ] |> List.filter (fun _ -> rng.Next 3 = 0) |> Set.ofList
 
             let acceptable (port : uint16) : bool = not (Set.contains port taken)
 
-            match EmulatedKernel.allocateEphemeralPort acceptable kernel with
-            | Some (port, kernel') ->
+            match UnixMachineState.allocateEphemeralPort acceptable machine with
+            | Some (port, machine') ->
                 // In range, free, and the cursor moved on.
                 port >= low
                 && port <= high
                 && acceptable port
-                && kernel'.EphemeralPortRange = (low, high)
-                // Deterministic: the same kernel answers the same way.
+                && machine'.EphemeralPortRange = (low, high)
+                // Deterministic: the same machine answers the same way.
                 && (
-                    match EmulatedKernel.allocateEphemeralPort acceptable kernel with
+                    match UnixMachineState.allocateEphemeralPort acceptable machine with
                     | Some (again, _) -> again = port
                     | None -> false
                 )
@@ -326,48 +327,52 @@ module TestSocketBinding =
     /// 0 from handing two sockets one port before either has been recorded.
     [<Test>]
     let ``successive allocations advance`` () : unit =
-        let kernel =
-            EmulatedKernel.initial
-            |> EmulatedKernel.withEphemeralPortRange (40000us, 40004us)
+        let machine =
+            UnixMachineState.withEphemeralPortRange (40000us, 40004us) EmulatedKernel.initial.Machine
 
-        let rec take (n : int) (kernel : EmulatedKernel) (acc : uint16 list) : uint16 list =
+        let rec take (n : int) (machine : UnixMachineState) (acc : uint16 list) : uint16 list =
             if n = 0 then
                 List.rev acc
             else
 
-            match EmulatedKernel.allocateEphemeralPort (fun _ -> true) kernel with
-            | Some (port, kernel) -> take (n - 1) kernel (port :: acc)
+            match UnixMachineState.allocateEphemeralPort (fun _ -> true) machine with
+            | Some (port, machine) -> take (n - 1) machine (port :: acc)
             | None -> failwith "the range is not exhausted here"
 
-        take 5 kernel []
+        take 5 machine []
         |> shouldEqual [ 40000us ; 40001us ; 40002us ; 40003us ; 40004us ]
 
     /// ...and wrap rather than running off the end.
     [<Test>]
     let ``allocation wraps at the top of the range`` () : unit =
-        let kernel =
-            EmulatedKernel.initial
-            |> EmulatedKernel.withEphemeralPortRange (40000us, 40001us)
+        let machine =
+            UnixMachineState.withEphemeralPortRange (40000us, 40001us) EmulatedKernel.initial.Machine
 
-        let _, kernel = (EmulatedKernel.allocateEphemeralPort (fun _ -> true) kernel).Value
-        let _, kernel = (EmulatedKernel.allocateEphemeralPort (fun _ -> true) kernel).Value
-        let port, _ = (EmulatedKernel.allocateEphemeralPort (fun _ -> true) kernel).Value
+        let _, machine =
+            (UnixMachineState.allocateEphemeralPort (fun _ -> true) machine).Value
+
+        let _, machine =
+            (UnixMachineState.allocateEphemeralPort (fun _ -> true) machine).Value
+
+        let port, _ = (UnixMachineState.allocateEphemeralPort (fun _ -> true) machine).Value
         port |> shouldEqual 40000us
 
     [<Test>]
     let ``an exhausted range is refused rather than looping`` () : unit =
-        let kernel =
-            EmulatedKernel.initial
-            |> EmulatedKernel.withEphemeralPortRange (40000us, 40010us)
+        let machine =
+            UnixMachineState.withEphemeralPortRange (40000us, 40010us) EmulatedKernel.initial.Machine
 
-        EmulatedKernel.allocateEphemeralPort (fun _ -> false) kernel |> shouldEqual None
+        UnixMachineState.allocateEphemeralPort (fun _ -> false) machine
+        |> shouldEqual None
 
     [<Test>]
     let ``an empty or zero-based ephemeral range is refused`` () : unit =
         let shouldFail (low : uint16) (high : uint16) (substring : string) : unit =
             let exn =
                 Assert.Throws<System.Exception> (fun () ->
-                    EmulatedKernel.withEphemeralPortRange (low, high) EmulatedKernel.initial
+                    EmulatedKernel.mapMachine
+                        (UnixMachineState.withEphemeralPortRange (low, high))
+                        EmulatedKernel.initial
                     |> ignore<EmulatedKernel>
                 )
 

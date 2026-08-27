@@ -95,6 +95,27 @@ public class UInt128EqualityTests
         return 0;
     }
 
+    public static int TestInequality()
+    {
+        // op_Inequality is op_Equality's body with `ldc.i4.0; ceq` appended to negate the
+        // result, so it must agree with negated equality on both outcomes and must still
+        // consult both halves.
+        UInt128 baseline = new UInt128(0x0123456789ABCDEFul, 0xFEDCBA9876543210ul);
+
+        if (baseline != new UInt128(0x0123456789ABCDEFul, 0xFEDCBA9876543210ul)) return 1;
+        // Lower differs, upper agrees.
+        if (!(baseline != new UInt128(0x0123456789ABCDEFul, 0xFEDCBA9876543211ul))) return 2;
+        // Upper differs, lower agrees.
+        if (!(baseline != new UInt128(0x0123456789ABCDEEul, 0xFEDCBA9876543210ul))) return 3;
+        if (default(UInt128) != new UInt128(0, 0)) return 4;
+        if (!(UInt128.MinValue != UInt128.MaxValue)) return 5;
+        // An op_Inequality that returned its argument comparison unnegated would pass every
+        // check whose expected answer is "unequal"; the two `if (a != b) return` cases above
+        // are the ones that pin the negation.
+        if (UInt128.MaxValue != new UInt128(ulong.MaxValue, ulong.MaxValue)) return 6;
+        return 0;
+    }
+
     public static int TestEveryBitPosition()
     {
         // One value per set bit of the 128, in both halves. The comparison against zero is
@@ -149,6 +170,9 @@ class Program
 
         result = UInt128EqualityTests.TestEveryBitPosition();
         if (result != 0) return 60 + result;
+
+        result = UInt128EqualityTests.TestInequality();
+        if (result != 0) return 70 + result;
 
         return 0;
     }

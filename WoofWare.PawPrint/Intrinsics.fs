@@ -1624,6 +1624,50 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
             |> IlMachineState.advanceProgramCounter currentThread
             |> IntrinsicResult.Completed
+        | CorelibAssembly, "Math", "Truncate" when
+            intrinsicKey.DeclaringTypeFullName = "System.Math"
+            && intrinsicKey.ParameterShapes = [ "System.Double" ]
+            ->
+            // Like `Math.Round` above, this one is `[Intrinsic]` but not
+            // `MethodImplOptions.InternalCall`, so it does have an IL body. Unlike `Math.Round`
+            // that body cannot be run even in principle: it is `ModF(d, &d); return d;`, and
+            // `ModF` is itself `InternalCall` with no IL, forwarding to the platform C library's
+            // `modf` (classlibnative/float/floatdouble.cpp:226). Allowlisting this method in
+            // `safeIntrinsics` would therefore only move the failure one frame down.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1489-L1494
+            //
+            // The JIT does not use that body: it lowers the call to `roundsd` with an immediate
+            // of 11 -- mode 3, round-toward-zero, plus the bit that suppresses the precision
+            // exception (codegenxarch.cpp:7873) -- or to `frintz` on Arm64
+            // (codegenarmarch.cpp:695), falling back to the managed body only where SSE4.2 is
+            // absent (importercalls.cpp:8336). All three routes compute IEEE 754's
+            // `roundToIntegralTowardZero`, which is exact, so naming the operation in-tree
+            // changes nothing about the result and gives the tests an exact oracle.
+            //
+            // The `decimal` overload never arrives here: it is not marked `[Intrinsic]` and has
+            // an ordinary IL body, so it runs as managed code. The guard on
+            // `DeclaringTypeFullName` keeps this arm off any other type with a `Truncate`
+            // (`System.MathF.Truncate(float)` is also `[Intrinsic]`, and is a different
+            // operation on a different width), and the guard on `ParameterShapes` keeps it off
+            // any single-argument overload of another type that might arrive in future.
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcreteDouble state.ConcreteTypes ], MethodReturnType.Returns (ConcreteDouble state.ConcreteTypes) ->
+                ()
+            | _ -> failwith $"Math.Truncate: unexpected signature %s{formatMethodKey intrinsicKey}"
+
+            let argument, state = IlMachineState.popEvalStack currentThread state
+
+            let argument =
+                match argument with
+                | EvalStackValue.Float f -> f
+                | _ -> failwith $"Math.Truncate: unexpected eval stack value: %O{argument}"
+
+            let result = DeterministicMath.truncate argument
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> IntrinsicResult.Completed
         | CorelibAssembly, "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteString state.ConcreteTypes ; ConcreteString state.ConcreteTypes ],
@@ -1838,7 +1882,8 @@ module Intrinsics =
         | CorelibAssembly, "Unsafe", ("CopyBlock" | "CopyBlockUnaligned") ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L313
             // The CoreLib bodies throw PlatformNotSupportedException; the real JIT replaces
-            // these with `cpblk` (optionally prefixed by `unaligned.`). Both overloads accept
+            // these with `cpblk` (optionally prefixed by `unaligned.`), so the opcode's own
+            // implementation is what runs here rather than any body. Both overloads accept
             // the byref and pointer forms uniformly via managedPointerOfPointerArgument.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes PrimitiveType.Byte)
@@ -1848,8 +1893,13 @@ module Intrinsics =
             | [ ConcretePointer _ ; ConcretePointer _ ; ConcreteUInt32 state.ConcreteTypes ], MethodReturnType.Void ->
                 let operation = $"Unsafe.%s{methodToCall.Name}"
 
-                executeUnsafeCopyBlock baseClassTypes currentThread operation state
-                |> IntrinsicResult.Completed
+                match IntrinsicHelpers.executeCopyBlock baseClassTypes currentThread operation state with
+                | CopyBlockOutcome.Copied state ->
+                    state
+                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> IntrinsicResult.Completed
+                | CopyBlockOutcome.NullEndpoint state ->
+                    IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | _ -> IntrinsicResult.Unrecognised
         | CorelibAssembly, "SpanHelpers", "Memmove" ->
             // `[Intrinsic] internal static void Memmove(ref byte dest, ref byte src, nuint len)`

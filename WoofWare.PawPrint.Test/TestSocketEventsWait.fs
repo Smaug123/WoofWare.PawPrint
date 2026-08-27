@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The park in `SystemNative_WaitForSocketEvents` -- the row the wait exists for, and the one
 /// no guest can report on, because a parked guest never returns an exit code.

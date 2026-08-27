@@ -1,0 +1,34 @@
+# WoofWare.PosixKernel definitions that still speak WoofWare.PawPrint's CoreCLR
+# PAL rather than POSIX. Checked by scripts/check-pal-residue.py, which runs as
+# the `pal-residue` flake check.
+#
+# This list may shrink. It may not grow: a new conversion between POSIX and a
+# .NET encoding belongs in WoofWare.PawPrint (Native/NativeSystemNative.fs holds
+# the rest of them), with the POSIX value handed to the library.
+#
+# Retiring what is here is split, and docs/plans/2026-08-23-posix-kernel-
+# extraction.md says why. The `UnixError` cluster is gone: stage 7 moved the PAL
+# numbering to WoofWare.PawPrint's `UnixErrorPal`, leaving the library stating
+# only the raw `<errno.h>` number. The socket clusters go with stages 8 and 9,
+# alongside the syscalls that use them; stage 7 as re-scoped touches none of
+# them, so it could not retire them.
+#
+# The grouping matches that plan's table.
+
+# Managed-enum mapping: `System.Runtime.InteropServices.PosixSignal` values,
+# which carry no kernel content whatever.
+Signal.fs:Signal.ofPosixSignalEnum
+Signal.fs:Signal.toPosixSignalEnum
+
+# PAL bit mask: the PAL's `SocketEvents` bits, plus its EINVAL screen.
+FileDescriptorRegistry.fs:SocketEventInterest.ofBits
+
+# PAL <-> platform numbering: the PAL's `AF_*`/`SOCK_*`/`PT_*` constants and the
+# transcriptions of `TryConvertAddressFamily*`. `socketCreation` is the mixed
+# case -- it holds the shim's three screens *and* this kernel's own declared
+# protocol table, so splitting it is a design question, not a move.
+SimulatedUnixPlatform.fs:SimulatedUnixPlatform.Pal
+SimulatedUnixPlatform.fs:SimulatedUnixPlatform.addressFamilyPalToPlatform
+SimulatedUnixPlatform.fs:SimulatedUnixPlatform.addressFamilyPlatformToPal
+SimulatedUnixPlatform.fs:SimulatedUnixPlatform.isTcpProtocolType
+SimulatedUnixPlatform.fs:SimulatedUnixPlatform.socketCreation

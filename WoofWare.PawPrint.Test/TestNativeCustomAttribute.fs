@@ -479,9 +479,7 @@ public sealed class CctorAttribute : System.Attribute
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         {|
@@ -777,9 +775,7 @@ public sealed class CctorAttribute : System.Attribute
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         {|

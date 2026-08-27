@@ -1314,13 +1314,13 @@ module NativeMdUtf8String =
 
             // CoreCLR asserts both pointers are non-null (`CheckPointer`,
             // runtimehandles.cpp:46) and the managed wrapper never calls in with a zero
-            // length, so `readCountedUtf8Bytes` faulting on a null pointer here is the
+            // length, so `readCountedBytes` faulting on a null pointer here is the
             // right behaviour rather than something to paper over.
             let lhs =
-                NativeCall.readCountedUtf8Bytes operation ctx.BaseClassTypes state lhsPtr byteCount
+                NativeCall.readCountedBytes operation ctx.BaseClassTypes state lhsPtr byteCount
 
             let rhs =
-                NativeCall.readCountedUtf8Bytes operation ctx.BaseClassTypes state rhsPtr byteCount
+                NativeCall.readCountedBytes operation ctx.BaseClassTypes state rhsPtr byteCount
 
             let result = if equalsCaseInsensitive operation lhs rhs then 1 else 0
 

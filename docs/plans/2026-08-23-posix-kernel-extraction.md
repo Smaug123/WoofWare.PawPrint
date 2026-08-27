@@ -1,0 +1,2882 @@
+# WoofWare.PosixKernel: extracting the emulated POSIX process from PawPrint
+
+`EmulatedKernel.fs` is 6,948 lines and holds two unrelated things: a simulated
+Unix process (filesystem, descriptors, sockets, signals, clock, credentials)
+and a simulated CoreCLR runtime environment (`LowLevelMonitor`, `WaitHandle`,
+the `AllocHGlobal` arena, spurious-wakeup and clock-jitter search strategies).
+Meanwhile the syscall *semantics* — `open`'s flag decode, its errno ordering,
+`epoll_wait`'s copy-out shape — live in `Native/NativeSystemNative.fs`
+(7,618 lines) interleaved with PAL decoding and guest-memory access.
+
+This plan extracts the first thing into a new top-level component,
+`WoofWare.PosixKernel`, as a general POSIX process simulator with no
+IL/CLR/BCL/PAL concepts in it, and makes PawPrint one client of it.
+
+## Commissioned scope
+
+**Stages 1–3 only, as a spike.** Those three stages are rename-only: they move
+the 9,650 lines that are already free of every CLR concept, and they change no
+behaviour. What they are meant to establish is whether the boundary is real —
+whether `WoofWare.PosixKernel` can build and test with no reference to
+`WoofWare.PawPrint.Domain`, and whether the host-equality tests still pass on
+both platforms once they live on the other side of it. Stages 4–9 are written
+down here because the spike is only worth running if there is somewhere for it
+to go, but they are **not commissioned**: revisit them once stage 3 has
+answered its question.
+
+## Spike result (2026-08-23)
+
+All three commissioned stages are done. Measured on `dc341c58`:
+
+| | |
+| --- | --- |
+| lines moved into `WoofWare.PosixKernel` | 9,652 across 10 files |
+| project references from the library | **none** (asserted by `TestNoPawPrintReference.fs`) |
+| test files now on the library side | 14, including the 27-case host-equality suite |
+| test total | 3,056 + 448 = 3,504, against a 3,502 baseline, the difference being two new tests |
+| behavioural diff | none; `scripts/check-move-is-rename-only.sh` verifies every move, and the split |
+| guest fixtures | 1,011 passing, unchanged, after each of the three stages |
+
+Answering the question the spike was for: **the boundary is real.** Nothing in
+the moved 9,652 lines needed a CLR concept, and the one place PawPrint was
+reaching through an abstraction — `EmulatedKernel.checkInvariants` reading
+`FileDescriptorRegistry`'s private `Descriptions` — was predicted before the
+move and fixed with an accessor that already existed.
+
+Two findings worth carrying forward:
+
+* **The assembly boundary now enforces twelve private representations** that
+  were previously respected only by discipline. That is the extraction's first
+  concrete benefit and it arrived before any of the syscall work.
+* **Stage 3 doubled in size between the plan being written and being executed**,
+  because #1153 landed `RenameRules` inside the block. Specifying by definition
+  name rather than line range is what made that a non-event. Any future stage
+  touching this block should assume the same.
+
+**What the spike also found, which the plan did not anticipate.** The boundary
+is real for *state* but not yet for *vocabulary*. Seventeen definitions in the
+library speak CoreCLR's PAL encodings rather than POSIX ones; the exact set is
+`scripts/pal-residue-allowlist.txt`, and the `pal-residue` flake check keeps it
+exact.
+
+They are genuinely misplaced — a second, non-.NET client would have to learn
+`Interop.Sys.AddressFamily` to call `socketCreation` — and they are nearly all
+leaves, consumed almost entirely by `Native/NativeSystemNative.fs` (49 call
+sites for `toPal` alone, 1–3 for each of the others). Stage 7 moves them; stage
+3.5 below contains them until then.
+
+They were *not* fixed inside stages 1–3, deliberately: doing so would have meant
+non-rename edits to five moved files and re-pointing sixty call sites, which
+would have destroyed the rename-only oracle that is the only reason a
+9,650-line diff is reviewable at all. The claim in `AGENTS.md` and the package
+README was corrected to state the gap instead.
+
+### Stage 3.5: contain the PAL residue — **decided: (b), done**
+
+**Dependencies**: stage 3.
+
+The residue is not homogeneous, which is what made this a choice rather than a
+chore:
+
+| group | functions | content |
+| --- | --- | --- |
+| managed-enum mapping | `Signal.ofPosixSignalEnum`, `toPosixSignalEnum` | pure `System.Runtime.InteropServices.PosixSignal` values; no kernel content whatever |
+| PAL numbering of a POSIX concept | `UnixError.toPal`, `palOfRawErrno`, `palOfRawErrnoUnder` | one table carrying `.Raw` (POSIX) and `.Pal` (CoreCLR) together |
+| PAL bit mask | `SocketEventInterest.ofBits` | the PAL's `SocketEvents` bits, plus its EINVAL screen |
+| PAL↔platform numbering | `addressFamilyPalToPlatform`, `addressFamilyPlatformToPal` | transcriptions of `TryConvertAddressFamily*` |
+| **mixed** | `socketCreation` | the shim's three screens **and** this kernel's own declared protocol table, in one function |
+
+`PollEvents.ofBits`/`toBits` were on an earlier draft of this list and should not
+be: `POLLIN`…`POLLNVAL` are 0x01…0x20 in .NET's `Interop.Poll.Structs.cs`, in
+Linux's `<poll.h>` (measured, arm64 container) and in Darwin's, so those are
+POSIX values with a PAL-flavoured docstring. Fixed the docstring, not the code.
+
+**(a) Split every table at the boundary, now.** The library keeps the POSIX
+values; PawPrint gains a mirror table for the PAL ones. Immediate, and
+independent of everything downstream. The cost is two exhaustive matches over
+`UnixError` that the compiler will keep *exhaustive* but cannot keep *in
+agreement*, and — the real problem — it forces a decision on `socketCreation`'s
+mixture before there is anything to decide it against.
+
+**(b) Defer the whole thing to stage 7.** `Syscall`/`SyscallOutcome` carry POSIX
+values by construction, so PawPrint's translator is where PAL naturally lives,
+and these eleven then move as part of a change that must touch them anyway. No
+work is done twice and the adapter is designed once, against a real interface.
+The cost is that the library's public API speaks PAL until stage 7 lands —
+indefinitely, if this stalls.
+
+**(c) Split the eight clean ones now, defer `socketCreation`.** Attractive until
+you notice `socketCreation` *calls* `addressFamilyPalToPlatform`, so those two
+have to stay behind with it or be duplicated. Leaves the residue at three rather
+than eleven, at the price of a half-migrated boundary — the state the gospel
+warns about specifically.
+
+**(d) Parameterise the library over its own encoding**, so PawPrint supplies the
+PAL numbering as data. Rejected: the PAL is one client's encoding, not an axis
+the library varies along, and nothing else would use the generality.
+
+**Chosen: (b), plus the containment measure borrowed from (a).** The move waits
+for stage 7, where `Syscall`/`SyscallOutcome` give the adapter a real interface
+to be designed against. What landed now is the assertion: an allowlist that
+pins the residue exactly, may shrink, and may not grow. The failure mode here is
+accretion rather than any single function, so the assertion is worth more than
+the move, and it costs nothing that stage 7 would redo.
+
+**Where it lives.** `scripts/check-pal-residue.py` plus
+`scripts/pal-residue-allowlist.txt`, run as the `pal-residue` flake check, which
+CI's existing `flake-check` job already covers. The alternative was an NUnit
+test in `WoofWare.PosixKernel.Test`, which would reach every developer's
+`dotnet test` rather than only `nix flake check` — but no test in this repo
+reads the source tree, and one that did would have to find it from
+`bin/Release/net10.0/`. A flake check is the idiom the repo already has for
+asserting a fact about the sources (`runtime-version-pin`), so this follows it.
+
+**How a definition is detected.** By its name (`toPal`, `palOfRawErrno`,
+`ofPosixSignalEnum`) or by its body mentioning a PAL encoding (`Pal.`, `.Pal`,
+`SocketEvents`, `PosixSignal`), with comments excluded so that a docstring
+citing the PAL to explain a POSIX value's provenance is not a hit. That is a
+proxy and not a proof — a PAL-encoded `int` is indistinguishable from any other
+`int` — but the PAL constants live in one `module private Pal`, so an adapter
+essentially cannot be written without tripping it.
+
+**The detector corrected the census in both directions**, which is the argument
+for having written it rather than curating the list by hand. Off: `PollEvents`,
+as above. On: `SimulatedUnixPlatform.isTcpProtocolType` (its parameter is
+literally named `palProtocolType`), the `module private Pal` constant table,
+`UnixErrorNumbering.Pal` and its two private constructors, the
+`palSuccess`/`palNonStandard` sentinels, and — found by Codex's review of the
+detector rather than by the detector — `UnixError.numbering`, the 200-row
+`Interop.Error` table itself, whose rows are numeric literals and so tripped no
+token. Eleven was an undercount reached by reading; seventeen is what is there.
+
+**What the detector deliberately does not see**, all found by Codex across two
+review rounds: PAL vocabulary arriving as a union case (`| ToPal of int`), a
+`static member`, or an instance member (`member _.ToPal`, whose name the parser
+does not extract); and a definition that merely delegates to an allowlisted one
+(`let managedError e = UnixError.toPal e`), which would need a transitive
+closure over call sites. It also sees one entry for a weak reason:
+`SocketEventInterest.ofBits` is recognised only by the word `SocketEvents` in
+its failure message, its body being bare hex masks — so rewording that message
+reports the entry stale rather than retiring the conversion. Measured, not
+assumed.
+
+None of these is closed. The library is module-and-`let` throughout, and this
+work stream finishes before other development resumes, so accretion would have
+to arrive in a form nothing here uses. What the check must not do is *claim*
+more than it enforces, so the script's header states each gap, and the stale
+message tells the reader that a vanished entry may mean a blind detector rather
+than a retired conversion.
+
+**Correctness oracle**: the full suite including `Guest`, unchanged; plus the
+check itself, mutation-tested. Seven mutants, all killed:
+
+| mutant | caught by |
+| --- | --- |
+| `palOfSomethingNew` | name rule |
+| `let isUdpProtocolType (t : int) : bool = t = Pal.PtUdp` | body rule — the mutant that matters, since a name-only rule would miss `socketCreation` too |
+| `convertToPalValue` | name rule, camelCase boundary |
+| a second errno table, `portable 0x10042 1` rows, no PAL token | table-row rule |
+| the same, in a new `WoofWare.PosixKernel/Sub/` | recursive scan |
+| an allowlisted function that stops speaking PAL | stale detection, so the list cannot rot |
+| unmutated control | passes |
+
+The second was also run end-to-end through `nix flake check`, to confirm the
+derivation fails rather than passing quietly.
+
+The last two mutants were added after the first battery passed, and both found
+real defects: the scan was non-recursive, and the name rule required `pal` at a
+word boundary, so a camelCase `toPalSomething` slipped through. The first
+battery had used a leading-`pal` name and so could not see it. Twelve name
+probes now pin the boundary in both directions (`Palette`, `principal`,
+`palindrome` must not match).
+
+One thing outstanding before the spike is fully closed: the host-equality suite
+has been verified from the far side of the boundary **on macOS only**. It
+falsifies a different column on Linux, so CI's run is the other half of that
+result.
+
+The guest fixtures were run after each stage and were 1,011 passing every time,
+including after stage 3 — the run that matters most, since stage 3 is the only
+one that reorganised a file's contents rather than relocating whole files.
+
+## Goal
+
+A pure state machine that answers syscalls. Specifically:
+
+* It owns the filesystem, the descriptor table, sockets and connections,
+  the environment, signal dispositions, credentials, the umask, the clock,
+  entropy, and the Unix platform profile.
+* Every transition is `State -> Request -> Response * State`. No effects, no
+  host reads, no blocking.
+* It knows nothing about IL, the CLR type system, managed heaps, eval stacks,
+  P/Invoke, or the `libSystem.Native` PAL. A second client — a POSIX simulator
+  for some other language runtime — should be able to use it without meeting
+  any PawPrint concept.
+
+### Non-goals for this work
+
+* Multi-process. `fork(2)`/`exec(2)` stay unmodelled; see decision 4 for why
+  the *shape* accommodates them without the *implementation* existing.
+* Changing any guest-observable behaviour. Every stage's oracle is that the
+  existing suite — including the `Guest` fixtures — is unchanged and green.
+* Repackaging as a NuGet package on day one; see the open questions.
+
+## What is already true
+
+Measured, not assumed. Grepping the eleven candidate files for CLR-side type
+names (`MethodInfo`, `ConcreteTypeHandle`, `CliType`, `ManagedHeapAddress`,
+`EvalStackValue`, `NativeMemoryPool`, `ThreadId`, `IlMachineState`, …):
+
+| file | lines | CLR types referenced |
+| --- | --- | --- |
+| `UnixError.fs` | 653 | none |
+| `UnixPathText.fs` | 85 | none |
+| `AbsoluteUnixPath.fs` | 190 | none |
+| `UnixPath.fs` | 479 | none |
+| `VirtualFileSystem.fs` | 3,069 | none |
+| `FileSystemSeed.fs` | 101 | none |
+| `InternetEndpoint.fs` | 112 | none |
+| `FileDescriptorRegistry.fs` | 1,904 | none |
+| `Signal.fs` | 247 | none |
+| `SignalState.fs` | 347 | `MethodInfo<ConcreteTypeHandle,…>`, `ThreadId` |
+| `EmulatedKernel.fs` | 6,948 | `ThreadId`, `CpuId`, `OsThreadId`, `NativeMemoryPool`, `NativeMemoryBlockId`, `LowLevelMonitor*`, `WaitHandle*`, `NonCryptoRandom`, `ManagedHeapAddress` |
+
+**Nine of the eleven files are already CLR-free.** 6,840 lines can move with a
+namespace change and nothing else. That is the single most important fact
+here: it turns what looks like a rewrite into a sequence of renames followed by
+one genuinely hard split.
+
+Two further measurements:
+
+* 122 files across the repo reference at least one of these types (39 in
+  `WoofWare.PawPrint`, 2 in `.App`, 81 in `.Test`). Each needs one added
+  `open WoofWare.PosixKernel`; `.IlDump` and `.Performance` need none.
+* 76 of the last 420 commits (18%) touched one of `EmulatedKernel.fs`,
+  `VirtualFileSystem.fs`, `FileDescriptorRegistry.fs`,
+  `Native/NativeSystemNative.fs`, and there are ~45 live worktrees under
+  `.claude/worktrees/`. Every move stage must be a single mechanical commit
+  landed fast, or it will spend its life in conflict.
+
+## Options considered
+
+### 1. Where the boundary sits
+
+**(a) Shared vocabulary only.** Move the state types and their operations;
+PawPrint keeps `EmulatedKernel` as a composite that *contains* them, and every
+syscall handler stays in `NativeSystemNative.fs`.
+
+Cheap and low-risk, but it does not deliver a POSIX simulator. The interesting
+content — that `O_CREAT|O_EXCL` does not follow a final symlink, that an
+unrecognised open flag is EINVAL before any path is looked at, that a failed
+`epoll_wait` writes 0 through `*count` on Linux and -1 on Darwin — stays in
+PawPrint, and a second client would have to re-derive all of it. The boundary
+also has no oracle of its own: nothing can test the library except by running a
+guest.
+
+**(b) Syscall service.** The library owns a `Syscall` request DU and a pure
+`step : UnixSystem -> TaskId -> Syscall -> SyscallOutcome * UnixSystem`.
+`NativeSystemNative` becomes a translator: decode PAL arguments into a
+`Syscall`, apply it, encode the outcome onto the eval stack / into errno / into
+guest memory.
+
+Expensive, but it is what was asked for, and it gives the library an oracle
+that needs no guest at all: `TestVirtualFileSystemAgainstHost` and the
+`SocketFuzz` differential fuzzer both already drive the model directly and
+compare against a real kernel. Lifting them one altitude up — from
+`VirtualFileSystem.createFile` to `Syscall.Open` — makes them test the thing a
+client actually consumes.
+
+**Chosen: (b), reached through (a).** (a) is a strict prefix of (b) and is
+independently valuable, so it is stages 1–6 and (b) is stages 7–9. If the
+project stalls after stage 6 we still have a clean, separately-tested library;
+we just have a smaller one.
+
+### 2. Does the library see guest memory?
+
+**(a) The library owns the user address space.** Move `NativeMemoryPool` in;
+syscalls take addresses and perform their own copy-in and copy-out, so EFAULT
+and SIGSEGV are modelled entirely inside.
+
+This is wrong for PawPrint, and the reason is structural rather than a matter
+of taste. PawPrint's memory is not a flat byte array: it is cell-typed
+(`CliType`), with provenance-tracked pointers, byref containers, managed-heap
+interior pointers, and a whole `ManagedPointerByteView` / `StorageLocation`
+machinery that exists to preserve exactly the information a `byte[]` throws
+away. A buffer argument may be a managed object's interior, which has no
+address. Flattening it to satisfy the library would destroy the model.
+
+**(b) Value in, effect descriptions out.** A syscall request carries
+`ImmutableArray<byte>` payloads and *abstract* user addresses; the response
+carries an ordered list of effects (`WriteBytes of UserAddress * bytes`,
+`SetErrno of int`, `Return of int64`) that the client applies. The library
+keeps `UserAddressLimit` and `UserBufferCheck`, because those are a pure
+predicate on `(address, length)` and not a memory access.
+
+Buffers reach the library as a three-way classification, because PawPrint
+already distinguishes all three and the distinction is guest-visible:
+
+```fsharp
+type UserBuffer =
+    /// A null pointer. The syscall answers EFAULT.
+    | Null
+    /// Non-null, but names no storage. A real run takes SIGSEGV; today
+    /// PawPrint `failwith`s at each such site. Making it a response case
+    /// states the contract instead of scattering it.
+    | Unmapped of address : uint64
+    | Mapped of address : uint64 * bytes : ImmutableArray<byte>
+```
+
+**Chosen: (b).** This is the gospel's "compute a description of what to do,
+then do it", and it is the only option that preserves PawPrint's pointer
+provenance. Ordering of copy-out relative to the errno write becomes *data*
+(the order of the effect list) rather than discipline in 7,600 lines of
+handler.
+
+The client still needs kernel constants to build a request — how many bytes to
+read for a path before giving up. Those are already exposed
+(`PathLimits.pathMaxBytes`), and stay exposed.
+
+### 3. How blocking is expressed
+
+**(a) The library owns a scheduler**, with runnable/blocked task states and a
+run queue.
+
+Two schedulers in one process is a disaster, and PawPrint's is entangled with
+class-init locks, monitors, exception dispatch and its own fairness search.
+Also, `WaitHandle` and `LowLevelMonitor` are not POSIX objects, so the
+library's scheduler would immediately need to know about them.
+
+**(b) The library never blocks.** A syscall that would block returns
+`SyscallOutcome.WouldBlock of WakeCondition`, where `WakeCondition` is data
+(`SocketEventsDeliverable of OpenFileDescriptionId`, `Deadline of ticks`, …),
+and the library exposes a pure `WakeCondition.isSatisfied : WakeCondition ->
+UnixSystem -> bool`. The client's scheduler decides what parking means and
+polls the predicate.
+
+**Chosen: (b).** This is already the de-facto design and needs only naming:
+`SystemNative_WaitForSocketEvents` parks by storing `ParkedSocketWait` in the
+kernel and calling `Scheduler.blockOnSocketEvents`, and `Program`'s readiness
+sweep wakes it by polling `EmulatedKernel.hasDeliverableSocketEvents`.
+Formalising it means the library states the wake contract instead of it being
+an agreement between two files.
+
+### 4. The state split
+
+GPT-5.6's suggested three-way split (machine / process / task) is right, and
+the question is only how far to take it.
+
+**(a) Three records, exactly one process.**
+
+```fsharp
+type UnixSystem =
+    { Machine : UnixMachineState
+      Process : UnixProcessState
+      Tasks : Map<TaskId, UnixTaskState> }
+```
+
+The *typing* separates the three scopes, so the compiler answers "where does
+this fact live?" — which the `emulated-posix-kernel` skill names as the most
+common mistake in this area, and which today is answered by a comment on a
+flat 46-field record. Adding `fork` later is changing one field to a
+`Map<ProcessId, UnixProcessState>`.
+
+**(b) Multi-process from the start.** Every syscall signature gains a
+`ProcessId`; every test gains a process.
+
+Rejected. Nothing exercises it, `fork` is a real design job (the fd *table* is
+copied but the open file *descriptions* are shared, and PawPrint has no way to
+test that it got it right), and by the gospel's own standard an abstraction
+that cannot be exercised has not earned its place. The migration path is
+already open, and not by accident: `FileDescriptorRegistry` separates `Fds :
+Map<int, OpenFileDescriptionId>` from `Descriptions :
+Map<OpenFileDescriptionId, OpenFileDescription>`, which is precisely the split
+`fork` needs.
+
+**Chosen: (a).**
+
+One consequence worth flagging, because it is a behaviour change and needs its
+own test. Today `LastSystemError` and `SignalState.Blocked` are
+`Map<ThreadId, _>` that must *delete* an entry when it returns to its default,
+because `EmulatedKernel` is compared for structural equality to decide whether
+a step changed anything, and a stored default is a state that looks different
+while behaving identically. Under (a) errno and the blocked mask become fields
+of a per-task record, which is created when a task is registered and removed
+when it exits. That removes the canonicalisation obligation entirely — but only
+if task registration and removal are exact. The property tests in
+`TestSignalState.fs` and `TestLastError.fs` currently assert "no default may
+ever be stored"; their replacement must assert "the task set is exactly the
+live tasks".
+
+### 5. `SignalState` carries a CLR type
+
+`SignalHandler` wraps a `MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle,
+ConcreteTypeHandle>`, and `SignalInitState.Initialized` carries the `ThreadId`
+of PawPrint's internal dispatcher thread. So `SignalState` is *not* CLR-free,
+and is the only kernel-side type that is not.
+
+**(a) Erase to an opaque token.** The library holds `HandlerToken of int64`;
+the client keeps a side table mapping tokens to methods.
+
+Loses `SignalHandler`'s equality (`MethodInfo.NominallyEqual`), which is
+load-bearing — two registrations of the same method must compare equal — and
+adds a table whose entries can go stale.
+
+**(b) Make it generic: `SignalState<'Handler>` with `'Handler : equality`.**
+PawPrint instantiates `'Handler = SignalHandler`. A real kernel's `sa_handler`
+*is* a user address, so a client that has addresses instantiates it with one;
+PawPrint has no address for a managed method, and the generic parameter is
+exactly the honest statement of that.
+
+**Chosen: (b).** The dispatcher `ThreadId` is a different matter: no real Unix
+has a dispatcher thread — it is PawPrint's model of asynchronous delivery. That
+identity moves out to PawPrint, leaving the library with a payload-free
+"signal handling has been initialised" bit. The DU's invariant ("the dispatcher
+exists iff signal handling is initialised") is preserved on the PawPrint side.
+
+### 6. The shared PRNG
+
+`NonCryptoRandom` lives in `WoofWare.PawPrint.Domain` and is used by both the
+kernel (`NonCryptoRandomState`, `CryptoRandomState`, clock jitter) and
+PawPrint's scheduler. `Domain` is CLR metadata and must not gain a POSIX
+dependency; the new library must not gain a CLR one.
+
+**(a) Move it to `WoofWare.PosixKernel`.** PawPrint references both, so its
+scheduler keeps working. But `WoofWare.PawPrint.Domain` is a published NuGet
+package, and deleting a public module from it is a breaking change — and it
+would put the scheduler's PRNG in a package about POSIX, which is no more
+honest than leaving the kernel's in a package about CLR metadata.
+
+**(b) Duplicate the 126 lines.** No breaking change; two copies of a PRNG that
+must agree for no reason, which is exactly the "two versions of the truth"
+the gospel warns about.
+
+**(c) A third project** owning the PRNG, referenced by both.
+
+**Chosen: (c).** Note first that (a) and (c) are *equally* breaking to
+`Domain` — both delete a public module from it — so the breaking change is not
+what separates them, and the argument for (c) has to stand on dependency shape
+alone. It does: the two consumers are doing genuinely different things with
+it — the kernel draws entropy a guest reads back through `getrandom`/
+`/dev/urandom`, the scheduler draws an interleaving to explore — and neither is
+a special case of the other. A deterministic PRNG is a utility, and a utility
+with two unrelated consumers belongs in neither consumer. `Domain` holding it
+today is an accident of where it was first needed.
+
+This does not arise until stage 5: `NonCryptoRandom` appears in
+`EmulatedKernel.fs` only in the `NonCryptoRandomState` / `CryptoRandomState`
+fields and their initialisation, and not at all in the platform-profile block
+that stage 3 moves. The commissioned spike therefore leaves it exactly where it
+is.
+
+## Target shape
+
+```fsharp
+namespace WoofWare.PosixKernel
+
+/// One scheduling entity as the kernel sees it: what `gettid(2)` names.
+/// PawPrint's `ThreadId` maps onto this at task registration.
+type TaskId = TaskId of int
+
+type UnixMachineState =
+    { Platform : SimulatedUnixPlatform          // facts true of this kernel image
+      FileSystem : VirtualFileSystem
+      FileSystemType : EmulatedFileSystemType   // a mount fact
+      Clock : UnixClock                         // VirtualClockTicks, WallClockEpochMs
+      Entropy : UnixEntropy                     // NonCryptoRandomState, CryptoRandomState
+      Network : UnixNetworkConfiguration        // LocalAddresses, LocalRoutes,
+                                                // EphemeralPortRange, NextEphemeralPort, SoMaxConn
+      Sockets : SocketTable                     // Sockets, Connections, and their id counters
+      ProcessorCount : int
+      UserAddressLimit : uint64 }               // TASK_SIZE_MAX
+
+type UnixProcessState<'Handler> =
+    { Environment : Map<string, string>
+      CurrentDirectory : AbsoluteUnixPath
+      CurrentDirectoryInode : InodeNumber
+      ProcessPath : AbsoluteUnixPath option
+      Umask : PermissionBits
+      Identity : UnixCredentials                // UserId, GroupId
+      FileDescriptors : FileDescriptorRegistry
+      DirectoryStreams : Map<DirectoryStreamId, DirectoryStream>
+      Signals : SignalState<'Handler>           // dispositions, enabled set, pending queue
+      StandardStreams : ImmutableArray<OutputLogEntry> }
+
+type UnixTaskState =
+    { Errno : int
+      Cpu : CpuId
+      OsThreadId : OsThreadId
+      BlockedSignals : Set<Signal>
+      Parked : ParkedSyscall option }
+```
+
+`CpuId` and `OsThreadId` move across from `AbstractMachineDomain.fs`: both are
+values the *guest* reads from the kernel (`sched_getcpu`, `gettid`), and
+`EmulatedKernel.cpuForRotation` / `osThreadId` are already their only
+producers. `ThreadId` stays in PawPrint; the mapping `ThreadId -> TaskId` is
+established once, at thread creation.
+
+`DirectoryStreamId` is new: today `DirectoryStreams` is keyed by
+`NativeMemoryBlockId`, which is PawPrint's identity for the block backing the
+guest's `DIR*`. The library mints an opaque id; the client decides how to
+represent it to its guest.
+
+**`TaskId` turned out to be unnecessary, and stage 6c dropped it.** The sketch
+above has the library mint a `TaskId` with the client maintaining a
+`ThreadId -> TaskId` mapping. There is a cheaper answer that this codebase had
+already found: make the table generic in the task name, exactly as
+`SignalState<'Task, 'Handler>` is. `UnixTaskTable`'s operations take a
+`Map<'Task, UnixTaskState>` and never learn what names a task, so no second
+identity and no mapping to maintain. `EmulatedKernel` keys the table by its own
+`ThreadId` and nothing in the library knows.
+
+### What stays in PawPrint, and why
+
+Each of these fails the test "would a POSIX kernel have this?":
+
+| stays | because |
+| --- | --- |
+| `LowLevelMonitors`, `WaitHandles`, `SemaphoreState`, `MutexState`, `EventState` | CoreCLR PAL sync objects and .NET `WaitHandle`s. A POSIX kernel owns futexes, not these. If PawPrint ever interprets the real pthread PAL, `futex` becomes a library syscall and these become its client-side users |
+| `NativeMemoryPool` | the `malloc` arena is libc, not kernel: PawPrint models no `brk`/`mmap` |
+| `SpuriousWakeup`, `SyncBlockSpuriousWakeup`, `ClockJitter`, `StepCounter`, `InstructionCostTicks` | determinism-*search* strategies over PawPrint's own execution. `InstructionCostTicks` in particular is a client policy ("this machine runs at 10 MIPS"); the library exposes `Clock.advance : ticks -> …` and the client decides how many |
+| `OptimalMaxSpinWaitsPerSpinIteration` | reaches the guest through an internal `System.Threading.Thread` property |
+| `NextEventPipeId` | .NET diagnostics |
+| `LastPInvokeError` | `Marshal.GetLastPInvokeError` is a CLR per-thread slot written by `SetLastError=true` marshalling. Distinct from `LastSystemError`, which *is* errno and does move |
+
+## Settled
+
+* **Packaging.** `WoofWare.PosixKernel` **is** `IsPackable`, with its own
+  `PackageId`, following the `WoofWare.PawPrint.Domain` precedent — `Domain` is
+  a `ProjectReference` of `WoofWare.PawPrint`, is packable, and CI uploads both
+  nupkgs.
+
+  This overturns an earlier "not packable" decision, which was made without the
+  following, established by probe rather than from memory: a `ProjectReference`
+  to an `IsPackable=false` project emits `<dependency id="…" version="1.0.0"/>`
+  into the referencing package's nuspec **and omits the referenced assembly from
+  `lib/`**, silently and with no warning. Since `WoofWare.PawPrint` is packable
+  and `nuget-pack`/`expected-pack` are required checks that only count nupkg
+  *files*, a non-packable `WoofWare.PosixKernel` would have made the published
+  PawPrint package depend on a package that does not exist and ship without the
+  assembly, with CI green throughout.
+
+  The cost this incurs — the state records become public surface — is smaller
+  than it looks while the publish jobs remain `if: false`: nothing reaches
+  nuget.org today, so what is committed to is the *shape of the package graph*,
+  not an API contract with users.
+
+* **`.fsi` discipline.** None for now. `.fsi` files are the only thing that
+  actually hides an F# representation within an assembly, so the syscall layer
+  gets them when it is built (stages 7–9); writing them for 9,650 moved lines
+  would turn rename-only stages into rewrites and destroy their oracle.
+
+* **The shared PRNG.** Its own project — see decision 6. Not needed before
+  stage 5.
+
+## What the assembly boundary starts enforcing
+
+F# `private` on a record or single-case union declared in a *namespace* is
+assembly-scoped: it does not hide the representation from other files in the
+same assembly, but it does hide it across an assembly boundary. Twelve of the
+moving types have private representations (`AbsoluteUnixPath`, `FileName`,
+`UnixPath`, `PathCursor`, `SymlinkTarget`, `PermissionBits`, `UnixTimestamp`,
+`VirtualFileSystem`, `PathLimits`, `FileDescriptorRegistry`, `SignalState`,
+`SignalHandler`), so anything in PawPrint reaching into one becomes `FS1093`
+the moment it is a different assembly.
+
+Measured across `WoofWare.PawPrint`, `.App` and `.Test`, for every constructor,
+pattern match and field access outside the defining file: **there is exactly
+one**, `EmulatedKernel.fs`'s `checkInvariants` reading
+`kernel.FileDescriptors.Descriptions`. `FileDescriptorRegistry.descriptions`
+already exists as a public accessor, so it is a one-line change in stage 2.
+
+That is a good result for this plan's premise. The private representations were
+already being respected by discipline; the assembly boundary will now enforce
+what discipline was achieving, which is the machine-checks-invariants principle
+applied to a module boundary.
+
+## Still open
+
+* **Where the `emulated-posix-kernel` skill lives.** It documents the new
+  library, and its measured divergence tables are the most expensive thing in
+  this area. Recommendation: it stays at `.claude/skills/` in this repo (the
+  library is not a separate repository), with its file paths updated in stage 3
+  — the divergence tables and the platform profile move together, so that is
+  the moment its paths go stale.
+* **Two test files worth splitting, deferred.** `TestAbsoluteUnixPath.fs` has
+  four cases that forge an `EmulatedKernel`, and `TestFileSystemSeed.fs` has
+  eight that call `RealRuntime.validateSeedForOracle`. In both, the minority is
+  genuinely a PawPrint test and the majority is genuinely a library test.
+  Splitting them is the right end state but is not rename-only, so the spike
+  leaves both whole in `WoofWare.PawPrint.Test`.
+
+## Implementation plan
+
+Implement this plan with each stage on its own branch, stacked as necessary on
+previous branches, so that a reviewer can review each branch in isolation.
+
+The move stages (1, 2, 4, 5, 6) share an oracle worth stating once, because it
+is what makes a 6,000-line diff reviewable: **a rename-only check**. Strip
+`namespace` and `open` lines from both sides and diff; the result must be
+empty. Write that check as a script in stage 1 and reuse it. `git diff -M`
+should show renames, not deletions plus additions.
+
+Every stage's baseline oracle is the full suite, both halves:
+
+```
+nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj
+nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --filter "TestCategory=Guest"
+```
+
+plus the new `WoofWare.PosixKernel.Test` project from stage 1 onward.
+
+---
+
+### How the test files were assigned
+
+The first draft of this plan assigned test files by assuming they followed
+their implementation files. They do not, and four of the assignments were
+wrong. Assignment is therefore by grep over each *test* file's own code
+references (comments stripped), against two lists: names that will never be on
+the library side (`EmulatedKernel`, `KernelConfig`, `RealRuntime`,
+`HostPlatform`, `IlMachineState`, `NativeSystemNative`, …), and
+`SimulatedUnixPlatform`, which arrives only in stage 3.
+
+| test file | blockers | needs platform | lands in |
+| --- | --- | --- | --- |
+| `TestUnixError.fs` | — | no | stage 1 |
+| `TestUnixPath.fs` | — | no | stage 1 |
+| `TestFileDescriptorRegistry.fs` | — | no | stage 2 |
+| `TestSignal.fs` | — | no | stage 2 |
+| `TestDirectoryEnumeration.fs` | — | no | stage 2 |
+| `TestPathCursor.fs` | — | yes | stage 3 |
+| `TestVirtualFileSystem.fs` | — | yes | stage 3 |
+| `TestVirtualFileSystemAgainstHost.fs` | — | yes | stage 3 |
+| `TestOpenDirRules.fs` | — | yes | stage 3 |
+| `TestRmDirRules.fs` | — | yes | stage 3 |
+| `TestUnlinkRules.fs` | — | yes | stage 3 |
+| `TestRenameRules.fs` | — | yes | stage 3 |
+| `TestLinuxEpollLimits.fs` | — | yes | stage 3 |
+| `TestAbsoluteUnixPath.fs` | `EmulatedKernel`, `KernelConfig` | yes | stays |
+| `TestFileSystemSeed.fs` | `RealRuntime` | yes | stays |
+| `TestFileSystemType.fs` | `EmulatedKernel`, `HostPlatform` | yes | stays |
+| `TestSocketBinding.fs` | `EmulatedKernel` | yes | stays |
+| `TestUserBufferCheck.fs` | `EmulatedKernel` | yes | stays |
+| `TestUserBufferCheckAgainstHost.fs` | `EmulatedKernel`, `HostPlatform` | yes | stays |
+| `TestGuestPathBytes.fs` | `NativeSystemNative` | yes | stays |
+| `TestSignalHandler.fs` | `IlMachineState`, `MethodInfo` | no | stage 4 |
+| `TestSignalState.fs` | — | no | stage 4 |
+| `TestSocketCreation.fs` | embedded resource, see below | yes | stays |
+
+A test staying behind is not a problem: `WoofWare.PawPrint.Test` references the
+new library, so every one of these keeps testing the moved code. Moving a test
+buys one thing only — that the library is tested *without* a PawPrint
+reference — and the thirteen that do move include the host-equality suite,
+which is the expensive one.
+
+`TestSocketCreation.fs` is the one commissioned file that is not a rename: it
+reads embedded resources through `Assembly.GetExecutingAssembly()` with the
+hard-coded logical name `"WoofWare.PawPrint.Test.socketMatrix.%s"`, so moving it
+also means moving the `<EmbeddedResource Include="socketMatrix\*.tsv" />` item
+and editing that string. It stays behind in the spike. Assembly-identity-
+dependent code is a class the rename-only check cannot see; this is the only
+instance among the movers, and the check's documentation should say so.
+
+---
+
+### Stage 1: project skeleton, and the path/errno vocabulary
+
+**Dependencies**: none.
+
+**Implements**: "What is already true"; the packaging decision.
+
+Create `WoofWare.PosixKernel/` (net8.0, `IsPackable=true`, `PackageId`
+`WoofWare.PosixKernel`) and `WoofWare.PosixKernel.Test/` (net10.0 — the devshell
+carries only the net10 runtime, so a net8.0 test host will not run; NUnit 4.4.0,
+NUnit3TestAdapter 5.1.0, FsUnit 7.1.1, FsCheck(.NUnit) 3.3.2,
+Microsoft.NET.Test.Sdk 17.14.1, to match the existing test project). Add both to
+`WoofWare.PawPrint.slnx`; add a `WoofWare.PosixKernel` nupkg upload to the
+`nuget-pack` job. `WoofWare.PawPrint` references the new project.
+
+The new package gets its **own** `version.json` and its **own** `README.md`,
+rather than sharing the repository root's. Both existing packages carry a
+`version.json` whose `pathFilters` decide which tree changes bump that
+package's version — so a shared file would tie the new package's version to
+PawPrint's churn, which is exactly the coupling the extraction is trying to
+remove. `WoofWare.PawPrint`'s own filters already list
+`:/WoofWare.PawPrint.Domain` because it depends on it; add
+`:/WoofWare.PosixKernel` for the same reason. The `README.md` is separate
+because it is the package's front page on nuget.org and the repository root's
+describes an IL interpreter, which this library is not.
+
+Move, in compile order and with namespace change only: `UnixError.fs`,
+`UnixPathText.fs`, `AbsoluteUnixPath.fs`, `UnixPath.fs` (1,407 lines), and the
+tests `TestUnixError.fs`, `TestUnixPath.fs`. Add `open WoofWare.PosixKernel` to
+every referencing file.
+
+**Correctness oracle**:
+* The rename-only script reports an empty diff for every moved file.
+* The default suite is green and its total is the 3,502-test baseline minus
+  exactly the tests that moved projects; the two projects' totals must sum to
+  3,502. The `Guest` half is unchanged.
+* **Check the empty-filter case before landing**: CI's second step is
+  `dotnet test --filter "TestCategory=Guest"`, and `WoofWare.PosixKernel.Test`
+  contains no `Guest`-category test at all. Confirm VSTest treats "no test
+  matches" in one assembly of a solution-level run as a warning rather than a
+  failure. If it does not, that is a stage-1 blocker and needs a filter change,
+  not a workaround later.
+* `WoofWare.PosixKernel.dll` references neither `WoofWare.PawPrint` nor
+  `WoofWare.PawPrint.Domain` — asserted in CI, because it is the invariant the
+  whole plan rests on and it is cheap to check with `System.Reflection.Metadata`.
+
+### Stage 2: the CLR-free state modules
+
+**Dependencies**: stage 1.
+
+Move `VirtualFileSystem.fs`, `FileSystemSeed.fs`, `InternetEndpoint.fs`,
+`FileDescriptorRegistry.fs`, `Signal.fs` (5,433 lines) and the tests
+`TestFileDescriptorRegistry.fs`, `TestSignal.fs`, `TestDirectoryEnumeration.fs`.
+
+One non-rename edit, in its own commit: `EmulatedKernel.checkInvariants` reads
+`kernel.FileDescriptors.Descriptions`, which the assembly boundary now hides.
+Replace with the existing public accessor
+`FileDescriptorRegistry.descriptions`.
+
+**Correctness oracle**: as stage 1. The compiler is the real oracle for the
+private-representation question — if more than the one predicted `FS1093`
+appears, the measurement in "What the assembly boundary starts enforcing" was
+wrong and the surplus needs understanding rather than papering over with
+accessors.
+
+### Stage 3: the Unix platform profile
+
+**Dependencies**: stage 2.
+
+**Specify this stage by definition name, never by line range.** The first draft
+named lines 559–1913, and commit #1153 landed `RenameRules` inside that window
+between the measurement and the commit, silently moving every boundary. The
+block is 18% of recent commits by volume; assume it will move again.
+
+Move into `WoofWare.PosixKernel/SimulatedUnixPlatform.fs`, from
+`EmulatedKernel.fs`: `SimulatedUnixFlavour`, `EmulatedFileSystemType`,
+`FileSystemTypeAnswer`, `SimulatedUnixReleaseError`, `UserBufferCheck`,
+`ObservedUserAddressLimit`, `LinuxEpollLimits`, `SimulatedUnixPlatform`,
+`SocketAddressSizes`, `SockaddrFamilyField`, `SocketCreationRefusal`,
+`CreatingOpenRules`/`CreatingOpenVerdict`, `MkDirRules`/`MkDirVerdict`,
+`UnlinkRules`/`UnlinkVerdict`, `RemovalChecks`, `DirectoryEntryNameLength`,
+`GetCwdOrphanAnswer`, `RmDirRules`/`RmDirVerdict`, `OpenDirRules`/
+`OpenDirVerdict`, `RenameRules`/`RenameVerdict`/`RenameChecks`,
+`BindLengthVerdict`, `BindFault`, **and `module SimulatedUnixPlatform`**.
+
+That last is not optional and the first draft omitted it. The module holds every
+flavour derivation — `linuxX64`, `macOsArm64`, `pathLimits`,
+`creatingOpenRules`, `rawErrnoNumbering`, `socketCreation`, the bind rules — so
+it *is* the divergence tables, and six of the eight moving tests call into it.
+Leaving it behind would also split `type SimulatedUnixPlatform` from `module
+SimulatedUnixPlatform` across two namespaces, making resolution in any file
+opening both depend on `open` order. Verified CLR-free along with the rest of
+the block.
+
+Measured on `dc341c58`: this block references nothing defined outside it except
+in nine doc comments and one interpolated error string, all naming
+`EmulatedKernel.*` or `KernelConfig.*`. Land the move first, then the comment
+rewrites as a separate commit — and rewrite them into *library* vocabulary
+rather than merely repointing the names. The error string in
+`EmulatedFileSystemType.reportedFor` currently instructs its caller to use
+`EmulatedKernel.withUnixPlatformAndFileSystemType`, which after the move is
+client vocabulary inside a library that has no idea its client has such a
+function.
+
+Move the tests: `TestPathCursor.fs`, `TestVirtualFileSystem.fs`,
+`TestVirtualFileSystemAgainstHost.fs`, `TestOpenDirRules.fs`,
+`TestRmDirRules.fs`, `TestUnlinkRules.fs`, `TestRenameRules.fs`,
+`TestLinuxEpollLimits.fs`.
+
+**Correctness oracle**:
+* The rename-only script, on the move commit — but note this stage is a
+  **split**, not a rename: `EmulatedKernel.fs` keeps its name, so `git diff -M`
+  detects nothing. The check must diff the old file against
+  (remainder + extracted file) explicitly.
+* The host-equality tests are the real oracle here and they must pass **on both
+  platforms**: locally on macOS and in CI on Linux. Each falsifies a different
+  column of the divergence tables, so a green run on one is half a result.
+* `.claude/skills/emulated-posix-kernel/` and its `reference/` files name
+  `EmulatedKernel.fs` throughout. Update the paths in this stage; the skill is
+  the only durable record of how those constants were measured, and a skill
+  that points at a file which no longer holds the thing it describes is worse
+  than no skill.
+
+### Stage 3 is the spike's exit
+
+The question the commissioned work answers: **is the boundary real?** Concretely,
+after stage 3:
+
+* `WoofWare.PosixKernel.dll` builds and its tests pass with no reference to
+  `WoofWare.PawPrint` or `WoofWare.PawPrint.Domain` — asserted in CI, not
+  eyeballed.
+* 9,650 of the ~15,000 candidate lines have moved without a behavioural diff,
+  and the rename-only check says so mechanically.
+* Thirteen test files, including the host-equality suite, run from the far side
+  of the boundary, on both macOS and Linux.
+
+If any of those fails, the finding is worth more than the move: it means a CLR
+concept is reaching the POSIX model somewhere the type names did not reveal,
+and stages 4–9 need re-costing before anyone starts them.
+
+---
+
+*Stages 4–9 below are not commissioned. They are recorded so that stage 3's
+result can be judged against where it was heading; re-read and re-cost them
+before starting any of them.*
+
+### Stage 4: `SignalState` genericised — **done; two decisions taken in absentia**
+
+The plan as written missed that `SignalState` uses `ThreadId` in four places,
+one of which destructures its representation
+(`List.sortBy (fun (ThreadId.ThreadId tid) -> tid)`). Two questions followed,
+both answered the reversible way:
+
+* **Task identity: a second type parameter, not a library `TaskId`.**
+  `SignalState<'Task, 'Handler>` with `'Task : comparison`. The alternative —
+  introducing the library's own `TaskId` now — is where stage 5 is heading
+  anyway, but it needs a `ThreadId`↔`TaskId` mapping established at thread
+  creation, which is stage 5's work. A type parameter is purely additive and
+  collapses to `TaskId` later for free. The destructuring sort becomes
+  `List.sort`, which is identical for a single-field DU over `int`.
+* **The dispatcher payload stays on `Initialized`, rather than moving out.**
+  The plan proposed reducing `SignalInitState` to a payload-free bit with
+  PawPrint holding the dispatcher alongside. That is conceptually cleaner — no
+  real kernel has a managed-handler dispatch thread — but it splits an
+  invariant the original DU shape exists to make unrepresentable-to-violate
+  ("the dispatcher exists iff signal handling is initialised"). Keeping it as
+  `Initialized of dispatcher : 'Task` preserves the machine-checked invariant
+  and is honest at the library's altitude: the type records *which* task
+  dispatches without claiming to know what a task is.
+
+`SignalHandler` (which wraps a CLR `MethodInfo`) split out into its own PawPrint
+file and stayed. `TestSignalState.fs` moved and instantiates both parameters
+with nominal stand-in types of its own rather than `int` — an `int` could
+satisfy the signature through a numeric path without the parameter being
+genuinely opaque.
+
+The existing tests never exercised the handler slot at all, so two were added
+for it, and both are mutation-tested: making `setHandler` discard the rest of
+the state, and making it first-writer-wins, each kill exactly one.
+
+### Stage 4 (as originally specified): `SignalState` genericised
+
+**Dependencies**: stage 2.
+
+Parameterise `SignalState` over `'Handler` (decision 5); move
+`SignalInitState`'s dispatcher `ThreadId` out to PawPrint, leaving an
+initialised bit. Move `SignalState.fs` and `TestSignalState.fs`,
+`TestSignalHandler.fs`. `SignalDispatch.fs`, `TestSignalDispatch.fs`,
+`TestSignalDispatcherThread.fs`, `TestSignalTermination.fs` stay in PawPrint —
+they are about the dispatcher thread, which is PawPrint's.
+
+**Correctness oracle**:
+* `TestSignalState.fs`'s existing property tests against a store-everything
+  oracle, unchanged, at `'Handler = SignalHandler`.
+* A new instantiation at `'Handler = int` in the library's own test project,
+  running the same properties. This is what proves the generic parameter is
+  genuinely a parameter rather than a `SignalHandler` in disguise.
+* `TestSignalDispatcherThread.fs` green: the dispatcher identity moved and the
+  "dispatcher exists iff initialised" invariant must survive the move.
+
+### Stage 5: introduce `UnixSystem` inside PawPrint
+
+**Dependencies**: stages 3 and 4.
+
+**Implements**: decision 4.
+
+Do the state split *before* moving it, so that every step is compiler-checked
+against the existing 4,450-test suite. Add a nested record to `EmulatedKernel`
+and migrate the fields one group at a time, keeping the old accessors as
+forwarding members:
+
+**Corrected while doing sub-step 1: "no call site changes" is true of reads
+only.** Nineteen forwarding members left every read site untouched, exactly as
+planned — but F# cannot forward a record *update*, so `{ kernel with
+FileSystem = fs }` has to become `{ kernel with Machine = { kernel.Machine with
+FileSystem = fs } }`. The compiler named 124 such sites; they collapse to 76
+update expressions.
+
+Converting every write to a per-field setter first, as a separate prior step —
+the shape the `DirectoryStreams` re-key used — would have preserved the property
+literally. Measured, and rejected: **35 of the 72** kernel-update expressions set
+fields from more than one group at once, so per-field setters would fragment one
+record copy into a pipeline, and the later sub-steps would fragment it again.
+Nesting inline keeps each expression to one outer copy and one inner copy.
+
+Two smaller deviations, both to keep the diff mechanical:
+
+* The field is `Machine : UnixMachineState` directly on `EmulatedKernel`, not
+  `Unix : UnixSystem`. A `UnixSystem` wrapper holding one field would make every
+  write three levels deep for no gain; it can be introduced once all three parts
+  exist, as a change internal to this file.
+* `UnixMachineState` holds all nineteen fields flat. The target shape's
+  `UnixClock` / `UnixEntropy` / `UnixNetworkConfiguration` / `SocketTable`
+  grouping is a separate concern from relocation, and once the forwarding members
+  exist it costs no call site to introduce.
+
+The groups:
+
+1. machine: `FileSystem`, `FileSystemType`, `UnixPlatform`,
+   `VirtualClockTicks`, `WallClockEpochMs`, `NonCryptoRandomState`,
+   `CryptoRandomState`, `ProcessorCount`, `UserAddressLimit`, the network
+   fields, the socket table;
+2. process: `Environment`, `CurrentDirectory`, `CurrentDirectoryInode`,
+   `ProcessPath`, `Umask`, `UserId`, `GroupId`, `FileDescriptors`,
+   `DirectoryStreams` (**rekeyed already; move it as-is**), `Signals`,
+   `OutputLog`;
+3. tasks: `ParkedSocketWaits`, and `Cpu`/`OsThreadId` pulled off `ThreadState`.
+
+**Corrected while doing sub-step 3: `LastSystemError` is not kernel state.** On a
+real Unix errno lives in libc, not the kernel — the kernel returns an error code
+and the syscall wrapper stores it — so a POSIX simulator should return errors,
+not hold them. PawPrint's map is that wrapper's slot, and CoreCLR reuses it for
+Windows last-error too: `NativeWaitHandle` really does write Win32 numbers
+(`ERROR_TOO_MANY_POSTS` 298, `ERROR_INVALID_PARAMETER` 87) into it. It stays on
+`EmulatedKernel` beside `LastPInvokeError`, and the `Errno : int` in the target
+shape above is wrong.
+
+That correction is what makes the rest of the sub-step sound. The `Cpu` and
+`OsThreadId` docstrings argued they were *fields* rather than map entries
+because "there is no truthful default for an absent key", and errno — whose
+absence truthfully means 0 — was the one field that would have forced the task
+record to be partial. Without it every field is total, so a missing key is a bug
+rather than a default, and `checkTaskInvariants` says so.
+
+**The oracle the plan named cannot be written.** It asked for "the task set is
+exactly the live threads — created on thread creation and removed on thread
+exit", mutation-tested by deleting the removal. Nothing removes a thread from
+`IlMachineState.ThreadState`; there is no removal site in the repository, and
+`OsThreadId`'s non-reuse argument depends on that. So the honest assertion is
+that the task set equals the thread set, both monotonic: it catches a thread
+created without `registerTask` and a task minted for a thread that never
+existed, and it is not a leak check because nothing can leak yet.
+
+**Two of the seven mutants survived the first battery, and both were fixture
+defects rather than code defects.** Placing every task on core 0 instead of its
+rotation slot survived because `addThread` has one production caller — the entry
+thread, always at rotation 0, where `cpuForRotation 0` and `CpuId 0` agree — so
+the mutant is equivalent under every call the program makes; the new row calls
+`addThread` twice on a four-core machine to pin the contract anyway, so a second
+caller cannot silently land on core 0. Clobbering the core while parking survived
+because the park row used a one-processor machine whose only thread was already
+on core 0; it now parks the *second* thread of a four-core machine. Both are the
+same lesson: a fixture whose inputs are all zero cannot tell "left alone" from
+"set to zero".
+
+Sub-step 2 took `NextDirectoryStreamId` across with `DirectoryStreams`: it is the
+counter that mints stream ids, so it is the same kernel state, and only
+`DirectoryStreamBlocks` — PawPrint's representation of a `DIR*` — stays behind.
+`UnixProcessState` also holds `Signals` concretely as
+`SignalState<ThreadId, SignalHandler>` rather than generically: the type
+parameters stage 4 added exist so the *library* need not know PawPrint's
+`ThreadId`, and nothing needs that until stage 6 moves the record across.
+
+`KernelConfig` splits along the same lines but keeps its current surface, so
+`HostConfig` and every test registration are untouched.
+
+**Settled, and done: `DirectoryStreams`' key** — option (ii), as its own step
+before the migration. `DirectoryStreamId` is minted from a
+`NextDirectoryStreamId` counter on `EmulatedKernel`, exactly as `SocketId` and
+`InodeNumber` are, and `DirectoryStreamBlocks : Map<NativeMemoryBlockId,
+DirectoryStreamId>` is the client's representation of a `DIR*`. That second map
+is a PawPrint field and stays behind when `DirectoryStreams` moves in stage 6,
+which is the whole point: the stream table is kernel state a POSIX simulator
+owns whatever its client hands out, and `NativeMemoryBlockId` never crosses.
+
+`DirectoryStreamId` is declared beside `DirectoryStream` in `EmulatedKernel.fs`
+rather than in the library today. The rule being enforced is "no PawPrint
+identity inside the library", which is already satisfied; publishing a type into
+the package before anything there uses it would be placement ahead of need, and
+the two move together in stage 6 like every other field.
+
+The general setter is gone. `withNewDirectoryStream` mints, and
+`withDirectoryCursor` updates under the existing id — so "a `readdir` mints a
+second id, leaving the old stream unreachable and its directory pinned for the
+run" is not a mistake the API can express. Four invariants are new:
+`NextDirectoryStreamIdNotFresh`; `DirectoryStreamBlockDangling` /
+`UnreachableDirectoryStream` for the two directions in which the maps can
+disagree; and `DirectoryStreamNamedTwice`, because `DirectoryStreamBlocks` must
+be *injective* and neither of the other two can see that — the unreachable check
+reduces the ids to a set, in which two blocks naming one stream collapse to one
+element and both directions come back clean. Codex found that; measured before
+fixing, `checkInvariants` accepted the state, and closing either block would then
+have taken the stream out from under the other.
+
+**Correctness oracle, met**: the full suite including `Guest`, plus a new
+`TestDirectoryStreamId` fixture — thirteen rows and a property that drives an
+arbitrary sequence of opens and closes and asserts the maps agree at the end.
+Mutation-tested, seven mutants, all killed: forgetting either map on close
+(two), a counter that does not advance, a cursor advance routed through the open
+path, and each of the three new invariant checks computed but never reported.
+Three of them were killed by exactly one row each, which is the row written for
+them.
+
+The original option set follows, for the record.
+
+**The question was: `DirectoryStreams`' key.** This
+stage's whole safety property is "forwarding accessors, so no call site
+changes", and rekeying `Map<NativeMemoryBlockId, DirectoryStream>` to a minted
+`DirectoryStreamId` contradicts it — `Native/NativeSystemNative.fs` keys those
+by block id, so a forwarding accessor would have to maintain a block-id →
+stream-id mapping, which is design work smuggled into a mechanical stage.
+
+* **(i) Move the field as-is, rekey later.** The library ends up holding a
+  `NativeMemoryBlockId`-keyed map for a stage, which is a PawPrint identity
+  inside the library — ugly, and visible in the public surface.
+* **(ii) Rekey first, as its own step before the migration.** One focused
+  change to the `opendir`/`readdir`/`closedir` handlers, with the block-id →
+  stream-id mapping introduced deliberately and tested, then the field moves
+  mechanically like every other. Costs an extra step; keeps this stage's
+  safety property intact.
+* **(iii) Leave `DirectoryStreams` on `EmulatedKernel` entirely** and revisit
+  when stage 8 moves `opendir`. A directory stream *is* kernel state, so this
+  is a deferral rather than an answer, but it is the smallest step.
+
+Chosen: **(ii)**. The mapping has to exist eventually, the handlers are few, and
+doing it separately keeps "no call site changes" true of the migration itself —
+which is the only reason a 40-field move is reviewable.
+
+**Correctness oracle**:
+* The full suite after each of the three sub-steps.
+* **A new test that the task set is exactly the live threads** — created on
+  thread creation, removed on thread exit. This is the obligation that replaces
+  the "never store a default" canonicalisation (decision 4), and without it a
+  leaked task record is a determinism bug no existing test can see. Mutation-test
+  it: delete the removal, and the test must go red.
+* The `SocketFuzz` differential fuzzer, which drives the socket model directly
+  against real Linux epoll in a container, is the sharpest available check that
+  the socket-table regrouping preserved behaviour. Run it.
+
+### Interlude: the docstrings the moves detached
+
+Stages 5 and 6 moved definitions between files with scripted `cut`s that took
+the definition and left the prose. An F# `///` block binds to the declaration
+that *follows* it, so a stranded block does not vanish — it silently starts
+documenting whatever comes next, and where it lands immediately above another
+docstring the two fuse into one. Nothing catches that: it is invisible to the
+compiler, to the tests, and to a diff that looks local and reasonable.
+
+Nine sites were wrong by the end of stage 6c, and repairing them by eye had
+already failed twice (PRs #1162 and #1166 each found some and missed others).
+`scripts/check-docstring-attachment.py` is the oracle that finds them all: it
+pairs every block with the declaration it precedes on both sides of a revision
+range and reports the pairs that moved. Two of the nine predate the extraction
+entirely, which is what a mechanical check buys over reading — one of those
+(`nanosecondsPerTick` still opening "Nanoseconds per millisecond") had been
+stale since #848 renamed the constant.
+
+Run it against the branch point for every remaining stage; the moves are not
+finished.
+
+**The check had a blind spot, and it was the shape that caused both of the
+strandings found by eye.** `MERGED` recognised a fusion by splitting the fused
+text into blocks that had *each* stood on their own at the base revision, so it
+saw two existing docstrings pushed together but not the far commoner case: a
+declaration inserted between a block and its subject, carrying a docstring
+written on the spot. The second half never existed at the base, so there was
+nothing to split against and the check stayed silent — which is how #1080 could
+take `withUmask`'s prose and #1089 `cpuForRotation`'s with the tool in the
+repository. It now takes the longest opening that stood on its own before and
+asks about the *declarations* rather than about the text: the new block must
+precede at least one declaration that opening did not already document, and some
+declaration that did have it must no longer have it anywhere in its docstring.
+A declaration that had the prose and still has it was left alone, however much
+that prose has grown above or below it; and being detached from prose is exactly
+no longer having it. Both counted per declaration, since one normalised block can
+precede several.
+
+Five review rounds arrived at that phrasing, and the first four are why it is
+phrased that way. Asking only "did the subject change" reported a docstring that
+merely gained a paragraph. Asking additionally "does the opening still stand
+alone as a block" missed a stranding whose fused text opened with a *longer*
+block that was still standing; fixing that by continuing the search rather than
+stopping still misreported an opening retained inside its own subject's expanded
+block; asking the subjects existentially missed a block borne by two declarations
+where only one lost it; and asking whether the surviving docstring *starts* with
+the block reported prose merely prepended above it. Every one is a text-shaped
+approximation of a question about declarations, which is what five rounds on one
+predicate usually means.
+
+None of the shapes occurs in this repository's history: the whole-repository
+sweep reports the same thirty-five fusions throughout. Their oracle is
+`scripts/test-docstring-attachment.sh`, which puts all fifteen shapes in one
+throwaway repository — seven that must report, eight that must stay silent, plus
+the exit status and the exact number of findings — and runs as the
+`docstring-attachment` flake check, so a change to the checker cannot quietly
+retire it. It is itself mutation-tested: eight mutants of the guard, each
+killed by exactly the rows written for it. Two of those rows exist only because a
+mutant survived the first battery, which is the usual reason to keep a fixture
+honest: with two *distinct* subjects `kept < count` and `kept < 1` agree, and
+without a partial-word case the word-boundary padding is unobservable.
+
+Measured by running the check across every commit in the repository against its
+own parent, over the F# files that commit touched. Thirty-five fusions of the
+new shape, of which nine are strandings still in the tree: five in files this
+extraction has been moving (`cpuForRotation`, `defaultUserId`,
+`sockaddrFamilyField`, `socketCreation`, `GetCwdOrphanAnswer`) and four not.
+Eight are repaired as pure relocations. The ninth,
+`MemoryBlock.readNamedBytes`, needs writing rather than relocating: the stranded
+half says the function refuses a cell whose typed view is not byte-addressable,
+which is exactly the cell it *names* instead.
+
+Three more reports are not defects, and the line separating them is worth
+holding. Where the inserted declaration is a *generalisation* that legitimately
+inherited the prose — `tryNameCellWith`, `allocateZeroedAs`, `invokeStringQCall`
+— the block still describes what it now precedes; only the specialisation is
+left undocumented, and giving it words is writing rather than reattaching. The
+rest of the thirty-five are renames that carried their prose along, or
+strandings #1166 and #1171 had already repaired.
+
+### Stage 6: move `UnixSystem` to the library
+
+**Dependencies**: stage 5.
+
+Move `UnixSystem` and its operations across. `EmulatedKernel` keeps only the
+CLR-side fields listed in "What stays in PawPrint", plus `Unix : UnixSystem`.
+Delete the forwarding accessors from stage 5 and update the ~180 call sites in
+`NativeSystemNative.fs`.
+
+**Done, in seven sub-stages** (6a leaf types, 6b–6d the three records, 6e–6g the
+forwarders they left behind), with one deviation: `EmulatedKernel` holds the
+three records flat rather than a `Unix : UnixSystem` aggregate. See 6g for why
+that waits for stage 7.
+
+**Correctness oracle**: the full suite, plus the CI assertion from stage 1 that
+the library references nothing of PawPrint's. At this point the goal's second
+bullet is met and the third is met; the first is met for state but not yet for
+transitions.
+
+#### Stage 6d: `UnixProcessState` — done
+
+The record and nine process-only operations moved, generic in both of
+`SignalState`'s parameters because it holds one:
+`UnixProcessState<'Task, 'Handler>`. The `UnixProcessState<'Handler>` in the
+target shape above is therefore wrong, in the same way that block's
+`UnixTaskState.Errno` is: it was written before stage 4 measured that a signal
+state has to be generic in what names a task as well as in what a handler is. `environmentEntryProblem` went with them,
+being the rule `withEnvironment` enforces and no use of a CLR concept.
+`descriptionsNamingSocket` was private and stops being so: two of its three
+callers moved, and the third — `signalSocketDataReady`, which is mixed and stays
+— now reaches the library definition rather than a wrapper existing for one call
+site. `EmulatedKernel` keeps a thin forwarder for each of the rest, as stage 6c
+did, and stage 6e deletes them all.
+
+**Decided while doing it: who names the knob in a rejection.** Three setters
+validate and throw, and three tests assert the message names what a *host* would
+have to fix — `EmulatedKernel.ProcessPath`, `EmulatedKernel.Umask`,
+`KernelConfig.Environment`. None of those names is the library's to know, and two
+of them stop existing at stage 6e.
+
+* **(a) The library names its own field**, and the tests relax to
+  `UnixProcessState.Environment`. Simplest, and stops being wrong at 6e — but a
+  host that trips the check is told which field of a package it has never heard
+  of is unhappy, rather than which line of its own configuration to edit. The
+  test comments say avoiding exactly that is why they exist.
+* **(b) The client validates first and throws its own message**, with the
+  library re-checking behind it. Keeps both messages accurate, at the cost of two
+  statements of one rule that can drift apart, and of a second scan.
+* **(c) The caller supplies a `context` string the library prefixes**, which is
+  what `AbsoluteUnixPath.assertValid` and `PermissionBits.assertValid` already
+  do throughout this library, and for the same reason.
+
+Chosen: **(c)**. It is the house pattern, it is one parameter rather than a
+duplicated rule, and it puts the name in the hands of whoever owns it — so stage
+6e re-spells `"EmulatedKernel.ProcessPath"` by editing a string at the call site
+instead of a message inside the package. PawPrint passes
+`"EmulatedKernel.Environment (set from KernelConfig.Environment)"`, which names
+both the field and the knob; the three tests pass unchanged.
+
+**Found by eye while scoping, then confirmed mechanically**: `withUmask` had
+never had a docstring. #1080 inserted it directly beneath
+`withUserAndGroupId`'s, so it adopted that one and left the function that does
+set the ids undocumented. `scripts/check-docstring-attachment.py 5ebe390d^`
+reports it. This is the tool's documented blind spot — a mistake already in the
+base is invisible to a check between two revisions — and the way out is to run
+it across the commit suspected of making it.
+
+#### Stage 6e: the task forwarders deleted — done
+
+The six wrappers over `UnixTaskTable` are gone and their thirty-three call sites
+name the library directly: `UnixTaskTable.cpuOf thread kernel.Tasks` and its
+peers for the reads, `EmulatedKernel.mapTasks (UnixTaskTable.register …)` for the
+writes. `EmulatedKernel.task` was not replaced by anything, having had no caller
+anywhere since it was written.
+
+**Decided while doing it: what a write call site says.** F# cannot forward a
+record update, so deleting a `with`-style forwarder leaves the call site to
+perform the update itself.
+
+* **(a) Write the record update inline** — `{ kernel with Tasks =
+  UnixTaskTable.register … kernel.Tasks }`. Nothing new to learn, and each site
+  says exactly what it does. But five of the eight write sites are in `|>` or
+  `MapKernel` position, where an expression is not enough and a
+  `(fun k -> { k with … })` has to be written out.
+* **(b) One combinator per record**, `mapTasks : (Map<ThreadId, UnixTaskState> ->
+  Map<ThreadId, UnixTaskState>) -> EmulatedKernel -> EmulatedKernel`. Three of
+  these replace fifty-four forwarders across the three records, pipelines
+  survive, and the operation the call site names is still the library's.
+* **(c) Keep the write forwarders and delete only the reads.** Smallest diff, and
+  wrong: the wrappers exist to be deleted, and half a deletion leaves both
+  spellings live.
+
+Chosen: **(b)**. It is not a forwarder by another name — it restates none of the
+library's API, it is a lens over `EmulatedKernel`'s own field, and it is what
+lets a call site keep saying *which part of the kernel* it touches. `MapKernel`
+on `IlMachineState` is the naming precedent.
+
+**Nothing was lost by deleting the prose.** Five of the six forwarders'
+docstrings say what the library's already say. The sixth, `parkedSocketWaitFor`,
+carried a paragraph the library's does not — that the value is present from the
+park through the wake to the delivering re-entry, so the close-time retention
+check covers the woken-but-not-yet-run window — and `closeFd` already states that
+where it relies on it ("Checked against the in-flight wait map rather than thread
+status"). `scripts/check-docstring-attachment.py` against the branch point
+confirms no block changed subject.
+
+**Correctness oracle**: the full suite including `Guest`, and the docstring
+check. There is no behaviour to test: every call site is the same computation
+spelled differently, and the compiler checks the spelling.
+
+The remaining two records follow the same shape — stage 6f for
+`UnixProcessState`'s nine wrappers and about thirty call sites, stage 6g for
+`UnixMachineState`'s twenty-four and about two hundred. Split by record because
+one diff of ~260 mechanical call sites is not reviewable, and the split is the
+same one 6a–6d used.
+
+#### Stage 6f: the process forwarders deleted — done
+
+Nine wrappers gone, `mapProcess` added beside `mapTasks`, about forty call sites
+respelled. Three of the nine took a hard-coded `context` string, and 6d's choice
+(c) pays off here exactly as it was meant to: `KernelConfig.applyTo` now passes
+`"KernelConfig.ProcessPath"`, `"KernelConfig.Umask"` and
+`"KernelConfig.Environment"` — the knob a host actually turns — instead of
+`EmulatedKernel.ProcessPath` and a field name that is about to become
+`kernel.Process.Environment`. Tests pass `"test"`, which is what every other
+`context`-taking call in this repository does.
+
+**The two tests that asserted a message had to move with the name.** Both called
+a setter directly and asserted the string that setter hard-coded. With the name
+supplied by the caller, a test that calls the library directly is asserting a
+string it chose itself, which is no test at all — the library's own fixture
+already covers that the parameter is not ignored. What PawPrint still owns is
+*which* name it passes, and that is only observable through `KernelConfig.applyTo`:
+
+* `TestProcessPath`'s "rejects a forged path" now drives `applyTo` with a
+  defaulted `AbsoluteUnixPath` and asserts `KernelConfig.ProcessPath`.
+* `TestEnvironmentEntryInvariant`'s direct-setter rejection is deleted. Its
+  sibling already drove the same `rejected` corpus through `applyTo` and asserted
+  the same thing, expressly so that an `applyTo` which assigned `Environment` by
+  record-copy would be caught; that sibling inherits the deleted test's account
+  of why the boundary matters.
+
+Mutation-tested, both surviving assertions: change either context string at its
+`applyTo` call site and the corresponding test fails. `KernelConfig.Umask`'s has
+no such test and cannot have one — 6d measured that a defaulted `PermissionBits`
+is `0o000`, a legal `umask 000`, so no forged value reaches that guard.
+
+**Correctness oracle**: the non-`Guest` suite, the library suite, and the
+docstring check; `Guest` runs in CI. The count drops by one, which is the deleted
+test.
+
+Stage 6g is the last: `UnixMachineState`'s twenty-four wrappers and about two
+hundred call sites.
+
+#### Stage 6g: the machine forwarders deleted — stage 6 done
+
+The last twenty-four wrappers are gone and `mapMachine` joins `mapProcess` and
+`mapTasks`. One hundred and eighty-eight call sites were respelled by script,
+sixteen more by hand, and nine files gained an `open WoofWare.PosixKernel`.
+`EmulatedKernel` now holds `Machine`, `Process` and `Tasks` and restates none of
+the library's API: the three lenses take an operation and apply it to a field,
+which is the only thing left that is PawPrint's to say.
+
+**Redone from scratch once, and the reason is worth keeping.** The first attempt
+rewrote reads with a regex whose first capture was `\S+`, so
+`EmulatedKernel.socket (SocketId client) kernel` matched with the argument split
+at the space inside the parentheses — producing
+`UnixMachineState.socket (SocketId client.Machine) kernel`, which projects the
+wrong value and drops the kernel. The compiler caught those, but "the compiler
+caught the ones that did not typecheck" is not the same as "none survived", and
+a transformation applied 188 times has to be trustworthy rather than
+spot-checked. The tree was reset and everything redone with one
+argument-aware rewriter that consumes balanced parentheses and **reports what it
+cannot parse instead of guessing** — three calls whose arguments spanned a line
+break, which were then done by hand.
+
+**The audit that makes that trustworthy** is a token multiset comparison against
+the branch point, written separately from the rewriter: normalise away exactly
+what the rewrite may change (which module qualifies a name, the `.Machine` that
+projects a kernel, the `mapMachine` lens) and every remaining token must match.
+It does, for all twenty-one rewritten files — the only residue is the deleted
+block, the added `open`s, and the three deliberate hand edits, each of which the
+audit names. Whole-file rather than per-line, because `fantomas` reflows.
+
+**`allocateEphemeralPort` was the one operation that could not be mechanical**:
+it answers a port *and* advances the machine, so the wrapper existed to re-wrap
+`(port * UnixMachineState) option` into `(port * EmulatedKernel) option`. A
+fourth lens for option-returning state operations would be a shape invented for
+one function, so instead the seven test sites thread `UnixMachineState` directly
+— ephemeral-port allocation is a machine operation, and they only ever built
+kernels to reach the machine — and the two production sites rebuild the kernel
+in the match arm, which is a line longer and says plainly where the advance goes.
+
+**`UnixSystem` is deliberately still absent.** The target shape has
+`EmulatedKernel` hold `Unix : UnixSystem` rather than three fields, and stage 5
+deferred it on the grounds that a one-field wrapper buys nothing. It is still
+deferred, now for a better reason: its consumer is stage 7's
+`step : Syscall -> UnixSystem -> SyscallOutcome * UnixSystem`, which cannot take
+three separate arguments and return three. Introducing the aggregate with its
+consumer costs one mechanical `kernel.Machine` -> `kernel.Unix.Machine` rename;
+introducing it now would be a rename with nothing to justify it.
+
+**Correctness oracle**: the token audit, the non-`Guest` suite and the library
+suite (`Guest` runs in CI), and the docstring check. No behaviour changes: every
+call site is the same computation spelled differently.
+
+### Stage 7 design (proposed)
+
+Stage 7's specification below was written before stage 6, and measuring against
+today's code moves several things. This proposal was reviewed by a second model,
+which found two blocking defects and five smaller ones; what follows is the
+revision, with the review's findings marked where they changed the design.
+
+#### What is actually there
+
+The stage names thirteen syscalls. Measured against
+`Native/NativeSystemNative.fs`:
+
+* three have **no handler at all** — `getuid`, `umask`, `chdir`. There is nothing
+  to hoist.
+* four **do touch guest memory**: `getcwd` writes a buffer; `unlink`, `rmdir` and
+  `mkdir` each read a NUL-terminated path. The stage says "carry no buffer",
+  which is true only of the output buffer.
+
+The buffer-free set that exists today is the remaining **six**: `GetEUid`, `Dup`,
+`Close`, `FLock`, `LSeek`, `FTruncate`. None reads or writes guest memory and
+none blocks — `FLock`'s blocking case is a refusal today rather than a park. So
+stage 7 is these six, and every path-carrying syscall moves to stage 8 where the
+buffer machinery belongs.
+
+#### Refusals are two different things, and only one of them is data
+
+The six carry eight `failwith`s between their match arms, and a mechanical
+conversion of all eight into a returned outcome would be a correctness bug.
+Reading them:
+
+| site | says | kind |
+| --- | --- | --- |
+| `NativeSystemNative.fs:4599` | SEEK_DATA/SEEK_HOLE: no notion of sparseness | measured, unmodelled |
+| `:4659` | directory SEEK_END: "no portable answer: measured, …" | measured, unmodelled |
+| `:3692`, `:3811` | Darwin `flock`; blocking `flock` | measured, unmodelled |
+| `:4611`, `:4618` | "(this is an interpreter bug)" | invariant |
+| `:4625` | "the open file description must keep it alive" | invariant |
+| `:4641` | "`open` resolves symlinks, so no descriptor should name one" | invariant |
+
+An invariant violation is a corrupted `UnixSystem`. Returning it as a lawful
+outcome hands a second client something it can catch and continue past, with the
+broken state alongside — which is exactly what "correctness over availability"
+forbids, and what the gospel's fail-fast assertions are for. **Only the measured
+refusals become data; the invariant arms stay `failwith` inside the library.**
+
+The census also stops too early. `Close` delegates to `EmulatedKernel.closeFd`,
+which carries refusals of both kinds — two measured close-under-waiter cases
+(`EmulatedKernel.fs:2107`, `:2110`), a measured listener-RST case (`:2207`), and
+an invariant (`:2126`, `DanglingSocket`). `step` exposes call trees, not match
+arms, so the classification is a job for every operation the six reach.
+
+#### A refusal must not hand back a state
+
+If `step` returned `SyscallOutcome * UnixSystem` with a refusal case, the refusal
+would arrive paired with *some* state, and nothing in the type says which.
+`closeFd` makes that concrete: `FileDescriptorRegistry.close` runs at
+`EmulatedKernel.fs:2064`, and the refusals fire after it, so the obvious
+conversion returns the advanced registry beside a refusal.
+
+So the refusal is the outer error, and carries no state:
+
+```fsharp
+val step :
+    Syscall -> UnixSystem<'Task, 'Handler> ->
+        Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SyscallRefusal>
+```
+
+A refused call structurally cannot yield a continuable state: the client still
+holds the one it passed in. (The first draft had a three-case outcome, and its
+own worked example discarded the state on the refusal arm with a `_` — which was
+the tell.)
+
+#### The types
+
+```fsharp
+type UnixSystem<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    {
+        Machine : UnixMachineState
+        Process : UnixProcessState<'Task, 'Handler>
+        Tasks : Map<'Task, UnixTaskState>
+    }
+
+type Syscall =
+    | GetEffectiveUserId
+    | Dup of fd : int
+    | Close of fd : int
+    | FLock of fd : int * operation : int
+    | LSeek of fd : int * offset : int64 * whence : int
+    | FTruncate of fd : int * length : int64
+
+/// What the entry point returns, for a request the library could answer.
+type SyscallAnswer =
+    /// The entry point returns this.
+    | Completed of answer : int64
+    /// The entry point returns its failure sentinel, and the client stores
+    /// `error` wherever its libc keeps errno. A failure still changes the
+    /// system: a failing `flock` advances the descriptor table, measured.
+    | Failed of error : UnixError
+```
+
+`SyscallRefusal` is a DU per refusing syscall (`LSeekRefusal.SeekDataHole`,
+`FLockRefusal.DarwinUnmodelled of divergence`, …) rather than a `string`. The
+precedent is in the library already: `SocketCreationRefusal.Unmodelled`
+(`SimulatedUnixPlatform.fs:416`) is payload-free, and `NativeSystemNative.fs:5188`
+composes the crash message from the raw PAL arguments the library never saw.
+Prose describing *what the client asked for* cannot be the library's, so the
+library names the case and the client writes the sentence.
+
+**The core is per-syscall functions; `step` is a total dispatcher over them.** A
+single `SyscallAnswer` for every syscall makes illegal outcomes representable:
+`geteuid(2)` cannot fail (`pal_uid.c` is `return geteuid();`), and `Dup`,
+`Close` and `FTruncate` have no refusal at all. Typed:
+
+```fsharp
+val effectiveUserId : UnixSystem<'T,'H> -> uint32                                    // total
+val dup : fd : int -> UnixSystem<'T,'H> -> SyscallAnswer * UnixSystem<'T,'H>          // fallible, unrefusable
+val lseek : fd : int -> offset : int64 -> whence : int -> UnixSystem<'T,'H>
+         -> Result<SyscallAnswer * UnixSystem<'T,'H>, LSeekRefusal>
+```
+
+`step` still earns its place — uniform syscall logging, replay, and `SocketFuzz`
+generation all want one surface — but as sugar over the primitives rather than as
+the primitive. Cost: two surfaces to keep aligned, mitigated by the dispatcher
+being one arm per case and trivially total.
+
+#### `SyscallEffect`: deferred implementation, but the target shape is committed now
+
+No syscall in stage 7 writes guest memory, so nothing in stage 7 can exercise an
+effect list, and a shape no test can observe is a shape chosen ahead of its
+evidence. Stage 7 builds none.
+
+But the *evidence* for the eventual shape is already in this document, so
+deferring the decision as well would be a false economy. Decision 1 records that
+a failed `epoll_wait` writes 0 through `*count` on Linux and -1 on Darwin — so
+**`Failed` carries writes too**, and `SyscallAnswer` gains a `writes` component
+on both arms when the first buffer-carrying syscall lands. Committing to that
+here is the same argument the task parameter gets below, applied consistently.
+
+What stage 8 must still *measure* is whether `writes` is an ordered list. The
+claim to test is that it need not be: a syscall is atomic with respect to
+PawPrint's scheduler, and errno is per-calling-thread
+(`LastSystemError : Map<ThreadId, int>`), so no other guest thread can observe an
+interleaving and the caller sees every write only after return. If that holds, a
+set or a record is the honest shape and decision 2(b)'s ordered list is
+over-specified. **Decision 2(b) must be amended in place when this lands**, not
+left contradicting stage 7 — two versions of the truth in one plan document is
+the state the plan's own migration section warns about.
+
+One honesty note for stage 8: `Completed of answer` is "what the entry point
+returns, when that is a value the library knows". `getcwd`'s success value is the
+caller's own buffer pointer, which the library never possesses; the client
+composes it.
+
+#### Raw versus parsed: the rule, restated
+
+The first draft said "a value crosses raw exactly when rejecting it is behaviour
+the library models". The biconditional is false, and settled material falsifies
+it: rejecting a null pointer with EFAULT *is* library behaviour, yet decision 2
+has the pointer cross **parsed**, as `UserBuffer`'s three-way classification,
+because only the client can tell whether an address names storage. The rule
+conflated two independent questions. Separated:
+
+* **Who can classify?** Whoever holds the knowledge. The client knows what an
+  address names; the library knows what a path resolves to.
+* **Who owns the consequence?** Whoever models the behaviour. EFAULT for `Null`
+  is the library's answer even though the client did the classifying.
+
+A value crosses raw when the library can classify it *and* owns the consequence.
+With one carve-out that stage 8 will need: **raw means raw kernel ABI, not PAL.**
+`open`'s flags are PAL values the C shim translates, and letting them cross would
+grow `scripts/pal-residue-allowlist.txt`, which may only shrink. Stage 7's two
+raw ints are safe because the handlers say so — `flock`'s operation bits are
+"*not* PAL values that the C translates" (`NativeSystemNative.fs:3652`) and
+`SeekWhence`'s numbering "is also POSIX's" (`:4437`).
+
+#### The PAL residue stage 3.5 assigned here
+
+`scripts/pal-residue-allowlist.txt` says in its header that "Stage 7 … retires
+what is left", and stage 3.5 chose containment on the strength of that promise.
+The re-scoped stage 7 touches none of the socket cluster, so it cannot keep the
+whole promise — but it can keep part, and must say so rather than silently drop
+it. Stage 7 retires the `UnixError` PAL cluster (`toPal`, `palOfRawErrno`,
+`palOfRawErrnoUnder`), which belongs beside the errno-encoding helper stage 7
+builds anyway; the socket cluster moves to stages 8 and 9 with the syscalls that
+use it; the allowlist header is updated to say so.
+
+#### Two questions the review changed my mind on
+
+**(1) Does `step` take the calling task?** I leaned yes. The review's argument
+against is stronger, and it is a mutation-testing argument: **no stage-7 or
+stage-8 syscall's answer depends on the caller**, so no test and no mutant can
+distinguish a correct caller argument from a wrong one. Every call site written
+in stages 7–8 would pass an unaudited value, and when stage 9 makes it
+load-bearing nothing — not the compiler, not a review — revisits them. That is
+`fixture-default-can-hide-the-mutant` at the scale of a whole API.
+
+Chosen instead, a third option neither draft listed: **carry the caller in the
+payload of the syscalls that depend on it**, which from stage 9 means
+`WaitForSocketEvents of caller : 'Task * …`. "This syscall's answer cannot depend
+on who asks" then becomes structural for every other case rather than a
+convention. Cost: `Syscall` becomes generic in `'Task` at stage 9. Note this
+supersedes decision 1(b)'s sketched
+`step : UnixSystem -> TaskId -> Syscall -> …`, which predates the census.
+
+**(2) When does `UnixSystem` appear?** Unchanged: its own commit, first. It is a
+mechanical rename measured at **320 sites** (195 `.Machine`, 98 `.Process`, 27
+`.Tasks`), auditable by the token-multiset check stage 6g used, and burying that
+under the design work is what makes a diff unreadable.
+
+#### What a handler becomes, and what it does not
+
+```fsharp
+| Some "SystemNative_FLock", [ ConcreteIntPtr _ ; _ ], MethodReturnType.Returns (... Int32) ->
+    let fd = fdArgument operation instruction.Arguments.[0]
+    let request = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+    match UnixSystem.step (Syscall.FLock (fd, request)) state.Kernel.Unix with
+    | Error refusal -> failwith (FLockRefusal.describe operation fd request refusal)
+    | Ok (SyscallAnswer.Failed error, unix) -> failingWith operation error unix ctx state
+    | Ok (SyscallAnswer.Completed answer, unix) -> answeringInt32 (int32 answer) unix ctx state
+```
+
+`failingWith` is shared: it converts `UnixError` to the raw errno under this
+kernel's numbering, stores it in `LastSystemError` for the calling thread, and
+pushes the sentinel. There is **not** a single `answeringWith`, because the six
+push four different eval-stack shapes — `UInt32` for GetEUid
+(`NativeSystemNative.fs:2540`), `NativeInt` for Dup (`:4954`), `Int64` for LSeek
+(`:4685`), `Int32` for the rest — so the encode half is a small per-width family.
+
+Nor does "the handlers shrink to decode, `step`, encode" hold of the *library*
+side. `EmulatedKernel.closeFd` has three callers (`:3407` CloseDir, `:4970`
+Close, `:6254` a socket path) and `commitTruncation` two (`:2875` Open's
+`O_TRUNC`, `:3551` FTruncate), and in both cases only one caller hoists in stage
+7. Those operations move into the library as directly-callable functions that
+`step` delegates to, and the stage-7 move budget for `Close` is `closeFd`'s
+socket-teardown logic rather than a match arm.
+
+#### Two things implementing it changed
+
+**`UnixSystem` is projected, not stored — so it lands with `step` after all.**
+The design had `EmulatedKernel` hold `Unix : UnixSystem` in its own prior commit,
+a rename measured at 320 sites. Implementing showed a third option neither draft
+considered:
+
+* **(a) Storage.** `EmulatedKernel` holds one field; 302 reads and 144
+  field-assignments change. Faithful to the target shape.
+* **(b) Projection.** `EmulatedKernel` keeps the three fields flat, and a lens
+  pair — `unix : EmulatedKernel -> UnixSystem<…>` and `withUnix` — assembles and
+  disassembles at the boundary. About thirty lines; **no call site changes at
+  all**. Costs one three-field allocation per syscall, which is nothing against
+  an interpreter that allocates per IL instruction, and it is a *function*
+  rather than a property so the cost reads at the call site.
+* **(c) Storage, but later.** Defers the choice without deciding it.
+
+Chosen **(b)**, on blast radius and reversibility: 446 mechanical sites for a
+shape exactly one boundary needs is not a trade this stage has to make, and if
+the aggregate ever earns storage the rename is still there and no harder. It
+also dissolves the sequencing question — with no rename to separate,
+`UnixSystem` arrives with the consumer that justifies it, which is what stage 6g
+argued for.
+
+The two directions must be total inverses, so `TestUnixSystemProjection` asserts
+the round trip both ways: an answer is lost if a caller forgets `withUnix`, and
+a state is resurrected if a caller writes back a system it did not step.
+
+**The library cannot construct one of itself.** `TestUnixSystemStep` has to
+spell out all nineteen fields of `UnixMachineState` and all twelve of
+`UnixProcessState`, because the library exposes no constructor for either —
+`EmulatedKernel.initial` is PawPrint's, and the defaults it uses
+(`defaultUnixPlatform`, `defaultEphemeralPortRange`, `defaultUserId`, …) live in
+`EmulatedKernel.fs`. A second client cannot make a `UnixSystem` at all without
+transcribing those. That is a real gap in the stated goal, found by being the
+second client for the first time, and it is deliberately *not* fixed here:
+choosing what an `initial` takes as arguments is API design, and folding it into
+a stage about the syscall surface would decide it by accident. It gets its own
+stage.
+
+#### What landed first
+
+`GetEffectiveUserId`, `Dup` and `LSeek` — chosen so that the first increment
+exercises every part of the shape rather than the easy part. `GetEffectiveUserId`
+is the syscall whose *type* says it cannot fail; `Dup` is a plain
+`Completed`/`Failed` pair; and `LSeek` is the one that refuses, so the
+refusal-versus-invariant split and the stateless `Error` are both under test from
+the start. `NativeSystemNative`'s `LSeek` arm goes from 246 lines to 33.
+
+The split that design predicted holds in the messages: the library says why no
+answer exists ("the two platforms transpose the numbers"), and PawPrint says
+which managed caller could have asked ("CoreLib never sends these —
+`Interop.Sys.SeekWhence` is 0, 1, 2"). Neither half can write the other's.
+
+`FLock` and `FTruncate` followed. Between them they brought the first refusals
+with more than one reason — `flock` has six, five of which are `refuseDarwin`
+call sites that the old code spelled as one `failwith` — and the first operation
+shared with a syscall that has not hoisted: `commitTruncation` becomes
+`UnixSystem.truncateAt`, which `ftruncate` calls and which PawPrint's `open`
+still calls directly for `O_TRUNC`. That is the "directly-callable operations
+with `step` delegating" shape the design predicted, arriving on schedule rather
+than as a surprise.
+
+**An existing guest test caught the split putting prose on the wrong side.**
+`TestFlockBlocking` asserts the refusal names `issue #956`, and the first cut of
+the message lost it: the issue tracks *PawPrint's* scheduler work, so it belongs
+in PawPrint's half, and I had left it in neither. The rule the split needs is
+narrower than "measurement is the library's": a pointer to work is owned by
+whoever would do that work. The library cannot block a caller because it has no
+scheduler; the issue for building one is the client's.
+
+**Publishing a helper inherits the preconditions its private callers kept.**
+Review found that `truncateAt`, being public where `commitTruncation` was
+private, admits a negative length — and `VirtualFileSystem.truncateFile` guarded
+that with a `Debug.Assert`, which a Release build compiles out, after which the
+negative reaches `Array.Take` as an empty prefix and the file is silently emptied
+and stamped. The guard is now a `failwith`, mirroring
+`FileDescriptorRegistry.setOffset`'s treatment of a negative offset, which is the
+same precondition one layer over. This is the hazard `unparking-inherits-the-
+refusals-validations` names, in a new place: *widening* a definition's audience
+inherits every rule its old audience happened to satisfy, and a `Debug.Assert` is
+not a rule, it is a hope.
+
+**A refusal that is really stage 9's outcome, and what it costs.** Review
+pointed out that `FLockRefusal.WouldBlockIndefinitely` discards a state change a
+real kernel makes: `flock` removes the caller's old lock before it sleeps, so
+the registry has already advanced by the time the contention is discovered, and
+a refusal hands back no system. That is correct as far as this stage goes —
+PawPrint crashes, and a refusal must not look continuable — but it is a real
+loss for a client that *could* park, and it is the tell that this case is not a
+refusal at all. Decision 3 already says blocking becomes
+`WouldBlock of WakeCondition`, an *outcome*; when stage 9 builds that, this case
+moves there and carries the advance. Making it carry a state now would undo the
+property that a refusal cannot hand back a half-step, which is the more valuable
+of the two. The contract is pinned by a row, so stage 9 has to change it
+deliberately rather than discover it.
+
+`Close` is last, because it drags `closeFd` — 217 lines, refusals of both kinds,
+and two callers besides `Close` itself.
+
+**`Close`'s prerequisite went first, on its own.** `closeFd` reaps the inode a
+closing description was the last reference to, which is `forgetIfUnheld`, which
+is `pinnedInodes`. Both were PawPrint's, both are pure POSIX object-lifetime
+rules over the filesystem and the process's own references, and neither reads a
+CLR-side field — so they move, and `closeFd` cannot move before them without
+taking them as callbacks, which is the dependency injection the gospel rejects.
+
+Moving them first rather than inside the `Close` commit is the same argument
+this document made for the `UnixSystem` rename: it is a rename-only change at
+seventeen production and test call sites, and the *design* work in `close` is
+the refusal split. Audited as rename-only by a token-multiset comparison of the
+two definitions before and after, which reported exactly the intended signature
+substitutions and nothing else.
+
+It also adds the fourth lens, `EmulatedKernel.mapUnix`, beside `mapMachine`,
+`mapProcess` and `mapTasks`: an operation spanning all three parts is called
+through it, and it is `withUnix ∘ f ∘ unix` composed once rather than at every
+call site. Its own row is in `TestUnixSystemProjection` because a `mapUnix` that
+dropped its function's result, or wrote back the projection it read, passes both
+existing round-trip rows.
+
+**The tests for the moved rules stayed at PawPrint's altitude**, and that is a
+known cost rather than an oversight: `TestEmulatedKernelInodeLifetime` builds its
+kernels from `EmulatedKernel.initial`, and the library still exposes no
+constructor of its own (the gap recorded above). Two rows at the new altitude
+went into `TestUnixSystemStep` — an unnamed inode a descriptor holds, and one
+nothing holds — so that the pair is exercised by a client that is not PawPrint;
+moving the rest waits for the constructor stage.
+
+**`Close` landed last, and it is the one the design's own census under-read.**
+The stage's six syscalls carry eight `failwith`s between their match arms;
+`closeFd` carries four more, and the split between them is the whole point. Three
+are measured gaps — Linux's last port descriptor with a parked waiter, Darwin's
+any port descriptor with one, and a listener close that would RST an unaccepted
+connection's live client — and became `CloseRefusal`. The fourth, a descriptor
+naming a socket the table does not hold, stays a `failwith` inside the library:
+it is a corrupted system, and handing it back as a lawful outcome would let a
+client catch it and continue with the corruption alongside.
+
+**`CloseRefusal` is generic in `'Task`, and so `SyscallRefusal` had to become
+generic too.** Two of the three refusals are about a task parked in a wait, and
+the alternative — the refusal names only the port, and the client re-finds the
+waiter — is wrong for a measured reason: nothing stops two tasks parking on the
+same port, `Map.tryPick` chooses one, and a client repeating the search could
+name a different one from the one the refusal is about. That is a diagnostic
+naming the wrong thread, which is worse than a type parameter. The blast radius
+was two types and one test row.
+
+**Turning the refusals into data made three tests stronger.**
+`TestSocketEventDelivery` pinned all three by catching an exception and matching
+its message, which passes for any of the three; they now match the refusal's own
+case, and the two port rows assert *which* task the refusal names. The three
+`failwith` texts did not disappear: their measured half is the library's
+`describe`, and their "what to build instead" half is PawPrint's
+`closeRefusalMessage`, shared by all three entry points so that the same refusal
+reads the same way whichever one a guest went through.
+
+**The two non-syscall callers hoisted with it**, as `truncateAt` predicted:
+`SystemNative_CloseDir` and `SystemNative_CloseSocketEventPort` both call
+`close(2)` underneath, so all three entry points now call `UnixSystem.close` and
+differ only in how they encode its answer — `-1`-and-errno, `0`, or a PAL code.
+
+**One numbering changed, and it is asserted rather than assumed.** `Close` and
+`CloseSocketEventPort` reported EBADF through the portable `UnixError.toRawErrno`
+while `CloseDir` used the flavour-numbered `toRawErrnoUnder`; the shared
+`withErrno` makes all three the numbered form. Identical for every portable
+errno, which is the reason such a move is safe — so `TestUnixError` now states
+it, over every portable case and both flavours, instead of leaving it implied.
+
+**Test scaffolding: `KernelSyscall`.** Twenty-two call sites across five fixtures
+drove `EmulatedKernel.closeFd` against a whole kernel. Each would have become a
+projection, a library call and a write-back, and a copy that dropped the
+write-back would leave its own fixture asserting against a state the syscall
+never produced — silently, and only there. One definition instead, in a module
+those fixtures share.
+
+**Mutation found a hole the fast suite had.** Turning `close`'s EBADF into a
+success leaves the whole 3057-test PawPrint suite green: nothing there closes a
+descriptor that is not open. `SocketFuzz` has an EBADF arm, but its generator is
+constructive — it only closes a slot it knows holds a live fd — so that arm is
+unreachable by construction rather than merely unexercised, and it now says so.
+The row that kills the mutant is the new one at the library's altitude, which is
+the clearest instance so far of what that altitude is for.
+
+#### The errno PAL cluster, retired
+
+Stage 3.5 chose containment over splitting on the strength of a promise that
+stage 7 would retire the residue, and the re-scoped stage 7 could keep only the
+`UnixError` part of it. This is that part: nine of the seventeen allowlisted
+definitions, and the whole cluster the plan assigned here.
+
+`UnixError` carried two numbers per case — the raw `<errno.h>` value, which is
+what a kernel states, and .NET's `Interop.Error` value, which is one client's
+encoding. The PAL half is now `WoofWare.PawPrint`'s `UnixErrorPal`.
+`palOfRawErrno`/`palOfRawErrnoUnder` moved whole rather than being split: they
+are `SystemNative_ConvertErrorPlatformToPal`, a shim function rather than a
+kernel one. Two measurements made the cut clean — **the library read the PAL
+column in exactly zero places**, and all 75 production uses of it were in one
+file.
+
+`isPortableRawErrno` and `isUnambiguouslyNonStandardRawErrno` became public.
+They state which errno numbers every Unix agrees on, which is POSIX content
+rather than PAL content, and the converter cannot be written without them.
+
+**The mirrored-table cost, and why it is not the cost it looked like.** Stage
+3.5's option (a) was rejected partly because splitting leaves two exhaustive
+matches over `UnixError` that the compiler keeps *complete* but cannot keep *in
+agreement*. That framing had the oracle wrong. Agreement with the library was
+never the property that mattered: the PAL column's authority is upstream's
+`Interop.Errors.cs`, and `TestUnixErrorPal` re-derives all 47 values from the
+pinned source exactly as the joint table's test did. A wrong number is caught by
+the same authority as before, and a missing case by the compiler. Confirmed by
+mutation: a single wrong PAL row is caught by the upstream-derived row and by
+nothing else in either suite.
+
+Audited by parsing both columns out of the old file and the two new ones — the
+PAL values and the raw values are each identical to what the branch point held.
+
+**One thing the move exposed rather than fixed.** The `UnixError` docstring
+claimed the type carried two numbers; rewriting it forced the question of what
+the type's *membership* rule is, and the honest answer is that the vocabulary
+was chosen against one client too: `ENOTBLK` is absent because .NET's enum has
+no name for it. That is now stated in the docstring rather than left implicit. A
+second client wanting `ENOTBLK` adds the case; nothing about the design refuses
+it.
+
+**And one it deliberately did not touch.** The library's prose still says
+"PawPrint" in 106 places, which is a different residue from the encodings this
+check counts, and the `pal-residue` check cannot see it — a docstring is not a
+definition. **It is not to be swept.** Patrick will read the whole library by
+hand once the extraction finishes, ahead of releasing it, and the wrong names
+are the marker for what he has not yet checked; removing them mechanically would
+destroy that marker while leaving the prose unread.
+
+#### Correctness oracle
+
+* **A new `TestUnixSystemStep.fs` in `WoofWare.PosixKernel.Test`** driving the
+  primitives and `step`: the first test that uses the library the way a second
+  client would. One row per errno arm of the six, since the sad paths are the
+  shape's real exercise.
+* **One row per distinct refusal reason** — of which there are more than the
+  eight `failwith`s suggest, since `refuseDarwin` is one `failwith` behind five
+  call sites. This tier is the only place they are all reachable: CI's guests run
+  the Linux flavour, and a test here can construct a Darwin `UnixSystem`
+  directly. That reachability is the whole point of the new altitude.
+* **A row for `Failed` changing the system**: assert the descriptor table
+  advanced after a failing `flock`. It is the design's most distinctive claim and
+  the first draft's oracle did not test it.
+* **A host-differential row for each of the six**, in the manner of
+  `TestVirtualFileSystemAgainstHost`, so the new altitude keeps the oracle it had.
+* **An equivalence assertion for errno numbering**: `Dup` and `Close` use
+  portable `UnixError.toRawErrno` today (`:4950`, `:4975`) while `LSeek` and
+  `FLock` use `toRawErrnoUnder`. A shared `failingWith` changes the first two to
+  the numbered form. Identical for EBADF, but assert it rather than assume it.
+* **The existing guest fixtures, unchanged.** The whole claim is that no guest
+  can tell.
+* **Mutation**, per the skill: break one errno arm of each of the six and confirm
+  a row dies.
+
+#### What this stage deliberately does not do
+
+No `UserBuffer`, no writes component, no `WouldBlock`. Each waits for the stage
+that has a syscall needing it, so that its shape is chosen against evidence
+rather than against a sketch — with the one exception recorded above, where the
+evidence for the target shape already exists and is written down now.
+
+### Stage 7: the syscall request layer, on the pure syscalls first (as originally specified)
+
+**Dependencies**: stage 6.
+
+**Implements**: decisions 1(b), 2(b).
+
+Introduce `Syscall`, `SyscallOutcome`, `SyscallEffect`, `UserBuffer`, and
+`UnixSystem.step`. Hoist the syscalls that carry no buffer and cannot block:
+`getcwd`, `getuid`, `geteuid`, `umask`, `chdir`, `unlink`, `rmdir`, `mkdir`,
+`dup`, `close`, `flock`, `lseek`, `ftruncate`. `NativeSystemNative`'s handlers
+for these shrink to PAL decode, `step`, encode.
+
+Sad paths first, per the ordering guidance: the errno rows for each of these
+are simpler than the success path and exercise the whole request/response
+shape.
+
+**Correctness oracle**:
+* A new differential test in `WoofWare.PosixKernel.Test` that drives `step`
+  directly and compares against the host, extending
+  `TestVirtualFileSystemAgainstHost`'s existing technique one altitude up. This
+  is the first test that exercises the library as a client would.
+* The existing guest fixtures, unchanged — the whole point is that no guest can
+  tell.
+* Mutation test the effect *ordering*: swap `SetErrno` and `WriteBytes` in one
+  response and confirm a test goes red. If none does, the ordering is not yet
+  covered and a test for it is part of this stage.
+
+### Stage 8: buffer-carrying syscalls
+
+**Dependencies**: stage 7.
+
+`open`, `read`, `write`, `pread`, `pwrite`, `stat`, `lstat`, `fstat`,
+`readlink`, `opendir`, `readdir`, `closedir`, and the socket-address entry
+points. Each is one increment and can land individually.
+
+**Correctness oracle**: per syscall, the host-differential test at the new
+altitude, plus the existing guest fixtures. `TestGuestPathBytes.fs` and the
+`ENAMETOOLONG`/`EFAULT` rows are the interesting cases: they are exactly where
+the `UserBuffer` three-way classification earns its place, and each of the
+three cases needs a row that only it can satisfy.
+
+### Stage 8 design (proposed)
+
+Stage 8's specification above was written before stage 6, and — as with stage 7
+— measuring it against today's code moves several things. This is the census and
+the revision.
+
+#### What is actually there
+
+The stage names thirteen syscalls plus "the socket-address entry points".
+Measured in `Native/NativeSystemNative.fs`, which holds 73 match arms over 66
+distinct entry points (several entry points have more than one signature arm):
+
+| handler | lines | what it carries |
+| --- | --- | --- |
+| `Open` | 333 | path in |
+| `PRead` | 237 | buffer out, explicit offset |
+| `Poll` | 230 | array in *and* out |
+| `Read` / `Write` | 214 / 217 | buffer out / buffer in |
+| `ReadLink` | 178 | path in, buffer out |
+| `PWrite` | 164 | buffer in |
+| `GetCwd` | 133 | buffer out |
+| `OpenDir` / `ReadDir` | 114 / 102 | path in / struct out |
+| `GetSockName` | 100 | socket address out |
+| `MkDir` / `RmDir` / `Unlink` | 88 / 88 / 86 | path in |
+| `FStat` | 88 | struct out |
+| `Stat` / `LStat` | 3 / 8 | both delegate to one `statLike` |
+
+Across the whole file there are **47 buffer-pointer arguments and 39
+write-throughs**, so the named list is roughly a third of the eventual surface.
+
+#### Three findings that change the specification
+
+**(1) The buffer classification is four-way, and two of the four are refusals
+rather than EFAULT.** Decision 2(b) sketches `UserBuffer` as `Null | Unmapped |
+Mapped`, and says of `Unmapped` that "a real run takes SIGSEGV; today PawPrint
+`failwith`s at each such site". That is false today. `BufferPointer`
+(`NativeSystemNative.fs:16`) has four cases, and `BufferPointer.dereferenceable`
+answers `None` — hence EFAULT — for *every* raw address, null or not, because
+"real `write(2)` and `getcwd(3)` alike answer EFAULT for both, having performed
+no I/O". What actually crashes is the other two:
+
+* `Symbolic` — the address of a method table or type handle. A real runtime has
+  that memory mapped and readable, so the host transfers those bytes; **EFAULT
+  would be a wrong answer rather than an approximate one**, and PawPrint has no
+  bytes to transfer.
+* `Unstatable` — the difference of two pointers into separate storages, which
+  names no address at all. Under a platform that screens up front there is
+  nothing to compare against the limit, so the answer is not "out of range", it
+  is unknown.
+
+Both are measured-but-unmodelled in exactly stage 7's sense, so they are
+*refusals*. My first draft concluded they were therefore **the client's**
+refusals — only PawPrint can produce either — and that they never reach the
+library. **That is wrong, and the review that found it also found the
+counter-examples.** Production is client-side; *timing* is not, and after the
+move the library owns the order these fire in:
+
+| call today | today's answer | eager client refusal |
+| --- | --- | --- |
+| `read(badfd, symbolic, n)` | EBADF — the buffer is never even classified | crash |
+| `read(stdin, symbolic, n)` | **0** — the stdin arm precedes any dereference | crash |
+| `read(dir, symbolic, n)` | EISDIR | crash |
+| `write(rdonlyFd, unstatable, n)` | EBADF — the access-mode arm precedes the screen | crash |
+
+Every one of those is a currently-working call that a classification-time
+refusal would break, and conditioning the refusal on `screensUserBufferUpFront`
+does not help: it fixes *whether* and not *when*, and the descriptor checks that
+must precede it are exactly what moves into the library. **You cannot condition
+your way out of an ordering problem once you no longer own the order.**
+
+So the classification is four-way after all, and the two extra cases are library
+vocabulary rather than PawPrint's — a client whose memory is not byte-addressable
+is a general situation, not a CLR one:
+
+* `Opaque` — a real user address the client cannot name or transfer bytes
+  through. Passes every screen (`faultsBeforeOperation` already answers `false`
+  for it), and refuses at the transfer, which is where PawPrint runs out of
+  bytes.
+* `Addressless` — no address at all. Refuses at the *screen* on a screening
+  platform, because there is nothing to compare against the limit, and at the
+  transfer otherwise.
+
+Both refusals are the library's `Error`, returned at the step where the buffer is
+consulted, so every arm above keeps its answer. Both still satisfy "a refusal
+carries no state": for `read` and `write` the refusal points precede every state
+change, the offset advancing only after the copy.
+
+**And the classification is two-way, not three.** Decision 2 gives `Null` its
+own case. Measured: every one of the sixteen places that distinguishes
+`RawAddress 0UL` from any other raw address is a **C shim's own null screen**,
+executed before it calls the kernel at all — `SystemNative_FcntlGetIsNonBlocking`
+("the C tests the pointer before its first `fcntl`, so a null pointer with a
+nonsensical descriptor is EFAULT, not EBADF"), `GetSocketAddressSizes` (all four
+out-parameters screened together, before any is written), and fourteen more in
+the same family. No *kernel* path in the modelled set tells them apart: the
+up-front range check is arithmetic that address 0 passes like any other low
+address, and `dereferenceable` collapses every raw address to EFAULT.
+
+So `Null` is a shim concept that leaked into the kernel model, and the library's
+classification should be `Unmapped of address : uint64 | Mapped`. The shim's null
+screens stay in PawPrint, where their authority — the C source — lives. This is
+the same mistake as `Symbolic`, one level up: a distinction real somewhere else
+being attributed to the kernel.
+
+**(2) The buffer is an input consulted at several measured points, not only an
+output effect.** `SystemNative_Read`'s order, every step of it measured:
+
+1. `bufferSize < 0` → EINVAL — the shim's guard, ahead of the descriptor
+2. descriptor, access mode, object kind → EBADF / EINVAL / ENXIO
+3. **the up-front buffer screen — Linux only** (`screensUserBufferUpFront`)
+4. stdin → 0, *without touching the buffer*
+5. `EISDIR`, *without touching the buffer*
+6. the transfer window
+7. a zero-length transfer → 0, *without touching the buffer*
+8. dereference → EFAULT
+9. the copy-out, and only then the offset advance
+
+Three of those steps are "the buffer is not touched here", one is "it is screened
+here on one platform only", and one is the transfer. A design in which the buffer
+appears only in the *response* can express step 9 and none of the rest. So the
+classification crosses **in**, and is consulted; the bytes come **out**. That is
+decision 2(b)'s intent, confirmed, but the plan's phrasing ("the response carries
+an ordered list of effects") describes only half of it.
+
+`faultsBeforeOperation` (`:334`) is already most of the library function this
+needs: it consults `UserBufferCheck` and `screensUserBufferUpFront`, both
+library, and differs only in being typed over PawPrint's four-way DU.
+
+**(3) There are two kinds of copy-out, and conflating them would grow the PAL
+residue this work is supposed to shrink.**
+
+* **Opaque bytes at a caller-supplied address** — `read`, `pread`, `readlink`,
+  `getcwd`. The library knows the bytes; the client knows where they go.
+* **A structured value the client encodes to its own ABI** — `fstat`/`stat`/
+  `lstat` fill a guest `Interop.Sys.FileStatus`; `readdir` fills a `dirent`;
+  `getsockname` fills a `sockaddr`. `writeFileStatus` (`:1055`) writes at ABI
+  offsets, checks `CliType.sizeOf` against the guest's own struct, and resolves
+  it through a `ConcreteTypeHandle` — a CLR concept end to end.
+
+If stage 8 gave the library one generic `writes : (address, bytes)` component,
+`fstat` would have to emit `FileStatus` bytes, and the library would acquire a
+.NET struct layout — a **new** entry in `scripts/pal-residue-allowlist.txt`, in
+the stage whose job is to empty it. So the second kind must cross as a typed
+value and be encoded by the client.
+
+#### The open decision: how the answer carries a payload
+
+**(A) One `SyscallAnswer`, with a generic `writes` component**, as decision 2(b)
+sketches. Uniform, and `step` keeps one surface. Costs: every write needs a
+destination tag once a syscall has two output buffers (`getsockname` has address
+and length; `poll` and `recvfrom` likewise), and finding 3 means a *second*
+mechanism is needed anyway for the structured answers — so the generic list buys
+uniformity for one of the two kinds and no uniformity overall.
+
+**(B) Per-syscall typed answers, and no generic writes.** `read` answers
+`ImmutableArray<byte>`; `fstat` answers a `FileStatusAnswer` record; `getcwd`
+answers a path. The client places every one of them, which it must do anyway.
+`SyscallAnswer` becomes a DU whose cases enumerate the *shapes* of answer rather
+than one shape with an effect list. Costs: `step`'s uniform surface weakens —
+a client logging or replaying through it must match on more cases — and the case
+set grows as syscalls land, which is a closed-set-that-grows.
+
+**(C) (B), plus a two-phase surface for the source direction.** Forced by a
+defect in (B) that review found and that the code states outright. `Write`'s
+handler defers decoding its buffer on purpose:
+
+> Decoding the `buffer` pointer is deferred until we are about to dereference it.
+> `Common_Write` is documented to perform no dereference for `bufferSize < 0`
+> (ERANGE bail) or `bufferSize = 0` (no-op on every Unix we model), so a guest
+> calling e.g. `SystemNative_Write((IntPtr)1, (byte*)123, 0)` must succeed on
+> PawPrint as it does on the real CLR — eagerly decoding `buffer` would crash
+> here.
+
+A `Mapped of bytes` case forces the client to extract *before* it calls, so
+`write(badfd, threeByteBuf, 10)` — today EBADF, because the room check runs only
+after every descriptor check passes — becomes a host crash, as does every
+byte-addressability failure in the per-byte walk. So for source-carrying
+syscalls the surface is two calls: an **admission** (`fd`, count, classification)
+answering how many bytes the kernel will take, and a **commit** taking the bytes
+the client then extracted. The admission's answer is a value the library
+constructs and the client cannot forge — `private` on a record is assembly-scoped
+in F#, which is exactly the boundary here — so a commit cannot be reached without
+the checks having passed.
+
+**Recommended: (C)**, which is (B) everywhere except the source direction. (B)'s
+argument stands on finding 3: the generic effects list was proposed when the only
+imagined copy-out was opaque bytes, and against the measured set it covers half
+the cases while forcing the library to learn a .NET struct layout for the other
+half. Its defect is confined to buffers the client reads *from*, and two-phase is
+the smallest thing that keeps extraction after the checks. Both keep the "no
+illegal states" property that made stage 7's per-syscall functions the primitives
+and `step` the sugar: a `read` that returned a `FileStatus` would not typecheck,
+and a commit without an admission would not either.
+
+**One asymmetry left open on purpose.** Stage 7 recorded that a failed
+`epoll_wait` writes 0 through `*count` on Linux and −1 on Darwin — so `Failed`
+carries writes too. (B)/(C) type the *success* payloads per syscall and leave
+`Failed of UnixError` untyped, which that evidence falsifies. Nothing in stage 8
+needs it: the first syscall with a failure-write is `poll`/`epoll`, which is
+stage 9's. Written down so that stage 9 finds a known gap rather than a surprise.
+
+Concretely:
+
+```fsharp
+/// Where a buffer argument is, as far as this kernel's own address check can
+/// see. No `Null` case — that is the shim's concept, above — and no address on
+/// `Mapped`, because `faultsBeforeOperation` never asks for one.
+type UserBuffer =
+    /// A raw address naming no storage: EFAULT, whenever the syscall gets round
+    /// to looking.
+    | Unmapped of address : uint64
+    /// Real storage the client can transfer bytes through.
+    | Mapped
+    /// A real user address the client can neither name nor transfer through.
+    /// Passes every screen; refuses at the transfer.
+    | Opaque
+    /// Not an address at all. Refuses at the screen where there is one, at the
+    /// transfer otherwise.
+    | Addressless
+```
+
+One type, not two. My draft had a `SourceBuffer` carrying bytes and a
+`DestinationBuffer` carrying none, on a make-illegal-states-unrepresentable
+argument — but a source buffer must not carry its bytes, so the asymmetry that
+justified the split does not exist.
+
+#### A second genus of refusal, which should be named rather than absorbed
+
+Stage 7's definition of a refusal is "this library has measured what real kernels
+do here and found no single answer to give". Three of stage 8's refusals do not
+fit it. For `Opaque`, for `Addressless`, and for 8b's invalid-UTF-8 path, the
+kernel's answer is perfectly well known — transfer the bytes at that address;
+look up those raw bytes — and what is missing is a *representation*, in the
+library's model or in the client's memory.
+
+The stretch is right: both genera are "no answer to give", both must not be
+errnos, and both must carry no state. But `describe`'s contract says the library
+reports what it *measured*, and for these it reports what its model cannot say.
+Naming the second genus is what stops the messages overclaiming a measurement
+they do not have.
+
+#### Paths force a question larger than the syscall move
+
+`parseGuestPathBytes` (`:827`) does two things. ENAMETOOLONG is a library rule
+(`PathLimits.pathMaxBytes`). The other is a UTF-8 decode, with a `failwith` for
+invalid input whose message says it plainly: "a Unix kernel looks up the raw
+bytes, but PawPrint models a filename as a .NET string". That model is the
+*library's* — `UnixPath.parse` takes a string — so the limitation is the
+library's too, and the `failwith` is sitting on the wrong side of the boundary.
+
+By the raw-versus-parsed rule a path should cross **raw**, as
+`ImmutableArray<byte>`: the library can classify it (it owns `PathLimits`) and
+owns the consequence (ENAMETOOLONG). Doing that hands the library the non-UTF-8
+refusal, which is correct — but it is a change to the stated contract of the
+library's filename model, not a syscall move, and it should land **before** any
+path syscall rather than inside one.
+
+#### The increments
+
+Ordered so that each has an oracle before the next depends on it.
+
+* **8a — the buffer vocabulary, and the six call sites that already use it.**
+  My draft said "the screen moves into the library" and "two existing call sites
+  consume it". Both were wrong. `UserBufferCheck.faultsBeforeOperation` is
+  *already* in the library (`SimulatedUnixPlatform.fs:276`), and PawPrint's
+  same-named function is a thin typed adapter over it; and there are **six**
+  call sites, not two — `PRead` (`:3819`), `PWrite` (`:4008`), `Read` (`:4170`),
+  `Poll` (`:6456`) and `Write` (`:6904`, `:6956`). So 8a as drafted was
+  vocabulary with no library consumer until 8c, which is speculative generality
+  by this plan's own standard.
+
+  Redefined: 8a introduces `UserBuffer` with the four cases above, gives the
+  library the two refusals *with their timing*, and re-plumbs those six sites
+  onto it. That is real, testable work — the finding-1 table is its oracle — and
+  it must land before 8c, because `read` is where a wrong classification arity
+  becomes unfixable without a surface break.
+* **8b — paths cross raw.** `UnixPath` gains a bytes-shaped entry point, and the
+  non-UTF-8 refusal moves into the library as a refusal case. Oracle:
+  `TestGuestPathBytes`, plus the ENAMETOOLONG boundary rows, which are the ones
+  that can tell a byte budget from a character budget.
+  Two things implementing it settled. **Where it lives**: `PathArgument` sits in
+  `VirtualFileSystem.fs` beside `PathLimits`, because that is where `PathLimits`
+  and its two supporting types are, and `UnixPath.fs` compiles before them. The
+  alternative was moving all three types up into `UnixPath.fs` so that every path
+  concept lives in one file — a ~150-line rename-only move, which is exactly the
+  thing this plan keeps refusing to bundle with a design change. `PathLimits`'s
+  own docstring already says its rule is "enforced at the syscall boundary rather
+  than in the walk", so the file was never only about the image.
+
+  **And the refusal carries no payload.** The bytes are the client's — it read
+  them — so a `NotUtf8 of bytes` would have the library hand back something the
+  caller already holds, purely so the caller could render it. The hex rendering
+  stays in PawPrint's half of the message, along with the entry point's name and
+  the reachability sentence, and the library's half is the one fact the client
+  cannot state: that this kernel models a filename as characters and has no such
+  name to look up.
+
+* **8c — `read`**, first because its measured ordering exercises every part of
+  (2): three buffer-untouched short-circuits, a platform-dependent up-front
+  screen, and a copy-out. `pread` follows as the same operation with an explicit
+  offset, which is the whole difference between them.
+
+  Worth saying in advance, because it looks like scope creep when it arrives:
+  moving `read` also moves its epoll-port arm (EINVAL on Linux, ENXIO on Darwin)
+  and its socket arm, and the socket arm is a *refusal* — "PawPrint models no
+  socket connection state, and `read(2)` on a socket is an answer about exactly
+  that". After the move that gap is the library's own, so a socket-shaped
+  refusal lands here, ahead of stage 9's socket work.
+
+  Three things implementing it settled.
+
+  **`read` is not reachable through `step`, and that is the (B) cost arriving.**
+  Its answer carries bytes, so `SyscallAnswer` would have to grow a shape for
+  them — and nothing consumes that shape, because no client logs or replays a
+  buffer-carrying syscall yet. Inventing an encoding before there is a client to
+  be wrong about is the speculative generality this plan keeps refusing; the
+  first thing that genuinely needs it chooses it. `step`'s docstring now says so
+  rather than implying total coverage.
+
+  **The empty answer is load-bearing, and the type does not enforce it.**
+  `ReadAnswer.Completed ImmutableArray.Empty` means "moved nothing *and did not
+  touch the buffer*", which is three of `read`'s measured steps. A client that
+  resolved its pointer before checking for empty turns `read(f, NULL, 5)` at
+  end-of-file from 0 into EFAULT, and a symbolic buffer from 0 into a crash. The
+  docstring states it and the client guards on it; a shape that made it
+  structural would need a third case for what is otherwise the same answer.
+
+  **The screen really does precede the shortcuts, and only one buffer can show
+  it.** An addressless buffer under Linux is refused *even for a read that would
+  have moved nothing*, because the address check runs before the transfer window
+  is computed; under Darwin the same call reaches the shortcut and answers 0.
+  Two rows pin that pair, and they were written only after the first draft of
+  them asserted the opposite and failed — the library was right and the test was
+  wrong, which is the outcome to want from a faithful transcription.
+* **8d — `write`**, the source-buffer direction, and the only place the
+  two-phase surface of (C) is built.
+
+  **Implementing it removed the witness.** (C) proposed an admission carrying an
+  unforgeable token, so that a commit could not be reached without the checks
+  having passed. What the code wanted is simpler: `admitWrite` answers every
+  question a write settles *without reading the buffer* — the descriptor, the
+  object kind, the screen, the zero-length no-op, the faulting address — and
+  otherwise says how many bytes to extract. `write` then takes the fd and the
+  bytes and **no buffer at all**. A signature that cannot ask a buffer question
+  is a stronger guarantee than a token that says the questions were asked, and
+  it needs no private constructor. `write` still answers the descriptor
+  questions itself, so a caller that skips the admission gets a kernel's answer
+  rather than an inconsistent one.
+
+  `admitWrite` returns no system, which is the property that makes the pair
+  safe: everything a write does before the copy is a question, so a caller may
+  ask and then decline. Its own row asserts that.
+
+  `pread`/`pwrite` follow each of 8c and 8d as small increments of their own,
+  the `p`-variant being the same operation with an explicit offset and no
+  description update. Splitting them that way is what 8c did with `read`, and
+  keeps each diff about one thing.
+
+  **Review found a real ordering error, and measuring it found a second.**
+  `admitWrite` refused a socket before the buffer screen, which is what the
+  handler did before the move — so the transcription was faithful and the
+  *original* was wrong. Measured on both platforms (a small C probe over an
+  unconnected TCP, UNIX-stream and datagram socket, with `SIGPIPE` ignored,
+  run on macOS and in a Linux container):
+
+  | call | Linux | Darwin |
+  | --- | --- | --- |
+  | `write(socket, (void*)-1, 1)` | **EFAULT** | ENOTCONN / EDESTADDRREQ |
+  | `write(socket, (void*)-1, 0)` | **EFAULT** | ENOTCONN |
+  | `write(socket, buf, 0)` | EPIPE / ENOTCONN / EDESTADDRREQ | ENOTCONN / EDESTADDRREQ |
+  | `read(socket, (void*)-1, 1)` | **EFAULT** | ENOTCONN |
+  | `read(socket, (void*)-1, 0)` | **EFAULT** | ENOTCONN |
+  | `read(socket, buf, 0)` | **0** | ENOTCONN |
+
+  So Linux's screen precedes the object's own operation for sockets exactly as it
+  does for files, and the fix is the library's existing `screensUserBufferUpFront`
+  fact applied in the right order rather than a new claim. The zero-length no-op
+  does *not* move with it: `write(socket, buf, 0)` is the socket's own error on
+  both, so the socket refusal sits between the screen and the no-op.
+
+  The probe's first run looked like a broken container — exit 141 with no
+  output. That was the measurement: 141 is 128 + SIGPIPE, and Linux raises
+  SIGPIPE alongside EPIPE for a write to an unconnected TCP socket. Ignoring the
+  signal produced the table.
+
+  **`read` had the same error and is already merged.** Rows 4-6 above are not
+  what stage 8c does: it refuses the socket ahead of both the screen and the
+  zero-length shortcut, so `read(socket, buf, 0)` crashes where Linux answers 0.
+  It refuses rather than answering wrongly, so it is a "declines more than it
+  needs to" defect rather than a divergence.
+
+* **8e — `read`'s socket arm moves after the screen**, applying the same measured
+  ordering. Widening the probe first, because a rule drawn from one socket kind
+  is not a rule: on Linux `read(sock, buf, 0)` is **0** for an INET stream, a
+  UNIX-domain stream *and* a datagram socket, while all three answer ENOTCONN at
+  length 1 — so the short-circuit is about the length rather than about the
+  socket. The socket event port does not share it (`read(port, buf, 0)` is EINVAL
+  on Linux, like every other length), which is why the port arm stays ahead of
+  the screen where it already was.
+
+  Darwin has no such short-circuit: its stream sockets answer ENOTCONN at length
+  0 too, and only a datagram socket answers 0. So Linux's zero-length answer is
+  knowable without modelling connection state and Darwin's is not, which is
+  exactly the split the refusal already draws — the flavour match is a
+  consequence of that rather than a new axis.
+
+  One probe row was spoiled and is not in the table: `read(file, buf, 0)` on
+  Darwin reported EBADF, because the probe opened `/etc/hostname`, which does not
+  exist on macOS, so the descriptor was -1. The Linux half of that row stands;
+  the Darwin half says nothing.
+
+  **Review then asked the right question about the wrong axis, and widening the
+  probe answered both.** The objection was that a zero-length read of a Linux
+  datagram socket with a datagram queued might not be 0 — that the rule was drawn
+  from one socket *phase* as well as one kind. Measured across every phase this
+  kernel can produce:
+
+  | socket state | Linux | Darwin |
+  | --- | --- | --- |
+  | INET stream, idle | 0 | ENOTCONN |
+  | UNIX stream, idle | 0 | ENOTCONN |
+  | datagram, idle | 0 | 0 |
+  | INET stream, bound not listening | 0 | ENOTCONN |
+  | INET stream, listening | 0 | ENOTCONN |
+  | stream, connected, nothing queued | 0 | 0 |
+  | stream, connected, a byte queued | 0 | 0 |
+  | datagram, connected, empty | 0 | 0 |
+  | datagram, connected, one queued | 0 | 0 |
+  | stream, peer closed | 0 | 0 |
+
+  **Linux answers 0 in every state**, so keying the arm on the flavour alone is
+  right and the objection is falsified — including the queued-datagram case it
+  named. Darwin's answer is 0 too except for a stream socket that is *not*
+  connected, and separating those means modelling exactly the connection state
+  this refusal exists to avoid, so Darwin declines the whole class: it
+  over-refuses the connected cases and never answers wrongly.
+
+  A row now drives all five constructible phases, at length 0 and at length 1, so
+  a future rule drawn from one phase fails.
+* **8f — `pread`**, the same operation as `read` with an explicit offset, and
+  the increment that shows how little of `read` that actually leaves in common.
+  What the two genuinely share — the transfer window, the shortcut that touches
+  no buffer, and the one point at which the buffer must hold bytes — is now a
+  private `readFileAt`, so a future fix to a measured rule cannot land in one
+  syscall and miss the other. What is *not* shared is the ordering, which is
+  where all of `pread`'s content is.
+
+  **`pread` needs a seekable object, and that changes the answer for three of
+  the five descriptor kinds.** A pipe, a socket and a socket event port are all
+  ESPIPE, where `read` gives EBADF, a refusal, and EINVAL/ENXIO respectively.
+  The socket one is the interesting case: `pread` needs **no socket refusal at
+  all**, because a socket's *read operation* is an answer about connection state
+  while its *seekability* is not — every socket is unseekable whatever it is
+  connected to, so `pread` never reaches the operation to ask. So its signature
+  is `Result<ReadAnswer, BufferRefusal>`: the only refusal genus it can produce
+  is the buffer's, and an arm for a socket refusal would need an invented
+  message to fill.
+
+  **And it returns no system.** A `pread` changes nothing in one: it moves no
+  file offset, and nothing in this kernel moves `atime` (`InodeTimes.Access` is
+  stored and only `createdAt` ever sets it). The signature says so, which is the
+  same move 8d made in taking no buffer — a shape that cannot express the wrong
+  thing beats a comment asking a caller not to. PawPrint's handler therefore has
+  nothing to write back and so cannot forget to, and `withErrnoOnly` is the
+  errno half of `withErrno` without the write-back that would claim otherwise.
+
+  **The ordering, measured on macOS and in a Linux container.** A *single*-fault
+  input agrees on both flavours, so only an input with two things wrong at once
+  separates them:
+
+  | input | Linux | Darwin |
+  | --- | --- | --- |
+  | negative offset alone | EINVAL | EINVAL |
+  | negative offset + bad fd | EINVAL | EBADF |
+  | negative offset + pipe | EINVAL | ESPIPE |
+  | negative offset + socket | EINVAL | ESPIPE |
+  | negative offset + port | EINVAL | ESPIPE |
+  | negative offset + O_WRONLY | EINVAL | EBADF |
+  | negative offset + directory | EINVAL | EINVAL |
+  | negative offset + bad address | EINVAL | EINVAL |
+
+  Linux validates the offset before it looks the descriptor up at all
+  (`do_pread` checks `pos < 0` ahead of `fdget`); Darwin resolves the
+  descriptor, its seekability and its access mode first. The last two rows are
+  the control: EISDIR and the buffer screen both follow the offset check on
+  *both*, so only the descriptor steps move and one flag suffices rather than
+  two orderings.
+
+  The second table is the ESPIPE/EBADF tie, which the flavours break
+  differently because a pipe's write end fails two tests at once:
+
+  | descriptor | Linux | Darwin |
+  | --- | --- | --- |
+  | pipe read end (unseekable) | ESPIPE | ESPIPE |
+  | pipe write end (also unreadable) | ESPIPE | EBADF |
+  | regular file O_WRONLY (seekable) | EBADF | EBADF |
+
+  The third row is the control that says this is about the tie rather than
+  about unreadability generally.
+
+  **The probe was widened before the rows were written, and it changed two of
+  them.** The handler being transcribed had measured sockets only with a valid
+  buffer at a non-zero length, and had not measured a socket or a port against a
+  negative offset at all — so four of the rows above were symmetry arguments
+  rather than measurements. Measuring found them all correct, which is the
+  outcome to want but not one to assume: 8d and 8e were each a rule drawn from
+  one axis that turned out to need another. Two rows were added to the tests as
+  a result. One probe row is deliberately absent: nothing here measures
+  `pread` against a *symbolic* buffer, which is PawPrint's concept and not a
+  kernel's.
+
+  Eight mutants, all killed by the row that names the rule: the offset-order
+  flag flipped; the port answering `read`'s errno; Darwin's tie-break dropped;
+  the access-mode check deleted; the screen made not to answer; the
+  moved-nothing shortcut made to consult its buffer; `read` advancing by what
+  was asked rather than what moved; and `pread` reading from the start rather
+  than from its argument.
+
+* **8g — `pwrite`**, which stands to `write` as 8f stands to `read`: an explicit
+  offset, no description update, and the two-phase admission unchanged. Listed
+  as its own bullet rather than left implicit in 8d's prose, for the reason the
+  `getcwd` bullet below gives about itself — a list that does not partition its
+  own census table is not a plan.
+
+  **The temptation this increment exists to resist is transcribing 8f's order
+  with the words swapped, and measuring says that would be wrong in the very
+  first step.** `pwrite` validates a negative offset *ahead of everything, on
+  both flavours*, where `pread` does so only on Linux. Nine second faults give
+  way to it on both — a bad descriptor, either end of a pipe, a read-only file,
+  a directory, a socket, a socket event port, an unscreenable address and a zero
+  length — so the per-flavour flag 8f needed is not merely unnecessary here, it
+  would fail every one of those rows.
+
+  The seekability tie *is* 8f's mirrored, with the roles swapped: standard input
+  is now the descriptor that fails two tests at once, being neither seekable nor
+  open for writing.
+
+  | descriptor | Linux | Darwin |
+  | --- | --- | --- |
+  | pipe write end (unseekable) | ESPIPE | ESPIPE |
+  | pipe read end (also unwritable) | ESPIPE | EBADF |
+  | regular file O_RDONLY (seekable) | EBADF | EBADF |
+
+  **`PWriteRefusal` is `WriteRefusal` without its socket case**, rather than the
+  same type. A socket is unseekable, so `pwrite` answers ESPIPE and never
+  reaches the socket's write operation to ask about connection state — the same
+  argument 8f made for `pread`, and the reason the plan keeps stating it is that
+  the two syscalls' refusal *sets* differ even though their answer sets look
+  alike. Sharing the type would hand every client an arm it could not reach and
+  would have to invent a message for. The length refusal's sentence is shared
+  between the two types, being one fact reached from a different offset.
+
+  It does return a system, unlike `pread`: the description's offset does not
+  move, but the file's contents and timestamps do. So the pair of signatures
+  states exactly which of the two directions writes.
+
+  PawPrint's `commitFileWrite` goes with the move. `UnixSystem.pwrite` was its
+  last caller, and it was the last place the set-ID rule and the timestamp rule
+  were applied outside the library.
+
+  Ten mutants, all killed by the row that names the rule — including the one
+  this increment is really about: giving `pwrite` `pread`'s per-flavour offset
+  flag dies on the nine-row table above.
+
+* **8h — `fstat`**, the smallest structured answer, and what settles (3) against
+  a real encoder.
+
+  **`stat`/`lstat` do *not* come along for free, and the draft was wrong to say
+  so.** What they share with `fstat` is the *encoder*, which stays in PawPrint
+  either way, being .NET's ABI. What they do differently is the whole of the
+  path side — reading a NUL-terminated name out of guest memory, parsing it,
+  resolving it under a symlink policy — and only the resolution part crosses.
+  So they are 8i, and 8h is `fstat` alone. Meanwhile `statLike` keeps its own
+  resolution and asks the library for the answer, which is `statOf`.
+
+  **The answer is a record of POSIX facts, and it omits rather than zeroes.**
+  There is no `st_nlink`, no `st_blksize`, no `st_blocks` and no BSD `st_flags`
+  in `FileStatus`, because this kernel models none of them and a zero in a
+  client's struct is indistinguishable from a measurement. A client whose ABI
+  has those fields writes what its own runtime writes for a filesystem with no
+  such notion — which is exactly what PawPrint's encoder now does, in its own
+  comments, rather than the library pretending to an answer.
+
+  `BirthTime` is an option for the same reason and it is the sharper case: on a
+  Linux flavour `stat(2)` has no such field, and `None` says so where a zero
+  would be a claim that the inode was born at the epoch — a distinction that,
+  for an inode *actually* created at the epoch, no zeroed field could carry.
+  PawPrint turns the option into the pair the BCL reads: a cleared
+  `FileStatusFlags.HasBirthTime` and a zeroed field, which is what `pal_io.c`
+  writes under `#else`.
+
+  **`st_mode` is one `int`, composed by the library.** The alternative was a
+  `FileType` DU plus `PermissionBits`, with the client assembling the two bands
+  — more structured, and the project's usual preference. Rejected because the
+  assembly is correctness-critical knowledge that belongs where the type bits
+  are defined: splitting it moves a chance to get it wrong to every client, and
+  buys only a match-instead-of-mask for a question no client currently asks. It
+  can gain an accessor later without a surface break, which the reverse could
+  not.
+
+  **Three refusals**, one per descriptor this kernel holds no inode for: a
+  standard stream, a socket event port, a socket. One genus — "a real kernel
+  answers this and the model has no inode to answer it from" — but three
+  `describe`s, because their measurements are different: the flavours agree on
+  not one field for a port, and only Linux gives a socket an inode at all. A
+  shared sentence would hand a client rendering one of them the other's
+  evidence.
+
+  `EmulatedKernel.simulatedDeviceId` moves to `VirtualFileSystem.deviceId`, the
+  encoder being its last reader. A public deletion from a published package.
+
+  Measured, on macOS and in a Linux container: `fstat(999, (struct stat*)-1)` is
+  EBADF on both, so a bad descriptor beats a bad address and the output pointer
+  is decoded only on the path that writes through it; and a failed `fstat`
+  leaves the caller's struct byte-for-byte untouched on both, which is what
+  `ConvertFileStatus` relies on. Twelve mutants, all killed — including the two
+  that drop one band of `st_mode`, and the one that compares the device id
+  against the constant it came from, which is why that row asserts the literal.
+
+* **8i — `stat` and `lstat`**, which is the path resolution crossing: a library
+  `resolvePath` over `VirtualFileSystem.resolveFull`, taking the cwd inode, the
+  privilege and the limits that `UnixSystem` already holds. PawPrint keeps the
+  guest-memory half — reading a NUL-terminated name within `PATH_MAX` — because
+  that is its memory and not a kernel's. Once it exists, `mkdir`/`rmdir`/
+  `unlink` and `open` all want it, which is why it is its own increment rather
+  than a rider on one of them.
+
+  `stat` is `resolvePath` plus `statOf`, the symlink policy being the entire
+  difference between it and `lstat`. It **cannot be refused**, unlike `fstat`:
+  every inode a path resolves to is one this filesystem holds, so the three
+  inode-free descriptors `fstat` refuses for are unreachable from a path. The
+  signature says so by returning a bare `FileStatusAnswer` rather than a
+  `Result` — the same move 8f and 8g each made for their own refusal sets, and
+  the third time the plan has found that two syscalls with matching *answers*
+  have different *refusals*.
+
+  **A branch did not survive the move, and mutation testing is what found it.**
+  Replacing the start directory in the rooted arm changed no test, and reading
+  `resolveFull` says why: it asks `isRooted` itself and starts at the root
+  regardless of what it is handed. So the `if isRooted then root else cwd` that
+  PawPrint had been computing was choosing a value the walk discards. Deleted
+  rather than given an invented test, with the reason recorded at the call —
+  which is the outcome to want from a surviving mutant, and worth stating
+  because the first instinct on one is to reach for another row.
+* **8j — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
+  land together once 8b exists.
+
+  Their rules were already the library's — `MkDirRules`, `UnlinkRules`,
+  `RmDirRules` and their verdicts — so what was left standing between those
+  rules and the syscall boundary was three handler bodies. With 8i's walk
+  across, each is now resolve, verdict, commit, reap.
+
+  **None of the three can be refused**, every outcome being a success or an
+  errno, so they return a bare `SyscallAnswer * system`. Being payload-free they
+  also join `step`, which the buffer-carrying syscalls could not: that is the
+  first time since stage 7 that the dispatcher has grown, and it is the shape
+  the `step` docstring predicted would be able to.
+
+  `unlink` and `rmdir` carry `forgetIfUnheld` with them, which is the part they
+  add over the filesystem's own `unbind`.
+
+  On PawPrint's side the three handlers collapse into one `pathSyscall` — decode
+  a NUL-terminated path out of guest memory, hand it to the kernel, turn the
+  answer into the zero or the -1-with-errno the C returns. That is the shape
+  they always shared, and the syscall itself is now the only parameter.
+
+  **Three of the seven mutants survived the first battery, and all three were
+  rows that could not discriminate rather than rules that were untested.** A
+  `mkdir` onto a symbolic link to an *existing* file is EEXIST whether the final
+  component is dereferenced or not, so only a *dangling* link separates the two
+  readings. `Syscall.MkDir` at mode 0o755 and at 0o777 both become 0o755 under
+  the default umask, so a dispatcher that dropped the mode agreed. And the
+  `rmdir` ctime divergence — Linux moves the removed directory's, Darwin does
+  not — is visible only through a descriptor *held across the call*, an unheld
+  inode being reaped with nothing left to ask. Each of those is the same trap in
+  a different costume: an input whose two candidate rules agree.
+* **8k — `open`** (done; 333 lines), the largest of the file syscalls, and the
+  one whose flags are PAL values. **`opendir`/`readdir` are not bundled with it**:
+  8h taught that this list's bundlings are worth re-checking, and those two
+  return an opaque `DIR*` that PawPrint materialises as guest memory, which is a
+  different boundary question from `open`'s. They are 8l.
+
+  Most of the handler is kernel behaviour that simply moves — `CreatingOpenRules`
+  and its verdict are already the library's, and 8i's walk is across. What needs
+  a decision first is the *flags*, and the plan's own raw-versus-parsed rule
+  says only half of it: raw means raw kernel ABI, never PAL, so
+  `Interop.Sys.OpenFlags` cannot cross as an integer. What shape it crosses in
+  is open. **This needs confirming before the code is written**, because it adds
+  a public vocabulary type to a package that is about to be released.
+
+  **Decided: (B), a parsed `OpenFlags` record** — access mode, and a bool per
+  `O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_NOFOLLOW`/`O_CLOEXEC`/`O_SYNC`. PawPrint maps
+  the PAL bits onto it and the library never sees a numbering.
+
+  The argument that settled it is stronger than the one this bullet originally
+  made, which was about where platform knowledge lives (`O_CREAT` is 0o100 on
+  Linux and 0x200 on Darwin, and `SimulatedUnixPlatform` is the library's).
+  Patrick's objection to (A) is about what an `int` lets the *emulator* do:
+  given a bit pattern, a flag this kernel does not model is indistinguishable
+  from one it does, so it would silently do something the caller did not ask
+  for — the caller believing the bits mean something, and the kernel guessing.
+  A record has exactly the fields the kernel acts on, so what is supported is
+  legible at the boundary. An `int -> OpenFlags` decoder can be added later if
+  something wants one; it cannot be taken away once the surface is a number.
+
+  This also keeps the two shim-level rejections where they belong — an
+  unrecognised *bit* is EINVAL and so is an access mode that is none of the
+  three, both being the C's own checks rather than any kernel's, and neither
+  expressible once the flags are parsed. The cost accepted is that a future
+  `fcntl(F_GETFL)` would have to invent a numbering, and that the library
+  cannot model a kernel that rejects a flag *combination* by its bits; if
+  either arrives it wants a per-flavour numbering *in the library*, which is
+  where (B) leaves room for it.
+
+  One rule the shape has to be careful about, and the tests pin it: `O_EXCL`
+  crosses **as the caller set it**, not pre-ANDed with `O_CREAT`. That it does
+  nothing on its own is a measured kernel fact the library owns, and a client
+  that combined them first would leave the library with nothing to be right or
+  wrong about.
+
+  Either way the `mode` argument crosses raw and unvalidated, which is settled
+  and measured: `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only
+  open of an existing file, so a handler rejecting a nonzero mode without
+  `O_CREAT` would refuse the BCL's own read path; and `mode` 0o10777 creates
+  0o0755 on both kernels, so a bit above the permission word is dropped rather
+  than refused.
+
+* **8l — `opendir` and `readdir`** (done), split out of the old 8k for the
+  reason given there. Their own question was where the directory stream lives: PawPrint
+  materialises the `DIR*` as guest memory whose address *is* the handle, and the
+  `d_name` buffer inside it is sized by an ABI constant — so the stream's
+  identity and its bytes look to be on different sides of the boundary, which
+  none of stage 8's other syscalls has had to arrange.
+
+  **Reading the code says the boundary is already drawn**, and Patrick agrees:
+  the stream *state* is library-side already (`DirectoryStreamId`,
+  `DirectoryStream` with its fd, inode and cursor, and the `DirectoryStreams`
+  map on `UnixProcessState`), the address-to-id mapping is client-side already
+  (`DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>`, and
+  `NativeMemoryBlockId` is PawPrint's own), and the 1024-byte name buffer is
+  Darwin's `__DARWIN_MAXPATHLEN`, an ABI constant that stays with the client by
+  the raw-versus-PAL rule. It fits by construction: NAME_MAX is 255 bytes on
+  Linux and 255 UTF-16 code units (at most 765 bytes) on Darwin.
+
+  So `readdir` returns a name, an inode type and a new cursor, and PawPrint owns
+  the blob exactly as it owns `getcwd`'s destination. **The increment confirmed
+  it**: nothing had to be arranged that stage 8's other syscalls had not already
+  arranged.
+
+  What the code did add is a small vocabulary, `DirectoryEntryKind`, because
+  neither of the two obvious types would do. `InodeContent` carries the payload,
+  and a caller enumerating a directory is owed each entry's *type* rather than
+  the bytes of every file in it; `fileTypeBits` is the `S_IFMT` numbering `stat`
+  reports, where `readdir` has its own (`DT_REG` and friends) and the two are
+  different numbers. So the kind crosses as a kind and each client encodes
+  whichever its own struct wants — the same shape the `open` flags settled on,
+  arrived at from the other direction.
+
+  `EmulatedKernel.withNewDirectoryStream` becomes `withDirectoryStreamBlock`:
+  opening a stream is now two steps, the library minting the identity and the
+  client binding its address to it. That is the split this increment is, and it
+  is the machine that holds it rather than discipline —
+  `checkInvariants` already refuses a state in which the two maps disagree in
+  either direction, so a client that took only one of the steps is caught.
+
+  `closedir` stays where it is. It already delegates to `UnixSystem.close` and
+  `UnixSystem.forgetIfUnheld`; what is left of it is block bookkeeping and the
+  ordering that reaps a directory whose last name went while a stream held it,
+  which is client-side by the same rule.
+* **8m — `getcwd` and `readlink`** (done), and then **`getsockname`**. These
+  three appear in the census table and had no home in the first draft of this
+  list, which is a drafting failure the census itself should have caught: an
+  increment list that does not partition its own table is not a plan. All three
+  are destination-buffer syscalls and all three land after 8c has settled that
+  shape. `getcwd` is the one that needs the honesty note stage 7 wrote down: its
+  success value is the caller's own buffer pointer, which the library never
+  possesses, so the client composes it.
+
+  `getcwd` went first and took the increment on its own, because measuring it
+  turned up two things the shipped handler had wrong, neither of which a probe
+  passing a valid buffer can see:
+
+  * **An unwritable destination is not EFAULT everywhere.** Linux's `getcwd` is
+    a syscall whose `copy_to_user` reports one; Darwin's assembles the path with
+    stores executed in the caller's own context, so a destination it cannot
+    write kills the process — SIGSEGV unmapped, SIGBUS read-only. A `PROT_READ`
+    page is the probe that discriminates the two mechanisms, an unmapped address
+    being consistent with either, and `readlink` answers EFAULT on *both* in the
+    same probe, so this is `getcwd`'s own property rather than a general one.
+    The handler answered EFAULT for both flavours. `GetCwdRefusal` says so
+    instead, on the reasoning `requireStorage` already had written down: a dead
+    process is not an errno, and answering one turns a crash into a plausible
+    wrong answer.
+  * **A user-space `getcwd` stores before it decides, so its unwritable
+    destination refuses more widely than the success path.** Darwin can die on a
+    call that would otherwise report ERANGE or ENOENT, and whether it does turns
+    on the current directory's length against a libc threshold measured at 1016
+    bytes — neither PATH_MAX (1024) nor any documented constant, but one build's
+    internal slack selecting between the `__getcwd` syscall and the user-space
+    backward assembly. This library models kernels, not that route selection, so
+    it refuses from capacity 2 up whatever the path length, deliberately
+    over-refusing the cells where the real call answers without storing.
+    Capacity 0 and 1 still answer, that flavour having been measured to write
+    nothing there on either side of the threshold.
+
+  * **Darwin's failing `getcwd` scribbles on the caller's buffer, and this
+    library does not reproduce it.** This looked at first like the answer to the
+    asymmetry the `poll` bullet below leaves open — `Failed` carrying writes,
+    arriving on a syscall small enough to hold in view — and it is not. Two
+    successive attempts to model it from partial measurements were wrong in
+    different ways, the first writing past the caller's declared capacity, and
+    what the sweep eventually showed is BSD `getcwd(3)` assembling the path
+    *backwards* from the end of the buffer and moving it to the front once it
+    fits. The residue is a function of libc's internal progress, not of anything
+    a kernel decides. `GetCwdAnswer.Failed` therefore carries an errno and says
+    nothing about the destination; `docs/divergences.md` records the measured
+    table and the reasoning, and `Interop.Sys.GetCwd` cannot observe any of it.
+
+    So the `poll` asymmetry is still open, and this increment is evidence about
+    *how* to close it: a `Failed` that carries writes wants a syscall whose
+    failure writes are a kernel's decision. `poll`'s are. `getcwd`'s are libc's,
+    which is a different thing wearing the same shape.
+
+  `readlink` followed and was uneventful by comparison, which is itself worth
+  recording: the same `PROT_READ` probe that showed `getcwd` taking a signal
+  showed `readlink` answering EFAULT on both flavours, so it needs no refusal at
+  all beyond the buffer vocabulary's own. Its one subtlety is that truncation is
+  **not** an error path — `Interop.Sys.ReadLink` starts with a 256-byte
+  `stackalloc` and doubles while the result fills the buffer, so a kernel that
+  refused to truncate would break `FileInfo.LinkTarget` for every target of 256
+  bytes or more — and that the truncation is in *bytes*, which only a multi-byte
+  target can detect.
+
+  Moving it also dropped a claim that had gone stale where it stood: the
+  handler's note on the unmoved `atime` said this would be "the first mutation
+  of the emulated filesystem in the interpreter", and that no handler writes
+  back `Kernel.FileSystem`. Several do now. The contract half of that note is on
+  `UnixSystem.readlink`; the falsified half is gone rather than carried across.
+
+    The ordering the handler already had is otherwise confirmed exactly, including
+  two cells that only a size sweep reaches: a too-small buffer is ERANGE
+  whatever the destination is, on both flavours, and a removed current directory
+  outranks even that on Linux, where an unmapped destination is ENOENT rather
+  than EFAULT.
+* **`poll` defers to stage 9**, and not for the reason the others do. It carries
+  an array in *and* out, it is the syscall whose failure path writes (the
+  asymmetry left open above), and it is where blocking becomes unavoidable — it
+  needs `WouldBlock`, which stage 9 defines. It is also already entangled with
+  8a: it is one of the six `faultsBeforeOperation` call sites, so 8a must re-plumb
+  it even though the syscall itself does not move.
+* The **socket-address entry points** — nine handlers, about 600 lines — are the
+  largest homogeneous group of buffer handlers in the file, and where they go was
+  the first thing this census got wrong. Two claims had to be corrected by
+  measuring:
+
+  * "No kernel state at all" is false. All nine read `state.Kernel.UnixPlatform`.
+    The true claim is narrower and still useful: they read the *platform profile*
+    and no mutable kernel state — never the descriptor table, the filesystem, the
+    socket table or the tasks — so they are `UnixSystem`-shaped only in the way a
+    pure function of the platform is.
+  * "Splitting the socket PAL cluster across two stages is a half-migration" was
+    the argument for deferring all nine to stage 9, and it holds for **two** of
+    them. Only `GetAddressFamily` and `SetAddressFamily` touch the library's
+    remaining PAL residue (`addressFamilyPlatformToPal` and its inverse). The
+    other seven touch none of it: their only PAL contact is `UnixErrorPal`, which
+    is PawPrint's own as of stage 7's last increment.
+
+  Both corrections stood, and then the refusal-timing census below overtook them
+  with a third: every buffer these nine take is *wrapper*-touched, so none of
+  them crosses the boundary, and they read no mutable kernel state either. There
+  is nothing here to hoist. All nine stay in PawPrint as client-side decode; the
+  two that touch the address-family PAL cluster still wait for stage 9, but for
+  that cluster's sake rather than their own.
+
+#### Correctness oracle
+
+Per increment, the host-differential test at the new altitude plus the existing
+guest fixtures, as before. Specifically:
+
+* **A row per buffer classification, per screening platform.** The interesting
+  cell is `Unmapped` under Darwin, which does *not* screen up front and so
+  reaches the operation and answers from it — that is the cell a single-platform
+  test cannot see. Note where it can run: the host-differential fixtures cover
+  one column per host by construction, CI being Linux, so a Darwin-only cell is
+  exercised on Patrick's laptop and nowhere else. Say so at the row, as
+  `TestVirtualFileSystemAgainstHost` already does for its own halves, rather than
+  letting a green CI imply both columns were checked.
+* **A row per buffer-untouched short-circuit**, since "the buffer is not touched
+  here" is invisible to any test that passes a valid buffer. The two probes are
+  not interchangeable, and the difference is easy to get backwards: a **null**
+  pointer *passes* the Linux up-front screen, because that screen is arithmetic
+  and address 0 is a low address in range, so it reaches the short-circuits —
+  `read(f, NULL, 5)` at EOF is 0, `read(dir, NULL, 5)` is EISDIR. A **high**
+  address such as `(void*)-1` fails the range check and so probes step 3
+  instead: `read(wronlyFd, (void*)-1, 4)` is EBADF, `read(port, (void*)-1, 8)` is
+  EINVAL on Linux and ENXIO on Darwin. A test using only one of the two measures
+  only one of the two steps.
+* **A row pinning what an unrepresentable buffer does at each short-circuit.**
+  The finding-1 table is that row set, and without it the regression it names
+  lands green: nothing in the suite today asserts that `read(stdin, symbolic, n)`
+  answers 0.
+* **`TestGuestPathBytes` for 8b**, where a byte budget and a character budget
+  agree on ASCII and disagree on anything else — plus the *ordering* row, which
+  is a separate claim: a path that is both over-long and invalid UTF-8 must be
+  ENAMETOOLONG rather than a refusal, because `PATH_MAX` is enforced by
+  `getname()`/`copyinstr` when the kernel copies the string in, before anything
+  looks at what it says. `parseGuestPathBytes` records this and its measurement
+  (1023 bytes resolves on macOS, 1024 does not); the byte entry point must state
+  that the bytes exclude the terminating NUL, that the comparison is therefore
+  against `pathMaxBytes - 1`, and that the limit is per-flavour.
+* **Mutation, per increment**: break one ordering step and confirm a row dies.
+  The ordering steps are what this stage is really moving, and they are the part
+  no type can hold.
+
+#### The census this design owed, taken
+
+The missing axis was **where each refusal fires relative to its syscall's step
+order**. Measured across all thirty handlers that classify a buffer, recording
+for each argument the offsets at which it is classified, screened, dereferenced
+and transferred. Three results, and the first is the one that matters.
+
+**(i) PawPrint already draws the line the design needs, per *argument* rather
+than per handler, and it draws it by who dereferences.** There are two policies
+for a non-null address naming no storage, and the choice between them is not
+arbitrary:
+
+* **The kernel touches it** — `read`'s buffer, `write`'s, `getcwd`'s, `bind`'s
+  address blob. `BufferPointer.dereferenceable` answers `None` and the handler
+  reports **EFAULT**, which is the kernel's own answer.
+* **The wrapper touches it** — `getsockname`'s `socketAddressLen`,
+  `CreateSocketEventPort`'s out-parameter, every socket-address codec's blob.
+  `requireStorage` **refuses**: a real run faults inside the shim, and PawPrint
+  models no such fault.
+
+`bind` and `getsockname` each use both, on different arguments, and the code says
+so where it switches: "This is the opposite of
+`SystemNative_CreateSocketEventPort`'s out-parameter, which the wrapper itself
+dereferences, and which `requireStorage` refuses for."
+
+This retires the confusion the last three revisions have been circling. Decision
+2(b) said an unmapped address `failwith`s; I said it answers EFAULT; **both are
+true, of different arguments**, and the discriminator is whose code does the
+dereference. It follows that only **kernel-touched** buffers ever cross the
+boundary — a wrapper-touched argument is decoded by the client before any
+syscall exists — so `Unmapped` means EFAULT unconditionally for everything the
+library ever sees, and `Opaque`/`Addressless` are the only cases whose timing the
+library must own.
+
+**(ii) The classify-to-dereference gap is nonzero in six handlers and zero in
+six.** `Open`, `MkDir`, `Unlink`, `RmDir`, `OpenDir` and `FStat` dereference on
+the line after they classify, so for them an eager refusal is exactly today's
+behaviour. `GetCwd` (65 lines), `Read` (68), `PRead` (62), `Write` (17), `PWrite`
+(19) and `ReadLink` have real steps in between, and those six are where finding 1
+lives. The four regressions finding 1 names are all in that second group, and
+none is in the first.
+
+**(iii) 8h should not exist.** The seven socket-address codecs read only the
+platform profile, and every buffer they take is wrapper-touched. There is no
+kernel operation to hoist and no buffer that crosses — so scheduling them as a
+stage-8 increment was a category error, not a scheduling one. They are pure
+client-side decode and they stay in PawPrint. What remains for stage 9 is the two
+that touch the address-family PAL cluster, exactly as before.
+
+#### Decision 2(b), amended in place
+
+Stage 7 committed to `SyscallAnswer` gaining a writes component and left the
+ordered-versus-unordered question for measurement here. The census answers it by
+dissolving it: under option (B) there is no generic writes component to order.
+The claim stage 7 wanted tested — that a syscall is atomic with respect to
+PawPrint's scheduler, so no guest thread can observe an interleaving — is still
+true and is what lets a *typed* answer be applied in whatever order the client
+likes. Decision 2(b)'s "ordered list of effects" is superseded, and the sentence
+in stage 7's section that promised the amendment is discharged here.
+
+### Stage 9: blocking syscalls, and packaging
+
+**Dependencies**: stage 8.
+
+**Implements**: decision 3.
+
+`WaitForSocketEvents`, `poll`, `accept`, `connect`: `WouldBlock of
+WakeCondition` plus `WakeCondition.isSatisfied`. **And `flock`**, whose blocking
+case stage 7 had to spell as a refusal: moving it here is what lets it carry the
+descriptor-table advance a real kernel makes before it sleeps, which a refusal
+cannot. PawPrint's `Program` readiness
+sweep becomes a poll of that predicate. Then: `README`, the
+`emulated-posix-kernel` skill's paths, `docs/divergences.md`, and the
+packaging decision from the open questions.
+
+**Correctness oracle**:
+* `SocketFuzz` against real Linux epoll, driven through `step` rather than
+  through the model functions — the strongest oracle in the repo for this
+  area, now pointed at the public surface.
+* `TestSocketEventsWait.fs`, `TestSocketEventsWaitReason.fs` and the
+  `Guest`-category socket fixtures.
+* A property: for every `WouldBlock` outcome, `isSatisfied` on the returned
+  condition is `false` in the state that produced it. A wake condition already
+  satisfied at the moment of parking is a lost wakeup, and it is the failure
+  mode this stage can most easily introduce.

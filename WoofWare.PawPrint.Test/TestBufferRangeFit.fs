@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// What a `SystemNative_*` transfer does when its bytes would run past the end
 /// of the storage its buffer names.

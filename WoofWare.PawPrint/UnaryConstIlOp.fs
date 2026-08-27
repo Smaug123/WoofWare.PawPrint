@@ -547,7 +547,41 @@ module internal UnaryConstIlOp =
             |> IlMachineState.popFromStackToArgument currentThread (int s)
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
-        | Unaligned b -> failwith "TODO: Unaligned unimplemented"
+        | Unaligned alignment ->
+            // ECMA-335 III.2.3: `unaligned.` promises only that the address the following
+            // memory-access instruction uses might not be naturally aligned. It *widens* what is
+            // legal rather than narrowing it — without the prefix, an unaligned access has
+            // unspecified behaviour and may fault — and PawPrint is always in the widened regime:
+            // it addresses memory as a byref root plus a chain of projections, with no alignment
+            // to be wrong about. So the prefix is an executed no-op, as `volatile.` is.
+            //
+            // The one thing III.2.3 additionally says is that combining `unaligned.` with
+            // `volatile.` costs the atomicity a naturally-aligned access would otherwise have.
+            // PawPrint's scheduler switches threads between IL instructions and never within one,
+            // so every access it performs is already atomic and no guest can observe the
+            // difference. That is a property of the whole interpreter, not something this prefix
+            // introduces.
+            //
+            // Nothing is recorded in `PendingPrefix`: as for `tail.` (see `NullaryIlOp.execute`),
+            // a flag set here and read by nobody would be a lie in the machine state, and the
+            // following instruction has no clearing logic for it.
+            //
+            // The alignment operand *is* checked, because it belongs to this instruction rather
+            // than to the one it prefixes: CoreCLR's importer rejects anything outside {1, 2, 4}
+            // with `BADCODE("Alignment unaligned. must be 1, 2, or 4")` (jit/importer.cpp), so a
+            // body carrying another value is one the CLI refuses to run at all. PawPrint runs no
+            // IL verification pass of its own, so it does not also check that the instruction the
+            // prefix applies to is one of the eight III.2.3 permits.
+            match alignment with
+            | 1uy
+            | 2uy
+            | 4uy ->
+                state
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+            | other ->
+                failwith
+                    $"unaligned. %d{other}: alignment must be 1, 2 or 4, so this method body would raise InvalidProgramException on the real runtime"
         | Ldloc s -> failwith "TODO: Ldloc unimplemented"
         | Ldloca s -> failwith "TODO: Ldloca unimplemented"
         | Ldarg s -> failwith "TODO: Ldarg unimplemented"

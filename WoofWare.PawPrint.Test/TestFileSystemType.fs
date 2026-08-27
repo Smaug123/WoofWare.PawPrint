@@ -4,6 +4,7 @@ open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `SystemNative_GetFileSystemType`: the table of what `fstatfs(2)` answers for
 /// each kind of descriptor, and the coherence rule between a mount's type and
@@ -115,7 +116,9 @@ module TestFileSystemType =
         for flavour in everyFlavour do
             let kernel =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
+                |> EmulatedKernel.mapMachine (
+                    UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
+                )
 
             kernel.FileSystemType |> shouldEqual (EmulatedFileSystemType.defaultFor flavour)
 
@@ -138,7 +141,11 @@ module TestFileSystemType =
                 if permitted then
                     let kernel =
                         EmulatedKernel.initial
-                        |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) requested
+                        |> EmulatedKernel.mapMachine (
+                            UnixMachineState.withUnixPlatformAndFileSystemType
+                                (HostPlatform.platformOf flavour)
+                                requested
+                        )
 
                     let carried = SimulatedUnixPlatform.flavour kernel.UnixPlatform
 
@@ -164,7 +171,11 @@ module TestFileSystemType =
             let thrown =
                 Assert.Throws (fun () ->
                     EmulatedKernel.initial
-                    |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
+                    |> EmulatedKernel.mapMachine (
+                        UnixMachineState.withUnixPlatformAndFileSystemType
+                            (HostPlatform.platformOf flavour)
+                            (Some fsType)
+                    )
                     |> ignore<EmulatedKernel>
                 )
 
@@ -187,7 +198,9 @@ module TestFileSystemType =
         for flavour, fsType in accepted do
             let kernel =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
+                |> EmulatedKernel.mapMachine (
+                    UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
+                )
 
             kernel.FileSystemType |> shouldEqual fsType
 

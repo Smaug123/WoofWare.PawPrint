@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `EmulatedKernel.cpuForRotation` is the placement policy behind
 /// `SystemNative_SchedGetCpu`: it decides which simulated logical processor the
@@ -34,7 +35,8 @@ module TestCpuPlacement =
     let private rotationFrom (seed : int) : int = abs (seed % 100_000)
 
     let private kernelWith (count : int) : EmulatedKernel =
-        EmulatedKernel.initial |> EmulatedKernel.withProcessorCount count
+        EmulatedKernel.initial
+        |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount count)
 
     let private cpuIndex (CpuId.CpuId i : CpuId) : int = i
 
@@ -110,8 +112,12 @@ module TestCpuPlacement =
 
             let kernel =
                 EmulatedKernel.initial
-                |> EmulatedKernel.withProcessorCount 1
-                |> EmulatedKernel.withEnvironment (Map.ofList [ "DOTNET_PROCESSOR_COUNT", string<int> configured ])
+                |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 1)
+                |> EmulatedKernel.mapProcess (
+                    UnixProcessState.withEnvironment
+                        "test"
+                        (Map.ofList [ "DOTNET_PROCESSOR_COUNT", string<int> configured ])
+                )
 
             let cpu =
                 cpuIndex (EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel)
@@ -154,7 +160,10 @@ module TestCpuPlacement =
 
             let kernel =
                 { EmulatedKernel.initial with
-                    ProcessorCount = count
+                    Machine =
+                        { EmulatedKernel.initial.Machine with
+                            ProcessorCount = count
+                        }
                 }
 
             not (succeeds (fun () -> EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel))
@@ -180,9 +189,10 @@ module TestCpuPlacement =
         let _, loggerFactory = LoggerFactory.makeTest ()
 
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
-        |> fun state -> state.MapKernel (EmulatedKernel.withProcessorCount count)
+        |> fun state -> state.MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount count))
 
-    let private cpuOf (thread : ThreadId) (state : IlMachineState) : CpuId = state.ThreadState.[thread].Cpu
+    let private cpuOf (thread : ThreadId) (state : IlMachineState) : CpuId =
+        UnixTaskTable.cpuOf thread state.Kernel.Tasks
 
     [<Test>]
     let ``a fresh machine starts its rotation at zero`` () =
@@ -273,9 +283,12 @@ module TestCpuPlacement =
 
             let busy =
                 { plain with
-                    VirtualClockTicks = 1234L
                     StepCounter = 5678L
-                    NonCryptoRandomState = 0xDEADBEEFUL
+                    Machine =
+                        { plain.Machine with
+                            VirtualClockTicks = 1234L
+                            NonCryptoRandomState = 0xDEADBEEFUL
+                        }
                 }
 
             EmulatedKernel.cpuForRotation rotation plain = EmulatedKernel.cpuForRotation rotation busy

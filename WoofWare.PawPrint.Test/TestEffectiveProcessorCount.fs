@@ -5,6 +5,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `EmulatedKernel.effectiveProcessorCount` reproduces CoreCLR's
 /// `GetCurrentProcessCpuCount` (coreclr/utilcode/util.cpp): the
@@ -23,9 +24,12 @@ module TestEffectiveProcessorCount =
     /// A kernel whose detection-equivalent count is `detected` and whose
     /// environment carries exactly the supplied overrides.
     let private kernelWith (detected : int) (overrides : (string * string) list) : EmulatedKernel =
-        let kernel = EmulatedKernel.initial |> EmulatedKernel.withProcessorCount detected
+        let kernel =
+            EmulatedKernel.initial
+            |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount detected)
 
-        kernel |> EmulatedKernel.withEnvironment (Map.ofList overrides)
+        kernel
+        |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "test" (Map.ofList overrides))
 
     [<Test>]
     let ``with no override, the configured count is reported`` () =
@@ -76,7 +80,7 @@ module TestEffectiveProcessorCount =
 
             // NULs removed rather than shrunk away, because a NUL is not a value
             // an environment variable can hold: entries in a real `environ` are
-            // NUL-terminated C strings, and `EmulatedKernel.withEnvironment`
+            // NUL-terminated C strings, and `UnixProcessState.withEnvironment`
             // refuses such a table for that reason. Narrowing the alphabet here
             // is aligning it with what the table can contain, not dodging a rule
             // — every other byte sequence FsCheck produces still arrives intact.

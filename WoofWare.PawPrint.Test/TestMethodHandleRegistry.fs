@@ -126,9 +126,7 @@ module TestMethodHandleRegistry =
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         state, thread
@@ -308,9 +306,7 @@ public static class HasMethod
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         let token =
@@ -663,9 +659,7 @@ public static class GenericMethodHolder
 
         let state =
             { state with
-                ThreadState =
-                    Map.empty
-                    |> Map.add thread (ThreadState.New (CpuId 0) (OsThreadId 1u) methodState)
+                ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
 
         let ctx : NativeCallContext =
@@ -1661,3 +1655,385 @@ public class HasNestedGeneric<TKey, TValue>
 
         exn.Message
         |> shouldContainText "declaring type must be Closed or OpenGenericTypeDefinition"
+
+    // ---------------------------------------------------------------------------------------
+    // `RuntimeMethodHandle.IsTypicalMethodDefinition` through the machine.
+    //
+    // The predicate itself is pinned against the host runtime's own FCall in
+    // TestNativeRuntimeMethodHandle.fs. What these cases pin instead is the wiring: which two
+    // counts the native reads off a `MethodHandle`, where it gets the declaring type's generics
+    // flags, and that a dynamic handle is answered before any metadata lookup is attempted.
+    //
+    // Guest-level coverage is `sourcesPure/StackTraceCurrentThreadFrames.cs` (frames on non-generic
+    // types, all typical) and the parked `sourcesPure/StackTraceGenericDeclaringFrame.cs` (a frame
+    // on a generic type, which is not) -- but neither can reach the arms below where the *handle*
+    // is what varies rather than the guest's own call chain.
+    // ---------------------------------------------------------------------------------------
+
+    let private typicalFixtureSource : string =
+        """
+public static class TypicalPlain
+{
+    public static int NonGeneric()
+    {
+        return 1;
+    }
+
+    public static T GenericMethod<T>(T t)
+    {
+        return t;
+    }
+}
+
+public static class TypicalHolder<T>
+{
+    public static int NonGeneric()
+    {
+        return 2;
+    }
+}
+"""
+
+    /// The fixture assembly plus a concretized non-generic method, which the cases below use only
+    /// as the seed for `allocateStubCarrying`.
+    let private typicalFixture (assemblyName : string) =
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource assemblyName typicalFixtureSource
+
+        let seedMethod = assembly |> findMethod "TypicalPlain" "NonGeneric"
+
+        let state, seedConcretized, _declaringType =
+            ExecutionConcretization.concretizeMethodWithAllGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                (seedMethod
+                 |> MethodInfo.mapTypeGenerics (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber))
+                ImmutableArray.Empty
+                state
+
+        loggerFactory, baseClassTypes, assembly, seedConcretized, state
+
+    /// A `RuntimeMethodInfoStub` on the managed heap whose `m_value` names
+    /// <paramref name="internalHandle" />.
+    ///
+    /// `IsTypicalMethodDefinition` is the one `RuntimeMethodHandle` native taking an
+    /// `IRuntimeMethodInfo` rather than a bare `RuntimeMethodHandleInternal`, so its input is a heap
+    /// object. The object here is produced by the registry's own `allocateFreshStub` and then
+    /// re-pointed: its shape comes from production code, and only the handle it names is the test's
+    /// choice. Minting a stub for the handle directly is not on offer, because `allocateFreshStub`
+    /// derives the handle from a concretized method, and two of the shapes below -- a generic
+    /// method *definition*, and an open generic declaring type -- cannot be reached that way.
+    let private allocateStubCarrying
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (seed : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (internalHandle : CliValueType)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let runtimeMethodInfoStubType =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.RuntimeMethodInfoStub
+
+        let addr, registry, state =
+            MethodHandleRegistry.allocateFreshStub
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                seed
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+            |> IlMachineState.setOwnInstanceField addr "m_value" (CliType.ValueType internalHandle)
+
+        addr, state
+
+    let private invokeIsTypicalMethodDefinition =
+        invokeRuntimeMethodHandleFCall "IsTypicalMethodDefinition"
+
+    /// `CliType.ofBool` reaches the eval stack as an Int32.
+    let private boolResult (answer : bool) : EvalStackValue =
+        EvalStackValue.Int32 (Int32Source.Verbatim (if answer then 1 else 0))
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: a non-generic method on a non-generic type is typical`` () : unit =
+        let loggerFactory, baseClassTypes, assembly, seed, state =
+            typicalFixture "TypicalPlainAssembly"
+
+        let targetMethod = assembly |> findMethod "TypicalPlain" "NonGeneric"
+
+        let state, declaringType =
+            concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
+
+        let internalHandle, registry =
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+
+        let stubAddr, state =
+            allocateStubCarrying
+                baseClassTypes
+                seed
+                internalHandle
+                { state with
+                    MethodHandles = registry
+                }
+
+        invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
+        |> shouldEqual (boolResult true)
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: a generic method definition handle is typical`` () : unit =
+        // The shape every captured frame on a generic method produces, and the one that separates
+        // the two counts the native reads: the method declares `T` (arity 1) but this handle binds
+        // nothing (`MethodGenerics = []`). Reading the declared arity for both counts, or the bound
+        // count for both, answers `false` here and `true` on every other case in this file.
+        let loggerFactory, baseClassTypes, assembly, seed, state =
+            typicalFixture "TypicalGenericMethodDefinitionAssembly"
+
+        let targetMethod = assembly |> findMethod "TypicalPlain" "GenericMethod"
+
+        let state, declaringType =
+            concretizeDeclaringType loggerFactory baseClassTypes assembly targetMethod state
+
+        let internalHandle, registry =
+            internalHandleForClosed baseClassTypes state.ConcreteTypes declaringType targetMethod state.MethodHandles
+
+        match MethodHandleRegistry.resolveMethodFromId (registryIdOf internalHandle) registry with
+        | Some (MethodHandle.FromMetadata identity) -> identity.GetMethodGenerics () |> shouldEqual []
+        | Some (MethodHandle.FromDynamic handle) ->
+            failwith $"registry id resolved to %O{handle}, but a metadata method was registered"
+        | None -> failwith "expected the freshly minted handle to resolve"
+
+        let stubAddr, state =
+            allocateStubCarrying
+                baseClassTypes
+                seed
+                internalHandle
+                { state with
+                    MethodHandles = registry
+                }
+
+        invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
+        |> shouldEqual (boolResult true)
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: a bound generic method handle is not typical`` () : unit =
+        let loggerFactory, baseClassTypes, assembly, seed, state =
+            typicalFixture "TypicalBoundGenericMethodAssembly"
+
+        let targetMethod = assembly |> findMethod "TypicalPlain" "GenericMethod"
+
+        let state, concretized, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                targetMethod
+                (Some (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)))
+                assembly.DefinitionFullName
+                ImmutableArray.Empty
+                state
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                concretized
+                state.MethodHandles
+
+        let stubAddr, state =
+            allocateStubCarrying
+                baseClassTypes
+                seed
+                internalHandle
+                { state with
+                    MethodHandles = registry
+                }
+
+        invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
+        |> shouldEqual (boolResult false)
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: a non-generic method on a closed generic type is not typical`` () : unit =
+        // The class half. `TypicalHolder<int>.NonGeneric` binds nothing of its own, so a native
+        // that consulted only the method's generics would call this typical -- and a captured frame
+        // on such a method would then never reach the
+        // `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall it needs.
+        let loggerFactory, baseClassTypes, assembly, seed, state =
+            typicalFixture "TypicalClosedGenericDeclaringAssembly"
+
+        let targetMethod = assembly |> findMethod "TypicalHolder`1" "NonGeneric"
+
+        let declaringIdentity = targetMethod.RequiredDeclaringType.Identity
+
+        let state, intHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Int32.AssemblyFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        let state, closedHandle =
+            IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                assembly.DefinitionFullName
+                (ImmutableArray.Create intHandle)
+                ImmutableArray.Empty
+                (TypeDefn.GenericInstantiation (
+                    TypeDefn.FromDefinition (declaringIdentity, System.Reflection.Metadata.SignatureTypeKind.Class),
+                    ImmutableArray.Create (TypeDefn.GenericTypeParameter 0)
+                ))
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.DefinitionFullName
+                (RuntimeTypeHandleTarget.Closed closedHandle)
+                targetMethod
+                state.MethodHandles
+
+        let stubAddr, state =
+            allocateStubCarrying
+                baseClassTypes
+                seed
+                internalHandle
+                { state with
+                    MethodHandles = registry
+                }
+
+        invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
+        |> shouldEqual (boolResult false)
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: a non-generic method on the generic type definition is typical`` () : unit =
+        // The asymmetric partner of the case above: the same MethodDef row, the same declared
+        // arity, and only the declaring type's `IsGenericTypeDefinition` differing. `typeof(G<>)` is
+        // a MethodTable in CoreCLR with both generics flags set, so it is typical after all.
+        let loggerFactory, baseClassTypes, assembly, seed, state =
+            typicalFixture "TypicalOpenGenericDeclaringAssembly"
+
+        let targetMethod = assembly |> findMethod "TypicalHolder`1" "NonGeneric"
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.DefinitionFullName
+                (RuntimeTypeHandleTarget.OpenGenericTypeDefinition targetMethod.RequiredDeclaringType.Identity)
+                targetMethod
+                state.MethodHandles
+
+        let stubAddr, state =
+            allocateStubCarrying
+                baseClassTypes
+                seed
+                internalHandle
+                { state with
+                    MethodHandles = registry
+                }
+
+        invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
+        |> shouldEqual (boolResult true)
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: a dynamic method is typical`` () : unit =
+        // A `DynamicMethodDesc` is `mcDynamic` rather than `mcInstantiated` and lives in a
+        // non-generic minimal MethodTable, so both of CoreCLR's guards fall through. The arm is
+        // reachable: an LCG frame in a captured trace carries its dynamic registry id
+        // (`NativeStackTrace.methodHandleIdOfFrame`) and `StackFrameHelper.GetMethodBase` runs on
+        // every frame. Answering it through the metadata resolvers instead would turn this legal
+        // call into a "no MethodDef token to read" failure.
+        let loggerFactory, baseClassTypes, _assembly, _seed, state =
+            typicalFixture "TypicalDynamicMethodAssembly"
+
+        // `static void ()`: default calling convention, no parameters, void return.
+        let signature = ImmutableArray.Create (0x00uy, 0x00uy, 0x01uy)
+
+        let body =
+            MintedDynamicMethodBody.make [ IlOp.Nullary NullaryIlOp.Ret, 0 ] None ImmutableArray.Empty
+
+        let stubAddr, registry, state =
+            MethodHandleRegistry.mintDynamicMethod
+                baseClassTypes
+                state.ConcreteTypes
+                state
+                (fun fields state ->
+                    IlMachineState.allocateManagedObject
+                        (AllConcreteTypes.getRequiredNonGenericHandle
+                            state.ConcreteTypes
+                            baseClassTypes.RuntimeMethodInfoStub)
+                        fields
+                        state
+                )
+                "Emitted"
+                signature
+                baseClassTypes.Corelib.DefinitionFullName
+                None
+                body
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
+        |> shouldEqual (boolResult true)
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition refuses a null IRuntimeMethodInfo`` () : unit =
+        // `StackFrameHelper.GetMethodBase` returns early on a zero handle and allocates the stub
+        // itself, so a null here is a PawPrint contract violation rather than a guest condition;
+        // CoreCLR would dereference it.
+        let loggerFactory, baseClassTypes, _assembly, _seed, state =
+            typicalFixture "TypicalNullArgumentAssembly"
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef None) state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "null IRuntimeMethodInfo"
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition refuses a class that implements no IRuntimeMethodInfo`` () : unit =
+        // PawPrint reads the handle out of a named field, so it can only serve the three CoreLib
+        // classes whose field name it knows. CoreCLR reads by layout instead, which is why
+        // `RuntimeMethodInfoStub` pads itself to match `RuntimeMethodInfo`; PawPrint has no such
+        // coincidence to exploit, so a fourth class must say so rather than read whatever happens to
+        // sit in some other class's first slot.
+        let loggerFactory, baseClassTypes, _assembly, _seed, state =
+            typicalFixture "TypicalWrongClassAssembly"
+
+        let objectHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+
+        let objectValue =
+            SynthesisedLayoutKind.ofFields
+                baseClassTypes
+                state.ConcreteTypes
+                objectHandle
+                Layout.Default
+                System.Runtime.InteropServices.CharSet.Ansi
+                []
+
+        let addr, state =
+            IlMachineState.allocateManagedObject objectHandle objectValue state
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some addr)) state
+                |> ignore
+            )
+
+        exn.Message
+        |> shouldContainText "is not one of CoreLib's three IRuntimeMethodInfo implementers"

@@ -6,6 +6,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `EmulatedKernel.osThreadId` is the policy behind
 /// `SystemNative_TryGetUInt32OSThreadId` (Linux CoreLib) and
@@ -126,7 +127,7 @@ module TestOsThreadId =
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
 
     let private osThreadIdOf (thread : ThreadId) (state : IlMachineState) : OsThreadId =
-        state.ThreadState.[thread].OsThreadId
+        UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
 
     [<Test>]
     let ``guest threads are numbered from their thread id`` () =

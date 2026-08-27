@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open WoofWare.PosixKernel
 
 /// Drives signal delivery onto the kernel-owned dispatcher thread allocated
 /// by `SystemNative_InitializeTerminalAndSignalHandling`. Mirrors the real
@@ -239,7 +240,10 @@ module SignalDispatch =
         let state =
             state.MapKernel (fun kernel ->
                 { kernel with
-                    Signals = signalsAfter
+                    Process =
+                        { kernel.Process with
+                            Signals = signalsAfter
+                        }
                 }
             )
 

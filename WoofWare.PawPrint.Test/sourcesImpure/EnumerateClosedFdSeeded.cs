@@ -15,7 +15,7 @@ using System.Runtime.InteropServices;
 // a guest may legally close it. When that happens the stream is the only thing
 // left holding the directory's inode; removing the stream at `CloseDir` drops
 // that last hold, and if the reap does not happen there it happens nowhere --
-// `closeFd` reaps only the descriptor it actually closed, and here there is
+// `close` reaps only the descriptor it actually closed, and here there is
 // none. The result would be an inode no path reaches, which is PawPrint's
 // bookkeeping at fault rather than the guest's: `AssertTerminalState` checks
 // exactly that.

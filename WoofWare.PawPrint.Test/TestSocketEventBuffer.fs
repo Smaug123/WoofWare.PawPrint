@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The width of the block `SystemNative_CreateSocketEventBuffer` allocates, which is the one
 /// thing about that entry point no guest can report *directly*: the stride is 16 bytes an

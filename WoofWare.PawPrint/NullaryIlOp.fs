@@ -1253,6 +1253,23 @@ module NullaryIlOp =
         | LdindR4 -> CliType.Numeric (CliNumericType.Float32 0.0f)
         | LdindR8 -> CliType.Numeric (CliNumericType.Float64 0.0)
 
+    /// Whether the typed field descent can serve a `size`-byte window at offset 0 of this
+    /// struct: a field of exactly that size starts the struct, recursively so when that field
+    /// is itself a value type. This mirrors the descent `viewValueTypeAsPrimitive` performs
+    /// (an exact `DereferenceFieldAt 0 size` at each level), so `ldindNeedsByteView` routes to
+    /// bytes precisely when that descent would have nothing to answer with. The recursion is
+    /// unguarded for the same reason `ldindNeedsByteView`'s is, below.
+    let rec private hasExactLeadingCell (size : int) (vt : CliValueType) : bool =
+        CliValueType.TryFieldsAt 0 vt
+        |> List.exists (fun f ->
+            f.Size = size
+            && (
+                match f.Contents with
+                | CliType.ValueType inner -> hasExactLeadingCell size inner
+                | _ -> true
+            )
+        )
+
     /// Does a plain-byref `ldind` of `target` over a storage cell of `cell` have to
     /// reinterpret the cell's bytes, rather than read the cell and coerce it?
     ///
@@ -1276,23 +1293,6 @@ module NullaryIlOp =
     /// `EvalStackValue.ofCliType` will hand to `toCliTypeCoerced`", and that function
     /// flattens them through `CliValueType.PrimitiveLikeField` before the coercion sees
     /// them. Classifying the wrapper itself would answer a different question.
-    /// Whether the typed field descent can serve a `size`-byte window at offset 0 of this
-    /// struct: a field of exactly that size starts the struct, recursively so when that field
-    /// is itself a value type. This mirrors the descent `viewValueTypeAsPrimitive` performs
-    /// (an exact `DereferenceFieldAt 0 size` at each level), so `ldindNeedsByteView` routes to
-    /// bytes precisely when that descent would have nothing to answer with. The recursion is
-    /// unguarded for the same reason `ldindNeedsByteView`'s is, below.
-    let rec private hasExactLeadingCell (size : int) (vt : CliValueType) : bool =
-        CliValueType.TryFieldsAt 0 vt
-        |> List.exists (fun f ->
-            f.Size = size
-            && (
-                match f.Contents with
-                | CliType.ValueType inner -> hasExactLeadingCell size inner
-                | _ -> true
-            )
-        )
-
     let rec private ldindNeedsByteView (target : CliNumericType) (cell : CliType) : bool =
         match cell with
         // The recursion is unguarded for the same reason `ofCliType`'s is: a value type
@@ -3401,7 +3401,22 @@ module NullaryIlOp =
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             stElem loggerFactory corelib value index arr currentThread state
-        | Cpblk -> failwith "TODO: Cpblk unimplemented"
+        | Cpblk ->
+            // ECMA-335 III.3.30, shared with the `Unsafe.CopyBlock` intrinsics that lower to it.
+            match IntrinsicHelpers.executeCopyBlock corelib currentThread "cpblk" state with
+            | CopyBlockOutcome.Copied state ->
+                state
+                |> IlMachineState.advanceProgramCounter currentThread
+                |> Tuple.withRight WhatWeDid.Executed
+                |> ExecutionResult.stepped
+            | CopyBlockOutcome.NullEndpoint state ->
+                IlMachineStateExecution.raiseRuntimeException
+                    loggerFactory
+                    corelib
+                    corelib.NullReferenceException
+                    currentThread
+                    state
+                |> ExecutionResult.stepped
         | Initblk ->
             // ECMA-335 III.3.36, shared with the `Unsafe.InitBlock` intrinsics that lower to it.
             match IntrinsicHelpers.executeInitBlock corelib currentThread "initblk" state with

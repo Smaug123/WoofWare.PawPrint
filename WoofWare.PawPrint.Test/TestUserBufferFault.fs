@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Where each read/write entry point screens its buffer against the address
 /// space, which is the one part of their contract the two simulated platforms
@@ -323,6 +324,50 @@ class Program
 """
 
         for kernel, name in [ seed, "SymbolicBufferLinux.cs" ; darwin, "SymbolicBufferDarwin.cs" ] do
+            runOn kernel name source |> exitCodeOf |> shouldEqual 0
+
+    /// The refusal for a symbolic address fires at the *transfer*, and every
+    /// check that precedes the transfer still answers.
+    ///
+    /// These four rows are what pins the refusal's position. A
+    /// classification-time refusal — refusing as soon as the argument is seen to
+    /// be symbolic — passes every other row in this fixture, and turns each of
+    /// these four from an answer into a crash.
+    [<Test>]
+    let ``every check before the transfer still answers a symbolic address`` () : unit =
+        let source =
+            guest
+                """
+        byte* handle = (byte*)typeof(int).TypeHandle.Value;
+
+        // The descriptor is checked before the buffer is looked at at all.
+        Marshal.SetLastSystemError(0);
+        if (!ReadRejected(new IntPtr(999), handle, 5, EBADF)) return 10;
+
+        // Stdin is the read end of a closed pipe, so this is end-of-file, and a
+        // read that returns end-of-file never touches its buffer.
+        Marshal.SetLastSystemError(0);
+        if (Read(new IntPtr(0), handle, 5) != 0) return 11;
+
+        // A directory is EISDIR, decided from the inode and not from the buffer.
+        IntPtr d = OpenPath("d");
+        if (d == new IntPtr(-1)) return 12;
+        if (!ReadRejected(d, handle, 5, EISDIR)) return 13;
+
+        // And on the write side, the access mode precedes the buffer: `f` is
+        // opened O_RDONLY.
+        IntPtr f = OpenPath("f");
+        if (f == new IntPtr(-1)) return 14;
+        if (!WriteRejected(f, handle, 5, EBADF)) return 15;
+
+        return 0;
+"""
+
+        for kernel, name in
+            [
+                seed, "SymbolicBufferPrecedenceLinux.cs"
+                darwin, "SymbolicBufferPrecedenceDarwin.cs"
+            ] do
             runOn kernel name source |> exitCodeOf |> shouldEqual 0
 
     /// ...but a transfer *through* one is refused rather than answered. EFAULT

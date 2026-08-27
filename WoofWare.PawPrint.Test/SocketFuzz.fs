@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open System
 open System.Text
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// One operation of the socket/epoll differential fuzzer's op language
 /// (docs/plans/2026-08-22-socket-epoll-fuzzer.md). Slots name descriptors on
@@ -209,7 +210,7 @@ module SocketFuzz =
             // in EmulatedKernel, and are deliberately outside the fuzzed
             // vocabulary (see the plan doc's altitude option).
             let socketId = socketIdOfSlot slot state
-            let sock = EmulatedKernel.socket socketId state.Kernel
+            let sock = UnixMachineState.socket socketId state.Kernel.Machine
 
             match sock.Phase with
             | SocketPhase.Idle -> ()
@@ -220,24 +221,28 @@ module SocketFuzz =
 
             let kernel =
                 { state.Kernel with
-                    Sockets =
-                        Map.add
-                            socketId
-                            { sock with
-                                Binding =
-                                    Some
-                                        {
-                                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
-                                            LockedAddress = None
-                                        }
-                                Phase =
-                                    SocketPhase.Listening
-                                        {
-                                            Backlog = 8
-                                            Queue = []
-                                        }
-                            }
-                            state.Kernel.Sockets
+                    Machine =
+                        { state.Kernel.Machine with
+                            Sockets =
+                                Map.add
+                                    socketId
+                                    { sock with
+                                        Binding =
+                                            Some
+                                                {
+                                                    Endpoint =
+                                                        InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+                                                    LockedAddress = None
+                                                }
+                                        Phase =
+                                            SocketPhase.Listening
+                                                {
+                                                    Backlog = 8
+                                                    Queue = []
+                                                }
+                                    }
+                                    state.Kernel.Sockets
+                        }
                 }
 
             "ok",
@@ -250,7 +255,7 @@ module SocketFuzz =
             // slot of it, so ask the kernel at connect time — the harness
             // does the same with getsockname.
             let endpoint =
-                match (EmulatedKernel.socket (socketIdOfSlot listener state) state.Kernel).Binding with
+                match (UnixMachineState.socket (socketIdOfSlot listener state) state.Kernel.Machine).Binding with
                 | Some binding when binding.Endpoint.Port <> 0us -> binding.Endpoint
                 | _ -> failwith $"INTERPRETER-DRIVER BUG: conn targets slot %d{listener}, whose socket never listened."
 
@@ -294,7 +299,7 @@ module SocketFuzz =
         | FuzzOp.Accept (listener, newSlot) ->
             let socketId = socketIdOfSlot listener state
 
-            match (EmulatedKernel.socket socketId state.Kernel).Phase with
+            match (UnixMachineState.socket socketId state.Kernel.Machine).Phase with
             | SocketPhase.Listening listenState when List.isEmpty listenState.Queue ->
                 // Nonblocking accept of an empty queue, exactly accept4's
                 // answer; `acceptConnection` requires a nonempty queue.
@@ -313,14 +318,27 @@ module SocketFuzz =
         | FuzzOp.Close slot ->
             let fd = slotFd slot state
 
-            match EmulatedKernel.closeFd fd state.Kernel with
+            match KernelSyscall.close fd state.Kernel with
             | Ok kernel ->
                 "ok",
                 { state with
                     Kernel = kernel
                     SlotFd = Map.remove slot state.SlotFd
                 }
-            | Error FileDescriptorCloseError.BadFd -> "EBADF", state
+            | Error UnixError.EBADF ->
+                // Unreachable, and known to be: the generator is constructive,
+                // so it only ever closes a slot it knows holds a live fd (see
+                // `slotFd`, which crashes rather than inventing one). Kept
+                // because it is `close(2)`'s only errno and a generator that
+                // learned to close twice should find this arm waiting rather
+                // than a crash; measured by mutation, which turned EBADF into
+                // success here and left the whole PawPrint suite green.
+                "EBADF", state
+            | Error error ->
+                // EBADF is `close(2)`'s only errno; anything else means the
+                // library grew a failure this generator does not know how to
+                // shrink towards.
+                failwith $"close of fd %d{fd} answered %O{error}, which is not EBADF"
         | FuzzOp.Dup (slot, newSlot) ->
             match FileDescriptorRegistry.dup (slotFd slot state) state.Kernel.FileDescriptors with
             | Ok (fd, registry) ->
@@ -331,7 +349,10 @@ module SocketFuzz =
                     { state with
                         Kernel =
                             { state.Kernel with
-                                FileDescriptors = registry
+                                Process =
+                                    { state.Kernel.Process with
+                                        FileDescriptors = registry
+                                    }
                             }
                     }
             | Error FileDescriptorDupError.BadFd -> "EBADF", state
@@ -346,7 +367,10 @@ module SocketFuzz =
                 { state with
                     Kernel =
                         { state.Kernel with
-                            FileDescriptors = registry
+                            Process =
+                                { state.Kernel.Process with
+                                    FileDescriptors = registry
+                                }
                         }
                 }
         | FuzzOp.Add (port, target, mask) ->

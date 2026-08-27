@@ -6,6 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The parts of `SystemNative_LSeek`'s contract that `sourcesPure/ReadSeekSeeded.cs` and
 /// `sourcesImpure/LSeekRawSeeded.cs` cannot reach, for three different reasons.

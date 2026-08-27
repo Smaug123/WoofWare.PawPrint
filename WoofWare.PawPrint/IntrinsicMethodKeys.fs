@@ -1229,17 +1229,14 @@ module IntrinsicMethodKeys =
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
             // `Int128.PopCount` and `UInt128.PopCount` carry no *method*-level [Intrinsic], but
-            // their declaring types do, and a type-level marker routes every member -- so unlike
+            // their declaring types do, and a type-level marker routes every member — so unlike
             // the narrower wrappers above they do reach Intrinsics.call and do need entries. Their
             // bodies are `ulong.PopCount(value._lower) + ulong.PopCount(value._upper)`, which
-            // bottoms out in the UInt64 wrapper allowlisted above.
-            //
-            // `UInt128` needs only the PopCount entry, because PR #1132 already added the rest of
-            // the cluster a guest needs around it (.ctor, get_MinValue/get_MaxValue, op_Equality
-            // and the widening op_Implicit overloads). `Int128` has no such cluster, so its
-            // PopCount entry is followed below by the three members required to reach and inspect
-            // it. Note that no conversion is needed to reach either method in the first place:
-            // `default(Int128)` is a legal argument that constructs nothing.
+            // bottoms out in the UInt64 wrapper allowlisted above and is widened back to the
+            // return type through `op_Implicit(UInt64)`. No conversion is needed to *reach*
+            // either method, mind: `default(Int128)` is a legal argument that constructs nothing.
+            // Everything a guest needs in order to build a 128-bit value and inspect the result
+            // is allowlisted together at the end of this list.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L800-L802
             pattern
                 "System.Private.CoreLib"
@@ -1251,44 +1248,6 @@ module IntrinsicMethodKeys =
                 "System.Int128"
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.Int128" ]
-            // The minimum `Int128` cluster that makes the PopCount entry above usable and
-            // testable, all reached only because `Int128`'s type-level [Intrinsic] routes every
-            // member:
-            //   op_Implicit(UInt64): PopCount's body returns a `ulong` sum that the return type
-            //     widens through this. Body is `ldc.i4.0; conv.i8; ldarg.0; newobj .ctor; ret`.
-            //   .ctor(UInt64, UInt64): two `stfld`s, and the public (upper, lower) spelling a
-            //     guest needs to set bits in the high half.
-            //   op_Equality: `ldfld _lower` on both arguments, `bne.un`, then the same over
-            //     `_upper` — the identical body shape to the `UInt128.op_Equality` allowlisted
-            //     below, and every boundary in it is modelled. Without it a guest can call
-            //     PopCount but cannot inspect the `Int128` it returns, which would leave the test
-            //     asserting only that the call did not abort.
-            // This is still not the whole cluster PR #1132 built for `UInt128`: there is no
-            // `get_MinValue`/`get_MaxValue`, no signed-widening `op_Implicit(Int64)` and no
-            // `op_Inequality`, so those keep failing at the dispatcher naming themselves. Filling
-            // that in is separate work.
-            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L37-L41
-            pattern
-                "System.Private.CoreLib"
-                "System.Int128"
-                "op_Implicit"
-                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Int128"
-                ".ctor"
-                [
-                    IntrinsicParameterPattern.Exact "System.UInt64"
-                    IntrinsicParameterPattern.Exact "System.UInt64"
-                ]
-            pattern
-                "System.Private.CoreLib"
-                "System.Int128"
-                "op_Equality"
-                [
-                    IntrinsicParameterPattern.Exact "System.Int128"
-                    IntrinsicParameterPattern.Exact "System.Int128"
-                ]
             // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
             // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
             // numeric ops PawPrint already supports:
@@ -1451,21 +1410,35 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector128`1" "get_IsSupported" []
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector256`1" "get_IsSupported" []
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector512`1" "get_IsSupported" []
-            // `System.UInt128` carries a *type-level* [Intrinsic], which is why every one of its
-            // members reaches the intrinsic dispatcher. That marker is not about body
-            // substitution: CoreCLR consumes it in MethodTableBuilder (methodtablebuilder.cpp:11176,
-            // `SetIsIntrinsicType`) to give the type the ABI and alignment of `unsigned __int128`
-            // — the fact `DeclaredTypeFacts.nominalAlignment` already models — and this runtime's
-            // JIT has no `NI_System_UInt128_*` entry at all. The shipped IL below is therefore
-            // what real .NET runs, modulo ordinary inlining.
+            // `System.Int128` and `System.UInt128` each carry a *type-level* [Intrinsic], which
+            // is why every one of their members reaches the intrinsic dispatcher. That marker is
+            // not about body substitution: CoreCLR consumes it in MethodTableBuilder
+            // (methodtablebuilder.cpp:11176, `SetIsIntrinsicType`) to give the type the ABI and
+            // alignment of `__int128` — the fact `DeclaredTypeFacts.nominalAlignment` already
+            // models — and this runtime's JIT carries no `NI_System_Int128_*` or
+            // `NI_System_UInt128_*` entry at all. The shipped IL below is therefore what real
+            // .NET runs, modulo ordinary inlining. Every body in this block is byte-identical
+            // between the macOS-arm64 and the pinned linux-x64 CoreLib, so unlike the
+            // `BitOperations` intrinsics above none of it needs a flavour-specific test.
+            //
+            // The two clusters are listed member by member rather than type by type, so that
+            // the one place they genuinely differ — how many widening conversions each
+            // declares — is visible as an asymmetry rather than buried in two long lists.
             //
             // op_Equality: `ldarg.0; ldfld _lower; ldarg.1; ldfld _lower; bne.un L; ldarg.0;
             // ldfld _upper; ldarg.1; ldfld _upper; ceq; ret; L: ldc.i4.0; ret`. Two `ldfld`s of a
             // `ulong` field on a by-value struct argument, then integer comparison — every
-            // boundary is modelled. `op_Inequality` has the mirror-image body and is deliberately
-            // left off: nothing exercises it yet, so it keeps failing at the dispatcher naming
-            // itself.
+            // boundary is modelled. op_Inequality is that same body with `ldc.i4.0; ceq`
+            // appended to negate the result. Both types spell both operators identically.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L1300
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Equality"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
@@ -1474,10 +1447,34 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.UInt128"
                     IntrinsicParameterPattern.Exact "System.UInt128"
                 ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Inequality"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.UInt128"
+                "op_Inequality"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt128"
+                    IntrinsicParameterPattern.Exact "System.UInt128"
+                ]
             // The value-construction members equality is useless without, and which every one of
             // the entries below bottoms out in: `.ctor(ulong upper, ulong lower)` is
             // `ldarg.0; ldarg.2; stfld _lower; ldarg.0; ldarg.1; stfld _upper; ret`.
-            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L39
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L37-L41
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                ".ctor"
+                [
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                    IntrinsicParameterPattern.Exact "System.UInt64"
+                ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
@@ -1486,17 +1483,54 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.UInt64"
                     IntrinsicParameterPattern.Exact "System.UInt64"
                 ]
-            // `ldc.i4.0/m1; conv.i8` twice, then the ctor above: MinValue is (0, 0) and MaxValue
-            // is (ulong.MaxValue, ulong.MaxValue).
+            // `UInt128.MinValue`/`MaxValue` are `ldc.i4.0/m1; conv.i8` twice, i.e. (0, 0) and
+            // (ulong.MaxValue, ulong.MaxValue). `Int128` instead loads its upper half with
+            // `ldc.i8` of long.MinValue/long.MaxValue and its lower half with `ldc.i4.0/m1;
+            // conv.i8`, so its MinValue is the sign bit alone and is *not* the default value:
+            // the one place where copying the UInt128 shape would give a wrong answer.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L1123-L1126
+            pattern "System.Private.CoreLib" "System.Int128" "get_MinValue" []
+            pattern "System.Private.CoreLib" "System.Int128" "get_MaxValue" []
             pattern "System.Private.CoreLib" "System.UInt128" "get_MinValue" []
             pattern "System.Private.CoreLib" "System.UInt128" "get_MaxValue" []
-            // The six widening conversions, each `ldc.i4.0; conv.i8; ldarg.0; conv.u8; newobj
-            // .ctor; ret` — a zero upper half and a zero-extended lower half. The `UInt64`
-            // overload is the one that needs no `conv.u8`. They are enumerated rather than
-            // matched with `anyParams` so that an overload added by a future runtime bump has to
-            // be reviewed rather than inherited. UInt128 declares no `op_Implicit` *from*
-            // UInt128; the narrowing direction is `op_Explicit`, which is not allowlisted.
+            // The widening conversions. Both types take the same six from unsigned sources,
+            // each `ldc.i4.0; conv.i8; ldarg.0; conv.u8; newobj .ctor; ret` — a zero upper half
+            // and a zero-extended lower half, with the `UInt64` overload the one that needs no
+            // `conv.u8`. They are enumerated rather than matched with `anyParams` so that an
+            // overload added by a future runtime bump has to be reviewed rather than inherited.
+            // Neither type declares an `op_Implicit` *from* itself; the narrowing direction is
+            // `op_Explicit`, which is not allowlisted.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/UInt128.cs#L1712
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Byte" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Char" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UInt16" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UInt32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UInt64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
@@ -1527,6 +1561,41 @@ module IntrinsicMethodKeys =
                 "System.UInt128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
+            // `Int128` additionally takes five conversions from signed sources, which `UInt128`
+            // cannot: it is those five that make the two clusters different sizes. Their body is
+            // `ldarg.0; conv.i8; stloc.0; ldloc.0; ldc.i4.s 63; shr; ldloc.0; newobj .ctor; ret`
+            // — widen to int64, then broadcast the sign bit across the upper half with an
+            // *arithmetic* shift. (The `Int64` overload is the one that needs no `conv.i8`.)
+            // That `shr` is the only place in either cluster where a signed and an unsigned
+            // reading of the same bits diverge, so `Int128Conversions.cs` pairs each of these
+            // with the unsigned source of the same width: `(Int128)(-1L)` must not equal
+            // `(Int128)ulong.MaxValue`.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L595-L640
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.SByte" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Int16" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Int32" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.Int64" ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Implicit"
+                [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =

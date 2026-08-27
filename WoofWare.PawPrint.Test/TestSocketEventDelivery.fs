@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// The socket readiness delivery, row by measured row: every claim here is a
 /// row of `docs/plans/2026-08-21-socket-readiness-wake.md`'s tables (probes
@@ -35,7 +36,10 @@ module TestSocketEventDelivery =
         fd,
         portId,
         { kernel with
-            FileDescriptors = registry
+            Process =
+                { kernel.Process with
+                    FileDescriptors = registry
+                }
         }
 
     let private addStream (kernel : EmulatedKernel) : int * SocketId * EmulatedKernel =
@@ -58,24 +62,27 @@ module TestSocketEventDelivery =
 
         let kernel =
             { kernel with
-                Sockets =
-                    kernel.Sockets
-                    |> Map.add
-                        socketId
-                        { EmulatedKernel.socket socketId kernel with
-                            Binding =
-                                Some
-                                    {
-                                        Endpoint = loopback port
-                                        LockedAddress = None
-                                    }
-                            Phase =
-                                SocketPhase.Listening
-                                    {
-                                        Backlog = 8
-                                        Queue = []
-                                    }
-                        }
+                Machine =
+                    { kernel.Machine with
+                        Sockets =
+                            kernel.Sockets
+                            |> Map.add
+                                socketId
+                                { UnixMachineState.socket socketId kernel.Machine with
+                                    Binding =
+                                        Some
+                                            {
+                                                Endpoint = loopback port
+                                                LockedAddress = None
+                                            }
+                                    Phase =
+                                        SocketPhase.Listening
+                                            {
+                                                Backlog = 8
+                                                Queue = []
+                                            }
+                                }
+                    }
             }
 
         fd, socketId, kernel
@@ -333,7 +340,10 @@ module TestSocketEventDelivery =
                 | Ok (fd, registry) ->
                     fd,
                     { kernel with
-                        FileDescriptors = registry
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors = registry
+                            }
                     }
                 | Error error -> failwith $"dup failed: %O{error}"
 
@@ -520,14 +530,14 @@ module TestSocketEventDelivery =
         // queued connection survives its client, so the pending entry is
         // still there to sweep.
         let kernel =
-            match EmulatedKernel.closeFd clientFd kernel with
+            match KernelSyscall.close clientFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
         readyOf portId kernel |> List.length |> shouldEqual 1
 
         let kernel =
-            match EmulatedKernel.closeFd listenerFd kernel with
+            match KernelSyscall.close listenerFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -583,7 +593,7 @@ module TestSocketEventDelivery =
             ]
 
         let kernel =
-            match EmulatedKernel.closeFd serverFd kernel with
+            match KernelSyscall.close serverFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -630,7 +640,7 @@ module TestSocketEventDelivery =
         readyOf portId kernel |> shouldEqual []
 
         let kernel =
-            match EmulatedKernel.closeFd serverFd kernel with
+            match KernelSyscall.close serverFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -673,7 +683,7 @@ module TestSocketEventDelivery =
         let serverFd, _, kernel = EmulatedKernel.acceptConnection listenerId kernel
 
         let kernel =
-            match EmulatedKernel.closeFd serverFd kernel with
+            match KernelSyscall.close serverFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
@@ -706,10 +716,12 @@ module TestSocketEventDelivery =
         let _, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
 
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd listenerFd kernel |> ignore)
-
-        exc.Message |> shouldContainText "RSTs the unaccepted client"
+        // Asserted as the refusal's own case rather than as a crash: the
+        // library now says which measured gap it declined to answer across, and
+        // a message match would pass for any of the three.
+        match UnixSystem.close listenerFd (EmulatedKernel.unix kernel) with
+        | Error (CloseRefusal.ListenerWouldResetUnacceptedClient _) -> ()
+        | other -> failwith $"expected a listener-reset refusal, got %O{other}"
 
     /// The connect's two edges enter in the measured order (`order7.c`): the
     /// client's completion before the listener's accept edge.
@@ -884,7 +896,10 @@ module TestSocketEventDelivery =
             | Ok (fd, registry) ->
                 fd,
                 { kernel with
-                    FileDescriptors = registry
+                    Process =
+                        { kernel.Process with
+                            FileDescriptors = registry
+                        }
                 }
             | Error error -> failwith $"dup failed: %O{error}"
 
@@ -925,22 +940,27 @@ module TestSocketEventDelivery =
                 | Ok (fd, registry) ->
                     fd,
                     { kernel with
-                        FileDescriptors = registry
+                        Process =
+                            { kernel.Process with
+                                FileDescriptors = registry
+                            }
                     }
                 | Error error -> failwith $"dup failed: %O{error}"
 
             let kernel =
-                { kernel with
-                    ParkedSocketWaits =
-                        Map.ofList
-                            [
-                                ThreadId 1,
-                                {
-                                    Port = portId
-                                    MaxEvents = 8
-                                }
-                            ]
-                }
+                kernel
+                |> EmulatedKernel.mapTasks (
+                    UnixTaskTable.register (ThreadId 1) (CpuId 0) (EmulatedKernel.osThreadId (ThreadId 1))
+                )
+                |> EmulatedKernel.mapTasks (
+                    UnixTaskTable.withParkedSocketWait
+                        (ThreadId 1)
+                        (Some
+                            {
+                                ParkedSocketWait.Port = portId
+                                MaxEvents = 8
+                            })
+                )
 
             portFd, dupFd, kernel
 
@@ -948,28 +968,29 @@ module TestSocketEventDelivery =
         let portFd, dupFd, kernel = build ()
 
         let kernel =
-            match EmulatedKernel.closeFd dupFd kernel with
+            match KernelSyscall.close dupFd kernel with
             | Ok kernel -> kernel
             | Error error -> failwith $"close failed: %O{error}"
 
         // ...and destroying the description refuses.
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd portFd kernel |> ignore)
-
-        exc.Message |> shouldContainText "Implement port retention"
+        match UnixSystem.close portFd (EmulatedKernel.unix kernel) with
+        | Error (CloseRefusal.LinuxLastPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual (ThreadId 1)
+        | other -> failwith $"expected a Linux port-retention refusal, got %O{other}"
 
         // Darwin: even the dup-survived close refuses.
         let _, dupFd, kernel = build ()
 
         let kernel =
             { kernel with
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                Machine =
+                    { kernel.Machine with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
             }
 
-        let exc =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.closeFd dupFd kernel |> ignore)
-
-        exc.Message |> shouldContainText "closing a kqueue out from under a waiter"
+        match UnixSystem.close dupFd (EmulatedKernel.unix kernel) with
+        | Error (CloseRefusal.DarwinPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual (ThreadId 1)
+        | other -> failwith $"expected a Darwin kqueue refusal, got %O{other}"
 
     // --- forged invariants ---
 
@@ -1007,20 +1028,26 @@ module TestSocketEventDelivery =
                 |> Map.ofList
 
             { kernel with
-                FileDescriptors =
-                    FileDescriptorRegistry.Unchecked.mapDescription
-                        portId
-                        (fun description ->
-                            { description with
-                                Target =
-                                    OpenFileTarget.SocketEventPort
-                                        { portState with
-                                            Registrations = rewritten
-                                        }
-                            }
-                        )
-                        kernel.FileDescriptors
-                NextSocketEventRegistrationOrdinal = counter
+                Machine =
+                    { kernel.Machine with
+                        NextSocketEventRegistrationOrdinal = counter
+                    }
+                Process =
+                    { kernel.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.Unchecked.mapDescription
+                                portId
+                                (fun description ->
+                                    { description with
+                                        Target =
+                                            OpenFileTarget.SocketEventPort
+                                                { portState with
+                                                    Registrations = rewritten
+                                                }
+                                    }
+                                )
+                                kernel.FileDescriptors
+                    }
             }
 
         EmulatedKernel.checkInvariants (withOrdinals 0L 5L 2L)

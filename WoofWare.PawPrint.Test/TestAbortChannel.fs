@@ -5,6 +5,7 @@ open Microsoft.FSharp.Reflection
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// Pins the conversion that lets an *IL instruction* abort the process.
 ///

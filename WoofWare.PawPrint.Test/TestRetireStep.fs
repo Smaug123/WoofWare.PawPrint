@@ -5,6 +5,7 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `EmulatedKernel.retireStep` is the per-instruction clock advance: bump `StepCounter` by one
 /// and charge `InstructionCostTicks` of virtual time. It exists as its own function only so that
@@ -30,7 +31,9 @@ module TestRetireStep =
         { kernel with
             StepCounter = kernel.StepCounter + 1L
         }
-        |> EmulatedKernel.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
+        |> EmulatedKernel.mapMachine (
+            UnixMachineState.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
+        )
 
     /// Run `f`, reporting either the value or the fact that it threw. Which inputs are rejected is
     /// half of what is being compared, so a throw is an outcome rather than a test failure.
@@ -42,9 +45,12 @@ module TestRetireStep =
 
     let private kernelWith (clock : int64) (cost : int64) (step : int64) : EmulatedKernel =
         { EmulatedKernel.initial with
-            VirtualClockTicks = clock
             InstructionCostTicks = cost
             StepCounter = step
+            Machine =
+                { EmulatedKernel.initial.Machine with
+                    VirtualClockTicks = clock
+                }
         }
 
     /// Clock and cost both in the ordinary range: `retireStep` must produce exactly the kernel the
@@ -111,7 +117,10 @@ module TestRetireStep =
         |> shouldEqual
             { kernel with
                 StepCounter = 12L
-                VirtualClockTicks = 507L
+                Machine =
+                    { kernel.Machine with
+                        VirtualClockTicks = 507L
+                    }
             }
 
     /// A cost of zero freezes the clock and a negative one rewinds it. A record-copy can write
@@ -151,7 +160,7 @@ module TestRetireStep =
     /// that would cross it, and must fault in both implementations on the same input.
     [<Test>]
     let ``rejects crossing the clock horizon exactly as the composition does`` () =
-        let horizon = EmulatedKernel.maxMonotonicTimestampClockTicks
+        let horizon = UnixMachineState.maxMonotonicTimestampClockTicks
 
         let gen =
             gen {
@@ -225,7 +234,7 @@ module TestRetireStep =
     /// or the test above passes by never reaching a rejection at all.
     [<Test>]
     let ``horizon generator straddles the boundary`` () =
-        let horizon = EmulatedKernel.maxMonotonicTimestampClockTicks
+        let horizon = UnixMachineState.maxMonotonicTimestampClockTicks
 
         let outcomes =
             [ 0L .. 1000L ]

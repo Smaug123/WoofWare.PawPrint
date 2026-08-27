@@ -6,8 +6,9 @@ open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
-/// `EmulatedKernel.monotonicTimestampNanos` is the value
+/// `UnixMachineState.monotonicTimestampNanos` is the value
 /// `SystemNative_GetTimestamp` returns: nanoseconds since the simulated process
 /// booted, derived from the deterministic virtual clock. CoreLib exposes it
 /// unchanged as `Stopwatch.GetTimestamp()` and pairs it with a hard-coded
@@ -25,7 +26,7 @@ module TestMonotonicTimestamp =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    let private maxClockTicks : int64 = EmulatedKernel.maxMonotonicTimestampClockTicks
+    let private maxClockTicks : int64 = UnixMachineState.maxMonotonicTimestampClockTicks
 
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
     /// throws on `Int64.MinValue` — a value FsCheck does generate.
@@ -39,7 +40,10 @@ module TestMonotonicTimestamp =
     /// only production writer.
     let private kernelWith (clockMs : int64) : EmulatedKernel =
         { EmulatedKernel.initial with
-            VirtualClockTicks = clockMs
+            Machine =
+                { EmulatedKernel.initial.Machine with
+                    VirtualClockTicks = clockMs
+                }
         }
 
     let private int64s = ArbMap.defaults |> ArbMap.arbitrary<int64>
@@ -51,24 +55,25 @@ module TestMonotonicTimestamp =
         // Stopwatch readings change with it. Real CLOCK_MONOTONIC counts from
         // an unspecified origin (system boot on Linux), which is exactly the
         // kind of host dependence PawPrint exists to remove.
-        EmulatedKernel.monotonicTimestampNanos EmulatedKernel.initial |> shouldEqual 0L
+        UnixMachineState.monotonicTimestampNanos EmulatedKernel.initial.Machine
+        |> shouldEqual 0L
 
     [<Test>]
     let ``maxMonotonicTimestampClockTicks is the last non-overflowing millisecond`` () =
         // Pinned against int64 arithmetic rather than against the literal, so a
         // slip in the literal is caught here.
-        System.Int64.MaxValue / EmulatedKernel.nanosecondsPerTick
-        |> shouldEqual EmulatedKernel.maxMonotonicTimestampClockTicks
+        System.Int64.MaxValue / UnixMachineState.nanosecondsPerTick
+        |> shouldEqual UnixMachineState.maxMonotonicTimestampClockTicks
 
         // The bound is tight, not merely safe: the boundary itself is
         // representable...
-        maxClockTicks * EmulatedKernel.nanosecondsPerTick |> shouldBeGreaterThan 0L
+        maxClockTicks * UnixMachineState.nanosecondsPerTick |> shouldBeGreaterThan 0L
 
         // ...and one millisecond further is not. The assertion is on the
         // wrapped int64 product itself, because a negative product is precisely
         // the failure the bound exists to prevent: a monotonic clock that had
         // run backwards.
-        (maxClockTicks + 1L) * EmulatedKernel.nanosecondsPerTick
+        (maxClockTicks + 1L) * UnixMachineState.nanosecondsPerTick
         |> shouldBeSmallerThan 0L
 
     [<Test>]
@@ -77,7 +82,7 @@ module TestMonotonicTimestamp =
         // large for the nanosecond derivation: a real asymmetry between the
         // two clock views. Compared against the wall clock's ceiling in the
         // same unit (100 ns ticks).
-        maxClockTicks < EmulatedKernel.maxWallClockTicks |> shouldEqual true
+        maxClockTicks < UnixMachineState.maxWallClockTicks |> shouldEqual true
 
     [<Test>]
     let ``the timestamp is the virtual clock scaled to nanoseconds`` () =
@@ -88,7 +93,7 @@ module TestMonotonicTimestamp =
 
             let expected = decimal clockTicks * 100M
 
-            decimal (EmulatedKernel.monotonicTimestampNanos (kernelWith clockTicks)) = expected
+            decimal (UnixMachineState.monotonicTimestampNanos (kernelWith clockTicks).Machine) = expected
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -108,9 +113,9 @@ module TestMonotonicTimestamp =
         let property (seed : int64) : bool =
             let kernel = kernelWith (intoRange maxClockTicks seed)
 
-            let hiResMs = EmulatedKernel.monotonicTimestampNanos kernel / 1_000_000L
+            let hiResMs = UnixMachineState.monotonicTimestampNanos kernel.Machine / 1_000_000L
 
-            hiResMs = EmulatedKernel.lowResolutionTimestampMs kernel
+            hiResMs = UnixMachineState.lowResolutionTimestampMs kernel.Machine
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -124,12 +129,12 @@ module TestMonotonicTimestamp =
             [
                 0L, 0L
                 1L, 0L
-                EmulatedKernel.ticksPerMillisecond - 1L, 0L
-                EmulatedKernel.ticksPerMillisecond, 1L
-                EmulatedKernel.ticksPerMillisecond + 1L, 1L
-                7L * EmulatedKernel.ticksPerMillisecond - 1L, 6L
+                UnixMachineState.ticksPerMillisecond - 1L, 0L
+                UnixMachineState.ticksPerMillisecond, 1L
+                UnixMachineState.ticksPerMillisecond + 1L, 1L
+                7L * UnixMachineState.ticksPerMillisecond - 1L, 6L
             ] do
-            EmulatedKernel.lowResolutionTimestampMs (kernelWith ticks)
+            UnixMachineState.lowResolutionTimestampMs (kernelWith ticks).Machine
             |> shouldEqual expected
 
     [<Test>]
@@ -141,15 +146,21 @@ module TestMonotonicTimestamp =
         // breaking, and because every other property here holds the epoch at
         // zero.
         let property (epochSeed : int64, clockSeed : int64) : bool =
-            let epochMs = intoRange EmulatedKernel.maxWallClockEpochMs epochSeed
+            let epochMs = intoRange UnixMachineState.maxWallClockEpochMs epochSeed
             let clockMs = intoRange maxClockTicks clockSeed
 
             let shifted =
-                { kernelWith clockMs with
-                    WallClockEpochMs = epochMs
+                let baseKernel = kernelWith clockMs
+
+                { baseKernel with
+                    Machine =
+                        { baseKernel.Machine with
+                            WallClockEpochMs = epochMs
+                        }
                 }
 
-            EmulatedKernel.monotonicTimestampNanos shifted = EmulatedKernel.monotonicTimestampNanos (kernelWith clockMs)
+            UnixMachineState.monotonicTimestampNanos shifted.Machine = UnixMachineState.monotonicTimestampNanos
+                (kernelWith clockMs).Machine
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
@@ -165,17 +176,17 @@ module TestMonotonicTimestamp =
         let property (firstSeed : int64, secondSeed : int64) : bool =
             // Constrained to the range legal for *both* clocks; the asymmetry
             // between their bounds has its own test above.
-            let bound = min maxClockTicks EmulatedKernel.maxWallClockEpochMs
+            let bound = min maxClockTicks UnixMachineState.maxWallClockEpochMs
             let first = intoRange bound firstSeed
             let second = intoRange bound secondSeed
 
             let elapsedNanos =
-                EmulatedKernel.monotonicTimestampNanos (kernelWith second)
-                - EmulatedKernel.monotonicTimestampNanos (kernelWith first)
+                UnixMachineState.monotonicTimestampNanos (kernelWith second).Machine
+                - UnixMachineState.monotonicTimestampNanos (kernelWith first).Machine
 
             let elapsedTicks =
-                EmulatedKernel.systemTimeAsTicks (kernelWith second)
-                - EmulatedKernel.systemTimeAsTicks (kernelWith first)
+                UnixMachineState.systemTimeAsTicks (kernelWith second).Machine
+                - UnixMachineState.systemTimeAsTicks (kernelWith first).Machine
 
             elapsedNanos / nanosPerTick = elapsedTicks
 
@@ -190,8 +201,10 @@ module TestMonotonicTimestamp =
             let first = intoRange maxClockTicks firstSeed
             let second = intoRange maxClockTicks secondSeed
 
-            let firstNanos = EmulatedKernel.monotonicTimestampNanos (kernelWith first)
-            let secondNanos = EmulatedKernel.monotonicTimestampNanos (kernelWith second)
+            let firstNanos = UnixMachineState.monotonicTimestampNanos (kernelWith first).Machine
+
+            let secondNanos =
+                UnixMachineState.monotonicTimestampNanos (kernelWith second).Machine
 
             compare firstNanos secondNanos = compare first second
 
@@ -202,7 +215,7 @@ module TestMonotonicTimestamp =
         // The guard's whole purpose: a wrapped negative timestamp would make
         // every `Stopwatch` in the guest report a negative elapsed time.
         let property (seed : int64) : bool =
-            EmulatedKernel.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed))
+            UnixMachineState.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed)).Machine
             >= 0L
 
         Check.One (propertyConfig, Prop.forAll int64s property)
@@ -216,9 +229,9 @@ module TestMonotonicTimestamp =
         // thing makes no uniqueness guarantee either.
         let property (seed : int64) : bool =
             let nanos =
-                EmulatedKernel.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed))
+                UnixMachineState.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed)).Machine
 
-            nanos % EmulatedKernel.nanosecondsPerTick = 0L
+            nanos % UnixMachineState.nanosecondsPerTick = 0L
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -239,7 +252,7 @@ module TestMonotonicTimestamp =
         let property (clockMs : int64) : bool =
             let derivable = clockMs >= 0L && clockMs <= maxClockTicks
 
-            succeeds (fun () -> EmulatedKernel.monotonicTimestampNanos (kernelWith clockMs)) = derivable
+            succeeds (fun () -> UnixMachineState.monotonicTimestampNanos (kernelWith clockMs).Machine) = derivable
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -254,14 +267,20 @@ module TestMonotonicTimestamp =
         // faults instead.
         let atHorizon =
             { EmulatedKernel.initial with
-                VirtualClockTicks = EmulatedKernel.maxMonotonicTimestampClockTicks
+                Machine =
+                    { EmulatedKernel.initial.Machine with
+                        VirtualClockTicks = UnixMachineState.maxMonotonicTimestampClockTicks
+                    }
             }
 
         // The horizon itself is legal: a reading can still be derived from it.
-        EmulatedKernel.monotonicTimestampNanos atHorizon |> shouldBeGreaterThan 0L
+        UnixMachineState.monotonicTimestampNanos atHorizon.Machine
+        |> shouldBeGreaterThan 0L
 
         let beyond () =
-            EmulatedKernel.withVirtualClockTicks (EmulatedKernel.maxMonotonicTimestampClockTicks + 1L) atHorizon
+            EmulatedKernel.mapMachine
+                (UnixMachineState.withVirtualClockTicks (UnixMachineState.maxMonotonicTimestampClockTicks + 1L))
+                atHorizon
             |> ignore<EmulatedKernel>
 
         Assert.Throws<Exception> (TestDelegate beyond) |> ignore<Exception>
@@ -273,14 +292,18 @@ module TestMonotonicTimestamp =
         // `max`, say). Cheap to assert at the writer.
         let kernel =
             { EmulatedKernel.initial with
-                VirtualClockTicks = 5_000L
+                Machine =
+                    { EmulatedKernel.initial.Machine with
+                        VirtualClockTicks = 5_000L
+                    }
             }
 
-        EmulatedKernel.withVirtualClockTicks 5_000L kernel
+        EmulatedKernel.mapMachine (UnixMachineState.withVirtualClockTicks 5_000L) kernel
         |> fun k -> k.VirtualClockTicks |> shouldEqual 5_000L
 
         let backwards () =
-            EmulatedKernel.withVirtualClockTicks 4_999L kernel |> ignore<EmulatedKernel>
+            EmulatedKernel.mapMachine (UnixMachineState.withVirtualClockTicks 4_999L) kernel
+            |> ignore<EmulatedKernel>
 
         Assert.Throws<Exception> (TestDelegate backwards) |> ignore<Exception>
 
@@ -293,11 +316,14 @@ module TestMonotonicTimestamp =
         // narrower range than its own doc comment claims.
         let negativeKernel =
             { EmulatedKernel.initial with
-                VirtualClockTicks = -20_000L
+                Machine =
+                    { EmulatedKernel.initial.Machine with
+                        VirtualClockTicks = -20_000L
+                    }
             }
 
         let forwardsButNegative () =
-            EmulatedKernel.withVirtualClockTicks -10_000L negativeKernel
+            EmulatedKernel.mapMachine (UnixMachineState.withVirtualClockTicks -10_000L) negativeKernel
             |> ignore<EmulatedKernel>
 
         Assert.Throws<Exception> (TestDelegate forwardsButNegative) |> ignore<Exception>
