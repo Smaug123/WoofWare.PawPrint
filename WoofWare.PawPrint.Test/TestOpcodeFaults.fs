@@ -236,16 +236,30 @@ module TestOpcodeFaults =
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Call
         |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.StackOverflow ; OpcodeFault.TypeInitialization ])
 
-        for op in [ UnaryMetadataTokenIlOp.Callvirt ; UnaryMetadataTokenIlOp.Calli ] do
-            OpcodeFaults.ofUnaryMetadata op
-            |> shouldEqual (
-                OpcodeFaults.Raises
-                    [
-                        OpcodeFault.NullReference
-                        OpcodeFault.StackOverflow
-                        OpcodeFault.TypeInitialization
-                    ]
-            )
+        // `callvirt` and `calli` both dereference, but only `callvirt` allocates: under
+        // `constrained.`, a value type that inherits the target from `Object`/`ValueType`/`Enum`
+        // has its receiver boxed (ECMA-335 III.2.1). `calli` is the arm that keeps that from being
+        // read as "every indirect invocation allocates".
+        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Callvirt
+        |> shouldEqual (
+            OpcodeFaults.Raises
+                [
+                    OpcodeFault.NullReference
+                    OpcodeFault.OutOfMemory
+                    OpcodeFault.StackOverflow
+                    OpcodeFault.TypeInitialization
+                ]
+        )
+
+        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Calli
+        |> shouldEqual (
+            OpcodeFaults.Raises
+                [
+                    OpcodeFault.NullReference
+                    OpcodeFault.StackOverflow
+                    OpcodeFault.TypeInitialization
+                ]
+        )
 
         OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Newobj
         |> shouldEqual (

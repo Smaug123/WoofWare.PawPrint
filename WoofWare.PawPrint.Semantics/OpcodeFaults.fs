@@ -410,7 +410,21 @@ module OpcodeFaults =
         // divergence from CoreCLR, which segfaults — recorded in `docs/divergences.md` and pinned
         // by `TestPureCases`' "calli through a null function pointer throws
         // NullReferenceException".
-        | UnaryMetadataTokenIlOp.Callvirt
+        // `callvirt` additionally *allocates*, which `calli` does not. Under a `constrained.`
+        // prefix, "if thisType is a value type and thisType does not implement method then ptr is
+        // dereferenced, boxed, and passed as the 'this' pointer" (ECMA-335 III.2.1) — reachable
+        // whenever a generic calls a method it inherited from `Object`, `ValueType` or `Enum`,
+        // `t.ToString()` being the everyday case. `executeCallvirt` performs exactly that box, so
+        // the allocation is the `callvirt`'s own: were it ever to fail, the instruction in the
+        // frame at that moment is this one, and the entry has to say so.
+        | UnaryMetadataTokenIlOp.Callvirt ->
+            OpcodeFaults.Raises
+                [
+                    OpcodeFault.NullReference
+                    OpcodeFault.OutOfMemory
+                    OpcodeFault.StackOverflow
+                    OpcodeFault.TypeInitialization
+                ]
         | UnaryMetadataTokenIlOp.Calli ->
             OpcodeFaults.Raises
                 [
