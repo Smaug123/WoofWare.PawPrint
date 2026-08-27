@@ -131,6 +131,71 @@ last figure being small precisely because the `.cctor` rule above puts
 `TypeInitializationException` on almost every call. This is accepted as a starting point rather
 than a problem: the walls are known, countable, and each has a named remedy.
 
+### Can the `TypeInitializationException` load be discharged statically?
+
+It is now the largest single entry in the table — 121,520 CoreLib sites — so it is the obvious
+thing to ask about. The answer is yes, mostly, and the reason it is only *mostly* turns out not to
+be about `.cctor`s at all.
+
+**Only 275 of CoreLib's 2,759 types (10.0%) have a `.cctor`.** A call to a type without one cannot
+raise `TypeInitializationException`, exactly and by metadata alone, with no analysis and no
+approximation. That prunes **46.6% of CoreLib's 117,535 invoking sites** today. On System.Text.Json
+it is 25.8%.
+
+Of the rest:
+
+| | CoreLib | System.Text.Json |
+| --- | ---: | ---: |
+| target type has no `.cctor` — pruned exactly | 46.6% | 25.8% |
+| target not resolvable from here — the existing wall | 29.5% | 45.8% |
+| target's `.cctor` may throw | 23.2% | 28.5% |
+| target's `.cctor` provably cannot throw — pruned | 0.7% | 0.0% |
+
+The third row is not irreducible. Of the 275 `.cctor`s, **158 are `Unknown`** — blocked by the same
+generic-instantiation, devirtualisation and cross-assembly walls as everything else, not by
+anything specific to initialisers. So the ceiling on this prune is set by the four walls already
+identified, and rises with them.
+
+Two things were measured on the way that are worth recording.
+
+**A `.cctor` inflates its own answer, and the fix is small.** A `.cctor` that writes its own type's
+statics picks up `TypeInitialization` from `stsfld`, which then propagates to every call site of
+its type — a cycle the analysis inflicts on itself, since the initializer it would supposedly
+trigger is the one already running. The CLI lets the initializing thread straight through
+(ECMA-335 I.8.9.5), so suppressing it is sound. Before the refinement, *not one* of the 275
+`.cctor`s was provably harmless and all 117 "throwing" ones carried `TypeInitialization`
+themselves. After it, 8 are provably harmless and 800 sites prune. Real, and much smaller than the
+cycle's appearance suggested: the refinement is worth having but is not what is holding this back.
+
+**`beforefieldinit` is not available as a prune here**, though it looks like the obvious one.
+ECMA-335 I.8.9.5 does not list method invocation as a trigger for such a type — only static field
+access — and 270 of the 275 are marked. But PawPrint deliberately runs `.cctor`s eagerly
+regardless of the flag (II.10.5.3.2 permits eager schedules; see `docs/divergences.md`), so an
+analyser taking that prune would disagree with the interpreter that is meant to validate it. The
+prune is available in principle to an analyser targeting CoreCLR's schedule; it is not available to
+one whose oracle is PawPrint.
+
+**What is left is mostly one thing.** Of the 109 `.cctor`s that can throw a named type, 60 are
+hand-written (the rest are Roslyn closure caches), and the commonest shape by far is
+`OutOfMemoryException` — a `.cctor` that allocates. A sample of what remains:
+
+```text
+System.Collections.Generic.List`1     OutOfMemory, Overflow, TypeInitialization
+System.Convert                        TypeInitialization
+System.DateTimeOffset                 NullReference, OutOfMemory, TypeInitialization
+System.Decimal+DecCalc                ArrayTypeMismatch, IndexOutOfRange, NullReference, OutOfMemory, Overflow, TypeInitialization
+System.Diagnostics.Stopwatch          DivideByZero, Overflow
+```
+
+`Stopwatch` is the one worth looking at: its initializer divides by the timer frequency, so
+`DivideByZeroException` is a real fault a value domain could discharge and a syntactic analysis
+cannot. `Convert` carries nothing but `TypeInitialization`, meaning it only calls into other types
+— it is pure propagation. And the ubiquitous `OutOfMemoryException` raises a design question worth
+settling before any of this is reported to a user: whether resource-exhaustion faults
+(`OutOfMemoryException`, `StackOverflowException`) belong in the same set as faults the program's
+own logic produces, or in a separate class the reader can ignore, as Java's `Error` hierarchy and
+most practical checkers do.
+
 ### It needs a value domain to be *useful*, as opposed to *sound*
 
 A sound answer must include what the opcodes themselves can raise. In CoreLib that is 121,520 sites

@@ -1,5 +1,5 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 275ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 322ms
 methods: 4067 (IL bodies: 3975, 97.7%)
 
 -- body kinds --
@@ -76,7 +76,7 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
   System.ObjectDisposedException                               2
   System.OperationCanceledException                            2
 
-escape analysis (implicit on) took 245ms
+escape analysis (implicit on) took 260ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 11
@@ -94,7 +94,67 @@ methods: 4067
     Rethrow                        16
     NativeBody                      6
 
-escape analysis (implicit off) took 69ms
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 378, of which 40 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (17887 sites)
+  TargetNotLocal                   8184   45.8%
+  InitializerMayThrow              5092   28.5%
+  NoInitializer                    4611   25.8%
+
+-- the .cctors themselves --
+    ...of which beforefieldinit              40
+  Unknown (analysis envelope)                38
+  can throw a named type                      2
+
+-- what the throwing .cctors carry (exact answers only) --
+       1  System.TypeInitializationException
+       1  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+
+-- types whose initializer can throw: 2 in all, 2 of them hand-written --
+  System.Text.Json.JsonHelpers                             System.TypeInitializationException
+  System.Text.Json.Utf8JsonWriter                          System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
+
+===== sound, with self-initialisation pruned =====
+fixpoint rounds: 11
+methods: 4067
+  provably throws nothing:               115    2.8%
+  exact non-empty escaping set:          600   14.8%
+  Unknown (analysis envelope hit):      3352   82.4%
+  escaping-set size (exact answers): median 1, p90 1, max 5
+  incompleteness reasons (site counts):
+    ForeignCallee                6805
+    VirtualCall                  3282
+    GenericInstantiation         1379
+    AbstractBody                   86
+    UntypedThrow                   54
+    Rethrow                        16
+    NativeBody                      6
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 378, of which 40 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (17887 sites)
+  TargetNotLocal                   8184   45.8%
+  InitializerMayThrow              5092   28.5%
+  NoInitializer                    4611   25.8%
+
+-- the .cctors themselves --
+    ...of which beforefieldinit              40
+  Unknown (analysis envelope)                38
+  can throw a named type                      2
+
+-- what the throwing .cctors carry (exact answers only) --
+       1  System.TypeInitializationException
+       1  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException
+
+-- types whose initializer can throw: 2 in all, 2 of them hand-written --
+  System.Text.Json.JsonHelpers                             System.TypeInitializationException
+  System.Text.Json.Utf8JsonWriter                          System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException
+
+escape analysis (implicit off) took 47ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 9

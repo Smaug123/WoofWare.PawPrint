@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="Census.fs" />
     <Compile Include="Escape.fs" />
+    <Compile Include="CctorCensus.fs" />
     <Compile Include="Driver.fs" />
   </ItemGroup>
   <ItemGroup>

@@ -189,13 +189,22 @@ module Driver =
         Census.run assy
 
         let sw2 = Stopwatch.StartNew ()
-        let withImplicit = Escape.run true assy
+        let withImplicit = Escape.run true false assy
         printfn ""
         printfn "escape analysis (implicit on) took %dms" sw2.ElapsedMilliseconds
         report "sound: opcode-raised exceptions included" withImplicit
 
+        CctorCensus.run assy withImplicit
+
+        // The same sound run, with one refinement: a `.cctor` touching its own type's members does
+        // not pick up `TypeInitialization` from doing so. Reported as a separate run rather than
+        // folded in, so the size of what the refinement buys is visible rather than assumed.
+        let refined = Escape.run true true assy
+        report "sound, with self-initialisation pruned" refined
+        CctorCensus.run assy refined
+
         let sw3 = Stopwatch.StartNew ()
-        let withoutImplicit = Escape.run false assy
+        let withoutImplicit = Escape.run false false assy
         printfn ""
         printfn "escape analysis (implicit off) took %dms" sw3.ElapsedMilliseconds
         report "control: opcode-raised exceptions suppressed" withoutImplicit

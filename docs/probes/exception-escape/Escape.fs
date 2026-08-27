@@ -107,7 +107,7 @@ module Escape =
     /// Sound analysis must include them; the run with them switched off measures how much of the
     /// answer they swamp.
     /// </param>
-    let run (includeImplicit : bool) (assy : DumpedAssembly) : Analysis =
+    let run (includeImplicit : bool) (pruneSelfInitialisation : bool) (assy : DumpedAssembly) : Analysis =
         let thisAssembly = assy.ThisAssemblyDefinition.Name
 
         // Indices. Built once; every lookup below is O(1) against one of these.
@@ -130,6 +130,20 @@ module Escape =
                     allMethods.Add (facts.Handle, m)
                     names.[facts.Handle] <- $"{ty.Namespace}.{ty.Name}::{m.Name}"
                 | None -> ()
+
+        // Which TypeDef declares each field, and which methods are `.cctor`s. Both are needed only
+        // by the self-initialisation prune below.
+        let typeOfField = Dictionary<FieldDefinitionHandle, TypeDefinitionHandle> ()
+        let cctorsOwner = Dictionary<MethodDefinitionHandle, TypeDefinitionHandle> ()
+
+        for KeyValue (th, ty) in assy.TypeDefs do
+            for f in ty.Fields do
+                typeOfField.[f.Handle] <- th
+
+            for m in ty.Methods do
+                match m.TryMetadata with
+                | Some facts when m.Name = ".cctor" && m.IsStatic -> cctorsOwner.[facts.Handle] <- th
+                | _ -> ()
 
         /// Canonicalise a type named by namespace and name: prefer this assembly's own TypeDef, so
         /// that an exception this table names by string and a `catch` clause naming the same type
@@ -280,6 +294,38 @@ module Escape =
                 let calls = ResizeArray<int * MethodDefinitionHandle> ()
                 let opaque = ResizeArray<int> ()
 
+                // The type whose initializer this body *is*, when it is one. Inside it, touching
+                // that same type's statics or calling its own methods cannot trigger the
+                // initializer, because the initializer is the code doing the touching: the CLI
+                // marks the type as initializing and lets the initializing thread straight through
+                // (ECMA-335 I.8.9.5). Without this, a `.cctor` that writes its own fields picks up
+                // `TypeInitialization` from `stsfld`, which then propagates to every call site of
+                // its type -- a cycle the analysis inflicts on itself.
+                let initialisingType =
+                    if pruneSelfInitialisation then
+                        match cctorsOwner.TryGetValue h with
+                        | true, th -> Some th
+                        | _ -> None
+                    else
+                        None
+
+                /// Is this instruction's operand a member of the type this `.cctor` initialises?
+                let touchesOwnType (operand : MetadataOperand) : bool =
+                    match initialisingType, operand with
+                    | None, _ -> false
+                    | Some own, MetadataOperand.FromDynamicScope _ -> false
+                    | Some own, MetadataOperand.FromMetadata t ->
+                        match t.Token with
+                        | MetadataToken.FieldDefinition fh ->
+                            match typeOfField.TryGetValue fh with
+                            | true, th -> th = own
+                            | _ -> false
+                        | MetadataToken.MethodDef mh ->
+                            match typeOfMethod.TryGetValue mh with
+                            | true, th -> th = own
+                            | _ -> false
+                        | _ -> false
+
                 /// Record an operation this instrument cannot see through.
                 let opaqueHere (off : int) (reason : Incompleteness) =
                     bumpReason reason
@@ -298,8 +344,14 @@ module Escape =
                         | _ -> opaqueHere off Incompleteness.UntypedThrow
                     | OpcodeFaults.Raises xs ->
                         if includeImplicit then
+                            let selfInit =
+                                match op with
+                                | IlOp.UnaryMetadataToken (_, operand) -> touchesOwnType operand
+                                | _ -> false
+
                             for x in xs do
-                                raises.Add (off, Some (keyOfQualifiedName (OpcodeFault.typeName x)))
+                                if not (selfInit && x = OpcodeFault.TypeInitialization) then
+                                    raises.Add (off, Some (keyOfQualifiedName (OpcodeFault.typeName x)))
 
                     // 2. What the instruction throws explicitly.
                     match op with

@@ -40,7 +40,13 @@ trusting them if the pin moves.
 * `Census.fs` — counts the raw material: body kinds, `throw` sites and what precedes them, exception
   regions and their clause types, callee token kinds, and MemberRef parents.
 * `Escape.fs` — the interprocedural fixpoint. `Unknown` is the top element, reached at eight named
-  walls, each counted by site.
+  walls, each counted by site. Its `pruneSelfInitialisation` parameter switches on one refinement —
+  a `.cctor` touching its own type does not pick up `TypeInitialization` from doing so — and the
+  driver runs both ways so the size of what it buys is measured rather than assumed.
+* `CctorCensus.fs` — how much of the `TypeInitializationException` load a static checker could
+  discharge: invoking sites classified by whether the target type has an initializer at all, and by
+  whether that initializer can throw. Also names the types whose initializers can, since a
+  percentage is not something a reader can picture.
 * `Driver.fs` — reporting, and the oracle: `fixtureExpectations` states what each fixture method's
   escaping set must be, and the process exits non-zero on any mismatch. A second, smaller table is
   checked against the *sound* run, for the one case that is about an opcode-raised fault the
