@@ -1705,6 +1705,325 @@ module TestDeterministicMath =
         )
         |> reportFailures
 
+    /// Whether `r` really is `x` with its fractional part discarded, decided without reference
+    /// to any other truncation implementation: `r` must be an integer, it must lie on the same
+    /// side of zero as `x` (so it may not have crossed over), it must be no further from zero
+    /// than `x`, and one step further from zero would overshoot — so that no integer nearer to
+    /// `x` would have done. Every double is a dyadic rational, so `BigInteger` settles all four
+    /// exactly.
+    ///
+    /// Note what this deliberately does not see: `atExponent` maps both zeros to 0, so the
+    /// predicate cannot tell `truncate(-0.5) = -0` from `+0` — the sign test below passes
+    /// vacuously for a zero result. That sign is pinned by the special-case table and by the
+    /// bit-for-bit host property instead.
+    let private isTruncationOf (x : float) (r : float) : bool =
+        // One octave below the smallest subnormal, so that every double is an exact integer
+        // count of `2^fixedPoint` and `one` below is representable in the same units.
+        let fixedPoint = -1080
+        let one = BigInteger.One <<< -fixedPoint
+
+        let xFixed = atExponent fixedPoint x
+        let rFixed = atExponent fixedPoint r
+
+        (rFixed % one).IsZero
+        && (rFixed.IsZero || rFixed.Sign = xFixed.Sign)
+        && BigInteger.Abs rFixed <= BigInteger.Abs xFixed
+        && BigInteger.Abs rFixed + one > BigInteger.Abs xFixed
+
+    [<Test>]
+    let ``truncate matches its exact definition`` () : unit =
+        // As for `ceiling`: `roundToIntegralTowardZero` is exact, so there is a single right
+        // answer and it is checked against the definition itself rather than against another
+        // implementation.
+        let property (x : float) : bool =
+            isTruncationOf x (DeterministicMath.truncate x)
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``truncate agrees with the host bit-for-bit`` () : unit =
+        // The host is an exact oracle here rather than a bound, as for `ceiling`: the operation
+        // is exact, so any disagreement at all, including about the sign of a zero, is a bug in
+        // one of the two. The one argument on which the host is *not* an oracle — a signalling
+        // NaN, whose treatment depends on whether the JIT expanded the call — is out of reach of
+        // all three generators, which draw only finite doubles.
+        let property (x : float) : bool =
+            let actual = DeterministicMath.truncate x
+            BitConverter.DoubleToUInt64Bits actual = BitConverter.DoubleToUInt64Bits (Math.Truncate x)
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``truncate is idempotent`` () : unit =
+        // The result is integral, so a second application must change nothing at all — not even
+        // the sign of the zero the first one may have produced.
+        let property (x : float) : bool =
+            let once = DeterministicMath.truncate x
+            let twice = DeterministicMath.truncate once
+            BitConverter.DoubleToUInt64Bits twice = BitConverter.DoubleToUInt64Bits once
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``truncate is odd`` () : unit =
+        // The symmetry that distinguishes rounding towards zero from rounding towards either
+        // infinity: `truncate(-x) = -truncate(x)`, bit-for-bit and so including the signs of the
+        // zeros — `truncate(-0.5)` is -0 and `-truncate(0.5)` is the negation of +0, which is the
+        // same -0. `ceiling` satisfies nothing of the kind, so an implementation that had
+        // borrowed its asymmetry would fail here rather than only on the tables below.
+        let property (x : float) : bool =
+            let negated = DeterministicMath.truncate -x
+            let mirrored = -(DeterministicMath.truncate x)
+            BitConverter.DoubleToUInt64Bits negated = BitConverter.DoubleToUInt64Bits mirrored
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``truncate agrees with ceiling at or below zero`` () : unit =
+        // Rounding towards zero *is* rounding towards positive infinity for a non-positive
+        // argument, so the two in-tree implementations must agree there bit-for-bit — including
+        // on the -0 that both produce from -1 < x < 0. Above zero they may not agree, and the
+        // oddness property above pins that half instead.
+        let property (x : float) : bool =
+            if x > 0.0 then
+                true
+            else
+                BitConverter.DoubleToUInt64Bits (DeterministicMath.truncate x) = BitConverter.DoubleToUInt64Bits (
+                    DeterministicMath.ceiling x
+                )
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``truncate is the identity on doubles that are already integral`` () : unit =
+        // At or above 2^52 in magnitude a double's ulp is at least 1, so it is an integer and
+        // must come back untouched. This is the `exponent >= 0` fast path, which about half of
+        // `genFiniteDouble`'s draws reach; the rest pass vacuously, and are covered by the
+        // properties above instead.
+        let property (x : float) : bool =
+            if abs x < 4503599627370496.0 then
+                true
+            else
+                BitConverter.DoubleToUInt64Bits (DeterministicMath.truncate x) = BitConverter.DoubleToUInt64Bits x
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``truncate moves its argument by less than one, and never away from zero`` () : unit =
+        // The bound a caller actually relies on, stated on its own rather than as a corollary of
+        // the definition above: `0 <= |x| - |truncate x| < 1`, in exact arithmetic so that the
+        // subtraction cannot itself round.
+        let property (x : float) : bool =
+            let fixedPoint = -1080
+            let one = BigInteger.One <<< -fixedPoint
+
+            let difference =
+                BigInteger.Abs (atExponent fixedPoint x)
+                - BigInteger.Abs (atExponent fixedPoint (DeterministicMath.truncate x))
+
+            difference.Sign >= 0 && difference < one
+
+        for generator in [ genFiniteDouble ; genFractionalDouble ; genNearIntegerDouble ] do
+            Check.One (propertyConfig, Prop.forAll (Arb.fromGen generator) property)
+
+    [<Test>]
+    let ``truncate is monotone`` () : unit =
+        // A non-decreasing function of a non-decreasing argument, exactly rather than up to an
+        // error term.
+        let property (a : float, b : float) : bool =
+            let smaller, larger = if a <= b then a, b else b, a
+            DeterministicMath.truncate smaller <= DeterministicMath.truncate larger
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genFiniteDouble genFiniteDouble)) property)
+
+    [<Test>]
+    let ``truncate is a pure function of its argument`` () : unit =
+        let property (x : float) : bool =
+            let first = DeterministicMath.truncate x
+            let second = DeterministicMath.truncate x
+            BitConverter.DoubleToUInt64Bits first = BitConverter.DoubleToUInt64Bits second
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genFiniteDouble) property)
+
+    [<Test>]
+    let ``truncate agrees with the host on a dense sweep`` () : unit =
+        // Quarter-integers either side of zero, which is where the sign rules bite and where a
+        // random draw over a binade would spend nothing at all: every fractional part in sight
+        // is one a generator of uniform mantissas essentially never produces.
+        [ -2000 .. 2000 ]
+        |> List.collect (fun n ->
+            [ -0.75 ; -0.5 ; -0.25 ; 0.0 ; 0.25 ; 0.5 ; 0.75 ]
+            |> List.map (fun offset -> float n + offset)
+        )
+        |> List.choose (fun x ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.truncate x)
+            let host = BitConverter.DoubleToUInt64Bits (Math.Truncate x)
+
+            if actual = host && isTruncationOf x (DeterministicMath.truncate x) then
+                None
+            else
+                Some $"truncate(%.17g{x}): got %016x{actual}, host %016x{host}"
+        )
+        |> reportFailures
+
+    /// `(argument, expected bits)` for a spread of interesting truncation arguments. As for
+    /// `ceilingSpecialCases`, IEEE 754 fixes an answer for every one of them, so these are
+    /// shapes worth pinning rather than exceptions to a rule. Stated in bits so that the sign of
+    /// a zero and the payload of a NaN are pinned rather than compared by an equality that
+    /// ignores them.
+    let private truncateSpecialCases : (float * uint64) list =
+        let ofBits (b : uint64) : float = BitConverter.UInt64BitsToDouble b
+        let bits (v : float) : uint64 = BitConverter.DoubleToUInt64Bits v
+
+        // The last binade in which a double can be non-integral: its ulp is 1/2, so the value
+        // below is exactly representable and is the largest non-integral double there is.
+        let justBelowTwoToThe52 = 4503599627370495.5
+
+        [
+            // Zeros and infinities are integral already and come back with their signs.
+            0.0, bits 0.0
+            -0.0, bits (-0.0)
+            infinity, bits infinity
+            -infinity, bits (-infinity)
+
+            // Everything strictly inside (-1, 1) collapses to a zero, and that zero takes the
+            // *operand's* sign — the one sign rule of this operation an implementation is likely
+            // to get wrong, since the natural integer arithmetic produces a zero with no sign
+            // attached. Both columns are here, because unlike `ceiling` this operation can reach
+            // a zero of either sign from a non-zero argument.
+            Double.Epsilon, bits 0.0
+            1e-320, bits 0.0
+            0.25, bits 0.0
+            0.5, bits 0.0
+            0.75, bits 0.0
+            -Double.Epsilon, bits (-0.0)
+            -1e-320, bits (-0.0)
+            -0.25, bits (-0.0)
+            -0.5, bits (-0.0)
+            -0.75, bits (-0.0)
+
+            // Integers are their own truncation, with no sign surprises.
+            1.0, bits 1.0
+            -1.0, bits (-1.0)
+            2.0, bits 2.0
+            -2.0, bits (-2.0)
+
+            // Ordinary fractional arguments, both signs. The two columns are mirror images,
+            // which is what an implementation built on a floor or on a ceiling gets wrong in
+            // exactly one of them.
+            1.5, bits 1.0
+            -1.5, bits (-1.0)
+            2.5, bits 2.0
+            -2.5, bits (-2.0)
+            123.456, bits 123.0
+            -123.456, bits (-123.0)
+
+            // The boundary of the integral range: 2^52 is the smallest magnitude whose ulp is 1,
+            // and the row below it is the largest non-integral double there is.
+            justBelowTwoToThe52, bits 4503599627370495.0
+            -justBelowTwoToThe52, bits (-4503599627370495.0)
+            4503599627370496.0, bits 4503599627370496.0
+            -4503599627370496.0, bits (-4503599627370496.0)
+
+            // Beyond it nothing can be fractional, right out to the ends of the range.
+            1e300, bits 1e300
+            -1e300, bits (-1e300)
+            Double.MaxValue, bits Double.MaxValue
+            Double.MinValue, bits Double.MinValue
+
+            // A NaN argument comes back with its payload and sign intact, quietened if it was
+            // signalling — which is what `roundsd` and `frintz` do. The quiet rows need no host
+            // exemption; the signalling ones do, because real .NET reaches those instructions
+            // only once the JIT has expanded the call. See the host test below.
+            ofBits 0x7FF8000000000000UL, 0x7FF8000000000000UL
+            ofBits 0xFFF8000000000000UL, 0xFFF8000000000000UL
+            ofBits 0x7FF8000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF8000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000123UL, 0x7FF8000000000123UL
+            ofBits 0xFFF0000000000123UL, 0xFFF8000000000123UL
+            ofBits 0x7FF0000000000001UL, 0x7FF8000000000001UL
+        ]
+
+    [<Test>]
+    let ``the truncate special cases satisfy the exact definition`` () : unit =
+        // Keeps the table above honest independently of `truncate`, so that a mistyped constant
+        // fails whatever the implementation does. Covers every finite row; the infinities and
+        // NaNs have no integer to compare against and are pinned by the table alone.
+        truncateSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let result = BitConverter.UInt64BitsToDouble expected
+
+            if Double.IsNaN x || Double.IsInfinity x then
+                None
+            elif isTruncationOf x result then
+                None
+            else
+                Some
+                    $"the table's truncate(%.17g{x}) = %016x{expected} is not the nearest integer to it on the zero side"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``truncate matches the IEEE 754 special cases`` () : unit =
+        truncateSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let actual = BitConverter.DoubleToUInt64Bits (DeterministicMath.truncate x)
+
+            if actual = expected then
+                None
+            else
+                Some $"truncate(%.17g{x}): expected bits %016x{expected}, got %016x{actual}"
+        )
+        |> reportFailures
+
+    [<Test>]
+    let ``the host agrees about the truncate special cases`` () : unit =
+        // Unlike `ceiling`, this one needs a latitude — and for a reason peculiar to
+        // `Math.Truncate`, which is that real .NET has *two* implementations of it and they
+        // disagree. The JIT expands the call to `frintz`/`roundsd`, which quietens a signalling
+        // NaN as IEEE 754 requires; but under MinOpts, and at tier 0, the expansion does not
+        // happen and the managed body runs instead, reaching the platform C library's `modf` —
+        // which on Apple's libm hands a signalling NaN straight back. So the host's answer here
+        // depends on how the *call site* was compiled, which is not a property of the argument
+        // at all.
+        //
+        // Measured: over the twelve NaN shapes, the twenty-eight named special values, 28 007
+        // quarter-integers and two million pseudorandom bit patterns, the JIT-expanded and
+        // managed routes differ on the six signalling NaNs and on nothing else. That is what
+        // this exemption admits, and no more.
+        //
+        // PawPrint follows the instruction the JIT emits, which is also what `ceiling`, `floor`
+        // and `round` all do on every route, so the `expected` column stays the quietened one.
+        let permittedFor (x : float) (expected : uint64) : uint64 list =
+            if
+                Double.IsNaN x
+                && BitConverter.DoubleToUInt64Bits x &&& 0x0008000000000000UL = 0UL
+            then
+                // A signalling NaN: the un-expanded route returns the argument unchanged.
+                [ expected ; BitConverter.DoubleToUInt64Bits x ]
+            else
+                [ expected ]
+
+        truncateSpecialCases
+        |> List.choose (fun (x, expected) ->
+            let host = BitConverter.DoubleToUInt64Bits (Math.Truncate x)
+            let permitted = permittedFor x expected
+
+            if List.contains host permitted then
+                None
+            else
+
+            let permitted = permitted |> List.map (sprintf "%016x") |> String.concat " or "
+
+            Some $"host truncate(%.17g{x}): expected bits {permitted}, got %016x{host}"
+        )
+        |> reportFailures
+
     /// Whether `r` really is the integral value nearest to `x` with ties going to the even one,
     /// decided without reference to any other rounding implementation: `r` must be an integer,
     /// no other integer may be strictly nearer to `x`, and where `r` is exactly half a unit away

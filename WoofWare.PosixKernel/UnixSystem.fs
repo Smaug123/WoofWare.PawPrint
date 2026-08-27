@@ -313,6 +313,55 @@ module PWriteRefusal =
             // from the description's offset, so it says the same sentence.
             WriteRefusal.describeExceedsRepresentableLength inode offset count
 
+/// What kind of object one directory entry names.
+///
+/// Not `InodeContent`, which carries the payload as well — a caller enumerating
+/// a directory is owed the *type* of each entry and nothing else, and handing it
+/// the bytes of every file in the directory would be a different API. Not
+/// `fileTypeBits` either: that is the `S_IFMT` numbering `stat` reports, where
+/// `readdir` has its own (`DT_REG` and friends), and the two are not the same
+/// numbers. A client encodes whichever its own struct wants.
+[<RequireQualifiedAccess>]
+type DirectoryEntryKind =
+    | RegularFile
+    | Directory
+    | Symlink
+
+[<RequireQualifiedAccess>]
+module DirectoryEntryKind =
+    /// What kind of entry a directory binding onto this content is.
+    let ofContent (content : InodeContent) : DirectoryEntryKind =
+        match content with
+        | InodeContent.RegularFile _ -> DirectoryEntryKind.RegularFile
+        | InodeContent.Directory _ -> DirectoryEntryKind.Directory
+        | InodeContent.Symlink _ -> DirectoryEntryKind.Symlink
+
+/// What `opendir(3)` answers.
+[<RequireQualifiedAccess>]
+type OpenDirAnswer =
+    /// The stream to pass back to `readdir` and `closedir`.
+    ///
+    /// A minted identity rather than an address: a real `opendir` answers a
+    /// `DIR*`, which is a pointer into the caller's own address space, and this
+    /// kernel has no addresses. A client that hands its caller a pointer keeps
+    /// the mapping from that pointer to this identity.
+    | Opened of stream : DirectoryStreamId
+    /// The call returns NULL and the caller stores `error` wherever its libc
+    /// keeps errno.
+    | Failed of error : UnixError
+
+/// One entry of a directory stream, as facts rather than as a `struct dirent`.
+[<RequireQualifiedAccess>]
+type ReadDirAnswer =
+    /// The stream is exhausted. A real `readdir` answers NULL, and leaves errno
+    /// alone — which is why the C zeroes it before the call, so that it can tell
+    /// this from a failure afterwards.
+    | EndOfStream
+    /// `name` is the bytes `readdir(3)` puts in `d_name`, without a terminator:
+    /// terminating is the client's business, its buffer being the one with a
+    /// size. `.` and `..` are entries like any other and are reported here.
+    | Entry of name : ImmutableArray<byte> * kind : DirectoryEntryKind
+
 /// What a caller asked `open(2)` for, as facts about the open rather than as a
 /// bit pattern.
 ///
@@ -2692,6 +2741,109 @@ module UnixSystem =
             | InodeContent.Symlink _ -> system
 
         opened inode system
+
+    /// `opendir(3)`: resolve `path` and start a stream over the directory it
+    /// names.
+    ///
+    /// Answers a minted `DirectoryStreamId`, not a `DIR*`: see
+    /// `OpenDirAnswer.Opened`. A client that materialises a pointer for its
+    /// caller records the mapping itself, and must, because
+    /// `VirtualFileSystem.checkInvariants` refuses a state in which the two
+    /// disagree.
+    ///
+    /// Consumes a descriptor, which `dirfd(3)` would hand back. Nothing in the
+    /// PAL calls `dirfd`, so a caller can only see it in the numbering of a
+    /// later `open` -- which is enough to make it observable, and is why the
+    /// stream takes a real descriptor rather than living beside the table. It is
+    /// also what pins the directory's inode while the stream is open.
+    ///
+    /// Never refused: every outcome is a stream or an errno.
+    let opendir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : OpenDirAnswer * UnixSystem<'Task, 'Handler>
+        =
+        // `Follow`, and a trailing separator that merely records its demand:
+        // measured on both kernels, `opendir` follows a final symlink and a
+        // trailing separator changes no row at all -- "ld" and "ld/" both
+        // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
+        // `TrailingSeparatorDemanded`, because a directory is demanded outright
+        // whether the separator was there or not.
+        match resolvePathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand path system with
+        | Error error -> OpenDirAnswer.Failed error, system
+        | Ok resolution ->
+
+        match
+            OpenDirRules.verdict (UnixProcessState.callerPrivilege system.Process) resolution system.Machine.FileSystem
+        with
+        | OpenDirVerdict.Refuse error -> OpenDirAnswer.Failed error, system
+        | OpenDirVerdict.Open inode ->
+
+        let fd, registry =
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly system.Process.FileDescriptors
+
+        let id = system.Process.NextDirectoryStreamId
+        let (DirectoryStreamId raw) = id
+
+        let stream : DirectoryStream =
+            {
+                Fd = fd
+                Inode = inode
+                Cursor = DirectoryCursor.Start
+            }
+
+        OpenDirAnswer.Opened id,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                    DirectoryStreams = Map.add id stream system.Process.DirectoryStreams
+                    NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
+                }
+        }
+
+    /// `readdir(3)`: hand back the next entry of `stream` and advance it.
+    ///
+    /// Total: there is no failure arm, because the cursor walk always has an
+    /// answer and a stream this kernel never issued is a caller bug rather than
+    /// an errno -- a real libc calls that undefined behaviour, so there is no
+    /// errno to report.
+    let readdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (stream : DirectoryStreamId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadDirAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let current =
+            match Map.tryFind stream system.Process.DirectoryStreams with
+            | Some current -> current
+            | None ->
+                failwith
+                    $"UnixSystem.readdir: %O{stream} is not a directory stream this kernel issued. A real libc calls passing an unissued DIR* undefined behaviour rather than reporting an errno, so there is nothing to answer (this is a bug in the caller)."
+
+        match VirtualFileSystem.nextDirectoryEntry current.Inode current.Cursor system.Machine.FileSystem with
+        | None -> ReadDirAnswer.EndOfStream, system
+        | Some (name, target, next) ->
+
+        let kind =
+            match VirtualFileSystem.tryGetContent target system.Machine.FileSystem with
+            | Some content -> DirectoryEntryKind.ofContent content
+            | None ->
+                failwith
+                    $"UnixSystem.readdir: the entry \"%s{name.ToString ()}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        ReadDirAnswer.Entry (ImmutableArray.CreateRange (UnixPathText.utf8.GetBytes (name.ToString ())), kind),
+        { system with
+            Process =
+                { system.Process with
+                    DirectoryStreams =
+                        Map.add
+                            stream
+                            { current with
+                                Cursor = next
+                            }
+                            system.Process.DirectoryStreams
+                }
+        }
 
     /// `mkdir(2)`: bind a new directory at `path`.
     ///

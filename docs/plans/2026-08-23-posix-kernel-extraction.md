@@ -2608,8 +2608,8 @@ Ordered so that each has an oracle before the next depends on it.
   0o0755 on both kernels, so a bit above the permission word is dropped rather
   than refused.
 
-* **8l — `opendir` and `readdir`**, split out of the old 8k for the reason given
-  there. Their own question was where the directory stream lives: PawPrint
+* **8l — `opendir` and `readdir`** (done), split out of the old 8k for the
+  reason given there. Their own question was where the directory stream lives: PawPrint
   materialises the `DIR*` as guest memory whose address *is* the handle, and the
   `d_name` buffer inside it is sized by an ABI constant — so the stream's
   identity and its bytes look to be on different sides of the boundary, which
@@ -2626,8 +2626,30 @@ Ordered so that each has an oracle before the next depends on it.
   Linux and 255 UTF-16 code units (at most 765 bytes) on Darwin.
 
   So `readdir` returns a name, an inode type and a new cursor, and PawPrint owns
-  the blob exactly as it owns `getcwd`'s destination. That is a reading rather
-  than a verdict; the increment confirms it or reports otherwise.
+  the blob exactly as it owns `getcwd`'s destination. **The increment confirmed
+  it**: nothing had to be arranged that stage 8's other syscalls had not already
+  arranged.
+
+  What the code did add is a small vocabulary, `DirectoryEntryKind`, because
+  neither of the two obvious types would do. `InodeContent` carries the payload,
+  and a caller enumerating a directory is owed each entry's *type* rather than
+  the bytes of every file in it; `fileTypeBits` is the `S_IFMT` numbering `stat`
+  reports, where `readdir` has its own (`DT_REG` and friends) and the two are
+  different numbers. So the kind crosses as a kind and each client encodes
+  whichever its own struct wants — the same shape the `open` flags settled on,
+  arrived at from the other direction.
+
+  `EmulatedKernel.withNewDirectoryStream` becomes `withDirectoryStreamBlock`:
+  opening a stream is now two steps, the library minting the identity and the
+  client binding its address to it. That is the split this increment is, and it
+  is the machine that holds it rather than discipline —
+  `checkInvariants` already refuses a state in which the two maps disagree in
+  either direction, so a client that took only one of the steps is caught.
+
+  `closedir` stays where it is. It already delegates to `UnixSystem.close` and
+  `UnixSystem.forgetIfUnheld`; what is left of it is block bookkeeping and the
+  ordering that reaps a directory whose last name went while a stream held it,
+  which is client-side by the same rule.
 * **8m — `getcwd`** (done), and then **`readlink` and `getsockname`**. These
   three appear in the census table and had no home in the first draft of this
   list, which is a drafting failure the census itself should have caught: an
