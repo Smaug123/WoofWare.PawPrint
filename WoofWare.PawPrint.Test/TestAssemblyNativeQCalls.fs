@@ -11,14 +11,19 @@ open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
-/// Tests for the QCalls behind `Assembly.GetName()`. Most are answered from a column of the
+/// Tests for the `AssemblyNative_*` QCalls that answer questions about an assembly's own
+/// manifest. Most of those behind `Assembly.GetName()` are answered from a column of the
 /// manifest's single `Assembly` metadata row; the `ModuleHandle_*` ones are keyed by the
-/// manifest module instead and read the image's headers rather than that row.
+/// manifest module instead and read the image's headers rather than that row; and
+/// `AssemblyNative_GetModules` reads the `File` table.
 ///
-/// There is no end-to-end guest coverage yet: `Assembly.GetName()` is the only managed
-/// caller a guest can reach, and it needs nine runtime primitives in sequence, so it stays
-/// parked until the last of them lands (see `sourcesPure/AssemblyGetNameSimpleName.cs`,
-/// whose comment enumerates them). These tests pin each one as it arrives.
+/// `Assembly.GetName()` has no end-to-end guest coverage yet: it is the only managed caller a
+/// guest can reach for that family, and it needs nine runtime primitives in sequence, so it
+/// stays parked until the last of them lands (see `sourcesPure/AssemblyGetNameSimpleName.cs`,
+/// whose comment enumerates them). These tests pin each one as it arrives. `GetModules` is not
+/// in that position — `sourcesPure/AssemblyGetModules.cs` runs it end to end — so what is here
+/// for it is what a guest cannot reach: the `File`-row refusal, which needs an image no
+/// single-source guest can be compiled into.
 [<TestFixture>]
 module TestAssemblyNativeQCalls =
 
@@ -871,6 +876,66 @@ public static class StreamVersionLibrary
         : IlMachineState * ManagedHeapAddress option
         =
         invokeStringQCall loggerFactory prepared "AssemblyNative_GetSimpleName" state assemblyFullName
+
+    /// Runs `AssemblyNative_GetModules` for `assemblyFullName` and returns the heap address the
+    /// handler wrote into the `ObjectHandleOnStack` (None if it left the slot at null).
+    ///
+    /// The two flags are the `[MarshalAs(UnmanagedType.Bool)] bool` parameters as the
+    /// `LibraryImport` stub passes them on, i.e. already lowered to 0/1 `Int32`s.
+    let private invokeGetModules
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullName : string)
+        (loadIfNotFound : bool)
+        (getResourceModules : bool)
+        : IlMachineState * ManagedHeapAddress option
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let qCallAssembly, state =
+            qCallAssemblyValue loggerFactory baseClassTypes assemblyFullName state
+
+        let objectHandle, target, state =
+            objectHandleOnStackValue loggerFactory baseClassTypes state
+
+        let flag (b : bool) : CliType =
+            CliType.Numeric (CliNumericType.Int32 (if b then 1 else 0))
+
+        let state =
+            invokeQCall
+                loggerFactory
+                prepared
+                runtimeAssembly
+                "AssemblyNative_GetModules"
+                [ qCallAssembly ; flag loadIfNotFound ; flag getResourceModules ; objectHandle ]
+                state
+
+        let written =
+            match IlMachineState.readManagedByref baseClassTypes state target with
+            | CliType.ObjectRef maybeAddr -> maybeAddr
+            | other -> failwith $"expected ObjectHandleOnStack target to contain an object ref, got %O{other}"
+
+        state, written
+
+    /// The single element of the array `AssemblyNative_GetModules` wrote, failing if the handler
+    /// left the slot null or produced anything other than a one-element array.
+    let private soleModule
+        (state : IlMachineState)
+        (written : ManagedHeapAddress option)
+        : ManagedHeapAddress * ManagedHeapAddress
+        =
+        let arrayAddr =
+            written
+            |> Option.defaultWith (fun () -> failwith "handler left the ObjectHandleOnStack at null")
+
+        let shape = ManagedHeap.getArrayShape arrayAddr state.ManagedHeap
+
+        shape.Length |> shouldEqual 1
+
+        match ManagedHeap.getArrayValue arrayAddr 0 state.ManagedHeap with
+        | CliType.ObjectRef (Some moduleAddr) -> arrayAddr, moduleAddr
+        | other -> failwith $"expected a module reference in element 0, got %O{other}"
 
     /// Runs `AssemblyNative_GetPublicKey` for `assemblyFullName` and returns the heap address
     /// the handler wrote into the `ObjectHandleOnStack` (None if it left the slot at null).
@@ -2575,3 +2640,212 @@ public static class StreamVersionLibrary
                 )
 
             exn.Message |> shouldContainText "public key"
+
+    /// A `ResourceDescription` naming a separate file, which Roslyn emits as a `File` table row
+    /// (plus a `ManifestResource` row pointing at it) rather than as bytes in the image. That row
+    /// is the only thing on which `AssemblyNative_GetModules`' two flags are distinguishable.
+    let private linkedResource
+        (resourceName : string)
+        (fileName : string)
+        (resourceBytes : byte array)
+        : ResourceDescription
+        =
+        ResourceDescription (
+            resourceName,
+            fileName,
+            System.Func<Stream> (fun () -> new MemoryStream (resourceBytes) :> Stream),
+            true
+        )
+
+    [<Test>]
+    let ``GetModules answers with the manifest module alone`` () : unit =
+        // CoreCLR appends `pAssembly->GetModule()` and can never append anything else:
+        // `ModuleBase::LoadModule` (vm/ceeload.cpp:2543) throws for every `File` row it is handed,
+        // and a single-source guest has no such rows.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        // The oracle is deliberately taken *before* the call: it is the same expression the
+        // handler uses, so priming its cache first is what makes a handler that mints a fresh
+        // `RuntimeModule` per call fail here rather than agree with itself. The genuine
+        // cross-surface claim — that this is the object `Assembly.ManifestModule` reports — is
+        // pinned by the guest `sourcesPure/AssemblyGetModules.cs`, which this cannot see.
+        let expectedModule, state =
+            NativeRuntimeType.getOrAllocateRuntimeModule
+                loggerFactory
+                prepared.BaseClassTypes
+                guest.DefinitionFullName
+                prepared.State
+
+        let state, written =
+            invokeGetModules loggerFactory prepared state guest.Name.FullName true false
+
+        let _arrayAddr, moduleAddr = soleModule state written
+        moduleAddr |> shouldEqual expectedModule
+
+    [<Test>]
+    let ``GetModules allocates a RuntimeModule array`` () : unit =
+        // `AllocateObjectArray(..., CoreLibBinder::GetClass(CLASS__MODULE))`, and `CLASS__MODULE`
+        // is `RuntimeModule` (vm/corelib.h:615) — not the `Module` that the public
+        // `Assembly.GetModules(bool)` return type would suggest, and not `object`. A guest can see
+        // the difference through `GetType().GetElementType()`.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, written =
+            invokeGetModules loggerFactory prepared prepared.State guest.Name.FullName true false
+
+        let arrayAddr, _moduleAddr = soleModule state written
+
+        let runtimeModuleType =
+            requiredTopLevelType prepared.BaseClassTypes.Corelib "System.Reflection" "RuntimeModule"
+
+        let runtimeModuleHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes runtimeModuleType
+
+        (ManagedHeap.getArrayShape arrayAddr state.ManagedHeap).ConcreteType
+        |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero runtimeModuleHandle)
+
+    [<Test>]
+    let ``GetModules gives the same answer for every flag combination on a single-file assembly`` () : unit =
+        // Cheap, and it catches a handler that refuses outright on some flag value — but note
+        // what it cannot do: with no `File` rows the four cells are indistinguishable by
+        // construction, so on its own this says nothing about whether either flag is *read*
+        // correctly. That claim lives on the linked-resource fixture below.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let mutable state = prepared.State
+        let mutable seen = []
+
+        for loadIfNotFound in [ true ; false ] do
+            for getResourceModules in [ true ; false ] do
+                let next, written =
+                    invokeGetModules loggerFactory prepared state guest.Name.FullName loadIfNotFound getResourceModules
+
+                let _arrayAddr, moduleAddr = soleModule next written
+                state <- next
+                seen <- moduleAddr :: seen
+
+        seen |> List.distinct |> List.length |> shouldEqual 1
+
+    [<Test>]
+    let ``GetModules allocates a fresh array holding a stable element`` () : unit =
+        // CoreCLR allocates the array inside the QCall, so every call hands the guest a new one;
+        // but `GetExposedObject()` is cached on the module, so the element does not change. A
+        // guest can tell both apart with `ReferenceEquals`.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        let state, first =
+            invokeGetModules loggerFactory prepared prepared.State guest.Name.FullName true false
+
+        let firstArray, firstModule = soleModule state first
+
+        let state, second =
+            invokeGetModules loggerFactory prepared state guest.Name.FullName true false
+
+        let secondArray, secondModule = soleModule state second
+
+        secondArray |> shouldNotEqual firstArray
+        secondModule |> shouldEqual firstModule
+
+    [<Test>]
+    let ``GetModules refuses an assembly that is not loaded`` () : unit =
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                invokeGetModules
+                    loggerFactory
+                    prepared
+                    prepared.State
+                    "NotLoaded, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null"
+                    true
+                    false
+                |> ignore<IlMachineState * ManagedHeapAddress option>
+            )
+
+        exn.Message |> shouldContainText "is not loaded"
+
+    [<Test>]
+    let ``GetModules refuses a File row exactly when loadIfNotFound is set`` () : unit =
+        // The one input on which the two flags are distinguishable at all, so it is here that
+        // both get swept rather than on the single-file fixture above.
+        //
+        // Measured against real .NET on an assembly built with `<LinkResource Include="..."/>`:
+        // `GetModules()` — i.e. `getResourceModules` *false* — throws `FileLoadException` naming
+        // the linked file, and `GetLoadedModules()` returns one module. So `getResourceModules`
+        // is no escape from a resource-only `File` row, which is what CoreCLR's function body
+        // says too: it never reads that parameter.
+        //
+        // PawPrint refuses rather than reproducing that exception. Its `FileName` is the *row's*
+        // name and its `HResult` is 0x8013101E, neither of which a native handler's raise
+        // machinery can set — it calls the parameterless ctor and overwrites only the message.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let fileName = "GetModulesLinkedPayload.resources"
+
+        let image =
+            Roslyn.compileAssemblyWithResources
+                guestAssemblyName
+                OutputKind.ConsoleApplication
+                []
+                [
+                    linkedResource "PawPrint.GetModulesLinkedPayload.bin" fileName [| 0x11uy ; 0x22uy ; 0x33uy |]
+                ]
+                [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+        let guest = prepared.State.ActiveAssembly prepared.EntryThread
+
+        for getResourceModules in [ true ; false ] do
+            let exn =
+                Assert.Throws<System.Exception> (fun () ->
+                    invokeGetModules loggerFactory prepared prepared.State guest.Name.FullName true getResourceModules
+                    |> ignore<IlMachineState * ManagedHeapAddress option>
+                )
+
+            exn.Message |> shouldContainText fileName
+            exn.Message |> shouldContainText "loadIfNotFound was set"
+
+        // `loadIfNotFound` false is the `GetLoadedModules` path, whose loop body CoreCLR skips
+        // entirely — so the very same image answers normally. Without this half, a handler that
+        // refuses on any `File` row survives, and `GetLoadedModules` would be broken on exactly
+        // the assemblies it is documented to work on.
+        for getResourceModules in [ true ; false ] do
+            let state, written =
+                invokeGetModules loggerFactory prepared prepared.State guest.Name.FullName false getResourceModules
+
+            soleModule state written |> ignore<ManagedHeapAddress * ManagedHeapAddress>
