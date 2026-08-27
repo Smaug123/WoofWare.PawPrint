@@ -1,5 +1,4 @@
-warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 199ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 165ms
 methods: 4067 (IL bodies: 3975, 97.7%)
 
 -- body kinds --
@@ -51,7 +50,7 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
   TypeRef nested in a TypeRef                        7
 
 -- implicit (opcode-raised) exception site counts --
-  System.TypeInitializationException             18330
+  System.TypeInitializationException             24761
   System.NullReferenceException                  12340
   System.OutOfMemoryException                     2197
   System.InvalidCastException                      229
@@ -76,7 +75,7 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
   System.ObjectDisposedException                               2
   System.OperationCanceledException                            2
 
-escape analysis (implicit on) took 169ms
+escape analysis (implicit on) took 155ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 11
@@ -84,7 +83,7 @@ methods: 4067
   provably throws nothing:               114    2.8%
   exact non-empty escaping set:          601   14.8%
   Unknown (analysis envelope hit):      3352   82.4%
-  escaping-set size (exact answers): median 1, p90 1, max 6
+  escaping-set size (exact answers): median 1, p90 2, max 6
   incompleteness reasons (site counts):
     ForeignCallee                6805
     VirtualCall                  3282
@@ -123,7 +122,7 @@ methods: 4067
   provably throws nothing:               114    2.8%
   exact non-empty escaping set:          601   14.8%
   Unknown (analysis envelope hit):      3352   82.4%
-  escaping-set size (exact answers): median 1, p90 1, max 5
+  escaping-set size (exact answers): median 1, p90 2, max 5
   incompleteness reasons (site counts):
     ForeignCallee                6805
     VirtualCall                  3282
@@ -162,7 +161,7 @@ methods: 4067
   provably throws nothing:               117    2.9%
   exact non-empty escaping set:          598   14.7%
   Unknown (analysis envelope hit):      3352   82.4%
-  escaping-set size (exact answers): median 1, p90 1, max 4
+  escaping-set size (exact answers): median 1, p90 2, max 4
   incompleteness reasons (site counts):
     ForeignCallee                6805
     VirtualCall                  3282
@@ -195,7 +194,7 @@ types: 378, of which 40 have a .cctor
   System.Text.Json.JsonHelpers                             System.TypeInitializationException
   System.Text.Json.Utf8JsonWriter                          System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
 
-escape analysis (implicit off) took 43ms
+escape analysis (implicit off) took 41ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 9

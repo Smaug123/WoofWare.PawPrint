@@ -1,5 +1,4 @@
-warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 71ms
+read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 84ms
 methods: 22 (IL bodies: 22, 100.0%)
 
 -- body kinds --
@@ -32,7 +31,7 @@ throw sites: 3 ; rethrow sites: 1 ; call sites: 23 ; indirect transfers: 0
   TypeRef scoped to an AssemblyRef                  20
 
 -- implicit (opcode-raised) exception site counts --
-  System.TypeInitializationException                27
+  System.TypeInitializationException                28
   System.OutOfMemoryException                        7
   System.NullReferenceException                      4
   unmodelled opcode                                  1

@@ -1,5 +1,4 @@
-warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1263ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Private.CoreLib.dll in 1033ms
 methods: 41561 (IL bodies: 39466, 95.0%)
 
 -- body kinds --
@@ -65,7 +64,7 @@ throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers:
   TypeSpec (an instantiation)                     8214
 
 -- implicit (opcode-raised) exception site counts --
-  System.TypeInitializationException            121520
+  System.TypeInitializationException            154544
   System.NullReferenceException                  77337
   System.OutOfMemoryException                    24722
   System.IndexOutOfRangeException                 2951
@@ -90,7 +89,7 @@ throw sites: 8704 ; rethrow sites: 41 ; call sites: 117535 ; indirect transfers:
   System.BadImageFormatException                              49
   System.IndexOutOfRangeException                             36
 
-escape analysis (implicit on) took 2033ms
+escape analysis (implicit on) took 1739ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 23
@@ -162,7 +161,7 @@ methods: 41561
   provably throws nothing:              6281   15.1%
   exact non-empty escaping set:         4383   10.5%
   Unknown (analysis envelope hit):     30897   74.3%
-  escaping-set size (exact answers): median 0, p90 1, max 7
+  escaping-set size (exact answers): median 0, p90 2, max 7
   incompleteness reasons (site counts):
     GenericInstantiation        34720
     VirtualCall                 17021
@@ -192,9 +191,9 @@ types: 2759, of which 275 have a .cctor
 
 -- what the throwing .cctors carry (exact answers only) --
       71  System.OutOfMemoryException
-       9  System.NullReferenceException, System.OutOfMemoryException
+      11  System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
        7  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException
-       7  System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
+       5  System.NullReferenceException, System.OutOfMemoryException
        4  System.TypeInitializationException
        2  System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
        2  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
@@ -202,11 +201,11 @@ types: 2759, of which 275 have a .cctor
        1  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.InvalidCastException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
        1  System.InvalidCastException, System.NullReferenceException, System.TypeInitializationException
        1  System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
-       1  System.NullReferenceException
+       1  System.NullReferenceException, System.TypeInitializationException
 
 -- types whose initializer can throw: 110 in all, 61 of them hand-written --
   System.Array+EmptyArray`1                                System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
-  System.AttributeUsageAttribute                           System.NullReferenceException, System.OutOfMemoryException
+  System.AttributeUsageAttribute                           System.NullReferenceException, System.OutOfMemoryException, System.TypeInitializationException
   System.Boolean                                           System.OutOfMemoryException
   System.Collections.ArrayList+ArrayListEnumeratorSimple   System.OutOfMemoryException
   System.Collections.BitArray+BitArrayEnumeratorSimple     System.OutOfMemoryException
@@ -228,7 +227,7 @@ methods: 41561
   provably throws nothing:              6382   15.4%
   exact non-empty escaping set:         4282   10.3%
   Unknown (analysis envelope hit):     30897   74.3%
-  escaping-set size (exact answers): median 0, p90 1, max 6
+  escaping-set size (exact answers): median 0, p90 2, max 6
   incompleteness reasons (site counts):
     GenericInstantiation        34720
     VirtualCall                 17021
@@ -257,10 +256,10 @@ types: 2759, of which 275 have a .cctor
     ...of which NOT beforefieldinit           5
 
 -- what the throwing .cctors carry (exact answers only) --
-      10  System.NullReferenceException
+      12  System.NullReferenceException, System.TypeInitializationException
        7  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
-       7  System.NullReferenceException, System.TypeInitializationException
        5  System.TypeInitializationException
+       5  System.NullReferenceException
        2  System.OverflowException, System.TypeInitializationException
        2  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException, System.TypeInitializationException
        2  System.OverflowException
@@ -271,7 +270,7 @@ types: 2759, of which 275 have a .cctor
 
 -- types whose initializer can throw: 39 in all, 39 of them hand-written --
   System.Array+EmptyArray`1                                System.OverflowException, System.TypeInitializationException
-  System.AttributeUsageAttribute                           System.NullReferenceException
+  System.AttributeUsageAttribute                           System.NullReferenceException, System.TypeInitializationException
   System.Collections.Generic.List`1                        System.OverflowException, System.TypeInitializationException
   System.Convert                                           System.TypeInitializationException
   System.DateTimeOffset                                    System.NullReferenceException, System.TypeInitializationException
@@ -287,7 +286,7 @@ types: 2759, of which 275 have a .cctor
   System.IO.Path                                           System.OverflowException
   System.IO.Stream                                         System.TypeInitializationException
 
-escape analysis (implicit off) took 658ms
+escape analysis (implicit off) took 580ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 20

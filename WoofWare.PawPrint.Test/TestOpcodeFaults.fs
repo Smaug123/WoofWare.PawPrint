@@ -174,8 +174,20 @@ module TestOpcodeFaults =
 
     /// A static-field access can surface a failed `.cctor`; an instance-field access cannot,
     /// having no `.cctor` to run.
+    /// Every field-accessing instruction carries the `.cctor`, including the three that take a
+    /// receiver: ECMA-335 III.4.10, III.4.11 and III.4.28 each permit their token to name a
+    /// *static* field, and each says so twice over — once in the description ("can be either an
+    /// instance field ... or a static field") and once by conditioning the null check on it
+    /// ("thrown if obj is null *and the field is not static*"). A static-field access triggers the
+    /// initializer whichever instruction performs it (I.8.9.5), so the receiver is what
+    /// distinguishes these six, and the `.cctor` is not.
+    ///
+    /// PawPrint's own interpreter refuses a static target on the receiver-taking three
+    /// (`UnaryMetadataFieldOps.checkFieldStaticness`), so no guest can reach that fault and no
+    /// guest test can pin this. That is precisely why it is asserted here: the table's consumers
+    /// include analyses over assemblies PawPrint has never run.
     [<Test>]
-    let ``static field access can surface a failed cctor and instance access cannot`` () : unit =
+    let ``every field access carries the cctor, and only the receiver-taking ones dereference`` () : unit =
         for op in
             [
                 UnaryMetadataTokenIlOp.Ldsfld
@@ -192,7 +204,12 @@ module TestOpcodeFaults =
                 UnaryMetadataTokenIlOp.Stfld
             ] do
             OpcodeFaults.ofUnaryMetadata op
-            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ])
+            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.TypeInitialization ])
+
+        // `ldtoken` can name a field without accessing it, so nothing is initialized. This is the
+        // arm that stops the rule above being read as "anything naming a field".
+        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Ldtoken
+        |> shouldEqual (OpcodeFaults.Raises [])
 
     /// What a *target* raises is the call graph's business, not this table's — but two things an
     /// invoking instruction does are its own, and neither travels by the call edge.

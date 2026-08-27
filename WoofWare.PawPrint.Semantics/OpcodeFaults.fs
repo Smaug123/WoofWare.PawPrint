@@ -27,8 +27,9 @@ type OpcodeFault =
     | OutOfMemory
     /// `System.StackOverflowException`.
     | StackOverflow
-    /// `System.TypeInitializationException`, from a `.cctor` that a static-field access triggered
-    /// and that threw.
+    /// `System.TypeInitializationException`, from a `.cctor` that threw. Triggered by a
+    /// static-field access or by an invocation, per ECMA-335 I.8.9.5 — so it is not confined to the
+    /// instructions that name a static field.
     | TypeInitialization
 
 /// What performing one instruction can raise by itself.
@@ -347,9 +348,21 @@ module OpcodeFaults =
         // the declaring type's `.cctor` first does not, for the reason given against `call` below.
         | UnaryMetadataTokenIlOp.Newobj ->
             OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ; OpcodeFault.TypeInitialization ]
+        // The three field instructions that take a receiver may name a *static* field, and then
+        // they are a static-field access like `ldsfld`, with a `.cctor` to trigger. ECMA-335
+        // III.4.10, III.4.11 and III.4.28 each say the field "can be either an instance field ...
+        // or a static field", and each conditions the null check on it: "NullReferenceException is
+        // thrown if obj is null *and the field is not static*". `stfld`'s verifiability clause
+        // admits the shape too, so it is not merely correct CIL but verifiable CIL.
+        //
+        // PawPrint's interpreter refuses this shape rather than implementing it
+        // (`UnaryMetadataFieldOps.checkFieldStaticness`), so it never raises this itself. That does
+        // not licence dropping the entry: this table says what the *instruction* can raise, and it
+        // is read by analyses over assemblies PawPrint has never run.
         | UnaryMetadataTokenIlOp.Ldfld
         | UnaryMetadataTokenIlOp.Ldflda
-        | UnaryMetadataTokenIlOp.Stfld
+        | UnaryMetadataTokenIlOp.Stfld ->
+            OpcodeFaults.Raises [ OpcodeFault.NullReference ; OpcodeFault.TypeInitialization ]
         | UnaryMetadataTokenIlOp.Ldvirtftn
         | UnaryMetadataTokenIlOp.Initobj
         | UnaryMetadataTokenIlOp.Stobj
