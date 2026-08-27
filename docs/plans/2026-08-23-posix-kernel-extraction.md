@@ -2613,7 +2613,7 @@ Ordered so that each has an oracle before the next depends on it.
   `d_name` buffer inside it is sized by an ABI constant — so the stream's
   identity and its bytes are on different sides of the boundary, which none of
   stage 8's other syscalls has had to arrange.
-* **8l — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
+* **8m — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
   table and had no home in the first draft of this list, which is a drafting
   failure the census itself should have caught: an increment list that does not
   partition its own table is not a plan. All three are destination-buffer
