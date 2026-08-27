@@ -1606,6 +1606,199 @@ module TestUnixSystemStep =
             ] do
             FStatRefusal.describe refusal |> shouldNotContainText "SystemNative"
 
+    // ------------------------------------------------------------ stat / lstat
+
+    let private statPath (candidate : string) : UnixPath = UnixPath.parseOrFail context candidate
+
+    /// A system holding `/d/inner`, a file `/d/inner/t`, and a symbolic link
+    /// `/l -> /d/inner/t`. Enough to tell `stat` from `lstat`, and to move the
+    /// current directory somewhere that is not the root.
+    ///
+    /// `/d/inner`'s own permissions are the caller's, because whether that
+    /// directory is searchable is what one of the rows below varies.
+    let private withTreeUnder
+        (innerPermissions : PermissionBits)
+        (system : UnixSystem<int, string>)
+        : InodeNumber * InodeNumber * InodeNumber * UnixSystem<int, string>
+        =
+        let orFail (name : string) (result : Result<InodeNumber * VirtualFileSystem, UnixError>) =
+            match result with
+            | Ok pair -> pair
+            | Error error -> failwith $"could not seed %s{name}: %O{error}"
+
+        let dirPermissions = PermissionBits.parseOrFail context 0o755
+
+        let d, vfs =
+            VirtualFileSystem.createDirectory
+                rootInode
+                (FileName.parseOrFail context "d")
+                dirPermissions
+                epoch
+                system.Machine.FileSystem
+            |> orFail "/d"
+
+        let inner, vfs =
+            VirtualFileSystem.createDirectory d (FileName.parseOrFail context "inner") innerPermissions epoch vfs
+            |> orFail "/d/inner"
+
+        let target, vfs =
+            VirtualFileSystem.createFile
+                inner
+                (FileName.parseOrFail context "t")
+                (PermissionBits.parseOrFail context 0o600)
+                epoch
+                (ImmutableArray.CreateRange [ 1uy ; 2uy ; 3uy ])
+                vfs
+            |> orFail "/d/inner/t"
+
+        let link, vfs =
+            VirtualFileSystem.createSymlink
+                rootInode
+                (FileName.parseOrFail context "l")
+                epoch
+                (SymlinkTarget.parseOrFail context "/d/inner/t")
+                vfs
+            |> orFail "/l"
+
+        inner,
+        target,
+        link,
+        { system with
+            Machine =
+                { system.Machine with
+                    FileSystem = vfs
+                }
+        }
+
+    /// The tree with every directory searchable, which is what all but one row
+    /// wants.
+    let private withTree
+        (system : UnixSystem<int, string>)
+        : InodeNumber * InodeNumber * InodeNumber * UnixSystem<int, string>
+        =
+        withTreeUnder (PermissionBits.parseOrFail context 0o755) system
+
+    [<Test>]
+    let ``stat reports exactly what fstat reports for the same inode`` () : unit =
+        // Two entry points onto one answer. If they could disagree, a guest that
+        // opened a file and stat'd its path would see two different files.
+        let _, target, _, system = withTree linux
+
+        let fd, registry =
+            FileDescriptorRegistry.openFile target FileAccessMode.ReadOnly system.Process.FileDescriptors
+
+        let withDescriptor =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        UnixSystem.stat SymlinkPolicy.Follow (statPath "/d/inner/t") system
+        |> shouldEqual (UnixSystem.fstat fd withDescriptor |> reported |> FileStatusAnswer.Reported)
+
+    [<Test>]
+    let ``following a link is the whole difference between stat and lstat`` () : unit =
+        // The one thing the two syscalls do differently, and the row that fails
+        // if a policy is dropped on the way through: the link is 10 bytes of
+        // target text with the platform's own permission bits, and the file it
+        // names is 3 bytes with 0o600.
+        for flavour in [ linux ; darwin ] do
+            let _, target, link, system = withTree flavour
+
+            match UnixSystem.stat SymlinkPolicy.Follow (statPath "/l") system with
+            | FileStatusAnswer.Reported status ->
+                status.Inode |> shouldEqual target
+                status.Size |> shouldEqual 3L
+                status.Mode |> shouldEqual 0o100600
+            | other -> failwith $"expected a status, got %A{other}"
+
+            match UnixSystem.stat SymlinkPolicy.NoFollowFinal (statPath "/l") system with
+            | FileStatusAnswer.Reported status ->
+                status.Inode |> shouldEqual link
+                // `/d/inner/t` is ten bytes, which is what `readlink` would copy.
+                status.Size |> shouldEqual 10L
+            | other -> failwith $"expected a status, got %A{other}"
+
+    [<Test>]
+    let ``a name nothing holds is ENOENT rather than a refusal`` () : unit =
+        // `stat` has no refusal at all: every inode a path can resolve to is one
+        // this filesystem holds, so the three descriptors `fstat` refuses for are
+        // unreachable from a path.
+        let _, _, _, system = withTree linux
+
+        UnixSystem.stat SymlinkPolicy.Follow (statPath "/d/inner/nope") system
+        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+
+    [<Test>]
+    let ``a relative path starts at the current directory's inode`` () : unit =
+        // The field this reads is `CurrentDirectoryInode`, not the recorded
+        // current directory *path* — a real process reaches its cwd through a
+        // reference it already holds. Asserted by moving the inode and leaving
+        // the path alone: a resolver that re-walked the path would answer the
+        // same for both systems below.
+        let inner, target, _, system = withTree linux
+
+        let at (directory : InodeNumber) : UnixSystem<int, string> =
+            { system with
+                Process =
+                    { system.Process with
+                        CurrentDirectoryInode = directory
+                    }
+            }
+
+        UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "t") (at inner)
+        |> shouldEqual (Ok target)
+
+        UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "t") (at rootInode)
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        // ...and a rooted path ignores it, which is what says the branch above is
+        // a branch. Asked with the current directory at `inner` rather than at
+        // the root: with it at the root the two arms agree, so that row could
+        // not tell "rooted paths start at the root" from "every path starts at
+        // the current directory".
+        UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") (at inner)
+        |> shouldEqual (Ok target)
+
+    [<Test>]
+    let ``a trailing separator demands a directory`` () : unit =
+        // `resolvePath` fixes `TrailingSeparatorPolicy.Demand`, which is the
+        // non-creating lookup's rule; a caller that needs the other axis uses
+        // `resolvePathFull`. Without the demand reaching the walk, a trailing
+        // separator on a regular file would resolve.
+        let inner, target, _, system = withTree linux
+
+        UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t/") system
+        |> shouldEqual (Error UnixError.ENOTDIR)
+
+        UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/") system
+        |> shouldEqual (Ok inner)
+
+        UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") system
+        |> shouldEqual (Ok target)
+
+    [<Test>]
+    let ``an unsearchable directory on the way is EACCES`` () : unit =
+        // The privilege the walk uses is the calling process's, read from the
+        // system rather than passed in — so dropping root changes the answer.
+        let _, _, _, system = withTreeUnder (PermissionBits.parseOrFail context 0o600) linux
+
+        UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") system
+        |> shouldEqual (Error UnixError.EACCES)
+
+        // uid 0 is exempt, which is what says the rule is being read from the
+        // process rather than hardcoded.
+        let asRoot =
+            { system with
+                Process = UnixProcessState.withUserAndGroupId 0u 0u system.Process
+            }
+
+        match UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/d/inner/t") asRoot with
+        | Ok _ -> ()
+        | Error error -> failwith $"root should have been exempt, got %O{error}"
+
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
         UnixSystem.close 7 linux

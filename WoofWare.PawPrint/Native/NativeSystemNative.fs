@@ -815,49 +815,17 @@ module NativeSystemNative =
         (path : UnixPath)
         : Result<Resolution, UnixError>
         =
-        let vfs = kernel.FileSystem
-        let limits = SimulatedUnixPlatform.pathLimits kernel.UnixPlatform
-
-        let startDirectory =
-            if UnixPath.isRooted path then
-                VirtualFileSystem.root vfs
-            else
-                // The held inode, not a re-walk of `kernel.CurrentDirectory`: a
-                // real process reaches its current directory through a reference
-                // it already holds, so no component of that directory's own path
-                // is looked up here and none of their permission bits are
-                // consulted. Measured on both kernels — with the cwd at
-                // `outer/inner` and `outer` unsearchable, a relative
-                // `lstat("target")` succeeds while `lstat("../inner/target")` is
-                // EACCES.
-                //
-                // The cwd *itself* is not exempt: the walk below starts there and
-                // checks its search bit the moment it consumes a component, which
-                // is what makes `lstat("target")` EACCES when the cwd itself is
-                // unsearchable — also measured on both.
-                kernel.CurrentDirectoryInode
-
-        VirtualFileSystem.resolveFull
-            limits
-            (UnixProcessState.callerPrivilege kernel.Process)
-            startDirectory
-            policy
-            trailingSeparatorPolicy
-            path
-            vfs
+        UnixSystem.resolvePathFull policy trailingSeparatorPolicy path (EmulatedKernel.unix kernel)
 
     /// The inode a path names, or the errno the lookup owes the guest — what
-    /// every non-creating caller wants. Shares `resolveGuestPathFull`'s walk and
-    /// `VirtualFileSystem.existingOf`'s free-name-is-ENOENT rule, rather than
-    /// re-deciding either here.
+    /// every non-creating caller wants.
     let private resolveGuestPath
         (policy : SymlinkPolicy)
         (kernel : EmulatedKernel)
         (path : UnixPath)
         : Result<InodeNumber, UnixError>
         =
-        resolveGuestPathFull policy TrailingSeparatorPolicy.Demand kernel path
-        |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
+        UnixSystem.resolvePath policy path (EmulatedKernel.unix kernel)
 
     /// How big the `d_name` buffer inside one directory stream is.
     ///
@@ -1155,18 +1123,9 @@ module NativeSystemNative =
         | Error error -> fail error
         | Ok path ->
 
-        match resolveGuestPath policy state.Kernel path with
-        | Error error -> fail error
-        | Ok inode ->
-
-        // The same status `fstat` reports, reached from a path rather than from a
-        // descriptor — which is the whole difference between the two syscalls.
-        let status =
-            match UnixSystem.statOf inode (EmulatedKernel.unix state.Kernel) with
-            | Some status -> status
-            | None ->
-                failwith
-                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+        match UnixSystem.stat policy path (EmulatedKernel.unix state.Kernel) with
+        | FileStatusAnswer.Failed error -> fail error
+        | FileStatusAnswer.Reported status ->
 
         // The output pointer is only decoded here, on the path that actually
         // writes through it.

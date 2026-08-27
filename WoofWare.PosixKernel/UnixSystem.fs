@@ -1250,6 +1250,60 @@ module UnixSystem =
 
         Ok (SyscallAnswer.Completed 0L, reaped)
 
+    /// The full result of walking `path`, which a caller that must distinguish
+    /// "the name exists" from "the name is free in a directory that exists"
+    /// needs — `open` with `O_CREAT`, `rename`, `link`. Callers that only want
+    /// the inode use `resolvePath`.
+    ///
+    /// Relative paths start at the process's current directory *inode*, not at a
+    /// re-walk of its path.
+    let resolvePathFull<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (policy : SymlinkPolicy)
+        (trailingSeparatorPolicy : TrailingSeparatorPolicy)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<Resolution, UnixError>
+        =
+        // The held inode, not a re-walk of the recorded current directory: a real
+        // process reaches its current directory through a reference it already
+        // holds, so no component of that directory's own path is looked up here
+        // and none of their permission bits are consulted. Measured on both
+        // kernels — with the cwd at `outer/inner` and `outer` unsearchable, a
+        // relative `lstat("target")` succeeds while `lstat("../inner/target")` is
+        // EACCES.
+        //
+        // The cwd *itself* is not exempt: the walk starts there and checks its
+        // search bit the moment it consumes a component, which is what makes
+        // `lstat("target")` EACCES when the cwd itself is unsearchable — also
+        // measured on both.
+        //
+        // Passed unconditionally, a rooted path included: `resolveFull` asks
+        // `isRooted` itself and starts at the root regardless of what it is
+        // handed, so a caller that branched here would be computing a value the
+        // walk discards.
+        VirtualFileSystem.resolveFull
+            (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
+            (UnixProcessState.callerPrivilege system.Process)
+            system.Process.CurrentDirectoryInode
+            policy
+            trailingSeparatorPolicy
+            path
+            system.Machine.FileSystem
+
+    /// The inode a path names, or the errno the lookup owes the caller — what
+    /// every non-creating caller wants.
+    ///
+    /// Shares `resolvePathFull`'s walk and `VirtualFileSystem.existingOf`'s
+    /// free-name-is-ENOENT rule, rather than restating either.
+    let resolvePath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (policy : SymlinkPolicy)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<InodeNumber, UnixError>
+        =
+        resolvePathFull policy TrailingSeparatorPolicy.Demand path system
+        |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
+
     /// The status of an inode this filesystem holds, or `None` if it holds no
     /// such inode.
     ///
@@ -1309,6 +1363,33 @@ module UnixSystem =
                 DeviceId = VirtualFileSystem.deviceId
                 Inode = inode
             }
+
+    /// `stat(2)` and `lstat(2)`: report the status of the inode `path` names,
+    /// the two differing only in whether a symbolic link in the final position
+    /// is followed.
+    ///
+    /// Changes nothing and returns no system, for the reason `fstat` does not:
+    /// a `stat` records no access.
+    ///
+    /// Cannot be refused, unlike `fstat`. Every inode a path resolves to is one
+    /// this filesystem holds — a name for an inode-free object cannot be created
+    /// in it — so the three descriptors `fstat` refuses for are unreachable from
+    /// here.
+    let stat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (policy : SymlinkPolicy)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : FileStatusAnswer
+        =
+        match resolvePath policy path system with
+        | Error error -> FileStatusAnswer.Failed error
+        | Ok inode ->
+
+        match statOf inode system with
+        | Some status -> FileStatusAnswer.Reported status
+        | None ->
+            failwith
+                $"UnixSystem.stat: resolving %O{path} returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
     /// `fstat(2)`: report the status of the inode `fd` names.
     ///
