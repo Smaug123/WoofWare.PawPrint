@@ -3390,3 +3390,222 @@ module TestUnixSystemStep =
                 )
 
             exn.Message |> shouldContainText "not positive"
+
+
+    /// A descriptor onto one INET stream socket bound to 127.0.0.1:8080.
+    let private withBoundSocket (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let fd, system = withSocket system
+
+        let bound =
+            { socketDescription with
+                Binding =
+                    Some
+                        {
+                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us
+                            LockedAddress = Some InternetEndpoint.LoopbackAddress
+                        }
+            }
+
+        fd,
+        { system with
+            Machine =
+                { system.Machine with
+                    Sockets = Map.ofList [ socketZero, bound ]
+                }
+        }
+
+    let private sockNameReported (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : InternetEndpoint * int =
+        match answer with
+        | Ok (GetSockNameAnswer.Reported (endpoint, reportedLength)) -> endpoint, reportedLength
+        | other -> failwith $"expected a reported address, got %O{other}"
+
+    let private sockNameFailed (answer : Result<GetSockNameAnswer, GetSockNameRefusal>) : UnixError * int option =
+        match answer with
+        | Ok (GetSockNameAnswer.Failed (error, lengthOverwritten)) -> error, lengthOverwritten
+        | other -> failwith $"expected a failure, got %O{other}"
+
+    [<Test>]
+    let ``getsockname reports an unbound socket's family and nothing else`` () : unit =
+        // Wildcard address, port zero: measured on both, a fresh AF_INET socket
+        // reads back sixteen bytes whose only content is the family.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withSocket flavour
+
+            UnixSystem.getsockname fd UserBuffer.Mapped 16 system
+            |> sockNameReported
+            |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us, 16)
+
+    [<Test>]
+    let ``getsockname reports where a bound socket is bound`` () : unit =
+        // The binding's own endpoint, not the wildcard the row above reports:
+        // otherwise "reports the address" would be satisfied by a constant.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withBoundSocket flavour
+
+            UnixSystem.getsockname fd UserBuffer.Mapped 16 system
+            |> sockNameReported
+            |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us, 16)
+
+    [<Test>]
+    let ``the declared length bounds what is written and not what is reported`` () : unit =
+        // Measured on both flavours across a sweep of declared lengths: a call
+        // declaring 8 writes eight bytes and reports 16; one declaring 128
+        // writes sixteen and still reports 16. The shim's own
+        // `assert(addrLen <= *socketAddressLen)` is false on both platforms and
+        // is compiled out of the shipped build.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withBoundSocket flavour
+
+            for declared in [ 1 ; 2 ; 4 ; 8 ; 15 ; 16 ; 17 ; 128 ] do
+                UnixSystem.getsockname fd UserBuffer.Mapped declared system
+                |> sockNameReported
+                |> snd
+                |> shouldEqual 16
+
+    [<Test>]
+    let ``a descriptor error outranks a destination that names nothing`` () : unit =
+        // Measured: with a closed descriptor or a non-socket one, an unmapped
+        // destination still answers EBADF or ENOTSOCK rather than EFAULT, at
+        // every declared length probed. Asked here with a destination that would
+        // fault, which is what makes this an ordering row rather than a
+        // restatement of the two errnos.
+        for flavour in [ linux ; darwin ] do
+            UnixSystem.getsockname 7 (UserBuffer.Unmapped 8UL) 16 flavour
+            |> sockNameFailed
+            |> shouldEqual (UnixError.EBADF, None)
+
+            let fileFd, fileSystem = withOpenFile flavour
+
+            UnixSystem.getsockname fileFd (UserBuffer.Unmapped 8UL) 16 fileSystem
+            |> sockNameFailed
+            |> shouldEqual (UnixError.ENOTSOCK, None)
+
+            let portFd, portSystem = withSocketEventPort flavour
+
+            UnixSystem.getsockname portFd (UserBuffer.Unmapped 8UL) 16 portSystem
+            |> sockNameFailed
+            |> shouldEqual (UnixError.ENOTSOCK, None)
+
+            // Standard input is a pipe end here, and a pipe is ENOTSOCK on both.
+            UnixSystem.getsockname 0 (UserBuffer.Unmapped 8UL) 16 flavour
+            |> sockNameFailed
+            |> shouldEqual (UnixError.ENOTSOCK, None)
+
+    [<Test>]
+    let ``a zero declared length succeeds through a destination that names nothing`` () : unit =
+        // A call that may write nothing never consults the destination:
+        // measured, `getsockname(s, unmapped, &zero)` succeeds on both flavours
+        // and still reports 16. So the destination cannot be screened up front,
+        // and an `Addressless` one has no address to want at this length either.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withBoundSocket flavour
+
+            for destination in
+                [
+                    UserBuffer.Unmapped 8UL
+                    UserBuffer.Opaque
+                    UserBuffer.Addressless
+                    UserBuffer.Mapped
+                ] do
+                UnixSystem.getsockname fd destination 0 system
+                |> sockNameReported
+                |> shouldEqual (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us, 16)
+
+    [<Test>]
+    let ``a destination that names nothing faults once a single byte would move`` () : unit =
+        // One byte is the boundary: the row above pins that zero succeeds, and
+        // this pins that the very next length does not. Measured at 1, 2, 4, 8,
+        // 15, 16, 17 and 128 on both flavours.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withBoundSocket flavour
+
+            UnixSystem.getsockname fd (UserBuffer.Unmapped 8UL) 1 system
+            |> sockNameFailed
+            |> fst
+            |> shouldEqual UnixError.EFAULT
+
+            UnixSystem.getsockname fd UserBuffer.Opaque 1 system
+            |> shouldEqual (Error (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
+
+            // At the transfer rather than at a screen: neither flavour checks
+            // the destination's address before deciding it has bytes to move.
+            UnixSystem.getsockname fd UserBuffer.Addressless 1 system
+            |> shouldEqual (Error (GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
+
+    [<Test>]
+    let ``a faulting getsockname has already reported the length on one flavour`` () : unit =
+        // The two kernels order the two stores differently. Measured against a
+        // wholly unmapped destination with sentinel lengths of 7, 13, 100 and
+        // 4096, so a cell that came back reading 16 can only have been written:
+        // Linux 6.18.5 writes the untruncated length before attempting the copy
+        // that then faults, macOS 26.6 reports it only once the copy succeeded.
+        let linuxFd, linuxSystem = withBoundSocket linux
+
+        UnixSystem.getsockname linuxFd (UserBuffer.Unmapped 8UL) 13 linuxSystem
+        |> sockNameFailed
+        |> shouldEqual (UnixError.EFAULT, Some 16)
+
+        let darwinFd, darwinSystem = withBoundSocket darwin
+
+        UnixSystem.getsockname darwinFd (UserBuffer.Unmapped 8UL) 13 darwinSystem
+        |> sockNameFailed
+        |> shouldEqual (UnixError.EFAULT, None)
+
+    [<Test>]
+    let ``a domain whose address this kernel does not model is refused`` () : unit =
+        // Refused rather than answered: a real kernel in either family reports
+        // an address, and every value this one could report would be invented.
+        // IPv6 and Unix-domain differ in *shape* from what is modelled, not in
+        // width, so there is nothing to truncate into an answer.
+        for domain in [ SocketDomain.InterNetworkV6 ; SocketDomain.Unix ] do
+            let fd, system = withSocket linux
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            Sockets =
+                                Map.ofList
+                                    [
+                                        socketZero,
+                                        { socketDescription with
+                                            Domain = domain
+                                        }
+                                    ]
+                        }
+                }
+
+            UnixSystem.getsockname fd UserBuffer.Mapped 16 system
+            |> shouldEqual (Error (GetSockNameRefusal.UnmodelledDomain (socketZero, domain)))
+
+    [<Test>]
+    let ``the getsockname refusals describe their own measurement`` () : unit =
+        GetSockNameRefusal.describe (GetSockNameRefusal.UnmodelledDomain (socketZero, SocketDomain.Unix))
+        |> shouldContainText "path"
+
+        GetSockNameRefusal.describe (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        |> shouldContainText "bytes the caller cannot produce"
+
+        // And neither names PawPrint: which client is asking, and what it would
+        // have to build, is the client's half of the message.
+        for refusal in
+            [
+                GetSockNameRefusal.UnmodelledDomain (socketZero, SocketDomain.InterNetworkV6)
+                GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer
+            ] do
+            GetSockNameRefusal.describe refusal |> shouldNotContainText "PawPrint"
+
+    [<Test>]
+    let ``getsockname refuses a declared length no kernel it models was ever asked`` () : unit =
+        // The shim screens `*socketAddressLen < 0` before the cast to
+        // `socklen_t` that would otherwise make the bound SIZE_MAX, so no kernel
+        // is ever asked one.
+        let fd, system = withBoundSocket linux
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixSystem.getsockname fd UserBuffer.Mapped -1 system
+                |> ignore<Result<GetSockNameAnswer, GetSockNameRefusal>>
+            )
+
+        exn.Message |> shouldContainText "negative"
