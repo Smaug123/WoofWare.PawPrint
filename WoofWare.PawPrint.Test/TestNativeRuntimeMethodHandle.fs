@@ -647,3 +647,256 @@ module TestNativeRuntimeMethodHandle =
         |> shouldContain "m_handle"
 
         fieldNames "System.RuntimeMethodInfoStub" |> shouldContain "m_value"
+||||||| parent of 25d6e7d7 (`IsTypicalMethodDefinition`, which asks about two instantiations, not one)
+
+    // ---------------------------------------------------------------------------------------
+    // `isTypicalMethodDefinition`: CoreCLR's `MethodDesc::IsTypicalMethodDefinition`
+    // (method.cpp:1685), which the `RuntimeMethodHandle.IsTypicalMethodDefinition` FCall
+    // (runtimehandles.cpp:1798) returns verbatim.
+    //
+    // Two independent halves, and a handle must pass both: the method's own generics must be
+    // unbound, and its declaring type's must be too. The trap is treating it as one question --
+    // `isGenericMethodDefinition` answers only the method half, and every other predicate in this
+    // file is deliberately blind to the declaring type's instantiation.
+    //
+    // The expectations below are not a second transcription of the C++; they are measured against
+    // the host runtime's own FCall (`hostAnswer`). What that oracle does *not* cover is PawPrint's
+    // extraction of the predicate's inputs from a `MethodHandle`, which is a wiring question and
+    // lives in TestMethodHandleRegistry.fs instead.
+    // ---------------------------------------------------------------------------------------
+
+    type private TypicalPlain () =
+        static member NonGeneric () : int = 1
+        static member GenericMethod<'a> (x : 'a) : 'a = x
+
+    type private TypicalHolder<'t> () =
+        static member NonGeneric () : int = 2
+        static member GenericMethod<'a> (x : 'a) : 'a = x
+
+    /// Invoke the host runtime's own `RuntimeMethodHandle.IsTypicalMethodDefinition` on
+    /// <paramref name="method" />.
+    ///
+    /// The FCall is `private static extern bool IsTypicalMethodDefinition(IRuntimeMethodInfo)`
+    /// (RuntimeHandles.cs:1286); `RuntimeMethodInfo` implements that internal interface, so a
+    /// `MethodInfo` obtained from `Type.GetMethod` is directly acceptable as its argument.
+    let private hostAnswer (method : MethodBase) : bool =
+        let fcall =
+            typeof<System.RuntimeMethodHandle>
+                .GetMethod ("IsTypicalMethodDefinition", BindingFlags.NonPublic ||| BindingFlags.Static)
+
+        if isNull fcall then
+            failwith
+                "the host runtime no longer declares a private static RuntimeMethodHandle.IsTypicalMethodDefinition; this oracle needs updating alongside the pinned runtime"
+
+        match fcall.Invoke ((null : obj), [| box method |]) with
+        | :? bool as answer -> answer
+        | other -> failwith $"expected RuntimeMethodHandle.IsTypicalMethodDefinition to return a bool, got %O{other}"
+
+    /// The same predicate, asked of PawPrint, with the inputs read off <paramref name="method" />
+    /// the way PawPrint reads them off a `MethodHandle`: the declared generic arity, the count of
+    /// arguments *bound* to this particular handle (zero for a definition, as `MethodGenerics` is
+    /// empty there), and the declaring type's two generics flags.
+    let private pawPrintAnswer (method : MethodBase) : bool =
+        let declaredArity =
+            if method.IsGenericMethod then
+                method.GetGenericArguments().Length
+            else
+                0
+
+        let boundCount =
+            if method.IsGenericMethod && not method.IsGenericMethodDefinition then
+                declaredArity
+            else
+                0
+
+        let declaringType = method.DeclaringType
+
+        NativeRuntimeMethodHandle.isTypicalMethodDefinition
+            declaredArity
+            boundCount
+            {
+                IsValueType = declaringType.IsValueType
+                HasInstantiation = declaringType.IsGenericType
+                IsGenericTypeDefinition = declaringType.IsGenericTypeDefinition
+                IsInterface = declaringType.IsInterface
+            }
+
+    let private requiredMethod (declaringType : System.Type) (name : string) : MethodInfo =
+        match
+            declaringType.GetMethod (name, BindingFlags.Public ||| BindingFlags.NonPublic ||| BindingFlags.Static)
+        with
+        | null -> failwith $"fixture method %s{declaringType.FullName}.%s{name} not found"
+        | method -> method
+
+    /// Every shape the predicate distinguishes, as the host runtime names them. The two halves vary
+    /// independently, so no case can pass by accident of the other half's answer.
+    let private typicalShapes : (string * MethodBase) list =
+        let openHolder = typedefof<TypicalHolder<int>>
+        let closedHolder = typeof<TypicalHolder<int>>
+
+        [
+            "non-generic method on a non-generic type", requiredMethod typeof<TypicalPlain> "NonGeneric" :> MethodBase
+            "generic method definition on a non-generic type",
+            requiredMethod typeof<TypicalPlain> "GenericMethod" :> MethodBase
+            "bound generic method on a non-generic type",
+            (requiredMethod typeof<TypicalPlain> "GenericMethod").MakeGenericMethod typeof<int> :> MethodBase
+            "non-generic method on a closed generic type", requiredMethod closedHolder "NonGeneric" :> MethodBase
+            "non-generic method on the generic type definition", requiredMethod openHolder "NonGeneric" :> MethodBase
+            "generic method definition on the generic type definition",
+            requiredMethod openHolder "GenericMethod" :> MethodBase
+            "bound generic method on a closed generic type",
+            (requiredMethod closedHolder "GenericMethod").MakeGenericMethod typeof<string> :> MethodBase
+        ]
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition agrees with the host runtime on every shape`` () : unit =
+        // An outside oracle rather than a re-transcription: a second reading of the same C++ can
+        // repeat the first reading's mistake, and this predicate's whole risk is misjudging which
+        // of the two halves a shape falls foul of.
+        for description, method in typicalShapes do
+            let expected = hostAnswer method
+            let actual = pawPrintAnswer method
+
+            if actual <> expected then
+                failwith
+                    $"%s{description}: the host runtime says IsTypicalMethodDefinition = %b{expected}, PawPrint says %b{actual} (method %O{method} on %O{method.DeclaringType})"
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: the shapes the host oracle measured`` () : unit =
+        // The oracle's answers, written down, so that a change says which shape moved rather than
+        // only that the two disagree. Typical means *both* halves unbound.
+        typicalShapes
+        |> List.map (fun (description, method) -> description, hostAnswer method)
+        |> shouldEqual
+            [
+                "non-generic method on a non-generic type", true
+                "generic method definition on a non-generic type", true
+                "bound generic method on a non-generic type", false
+                "non-generic method on a closed generic type", false
+                "non-generic method on the generic type definition", true
+                "generic method definition on the generic type definition", true
+                "bound generic method on a closed generic type", false
+            ]
+
+    /// A declaring type as the predicate sees it, over the combinations CoreCLR can actually be in.
+    /// `HasInstantiation = false` with `IsGenericTypeDefinition = true` is excluded because the two
+    /// read one two-bit field and TypicalInst implies "generic at all" (methodtable.h:3666-3670);
+    /// `IsValueType` and `IsInterface` vary freely, since the predicate must ignore them.
+    let private declaringTypeFacts : Gen<MethodTableStubFacts> =
+        gen {
+            let! hasInstantiation, isGenericTypeDefinition = Gen.elements [ false, false ; true, false ; true, true ]
+
+            let! isValueType = Gen.elements [ true ; false ]
+            let! isInterface = Gen.elements [ true ; false ]
+
+            return
+                {
+                    IsValueType = isValueType
+                    HasInstantiation = hasInstantiation
+                    IsGenericTypeDefinition = isGenericTypeDefinition
+                    IsInterface = isInterface
+                }
+        }
+
+    [<Test>]
+    let ``property: a handle with bound method type arguments is never typical`` () : unit =
+        // The method half. `Gen<T>.Map<string>` is not the typical form however its declaring type
+        // is instantiated, so no declaring type can rescue it.
+        let property
+            ((declaredCount, handleInstantiation) : int * ConcreteTypeHandle list, facts : MethodTableStubFacts)
+            : bool
+            =
+            if List.isEmpty handleInstantiation then
+                true
+            else
+                not (NativeRuntimeMethodHandle.isTypicalMethodDefinition declaredCount handleInstantiation.Length facts)
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip consistentInstantiation declaringTypeFacts)) property
+        )
+
+    [<Test>]
+    let ``property: a generic declaring type that is not the definition is never typical`` () : unit =
+        // The class half, and the one no other predicate in this file can see: `Gen<int>.M` is not
+        // typical even though `M` itself binds nothing. This is what sends a captured frame on a
+        // generic type through the `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall.
+        let property
+            ((declaredCount, handleInstantiation) : int * ConcreteTypeHandle list, facts : MethodTableStubFacts)
+            : bool
+            =
+            let facts =
+                { facts with
+                    HasInstantiation = true
+                    IsGenericTypeDefinition = false
+                }
+
+            not (NativeRuntimeMethodHandle.isTypicalMethodDefinition declaredCount handleInstantiation.Length facts)
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip consistentInstantiation declaringTypeFacts)) property
+        )
+
+    [<Test>]
+    let ``property: an unbound method on a non-generic declaring type is always typical`` () : unit =
+        let property (declaredCount : int, facts : MethodTableStubFacts) : bool =
+            let facts =
+                { facts with
+                    HasInstantiation = false
+                    IsGenericTypeDefinition = false
+                }
+
+            NativeRuntimeMethodHandle.isTypicalMethodDefinition declaredCount 0 facts
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip (Gen.choose (0, 8)) declaringTypeFacts)) property)
+
+    [<Test>]
+    let ``property: IsValueType and IsInterface do not affect the answer`` () : unit =
+        // They are the other two fields of `MethodTableStubFacts`, and they belong to the
+        // `GetStubIfNeeded` decision rather than to this one. A misreading that consulted either
+        // would survive every named shape above, since each shape fixes them.
+        let property
+            ((declaredCount, handleInstantiation) : int * ConcreteTypeHandle list, facts : MethodTableStubFacts)
+            : bool
+            =
+            let answer (isValueType : bool) (isInterface : bool) : bool =
+                NativeRuntimeMethodHandle.isTypicalMethodDefinition
+                    declaredCount
+                    handleInstantiation.Length
+                    { facts with
+                        IsValueType = isValueType
+                        IsInterface = isInterface
+                    }
+
+            let baseline = answer false false
+
+            answer true false = baseline
+            && answer false true = baseline
+            && answer true true = baseline
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip consistentInstantiation declaringTypeFacts)) property
+        )
+
+    [<Test>]
+    let ``property: typical implies the method half binds nothing`` () : unit =
+        // Ties this predicate to its neighbour: whenever a handle is typical, asking
+        // `isGenericMethodDefinition` about its method half must agree that nothing is bound. A
+        // reading that dropped the method half entirely -- answering purely from the declaring
+        // type -- breaks here.
+        let property
+            ((declaredCount, handleInstantiation) : int * ConcreteTypeHandle list, facts : MethodTableStubFacts)
+            : bool
+            =
+            if NativeRuntimeMethodHandle.isTypicalMethodDefinition declaredCount handleInstantiation.Length facts then
+                NativeRuntimeMethodHandle.isGenericMethodDefinition declaredCount handleInstantiation.Length
+                || not (NativeRuntimeMethodHandle.hasMethodInstantiation declaredCount)
+            else
+                true
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll (Arb.fromGen (Gen.zip consistentInstantiation declaringTypeFacts)) property
+        )
