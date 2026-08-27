@@ -2450,3 +2450,205 @@ module TestUnixSystemStep =
             )
 
         exn.Message |> shouldContainText "negative"
+
+    // ---- `getcwd` ----------------------------------------------------------
+    //
+    // Every row below is measured on macOS 26.6/APFS and on Linux 6.x in a
+    // container, one forked child per row so that a flavour which *dies* rather
+    // than answering is observed rather than taking the probe with it.
+
+    /// The tree with the current directory at `/d/inner`, whose path is eight
+    /// bytes — so nine is an exact fit and eight is one byte short.
+    let private atInner (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let inner, _, _, system = withTree system
+
+        { system with
+            Process =
+                { system.Process with
+                    CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/d/inner"
+                    CurrentDirectoryInode = inner
+                }
+        }
+
+    /// The same, with `/d/inner` then removed: a current directory a real
+    /// process keeps working relative to but which has no path any more.
+    ///
+    /// Orphaned through this library's own `rmdir` rather than by editing the
+    /// filesystem, so that the state under test is one a guest could actually
+    /// reach — `rmdir` is the only syscall that can orphan a directory.
+    let private atOrphan (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let system = atInner system
+
+        // `/d/inner/t` first: `rmdir` refuses a directory that still has names
+        // in it, which is also what keeps an orphan empty for ever after.
+        let system =
+            match UnixSystem.unlink (statPath "/d/inner/t") system with
+            | SyscallAnswer.Completed 0L, system -> system
+            | other -> failwith $"could not empty /d/inner: %O{other}"
+
+        match UnixSystem.rmdir (statPath "/d/inner") system with
+        | SyscallAnswer.Completed 0L, system -> system
+        | other -> failwith $"could not orphan the current directory: %O{other}"
+
+    /// What a successful `getcwd` places: the path and the terminator that makes
+    /// nine bytes an exact fit for an eight-byte path.
+    let private cwdBytes : ImmutableArray<byte> =
+        (AbsoluteUnixPath.toUtf8 (AbsoluteUnixPath.parseOrFail context "/d/inner")).Add 0uy
+
+    [<Test>]
+    let ``getcwd reports the path and its terminator, which is what makes the fit exact`` () : unit =
+        for system in [ atInner linux ; atInner darwin ] do
+            // Nine bytes: eight of path and the NUL. A caller sizing its buffer
+            // by the path alone is one short, which is the next row.
+            UnixSystem.getcwd UserBuffer.Mapped 9 system
+            |> shouldEqual (Ok (GetCwdAnswer.Reported cwdBytes))
+
+            UnixSystem.getcwd UserBuffer.Mapped 1000 system
+            |> shouldEqual (Ok (GetCwdAnswer.Reported cwdBytes))
+
+    [<Test>]
+    let ``getcwd needs room for the terminator as well as the path`` () : unit =
+        for system in [ atInner linux ; atInner darwin ] do
+            UnixSystem.getcwd UserBuffer.Mapped 8 system
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
+
+    [<Test>]
+    let ``getcwd answers a zero capacity EINVAL, and that beats a removed directory`` () : unit =
+        // POSIX: size 0 with a non-NULL buffer is EINVAL, *not* ERANGE — so a
+        // caller must not treat it as "grow and retry". Measured against the
+        // orphaned system too, which is what says this guard comes first: with
+        // the current directory removed, `getcwd(buf, 0)` is still EINVAL.
+        for system in [ atInner linux ; atInner darwin ; atOrphan linux ; atOrphan darwin ] do
+            UnixSystem.getcwd UserBuffer.Mapped 0 system
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.EINVAL))
+
+    [<Test>]
+    let ``a kernel-copying getcwd answers ERANGE before it looks at the destination`` () : unit =
+        // Measured: `getcwd((char*)123, 1)` is ERANGE, not EFAULT — the size
+        // comparison comes first. Only asserted for the flavour that copies from
+        // the kernel; the other one may already have stored by here, which the
+        // next row is about.
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 8 (atInner linux)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
+
+    [<Test>]
+    let ``a user-space getcwd refuses an unwritable destination on every failing path too`` () : unit =
+        // Darwin stores *before* it decides which answer to give, so a
+        // destination it cannot write kills the process on calls that would
+        // otherwise be ERANGE or ENOENT — not only on the success path. Whether
+        // it has stored yet turns on the current directory's length against a
+        // libc threshold that is not a kernel fact (measured: 1015 bytes ERANGEs
+        // cleanly, 1016 bytes is a SIGSEGV, and PATH_MAX is 1024), so the
+        // library refuses from capacity 2 up rather than pick a cell.
+        //
+        // Three states, because the refusal has to outrank three different
+        // answers: a short path that would be ERANGE, a fitting path that would
+        // succeed, and a removed directory that would be ENOENT.
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 8 (atInner darwin)
+        |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
+
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1000 (atInner darwin)
+        |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
+
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1000 (atOrphan darwin)
+        |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
+
+        // Capacity 2 exactly, which is where the refusal starts and therefore
+        // the only capacity that can tell a floor of 2 from a floor of 3. It is
+        // the removed-directory case that establishes it: measured, that flavour
+        // stores its first byte at capacity 2 and dies for an unmapped
+        // destination, where capacity 1 is a clean ERANGE.
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 2 (atOrphan darwin)
+        |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
+
+    [<Test>]
+    let ``below capacity 2 even a user-space getcwd answers an unwritable destination`` () : unit =
+        // The floor the refusal starts at, and it is measured rather than
+        // assumed: at capacity 1 Darwin writes nothing, so it reports an errno
+        // for a destination it could not have written — for a path of 1015 bytes
+        // and for one of 1026 alike, either side of the threshold above. This is
+        // what stops the refusal swallowing the whole entry point.
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1 (atInner darwin)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
+
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1 (atOrphan darwin)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
+
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 0 (atInner darwin)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.EINVAL))
+
+    [<Test>]
+    let ``an unwritable destination is EFAULT on Linux and fatal on Darwin`` () : unit =
+        // The divergence this entry point exists to hold. Linux's `getcwd` is a
+        // syscall whose `copy_to_user` reports a bad destination; Darwin's
+        // assembles the path with stores in the caller's own context, so the
+        // process dies instead. Measured against a `PROT_READ` page, which
+        // discriminates the two mechanisms where an unmapped address cannot —
+        // and `readlink` answers EFAULT on *both* in the same probe, so this is
+        // `getcwd`'s own property rather than a general one.
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 9 (atInner linux)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.EFAULT))
+
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 9 (atInner darwin)
+        |> shouldEqual (Error GetCwdRefusal.FatalToTheProcess)
+
+    [<Test>]
+    let ``getcwd refuses a destination whose bytes the caller cannot place`` () : unit =
+        for system in [ atInner linux ; atInner darwin ] do
+            UnixSystem.getcwd UserBuffer.Opaque 9 system
+            |> shouldEqual (Error (GetCwdRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
+
+            // At the transfer rather than at a screen: neither flavour looks at
+            // the destination's address before comparing sizes, so there is no
+            // screen for an addressless buffer to reach.
+            UnixSystem.getcwd UserBuffer.Addressless 9 system
+            |> shouldEqual (Error (GetCwdRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
+
+    [<Test>]
+    let ``getcwd refuses a negative capacity rather than answering one`` () : unit =
+        // No `getcwd(3)` sees a negative size — its argument is a `size_t`. The
+        // PAL shim rejects one before calling, and that guard stays with the
+        // client whose signature admits it.
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixSystem.getcwd UserBuffer.Mapped -1 (atInner linux)
+                |> ignore<Result<GetCwdAnswer, GetCwdRefusal>>
+            )
+
+        exn.Message |> shouldContainText "negative"
+
+    [<Test>]
+    let ``a removed current directory outranks the size comparison on Linux only`` () : unit =
+        // Linux's `sys_getcwd` builds the path, finds it disconnected, and never
+        // reaches the length comparison: measured ENOENT at every size from 1
+        // up. Darwin's climbs from the root downwards and so needs two bytes
+        // before it can start, which makes size 1 ERANGE there.
+        UnixSystem.getcwd UserBuffer.Mapped 1 (atOrphan linux)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
+
+        UnixSystem.getcwd UserBuffer.Mapped 1 (atOrphan darwin)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ERANGE))
+
+    [<Test>]
+    let ``a removed current directory is ENOENT at every capacity that reaches it`` () : unit =
+        // Swept rather than sampled, because the two flavours split on capacity
+        // 1 alone and a single sample cannot see that. Darwin's `getcwd` does
+        // write to the destination on these paths -- a NUL at the last byte, and
+        // the stale path too once the buffer reaches PATH_MAX -- and this
+        // library deliberately reports none of it: see
+        // `GetCwdOrphanAnswer.ShortestPathFirst` and docs/divergences.md.
+        for capacity in [ 2 ; 3 ; 8 ; 64 ; 1023 ; 1024 ; 1025 ; 4096 ] do
+            UnixSystem.getcwd UserBuffer.Mapped capacity (atOrphan darwin)
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
+
+            UnixSystem.getcwd UserBuffer.Mapped capacity (atOrphan linux)
+            |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
+
+    [<Test>]
+    let ``a removed directory outranks EFAULT on the kernel-copying flavour`` () : unit =
+        // Linux never reaches a copy once it knows the directory is detached, so
+        // an unmapped destination there is ENOENT and not EFAULT. That is the
+        // pairing for the Darwin row above: the same call, the same destination,
+        // and the two flavours differ in whether the destination matters at all.
+        UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1000 (atOrphan linux)
+        |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))

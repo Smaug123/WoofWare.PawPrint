@@ -2613,14 +2613,65 @@ Ordered so that each has an oracle before the next depends on it.
   `d_name` buffer inside it is sized by an ABI constant — so the stream's
   identity and its bytes are on different sides of the boundary, which none of
   stage 8's other syscalls has had to arrange.
-* **8m — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
-  table and had no home in the first draft of this list, which is a drafting
-  failure the census itself should have caught: an increment list that does not
-  partition its own table is not a plan. All three are destination-buffer
-  syscalls and all three land after 8c has settled that shape. `getcwd` is the
-  one that needs the honesty note stage 7 wrote down: its success value is the
-  caller's own buffer pointer, which the library never possesses, so the client
-  composes it.
+* **8m — `getcwd`** (done), and then **`readlink` and `getsockname`**. These
+  three appear in the census table and had no home in the first draft of this
+  list, which is a drafting failure the census itself should have caught: an
+  increment list that does not partition its own table is not a plan. All three
+  are destination-buffer syscalls and all three land after 8c has settled that
+  shape. `getcwd` is the one that needs the honesty note stage 7 wrote down: its
+  success value is the caller's own buffer pointer, which the library never
+  possesses, so the client composes it.
+
+  `getcwd` went first and took the increment on its own, because measuring it
+  turned up two things the shipped handler had wrong, neither of which a probe
+  passing a valid buffer can see:
+
+  * **An unwritable destination is not EFAULT everywhere.** Linux's `getcwd` is
+    a syscall whose `copy_to_user` reports one; Darwin's assembles the path with
+    stores executed in the caller's own context, so a destination it cannot
+    write kills the process — SIGSEGV unmapped, SIGBUS read-only. A `PROT_READ`
+    page is the probe that discriminates the two mechanisms, an unmapped address
+    being consistent with either, and `readlink` answers EFAULT on *both* in the
+    same probe, so this is `getcwd`'s own property rather than a general one.
+    The handler answered EFAULT for both flavours. `GetCwdRefusal` says so
+    instead, on the reasoning `requireStorage` already had written down: a dead
+    process is not an errno, and answering one turns a crash into a plausible
+    wrong answer.
+  * **A user-space `getcwd` stores before it decides, so its unwritable
+    destination refuses more widely than the success path.** Darwin can die on a
+    call that would otherwise report ERANGE or ENOENT, and whether it does turns
+    on the current directory's length against a libc threshold measured at 1016
+    bytes — neither PATH_MAX (1024) nor any documented constant, but one build's
+    internal slack selecting between the `__getcwd` syscall and the user-space
+    backward assembly. This library models kernels, not that route selection, so
+    it refuses from capacity 2 up whatever the path length, deliberately
+    over-refusing the cells where the real call answers without storing.
+    Capacity 0 and 1 still answer, that flavour having been measured to write
+    nothing there on either side of the threshold.
+
+  * **Darwin's failing `getcwd` scribbles on the caller's buffer, and this
+    library does not reproduce it.** This looked at first like the answer to the
+    asymmetry the `poll` bullet below leaves open — `Failed` carrying writes,
+    arriving on a syscall small enough to hold in view — and it is not. Two
+    successive attempts to model it from partial measurements were wrong in
+    different ways, the first writing past the caller's declared capacity, and
+    what the sweep eventually showed is BSD `getcwd(3)` assembling the path
+    *backwards* from the end of the buffer and moving it to the front once it
+    fits. The residue is a function of libc's internal progress, not of anything
+    a kernel decides. `GetCwdAnswer.Failed` therefore carries an errno and says
+    nothing about the destination; `docs/divergences.md` records the measured
+    table and the reasoning, and `Interop.Sys.GetCwd` cannot observe any of it.
+
+    So the `poll` asymmetry is still open, and this increment is evidence about
+    *how* to close it: a `Failed` that carries writes wants a syscall whose
+    failure writes are a kernel's decision. `poll`'s are. `getcwd`'s are libc's,
+    which is a different thing wearing the same shape.
+
+  The ordering the handler already had is otherwise confirmed exactly, including
+  two cells that only a size sweep reaches: a too-small buffer is ERANGE
+  whatever the destination is, on both flavours, and a removed current directory
+  outranks even that on Linux, where an unmapped destination is ENOENT rather
+  than EFAULT.
 * **`poll` defers to stage 9**, and not for the reason the others do. It carries
   an array in *and* out, it is the syscall whose failure path writes (the
   asymmetry left open above), and it is where blocking becomes unavoidable — it

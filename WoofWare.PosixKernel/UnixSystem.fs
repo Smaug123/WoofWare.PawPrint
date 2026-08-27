@@ -313,6 +313,59 @@ module PWriteRefusal =
             // from the description's offset, so it says the same sentence.
             WriteRefusal.describeExceedsRepresentableLength inode offset count
 
+/// What `getcwd(3)` does to the caller's buffer and what it returns.
+///
+/// The success value of a real `getcwd` is the caller's own buffer pointer,
+/// which this library never possesses; the client composes that from the
+/// pointer it already holds.
+[<RequireQualifiedAccess>]
+type GetCwdAnswer =
+    /// Place these bytes in the caller's buffer. They are NUL-terminated
+    /// already, because terminating is `getcwd`'s job rather than its caller's,
+    /// and they fit: the length comparison that produces ERANGE has already been
+    /// made against this exact sequence.
+    | Reported of path : ImmutableArray<byte>
+    /// The call returns NULL and the caller stores `error` wherever its libc
+    /// keeps errno.
+    ///
+    /// Says nothing about the destination's *contents*. Every Linux failure
+    /// path leaves it untouched, and Darwin's do not: see
+    /// `GetCwdOrphanAnswer.ShortestPathFirst` for what was measured there and
+    /// why this library does not reproduce it.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer a `getcwd`.
+[<RequireQualifiedAccess>]
+type GetCwdRefusal =
+    /// The buffer has no answer at the step this `getcwd` reached — which is
+    /// always the copy, never a screen: measured, neither flavour checks the
+    /// destination's address before comparing sizes, so `getcwd(high, 1)` is
+    /// ERANGE rather than EFAULT on both.
+    | Buffer of BufferRefusal
+    /// The destination names no writable storage, on a platform whose `getcwd`
+    /// stores from user space. That is a fatal signal rather than an errno, and
+    /// this kernel has no way to deliver one; answering EFAULT would turn a
+    /// crash into a plausible wrong answer.
+    ///
+    /// Reported for every capacity of 2 or more, including calls that would
+    /// have failed for another reason — because such a flavour may store before
+    /// it decides which failure to report, and whether it has depends on a libc
+    /// route this library cannot observe. It therefore over-refuses rather than
+    /// answer some cells and die in others; the measurements are in
+    /// `docs/divergences.md`.
+    | FatalToTheProcess
+
+[<RequireQualifiedAccess>]
+module GetCwdRefusal =
+    /// What this kernel knows about why it cannot answer a `getcwd`. The client
+    /// supplies its own half — which entry point, and what the destination
+    /// actually was, neither of which this library ever saw.
+    let describe (refusal : GetCwdRefusal) : string =
+        match refusal with
+        | GetCwdRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | GetCwdRefusal.FatalToTheProcess ->
+            "the destination names no storage this caller can write, and this platform's `getcwd(3)` assembles the path with stores executed in the caller's own context rather than copying from the kernel. Measured against a `PROT_READ` page: Darwin dies on a signal (SIGSEGV unmapped, SIGBUS read-only) where Linux answers EFAULT. It can die that way on calls that would otherwise report ERANGE or ENOENT, because it stores before it decides -- so this is reported for any capacity of two or more, which over-refuses the cells where the real call answers without storing. A dead process is not an errno, and guessing which cell this is would answer one for a call that really dies."
+
 /// Why this kernel will not answer a syscall at all. The client decides what a
 /// refusal means for it; nothing here is recoverable by retrying.
 [<RequireQualifiedAccess>]
@@ -1423,6 +1476,115 @@ module UnixSystem =
         | None ->
             failwith
                 $"UnixSystem.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+
+    /// `getcwd(3)`: report the current directory's path into the caller's buffer.
+    ///
+    /// Changes nothing and returns no system, for the reason `fstat` gives.
+    ///
+    /// `capacity` is the caller's buffer size and must not be negative: a
+    /// negative size is not a value any `getcwd` sees, since the C library takes
+    /// a `size_t`. Rejecting one is the PAL shim's own guard, and stays with the
+    /// client that holds the shim's signature.
+    ///
+    /// The whole measured ordering lives here, and the destination's
+    /// classification is consulted last on both flavours — a too-small buffer is
+    /// ERANGE whatever the destination is, and a removed current directory
+    /// outranks even that on Linux.
+    let getcwd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : UserBuffer)
+        (capacity : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetCwdAnswer, GetCwdRefusal>
+        =
+        if capacity < 0 then
+            failwith
+                $"UnixSystem.getcwd: capacity %d{capacity} is negative, which no `getcwd(3)` can be asked for -- its size argument is a `size_t`. Screen this in the client, where the signature that admits a negative number lives (this is a bug in the caller)."
+
+        /// The bytes a successful call would place, terminator included. Also
+        /// what the comparison producing ERANGE is made against, so the two
+        /// cannot disagree about whether the path fits.
+        let terminated : ImmutableArray<byte> =
+            (AbsoluteUnixPath.toUtf8 system.Process.CurrentDirectory).Add 0uy
+
+        /// The destination is about to be written. Every caller of this has
+        /// already decided that the bytes are wanted, so a destination that
+        /// cannot take them is the last thing left to fail.
+        let transfer (onWritten : GetCwdAnswer) : Result<GetCwdAnswer, GetCwdRefusal> =
+            match destination with
+            | UserBuffer.Mapped -> Ok onWritten
+            | UserBuffer.Opaque -> Error (GetCwdRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+            | UserBuffer.Addressless -> Error (GetCwdRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+            | UserBuffer.Unmapped _ ->
+                match SimulatedUnixPlatform.getCwdDestinationFault system.Machine.UnixPlatform with
+                | GetCwdDestinationFault.ReportedAsEfault -> Ok (GetCwdAnswer.Failed UnixError.EFAULT)
+                | GetCwdDestinationFault.FatalToTheProcess -> Error GetCwdRefusal.FatalToTheProcess
+
+        /// Whether a destination this caller cannot write makes the call fatal
+        /// rather than answerable, on a flavour that assembles the path with
+        /// stores executed in the caller's own context.
+        let storeWouldBeFatal : bool =
+            match destination with
+            | UserBuffer.Unmapped _ ->
+                match SimulatedUnixPlatform.getCwdDestinationFault system.Machine.UnixPlatform with
+                | GetCwdDestinationFault.FatalToTheProcess -> true
+                | GetCwdDestinationFault.ReportedAsEfault -> false
+            // `Opaque` and `Addressless` name memory a real `getcwd` writes
+            // perfectly well; what is missing is this client's ability to
+            // perform the store. That only matters where bytes are actually
+            // reported, so those two are screened at the transfer instead.
+            | UserBuffer.Mapped
+            | UserBuffer.Opaque
+            | UserBuffer.Addressless -> false
+
+        // Measured first on both, and it beats the removed-directory case below:
+        // with the current directory gone, `getcwd(buf, 0)` is still EINVAL.
+        if capacity = 0 then
+            Ok (GetCwdAnswer.Failed UnixError.EINVAL)
+        elif capacity >= 2 && storeWouldBeFatal then
+            // From capacity 2 up, such a flavour may have stored *before* it
+            // decides which answer to give, so a destination it cannot write
+            // kills the process on paths that would otherwise be ERANGE or
+            // ENOENT -- not only on the success path.
+            //
+            // Whether it has stored yet depends on which of libc's internal
+            // routes the call took, and that is selected by the current
+            // directory's own length against a threshold that is *not* a kernel
+            // fact: measured on macOS 26.6 at capacity 8 with an unmapped
+            // destination, a path of 1015 bytes is a clean ERANGE and one of
+            // 1016 bytes is a SIGSEGV. That is neither PATH_MAX (1024) nor any
+            // documented constant -- it is one libc build's internal slack.
+            //
+            // So this refuses from capacity 2 up rather than encoding 1016.
+            // It deliberately over-refuses the short-path cell, where the real
+            // call answers ERANGE without touching the destination: a refusal
+            // says "this library cannot tell you", which is honest, where
+            // picking a side would answer ERANGE for a call that really dies.
+            Error GetCwdRefusal.FatalToTheProcess
+        elif VirtualFileSystem.isOrphanedDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem then
+            // The stored path is stale -- nothing reaches it any more -- so it is
+            // not measured against the buffer. What the buffer can still change
+            // is per-flavour; see `GetCwdOrphanAnswer`.
+            match SimulatedUnixPlatform.getCwdOrphanAnswer system.Machine.UnixPlatform with
+            | GetCwdOrphanAnswer.AlwaysDetached -> Ok (GetCwdAnswer.Failed UnixError.ENOENT)
+            | GetCwdOrphanAnswer.ShortestPathFirst ->
+                // Room for "/" and its terminator, which is what this flavour
+                // writes before it starts climbing. Two bytes, not the length of
+                // the path that used to be here -- and below two it writes
+                // nothing at all, which is why the refusal above starts at two.
+                if capacity < 2 then
+                    Ok (GetCwdAnswer.Failed UnixError.ERANGE)
+                else
+                    Ok (GetCwdAnswer.Failed UnixError.ENOENT)
+        elif capacity < terminated.Length then
+            // `getcwd` needs room for the path *and* its NUL, which is why a
+            // buffer of the path's own length is one byte short rather than an
+            // exact fit. Measured with an unwritable destination too: on the
+            // flavour that copies from the kernel this answers before the
+            // destination is looked at, `getcwd((char*)123, 1)` being ERANGE
+            // rather than EFAULT.
+            Ok (GetCwdAnswer.Failed UnixError.ERANGE)
+        else
+            transfer (GetCwdAnswer.Reported terminated)
 
     /// The object's own read operation on a regular file, which `read` and
     /// `pread` reach identically: the transfer window, the shortcut that touches

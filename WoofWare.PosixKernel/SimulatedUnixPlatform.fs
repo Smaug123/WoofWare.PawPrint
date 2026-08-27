@@ -1160,7 +1160,57 @@ type GetCwdOrphanAnswer =
     /// ERANGE and *every* larger size is ENOENT — including sizes far below the
     /// length of the path that used to be there. It is a minimum, not a
     /// comparison against a path that no longer exists.
+    ///
+    /// **This flavour's failing `getcwd` scribbles on the caller's buffer, and
+    /// this library does not reproduce what it leaves.** `GetCwdAnswer.Failed`
+    /// carries an errno and says nothing about the destination's contents; the
+    /// errno itself is exact. Measured by sweeping the capacity with the
+    /// destination prefilled `0xAA` and reporting every byte that changed:
+    ///
+    /// * orphaned, capacity 1: nothing written, ERANGE;
+    /// * orphaned, 2 ≤ capacity < PATH_MAX: a NUL at the buffer's *last* byte;
+    /// * orphaned, capacity ≥ PATH_MAX: that NUL, and the stale path at offset
+    ///   0 as well;
+    /// * intact but the path does not fit: a *suffix* of the path, filled
+    ///   backwards from the last byte — 976 bytes at offsets 48..1023 for a
+    ///   1418-byte path in a 1024-byte buffer — and ERANGE.
+    ///
+    /// That last shape is BSD `getcwd(3)` assembling the path backwards from
+    /// the end of the buffer and moving it to the front once it fits, so the
+    /// residue is a function of libc's internal progress rather than of
+    /// anything a kernel decides. Reproducing it faithfully means reproducing
+    /// that algorithm, including which of its paths a given capacity takes;
+    /// reproducing it approximately means inventing bytes a guest can read. No
+    /// caller in the BCL reads the destination after a NULL return, so this
+    /// library reports the errno and leaves the buffer alone — recorded in
+    /// `docs/divergences.md` rather than left to be discovered.
+    ///
+    /// Linux writes nothing on any failure path at any capacity, which is why
+    /// only this case needs the note.
     | ShortestPathFirst
+
+/// What an unwritable destination does to a `getcwd(3)` that has got as far as
+/// storing into it — which is a question about *where the bytes are copied*,
+/// and so splits by flavour rather than by kernel behaviour.
+///
+/// Measured with a destination that is mapped `PROT_READ` only, which
+/// discriminates the two mechanisms where an unmapped address cannot: a kernel
+/// copying with `copy_to_user` reports EFAULT, while a store executed in user
+/// space takes a fatal signal. `readlink(2)` answers EFAULT on both platforms
+/// in the same probe, so this is `getcwd`'s own property and not a general one.
+[<RequireQualifiedAccess>]
+type GetCwdDestinationFault =
+    /// EFAULT, the destination untouched. Linux's `getcwd` is a syscall whose
+    /// `copy_to_user` reports a bad destination as an ordinary error.
+    | ReportedAsEfault
+    /// A fatal signal — SIGSEGV for an unmapped destination, SIGBUS for a
+    /// read-only one. Darwin's `getcwd(3)` assembles the path with stores
+    /// executed in the caller's own context, so a destination it cannot write
+    /// kills the process instead of producing an errno.
+    ///
+    /// A kernel cannot answer this, and neither can this library: see
+    /// `GetCwdRefusal.FatalToTheProcess` for what it says instead.
+    | FatalToTheProcess
 
 /// Everything a kernel does differently when `rmdir(2)` removes a directory.
 ///
@@ -2026,6 +2076,13 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> GetCwdOrphanAnswer.AlwaysDetached
         | SimulatedUnixFlavour.Darwin -> GetCwdOrphanAnswer.ShortestPathFirst
+
+    /// What this platform's `getcwd(3)` does with a destination it cannot write.
+    /// See `GetCwdDestinationFault`.
+    let getCwdDestinationFault (platform : SimulatedUnixPlatform) : GetCwdDestinationFault =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> GetCwdDestinationFault.ReportedAsEfault
+        | SimulatedUnixFlavour.Darwin -> GetCwdDestinationFault.FatalToTheProcess
 
     /// What this platform's PAL puts in `DirectoryEntry.NameLength`. See
     /// `DirectoryEntryNameLength`.
