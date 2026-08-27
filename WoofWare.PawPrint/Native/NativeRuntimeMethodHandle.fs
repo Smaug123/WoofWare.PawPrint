@@ -1559,6 +1559,18 @@ module NativeRuntimeMethodHandle =
             // The generic definition the named type is an instantiation of. Only the two
             // method-table-backed spellings can be one; the rest cannot declare a metadata method
             // at all, and `MethodHandleRegistry.getOrAllocateInternalHandle` refuses them below.
+            //
+            // One of those refusals is a real gap rather than a contract violation: an *open
+            // construction* such as `Pair<T, int>` is a declaring type CoreCLR serves here, and
+            // the registry's mint-time chokepoint has a named TODO for it, because
+            // `MetadataMethodIdentity` cannot yet carry one. No guest reaches it today -- measured,
+            // both ways in: naming such a type through `Type.MakeGenericType` with a type-variable
+            // argument stops in `RuntimeTypeHandle.Instantiate`, and reaching one as the base of an
+            // open definition stops in `resolveBaseRuntimeTypeHandleTarget`, which
+            // `sourcesPure/ReflectionOpenGenericDefinitionSharedParent.cs` parks. Whichever of
+            // those opens first will arrive here and get the registry's TODO, which is the right
+            // place for it: widening the identity is a change to every consumer of a declaring
+            // type, not to this native.
             let namedDefinition : ResolvedTypeIdentity option =
                 match target with
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
