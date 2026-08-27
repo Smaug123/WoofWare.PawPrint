@@ -1815,6 +1815,30 @@ module IlMachineStateExecution =
             else
                 None
 
+    /// What `OpcodeFaults` says the instruction this thread is positioned at may raise.
+    ///
+    /// Positioned at, not "has retired": the program counter advances only once an instruction has
+    /// completed, so before that point this reads the instruction currently executing — which is
+    /// the one whose faults are in question. A caller that has already advanced is asking about
+    /// the wrong instruction.
+    ///
+    /// Fails if the thread is not executing IL at all. A native frame or a runtime-provided body
+    /// has no `OpcodeFaults` entry, and silently answering `Unmodelled` for one would let a
+    /// caller's check pass by accident rather than by being right.
+    let faultsOfCurrentInstruction (currentThread : ThreadId) (state : IlMachineState) : OpcodeFaults =
+        let methodState = state.ThreadState.[currentThread].MethodState
+
+        match methodState.ExecutingMethod.Body with
+        | MethodBody.Il instructions ->
+            match instructions.Locations.TryGetValue methodState.IlOpIndex with
+            | true, op -> OpcodeFaults.ofIlOp op
+            | false, _ ->
+                failwith
+                    $"logic error: %s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name} is positioned at IL_%04X{methodState.IlOpIndex}, which is not an instruction offset in that body"
+        | body ->
+            failwith
+                $"logic error: asked for the permitted faults of %s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name}, whose body is %O{body} rather than IL; only an instruction has an OpcodeFaults entry"
+
     let rec callMethodWithCommitment
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2903,6 +2927,49 @@ module IlMachineStateExecution =
         : IlMachineState * WhatWeDid
         =
         raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exceptionTypeInfo None currentThread state
+
+    /// Raise the fault an *instruction* faulted with, naming the fault rather than the corelib
+    /// type. `OpcodeFault.resolve` supplies the type, so no call site here decides that
+    /// correspondence for itself.
+    ///
+    /// Prefer this to `raiseRuntimeException` at every opcode site. Besides removing the type
+    /// choice from the call site, it checks the raise against `OpcodeFaults`: an instruction that
+    /// faults with something its table entry does not list means one of the two is wrong, and
+    /// which one is not something this can decide, so it says so and stops. That check is what
+    /// makes the table something an analyser may believe rather than a second, unpoliced
+    /// description of the same behaviour.
+    ///
+    /// The instruction is read from the thread's own frame rather than passed in, so a site cannot
+    /// name one opcode while executing another. The program counter is not advanced at a raise
+    /// site — exception dispatch keys the handler search and the stack trace on the faulting
+    /// instruction's offset — so what it reads is the instruction that faulted.
+    ///
+    /// Not for the runtime's non-instruction raises: a native handler, an intrinsic, or a frame
+    /// prologue is not executing an opcode, and `OpcodeFaults` has nothing to say about it. Those
+    /// keep `raiseRuntimeException`.
+    and raiseOpcodeFault
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (fault : OpcodeFault)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        let permitted = faultsOfCurrentInstruction currentThread state
+
+        if not (OpcodeFaults.mayRaise fault permitted) then
+            let methodState = state.ThreadState.[currentThread].MethodState
+
+            failwith
+                $"logic error: %s{MethodOwner.describe methodState.ExecutingMethod.Owner}::%s{methodState.ExecutingMethod.Name} at IL_%04X{methodState.IlOpIndex} raised %O{fault}, but OpcodeFaults says that instruction raises %O{permitted}. Either the interpreter is raising the wrong exception here, or the table is missing an entry; both are bugs and only a human can say which."
+
+        raiseRuntimeExceptionWithMessage
+            loggerFactory
+            baseClassTypes
+            (OpcodeFault.resolve baseClassTypes fault)
+            None
+            currentThread
+            state
 
     /// Result of the ECMA-335 III.4.x runtime array-store variance gate.
     [<RequireQualifiedAccess>]

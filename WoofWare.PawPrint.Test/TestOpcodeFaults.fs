@@ -173,21 +173,23 @@ module TestOpcodeFaults =
             OpcodeFaults.ofUnaryMetadata op
             |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ])
 
-    /// The control-transfer instructions fault on nothing of their own beyond a null receiver:
-    /// what the target raises is the call graph's business, not this table's. `callvirt` has the
-    /// receiver and so is the one that differs.
+    /// The control-transfer instructions carry nothing of their own except where the transfer has
+    /// something to dereference: what the *target* raises is the call graph's business, not this
+    /// table's. `callvirt` has a receiver and `calli` has a function pointer, so those two differ
+    /// from `call` and `jmp`, which name their target by token and have nothing to fault on.
+    ///
+    /// `calli`'s entry is the one to be careful with: ECMA-335 III.3.20 lists only
+    /// `SecurityException` against it, so reading the specification alone gives the wrong answer
+    /// here. What pins it is `TestPureCases`' "calli through a null function pointer throws
+    /// NullReferenceException", which is PawPrint's own deliberate divergence from CoreCLR.
     [<Test>]
     let ``control transfers carry only their own faults`` () : unit =
-        for op in
-            [
-                UnaryMetadataTokenIlOp.Call
-                UnaryMetadataTokenIlOp.Calli
-                UnaryMetadataTokenIlOp.Jmp
-            ] do
+        for op in [ UnaryMetadataTokenIlOp.Call ; UnaryMetadataTokenIlOp.Jmp ] do
             OpcodeFaults.ofUnaryMetadata op |> shouldEqual (OpcodeFaults.Raises [])
 
-        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Callvirt
-        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ])
+        for op in [ UnaryMetadataTokenIlOp.Callvirt ; UnaryMetadataTokenIlOp.Calli ] do
+            OpcodeFaults.ofUnaryMetadata op
+            |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.NullReference ])
 
     /// `ofIlOp` must agree with the per-shape functions rather than being a second opinion.
     [<Test>]

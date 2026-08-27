@@ -470,12 +470,7 @@ module internal UnaryMetadataTokenOps =
         | Some EvalStackValue.NullObjectRef ->
             // CoreCLR raises this from the dispatch helper (`ResolveVirtualFunctionPointer`,
             // jithelpers.cpp), so it is an ordinary catchable managed exception.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         // ECMA-335 III.4.18 types the popped operand `O`, and PawPrint spells every such receiver
         // — a boxed value type included — as an `ObjectRef`. Anything else is malformed IL rather
         // than a shape to reinterpret, so the arm below says so instead of letting `getTypeOfObj`

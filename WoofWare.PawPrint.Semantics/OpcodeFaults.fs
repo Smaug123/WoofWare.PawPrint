@@ -259,6 +259,18 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Ldflda
         | UnaryMetadataTokenIlOp.Stfld
         | UnaryMetadataTokenIlOp.Callvirt
+        // `calli` faults on a null *target*, as `callvirt` does on a null receiver.
+        //
+        // This entry does not come from the specification. ECMA-335 (6th edition) III.3.20 lists
+        // only `System.SecurityException` under `calli`'s "Exceptions", where III.4.2's `callvirt`
+        // says in as many words that "System.NullReferenceException is thrown if obj is null"; and
+        // III.3.20's "Correctness" requires the pointer to hold the address of a method, so a null
+        // one is incorrect CIL whose behaviour the specification does not fix. It comes instead
+        // from what PawPrint does, which `TestPureCases`' "calli through a null function pointer
+        // throws NullReferenceException" pins, and which is a deliberate divergence from CoreCLR
+        // (that segfaults). Note that `docs/divergences.md` attributes the choice to III.3.20
+        // listing `NullReferenceException`, which that section does not.
+        | UnaryMetadataTokenIlOp.Calli
         | UnaryMetadataTokenIlOp.Ldvirtftn
         | UnaryMetadataTokenIlOp.Initobj
         | UnaryMetadataTokenIlOp.Stobj
@@ -275,10 +287,9 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Ldsfld
         | UnaryMetadataTokenIlOp.Ldsflda
         | UnaryMetadataTokenIlOp.Stsfld -> OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ]
-        // These fault on nothing themselves. For the three that transfer control, what the target
+        // These fault on nothing themselves. For the two that transfer control, what the target
         // raises reaches the caller by the call graph rather than from here.
         | UnaryMetadataTokenIlOp.Call
-        | UnaryMetadataTokenIlOp.Calli
         | UnaryMetadataTokenIlOp.Jmp
         | UnaryMetadataTokenIlOp.Isinst
         | UnaryMetadataTokenIlOp.Ldftn
@@ -357,3 +368,29 @@ module OpcodeFaults =
         match faults with
         | OpcodeFaults.Unmodelled -> true
         | OpcodeFaults.Raises xs -> List.contains fault xs
+
+/// The bridge from a fault named abstractly to the corelib type that stands for it.
+[<RequireQualifiedAccess>]
+module OpcodeFault =
+
+    /// The corelib type an execution engine raises for this fault.
+    ///
+    /// Total, and the only place the correspondence is written down: a consumer that wants the
+    /// type for a fault must come through here rather than naming a `BaseClassTypes` field
+    /// itself, which is what keeps the table and the interpreter from drifting apart.
+    let resolve
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (fault : OpcodeFault)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        match fault with
+        | OpcodeFault.NullReference -> baseClassTypes.NullReferenceException
+        | OpcodeFault.IndexOutOfRange -> baseClassTypes.IndexOutOfRangeException
+        | OpcodeFault.ArrayTypeMismatch -> baseClassTypes.ArrayTypeMismatchException
+        | OpcodeFault.InvalidCast -> baseClassTypes.InvalidCastException
+        | OpcodeFault.Overflow -> baseClassTypes.OverflowException
+        | OpcodeFault.DivideByZero -> baseClassTypes.DivideByZeroException
+        | OpcodeFault.Arithmetic -> baseClassTypes.ArithmeticException
+        | OpcodeFault.OutOfMemory -> baseClassTypes.OutOfMemoryException
+        | OpcodeFault.StackOverflow -> baseClassTypes.StackOverflowException
+        | OpcodeFault.TypeInitialization -> baseClassTypes.TypeInitializationException

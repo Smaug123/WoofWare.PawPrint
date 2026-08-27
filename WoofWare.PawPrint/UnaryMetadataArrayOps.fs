@@ -284,10 +284,10 @@ module internal UnaryMetadataArrayOps =
             if tokenElementHandle <> arrayElementHandle then
                 // Don't advance the PC: exception dispatch needs the faulting instruction's
                 // offset for handler search and stack-trace construction.
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     baseClassTypes
-                    baseClassTypes.ArrayTypeMismatchException
+                    OpcodeFault.ArrayTypeMismatch
                     thread
                     state
             else
@@ -339,10 +339,10 @@ module internal UnaryMetadataArrayOps =
 
         if index < 0 || index >= arrAlloc.Length then
             // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseRuntimeException
+            IlMachineStateExecution.raiseOpcodeFault
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.IndexOutOfRangeException
+                OpcodeFault.IndexOutOfRange
                 thread
                 state
         else

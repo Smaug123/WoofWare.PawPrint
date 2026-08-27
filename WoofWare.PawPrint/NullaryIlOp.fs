@@ -429,20 +429,6 @@ module NullaryIlOp =
             |> EvalStackValue.NativeInt
         | _ -> failwith $"TODO: Div_un for {v1} and {v2}"
 
-    /// Which operand-dependent faults an IL arithmetic instruction is *allowed* to raise.
-    /// `executeFaultingArithmetic` converts exactly the listed faults into guest exceptions and
-    /// lets anything else escape as an interpreter failure, so a host `DivideByZeroException`
-    /// arriving from somewhere that cannot divide still crashes loudly instead of being handed to
-    /// the guest as a plausible-looking `System.DivideByZeroException`.
-    [<RequireQualifiedAccess>]
-    type private ArithmeticFaults =
-        /// `div.un`, `rem.un`. Unsigned, so every quotient is representable and only a zero divisor
-        /// faults (ECMA-335 III.3.32, III.3.56).
-        | DivideByZero
-        /// `div`, `rem`. A zero divisor faults, and so does `MinValue op -1`, whose quotient has no
-        /// two's-complement representation (ECMA-335 III.3.31, III.3.55).
-        | DivideByZeroOrOverflow
-
     /// Run one arithmetic instruction that can fault on its operands, and either push its result or
     /// hand the guest the exception the CLR would have thrown.
     ///
@@ -456,12 +442,22 @@ module NullaryIlOp =
     let private executeFaultingArithmetic
         (loggerFactory : ILoggerFactory)
         (corelib : BaseClassTypes<DumpedAssembly>)
-        (faults : ArithmeticFaults)
         (currentThread : ThreadId)
         (state : IlMachineState)
         (compute : unit -> EvalStackValue * IlMachineState)
         : ExecutionResult
         =
+        // Which faults this instruction is *allowed* to hand the guest, read from the shared
+        // table rather than restated here. `div.un` and `rem.un` are unsigned, so every quotient
+        // is representable and only a zero divisor faults (ECMA-335 III.3.32, III.3.56); `div`
+        // and `rem` additionally fault on `MinValue op -1`, whose quotient has no two's-complement
+        // representation (III.3.31, III.3.55). Anything else the host raises is an interpreter
+        // failure and escapes, so a host `DivideByZeroException` arriving from somewhere that
+        // cannot divide still crashes loudly instead of being handed to the guest as a
+        // plausible-looking `System.DivideByZeroException`.
+        let permitted =
+            IlMachineStateExecution.faultsOfCurrentInstruction currentThread state
+
         // The host's own `div`/`rem` instructions are what actually detect these faults —
         // PawPrint delegates the arithmetic to them via `BinaryArithmetic`, so there is no
         // separate table of faulting operand values here that could drift from the semantics
@@ -470,13 +466,10 @@ module NullaryIlOp =
             try
                 compute () |> Ok
             with
-            | :? DivideByZeroException -> Error corelib.DivideByZeroException
-            | :? OverflowException when
-                (match faults with
-                 | ArithmeticFaults.DivideByZeroOrOverflow -> true
-                 | ArithmeticFaults.DivideByZero -> false)
-                ->
-                Error corelib.OverflowException
+            | :? DivideByZeroException when OpcodeFaults.mayRaise OpcodeFault.DivideByZero permitted ->
+                Error OpcodeFault.DivideByZero
+            | :? OverflowException when OpcodeFaults.mayRaise OpcodeFault.Overflow permitted ->
+                Error OpcodeFault.Overflow
 
         match outcome with
         | Ok (result, state) ->
@@ -485,8 +478,8 @@ module NullaryIlOp =
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
             |> ExecutionResult.stepped
-        | Error exceptionType ->
-            IlMachineStateExecution.raiseRuntimeException loggerFactory corelib exceptionType currentThread state
+        | Error fault ->
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib fault currentThread state
             |> ExecutionResult.stepped
 
     let private negInt32Unchecked (value : int32) : int32 =
@@ -1339,12 +1332,7 @@ module NullaryIlOp =
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                corelib
-                corelib.NullReferenceException
-                currentThread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.NullReference currentThread state
             |> ExecutionResult.stepped
         | EvalStackValue.NativeInt (NativeIntSource.PerInstInfoPtr handle) ->
             // First deref of the `MethodTable*** PerInstInfo` chain: step
@@ -1478,12 +1466,7 @@ module NullaryIlOp =
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ManagedPointer ManagedPointerSource.Null
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                corelib
-                corelib.NullReferenceException
-                currentThread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.NullReference currentThread state
             |> ExecutionResult.stepped
         | _ ->
 
@@ -2003,12 +1986,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error _ ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Sub_ovf_un -> failwith "TODO: Sub_ovf_un unimplemented"
         | Add ->
@@ -2041,12 +2019,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error _ ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Add_ovf_un -> failwith "TODO: Add_ovf_un unimplemented"
         | Mul ->
@@ -2079,12 +2052,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error _ ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Mul_ovf_un ->
             let val2, state = IlMachineState.popEvalStack currentThread state
@@ -2104,12 +2072,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error _ ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Div ->
             let val2, state = IlMachineState.popEvalStack currentThread state
@@ -2118,7 +2081,6 @@ module NullaryIlOp =
             executeFaultingArithmetic
                 loggerFactory
                 corelib
-                ArithmeticFaults.DivideByZeroOrOverflow
                 currentThread
                 state
                 (fun () -> BinaryArithmetic.execute corelib ArithmeticOperation.div state val1 val2)
@@ -2126,13 +2088,7 @@ module NullaryIlOp =
             let v2, state = IlMachineState.popEvalStack currentThread state
             let v1, state = IlMachineState.popEvalStack currentThread state
 
-            executeFaultingArithmetic
-                loggerFactory
-                corelib
-                ArithmeticFaults.DivideByZero
-                currentThread
-                state
-                (fun () -> divUnValues v1 v2, state)
+            executeFaultingArithmetic loggerFactory corelib currentThread state (fun () -> divUnValues v1 v2, state)
         | Shr ->
             let shift, state = IlMachineState.popEvalStack currentThread state
             let number, state = IlMachineState.popEvalStack currentThread state
@@ -2814,10 +2770,10 @@ module NullaryIlOp =
             match exceptionObject with
             | EvalStackValue.NullObjectRef ->
                 // Per ECMA-335 III.4.31: if the object is null, throw NullReferenceException instead.
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     corelib
-                    corelib.NullReferenceException
+                    OpcodeFault.NullReference
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -2926,7 +2882,6 @@ module NullaryIlOp =
             executeFaultingArithmetic
                 loggerFactory
                 corelib
-                ArithmeticFaults.DivideByZeroOrOverflow
                 currentThread
                 state
                 (fun () -> BinaryArithmetic.execute corelib ArithmeticOperation.rem state val1 val2)
@@ -2937,7 +2892,6 @@ module NullaryIlOp =
             executeFaultingArithmetic
                 loggerFactory
                 corelib
-                ArithmeticFaults.DivideByZero
                 currentThread
                 state
                 (fun () -> BinaryArithmetic.execute corelib ArithmeticOperation.remUn state val1 val2)
@@ -3002,12 +2956,7 @@ module NullaryIlOp =
             | Error () ->
                 // Exception dispatch uses the faulting instruction's PC, so do
                 // not advance the program counter on this branch.
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_u_un -> failwith "TODO: Conv_ovf_u_un unimplemented"
         | Conv_ovf_i1_un -> failwith "TODO: Conv_ovf_i1_un unimplemented"
@@ -3024,12 +2973,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error () ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_i2_un -> failwith "TODO: Conv_ovf_i2_un unimplemented"
         | Conv_ovf_u2_un -> failwith "TODO: Conv_ovf_u2_un unimplemented"
@@ -3046,12 +2990,7 @@ module NullaryIlOp =
             | Error () ->
                 // Exception dispatch uses the faulting instruction's PC, so do
                 // not advance the program counter on this branch.
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_u4_un -> failwith "TODO: Conv_ovf_u4_un unimplemented"
         | Conv_ovf_i8_un -> failwith "TODO: Conv_ovf_i8_un unimplemented"
@@ -3081,12 +3020,7 @@ module NullaryIlOp =
             | Error () ->
                 // Exception dispatch uses the faulting instruction's PC, so do
                 // not advance the program counter on this branch.
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_u ->
             let popped, state = IlMachineState.popEvalStack currentThread state
@@ -3113,12 +3047,7 @@ module NullaryIlOp =
             | Error () ->
                 // Exception dispatch uses the faulting instruction's PC, so do
                 // not advance the program counter on this branch.
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Neg ->
             let val1, state = IlMachineState.popEvalStack currentThread state
@@ -3177,10 +3106,10 @@ module NullaryIlOp =
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     corelib
-                    corelib.NullReferenceException
+                    OpcodeFault.NullReference
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3250,10 +3179,10 @@ module NullaryIlOp =
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null
             | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) ->
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     corelib
-                    corelib.NullReferenceException
+                    OpcodeFault.NullReference
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3410,10 +3339,10 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | CopyBlockOutcome.NullEndpoint state ->
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     corelib
-                    corelib.NullReferenceException
+                    OpcodeFault.NullReference
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3426,10 +3355,10 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | InitBlockOutcome.NullDestination state ->
-                IlMachineStateExecution.raiseRuntimeException
+                IlMachineStateExecution.raiseOpcodeFault
                     loggerFactory
                     corelib
-                    corelib.NullReferenceException
+                    OpcodeFault.NullReference
                     currentThread
                     state
                 |> ExecutionResult.stepped
@@ -3446,12 +3375,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error () ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_u2 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
@@ -3466,12 +3390,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error () ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_u4 ->
             let popped, state = IlMachineState.popEvalStack currentThread state
@@ -3486,12 +3405,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error () ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_u8 -> failwith "TODO: Conv_ovf_u8 unimplemented"
         | Conv_ovf_i1 ->
@@ -3507,12 +3421,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error () ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_i2 -> failwith "TODO: Conv_ovf_i2 unimplemented"
         | Conv_ovf_i4 ->
@@ -3526,12 +3435,7 @@ module NullaryIlOp =
                 |> Tuple.withRight WhatWeDid.Executed
                 |> ExecutionResult.stepped
             | Error () ->
-                IlMachineStateExecution.raiseRuntimeException
-                    loggerFactory
-                    corelib
-                    corelib.OverflowException
-                    currentThread
-                    state
+                IlMachineStateExecution.raiseOpcodeFault loggerFactory corelib OpcodeFault.Overflow currentThread state
                 |> ExecutionResult.stepped
         | Conv_ovf_i8 -> failwith "TODO: Conv_ovf_i8 unimplemented"
         | Break -> failwith "TODO: Break unimplemented"

@@ -108,12 +108,7 @@ module internal UnaryMetadataCallOps =
         match arrAddrOpt with
         | None ->
             // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | Some arrAddr ->
 
         let arrObj =
@@ -126,10 +121,10 @@ module internal UnaryMetadataCallOps =
                 $"multi-dim array Set: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
 
         if indicesOutOfRange arrObj.Lengths indices then
-            IlMachineStateExecution.raiseRuntimeException
+            IlMachineStateExecution.raiseOpcodeFault
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.IndexOutOfRangeException
+                OpcodeFault.IndexOutOfRange
                 thread
                 state
         else
@@ -204,12 +199,7 @@ module internal UnaryMetadataCallOps =
         match arrAddrOpt with
         | None ->
             // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | Some arrAddr ->
 
         let arrObj =
@@ -222,10 +212,10 @@ module internal UnaryMetadataCallOps =
                 $"multi-dim array Get: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
 
         if indicesOutOfRange arrObj.Lengths indices then
-            IlMachineStateExecution.raiseRuntimeException
+            IlMachineStateExecution.raiseOpcodeFault
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.IndexOutOfRangeException
+                OpcodeFault.IndexOutOfRange
                 thread
                 state
         else
@@ -308,12 +298,7 @@ module internal UnaryMetadataCallOps =
         match arrAddrOpt with
         | None ->
             // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | Some arrAddr ->
 
         let arrObj =
@@ -326,10 +311,10 @@ module internal UnaryMetadataCallOps =
                 $"multi-dim array Address: rank %d{rank} from metadata does not match the allocated array's rank %d{arrObj.Lengths.Length} at %O{arrAddr}"
 
         if indicesOutOfRange arrObj.Lengths indices then
-            IlMachineStateExecution.raiseRuntimeException
+            IlMachineStateExecution.raiseOpcodeFault
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.IndexOutOfRangeException
+                OpcodeFault.IndexOutOfRange
                 thread
                 state
         else
@@ -373,10 +358,10 @@ module internal UnaryMetadataCallOps =
                 failwith $"BUG: multi-dim array Address: array at %O{arrAddr} has non-Array ConcreteType %O{other}"
 
         if tokenElementHandle <> arrayElementHandle then
-            IlMachineStateExecution.raiseRuntimeException
+            IlMachineStateExecution.raiseOpcodeFault
                 loggerFactory
                 baseClassTypes
-                baseClassTypes.ArrayTypeMismatchException
+                OpcodeFault.ArrayTypeMismatch
                 thread
                 state
         else
@@ -1198,12 +1183,7 @@ module internal UnaryMetadataCallOps =
                 | _ -> false
             )
         then
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         else
 
         let state =
@@ -1568,12 +1548,7 @@ module internal UnaryMetadataCallOps =
             // ECMA-335 III.3.20: calli throws NullReferenceException if the function
             // pointer is null. Don't advance the PC; exception dispatch needs the
             // faulting instruction's offset.
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | Some FunctionPointerTarget.RuntimeAllocator -> executeAllocatorCalli ctx callSiteSignature state
         | Some (FunctionPointerTarget.Dynamic handle) ->
             // The same boundary `FunctionPointerTarget.requireManaged` enforces on the delegate
