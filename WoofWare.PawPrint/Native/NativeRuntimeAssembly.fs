@@ -1107,6 +1107,125 @@ module NativeRuntimeAssembly =
                 |> writeComponent 4 "revNum" version.Revision
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_GetModules",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            // `AssemblyNative_GetModules` (coreclr/vm/assemblynative.cpp:696), behind
+            // `Assembly.GetModules()`, `GetModules(bool)` and `GetLoadedModules(bool)`. CoreCLR
+            // appends the assembly's own module, walks the `File` table calling
+            // `Module::LoadModule` on each row when `fLoadIfNotFound`, and writes back an array of
+            // each module's `GetExposedObject()`.
+            //
+            // The two `Int32` parameters are the `[MarshalAs(UnmanagedType.Bool)] bool` ones after
+            // the `LibraryImport` stub has lowered them; that stub is `brtrue`-based, so only 0
+            // and 1 arrive here.
+            let operation = "AssemblyNative_GetModules"
+
+            if instruction.Arguments.Length <> 4 then
+                failwith $"%s{operation}: expected four native arguments, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                instruction.Arguments.[0]
+                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+            let loadIfNotFound =
+                NativeCall.int32Argument operation instruction.Arguments.[1] <> 0
+
+            // `fGetResourceModules` is read nowhere in CoreCLR's function body, so a resource-only
+            // `File` row is treated exactly as a code module row would be. Measured against real
+            // .NET rather than inferred from the parameter's name: `GetModules(false)` on an
+            // assembly built with `csc /linkresource` throws just as `GetModules(true)` does.
+            NativeCall.int32Argument operation instruction.Arguments.[2] |> ignore<int>
+
+            let retModules =
+                NativeCall.objectHandleOnStackTarget operation state "retModuleHandles" instruction.Arguments.[3]
+
+            let assembly =
+                state.LoadedAssembly assemblyFullName
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+            // A `File` row can only ever end the call: `ModuleBase::LoadModule`
+            // (vm/ceeload.cpp:2543) reads the row's name and then unconditionally throws
+            // `COR_E_MULTIMODULEASSEMBLIESDIALLOWED`, so CoreCLR never appends a second module. It
+            // *is* a virtual with an override that returns one (vm/readytoruninfo.cpp:1777), but
+            // that override is `final` on `NativeManifestModule` — the synthetic metadata module of
+            // a composite ReadyToRun image, never what `pAssembly->GetModule()` returns.
+            //
+            // Refused here rather than reproduced as a guest-catchable `FileLoadException`. That
+            // exception carries a `FileName` (the *row's* name, not the assembly's) and
+            // `HResult = 0x8013101E`, and the raise machinery available to a native handler can
+            // set neither: it calls the parameterless ctor and overwrites `_message`, which would
+            // leave a guest reading `null` and `0x80131621`. Two silently wrong guest-readable
+            // values is a worse trade than a loud stop.
+            if loadIfNotFound then
+                let metadataReader =
+                    System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader assembly.PeReader
+
+                let files = metadataReader.AssemblyFiles
+
+                if files.Count > 0 then
+                    // Named after the row CoreCLR's exception would name: `EnumNext` yields rids
+                    // ascending and `LoadModule` throws on the first row it is handed, so it is
+                    // always row 1 that is reported however many rows there are.
+                    let firstFile =
+                        (files :> seq<System.Reflection.Metadata.AssemblyFileHandle>)
+                        |> Seq.head
+                        |> metadataReader.GetAssemblyFile
+
+                    failwith
+                        $"%s{operation}: assembly %s{assembly.DefinitionFullName} has %d{files.Count} File row(s), the first naming %s{metadataReader.GetString firstFile.Name}, and loadIfNotFound was set; multi-module and linked-file assemblies are not supported"
+
+            let moduleAddr, state =
+                NativeRuntimeType.getOrAllocateRuntimeModule
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    assembly.DefinitionFullName
+                    state
+
+            // `AllocateObjectArray(modules.GetCount(), CoreLibBinder::GetClass(CLASS__MODULE))`,
+            // and `CLASS__MODULE` is `System.Reflection.RuntimeModule` (vm/corelib.h:615) —
+            // matching the `RuntimeModule[]` local `GetModulesInternal` declares, which the public
+            // `Assembly.GetModules(bool)` only widens to `Module[]` on the way out.
+            let state, _, runtimeModuleElementHandle =
+                NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    "System.Reflection"
+                    "RuntimeModule"
+
+            // Freshly allocated per call, while the module object it holds is cached — so two
+            // `GetModules()` calls give a guest two distinct arrays holding the same element, and
+            // that element is the one `Assembly.ManifestModule` reports.
+            let arrayAddr, state =
+                IlMachineState.allocateArray
+                    (ConcreteTypeHandle.OneDimArrayZero runtimeModuleElementHandle)
+                    (fun () -> CliType.ObjectRef None)
+                    1
+                    state
+
+            let state =
+                IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some moduleAddr)) 0 state
+
+            // Written unconditionally: `GetModulesInternal` starts from `null` and returns
+            // `modules!` (RuntimeAssembly.cs:678-685), so a skipped write is a
+            // NullReferenceException in the guest.
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retModules
+                    (CliType.ObjectRef (Some arrayAddr))
+
+            NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetTypeCore",
           "System.Private.CoreLib",
           "System.Reflection",

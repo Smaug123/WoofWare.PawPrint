@@ -126,6 +126,7 @@ module NativeQCall =
             "AssemblyNative_GetHashAlgorithm", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetHashAlgorithm"
             "AssemblyNative_GetLocale", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocale"
             "AssemblyNative_GetLocation", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocation"
+            "AssemblyNative_GetModules", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetModules"
             "AssemblyNative_GetPublicKey", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetPublicKey"
             "AssemblyNative_GetResource", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetResource"
             "AssemblyNative_GetSimpleName", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetSimpleName"
