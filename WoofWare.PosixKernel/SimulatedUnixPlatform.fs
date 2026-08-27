@@ -1162,12 +1162,24 @@ type GetCwdOrphanAnswer =
     /// comparison against a path that no longer exists.
     ///
     /// This is the one failure path in this library that **writes to the
-    /// caller's buffer**. Having climbed, Darwin leaves the whole stale path
-    /// there, NUL-terminated, and *then* reports ENOENT — measured with the
-    /// destination prefilled `0xAA` and stable across ten samples, so it is the
-    /// path the directory had rather than whatever the name cache happened to
-    /// hold. Every Linux failure path, and every other Darwin one, leaves the
-    /// destination exactly as it was.
+    /// caller's buffer**, and it does not write from the front. Measured by
+    /// sweeping the capacity with the destination prefilled `0xAA` and
+    /// reporting every byte that changed:
+    ///
+    /// * a NUL lands at the *last* byte of the buffer, whatever its size;
+    /// * once the buffer is at least PATH_MAX, the stale path appears at offset
+    ///   0 as well — the two are not alternatives — NUL-terminated, and stable
+    ///   across ten samples, so it is the path the directory had rather than
+    ///   whatever a name cache happened to hold.
+    ///
+    /// The switch is sharp between 1023 and 1024, which is this flavour's own
+    /// PATH_MAX. Linux writes nothing on any failure path at any capacity, so
+    /// there is no second flavour to confirm that the threshold is PATH_MAX
+    /// rather than the number 1024.
+    ///
+    /// Every Linux failure path, and every other Darwin one, leaves the
+    /// destination exactly as it was — including this flavour's own ERANGE at
+    /// capacity 1, which is why that case reports no write at all.
     | ShortestPathFirst
 
 /// What an unwritable destination does to a `getcwd(3)` that has got as far as

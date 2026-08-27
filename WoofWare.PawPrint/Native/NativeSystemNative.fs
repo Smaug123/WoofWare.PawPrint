@@ -2433,26 +2433,35 @@ module NativeSystemNative =
                     $"%s{operation}: `buffer` is %O{bufferPointer}, and %s{GetCwdRefusal.describe refusal} Pass a buffer that names guest storage."
             | Ok answer ->
 
-            /// What the call leaves in the caller's buffer. Empty means it was
-            /// not touched at all, and the pointer must therefore not be
-            /// resolved — a call that writes nothing cannot fault, and
-            /// resolving it here would turn an answer into a crash.
-            let writeInto (bytes : ImmutableArray<byte>) (state : IlMachineState) : IlMachineState =
-                if bytes.IsEmpty then
-                    state
-                else
+            /// What the call leaves in the caller's buffer before failing. An
+            /// empty list means it was not touched at all, and the pointer must
+            /// therefore not be resolved — a call that writes nothing cannot
+            /// fault, and resolving it here would turn an answer into a crash.
+            let writeInto (leaves : BufferWrite list) (state : IlMachineState) : IlMachineState =
+                match leaves with
+                | [] -> state
+                | _ ->
 
-                match BufferPointer.dereferenceable bufferPointer with
-                | Some destination -> writeBytesThrough ctx operation destination bytes state
-                | None ->
-                    failwith
-                        $"%s{operation}: the kernel produced %d{bytes.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+                let destination =
+                    match BufferPointer.dereferenceable bufferPointer with
+                    | Some destination -> destination
+                    | None ->
+                        failwith
+                            $"%s{operation}: the kernel left bytes in a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
+
+                (state, leaves)
+                ||> List.fold (fun state write ->
+                    let at = bufferFieldAt ctx operation destination write.Offset state
+                    writeBytesThrough ctx operation at write.Bytes state
+                )
 
             match answer with
             | GetCwdAnswer.Failed (error, leaves) ->
-                // `leaves` is non-empty on exactly one measured path: Darwin
-                // climbing out of a removed current directory writes the stale
-                // path and *then* reports ENOENT.
+                // `leaves` is non-empty on exactly one measured path: Darwin,
+                // climbing out of a removed current directory, terminates the
+                // last byte of the buffer — and, once the buffer is at least
+                // PATH_MAX, puts the stale path at the front as well — and
+                // *then* reports ENOENT.
                 state |> writeInto leaves |> fail error
             | GetCwdAnswer.Reported terminated ->
 
