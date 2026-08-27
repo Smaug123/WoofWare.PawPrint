@@ -3102,10 +3102,51 @@ module TestUnixSystemStep =
             drain second system |> fst |> List.length |> shouldEqual 3
 
     [<Test>]
-    let ``opendir follows a final symlink and demands a directory`` () : unit =
-        // Measured on both: `opendir` follows a final symbolic link, and a
-        // trailing separator changes no row — "ld" and "ld/" both succeed, "f"
-        // and "f/" are both ENOTDIR.
+    let ``opendir follows a final symlink to a directory`` () : unit =
+        // A link to a *directory* is the only thing that can tell `Follow` from
+        // `NoFollowFinal` here: a link to a file is ENOTDIR under either, the
+        // one because the walk lands on the file and the other because the
+        // verdict refuses a symlink. Measured on both, "ld" succeeds.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let vfs =
+                match
+                    VirtualFileSystem.createSymlink
+                        (VirtualFileSystem.root system.Machine.FileSystem)
+                        (FileName.parseOrFail context "ld")
+                        epoch
+                        (SymlinkTarget.parseOrFail context "/d/inner")
+                        system.Machine.FileSystem
+                with
+                | Ok (_, vfs) -> vfs
+                | Error error -> failwith $"could not seed /ld: %O{error}"
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = vfs
+                        }
+                }
+
+            let id, system = openedStream system "/ld"
+
+            // It really enumerated the directory the link names, rather than
+            // opening something empty.
+            drain id system
+            |> fst
+            |> shouldEqual
+                [
+                    "t", DirectoryEntryKind.RegularFile
+                    "..", DirectoryEntryKind.Directory
+                    ".", DirectoryEntryKind.Directory
+                ]
+
+    [<Test>]
+    let ``opendir demands a directory`` () : unit =
+        // Measured on both: "f" and "f/" are both ENOTDIR, and a free name is
+        // ENOENT.
         for flavour in [ linux ; darwin ] do
             let _, _, _, system = withTree flavour
 
