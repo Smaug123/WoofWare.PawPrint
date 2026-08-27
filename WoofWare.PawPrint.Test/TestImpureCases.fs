@@ -1855,7 +1855,7 @@ module TestImpureCases =
             {
                 // A content-changing write's set-ID rule, one guest per flavour,
                 // and the same pairing argument the truncation guests above make:
-                // a `commitFileWrite` that hardcoded either answer instead of
+                // a `UnixSystem.write` that hardcoded either answer instead of
                 // reading `SimulatedUnixPlatform.setGroupIdOnWrite` would satisfy
                 // every unit test (they pass the rule in by hand), the host
                 // oracle (it compares the pure function) *and* one of these two.

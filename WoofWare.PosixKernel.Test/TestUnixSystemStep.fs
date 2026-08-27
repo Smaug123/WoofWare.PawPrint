@@ -1068,6 +1068,356 @@ module TestUnixSystemStep =
 
         exn.Message |> shouldContainText "UnixSystem.pread"
 
+    // ------------------------------------------------------------------ pwrite
+
+    let private pwriteAdmitted (result : Result<WriteAdmission, PWriteRefusal>) : WriteAdmission =
+        match result with
+        | Ok admission -> admission
+        | Error refusal -> failwith $"expected an admission, got %A{refusal}"
+
+    let private pwriteFailed (error : UnixError) : Result<WriteAdmission, PWriteRefusal> =
+        Ok (WriteAdmission.Answered (WriteAnswer.Failed error))
+
+    [<Test>]
+    let ``pwrite writes at the offset it is given and leaves the description alone`` () : unit =
+        // The whole of what `pwrite` does differently from `write`, and the row a
+        // `pwrite` implemented by delegating to `write` fails: the description's
+        // offset is moved first, so writing at it would land in the wrong place
+        // and move it again.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withOpenFile flavour
+
+            let system =
+                match UnixSystem.read fd UserBuffer.Mapped 2 system with
+                | Ok (_, system) -> system
+                | other -> failwith $"could not advance the offset: %A{other}"
+
+            match UnixSystem.pwrite fd (ImmutableArray.CreateRange [ 9uy ; 9uy ]) 3L system with
+            | Ok (WriteAnswer.Completed written, after) ->
+                written |> shouldEqual 2
+
+                match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+                | Some (OpenFileTarget.File (inode, offset)) ->
+                    // Exactly where `read` left it, rather than at 5.
+                    offset |> shouldEqual 2L
+
+                    match VirtualFileSystem.tryGetContent inode after.Machine.FileSystem with
+                    | Some (InodeContent.RegularFile (contents, _)) ->
+                        List.ofSeq contents |> shouldEqual [ 1uy ; 2uy ; 3uy ; 9uy ; 9uy ]
+                    | other -> failwith $"expected a regular file, got %O{other}"
+                | other -> failwith $"expected a file descriptor, got %O{other}"
+            | other -> failwith $"unexpected: %A{other}"
+
+    [<Test>]
+    let ``a pwrite past the end of the file extends it`` () : unit =
+        let fd, system = withOpenFile linux
+
+        match UnixSystem.pwrite fd (ImmutableArray.CreateRange [ 7uy ]) 7L system with
+        | Ok (WriteAnswer.Completed written, after) ->
+            written |> shouldEqual 1
+
+            match FileDescriptorRegistry.tryFindTarget fd after.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, offset)) ->
+                offset |> shouldEqual 0L
+
+                match VirtualFileSystem.tryGetContent inode after.Machine.FileSystem with
+                | Some (InodeContent.RegularFile (contents, _)) ->
+                    List.ofSeq contents
+                    |> shouldEqual [ 1uy ; 2uy ; 3uy ; 4uy ; 5uy ; 0uy ; 0uy ; 7uy ]
+                | other -> failwith $"expected a regular file, got %O{other}"
+            | other -> failwith $"expected a file descriptor, got %O{other}"
+        | other -> failwith $"unexpected: %A{other}"
+
+    [<Test>]
+    let ``a negative offset beats every other fault, on both flavours`` () : unit =
+        // Where `pwrite` differs from `pread`, and the reason it takes no
+        // per-flavour flag. Measured, every second fault gives way to it on both:
+        //
+        //   negative offset with...    Linux    Darwin
+        //   a bad descriptor           EINVAL   EINVAL
+        //   a pipe's read end          EINVAL   EINVAL
+        //   a pipe's write end         EINVAL   EINVAL
+        //   a read-only file           EINVAL   EINVAL
+        //   a directory                EINVAL   EINVAL
+        //   a socket                   EINVAL   EINVAL
+        //   a socket event port        EINVAL   EINVAL
+        //   an unscreenable address    EINVAL   EINVAL
+        //   a zero length              EINVAL   EINVAL
+        //
+        // `pread` answers the same shapes as EBADF, ESPIPE and EBADF on Darwin,
+        // so a flag copied across from it would fail every row here.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withOpenFile flavour
+            let readOnlyFd, readOnly = withReadOnlyFile flavour
+            let dirFd, dirSystem = withOpenDirectory flavour
+            let socketFd, socketSystem = withSocket flavour
+            let portFd, portSystem = withSocketEventPort flavour
+
+            for descriptor, holding in
+                [
+                    fd, system
+                    7, system
+                    0, system
+                    1, system
+                    readOnlyFd, readOnly
+                    dirFd, dirSystem
+                    socketFd, socketSystem
+                    portFd, portSystem
+                ] do
+                UnixSystem.admitPWrite descriptor UserBuffer.Mapped 4 -1L holding
+                |> shouldEqual (pwriteFailed UnixError.EINVAL)
+
+            // And it beats the buffer screen and the no-op too, which the rows
+            // above cannot say: both of those sit behind the descriptor steps,
+            // so a buffer with no answer at all still earns EINVAL.
+            UnixSystem.admitPWrite fd UserBuffer.Addressless 4 -1L system
+            |> shouldEqual (pwriteFailed UnixError.EINVAL)
+
+            UnixSystem.admitPWrite fd UserBuffer.Mapped 0 -1L system
+            |> shouldEqual (pwriteFailed UnixError.EINVAL)
+
+    [<Test>]
+    let ``an unseekable descriptor is ESPIPE for pwrite, with the tie the other way up`` () : unit =
+        // The mirror of `pread`'s tie: standard *input* is the one that fails two
+        // tests at once, being neither seekable nor open for writing. Measured:
+        //
+        //   descriptor                        Linux    Darwin
+        //   pipe write end (unseekable)       ESPIPE   ESPIPE
+        //   pipe read end (also unwritable)   ESPIPE   EBADF
+        //   regular file O_RDONLY (seekable)  EBADF    EBADF
+        for fd in [ 1 ; 2 ] do
+            UnixSystem.admitPWrite fd UserBuffer.Mapped 4 0L linux
+            |> shouldEqual (pwriteFailed UnixError.ESPIPE)
+
+            UnixSystem.admitPWrite fd UserBuffer.Mapped 4 0L darwin
+            |> shouldEqual (pwriteFailed UnixError.ESPIPE)
+
+        UnixSystem.admitPWrite 0 UserBuffer.Mapped 4 0L linux
+        |> shouldEqual (pwriteFailed UnixError.ESPIPE)
+
+        UnixSystem.admitPWrite 0 UserBuffer.Mapped 4 0L darwin
+        |> shouldEqual (pwriteFailed UnixError.EBADF)
+
+        // The control that says this is about the tie rather than about
+        // unwritability generally.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withReadOnlyFile flavour
+
+            UnixSystem.admitPWrite fd UserBuffer.Mapped 4 0L system
+            |> shouldEqual (pwriteFailed UnixError.EBADF)
+
+        // And seekability precedes the screen on both: measured,
+        // `pwrite(pipeReadEnd, (void*)-1, 4, 0)` is ESPIPE on Linux and EBADF on
+        // Darwin, not EFAULT.
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+
+        UnixSystem.admitPWrite 0 wild 4 0L linux
+        |> shouldEqual (pwriteFailed UnixError.ESPIPE)
+
+        UnixSystem.admitPWrite 0 wild 4 0L darwin
+        |> shouldEqual (pwriteFailed UnixError.EBADF)
+
+        UnixSystem.admitPWrite 1 wild 4 0L linux
+        |> shouldEqual (pwriteFailed UnixError.ESPIPE)
+
+    [<Test>]
+    let ``a socket and a port are ESPIPE for pwrite, and so need no refusal`` () : unit =
+        // Where `pwrite` and `write` part company hardest: `write` to a socket is
+        // an answer about connection state, which this kernel cannot give, but
+        // seekability is not — so `pwrite` never reaches the write operation to
+        // ask, and `PWriteRefusal` has no socket case at all. Measured ESPIPE on
+        // a TCP, a UDP and a Unix-domain socket alike, at every buffer and every
+        // length.
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+
+        for flavour in [ linux ; darwin ] do
+            let socketFd, socketSystem = withSocket flavour
+            let portFd, portSystem = withSocketEventPort flavour
+
+            for buffer in [ UserBuffer.Mapped ; wild ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
+                for count in [ 0 ; 4 ] do
+                    UnixSystem.admitPWrite socketFd buffer count 0L socketSystem
+                    |> shouldEqual (pwriteFailed UnixError.ESPIPE)
+
+                    UnixSystem.admitPWrite portFd buffer count 0L portSystem
+                    |> shouldEqual (pwriteFailed UnixError.ESPIPE)
+
+        // The same socket refuses a `write`, and the port answers it with the
+        // kind's own errno rather than with unseekability.
+        let fd, system = withSocket linux
+
+        UnixSystem.admitWrite fd UserBuffer.Mapped 4 system
+        |> shouldEqual (
+            Error (WriteRefusal.SocketConnectionState (socketZero, SocketDomain.InterNetwork, SocketKind.Stream))
+        )
+
+        let portFd, portSystem = withSocketEventPort linux
+
+        UnixSystem.admitWrite portFd UserBuffer.Mapped 4 portSystem
+        |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EINVAL)))
+
+    [<Test>]
+    let ``an unwritable file beats pwrite's screen and its no-op`` () : unit =
+        // Measured: `pwrite(rdonlyFd, (void*)-1, 4, 0)` is EBADF rather than
+        // EFAULT, and `pwrite(rdonlyFd, buf, 0, 0)` is EBADF rather than 0. Driven
+        // at count 0 *and* with a buffer that would otherwise refuse, since either
+        // alone could pass against a wrong order.
+        for flavour in [ linux ; darwin ] do
+            let fd, system = withReadOnlyFile flavour
+            // A directory too, which is how it is unreachable as a *kind*: one
+            // can only be opened for reading, so the access mode catches it and
+            // `pwrite` never gets far enough to say EISDIR. Measured EBADF on
+            // both, with a wild address as well as a good one.
+            let dirFd, dirSystem = withOpenDirectory flavour
+
+            for descriptor, holding in [ fd, system ; dirFd, dirSystem ] do
+                for buffer in [ UserBuffer.Mapped ; UserBuffer.Addressless ; UserBuffer.Unmapped 0UL ] do
+                    for count in [ 0 ; 4 ] do
+                        UnixSystem.admitPWrite descriptor buffer count 0L holding
+                        |> shouldEqual (pwriteFailed UnixError.EBADF)
+
+    [<Test>]
+    let ``pwrite's screen precedes its zero-length no-op, on the flavour that screens`` () : unit =
+        // A wild address with nothing to write is EFAULT on Linux, which screens
+        // before the operation, and 0 on Darwin, which screens nothing and reaches
+        // the no-op.
+        let wild = UserBuffer.Unmapped System.UInt64.MaxValue
+        let fd, system = withOpenFile linux
+        let darwinFd, darwinSystem = withOpenFile darwin
+
+        UnixSystem.admitPWrite fd wild 0 0L system
+        |> shouldEqual (pwriteFailed UnixError.EFAULT)
+
+        UnixSystem.admitPWrite darwinFd wild 0 0L darwinSystem
+        |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0)))
+
+        // A *null* pointer passes the screen on both — it is an ordinary user
+        // address — so it reaches the no-op at length 0 and faults at the copy
+        // otherwise. Measured, `pwrite(f, NULL, 0, 0)` is 0 and
+        // `pwrite(f, NULL, 4, 0)` is EFAULT, on both.
+        for descriptor, holding in [ fd, system ; darwinFd, darwinSystem ] do
+            UnixSystem.admitPWrite descriptor (UserBuffer.Unmapped 0UL) 0 0L holding
+            |> shouldEqual (Ok (WriteAdmission.Answered (WriteAnswer.Completed 0)))
+
+            UnixSystem.admitPWrite descriptor (UserBuffer.Unmapped 0UL) 4 0L holding
+            |> shouldEqual (pwriteFailed UnixError.EFAULT)
+
+    [<Test>]
+    let ``a pwrite buffer with no bytes is refused at the copy, not faulted`` () : unit =
+        let fd, system = withOpenFile linux
+
+        UnixSystem.admitPWrite fd UserBuffer.Opaque 4 0L system
+        |> shouldEqual (Error (PWriteRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
+
+        UnixSystem.admitPWrite fd UserBuffer.Addressless 4 0L system
+        |> shouldEqual (Error (PWriteRefusal.Buffer BufferRefusal.AddresslessAtScreen))
+
+        let darwinFd, darwinSystem = withOpenFile darwin
+
+        UnixSystem.admitPWrite darwinFd UserBuffer.Addressless 4 0L darwinSystem
+        |> shouldEqual (Error (PWriteRefusal.Buffer BufferRefusal.AddresslessAtTransfer))
+
+    [<Test>]
+    let ``a pwrite that reaches the copy asks for exactly what was requested`` () : unit =
+        let fd, system = withOpenFile linux
+
+        UnixSystem.admitPWrite fd UserBuffer.Mapped 3 9L system
+        |> pwriteAdmitted
+        |> shouldEqual (WriteAdmission.Transfer 3)
+
+    [<Test>]
+    let ``admitting a pwrite changes nothing`` () : unit =
+        // Everything a write does before the copy is a question, so a caller may
+        // ask and then decline. If this stopped holding, the two-call shape would
+        // be handing out a half-performed syscall.
+        let fd, system = withOpenFile linux
+
+        for buffer, count in [ UserBuffer.Mapped, 3 ; UserBuffer.Unmapped 0UL, 3 ; UserBuffer.Mapped, 0 ] do
+            UnixSystem.admitPWrite fd buffer count 0L system
+            |> ignore<Result<WriteAdmission, PWriteRefusal>>
+
+        UnixSystem.admitPWrite fd UserBuffer.Mapped 3 0L system
+        |> pwriteAdmitted
+        |> shouldEqual (WriteAdmission.Transfer 3)
+
+    [<Test>]
+    let ``pwrite answers the descriptor questions itself`` () : unit =
+        // A caller that skipped the admission gets a kernel's answer rather than
+        // an inconsistent one, which is what lets the second call take no buffer.
+        let bytes = ImmutableArray.CreateRange [ 1uy ]
+
+        UnixSystem.pwrite 7 bytes 0L linux
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, linux))
+
+        let fd, system = withReadOnlyFile linux
+
+        UnixSystem.pwrite fd bytes 0L system
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, system))
+
+        // Including the negative offset, which precedes them all.
+        let good, goodSystem = withOpenFile linux
+
+        UnixSystem.pwrite good bytes -1L goodSystem
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EINVAL, goodSystem))
+
+    [<Test>]
+    let ``an empty pwrite changes nothing, but only after the descriptor checks`` () : unit =
+        let fd, system = withOpenFile linux
+
+        // Including far past the end of the file, which does not extend it:
+        // measured, `pwrite(f, buf, 0, 100000)` on a five-byte file leaves it five
+        // bytes long.
+        for offset in [ 0L ; 100000L ] do
+            UnixSystem.pwrite fd ImmutableArray<byte>.Empty offset system
+            |> shouldEqual (Ok (WriteAnswer.Completed 0, system))
+
+        let readOnlyFd, readOnly = withReadOnlyFile linux
+
+        UnixSystem.pwrite readOnlyFd ImmutableArray<byte>.Empty 0L readOnly
+        |> shouldEqual (Ok (WriteAnswer.Failed UnixError.EBADF, readOnly))
+
+    [<Test>]
+    let ``a pwrite longer than the model can hold is refused, not answered`` () : unit =
+        // A real filesystem answers this without difficulty, so an errno here
+        // would be one no kernel produced. `pwrite` reaches it far more easily
+        // than `write` does, its offset being an argument rather than a position
+        // the file was walked to.
+        let fd, system = withOpenFile linux
+        let bytes = ImmutableArray.CreateRange [ 1uy ]
+
+        match UnixSystem.pwrite fd bytes VirtualFileSystem.maxFileLength system with
+        | Error (PWriteRefusal.ExceedsRepresentableLength (_, offset, count)) ->
+            offset |> shouldEqual VirtualFileSystem.maxFileLength
+            count |> shouldEqual 1
+
+            PWriteRefusal.describe (PWriteRefusal.ExceedsRepresentableLength (rootInode, offset, count))
+            |> shouldContainText "limit of the model"
+        | other -> failwith $"expected a refusal, got %A{other}"
+
+    [<Test>]
+    let ``a defaulted byte array is rejected rather than pwritten`` () : unit =
+        let fd, system = withOpenFile linux
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                UnixSystem.pwrite fd Unchecked.defaultof<ImmutableArray<byte>> 0L system
+                |> ignore<Result<WriteAnswer * UnixSystem<int, string>, PWriteRefusal>>
+            )
+
+        exn.Message |> shouldContainText "ImmutableArray<byte>.Empty"
+
+    [<Test>]
+    let ``a negative count is refused as admitPWrite's caller's own mistake`` () : unit =
+        let fd, system = withOpenFile linux
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                UnixSystem.admitPWrite fd UserBuffer.Mapped -1 0L system
+                |> ignore<Result<WriteAdmission, PWriteRefusal>>
+            )
+
+        exn.Message |> shouldContainText "UnixSystem.admitPWrite"
+
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
         UnixSystem.close 7 linux
