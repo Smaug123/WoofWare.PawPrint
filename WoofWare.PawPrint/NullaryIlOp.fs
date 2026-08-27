@@ -1659,8 +1659,14 @@ module NullaryIlOp =
                 value
                 state
         with
-        | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state ->
-            ExecutionResult.stepped (state, WhatWeDid.Executed)
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Refused state ->
+            IlMachineStateExecution.raiseOpcodeFault
+                loggerFactory
+                baseClassTypes
+                OpcodeFault.ArrayTypeMismatch
+                currentThread
+                state
+            |> ExecutionResult.stepped
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         // Re-read the allocation from the post-check state rather than reusing the `arr` binding

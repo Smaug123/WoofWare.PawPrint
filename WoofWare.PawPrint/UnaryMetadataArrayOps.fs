@@ -102,17 +102,11 @@ module internal UnaryMetadataArrayOps =
         // thrown.
         match SzArrayAllocation.checkLength len with
         | Some err ->
-            let exceptionType, message = SzArrayAllocation.exceptionFor baseClassTypes err
+            let fault, message = SzArrayAllocation.faultFor err
 
             // Don't advance the PC: exception dispatch needs the faulting instruction's
             // offset for handler search and stack-trace construction.
-            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
-                loggerFactory
-                baseClassTypes
-                exceptionType
-                message
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFaultWithMessage loggerFactory baseClassTypes fault message thread state
         | None ->
 
         let arrayType = ConcreteTypeHandle.OneDimArrayZero concreteTypeHandle
@@ -365,7 +359,13 @@ module internal UnaryMetadataArrayOps =
         match
             IlMachineStateExecution.checkArrayStoreVariance loggerFactory baseClassTypes thread arr contents state
         with
-        | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state -> state, WhatWeDid.Executed
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Refused state ->
+            IlMachineStateExecution.raiseOpcodeFault
+                loggerFactory
+                baseClassTypes
+                OpcodeFault.ArrayTypeMismatch
+                thread
+                state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         let contents = EvalStackValue.toCliTypeCoerced zeroOfType contents

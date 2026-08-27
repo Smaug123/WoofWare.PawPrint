@@ -2955,6 +2955,20 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
+        raiseOpcodeFaultWithMessage loggerFactory baseClassTypes fault None currentThread state
+
+    /// `raiseOpcodeFault` with the message the CLR would have passed to a message-taking ctor
+    /// overload. Most instruction faults want `None` — the CLR raises them with no argument — so
+    /// `raiseOpcodeFault` is the usual entry point.
+    and raiseOpcodeFaultWithMessage
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (fault : OpcodeFault)
+        (message : string option)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
         let permitted = faultsOfCurrentInstruction currentThread state
 
         if not (OpcodeFaults.mayRaise fault permitted) then
@@ -2967,7 +2981,7 @@ module IlMachineStateExecution =
             loggerFactory
             baseClassTypes
             (OpcodeFault.resolve baseClassTypes fault)
-            None
+            message
             currentThread
             state
 
@@ -2978,11 +2992,17 @@ module IlMachineStateExecution =
         /// the assignability walk (which may concretize additional metadata), so the
         /// caller must use the state carried here, not its pre-check state.
         | Allowed of state : IlMachineState
-        /// The store was rejected as covariance-incompatible; `ArrayTypeMismatchException`
-        /// has been raised on the current thread. The caller must return
-        /// `(state, WhatWeDid.Executed)` immediately without advancing PC: exception
-        /// dispatch needs the faulting instruction's offset.
-        | Raised of state : IlMachineState
+        /// The store was rejected as covariance-incompatible. The caller must raise
+        /// `ArrayTypeMismatchException` and return without advancing PC: exception dispatch needs
+        /// the faulting instruction's offset.
+        ///
+        /// The raise is the *caller's* to make, not this check's, because the callers are not
+        /// alike. `stelem` and `stelem.ref` are instructions, so their fault goes through
+        /// `raiseOpcodeFault` and is checked against `OpcodeFaults`; the runtime-synthesized
+        /// `T[<rank>]::Set` is a callee reached from a plain `call`, about which the table says
+        /// nothing, so its fault must not be. A helper raising on both their behalves would have to
+        /// choose one route for both.
+        | Refused of state : IlMachineState
 
     /// ECMA-335 III.4.x runtime-assignment-compatibility gate for `stelem` /
     /// runtime-synthesized `T[<rank>]::Set`. For reference-typed array elements, the
@@ -3042,15 +3062,7 @@ module IlMachineStateExecution =
             if isAssignable then
                 ArrayStoreVarianceCheck.Allowed state
             else
-                let state, _whatWeDid =
-                    raiseRuntimeException
-                        loggerFactory
-                        baseClassTypes
-                        baseClassTypes.ArrayTypeMismatchException
-                        currentThread
-                        state
-
-                ArrayStoreVarianceCheck.Raised state
+                ArrayStoreVarianceCheck.Refused state
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.Int32 _
         | EvalStackValue.Int64 _

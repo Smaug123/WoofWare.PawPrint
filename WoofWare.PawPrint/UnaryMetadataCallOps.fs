@@ -164,7 +164,15 @@ module internal UnaryMetadataCallOps =
         match
             IlMachineStateExecution.checkArrayStoreVariance loggerFactory baseClassTypes thread arrAddr value state
         with
-        | IlMachineStateExecution.ArrayStoreVarianceCheck.Raised state -> state, WhatWeDid.Executed
+        | IlMachineStateExecution.ArrayStoreVarianceCheck.Refused state ->
+            // Unchecked, as the other faults of this synthesized member are: what faults here is
+            // the callee, and the executing instruction is a plain `call`.
+            IlMachineStateExecution.raiseRuntimeException
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.ArrayTypeMismatchException
+                thread
+                state
         | IlMachineStateExecution.ArrayStoreVarianceCheck.Allowed state ->
 
         let coerced = EvalStackValue.toCliTypeCoerced zeroOfType value

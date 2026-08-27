@@ -55,6 +55,92 @@ type OpcodeFaults =
     /// "may raise anything" and must never read it as "cannot raise".
     | Unmodelled
 
+/// What a fault depends on, which is what decides whether a reader wants to see it.
+///
+/// Not a distinction the CLI draws — .NET has no `Error` hierarchy separating these, as Java does —
+/// but the one that matters to somebody reading a report. It exists so a consumer can *choose*;
+/// nothing here lets the analysis quietly drop anything.
+[<RequireQualifiedAccess>]
+type FaultKind =
+    /// Determined by the values the program computes and the control flow it takes. A null
+    /// dereference, an array bound, a division by zero: each is in principle preventable by the
+    /// program, and each is something a reader can act on.
+    | Logic
+    /// Determined by the environment the program runs in rather than by the program. These attach
+    /// to almost every allocation and every call, so reporting them beside logic faults buries the
+    /// latter — but they are genuinely possible, so the model keeps them and the *reporting* is
+    /// what filters.
+    | ResourceExhaustion
+
+/// The bridge from a fault named abstractly to the corelib type that stands for it.
+[<RequireQualifiedAccess>]
+module OpcodeFault =
+
+    /// The fully-qualified name of the corelib type this fault stands for.
+    ///
+    /// For a consumer with no assemblies loaded, which cannot use `resolve`: an analyser reporting
+    /// what a method may throw wants to name the type without having resolved it. The two are kept
+    /// in step by `TestOpcodeFaults`, which resolves every fault against a real corelib and checks
+    /// the type it gets back is the one named here.
+    let typeName (fault : OpcodeFault) : string =
+        match fault with
+        | OpcodeFault.NullReference -> "System.NullReferenceException"
+        | OpcodeFault.IndexOutOfRange -> "System.IndexOutOfRangeException"
+        | OpcodeFault.ArrayTypeMismatch -> "System.ArrayTypeMismatchException"
+        | OpcodeFault.InvalidCast -> "System.InvalidCastException"
+        | OpcodeFault.Overflow -> "System.OverflowException"
+        | OpcodeFault.DivideByZero -> "System.DivideByZeroException"
+        | OpcodeFault.Arithmetic -> "System.ArithmeticException"
+        | OpcodeFault.OutOfMemory -> "System.OutOfMemoryException"
+        | OpcodeFault.StackOverflow -> "System.StackOverflowException"
+        | OpcodeFault.TypeInitialization -> "System.TypeInitializationException"
+
+    /// What this fault depends on. Exhaustive with no wildcard: a fault added to `OpcodeFault` has
+    /// to be classified here rather than defaulting into either class.
+    let kind (fault : OpcodeFault) : FaultKind =
+        match fault with
+        // Neither is about anything the program computed. `OutOfMemory` attaches to every
+        // allocation and `StackOverflow` to `localloc`, so a report carrying them everywhere says
+        // nothing a reader can act on — which is the whole reason `FaultKind` exists.
+        | OpcodeFault.OutOfMemory
+        | OpcodeFault.StackOverflow -> FaultKind.ResourceExhaustion
+        // `TypeInitialization` is a logic fault despite being a wrapper around another method's
+        // failure: whether it can arise at all is decided by whether the initializer's own code can
+        // fail, and that is a fact about the program. Note the consequence, which is measured in
+        // `docs/plans/2026-08-26-exception-escape-analysis.md`: an initializer that fails *only*
+        // because it allocates still contributes one of these, so filtering
+        // `ResourceExhaustion` does not remove every fault whose cause is resource exhaustion.
+        | OpcodeFault.TypeInitialization
+        | OpcodeFault.NullReference
+        | OpcodeFault.IndexOutOfRange
+        | OpcodeFault.ArrayTypeMismatch
+        | OpcodeFault.InvalidCast
+        | OpcodeFault.Overflow
+        | OpcodeFault.DivideByZero
+        | OpcodeFault.Arithmetic -> FaultKind.Logic
+
+    /// The corelib type an execution engine raises for this fault.
+    ///
+    /// Total, and the only place the correspondence is written down: a consumer that wants the
+    /// type for a fault must come through here rather than naming a `BaseClassTypes` field
+    /// itself, which is what keeps the table and the interpreter from drifting apart.
+    let resolve
+        (baseClassTypes : BaseClassTypes<'corelib>)
+        (fault : OpcodeFault)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        match fault with
+        | OpcodeFault.NullReference -> baseClassTypes.NullReferenceException
+        | OpcodeFault.IndexOutOfRange -> baseClassTypes.IndexOutOfRangeException
+        | OpcodeFault.ArrayTypeMismatch -> baseClassTypes.ArrayTypeMismatchException
+        | OpcodeFault.InvalidCast -> baseClassTypes.InvalidCastException
+        | OpcodeFault.Overflow -> baseClassTypes.OverflowException
+        | OpcodeFault.DivideByZero -> baseClassTypes.DivideByZeroException
+        | OpcodeFault.Arithmetic -> baseClassTypes.ArithmeticException
+        | OpcodeFault.OutOfMemory -> baseClassTypes.OutOfMemoryException
+        | OpcodeFault.StackOverflow -> baseClassTypes.StackOverflowException
+        | OpcodeFault.TypeInitialization -> baseClassTypes.TypeInitializationException
+
 /// Which faults each IL instruction can raise by itself.
 ///
 /// This is a table rather than an interpreter, which is the point: the same fact serves the
@@ -248,7 +334,11 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Unbox
         | UnaryMetadataTokenIlOp.Unbox_Any ->
             OpcodeFaults.Raises [ OpcodeFault.InvalidCast ; OpcodeFault.NullReference ]
-        | UnaryMetadataTokenIlOp.Mkrefany
+        // `refanyval` compares the requested type against the one the `TypedRef` was built with:
+        // "System.InvalidCastException is thrown if type is not identical to the type stored in the
+        // TypedRef" (ECMA-335 III.4.28). `mkrefany` is *not* its mirror — it packages an address
+        // and a type handle and performs no runtime check, so III.4.16 lists only
+        // `TypeLoadException`, which is the resolution dimension this table excludes.
         | UnaryMetadataTokenIlOp.Refanyval -> OpcodeFaults.Raises [ OpcodeFault.InvalidCast ]
         // A negative length is the overflow; the allocation itself is the OOM.
         | UnaryMetadataTokenIlOp.Newarr -> OpcodeFaults.Raises [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ]
@@ -302,6 +392,7 @@ module OpcodeFaults =
         | UnaryMetadataTokenIlOp.Call
         | UnaryMetadataTokenIlOp.Jmp -> OpcodeFaults.Raises [ OpcodeFault.TypeInitialization ]
         // These fault on nothing themselves and invoke nothing.
+        | UnaryMetadataTokenIlOp.Mkrefany
         | UnaryMetadataTokenIlOp.Isinst
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Constrained
@@ -359,8 +450,12 @@ module OpcodeFaults =
 
     let ofUnaryStringToken (op : UnaryStringTokenIlOp) : OpcodeFaults =
         match op with
-        // The literal is interned, so there is no allocation for this to fail on.
-        | UnaryStringTokenIlOp.Ldstr -> none
+        // Interning makes this free on every execution *but the first*: the literal has no object
+        // until one is made for it, and making it allocates
+        // (`UnaryStringTokenIlOp.execute` -> `IlMachineState.allocateManagedString`, mirroring
+        // CoreCLR's `AddStringLiteral`). ECMA-335 III.4.15 says "Exceptions: None", which is true
+        // of the steady state and not of first materialisation.
+        | UnaryStringTokenIlOp.Ldstr -> OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ]
 
     let ofIlOp (op : IlOp) : OpcodeFaults =
         match op with
@@ -380,47 +475,18 @@ module OpcodeFaults =
         | OpcodeFaults.Unmodelled -> true
         | OpcodeFaults.Raises xs -> List.contains fault xs
 
-/// The bridge from a fault named abstractly to the corelib type that stands for it.
-[<RequireQualifiedAccess>]
-module OpcodeFault =
-
-    /// The fully-qualified name of the corelib type this fault stands for.
+    /// Drop the faults of one kind, for a consumer that has decided it does not want to see them.
     ///
-    /// For a consumer with no assemblies loaded, which cannot use `resolve`: an analyser reporting
-    /// what a method may throw wants to name the type without having resolved it. The two are kept
-    /// in step by `TestOpcodeFaults`, which resolves every fault against a real corelib and checks
-    /// the type it gets back is the one named here.
-    let typeName (fault : OpcodeFault) : string =
-        match fault with
-        | OpcodeFault.NullReference -> "System.NullReferenceException"
-        | OpcodeFault.IndexOutOfRange -> "System.IndexOutOfRangeException"
-        | OpcodeFault.ArrayTypeMismatch -> "System.ArrayTypeMismatchException"
-        | OpcodeFault.InvalidCast -> "System.InvalidCastException"
-        | OpcodeFault.Overflow -> "System.OverflowException"
-        | OpcodeFault.DivideByZero -> "System.DivideByZeroException"
-        | OpcodeFault.Arithmetic -> "System.ArithmeticException"
-        | OpcodeFault.OutOfMemory -> "System.OutOfMemoryException"
-        | OpcodeFault.StackOverflow -> "System.StackOverflowException"
-        | OpcodeFault.TypeInitialization -> "System.TypeInitializationException"
-
-    /// The corelib type an execution engine raises for this fault.
+    /// **Deliberately unsound: a reporting policy, not an analysis.** What comes back is no longer
+    /// an over-approximation of what the instruction can do, so a result derived through it may not
+    /// be read as a proof that the dropped faults cannot happen. They can — which is why the table
+    /// carries them. The interpreter must never use this: its check in `raiseOpcodeFault` is a
+    /// soundness check and wants the whole table.
     ///
-    /// Total, and the only place the correspondence is written down: a consumer that wants the
-    /// type for a fault must come through here rather than naming a `BaseClassTypes` field
-    /// itself, which is what keeps the table and the interpreter from drifting apart.
-    let resolve
-        (baseClassTypes : BaseClassTypes<'corelib>)
-        (fault : OpcodeFault)
-        : TypeInfo<GenericParamFromMetadata, TypeDefn>
-        =
-        match fault with
-        | OpcodeFault.NullReference -> baseClassTypes.NullReferenceException
-        | OpcodeFault.IndexOutOfRange -> baseClassTypes.IndexOutOfRangeException
-        | OpcodeFault.ArrayTypeMismatch -> baseClassTypes.ArrayTypeMismatchException
-        | OpcodeFault.InvalidCast -> baseClassTypes.InvalidCastException
-        | OpcodeFault.Overflow -> baseClassTypes.OverflowException
-        | OpcodeFault.DivideByZero -> baseClassTypes.DivideByZeroException
-        | OpcodeFault.Arithmetic -> baseClassTypes.ArithmeticException
-        | OpcodeFault.OutOfMemory -> baseClassTypes.OutOfMemoryException
-        | OpcodeFault.StackOverflow -> baseClassTypes.StackOverflowException
-        | OpcodeFault.TypeInitialization -> baseClassTypes.TypeInitializationException
+    /// `Unmodelled` comes back unchanged. An instruction this table declines to classify might
+    /// raise a fault of any kind, including one the caller did not ask to drop, so there is nothing
+    /// in it that filtering could honestly remove.
+    let excludingKind (kind : FaultKind) (faults : OpcodeFaults) : OpcodeFaults =
+        match faults with
+        | OpcodeFaults.Unmodelled -> OpcodeFaults.Unmodelled
+        | OpcodeFaults.Raises xs -> xs |> List.filter (fun f -> OpcodeFault.kind f <> kind) |> OpcodeFaults.Raises

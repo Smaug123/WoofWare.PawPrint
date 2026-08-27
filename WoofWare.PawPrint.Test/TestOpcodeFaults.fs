@@ -56,6 +56,27 @@ module TestOpcodeFaults =
         |> List.map nameOf
         |> shouldEqual []
 
+    /// `ldstr` looks free, and is on every execution but the first: interning means the literal has
+    /// no object until one is made for it, and making it allocates. ECMA-335 III.4.15 says
+    /// "Exceptions: None", which describes the steady state rather than first materialisation, so
+    /// this entry is one the specification alone would get wrong.
+    [<Test>]
+    let ``ldstr can fail to allocate its literal`` () : unit =
+        OpcodeFaults.ofUnaryStringToken UnaryStringTokenIlOp.Ldstr
+        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ])
+
+    /// `refanyval` checks the requested type against the one the `TypedRef` carries and can fail
+    /// that check; `mkrefany` only packages an address and a handle, and performs no check at all.
+    /// The two are easy to treat as mirror images, and ECMA-335 III.4.28 and III.4.16 are explicit
+    /// that they are not.
+    [<Test>]
+    let ``refanyval checks its type and mkrefany does not`` () : unit =
+        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Refanyval
+        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.InvalidCast ])
+
+        OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Mkrefany
+        |> shouldEqual (OpcodeFaults.Raises [])
+
     /// A duplicate entry would make `Raises` a bag where the type says it is a set, and would make
     /// two tables that mean the same thing compare unequal.
     [<Test>]
@@ -216,6 +237,70 @@ module TestOpcodeFaults =
         for op in allCasesOf<UnaryMetadataTokenIlOp> () do
             OpcodeFaults.ofIlOp (IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata dummy))
             |> shouldEqual (OpcodeFaults.ofUnaryMetadata op)
+
+    // ---------- Fault kinds, and the filtering they enable ----------
+
+    /// The resource-exhaustion class is exactly `OutOfMemory` and `StackOverflow`. Asserted as a
+    /// whole-set equality so that moving a fault *into* it fails here as loudly as moving one out:
+    /// the class exists so a reader can hide it, and quietly widening what gets hidden is the way
+    /// this stops being honest.
+    [<Test>]
+    let ``exactly two faults are resource exhaustion`` () : unit =
+        allCasesOf<OpcodeFault> ()
+        |> List.filter (fun f -> OpcodeFault.kind f = FaultKind.ResourceExhaustion)
+        |> List.map nameOf
+        |> List.sort
+        |> shouldEqual [ "OutOfMemory" ; "StackOverflow" ]
+
+    /// `excludingKind` is a reporting policy, so it must not turn an admission of ignorance into a
+    /// claim of safety: an unclassified instruction might raise a fault of any kind, including one
+    /// the caller did not ask to drop.
+    [<Test>]
+    let ``excludingKind leaves Unmodelled alone`` () : unit =
+        OpcodeFaults.excludingKind FaultKind.ResourceExhaustion OpcodeFaults.Unmodelled
+        |> shouldEqual OpcodeFaults.Unmodelled
+
+        OpcodeFaults.excludingKind FaultKind.Logic OpcodeFaults.Unmodelled
+        |> shouldEqual OpcodeFaults.Unmodelled
+
+    /// Drops the named kind and nothing else. `newarr` is the useful case to assert on: it carries
+    /// one fault of each kind, so an implementation that dropped everything, or nothing, or the
+    /// wrong one, all read differently here.
+    [<Test>]
+    let ``excludingKind drops one kind and keeps the other`` () : unit =
+        let newarr = OpcodeFaults.ofUnaryMetadata UnaryMetadataTokenIlOp.Newarr
+
+        newarr
+        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.Overflow ; OpcodeFault.OutOfMemory ])
+
+        newarr
+        |> OpcodeFaults.excludingKind FaultKind.ResourceExhaustion
+        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.Overflow ])
+
+        newarr
+        |> OpcodeFaults.excludingKind FaultKind.Logic
+        |> shouldEqual (OpcodeFaults.Raises [ OpcodeFault.OutOfMemory ])
+
+    /// Filtering must never *add* a fault, whatever it is asked to drop. Checked over the whole
+    /// table rather than at a chosen opcode, since the interesting failure would be at whichever
+    /// entry the author did not think of.
+    [<Test>]
+    let ``excludingKind only ever removes`` () : unit =
+        let check (before : OpcodeFaults) =
+            for kind in allCasesOf<FaultKind> () do
+                match before, OpcodeFaults.excludingKind kind before with
+                | OpcodeFaults.Unmodelled, after -> after |> shouldEqual OpcodeFaults.Unmodelled
+                | OpcodeFaults.Raises xs, OpcodeFaults.Raises ys ->
+                    for y in ys do
+                        List.contains y xs |> shouldEqual true
+                | OpcodeFaults.Raises _, OpcodeFaults.Unmodelled ->
+                    failwith "excludingKind turned a classified entry into an unclassified one"
+
+        for op in allCasesOf<NullaryIlOp> () do
+            check (OpcodeFaults.ofNullary op)
+
+        for op in allCasesOf<UnaryMetadataTokenIlOp> () do
+            check (OpcodeFaults.ofUnaryMetadata op)
 
     // ---------- The two spellings of "which type is this fault?" agree ----------
 
