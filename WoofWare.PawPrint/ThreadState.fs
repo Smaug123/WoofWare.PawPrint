@@ -223,6 +223,25 @@ type ThreadStatus =
     /// once `EmulatedKernel.hasDeliverableSocketEvents` answers yes for the port; the handler
     /// then re-enters (the park kept its frame) and performs the delivery itself.
     | BlockedOnSocketEvents of port : OpenFileDescriptionId
+    /// This thread called `SystemNative_FLock` without `LOCK_NB` on a lock another open file
+    /// description holds, and is parked until that lock becomes available.
+    ///
+    /// Carries nothing, deliberately, where `BlockedOnSocketEvents` carries its port. What this
+    /// thread is waiting for is the `ParkedFlock` its task holds, which the kernel must have
+    /// anyway — `UnixSystem.close` refuses a close that would destroy a description something is
+    /// parked on, and it can only apply that rule to a park it can see. A payload here would be a
+    /// second copy of that fact with nothing keeping the two equal.
+    ///
+    /// Carries no deadline either: an `flock` wait cannot time out, so `Program.waitDeadline`
+    /// answers `None` and the clock can never wake this thread. The only wake is
+    /// `Program.fireFlockGrantable`, which flips it back to `Runnable` once
+    /// `WakeCondition.isSatisfied` holds; the handler then re-enters (the park kept its frame)
+    /// and finishes the acquisition against the description its record names.
+    ///
+    /// Signal delivery must not wake this thread. Real `flock(2)` is interruptible, but the PAL
+    /// retries it in the native loop — `while ((result = flock(...)) < 0 && errno == EINTR);`
+    /// (pal_io.c) — so no managed caller can observe `EINTR` from it.
+    | BlockedOnFlock
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
@@ -281,6 +300,7 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnWaitHandles _ -> false
         | ThreadStatus.BlockedOnSleep _ -> false
         | ThreadStatus.BlockedOnSocketEvents _ -> false
+        | ThreadStatus.BlockedOnFlock -> false
 
     /// True iff a thread in this status parked with its program counter already advanced
     /// *past* the call that blocked it, so the active frame's `IlOpIndex` names the
@@ -318,6 +338,9 @@ module ThreadStatus =
         | ThreadStatus.Terminated -> false
         | ThreadStatus.BlockedOnClassInit _ -> false
         | ThreadStatus.BlockedOnSocketEvents _ -> false
+        // Parks *on* the call, like the socket wait and for the same reason: the
+        // wake re-enters the handler to finish the acquisition.
+        | ThreadStatus.BlockedOnFlock -> false
         | ThreadStatus.BlockedOnJoin _ -> true
         | ThreadStatus.BlockedOnMonitorAcquire _ -> true
         | ThreadStatus.BlockedOnMonitorWait _ -> true

@@ -47,6 +47,7 @@ module TestGuestLocation =
                 Thread = ThreadId 3
                 Status = status
                 Position = position
+                WaitingFor = None
             }
 
     [<Test>]

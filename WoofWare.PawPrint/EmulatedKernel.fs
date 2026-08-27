@@ -814,6 +814,19 @@ type EmulatedKernelDefect =
     /// A task exists for a thread that does not, so its processor placement and
     /// OS thread id are held for a thread that can never read them.
     | TaskWithoutThread of thread : ThreadId
+    /// A thread is parked in `ThreadStatus.BlockedOnFlock` but its task records
+    /// no `flock` acquisition, so nothing says what it is waiting for: the sweep
+    /// cannot decide whether to wake it and the re-entered handler cannot decide
+    /// what to finish.
+    | FlockWaiterWithoutRecord of thread : ThreadId
+    /// A task records an `flock` acquisition while its thread is in a status
+    /// that cannot be holding one open.
+    ///
+    /// `Runnable` is legitimate and not slack: between the sweep waking a waiter
+    /// and the woken thread re-entering the handler, the thread is `Runnable`
+    /// with its record intact — and the record is precisely what tells the
+    /// re-entered handler that it is a re-entry.
+    | FlockRecordWithoutWaiter of thread : ThreadId * status : ThreadStatus
     /// The stream table holds a stream no `DIR*` names, so nothing can ever
     /// read or close it and the directory it pins is held for the run.
     | UnreachableDirectoryStream of stream : DirectoryStreamId
@@ -2884,13 +2897,40 @@ module EmulatedKernel =
     /// absent. Nothing removes a thread today, so this is not a leak check —
     /// it catches a thread created without `registerTask`, and a task minted for
     /// a thread that was never created.
-    let checkTaskInvariants (liveThreads : Set<ThreadId>) (kernel : EmulatedKernel) : EmulatedKernelDefect list =
+    let checkTaskInvariants
+        (liveThreads : Map<ThreadId, ThreadStatus>)
+        (kernel : EmulatedKernel)
+        : EmulatedKernelDefect list
+        =
         // The comparison is the library's; naming the two failures is this
         // kernel's, because `EmulatedKernelDefect` is PawPrint's vocabulary.
-        let missing, extra = UnixTaskTable.reconcile liveThreads kernel.Tasks
+        let missing, extra =
+            UnixTaskTable.reconcile (liveThreads |> Map.toSeq |> Seq.map fst |> Set.ofSeq) kernel.Tasks
+
+        // The park record and the park status, which are written together and
+        // must be cleared together. Stated as an implication plus a bound rather
+        // than as an equivalence, because the wake leaves the record standing
+        // for the re-entry to find.
+        let parkAgreement =
+            liveThreads
+            |> Map.toList
+            |> List.collect (fun (thread, status) ->
+                let recorded =
+                    match Map.tryFind thread kernel.Tasks with
+                    | Some task -> task.ParkedFlock
+                    | None -> None
+
+                match status, recorded with
+                | ThreadStatus.BlockedOnFlock, None -> [ EmulatedKernelDefect.FlockWaiterWithoutRecord thread ]
+                | ThreadStatus.BlockedOnFlock, Some _
+                | ThreadStatus.Runnable, _
+                | _, None -> []
+                | status, Some _ -> [ EmulatedKernelDefect.FlockRecordWithoutWaiter (thread, status) ]
+            )
 
         (missing |> List.map EmulatedKernelDefect.ThreadWithoutTask)
         @ (extra |> List.map EmulatedKernelDefect.TaskWithoutThread)
+        @ parkAgreement
 
     /// Every way this kernel's tables disagree with each other: the socket
     /// table against the descriptor table, the descriptor table against the

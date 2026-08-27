@@ -3044,3 +3044,101 @@ blocking acquire reached the flavour-neutral refusal and now reaches
 `flock` is drop-versus-keep on conversion, and `FLockRefusal.DarwinConversion`
 refuses conversions before the contention test is reached — but it does widen
 what a Darwin-flavoured kernel answers.
+
+#### Stage 9b: PawPrint parks on `flock`
+
+**Dependencies**: stage 9a.
+
+The client half of 9a, and what stops `WakeCondition.isSatisfied` being a
+predicate with no consumer but its own tests. It also replaces an abort with
+faithful behaviour: `TestFlockBlocking`'s guests are single-threaded and hold
+the conflicting lock themselves, so they now reach `Deadlocked` — which is what
+hanging for ever *is* here — instead of crashing the interpreter.
+
+**Where the park is recorded.** In two places, and only one of them carries the
+payload. The library-side record is not optional: `close` must refuse a close
+that would destroy a description a task is parked on, that rule is a kernel's,
+and a library function cannot see PawPrint's `ThreadStatus`. So `UnixTaskState`
+gains `ParkedFlock`. `ThreadStatus.BlockedOnFlock` then carries *nothing*, where
+`BlockedOnSocketEvents` carries its port — because a payload there would be a
+second copy of a fact with nothing keeping the two equal, and the port payload's
+only consumer today is its sweep's fold. The sweep asks the kernel instead.
+
+That is a deliberate divergence from the adjacent mechanism, and the reconciling
+move goes the other way: when `WaitForSocketEvents` converts, its park should
+move to this shape rather than this one growing a payload to match. A marker
+also merges cleanly into the `BlockedInSyscall` that four more parking syscalls
+will want, where a payload would not — `waitDeadline` is a pure function of
+`ThreadStatus` today, which is what would make that conversion expensive once
+`poll`'s deadline-carrying condition arrives.
+
+**Who writes the record.** `UnixSystem.parkFlock` *derives* it from the
+condition it is handed, rather than the handler building one beside the
+condition it destructured. 9a's notes said 9b would take the "kernel records the
+park" option; taken literally that means a task parameter on `flock`, which
+stages 7 and 8 kept off every syscall whose answer does not depend on the
+caller. This keeps both: the library owns the record's coherence, and a record
+disagreeing with the condition a client polls is unwritable rather than merely
+unwritten.
+
+**How a woken call finishes.** Not by re-issuing it. `UnixSystem.flockAcquire`
+takes the open file description, and `FileDescriptorRegistry.flockOn` is the
+by-description primitive the by-fd `flock` now delegates to. A guest test pins
+why: it closes the descriptor it parked through — kept alive by a `dup` — and
+watches the number be handed to a different file before the lock frees.
+
+Most of what `flock` screens is not re-applied, and the rule rather than the
+case list is that *a screen over immutable facts is spent; a screen over mutable
+state is not*. The operation bits are captured, and `flockAcquire`'s signature
+makes a malformed resume unrepresentable; the Darwin refusals for a pipe, a
+socket and an event port are about the description's object kind, which never
+changes. `DarwinConversion` is the exception and is reachable: 9a's widening
+made Darwin parks possible, and while a waiter holds nothing another task
+through a `dup` can take a lock on its description — a first acquisition, which
+Darwin serves — so the resume becomes the conversion whose keep-versus-drop
+divergence is unmeasured.
+
+**Several waiters wake, and the socket sweep's refusal is not copied.**
+`fireSocketReadiness` refuses loudly when several threads park on one port,
+because epoll's wait queue is *exclusive*: a real edge wakes exactly one, by
+park order, which PawPrint keeps no state to reproduce. `flock` has no exclusive
+handoff — a release wakes every blocker and they race — and, decisively, *which*
+waiter wins is not observable from userspace on any platform. So waking them all
+and letting the seeded scheduler pick is declining to invent a winner rather
+than inventing one. The losers re-enter, find the lock taken, and park again;
+that path is the mechanism rather than an edge case, and `flockAcquire` answers
+`WouldBlock` for it.
+
+**What a park costs a `close`.** `CloseRefusal.LastFlockedDescriptorWithWaiter`,
+which discharges 9a's obligation and makes `isSatisfied`'s vanished-description
+arm unreachable. Flavour-blind, unlike the two port refusals it sits beside:
+those split Linux from Darwin because two *measured platform behaviours* differ,
+whereas this models no platform at all — both flavours keep the file alive, and
+it is this table that cannot represent the reference. Splitting it would imply a
+measurement had been taken and invite someone to complete the Darwin arm.
+
+**Correctness oracle**:
+* `TestFlockPark`: a two-thread guest that contends, releases and completes —
+  driven by *stepping*, asserting a thread was seen in `BlockedOnFlock`, because
+  an exit code cannot tell a park that worked from a park that never happened
+  (if the waiter arrives after the release, it succeeds uncontended and covers
+  nothing). Plus the descriptor-reuse guest, a guest whose release is the
+  holder's `close` rather than `LOCK_UN` (which is what the sweep-not-push design
+  buys), and a single-threaded parked *conversion* asserting on the deadlocked
+  state's kernel that the requester holds nothing — the only deterministic
+  observer of the advance, since a fresh contended acquire has nothing to drop.
+* `TestFlockBlocking`'s blocking cases, now asserting `Deadlocked` precisely
+  rather than "did not crash": an implementation that parks by leaving the
+  thread `Runnable` and re-entering in a loop hits the step cap instead, and
+  only the outcome shape tells the two apart.
+* Library tests for the resume, the beaten resume, the Darwin re-screen,
+  `parkFlock`'s derivation, and both sides of `close`'s new refusal.
+* `EmulatedKernel.checkTaskInvariants` gains the park agreement, stated as an
+  implication plus a bound rather than an equivalence: `BlockedOnFlock` implies
+  a record, and a record implies `BlockedOnFlock` *or* `Runnable`. The
+  `Runnable` half is not slack — between the wake and the re-entry the thread is
+  runnable with its record intact, and the record is what tells the re-entered
+  handler that it is a re-entry.
+
+**What is left of stage 9**: the four socket syscalls, the socket park's move to
+this shape, and the packaging items.

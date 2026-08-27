@@ -84,6 +84,17 @@ type CloseRefusal<'Task> =
     /// The last descriptor onto a listening socket whose accept queue still
     /// holds a connection whose client is open.
     | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
+    /// The last descriptor onto an open file description that `task` is parked
+    /// on an `flock` of.
+    ///
+    /// Unlike the two port cases above, this does not split by flavour, because
+    /// it models no platform's behaviour: a real kernel of either flavour keeps
+    /// the file alive — a blocked `flock` holds a reference to it — and
+    /// eventually grants the waiter its lock on a file nothing names any more.
+    /// This table cannot represent that reference at all, so the refusal is a
+    /// fact about the model and is the same on both. There is nothing here to
+    /// measure and complete.
+    | LastFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
 
 /// What `stat(2)` and its siblings report about one inode.
 ///
@@ -572,6 +583,8 @@ module CloseRefusal =
             $"it is the last descriptor onto socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Linux's epoll_wait holds the port by file reference: the last close leaves the in-flight wait's registrations live, and a later edge can still complete it. Representing that needs the port to outlive its last descriptor, which this kernel's descriptor table cannot express."
         | CloseRefusal.DarwinPortDescriptorWithWaiter (port, task) ->
             $"the descriptor names socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Darwin's kevent *ends* such a wait with an error when the fd it was entered through closes -- but which error is not measured precisely, and what a close of a *different* descriptor onto the same kqueue does is not measured at all."
+        | CloseRefusal.LastFlockedDescriptorWithWaiter (description, task) ->
+            $"the descriptor is the last one onto open file description %O{description}, and task %O{task} is parked on an `flock` of it. A real kernel's blocked `flock` holds a reference to the file, so the description outlives every descriptor onto it and the waiter is eventually granted its lock; this table has no such reference to represent, so destroying the description would either strand the waiter for ever or wake it into an EBADF no kernel produces."
         | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
 
@@ -1312,6 +1325,98 @@ module UnixSystem =
             Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, requested)), advanced)
         | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
 
+    /// Finish an `flock` acquisition that parked, against the open file
+    /// description it parked on.
+    ///
+    /// This rather than re-issuing `flock` with the descriptor the call was made
+    /// through, and not as a convenience: descriptor numbers are allocated
+    /// lowest-free and reused as soon as they are freed, so a `close` of that
+    /// number elsewhere — survivable whenever a `dup` keeps the description
+    /// alive — can leave it naming a different object by the time the lock frees.
+    /// A real kernel has no such hazard: the sleeping call holds the file.
+    ///
+    /// Answers `WouldBlock` again, with the same condition, when the lock has
+    /// been taken since the waiter was woken. That is the ordinary case rather
+    /// than an edge one: a release wakes every waiter and they race, so all but
+    /// one of them find it gone.
+    ///
+    /// Most of what `flock` screens is not re-screened, because a screen over
+    /// facts that cannot change is spent: the operation bits were validated
+    /// before the park, and this signature makes a malformed resume
+    /// unrepresentable; the Darwin refusals for a pipe, a socket and a socket
+    /// event port are about the description's object kind, which never changes.
+    /// `DarwinConversion` is the exception, because it screens *mutable* state —
+    /// while this task held nothing, another through a `dup` of its descriptor
+    /// could have taken a lock on this same description, which Darwin serves as
+    /// a first acquisition, and the resume is then the conversion whose
+    /// keep-versus-drop divergence is unmeasured.
+    let flockAcquire<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (requester : OpenFileDescriptionId)
+        (mode : FlockMode)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
+        =
+        let descriptions =
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+
+        match Map.tryFind requester descriptions with
+        | None ->
+            failwith
+                $"UnixSystem.flockAcquire: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. `close` refuses such a close precisely so that this cannot happen (this is an interpreter bug)."
+        | Some description ->
+
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, description.Flock with
+        | SimulatedUnixFlavour.Darwin, Some _ -> Error FLockRefusal.DarwinConversion
+        | SimulatedUnixFlavour.Darwin, None
+        | SimulatedUnixFlavour.Linux, _ ->
+
+        let registry, error =
+            FileDescriptorRegistry.flockOn requester (FlockRequest.Acquire mode) system.Process.FileDescriptors
+
+        let advanced =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        match error with
+        | Some FlockError.BadFd ->
+            // `flockOn` never resolves a descriptor, so it has no bad one to
+            // report.
+            failwith
+                $"UnixSystem.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is an interpreter bug)."
+        | Some FlockError.WouldBlock ->
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, mode)), advanced)
+        | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
+
+    /// Record that `task` has parked in the `flock` `condition` describes.
+    ///
+    /// The record is derived from the condition rather than built beside it, so
+    /// that a client cannot park a task on one lock while polling for another.
+    /// Clearing it is `UnixTaskTable.withParkedFlock task None`, which the
+    /// client does when the acquisition finishes.
+    let parkFlock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (condition : WakeCondition)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        match condition with
+        | WakeCondition.FlockGrantable (requester, mode) ->
+            { system with
+                Tasks =
+                    UnixTaskTable.withParkedFlock
+                        task
+                        (Some
+                            {
+                                ParkedFlock.Requester = requester
+                                Mode = mode
+                            })
+                        system.Tasks
+            }
+
     /// `close(2)`: drop `fd` from the process's table, together with the kernel
     /// objects the description it named was the last reference to — the socket,
     /// the connections nothing else references, and the inode whose last name
@@ -1387,6 +1492,31 @@ module UnixSystem =
                 | SimulatedUnixFlavour.Darwin -> Some (CloseRefusal.DarwinPortDescriptorWithWaiter (closingId, task))
 
         match portRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        // The same question for a lock rather than a port, and the reason
+        // `WakeCondition.isSatisfied` may treat a vanished description as an
+        // interpreter bug rather than as something to answer.
+        let flockRefusal : CloseRefusal<'Task> option =
+            match destroyed with
+            | None -> None
+            | Some _ ->
+
+            match closing with
+            | None -> None
+            | Some (closingId, _) ->
+
+            system.Tasks
+            |> Map.tryPick (fun task state ->
+                match state.ParkedFlock with
+                | Some parked when parked.Requester = closingId ->
+                    Some (CloseRefusal.LastFlockedDescriptorWithWaiter (closingId, task))
+                | Some _
+                | None -> None
+            )
+
+        match flockRefusal with
         | Some refusal -> Error refusal
         | None ->
 

@@ -8,25 +8,22 @@ open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `SystemNative_FLock` aborts on a *blocking* request that cannot be granted. The kernel answers
-/// it perfectly well — `UnixSystem.flock` reports a park, and which lock is being waited for — but
-/// performing the park needs PawPrint's scheduler to hold a thread on a predicate and wake it when
-/// the holder releases, and it has no such status. So the diagnostic is PawPrint's own missing
-/// feature rather than anything the kernel declined to say.
-///
-/// That abort has no guest that can assert it — a `failwith` aborts the interpreter rather than
-/// reaching the guest's exit code — so it would otherwise be a claim with nothing behind it. These
-/// tests drive it directly.
+/// `SystemNative_FLock` on a *blocking* request that cannot be granted parks the calling thread,
+/// and the guests here are single-threaded and hold the conflicting lock themselves — so the park
+/// is permanent and the run ends `Deadlocked`. On a real Linux kernel they would hang for ever,
+/// which is what that outcome models; it is also why these cannot be differential cases, since the
+/// oracle would never terminate.
 ///
 /// The distinction being pinned is *narrow* and easy to get wrong in the permissive direction: a
 /// blocking request that can be satisfied must still succeed, since that is what a hand-rolled
 /// P/Invoke most naturally writes. Only genuine contention parks. CoreLib never reaches either,
 /// because `SafeFileHandle.Init` always sets `LOCK_NB`.
 ///
-/// The guests below are single-threaded and hold the conflicting lock themselves, so on a real
-/// Linux kernel they would *hang forever* rather than return anything. That is not a defect in the
-/// tests: it is why the abort is worth having, and it is also why these cannot be differential
-/// cases — the oracle would never terminate.
+/// A park that *does* wake is `TestFlockPark`; what these add is the deadlocking end of the same
+/// mechanism, which is the only way to observe a park whose lock is never released.
+///
+/// The Darwin refusals below are unaffected by any of that: they are decided before contention is
+/// ever considered, so they abort rather than park.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFlockBlocking =
@@ -125,10 +122,10 @@ class Program
             UnixPlatform = SimulatedUnixPlatform.macOsArm64
         }
 
-    /// The abort itself: two descriptions on one file, the first holding an exclusive lock, and
-    /// the second asking for one *without* `LOCK_NB`.
+    /// The park itself: two descriptions on one file, the first holding an exclusive lock, and
+    /// the second asking for one *without* `LOCK_NB`. One thread, so nothing can ever release it.
     [<Test>]
-    let ``a blocking request that conflicts aborts, because PawPrint cannot park`` () : unit =
+    let ``a blocking request that conflicts parks for ever`` () : unit =
         let source =
             guest
                 """
@@ -143,14 +140,16 @@ class Program
 
         // Named precisely enough that a failing run says which fd wanted what, rather than merely
         // that flock was unhappy.
-        exn.Message |> shouldContainText "SystemNative_FLock"
-        exn.Message |> shouldContainText "the call blocks on"
+        // Deadlock rather than a crash, and named precisely enough that a stuck run says which
+        // thread is waiting for which lock rather than merely that flock was unhappy.
+        exn.Message |> shouldContainText "deadlocked"
+        exn.Message |> shouldContainText "BlockedOnFlock"
+        exn.Message |> shouldContainText "open file description"
         exn.Message |> shouldContainText "Exclusive"
-        exn.Message |> shouldContainText "issue #956"
 
-    /// The other half, and the reason the abort is conditional rather than "no `LOCK_NB` is
+    /// The other half, and the reason the park is conditional rather than "no `LOCK_NB` is
     /// unsupported": an uncontended blocking request is an ordinary success. Without this, the
-    /// simplest wrong implementation — abort whenever `LOCK_NB` is absent — passes the test above.
+    /// simplest wrong implementation — park whenever `LOCK_NB` is absent — passes the test above.
     [<Test>]
     let ``a blocking request that can be granted succeeds`` () : unit =
         let source =
@@ -183,7 +182,8 @@ class Program
         let exn =
             Assert.Catch (fun () -> run "FlockBlocksShared.cs" conflicting |> ignore<RunOutcome>)
 
-        exn.Message |> shouldContainText "the call blocks on"
+        exn.Message |> shouldContainText "deadlocked"
+        exn.Message |> shouldContainText "BlockedOnFlock"
         exn.Message |> shouldContainText "Shared"
 
         let compatible =
