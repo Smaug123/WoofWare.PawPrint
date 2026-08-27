@@ -150,18 +150,25 @@ public class Program
         if (idInt.MetadataToken != idStr.MetadataToken)
             return 17;
 
-        // No `ResolveMethod` round trip for these two, unlike the non-generic methods above:
-        // `ModuleHandle.ResolveMethod` refuses a MethodDef declared on a generic type in PawPrint
-        // today ("the MethodHandle registry only supports fully concretised methods"), which is a
-        // limitation of that QCall and nothing to do with the token. Measured by writing the check
-        // and watching it abort there.
+        // Both instantiations resolve back to one row, and that row is the generic *definition*'s:
+        // `ModuleHandle.ResolveMethod` answers a MethodDef with the typical definition and ignores
+        // the caller's instantiation context. So this is the token->row direction of the claim
+        // above, where check 17 was only the row->token one.
+        if (typeof (Gen<>).Module.ResolveMethod (idInt.MetadataToken) != typeof (Gen<>).GetMethod ("Id"))
+            return 18;
+
+        if (typeof (Gen<>).Module.ResolveMethod (idStr.MetadataToken) != typeof (Gen<>).GetMethod ("Id"))
+            return 19;
 
         // A method-level instantiation is the same story.
         MethodInfo map = typeof (Gen<int>).GetMethod ("Map");
         MethodInfo mapOfString = map.MakeGenericMethod (typeof (string));
 
         if (mapOfString.MetadataToken != map.MetadataToken)
-            return 18;
+            return 20;
+
+        if (typeof (Gen<>).Module.ResolveMethod (mapOfString.MetadataToken) != typeof (Gen<>).GetMethod ("Map"))
+            return 21;
 
         // --- cross-assembly -----------------------------------------------------------------------
         // A corelib method's token belongs to corelib's tables, so it must round-trip through
@@ -170,20 +177,20 @@ public class Program
         MethodInfo getType = typeof (object).GetMethod ("GetType");
 
         if (Table (getType.MetadataToken) != 0x06)
-            return 19;
+            return 22;
 
         if (typeof (object).Module.ResolveMethod (getType.MetadataToken).Name != "GetType")
-            return 20;
+            return 23;
 
         // Reflecting the inherited method on a guest type reports corelib's row, not a guest one.
         MethodInfo inherited = typeof (Sample).GetMethod ("GetType");
 
         if (inherited.MetadataToken != getType.MetadataToken)
-            return 21;
+            return 24;
 
         // --- a method token is not a type token ---------------------------------------------------
         if (Table (typeof (Sample).MetadataToken) != 0x02)
-            return 22;
+            return 25;
 
         return 0;
     }

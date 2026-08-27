@@ -1,20 +1,18 @@
 using System;
 using System.Reflection;
 
-// Parked. Properties declared *on* a generic type, which is the shape that makes
-// `Signature_Init` resolve a PropertySig against the declaring type's instantiation
+// Properties declared *on* a generic type, which is the shape that makes `Signature_Init` resolve
+// a PropertySig against the declaring type's instantiation
 // (`SigTypeContext::InitTypeContext(declType, ...)`).
 //
-// Blocked before it gets there: `Type.GetProperty` on a generic instantiation populates the
-// property list, which resolves the accessors' MethodDef tokens, and that dies in
-//   TODO: ModuleHandle.ResolveMethod: MethodDef token ... declared on generic type Holder`1;
-//   CoreCLR returns the open metadata definition without consuming the caller's
-//   typeInstantiation, but the MethodHandle registry only supports fully concretised methods.
-// So this is blocked on the MethodHandle registry, not on signature decoding.
+// `Type.GetProperty` on a generic instantiation populates the property list, which resolves the
+// accessors' MethodDef tokens through `ModuleHandle.ResolveMethod`. That answers with the *typical*
+// definition -- `Holder<T>.get_Value`, declaring type the open definition -- and
+// `RuntimeType.GetMethodBase` binds it back onto `Holder<int>`, so the two halves have to agree
+// about which type is doing the substituting.
 //
-// `ReflectionPropertyType.cs` covers a generic instantiation appearing as a property *type*, which
-// is reachable; this file covers a class type parameter appearing *in* the property's signature,
-// which is not.
+// `ReflectionPropertyType.cs` covers a generic instantiation appearing as a property *type*; this
+// file covers a class type parameter appearing *in* the property's signature.
 
 public class Holder<T>
 {

@@ -1670,6 +1670,67 @@ public class HasNestedGeneric<TKey, TValue>
         |> shouldContainText "declaring type must be Closed or OpenGenericTypeDefinition"
 
     // ---------------------------------------------------------------------------------------
+    // `NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget`: the declaring type
+    // `ModuleHandle.ResolveMethod` reports for a MethodDef token.
+    //
+    // Pinned here rather than end-to-end because no guest can see it.
+    // `RuntimeType.GetMethodBase` re-derives a declaring type from the *reflected* type before
+    // handing a `MethodBase` back (RuntimeType.CoreCLR.cs:1873-1913), so a closed declaring type
+    // minted here would be normalised away -- measured, by making the QCall honour the caller's
+    // instantiation and watching every differential case still pass. The reason to mint the
+    // typical one anyway is that it is what CoreCLR's handle *is*, and the next consumer to read a
+    // declaring type without that normalisation would otherwise be wrong.
+    // ---------------------------------------------------------------------------------------
+
+    [<Test>]
+    let ``the typical declaring type of a method on a generic type is the definition`` () : unit =
+        let loggerFactory, baseClassTypes, assembly, _ctors, _openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let plain =
+            assembly.Methods.Values
+            |> Seq.find (fun method -> method.RequiredDeclaringType.Name = "Box`1" && method.Name = "Plain")
+
+        let _state, target =
+            NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget loggerFactory baseClassTypes assembly plain state
+
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
+            definition |> shouldEqual plain.RequiredDeclaringType.Identity
+        | other -> failwithf "expected the open generic definition of Box`1, got %A" other
+
+    [<Test>]
+    let ``the typical declaring type of a method on a non-generic type is that closed type`` () : unit =
+        // The control in the other direction: the same call must not spell a non-generic declaring
+        // type as anything but `Closed`, or every previously-served MethodDef token would mint a
+        // second registry id alongside the one `PopulateMethods` already holds.
+        let loggerFactory, baseClassTypes, assembly, state =
+            loadAssemblyFromSource
+                "TypicalDeclaringTypeAssembly"
+                """
+public sealed class Plain
+{
+    public int Method() { return 1; }
+}
+"""
+
+        let method =
+            assembly.Methods.Values
+            |> Seq.find (fun method -> method.RequiredDeclaringType.Name = "Plain" && method.Name = "Method")
+
+        let state, target =
+            NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget loggerFactory baseClassTypes assembly method state
+
+        match target with
+        | RuntimeTypeHandleTarget.Closed handle ->
+            AllConcreteTypes.lookup handle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
+            |> fun concreteType ->
+                concreteType.Identity |> shouldEqual method.RequiredDeclaringType.Identity
+                concreteType.Generics.IsEmpty |> shouldEqual true
+        | other -> failwithf "expected the closed non-generic type Plain, got %A" other
+
+    // ---------------------------------------------------------------------------------------
     // `RuntimeMethodHandle.GetMethodFromCanonical` through the machine.
     //
     // The native re-reads a method handle against another instantiation of its declaring type, and
