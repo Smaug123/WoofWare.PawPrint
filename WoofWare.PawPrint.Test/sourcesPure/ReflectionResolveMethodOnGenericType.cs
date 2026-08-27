@@ -96,9 +96,21 @@ public static class Program
         MethodBase resolvedCtor = mod.ResolveMethod(ctor.MetadataToken);
         if (!ReferenceEquals(resolvedCtor, typeof(Holder<>).GetConstructor(Type.EmptyTypes))) return 14;
 
+        // An *open* type as the supplied context. CoreCLR never looks at the arrays for a MethodDef,
+        // so it does not care that `Holder<>` names no closed type; a resolver that decoded them
+        // anyway would have to reject this.
+        MethodBase resolvedOpenContext =
+            mod.ResolveMethod (genericStatic.MetadataToken, null, new Type[] { typeof (Holder<>) });
+        if (!ReferenceEquals (resolvedOpenContext, genericStatic)) return 15;
+
+        // The same shape with a *generic declaring type* is not checked here: `Module.ResolveMethod`
+        // then re-resolves the declaring TypeDef through `ModuleHandle.ResolveType`, which does
+        // consume its instantiation arrays and refuses an open argument. That is a gap in that
+        // QCall rather than in this one, and reaching it needs no MethodDef token at all.
+
         // Control: an ordinary method on a non-generic type still round-trips to itself.
         MethodInfo plain = typeof(Statics).GetMethod("Plain");
-        if (!ReferenceEquals(mod.ResolveMethod(plain.MetadataToken), plain)) return 15;
+        if (!ReferenceEquals (mod.ResolveMethod (plain.MetadataToken), plain)) return 16;
 
         return 0;
     }

@@ -1128,29 +1128,22 @@ module NativeRuntimeTypeQCall =
                     failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
                 )
 
-            // Decode the caller-supplied substitution context up front. Mirrors CoreCLR's
+            // The caller-supplied substitution context is CoreCLR's
             // SigTypeContext(Instantiation(typeArgs, ...), Instantiation(methodArgs, ...)): the
-            // arrays are used to substitute any GenericTypeParameter / GenericMethodParameter
-            // references the token's signatures contain, and may be empty for tokens that don't
-            // need them.
-            let typeInstantiation =
+            // arrays substitute any GenericTypeParameter / GenericMethodParameter references the
+            // token's signatures contain. Decoded per token kind rather than up front, because
+            // only the MemberRef arm consumes them and decoding narrows each element to a closed
+            // type: a MethodDef whose caller passed `typeof(G<>)` as a method-generic argument is
+            // one CoreCLR answers (it never looks), and reading the array here would refuse it.
+            let decodeInstantiation
+                (pointer : ManagedPointerSource)
+                (count : int)
+                : ImmutableArray<ConcreteTypeHandle>
+                =
                 ImmutableArray.CreateRange (
                     seq {
-                        for index in 0 .. typeInstCount - 1 ->
-                            readTypeHandleInstantiationElement ctx.BaseClassTypes operation state typeInstArgsPtr index
-                    }
-                )
-
-            let methodInstantiation =
-                ImmutableArray.CreateRange (
-                    seq {
-                        for index in 0 .. methodInstCount - 1 ->
-                            readTypeHandleInstantiationElement
-                                ctx.BaseClassTypes
-                                operation
-                                state
-                                methodInstArgsPtr
-                                index
+                        for index in 0 .. count - 1 ->
+                            readTypeHandleInstantiationElement ctx.BaseClassTypes operation state pointer index
                     }
                 )
 
@@ -1213,6 +1206,10 @@ module NativeRuntimeTypeQCall =
                     },
                     value
                 | MetadataToken.MemberReference h ->
+                    let typeInstantiation = decodeInstantiation typeInstArgsPtr typeInstCount
+
+                    let methodInstantiation = decodeInstantiation methodInstArgsPtr methodInstCount
+
                     // Surface typeInstantiation/methodInstantiation as TypeDefn arrays so the
                     // MemberRef resolver can substitute any GenericTypeParameter /
                     // GenericMethodParameter appearing in the TypeSpec parent or member
