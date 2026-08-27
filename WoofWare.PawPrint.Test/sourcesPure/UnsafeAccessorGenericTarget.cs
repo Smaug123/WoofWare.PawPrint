@@ -29,6 +29,7 @@ public class TestUnsafeAccessorGenericTarget
         private T _typed;
         private int _plain = 17;
         private int Get() => _plain;
+        private void Typed(T t) { }
     }
 
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Echo")]
@@ -45,6 +46,12 @@ public class TestUnsafeAccessorGenericTarget
 
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Get")]
     private static extern int MethodOfGenericType(Boxed<int> b);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Typed")]
+    private static extern void VariablyTypedParameter(Boxed<int> b, int x);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_typed")]
+    private static extern ref T VariablyTypedFieldGenerically<T>(Boxed<T> b);
 
     public static int Main()
     {
@@ -79,6 +86,26 @@ public class TestUnsafeAccessorGenericTarget
             return 7;
         }
         catch (InvalidProgramException) { }
+
+        // `Typed` takes `!0` and the accessor spells `int32`, so nothing matches at all -- the
+        // lookup fails before the constraint check the previous case reaches. A comparison that
+        // substituted `Boxed<int>`'s instantiation into the candidate would match this and report
+        // the other exception.
+        try
+        {
+            VariablyTypedParameter(b, 1);
+            return 8;
+        }
+        catch (MissingMethodException) { }
+
+        // The accessor's own `!!0` is a different element type from the target's `!0`, so making
+        // the accessor generic does not reach the variably-typed field either.
+        try
+        {
+            VariablyTypedFieldGenerically<int>(b);
+            return 9;
+        }
+        catch (MissingFieldException) { }
 
         return 0;
     }

@@ -60,6 +60,16 @@ public class TestUnsafeAccessorFailures
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Instance")]
     private static extern int ValueTypeMethodByValue(Value v, int x);
 
+    // The synthesised body for the field kind is `ldarg.0; ldflda`, so a null receiver faults at
+    // the accessor rather than wherever the byref is later read.
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_field")]
+    private static extern ref int NullFieldReceiver(Target t);
+
+    // The target type is read from the first parameter, and `ValidateTargetType` refuses a generic
+    // parameter there outright -- it names no type to search.
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Whatever")]
+    private static extern void GenericParameterInTargetPosition<T>(T t, int x);
+
     private static int Check<TExpected>(int code, Action a)
         where TExpected : Exception
     {
@@ -108,8 +118,14 @@ public class TestUnsafeAccessorFailures
         r = Check<BadImageFormatException>(10, () => ValueTypeMethodByValue(default, 1));
         if (r != 0) return r;
 
+        r = Check<NullReferenceException>(11, () => NullFieldReceiver(null));
+        if (r != 0) return r;
+
+        r = Check<BadImageFormatException>(12, () => GenericParameterInTargetPosition<Target>(new Target(), 1));
+        if (r != 0) return r;
+
         // The failure recurs on every call rather than being latched as a success.
-        r = Check<MissingMethodException>(11, () => MissingMethod(null, 1));
+        r = Check<MissingMethodException>(13, () => MissingMethod(null, 1));
         if (r != 0) return r;
 
         return 0;
