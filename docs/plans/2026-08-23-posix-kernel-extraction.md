@@ -2320,14 +2320,139 @@ Ordered so that each has an oracle before the next depends on it.
 
   A row now drives all five constructible phases, at length 0 and at length 1, so
   a future rule drawn from one phase fails.
-* **8e — `fstat`, then `stat`/`lstat`**, first because it is the smallest
+* **8f — `pread`**, the same operation as `read` with an explicit offset, and
+  the increment that shows how little of `read` that actually leaves in common.
+  What the two genuinely share — the transfer window, the shortcut that touches
+  no buffer, and the one point at which the buffer must hold bytes — is now a
+  private `readFileAt`, so a future fix to a measured rule cannot land in one
+  syscall and miss the other. What is *not* shared is the ordering, which is
+  where all of `pread`'s content is.
+
+  **`pread` needs a seekable object, and that changes the answer for three of
+  the five descriptor kinds.** A pipe, a socket and a socket event port are all
+  ESPIPE, where `read` gives EBADF, a refusal, and EINVAL/ENXIO respectively.
+  The socket one is the interesting case: `pread` needs **no socket refusal at
+  all**, because a socket's *read operation* is an answer about connection state
+  while its *seekability* is not — every socket is unseekable whatever it is
+  connected to, so `pread` never reaches the operation to ask. So its signature
+  is `Result<ReadAnswer, BufferRefusal>`: the only refusal genus it can produce
+  is the buffer's, and an arm for a socket refusal would need an invented
+  message to fill.
+
+  **And it returns no system.** A `pread` changes nothing in one: it moves no
+  file offset, and nothing in this kernel moves `atime` (`InodeTimes.Access` is
+  stored and only `createdAt` ever sets it). The signature says so, which is the
+  same move 8d made in taking no buffer — a shape that cannot express the wrong
+  thing beats a comment asking a caller not to. PawPrint's handler therefore has
+  nothing to write back and so cannot forget to, and `withErrnoOnly` is the
+  errno half of `withErrno` without the write-back that would claim otherwise.
+
+  **The ordering, measured on macOS and in a Linux container.** A *single*-fault
+  input agrees on both flavours, so only an input with two things wrong at once
+  separates them:
+
+  | input | Linux | Darwin |
+  | --- | --- | --- |
+  | negative offset alone | EINVAL | EINVAL |
+  | negative offset + bad fd | EINVAL | EBADF |
+  | negative offset + pipe | EINVAL | ESPIPE |
+  | negative offset + socket | EINVAL | ESPIPE |
+  | negative offset + port | EINVAL | ESPIPE |
+  | negative offset + O_WRONLY | EINVAL | EBADF |
+  | negative offset + directory | EINVAL | EINVAL |
+  | negative offset + bad address | EINVAL | EINVAL |
+
+  Linux validates the offset before it looks the descriptor up at all
+  (`do_pread` checks `pos < 0` ahead of `fdget`); Darwin resolves the
+  descriptor, its seekability and its access mode first. The last two rows are
+  the control: EISDIR and the buffer screen both follow the offset check on
+  *both*, so only the descriptor steps move and one flag suffices rather than
+  two orderings.
+
+  The second table is the ESPIPE/EBADF tie, which the flavours break
+  differently because a pipe's write end fails two tests at once:
+
+  | descriptor | Linux | Darwin |
+  | --- | --- | --- |
+  | pipe read end (unseekable) | ESPIPE | ESPIPE |
+  | pipe write end (also unreadable) | ESPIPE | EBADF |
+  | regular file O_WRONLY (seekable) | EBADF | EBADF |
+
+  The third row is the control that says this is about the tie rather than
+  about unreadability generally.
+
+  **The probe was widened before the rows were written, and it changed two of
+  them.** The handler being transcribed had measured sockets only with a valid
+  buffer at a non-zero length, and had not measured a socket or a port against a
+  negative offset at all — so four of the rows above were symmetry arguments
+  rather than measurements. Measuring found them all correct, which is the
+  outcome to want but not one to assume: 8d and 8e were each a rule drawn from
+  one axis that turned out to need another. Two rows were added to the tests as
+  a result. One probe row is deliberately absent: nothing here measures
+  `pread` against a *symbolic* buffer, which is PawPrint's concept and not a
+  kernel's.
+
+  Eight mutants, all killed by the row that names the rule: the offset-order
+  flag flipped; the port answering `read`'s errno; Darwin's tie-break dropped;
+  the access-mode check deleted; the screen made not to answer; the
+  moved-nothing shortcut made to consult its buffer; `read` advancing by what
+  was asked rather than what moved; and `pread` reading from the start rather
+  than from its argument.
+
+* **8g — `pwrite`**, which stands to `write` as 8f stands to `read`: an explicit
+  offset, no description update, and the two-phase admission unchanged. Listed
+  as its own bullet rather than left implicit in 8d's prose, for the reason the
+  `getcwd` bullet below gives about itself — a list that does not partition its
+  own census table is not a plan.
+
+  **The temptation this increment exists to resist is transcribing 8f's order
+  with the words swapped, and measuring says that would be wrong in the very
+  first step.** `pwrite` validates a negative offset *ahead of everything, on
+  both flavours*, where `pread` does so only on Linux. Nine second faults give
+  way to it on both — a bad descriptor, either end of a pipe, a read-only file,
+  a directory, a socket, a socket event port, an unscreenable address and a zero
+  length — so the per-flavour flag 8f needed is not merely unnecessary here, it
+  would fail every one of those rows.
+
+  The seekability tie *is* 8f's mirrored, with the roles swapped: standard input
+  is now the descriptor that fails two tests at once, being neither seekable nor
+  open for writing.
+
+  | descriptor | Linux | Darwin |
+  | --- | --- | --- |
+  | pipe write end (unseekable) | ESPIPE | ESPIPE |
+  | pipe read end (also unwritable) | ESPIPE | EBADF |
+  | regular file O_RDONLY (seekable) | EBADF | EBADF |
+
+  **`PWriteRefusal` is `WriteRefusal` without its socket case**, rather than the
+  same type. A socket is unseekable, so `pwrite` answers ESPIPE and never
+  reaches the socket's write operation to ask about connection state — the same
+  argument 8f made for `pread`, and the reason the plan keeps stating it is that
+  the two syscalls' refusal *sets* differ even though their answer sets look
+  alike. Sharing the type would hand every client an arm it could not reach and
+  would have to invent a message for. The length refusal's sentence is shared
+  between the two types, being one fact reached from a different offset.
+
+  It does return a system, unlike `pread`: the description's offset does not
+  move, but the file's contents and timestamps do. So the pair of signatures
+  states exactly which of the two directions writes.
+
+  PawPrint's `commitFileWrite` goes with the move. `UnixSystem.pwrite` was its
+  last caller, and it was the last place the set-ID rule and the timestamp rule
+  were applied outside the library.
+
+  Ten mutants, all killed by the row that names the rule — including the one
+  this increment is really about: giving `pwrite` `pread`'s per-flavour offset
+  flag dies on the nine-row table above.
+
+* **8h — `fstat`, then `stat`/`lstat`**, first because it is the smallest
   structured answer and it is what settles (3) against a real encoder. `stat`
   and `lstat` follow for free: they already share one `statLike`.
-* **8f — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
+* **8i — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
   land together once 8b exists.
-* **8g — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
+* **8j — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
   file syscalls, and `open`'s flags are PAL values.
-* **8h — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
+* **8k — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
   table and had no home in the first draft of this list, which is a drafting
   failure the census itself should have caught: an increment list that does not
   partition its own table is not a plan. All three are destination-buffer
