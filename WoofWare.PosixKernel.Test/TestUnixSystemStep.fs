@@ -2973,3 +2973,39 @@ module TestUnixSystemStep =
             UnixSystem.openPath creating (statPath "/new") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
+
+    [<Test>]
+    let ``the descriptor carries the access mode that was asked for`` () : unit =
+        // Every other row reads the *number* the open returned, which cannot
+        // tell one access mode from another. What can is using the descriptor:
+        // a write-only description refuses `read` with EBADF and a read-only one
+        // refuses `write`, so the two directions pin the field in both
+        // directions rather than only asserting it is not read-only.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let writeOnlyFd, afterWriteOnly =
+                match
+                    UnixSystem.openPath
+                        { plainOpen with
+                            Access = FileAccessMode.WriteOnly
+                        }
+                        (statPath "/d/inner/t")
+                        0o666
+                        system
+                with
+                | SyscallAnswer.Completed fd, after -> int fd, after
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            match UnixSystem.read writeOnlyFd UserBuffer.Mapped 8 afterWriteOnly with
+            | Ok (ReadAnswer.Failed UnixError.EBADF, _) -> ()
+            | other -> failwith $"a write-only descriptor should refuse read: %O{other}"
+
+            let readOnlyFd, afterReadOnly =
+                match UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
+                | SyscallAnswer.Completed fd, after -> int fd, after
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            match UnixSystem.admitWrite readOnlyFd UserBuffer.Mapped 3 afterReadOnly with
+            | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)) -> ()
+            | other -> failwith $"a read-only descriptor should refuse write: %O{other}"
