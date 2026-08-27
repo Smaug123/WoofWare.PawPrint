@@ -2704,6 +2704,16 @@ module TestUnixSystemStep =
             |> openFailed
             |> shouldEqual UnixError.ENOENT
 
+            // On a *symbolic link*, which is the row that makes the rule
+            // load-bearing rather than merely stated. `O_EXCL` with `O_CREAT`
+            // stops the walk at the link (the next test), so an implementation
+            // that read `Exclusive` without `Create` would answer ELOOP here.
+            // Measured on both: `open(link, O_RDONLY|O_EXCL)` follows to the
+            // file and succeeds, exactly as without the flag.
+            UnixSystem.openPath exclusiveOnly (statPath "/l") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
             // And with `Create` it bites, which is what says the field is read
             // at all.
             UnixSystem.openPath
@@ -2928,5 +2938,38 @@ module TestUnixSystemStep =
             let _, _, _, system = withTree flavour
 
             UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+    [<Test>]
+    let ``a creating open picks its own trailing-separator rule, and the flavours differ`` () : unit =
+        // The cell that discriminates is a *free* name carrying a trailing
+        // separator: an existing directory is EISDIR on both, so it cannot tell
+        // the two rules apart. Measured, `open("new/", O_CREAT|O_WRONLY)` is
+        // EISDIR on Linux and ENOENT on Darwin, and neither creates anything.
+        //
+        // A non-creating open demands a directory on both, which is why the
+        // policy is chosen from `Create` at all rather than being one constant.
+        let creating =
+            { plainOpen with
+                Create = true
+                Access = FileAccessMode.WriteOnly
+            }
+
+        for flavour, expected in [ linux, UnixError.EISDIR ; darwin, UnixError.ENOENT ] do
+            let _, _, _, system = withTree flavour
+
+            let answer, after = UnixSystem.openPath creating (statPath "/new/") 0o666 system
+
+            answer |> shouldEqual (SyscallAnswer.Failed expected)
+
+            // Nothing was created under either rule, which is the half an errno
+            // alone does not assert.
+            UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/new") after
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            // The same name *without* the separator creates, so the row above is
+            // about the separator rather than about the name being unreachable.
+            UnixSystem.openPath creating (statPath "/new") 0o666 system
             |> openedFd
             |> shouldBeGreaterThan 2
