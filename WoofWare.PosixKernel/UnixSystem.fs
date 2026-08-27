@@ -313,6 +313,72 @@ module PWriteRefusal =
             // from the description's offset, so it says the same sentence.
             WriteRefusal.describeExceedsRepresentableLength inode offset count
 
+/// What `readlink(2)` puts in the caller's buffer and what it returns.
+[<RequireQualifiedAccess>]
+type ReadLinkAnswer =
+    /// Place these bytes in the caller's buffer; the entry point returns how
+    /// many there are.
+    ///
+    /// **No terminator**, and truncated to the capacity rather than refused:
+    /// `readlink` writes exactly the bytes it reports and reports success by a
+    /// non-negative count, so a NUL would corrupt the byte after a target that
+    /// exactly fits. Truncation is not an error path — `Interop.Sys.ReadLink`
+    /// starts with a 256-byte `stackalloc` and doubles while the result fills
+    /// the buffer, so a short buffer is how the BCL *sizes* its allocation.
+    | Reported of bytes : ImmutableArray<byte>
+    /// The entry point returns -1 and the caller stores `error` wherever its
+    /// libc keeps errno.
+    | Failed of error : UnixError
+
+/// What kind of object one directory entry names.
+///
+/// Not `InodeContent`, which carries the payload as well — a caller enumerating
+/// a directory is owed the *type* of each entry and nothing else, and handing it
+/// the bytes of every file in the directory would be a different API. Not
+/// `fileTypeBits` either: that is the `S_IFMT` numbering `stat` reports, where
+/// `readdir` has its own (`DT_REG` and friends), and the two are not the same
+/// numbers. A client encodes whichever its own struct wants.
+[<RequireQualifiedAccess>]
+type DirectoryEntryKind =
+    | RegularFile
+    | Directory
+    | Symlink
+
+[<RequireQualifiedAccess>]
+module DirectoryEntryKind =
+    /// What kind of entry a directory binding onto this content is.
+    let ofContent (content : InodeContent) : DirectoryEntryKind =
+        match content with
+        | InodeContent.RegularFile _ -> DirectoryEntryKind.RegularFile
+        | InodeContent.Directory _ -> DirectoryEntryKind.Directory
+        | InodeContent.Symlink _ -> DirectoryEntryKind.Symlink
+
+/// What `opendir(3)` answers.
+[<RequireQualifiedAccess>]
+type OpenDirAnswer =
+    /// The stream to pass back to `readdir` and `closedir`.
+    ///
+    /// A minted identity rather than an address: a real `opendir` answers a
+    /// `DIR*`, which is a pointer into the caller's own address space, and this
+    /// kernel has no addresses. A client that hands its caller a pointer keeps
+    /// the mapping from that pointer to this identity.
+    | Opened of stream : DirectoryStreamId
+    /// The call returns NULL and the caller stores `error` wherever its libc
+    /// keeps errno.
+    | Failed of error : UnixError
+
+/// One entry of a directory stream, as facts rather than as a `struct dirent`.
+[<RequireQualifiedAccess>]
+type ReadDirAnswer =
+    /// The stream is exhausted. A real `readdir` answers NULL, and leaves errno
+    /// alone — which is why the C zeroes it before the call, so that it can tell
+    /// this from a failure afterwards.
+    | EndOfStream
+    /// `name` is the bytes `readdir(3)` puts in `d_name`, without a terminator:
+    /// terminating is the client's business, its buffer being the one with a
+    /// size. `.` and `..` are entries like any other and are reported here.
+    | Entry of name : ImmutableArray<byte> * kind : DirectoryEntryKind
+
 /// What a caller asked `open(2)` for, as facts about the open rather than as a
 /// bit pattern.
 ///
@@ -2692,6 +2758,190 @@ module UnixSystem =
             | InodeContent.Symlink _ -> system
 
         opened inode system
+
+    /// `readlink(2)`: report what the symbolic link at `path` points at.
+    ///
+    /// Changes nothing and returns no system. That is *not* quite what POSIX
+    /// says: a successful `readlink` marks the link's access time for update,
+    /// and this kernel does not move it. Whether it would move is a property of
+    /// the mount rather than of this syscall, and the two flavours disagree —
+    /// measured on macOS (lstat, sleep, readlink, lstat) `st_atime` does not
+    /// move, while Linux's default `relatime` updates whenever `mtime` or
+    /// `ctime` is at or after the old `atime`, and a freshly seeded inode has
+    /// all three equal, so the first read there *would* move it. Deciding it
+    /// inside one entry point would set mount semantics for every future read
+    /// by accident, and would make `readlink` the only syscall obeying them.
+    ///
+    /// `capacity` is the caller's buffer size and must be positive. Zero and
+    /// negative are the shim's own guard, and it is the only reason this
+    /// syscall is cross-platform at all: measured, the raw syscall answers 0 on
+    /// Darwin and EINVAL on Linux for a zero size, and the guard means neither
+    /// answer escapes. So a caller that has not screened it is asking a question
+    /// no kernel this library models was ever asked.
+    let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (destination : UserBuffer)
+        (capacity : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ReadLinkAnswer, BufferRefusal>
+        =
+        if capacity <= 0 then
+            failwith
+                $"UnixSystem.readlink: capacity %d{capacity} is not positive, and the two flavours do not agree on what such a call does -- Darwin answers 0 where Linux answers EINVAL. Screen this in the client, where the shim that rejects it lives (this is a bug in the caller)."
+
+        // `NoFollowFinal` is what makes this `readlink` rather than an expensive
+        // way of asking about the target: a final symlink is the thing being
+        // read, not something to step through. A trailing separator still
+        // overrides that -- "lf/" demands that `lf` be a directory -- and the
+        // resolver owns that rule, answering ENOTDIR.
+        match resolvePath SymlinkPolicy.NoFollowFinal path system with
+        | Error error -> Ok (ReadLinkAnswer.Failed error)
+        | Ok inode ->
+
+        match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+        | None ->
+            failwith
+                $"UnixSystem.readlink: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+        | Some (InodeContent.Directory _)
+        | Some (InodeContent.RegularFile _) ->
+            // Not a link. It must be EINVAL and no other errno:
+            // `FileSystem.ResolveLinkTarget` answers *null* for EINVAL and
+            // rethrows every other errno as an exception, so this single choice
+            // is the difference between `File.ResolveLinkTarget` reporting "not
+            // a link" and it throwing.
+            //
+            // Decided before the destination is looked at, which is what a real
+            // kernel does -- `vfs_readlink` refuses on the inode's operations
+            // before it copies anything out. Measured on the host:
+            // `readlink("f", (char*)8, 16)` is EINVAL, not EFAULT.
+            Ok (ReadLinkAnswer.Failed UnixError.EINVAL)
+        | Some (InodeContent.Symlink target) ->
+
+        // The destination is consulted only here, on the path that actually
+        // writes through it. `readlink(2)` runs no up-front address check on
+        // either flavour: the target is built in the kernel and handed over with
+        // a single `copy_to_user`, so an unusable buffer is discovered at the
+        // copy and every earlier refusal wins. Measured against a `PROT_READ`
+        // page, both flavours answer EFAULT -- unlike `getcwd`, whose copy is a
+        // user-space store on one of them.
+        match destination with
+        | UserBuffer.Unmapped _ -> Ok (ReadLinkAnswer.Failed UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error BufferRefusal.OpaqueAtTransfer
+        | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
+        | UserBuffer.Mapped ->
+
+        let all = SymlinkTarget.toUtf8 target
+
+        // Truncated in *bytes*, not in characters: a symlink target is a byte
+        // string, and truncating by character count would write two bytes where
+        // the caller allowed one for any non-ASCII target.
+        if all.Length <= capacity then
+            Ok (ReadLinkAnswer.Reported all)
+        else
+            Ok (ReadLinkAnswer.Reported (ImmutableArray.CreateRange (Seq.truncate capacity all)))
+
+    /// `opendir(3)`: resolve `path` and start a stream over the directory it
+    /// names.
+    ///
+    /// Answers a minted `DirectoryStreamId`, not a `DIR*`: see
+    /// `OpenDirAnswer.Opened`. A client that materialises a pointer for its
+    /// caller records the mapping itself, and must, because
+    /// `VirtualFileSystem.checkInvariants` refuses a state in which the two
+    /// disagree.
+    ///
+    /// Consumes a descriptor, which `dirfd(3)` would hand back. Nothing in the
+    /// PAL calls `dirfd`, so a caller can only see it in the numbering of a
+    /// later `open` -- which is enough to make it observable, and is why the
+    /// stream takes a real descriptor rather than living beside the table. It is
+    /// also what pins the directory's inode while the stream is open.
+    ///
+    /// Never refused: every outcome is a stream or an errno.
+    let opendir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : OpenDirAnswer * UnixSystem<'Task, 'Handler>
+        =
+        // `Follow`, and a trailing separator that merely records its demand:
+        // measured on both kernels, `opendir` follows a final symlink and a
+        // trailing separator changes no row at all -- "ld" and "ld/" both
+        // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
+        // `TrailingSeparatorDemanded`, because a directory is demanded outright
+        // whether the separator was there or not.
+        match resolvePathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand path system with
+        | Error error -> OpenDirAnswer.Failed error, system
+        | Ok resolution ->
+
+        match
+            OpenDirRules.verdict (UnixProcessState.callerPrivilege system.Process) resolution system.Machine.FileSystem
+        with
+        | OpenDirVerdict.Refuse error -> OpenDirAnswer.Failed error, system
+        | OpenDirVerdict.Open inode ->
+
+        let fd, registry =
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly system.Process.FileDescriptors
+
+        let id = system.Process.NextDirectoryStreamId
+        let (DirectoryStreamId raw) = id
+
+        let stream : DirectoryStream =
+            {
+                Fd = fd
+                Inode = inode
+                Cursor = DirectoryCursor.Start
+            }
+
+        OpenDirAnswer.Opened id,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                    DirectoryStreams = Map.add id stream system.Process.DirectoryStreams
+                    NextDirectoryStreamId = DirectoryStreamId (raw + 1L)
+                }
+        }
+
+    /// `readdir(3)`: hand back the next entry of `stream` and advance it.
+    ///
+    /// Total: there is no failure arm, because the cursor walk always has an
+    /// answer and a stream this kernel never issued is a caller bug rather than
+    /// an errno -- a real libc calls that undefined behaviour, so there is no
+    /// errno to report.
+    let readdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (stream : DirectoryStreamId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadDirAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let current =
+            match Map.tryFind stream system.Process.DirectoryStreams with
+            | Some current -> current
+            | None ->
+                failwith
+                    $"UnixSystem.readdir: %O{stream} is not a directory stream this kernel issued. A real libc calls passing an unissued DIR* undefined behaviour rather than reporting an errno, so there is nothing to answer (this is a bug in the caller)."
+
+        match VirtualFileSystem.nextDirectoryEntry current.Inode current.Cursor system.Machine.FileSystem with
+        | None -> ReadDirAnswer.EndOfStream, system
+        | Some (name, target, next) ->
+
+        let kind =
+            match VirtualFileSystem.tryGetContent target system.Machine.FileSystem with
+            | Some content -> DirectoryEntryKind.ofContent content
+            | None ->
+                failwith
+                    $"UnixSystem.readdir: the entry \"%s{name.ToString ()}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        ReadDirAnswer.Entry (ImmutableArray.CreateRange (UnixPathText.utf8.GetBytes (name.ToString ())), kind),
+        { system with
+            Process =
+                { system.Process with
+                    DirectoryStreams =
+                        Map.add
+                            stream
+                            { current with
+                                Cursor = next
+                            }
+                            system.Process.DirectoryStreams
+                }
+        }
 
     /// `mkdir(2)`: bind a new directory at `path`.
     ///

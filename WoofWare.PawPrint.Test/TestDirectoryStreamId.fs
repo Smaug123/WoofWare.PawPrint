@@ -47,13 +47,19 @@ module TestDirectoryStreamId =
         | Ok inode -> inode
         | Error error -> failwith $"could not resolve /dir in the test seed: %O{error}"
 
-    /// Everything `SystemNative_OpenDir` does to kernel state: a descriptor, a
-    /// native block standing in for the `DIR*`, and the stream itself.
+    /// Everything `SystemNative_OpenDir` does to kernel state: the library mints
+    /// the stream and takes the descriptor, and the client allocates the native
+    /// block standing in for the `DIR*` and binds it to that identity.
+    ///
+    /// Two steps rather than one, which is the split these rows exist to hold:
+    /// the identity is the library's and the address is PawPrint's.
     let private openDir (kernel : EmulatedKernel) : NativeMemoryBlockId * EmulatedKernel =
-        let inode = dirInode kernel
+        let id, system =
+            match UnixSystem.opendir (UnixPath.parseOrFail "test" "/dir") (EmulatedKernel.unix kernel) with
+            | OpenDirAnswer.Opened id, system -> id, system
+            | other -> failwith $"could not open the directory: %O{other}"
 
-        let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly kernel.FileDescriptors
+        let kernel = EmulatedKernel.withUnix system kernel
 
         let block, pool =
             NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized 1024 kernel.NativeMemoryPool
@@ -61,18 +67,8 @@ module TestDirectoryStreamId =
         block,
         { kernel with
             NativeMemoryPool = pool
-            Process =
-                { kernel.Process with
-                    FileDescriptors = registry
-                }
         }
-        |> EmulatedKernel.withNewDirectoryStream
-            block
-            {
-                Fd = fd
-                Inode = inode
-                Cursor = DirectoryCursor.Start
-            }
+        |> EmulatedKernel.withDirectoryStreamBlock block id
 
     let private closeDir (block : NativeMemoryBlockId) (kernel : EmulatedKernel) : EmulatedKernel =
         let stream = EmulatedKernel.directoryStream block kernel
@@ -126,14 +122,17 @@ module TestDirectoryStreamId =
         let before = EmulatedKernel.directoryStreamId block kernel
 
         let kernel =
-            EmulatedKernel.withDirectoryCursor block (DirectoryCursor.After (name "a")) kernel
+            EmulatedKernel.mapUnix (fun system -> snd (UnixSystem.readdir before system)) kernel
 
         EmulatedKernel.directoryStreamId block kernel |> shouldEqual before
         kernel.NextDirectoryStreamId |> shouldEqual (DirectoryStreamId 1L)
         kernel.DirectoryStreams.Count |> shouldEqual 1
 
+        // `dir` binds no names, so the first entry is `..` and the cursor lands
+        // there. Asserted as a value rather than as "it moved": a cursor that
+        // advanced to the wrong state would pass the weaker check.
         (EmulatedKernel.directoryStream block kernel).Cursor
-        |> shouldEqual (DirectoryCursor.After (name "a"))
+        |> shouldEqual DirectoryCursor.ReturnedDotDot
 
     [<Test>]
     let ``closing clears both maps`` () : unit =

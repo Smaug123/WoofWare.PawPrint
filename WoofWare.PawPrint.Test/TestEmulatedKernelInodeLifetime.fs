@@ -463,7 +463,15 @@ module TestEmulatedKernelInodeLifetime =
     /// would have opened, answering the block standing in for the `DIR*`.
     let private streaming (kernel : EmulatedKernel) : NativeMemoryBlockId * InodeNumber * EmulatedKernel =
         let inner = inodeOf kernel "/outer/inner"
-        let fd, kernel = opened inner kernel
+
+        // The library mints the stream and takes the descriptor; the client
+        // allocates the block standing in for the `DIR*` and binds it.
+        let id, system =
+            match UnixSystem.opendir (UnixPath.parseOrFail "test" "/outer/inner") (EmulatedKernel.unix kernel) with
+            | OpenDirAnswer.Opened id, system -> id, system
+            | other -> failwith $"could not open the directory: %O{other}"
+
+        let kernel = EmulatedKernel.withUnix system kernel
 
         let block, pool =
             NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized 1024 kernel.NativeMemoryPool
@@ -473,13 +481,7 @@ module TestEmulatedKernelInodeLifetime =
         { kernel with
             NativeMemoryPool = pool
         }
-        |> EmulatedKernel.withNewDirectoryStream
-            block
-            {
-                Fd = fd
-                Inode = inner
-                Cursor = DirectoryCursor.Start
-            }
+        |> EmulatedKernel.withDirectoryStreamBlock block id
 
     [<Test>]
     let ``an open stream holds its directory even with its descriptor gone`` () : unit =

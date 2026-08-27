@@ -3009,3 +3009,384 @@ module TestUnixSystemStep =
             match UnixSystem.admitWrite readOnlyFd UserBuffer.Mapped 3 afterReadOnly with
             | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)) -> ()
             | other -> failwith $"a read-only descriptor should refuse write: %O{other}"
+
+    // ---- `opendir` / `readdir` ---------------------------------------------
+
+    let private openedStream
+        (system : UnixSystem<int, string>)
+        (path : string)
+        : DirectoryStreamId * UnixSystem<int, string>
+        =
+        match UnixSystem.opendir (statPath path) system with
+        | OpenDirAnswer.Opened id, after -> id, after
+        | other -> failwith $"expected a stream, got %O{other}"
+
+    /// Everything the stream yields, as (name, kind) pairs in the order it
+    /// yielded them.
+    let private drain
+        (id : DirectoryStreamId)
+        (system : UnixSystem<int, string>)
+        : (string * DirectoryEntryKind) list * UnixSystem<int, string>
+        =
+        let rec go fuel acc system =
+            if fuel <= 0 then
+                failwith
+                    $"readdir yielded %d{List.length acc} entries without reaching end-of-stream; the cursor is not advancing."
+            else
+
+            match UnixSystem.readdir id system with
+            | ReadDirAnswer.EndOfStream, system -> List.rev acc, system
+            | ReadDirAnswer.Entry (name, kind), system ->
+                let text = System.Text.Encoding.UTF8.GetString (name.AsSpan ())
+                go (fuel - 1) ((text, kind) :: acc) system
+
+        // Bounded rather than "until end-of-stream": a `readdir` that fails to
+        // advance its cursor is a real thing to get wrong, and an unbounded loop
+        // would hang the suite rather than report it. No fixture here holds more
+        // than a handful of entries.
+        go 64 [] system
+
+    [<Test>]
+    let ``a stream yields every binding, then dotdot, then dot`` () : unit =
+        // The whole order in one row, because the cursor's states are only
+        // meaningful as a sequence: names in ascending order, then `..`, then
+        // `.`, then end-of-stream. Asserting a set would pass for a cursor that
+        // never advanced past the first name.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let id, system = openedStream system "/d/inner"
+
+            drain id system
+            |> fst
+            |> shouldEqual
+                [
+                    "t", DirectoryEntryKind.RegularFile
+                    "..", DirectoryEntryKind.Directory
+                    ".", DirectoryEntryKind.Directory
+                ]
+
+    [<Test>]
+    let ``the kind reported is the entry's own, not the stream's`` () : unit =
+        // A directory holding one of each, so a `readdir` that reported the
+        // *directory's* kind for every entry — or the first entry's for all of
+        // them — is distinguishable. `/l` is a symbolic link and is reported as
+        // one: `readdir` does not follow it.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let id, system = openedStream system "/"
+
+            let entries, _ = drain id system
+
+            entries
+            |> List.filter (fun (name, _) -> name <> "." && name <> "..")
+            |> shouldEqual
+                [
+                    "d", DirectoryEntryKind.Directory
+                    "dangling", DirectoryEntryKind.Symlink
+                    "l", DirectoryEntryKind.Symlink
+                ]
+
+    [<Test>]
+    let ``two streams over one directory advance independently`` () : unit =
+        // The cursor belongs to the stream rather than to the directory, which
+        // a single-stream test cannot tell. Draining one leaves the other at the
+        // start.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let first, system = openedStream system "/d/inner"
+            let second, system = openedStream system "/d/inner"
+
+            let drained, system = drain first system
+            drained |> List.length |> shouldEqual 3
+
+            drain second system |> fst |> List.length |> shouldEqual 3
+
+    [<Test>]
+    let ``opendir follows a final symlink to a directory`` () : unit =
+        // A link to a *directory* is the only thing that can tell `Follow` from
+        // `NoFollowFinal` here: a link to a file is ENOTDIR under either, the
+        // one because the walk lands on the file and the other because the
+        // verdict refuses a symlink. Measured on both, "ld" succeeds.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let vfs =
+                match
+                    VirtualFileSystem.createSymlink
+                        (VirtualFileSystem.root system.Machine.FileSystem)
+                        (FileName.parseOrFail context "ld")
+                        epoch
+                        (SymlinkTarget.parseOrFail context "/d/inner")
+                        system.Machine.FileSystem
+                with
+                | Ok (_, vfs) -> vfs
+                | Error error -> failwith $"could not seed /ld: %O{error}"
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = vfs
+                        }
+                }
+
+            let id, system = openedStream system "/ld"
+
+            // It really enumerated the directory the link names, rather than
+            // opening something empty.
+            drain id system
+            |> fst
+            |> shouldEqual
+                [
+                    "t", DirectoryEntryKind.RegularFile
+                    "..", DirectoryEntryKind.Directory
+                    ".", DirectoryEntryKind.Directory
+                ]
+
+    [<Test>]
+    let ``opendir demands a directory`` () : unit =
+        // Measured on both: "f" and "f/" are both ENOTDIR, and a free name is
+        // ENOENT.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            match UnixSystem.opendir (statPath "/l") system with
+            | OpenDirAnswer.Failed UnixError.ENOTDIR, _ -> ()
+            | other -> failwith $"a link to a regular file should be ENOTDIR: %O{other}"
+
+            match UnixSystem.opendir (statPath "/d/inner/t") system with
+            | OpenDirAnswer.Failed UnixError.ENOTDIR, _ -> ()
+            | other -> failwith $"a regular file should be ENOTDIR: %O{other}"
+
+            match UnixSystem.opendir (statPath "/d/inner/nope") system with
+            | OpenDirAnswer.Failed UnixError.ENOENT, _ -> ()
+            | other -> failwith $"a free name should be ENOENT: %O{other}"
+
+    [<Test>]
+    let ``opendir consumes a descriptor that pins the directory`` () : unit =
+        // A real `opendir` takes a file descriptor, and `dirfd(3)` hands it
+        // back. Nothing in the PAL calls `dirfd`, so the only way a guest sees
+        // it is in the *numbering* of a later open — which is what this asserts,
+        // rather than reading the stream's own field.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let withoutStream =
+                match UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
+                | SyscallAnswer.Completed fd, _ -> int fd
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            let _, afterStream = openedStream system "/d/inner"
+
+            let withStream =
+                match UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 afterStream with
+                | SyscallAnswer.Completed fd, _ -> int fd
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            withStream |> shouldEqual (withoutStream + 1)
+
+    [<Test>]
+    let ``a stream over a removed directory is at end-of-stream at once`` () : unit =
+        // Dots included, which is the whole of the choice recorded on
+        // `nextDirectoryEntry`: probed on both kernels, `opendir` then `rmdir`
+        // then `readdir` answers NULL without yielding either dot.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let id, system = openedStream system "/d/inner"
+
+            let system =
+                match UnixSystem.unlink (statPath "/d/inner/t") system with
+                | SyscallAnswer.Completed 0L, system -> system
+                | other -> failwith $"could not empty the directory: %O{other}"
+
+            let system =
+                match UnixSystem.rmdir (statPath "/d/inner") system with
+                | SyscallAnswer.Completed 0L, system -> system
+                | other -> failwith $"could not remove the directory: %O{other}"
+
+            drain id system |> fst |> shouldEqual []
+
+    [<Test>]
+    let ``readdir refuses a stream this kernel never issued`` () : unit =
+        // A real libc calls this undefined behaviour rather than reporting an
+        // errno, so there is nothing to answer and inventing EBADF would be a
+        // plausible wrong answer.
+        let _, _, _, system = withTree linux
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixSystem.readdir (DirectoryStreamId 99L) system
+                |> ignore<ReadDirAnswer * UnixSystem<int, string>>
+            )
+
+        exn.Message |> shouldContainText "not a directory stream this kernel issued"
+
+    // ---- `readlink` --------------------------------------------------------
+
+    let private readLinkBytes (answer : Result<ReadLinkAnswer, BufferRefusal>) : byte list =
+        match answer with
+        | Ok (ReadLinkAnswer.Reported bytes) -> List.ofSeq bytes
+        | other -> failwith $"expected a target, got %O{other}"
+
+    let private readLinkFailed (answer : Result<ReadLinkAnswer, BufferRefusal>) : UnixError =
+        match answer with
+        | Ok (ReadLinkAnswer.Failed error) -> error
+        | other -> failwith $"expected a failure, got %O{other}"
+
+    let private targetOf (path : string) : byte list =
+        List.ofSeq (System.Text.Encoding.UTF8.GetBytes path)
+
+    [<Test>]
+    let ``readlink reports the target without a terminator`` () : unit =
+        // No terminator: `readlink` writes exactly the bytes it reports, so a
+        // NUL would corrupt the byte after a target that exactly fits. Asserted
+        // at exactly the target's length, which is where that would show.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let expected = targetOf "/d/inner/t"
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped 4096 system
+            |> readLinkBytes
+            |> shouldEqual expected
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped expected.Length system
+            |> readLinkBytes
+            |> shouldEqual expected
+
+            // And one byte below it, which is the other side of the boundary:
+            // a capacity of exactly the target's length must not truncate, and a
+            // capacity one below it must. Only this pair pins the comparison —
+            // either row alone passes for an off-by-one.
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped (expected.Length - 1) system
+            |> readLinkBytes
+            |> shouldEqual (List.truncate (expected.Length - 1) expected)
+
+    [<Test>]
+    let ``a short buffer truncates rather than failing`` () : unit =
+        // Truncation is how the BCL *sizes* its allocation: `Interop.Sys.ReadLink`
+        // starts with a 256-byte `stackalloc` and doubles while the result fills
+        // the buffer, so refusing here would break `FileInfo.LinkTarget` for
+        // every target of 256 bytes or more.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped 4 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/d/i")
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Mapped 1 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/")
+
+    [<Test>]
+    let ``a target is truncated in bytes rather than characters`` () : unit =
+        // A symlink target is a byte string. Truncating by character count would
+        // write two bytes where the caller allowed one for any non-ASCII target,
+        // which only a multi-byte target can detect.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let vfs =
+                match
+                    VirtualFileSystem.createSymlink
+                        (VirtualFileSystem.root system.Machine.FileSystem)
+                        (FileName.parseOrFail context "wide")
+                        epoch
+                        (SymlinkTarget.parseOrFail context "/éé")
+                        system.Machine.FileSystem
+                with
+                | Ok (_, vfs) -> vfs
+                | Error error -> failwith $"could not seed: %O{error}"
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = vfs
+                        }
+                }
+
+            // "/ee" is five bytes but three characters. A capacity of three
+            // must yield three *bytes* — the slash and the first é.
+            UnixSystem.readlink (statPath "/wide") UserBuffer.Mapped 4096 system
+            |> readLinkBytes
+            |> List.length
+            |> shouldEqual 5
+
+            UnixSystem.readlink (statPath "/wide") UserBuffer.Mapped 3 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/é")
+
+    [<Test>]
+    let ``a path that is not a link is EINVAL, before the destination is looked at`` () : unit =
+        // It must be EINVAL and no other errno: `FileSystem.ResolveLinkTarget`
+        // answers *null* for EINVAL and rethrows everything else, so this single
+        // choice is the difference between `File.ResolveLinkTarget` reporting
+        // "not a link" and it throwing.
+        //
+        // Asked with an unusable destination too, which is what pins the order:
+        // measured, `readlink("f", (char*)8, 16)` is EINVAL rather than EFAULT.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/d/inner/t") UserBuffer.Mapped 4096 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+            UnixSystem.readlink (statPath "/d/inner/t") (UserBuffer.Unmapped 8UL) 16 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+            UnixSystem.readlink (statPath "/d/inner") UserBuffer.Mapped 4096 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+    [<Test>]
+    let ``an unusable destination is EFAULT on both flavours`` () : unit =
+        // Unlike `getcwd`, whose copy is a user-space store on one flavour and
+        // so kills the process. `readlink`'s target is built in the kernel and
+        // handed over with a single `copy_to_user`, so a `PROT_READ` destination
+        // is EFAULT on both — measured in the same probe that showed `getcwd`
+        // taking a signal.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/l") (UserBuffer.Unmapped 8UL) 16 system
+            |> readLinkFailed
+            |> shouldEqual UnixError.EFAULT
+
+            UnixSystem.readlink (statPath "/l") UserBuffer.Opaque 16 system
+            |> shouldEqual (Error BufferRefusal.OpaqueAtTransfer)
+
+            // At the transfer rather than at a screen: neither flavour checks
+            // the destination's address up front.
+            UnixSystem.readlink (statPath "/l") UserBuffer.Addressless 16 system
+            |> shouldEqual (Error BufferRefusal.AddresslessAtTransfer)
+
+    [<Test>]
+    let ``readlink does not step through the final link`` () : unit =
+        // `NoFollowFinal` is what makes this `readlink` rather than an expensive
+        // way of asking about the target. `/dangling` names nothing, so a walk
+        // that followed it would be ENOENT where this reports the target.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.readlink (statPath "/dangling") UserBuffer.Mapped 4096 system
+            |> readLinkBytes
+            |> shouldEqual (targetOf "/d/inner/gone")
+
+    [<Test>]
+    let ``readlink refuses a capacity no kernel it models was ever asked`` () : unit =
+        // Zero and negative are the shim's guard, and the only reason this
+        // syscall is cross-platform: the raw one answers 0 on Darwin and EINVAL
+        // on Linux for a zero size.
+        let _, _, _, system = withTree linux
+
+        for capacity in [ 0 ; -1 ] do
+            let exn =
+                Assert.Throws<exn> (fun () ->
+                    UnixSystem.readlink (statPath "/l") UserBuffer.Mapped capacity system
+                    |> ignore<Result<ReadLinkAnswer, BufferRefusal>>
+                )
+
+            exn.Message |> shouldContainText "not positive"

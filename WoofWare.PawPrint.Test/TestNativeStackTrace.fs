@@ -13,15 +13,14 @@ open WoofWare.PawPrint
 /// is handed.
 /// </summary>
 /// <remarks>
-/// These are the only tests that can see those writes. A guest cannot: `CaptureStackTrace` builds a
-/// `StackFrame` per captured frame and that constructor calls `GetMethodBase` unconditionally, which
-/// needs the unimplemented `IsTypicalMethodDefinition` — so every guest-visible route to a non-empty
-/// capture is blocked (`sourcesPure/StackTraceCurrentThreadFrames.cs` is parked on exactly that).
-/// The one guest-reachable branch is the empty capture, covered end to end by
-/// `sourcesPure/StackTraceFromUnthrownException.cs`; but `StackFrameHelper`'s constructor already
-/// sets `iFrameCount` to 0, so that guest would pass against a handler that wrote nothing at all.
-/// Hence the empty case is asserted here too, as a claim about what the handler did rather than
-/// about what the guest saw.
+/// These are the only tests that can see those writes *as writes*. A guest sees them only through
+/// what `StackFrameHelper.GetMethodBase` makes of them, which is a lossy projection: it reports the
+/// typical method definition, so a frame's exact instantiation never reaches guest code at all.
+/// `sourcesPure/StackTraceCurrentThreadFrames.cs` covers the reported frames end to end, and
+/// `sourcesPure/StackTraceFromUnthrownException.cs` covers the empty capture — but
+/// `StackFrameHelper`'s constructor already sets `iFrameCount` to 0, so that guest would pass
+/// against a handler that wrote nothing at all. Hence the empty case is asserted here too, as a
+/// claim about what the handler did rather than about what the guest saw.
 /// </remarks>
 [<TestFixture>]
 module TestNativeStackTrace =

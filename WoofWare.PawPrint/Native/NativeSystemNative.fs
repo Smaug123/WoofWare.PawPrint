@@ -2692,36 +2692,35 @@ module NativeSystemNative =
             // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
             // `TrailingSeparatorDemanded`, because a directory is demanded
             // outright whether the separator was there or not.
-            match resolveGuestPathFull SymlinkPolicy.Follow TrailingSeparatorPolicy.Demand state.Kernel path with
-            | Error error -> fail error
-            | Ok resolution ->
+            match UnixSystem.opendir path (EmulatedKernel.unix state.Kernel) with
+            | OpenDirAnswer.Failed error, system ->
+                let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
-            match
-                OpenDirRules.verdict
-                    (UnixProcessState.callerPrivilege state.Kernel.Process)
-                    resolution
-                    state.Kernel.FileSystem
-            with
-            | OpenDirVerdict.Refuse error -> fail error
-            | OpenDirVerdict.Open inode ->
-
-            // Measured on both: `opendir` consumes a file descriptor, and
-            // `dirfd(3)` hands it back. Nothing in CoreLib or the PAL calls
-            // `dirfd`, so a guest can only see it in the numbering of a later
-            // `open` — which is enough to make it observable, and is why the
-            // stream takes a real descriptor rather than living beside the
-            // table. It is also what pins the directory's inode while the
-            // stream is open.
-            let fd, registry =
-                FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly state.Kernel.FileDescriptors
+                state.MapKernel (EmulatedKernel.withUnix system)
+                |> fun state ->
+                    state.MapKernel (
+                        EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrnoUnder numbering error)
+                    )
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | OpenDirAnswer.Opened id, system ->
 
             // The block whose address the guest holds as its `DIR*`, and whose
             // bytes are the `d_name` buffer each `ReadDir` refills. One
             // allocation per stream rather than one per entry, because
             // `DirectoryEntry.Name` points into the stream's own storage and
             // stays valid only until the next `readdir`.
+            //
+            // This address is PawPrint's half of the stream: the library minted
+            // the identity and has no addresses of its own, so binding the two
+            // is the client's step. `checkInvariants` refuses a state in which
+            // only one of them happened.
             let handle, state =
-                NativeCall.allocateNativeHeapBlob operation (Array.zeroCreate directoryNameBufferBytes) state
+                NativeCall.allocateNativeHeapBlob
+                    operation
+                    (Array.zeroCreate directoryNameBufferBytes)
+                    (withAnswered system state)
 
             let block =
                 match handle with
@@ -2730,21 +2729,7 @@ module NativeSystemNative =
                     failwith
                         $"%s{operation}: the name buffer allocation returned an unexpected pointer shape (%O{other}); this is an interpreter bug."
 
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors = registry
-                        }
-                }
-                |> EmulatedKernel.withNewDirectoryStream
-                    block
-                    {
-                        Fd = fd
-                        Inode = inode
-                        Cursor = DirectoryCursor.Start
-                    }
-            )
+            state.MapKernel (EmulatedKernel.withDirectoryStreamBlock block id)
             |> IlMachineState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer handle))
                 ctx.Thread
@@ -2758,7 +2743,7 @@ module NativeSystemNative =
         // converts it with `ConvertErrorPlatformToPal`. No failure arm exists
         // here: the cursor walk is total, and a `DIR*` this kernel never issued
         // is undefined behaviour on a real libc rather than an errno, so
-        // `EmulatedKernel.directoryStream` refuses instead of inventing EBADF.
+        // `EmulatedKernel.directoryStreamId` refuses instead of inventing EBADF.
         //
         // The output parameter is matched loosely, as `SystemNative_Stat`'s is
         // and for the same reason: `Interop.Sys.DirectoryEntry` is internal to
@@ -2778,7 +2763,7 @@ module NativeSystemNative =
             let output =
                 NativeCall.managedPointerOfPointerArgument operation "outputEntry" instruction.Arguments.[1]
 
-            let stream = EmulatedKernel.directoryStream block state.Kernel
+            let id = EmulatedKernel.directoryStreamId block state.Kernel
 
             // `errno = 0` before the `readdir`, which the C does itself
             // (pal_io.c:511) so that it can tell "end of stream" from "failed"
@@ -2800,19 +2785,27 @@ module NativeSystemNative =
             // `docs/divergences.md`.
             let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
 
-            match VirtualFileSystem.nextDirectoryEntry stream.Inode stream.Cursor state.Kernel.FileSystem with
-            | None ->
+            match UnixSystem.readdir id (EmulatedKernel.unix state.Kernel) with
+            | ReadDirAnswer.EndOfStream, system ->
                 // "0 returned with null result -> end-of-stream". The C
                 // `memset`s the output struct first, with the comment "managed
                 // out param must be initialized", so the guest sees a null
                 // `Name` rather than the previous entry's.
-                writeDirectoryEntry ctx operation directoryEntryHandle output ManagedPointerSource.Null 0 0 state
+                writeDirectoryEntry
+                    ctx
+                    operation
+                    directoryEntryHandle
+                    output
+                    ManagedPointerSource.Null
+                    0
+                    0
+                    (withAnswered system state)
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-            | Some (name, target, next) ->
+            | ReadDirAnswer.Entry (name, kind), system ->
 
-            let nameBytes = UnixPathText.utf8.GetBytes (name.ToString ())
+            let nameBytes = name.AsSpan().ToArray ()
 
             if nameBytes.Length + 1 > directoryNameBufferBytes then
                 // No name either kernel can store reaches this: Linux bounds a
@@ -2821,22 +2814,25 @@ module NativeSystemNative =
                 // from a seed, which bypasses `NAME_MAX` — and such a name is
                 // unreachable by every other syscall, because the walk checks
                 // the limit before each lookup.
+                //
+                // The buffer's size is the ABI's rather than the kernel's, which
+                // is why this check is here and not in `UnixSystem.readdir`.
                 failwith
-                    $"%s{operation}: the entry \"%s{name.ToString ()}\" is %d{nameBytes.Length} bytes, which does not fit the %d{directoryNameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
+                    $"%s{operation}: an entry of %d{nameBytes.Length} bytes does not fit the %d{directoryNameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
 
             let nameLength =
                 match SimulatedUnixPlatform.directoryEntryNameLength state.Kernel.UnixPlatform with
                 | DirectoryEntryNameLength.Reported -> nameBytes.Length
                 | DirectoryEntryNameLength.WalkToTerminator -> -1
 
+            // The PAL's own `DT_*` numbering, which is not the `S_IFMT` one
+            // `stat` reports — so the kind crosses as a kind and is encoded
+            // here.
             let inodeType =
-                match VirtualFileSystem.tryGetContent target state.Kernel.FileSystem with
-                | Some (InodeContent.RegularFile _) -> directoryEntryTypeRegular
-                | Some (InodeContent.Directory _) -> directoryEntryTypeDirectory
-                | Some (InodeContent.Symlink _) -> directoryEntryTypeSymlink
-                | None ->
-                    failwith
-                        $"%s{operation}: the entry \"%s{name.ToString ()}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+                match kind with
+                | DirectoryEntryKind.RegularFile -> directoryEntryTypeRegular
+                | DirectoryEntryKind.Directory -> directoryEntryTypeDirectory
+                | DirectoryEntryKind.Symlink -> directoryEntryTypeSymlink
 
             // The name, then its terminator. The block was zero-filled at
             // allocation, so the terminator is already there for a first entry —
@@ -2847,12 +2843,12 @@ module NativeSystemNative =
             Array.blit nameBytes 0 terminated 0 nameBytes.Length
 
             let state =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        NativeMemoryPool = NativeMemoryPool.writeBytes block 0 terminated kernel.NativeMemoryPool
-                    }
-                    |> EmulatedKernel.withDirectoryCursor block next
-                )
+                (withAnswered system state)
+                    .MapKernel (fun kernel ->
+                        { kernel with
+                            NativeMemoryPool = NativeMemoryPool.writeBytes block 0 terminated kernel.NativeMemoryPool
+                        }
+                    )
 
             writeDirectoryEntry
                 ctx
@@ -3468,103 +3464,37 @@ module NativeSystemNative =
             | Error error -> fail error
             | Ok path ->
 
-            // `NoFollowFinal` plus "and then it had better be a symlink" is
-            // the same composition `TestVirtualFileSystemAgainstHost`'s
-            // `modelOutcome` already checks against a real kernel over
-            // generated symlink trees, which is why it is composed here rather
-            // than extracted into `VirtualFileSystem`: the rule is verified
-            // where it lives, and this arm's own job is the wire format.
-            //
-            // `NoFollowFinal`, which is what makes this `readlink` rather than
-            // an expensive way of asking about the target: a final symlink is
-            // the thing being read, not something to step through. A trailing
-            // separator still overrides that — "lf/" demands that `lf` be a
-            // directory — and the resolver owns that rule, answering ENOTDIR.
-            match resolveGuestPath SymlinkPolicy.NoFollowFinal state.Kernel path with
-            | Error error -> fail error
-            | Ok inode ->
+            // The whole ordering below `bufferSize` and the pathname is the
+            // library's, including the composition `NoFollowFinal` plus "and
+            // then it had better be a symlink" that
+            // `TestVirtualFileSystemAgainstHost`'s `modelOutcome` checks against
+            // a real kernel over generated symlink trees. What is left here is
+            // the wire format.
+            let destination = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
-            match VirtualFileSystem.tryGetContent inode state.Kernel.FileSystem with
-            | None ->
-                failwith
-                    $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
-            | Some (InodeContent.Directory _)
-            | Some (InodeContent.RegularFile _) ->
-                // Not a link. It must be EINVAL and no other errno:
-                // `FileSystem.ResolveLinkTarget`
-                // (FileSystem.Unix.cs:679) answers *null* for EINVAL and
-                // rethrows every other errno as an exception, so this single
-                // choice is the difference between `File.ResolveLinkTarget`
-                // reporting "not a link" and it throwing.
-                //
-                // Decided here, before the output pointer is looked at, which
-                // is what a real kernel does — `vfs_readlink` refuses on the
-                // inode's operations before it copies anything out. Measured
-                // on the host: `readlink("f", (char*)8, 16)` is EINVAL, not
-                // EFAULT.
-                fail UnixError.EINVAL
-            | Some (InodeContent.Symlink target) ->
-
-            // The output pointer is only resolved to storage here, on the path
-            // that actually writes through it. `readlink(2)` runs no up-front
-            // address check on either platform: the target is built in the
-            // kernel and handed over with a single `copy_to_user`, so an
-            // unusable buffer is discovered at the copy and every earlier
-            // refusal wins.
             match
-                bufferPointerArgument operation "buffer" instruction.Arguments.[1]
-                |> BufferPointer.dereferenceable
+                UnixSystem.readlink
+                    path
+                    (BufferPointer.toUserBuffer destination)
+                    bufferSize
+                    (EmulatedKernel.unix state.Kernel)
             with
-            | None -> fail UnixError.EFAULT
-            | Some buffer ->
+            | Error refusal -> failwith (BufferPointer.refusalMessage destination refusal)
+            | Ok (ReadLinkAnswer.Failed error) -> fail error
+            | Ok (ReadLinkAnswer.Reported written) ->
 
-            let all = SymlinkTarget.toUtf8 target
-            let count = min all.Length bufferSize
+            let storage =
+                match BufferPointer.dereferenceable destination with
+                | Some storage -> storage
+                | None ->
+                    failwith
+                        $"%s{operation}: the kernel produced %d{written.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
 
-            // Truncated in *bytes*, not in characters: a symlink target is a
-            // byte string, and truncating a .NET string by `String.Length`
-            // would write two bytes where the caller allowed one for any
-            // non-ASCII target. `sourcesImpure/ReadLinkRawSeeded.cs` is the
-            // only test that can tell the two apart, because the differential
-            // oracle's seed validator permits only ASCII targets.
-            let written =
-                if count = all.Length then
-                    all
-                else
-                    ImmutableArray.CreateRange (Seq.truncate count all)
-
-            // **Known omission: the link's `atime` does not move**, though
-            // POSIX says a successful `readlink` marks it for update. The
-            // virtual clock advances as the driver loop runs, so a guest that
-            // `LStat`s a link before and after reading it really could see the
-            // difference.
-            //
-            // Deferred because it cannot be settled *here*. Whether the
-            // access time moves is a property of the mount, not of this
-            // syscall, and the two platforms modelled disagree: measured on
-            // macOS — lstat, sleep, readlink, lstat — `st_atime` does not
-            // move, while Linux's default `relatime` updates whenever `mtime`
-            // or `ctime` is at or after the old `atime`, or it is a day stale
-            // (`relatime_need_update`, fs/inode.c) — and a freshly seeded
-            // inode has all three equal, so the first read *would* move it.
-            // Deciding that inside one entry point would set mount semantics
-            // for every future read by accident, and would make `readlink` the
-            // only syscall obeying them.
-            //
-            // It would also be the first mutation of the emulated filesystem
-            // in the interpreter: the graph is built once from the seed
-            // (`EmulatedKernel.fs`) and no handler writes back
-            // `Kernel.FileSystem` today, so there is no write-back path to
-            // reuse. The divergence is also not something the differential
-            // oracle can arbitrate, since the answer depends on which host ran
-            // it.
-            //
-            // No terminator, and errno left alone: `readlink` writes exactly
-            // the bytes it reports and reports success by a non-negative
-            // count, so a NUL here would corrupt the byte after a target that
-            // exactly fits.
-            writeBytesThrough ctx operation buffer written state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim count)) ctx.Thread
+            // No terminator, and errno left alone: `readlink` writes exactly the
+            // bytes it reports and reports success by a non-negative count, so a
+            // NUL here would corrupt the byte after a target that exactly fits.
+            writeBytesThrough ctx operation storage written state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim written.Length)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_SetErrNo",

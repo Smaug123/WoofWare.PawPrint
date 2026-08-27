@@ -114,8 +114,10 @@ module StackFrameCapture =
             // capture-shaped one.
             //
             // Until it is made, this refuses: a trace missing the frames that explain the exception
-            // being filtered is a wrong answer presented as a right one. Nothing is lost today —
-            // every non-empty capture already stops earlier, at `IsTypicalMethodDefinition`.
+            // being filtered is a wrong answer presented as a right one. The refusal is now
+            // reachable — a non-empty capture from a non-generic frame runs end to end
+            // (`sourcesPure/StackTraceCurrentThreadFrames.cs`), so a guest that captures from
+            // inside a filter body gets this failure rather than a wrong trace.
             frame.ExceptionContinuations
             |> List.iter (fun continuation ->
                 match continuation.Continuation with
