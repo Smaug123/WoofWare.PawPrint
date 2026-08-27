@@ -6,6 +6,7 @@
   "pathFilters": [
     "./",
     ":/WoofWare.PawPrint.Domain",
+    ":/WoofWare.PawPrint.Semantics",
     ":/WoofWare.PosixKernel",
     ":/Directory.Build.props",
     ":/README.md",
