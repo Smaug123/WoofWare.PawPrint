@@ -820,4 +820,80 @@ module NativeCustomAttribute =
                     ))
 
             NativeHandlerResult.completed state |> Some
+        | "CustomAttribute_ParseAttributeUsageAttribute",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "CustomAttribute",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ],
+          // CoreLib declares `[return: MarshalAs]`-free `int`, and the three out-params as `int*`
+          // even though the native side writes a `ULONG` and two `BOOL`s.
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            let operation = "CustomAttribute.ParseAttributeUsageAttribute"
+
+            if instruction.Arguments.Length <> 5 then
+                failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
+
+            let byteCount = NativeCall.int32Argument operation instruction.Arguments.[1]
+
+            if byteCount < 0 then
+                failwith $"%s{operation}: negative blob length %d{byteCount}"
+
+            // `GetCustomAttributeProps` hands back a `ConstArray` whose pointer is null exactly when
+            // the blob is empty, and an empty blob is a legitimate input here: CoreCLR's prolog
+            // check rejects it, and the guest sees a CustomAttributeFormatException. So this must
+            // not dereference, which is why the byte count is what gates the read.
+            let blobPtr =
+                NativeCall.managedPointerOfPointerArgument operation "pData" instruction.Arguments.[0]
+
+            let blob =
+                NativeCall.readCountedBytes operation ctx.BaseClassTypes state blobPtr byteCount
+                |> ImmutableArray.CreateRange
+
+            let parsed = CustomAttribute.parseAttributeUsage blob
+
+            let write (argIndex : int) (argName : string) (value : int) (state : IlMachineState) =
+                let target =
+                    NativeCall.managedPointerOfPointerArgument operation argName instruction.Arguments.[argIndex]
+
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    target
+                    (CliType.Numeric (CliNumericType.Int32 value))
+
+            // CoreCLR writes each out-param as soon as it has the value, not all three at the end,
+            // so how many are written depends on how far the parse got. `GetAttributeUsage` throws
+            // on FALSE without reading any of them, so no guest can tell — but the slots are the
+            // primitive's observable surface, and the tests hold them directly.
+            //
+            // Not modelled: CoreCLR writes `*pTargets` *between* the two halves of the parse, and
+            // parses from the caller's pointer throughout, so a caller that aimed `pTargets` into
+            // the blob would change the bytes the named-arg half then reads. This reads the blob
+            // once, up front. Reproducing the interleaving would need the parse split in two, and
+            // there is no lawful caller to serve: `pData` addresses metadata the runtime maps
+            // read-only, and `GetAttributeUsage` — the only caller — passes three stack locals.
+            let state =
+                match parsed with
+                | AttributeUsageParse.Malformed _ -> state
+                | AttributeUsageParse.ValidOnOnly (validOn, _) -> state |> write 2 "pTargets" validOn
+                | AttributeUsageParse.Parsed usage ->
+                    state
+                    |> write 2 "pTargets" usage.ValidOn
+                    |> write 3 "pAllowMultiple" (if usage.AllowMultiple then 1 else 0)
+                    |> write 4 "pInherited" (if usage.Inherited then 1 else 0)
+
+            let result =
+                match parsed with
+                | AttributeUsageParse.Parsed _ -> 1
+                | AttributeUsageParse.Malformed _
+                | AttributeUsageParse.ValidOnOnly _ -> 0
+
+            state
+            |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 result)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | _ -> None
