@@ -7,17 +7,18 @@ open System.Numerics
 /// lowers either to a call into the platform C library or to a machine instruction, rather
 /// than executing as ordinary managed IL.
 ///
-/// Most of them CoreCLR declares as `InternalCall`s with no IL body at all. `round` is the
-/// exception: it has a body, but that body is a managed emulation of the instruction the JIT
-/// emits rather than a definition — see its own comment.
+/// Most of them CoreCLR declares as `InternalCall`s with no IL body at all. `round` and
+/// `truncate` are the exceptions: they have bodies, but neither body is a definition — one is a
+/// managed emulation of the instruction the JIT emits, and the other only names an
+/// `InternalCall` of its own. See their own comments.
 ///
 /// The interpreter cannot forward these to the host's `System.Math`. `pow` and its
 /// transcendental relatives are not correctly rounded and are not required to agree
 /// bit-for-bit between libm implementations, so a run recorded on one machine could replay
 /// differently on another — silently, and only in the last bit, which is the worst failure
 /// mode this project has. Everything here is therefore computed in-tree, from integer
-/// arithmetic only, and depends on nothing but its arguments. (`sqrt`, `ceiling` and `round`
-/// are exceptions to the *motivation* rather than to the rule: all three are exactly
+/// arithmetic only, and depends on nothing but its arguments. (`sqrt`, `ceiling`, `truncate`
+/// and `round` are exceptions to the *motivation* rather than to the rule: all four are exactly
 /// specified, so the host would have agreed anyway. See their own comments for why they are
 /// here.)
 ///
@@ -533,6 +534,79 @@ module DeterministicMath =
             // Exact: `ceiled` is an integer of at most 53 bits, since `exponent < 0` bounds
             // `|x|` below 2^52.
             roundToDouble ceiled 0
+
+    /// `x` with its fractional part discarded, with the semantics of IEEE 754's
+    /// `roundToIntegralTowardZero` (clause 5.9) — which is what CoreCLR's `Math.Truncate`
+    /// inherits from the `roundsd`/`frintz` instruction the JIT emits for it.
+    ///
+    /// Exact, like `ceiling` and for the same reasons: clause 5.9 fixes the result, and every
+    /// double's truncation is itself a double (truncation only ever moves a value towards zero,
+    /// so it cannot leave the exactly-representable integers). There is no error term to budget
+    /// and nothing for the fixed-point machinery above to do.
+    ///
+    /// `Math.Truncate` is neither of the two shapes the rest of this module meets. Unlike
+    /// `ceiling` it is not `InternalCall`: it has an IL body. But unlike `round`, whose body at
+    /// least computes the answer, this one is `ModF(d, &d); return d;` — and `ModF` *is*
+    /// `InternalCall` with no IL, so the body only names the platform C library's `modf` rather
+    /// than defining anything. The operation is therefore named here as the other two are.
+    /// https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Math.cs#L1489-L1494
+    ///
+    /// The signs of a zero result are specified rather than open, as for `ceiling` and `round`:
+    /// the `roundToIntegral` operations take the sign of a zero result from the operand. Every
+    /// argument strictly between -1 and 1 truncates to a zero, and that zero is negative exactly
+    /// when the argument was — so this is the one operation of the three where *both* signs of
+    /// zero are reachable from a non-zero argument. C says the same of `trunc` (C17 F.10.6.8),
+    /// and the hardware obeys, so these are asserted against the host in `TestDeterministicMath`
+    /// rather than merely chosen here.
+    ///
+    /// A *signalling* NaN argument is the one place where the host is not an oracle, and it is
+    /// this operation's two-implementation problem again: `frintz`/`roundsd` quieten it, but the
+    /// managed body the JIT falls back to reaches `modf`, which on Apple's libm returns it
+    /// unchanged. This runtime follows the instruction, which is also what `ceiling` and `round`
+    /// do on every route. Measured, that is the whole of the difference between the two: they
+    /// agree on every other NaN shape, on every named special value, and on a two-million-point
+    /// sweep of the bit space.
+    let truncate (x : float) : float =
+        if Double.IsNaN x then
+            // Both hardware instructions propagate a NaN operand with its sign and payload,
+            // quietening a signalling one -- the same rule as `ceiling`.
+            quieted x
+        elif Double.IsInfinity x || x = 0.0 then
+            // Already integral, and their signs are part of the answer. `x = 0.0` catches -0 as
+            // well as +0, which is exactly what is wanted: both are returned unchanged.
+            x
+        else
+
+        // x = mantissa * 2^exponent exactly, with the sign carried by the mantissa.
+        let mantissa, exponent = decompose x
+
+        if exponent >= 0 then
+            // An integer times a non-negative power of two is already integral.
+            x
+        else
+
+        // `>>>` on a `BigInteger` is an arithmetic shift, so `floored` is the floor of
+        // `mantissa / 2^-exponent` for a negative mantissa as well as a positive one. Rounding
+        // towards zero is that floor above zero, and one more than it below zero whenever
+        // something was discarded -- the asymmetry `ceiling` has the other way round.
+        let shift = -exponent
+        let floored = mantissa >>> shift
+
+        let truncated =
+            if mantissa.Sign < 0 && (floored <<< shift) <> mantissa then
+                floored + BigInteger.One
+            else
+                floored
+
+        if truncated.IsZero then
+            // Reachable from either side: -1 < x < 0 gives -0 and 0 < x < 1 gives +0. This case
+            // has to be handled here because `roundToDouble` takes the sign from its mantissa
+            // and so cannot tell a zero that came from below from one that came from above.
+            if Double.IsNegative x then -0.0 else 0.0
+        else
+            // Exact: `truncated` is an integer of at most 53 bits, since `exponent < 0` bounds
+            // `|x|` below 2^52.
+            roundToDouble truncated 0
 
     /// The integral double nearest to `x`, ties going to the even one, with the semantics of
     /// IEEE 754's `roundToIntegralTiesToEven` (clause 5.9) — which is what CoreCLR's
