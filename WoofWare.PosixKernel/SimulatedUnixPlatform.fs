@@ -1160,7 +1160,38 @@ type GetCwdOrphanAnswer =
     /// ERANGE and *every* larger size is ENOENT — including sizes far below the
     /// length of the path that used to be there. It is a minimum, not a
     /// comparison against a path that no longer exists.
+    ///
+    /// This is the one failure path in this library that **writes to the
+    /// caller's buffer**. Having climbed, Darwin leaves the whole stale path
+    /// there, NUL-terminated, and *then* reports ENOENT — measured with the
+    /// destination prefilled `0xAA` and stable across ten samples, so it is the
+    /// path the directory had rather than whatever the name cache happened to
+    /// hold. Every Linux failure path, and every other Darwin one, leaves the
+    /// destination exactly as it was.
     | ShortestPathFirst
+
+/// What an unwritable destination does to a `getcwd(3)` that has got as far as
+/// storing into it — which is a question about *where the bytes are copied*,
+/// and so splits by flavour rather than by kernel behaviour.
+///
+/// Measured with a destination that is mapped `PROT_READ` only, which
+/// discriminates the two mechanisms where an unmapped address cannot: a kernel
+/// copying with `copy_to_user` reports EFAULT, while a store executed in user
+/// space takes a fatal signal. `readlink(2)` answers EFAULT on both platforms
+/// in the same probe, so this is `getcwd`'s own property and not a general one.
+[<RequireQualifiedAccess>]
+type GetCwdDestinationFault =
+    /// EFAULT, the destination untouched. Linux's `getcwd` is a syscall whose
+    /// `copy_to_user` reports a bad destination as an ordinary error.
+    | ReportedAsEfault
+    /// A fatal signal — SIGSEGV for an unmapped destination, SIGBUS for a
+    /// read-only one. Darwin's `getcwd(3)` assembles the path with stores
+    /// executed in the caller's own context, so a destination it cannot write
+    /// kills the process instead of producing an errno.
+    ///
+    /// A kernel cannot answer this, and neither can this library: see
+    /// `GetCwdRefusal.FatalToTheProcess` for what it says instead.
+    | FatalToTheProcess
 
 /// Everything a kernel does differently when `rmdir(2)` removes a directory.
 ///
@@ -2026,6 +2057,13 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> GetCwdOrphanAnswer.AlwaysDetached
         | SimulatedUnixFlavour.Darwin -> GetCwdOrphanAnswer.ShortestPathFirst
+
+    /// What this platform's `getcwd(3)` does with a destination it cannot write.
+    /// See `GetCwdDestinationFault`.
+    let getCwdDestinationFault (platform : SimulatedUnixPlatform) : GetCwdDestinationFault =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> GetCwdDestinationFault.ReportedAsEfault
+        | SimulatedUnixFlavour.Darwin -> GetCwdDestinationFault.FatalToTheProcess
 
     /// What this platform's PAL puts in `DirectoryEntry.NameLength`. See
     /// `DirectoryEntryNameLength`.

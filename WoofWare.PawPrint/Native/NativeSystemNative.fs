@@ -2370,28 +2370,22 @@ module NativeSystemNative =
             let bufferArgument = instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            // Without the terminator: `getcwd` needs room for the path *and*
-            // its NUL, which is exactly why a buffer of `path.Length` is one
-            // byte short rather than an exact fit.
-            let path = AbsoluteUnixPath.toUtf8 state.Kernel.CurrentDirectory
-
             /// Set errno and hand the guest a NULL `char*`, as the C does on
             /// every failure path.
-            let fail (error : UnixError) : NativeHandlerResult option =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+            let fail (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+                withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
 
             // Classifying the pointer inspects the argument's shape and
-            // resolves nothing to storage, so it is safe this early. Every
-            // failure below is decided *without* that resolution, because the C
+            // resolves nothing to storage, so it is safe this early. Both
+            // guards below are decided *without* that resolution, because the C
             // decides them without dereferencing the buffer: the negative-size
-            // guard runs before `getcwd` is even called, and `getcwd` itself
-            // validates the size and compares it against the path length before
-            // it writes a byte. A guest that hand-rolls this P/Invoke may
-            // therefore legally pass a bit pattern PawPrint cannot resolve —
-            // `GetCwd((byte*)123, 0)` returns EINVAL on the real runtime.
+            // guard runs before `getcwd` is even called. A guest that
+            // hand-rolls this P/Invoke may therefore legally pass a bit pattern
+            // PawPrint cannot resolve — `GetCwd((byte*)123, 0)` returns EINVAL
+            // on the real runtime.
             let bufferPointer = bufferPointerArgument operation "buffer" bufferArgument
 
             let bufferIsNull =
@@ -2402,72 +2396,81 @@ module NativeSystemNative =
                 | BufferPointer.Unstatable _ -> false
 
             if bufferSize < 0 then
-                // The shim's own guard. It *also* `assert`s this, so a
-                // checked native build would abort instead; EINVAL is what a
-                // guest running against a retail runtime can observe, and it
-                // is the only one of the two behaviours we can reproduce.
-                fail UnixError.EINVAL
+                // The shim's own guard, and the reason `UnixSystem.getcwd`
+                // refuses a negative capacity rather than answering one: no
+                // `getcwd(3)` sees a negative size, its argument being a
+                // `size_t`. It *also* `assert`s this, so a checked native build
+                // would abort instead; EINVAL is what a guest running against a
+                // retail runtime can observe, and it is the only one of the two
+                // behaviours we can reproduce.
+                fail UnixError.EINVAL state
             elif bufferIsNull then
                 // `getcwd(NULL, size)` is a glibc/BSD extension that mallocs
                 // the result, and PawPrint does not model it: CoreLib's
                 // `Interop.Sys.GetCwd` always supplies a `localloc` block or a
                 // pinned `byte[]`, so a null here means a guest hand-rolled the
                 // P/Invoke and is relying on the allocating form. Tested before
-                // the zero-size case below, which would otherwise report EINVAL
-                // for `getcwd(NULL, 0)` — a call the real runtime *succeeds*.
+                // the size is handed to the kernel, which would otherwise report
+                // EINVAL for `getcwd(NULL, 0)` — a call the real runtime
+                // *succeeds*, and which the two flavours do not even agree on
+                // (measured: `getcwd(NULL, 1)` mallocs the full path on Darwin
+                // and is ERANGE under glibc).
                 failwith
                     $"%s{operation}: refusing to honour the allocating `getcwd(NULL, %d{bufferSize})` extension (PawPrint models only the caller-supplied-buffer form, which is the only one CoreLib uses)"
-            elif bufferSize = 0 then
-                // POSIX: size 0 with a non-NULL buffer is EINVAL, *not*
-                // ERANGE — so a guest must not treat it as "grow and retry".
-                // Measured on both, this beats the detached case below: with the
-                // current directory removed, `getcwd(buf, 0)` is still EINVAL.
-                fail UnixError.EINVAL
             else
 
-            // A current directory whose last name has gone still works for every
-            // relative path — a real process keeps it — but it has no *path*, and
-            // `getcwd` fails rather than answering a name nothing reaches.
-            // Reachable only since `rmdir`, which is what can orphan one.
-            let detached =
-                VirtualFileSystem.isOrphanedDirectory state.Kernel.CurrentDirectoryInode state.Kernel.FileSystem
+            match
+                UnixSystem.getcwd
+                    (BufferPointer.toUserBuffer bufferPointer)
+                    bufferSize
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (GetCwdRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage bufferPointer refusal)
+            | Error (GetCwdRefusal.FatalToTheProcess as refusal) ->
+                // The library says what it measured; PawPrint says which
+                // argument carried it and what a caller could do instead.
+                failwith
+                    $"%s{operation}: `buffer` is %O{bufferPointer}, and %s{GetCwdRefusal.describe refusal} Pass a buffer that names guest storage."
+            | Ok answer ->
 
-            if detached then
-                // The stored path is stale here — nothing reaches it any more —
-                // so it must not be measured against the buffer. What the buffer
-                // can still change is per-flavour and measured: see
-                // `GetCwdOrphanAnswer`.
-                match SimulatedUnixPlatform.getCwdOrphanAnswer state.Kernel.UnixPlatform with
-                | GetCwdOrphanAnswer.AlwaysDetached -> fail UnixError.ENOENT
-                | GetCwdOrphanAnswer.ShortestPathFirst ->
-                    // Room for "/" and its terminator, which is what Darwin
-                    // writes before it starts climbing. Two bytes, not the
-                    // length of the path that used to be here.
-                    if bufferSize < 2 then
-                        fail UnixError.ERANGE
-                    else
-                        fail UnixError.ENOENT
-            elif bufferSize < path.Length + 1 then
-                fail UnixError.ERANGE
-            else
+            /// What the call leaves in the caller's buffer. Empty means it was
+            /// not touched at all, and the pointer must therefore not be
+            /// resolved — a call that writes nothing cannot fault, and
+            /// resolving it here would turn an answer into a crash.
+            let writeInto (bytes : ImmutableArray<byte>) (state : IlMachineState) : IlMachineState =
+                if bytes.IsEmpty then
+                    state
+                else
 
-            // The buffer is dereferenced from here on, so this is
-            // where it must resolve to storage. A pointer that does not is an
-            // unmapped address (null was already handled above), which real
-            // `getcwd` reports as EFAULT after writing nothing — the
-            // size checks above come first, so `getcwd((byte*)123, 1)` is
-            // ERANGE rather than EFAULT, as on the real kernel.
-            match BufferPointer.dereferenceable bufferPointer with
-            | None -> fail UnixError.EFAULT
-            | Some buffer ->
+                match BufferPointer.dereferenceable bufferPointer with
+                | Some destination -> writeBytesThrough ctx operation destination bytes state
+                | None ->
+                    failwith
+                        $"%s{operation}: the kernel produced %d{bytes.Length} bytes for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
 
-            // Success. errno is left untouched, per Unix convention (and
+            match answer with
+            | GetCwdAnswer.Failed (error, leaves) ->
+                // `leaves` is non-empty on exactly one measured path: Darwin
+                // climbing out of a removed current directory writes the stale
+                // path and *then* reports ENOENT.
+                state |> writeInto leaves |> fail error
+            | GetCwdAnswer.Reported terminated ->
+
+            // Success returns the caller's own buffer, which is what `getcwd`
+            // promises; note CoreLib only tests it against NULL and then decodes
+            // `arg0`, so faithfulness here is for guests that hand-roll the
+            // P/Invoke. errno is left untouched, per Unix convention (and
             // CoreLib has already zeroed it via `Marshal.SetLastSystemError 0`
             // immediately before the call).
-            let terminated = path.Add 0uy
+            let destination =
+                match BufferPointer.dereferenceable bufferPointer with
+                | Some destination -> destination
+                | None ->
+                    failwith
+                        $"%s{operation}: the kernel reported a path for a buffer that names no storage. Every such buffer is answered or refused before the transfer (this is an interpreter bug)."
 
-            writeBytesThrough ctx operation buffer terminated state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer buffer) ctx.Thread
+            writeBytesThrough ctx operation destination terminated state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer destination) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetEUid",
