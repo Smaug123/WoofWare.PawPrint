@@ -82,6 +82,60 @@ module Escape =
             | _ -> "<unknown TypeDef>"
         | TyKey.Foreign (ns, n) -> if ns = "" then n else $"{ns}.{n}"
 
+    /// How far a branch instruction jumps from the end of itself, or `None` if it is not a branch.
+    ///
+    /// Exhaustive with no wildcard: a branch opcode added to `UnaryConstIlOp` must be classified
+    /// here rather than silently reading as "not a branch", which would let a `throw` be typed from
+    /// an instruction control never fell through from.
+    let private branchDelta (op : UnaryConstIlOp) : int option =
+        match op with
+        | UnaryConstIlOp.Br d
+        | UnaryConstIlOp.Brfalse d
+        | UnaryConstIlOp.Brtrue d
+        | UnaryConstIlOp.Beq d
+        | UnaryConstIlOp.Blt d
+        | UnaryConstIlOp.Ble d
+        | UnaryConstIlOp.Bgt d
+        | UnaryConstIlOp.Bge d
+        | UnaryConstIlOp.Bne_un d
+        | UnaryConstIlOp.Bge_un d
+        | UnaryConstIlOp.Bgt_un d
+        | UnaryConstIlOp.Ble_un d
+        | UnaryConstIlOp.Blt_un d
+        | UnaryConstIlOp.Leave d -> Some (int d)
+        | UnaryConstIlOp.Br_s d
+        | UnaryConstIlOp.Brfalse_s d
+        | UnaryConstIlOp.Brtrue_s d
+        | UnaryConstIlOp.Beq_s d
+        | UnaryConstIlOp.Blt_s d
+        | UnaryConstIlOp.Ble_s d
+        | UnaryConstIlOp.Bgt_s d
+        | UnaryConstIlOp.Bge_s d
+        | UnaryConstIlOp.Bne_un_s d
+        | UnaryConstIlOp.Bge_un_s d
+        | UnaryConstIlOp.Bgt_un_s d
+        | UnaryConstIlOp.Ble_un_s d
+        | UnaryConstIlOp.Blt_un_s d
+        | UnaryConstIlOp.Leave_s d -> Some (int d)
+        | UnaryConstIlOp.Stloc _
+        | UnaryConstIlOp.Stloc_s _
+        | UnaryConstIlOp.Ldc_I8 _
+        | UnaryConstIlOp.Ldc_I4 _
+        | UnaryConstIlOp.Ldc_R4 _
+        | UnaryConstIlOp.Ldc_R8 _
+        | UnaryConstIlOp.Ldc_I4_s _
+        | UnaryConstIlOp.Ldloc_s _
+        | UnaryConstIlOp.Ldloca_s _
+        | UnaryConstIlOp.Ldarga _
+        | UnaryConstIlOp.Ldarg_s _
+        | UnaryConstIlOp.Ldarga_s _
+        | UnaryConstIlOp.Starg_s _
+        | UnaryConstIlOp.Starg _
+        | UnaryConstIlOp.Unaligned _
+        | UnaryConstIlOp.Ldloc _
+        | UnaryConstIlOp.Ldloca _
+        | UnaryConstIlOp.Ldarg _ -> None
+
     /// Walk a `TypeDefn` to the nominal type at its root, past instantiations, arrays, pointers
     /// and modifiers. `None` when the root names no nominal type (a primitive, a generic
     /// parameter, `void`, a function pointer).
@@ -102,13 +156,42 @@ module Escape =
         | TypeDefn.GenericMethodParameter _
         | TypeDefn.Void -> None
 
-    /// <param name="includeImplicit">
-    /// Whether opcode-raised exceptions (a null dereference, an array bound, a division) count.
-    /// Sound analysis must include them; the run with them switched off measures how much of the
-    /// answer they swamp.
-    /// </param>
-    let run (includeImplicit : bool) (pruneSelfInitialisation : bool) (assy : DumpedAssembly) : Analysis =
+    /// How to run the analysis. A record rather than positional flags: there are four of them now,
+    /// they are all `bool`-shaped, and three of the four are things a caller gets wrong silently.
+    type Options =
+        {
+            /// Whether opcode-raised faults (a null dereference, an array bound, a division) count.
+            /// A sound analysis must include them; the run with them off measures how much of the
+            /// answer they swamp.
+            IncludeImplicit : bool
+            /// Whether a `.cctor` touching its own type's members picks up `TypeInitialization`
+            /// from doing so. It should not — the initializer it would trigger is the one already
+            /// running (ECMA-335 I.8.9.5) — but the unrefined run is kept so the refinement's size
+            /// is measured rather than assumed.
+            PruneSelfInitialisation : bool
+            /// Whether an invocation whose target type has no `.cctor` picks up
+            /// `TypeInitialization`. It cannot: there is no initializer to fail. Exact, and pure
+            /// metadata.
+            PruneAbsentInitialisers : bool
+            /// Kinds dropped from the *report*. Deliberately unsound — see
+            /// `OpcodeFaults.excludingKind`. A result produced with this non-empty may not be read
+            /// as a proof that the dropped faults cannot happen.
+            ExcludeKinds : FaultKind list
+        }
+
+    /// Everything on, nothing hidden: the honest answer.
+    let sound : Options =
+        {
+            IncludeImplicit = true
+            PruneSelfInitialisation = true
+            PruneAbsentInitialisers = true
+            ExcludeKinds = []
+        }
+
+    let run (options : Options) (assy : DumpedAssembly) : Analysis =
         let thisAssembly = assy.ThisAssemblyDefinition.Name
+        let includeImplicit = options.IncludeImplicit
+        let pruneSelfInitialisation = options.PruneSelfInitialisation
 
         // Indices. Built once; every lookup below is O(1) against one of these.
         let typeOfMethod = Dictionary<MethodDefinitionHandle, TypeDefinitionHandle> ()
@@ -131,10 +214,11 @@ module Escape =
                     names.[facts.Handle] <- $"{ty.Namespace}.{ty.Name}::{m.Name}"
                 | None -> ()
 
-        // Which TypeDef declares each field, and which methods are `.cctor`s. Both are needed only
-        // by the self-initialisation prune below.
+        // Which TypeDef declares each field, which methods are `.cctor`s, and which types have one
+        // at all. All three serve the type-initialisation prunes below.
         let typeOfField = Dictionary<FieldDefinitionHandle, TypeDefinitionHandle> ()
         let cctorsOwner = Dictionary<MethodDefinitionHandle, TypeDefinitionHandle> ()
+        let hasInitialiser = HashSet<TypeDefinitionHandle> ()
 
         for KeyValue (th, ty) in assy.TypeDefs do
             for f in ty.Fields do
@@ -142,7 +226,9 @@ module Escape =
 
             for m in ty.Methods do
                 match m.TryMetadata with
-                | Some facts when m.Name = ".cctor" && m.IsStatic -> cctorsOwner.[facts.Handle] <- th
+                | Some facts when m.Name = ".cctor" && m.IsStatic ->
+                    cctorsOwner.[facts.Handle] <- th
+                    hasInitialiser.Add th |> ignore
                 | _ -> ()
 
         /// Canonicalise a type named by namespace and name: prefer this assembly's own TypeDef, so
@@ -290,6 +376,37 @@ module Escape =
             match m.Body with
             | MethodBody.Il instrs ->
                 let ops = instrs.Instructions |> List.toArray
+
+                // Offsets some branch can land on. A `throw` among them may be reached from
+                // somewhere other than the instruction lexically above it, so the `newobj` there is
+                // not necessarily what produced its operand -- two arms each constructing a
+                // different exception and sharing one `throw` is the shape that breaks it.
+                let branchTargets = HashSet<int> ()
+
+                for op, off in instrs.Instructions do
+                    let width = IlOp.NumberOfBytes op
+
+                    match op with
+                    | IlOp.UnaryConst c ->
+                        match branchDelta c with
+                        | Some delta -> branchTargets.Add (off + width + delta) |> ignore
+                        | None -> ()
+                    | IlOp.Switch deltas ->
+                        for d in deltas do
+                            branchTargets.Add (off + width + d) |> ignore
+                    | _ -> ()
+
+                // A handler's first instruction is entered by dispatch rather than by a branch, and
+                // is just as much not-reached-from-above.
+                for r in instrs.ExceptionRegions do
+                    match r with
+                    | ExceptionRegion.Catch (_, o) -> branchTargets.Add o.HandlerOffset |> ignore
+                    | ExceptionRegion.Filter (filterOffset, o) ->
+                        branchTargets.Add filterOffset |> ignore
+                        branchTargets.Add o.HandlerOffset |> ignore
+                    | ExceptionRegion.Finally o
+                    | ExceptionRegion.Fault o -> branchTargets.Add o.HandlerOffset |> ignore
+
                 let raises = ResizeArray<int * TyKey option> ()
                 let calls = ResizeArray<int * MethodDefinitionHandle> ()
                 let opaque = ResizeArray<int> ()
@@ -308,6 +425,34 @@ module Escape =
                         | _ -> None
                     else
                         None
+
+                /// Does this instruction's operand name a member of a type that has no `.cctor`?
+                /// Then no initializer can fail on its account. Exact, and pure metadata — but only
+                /// answerable for a local target, so a foreign or instantiated one stays
+                /// conservative.
+                let touchesTypeWithoutInitialiser (operand : MetadataOperand) : bool =
+                    if not options.PruneAbsentInitialisers then
+                        false
+                    else
+
+                    let ownerOf (t : MetadataToken) : TypeDefinitionHandle option =
+                        match t with
+                        | MetadataToken.FieldDefinition fh ->
+                            match typeOfField.TryGetValue fh with
+                            | true, th -> Some th
+                            | _ -> None
+                        | MetadataToken.MethodDef mh ->
+                            match typeOfMethod.TryGetValue mh with
+                            | true, th -> Some th
+                            | _ -> None
+                        | _ -> None
+
+                    match operand with
+                    | MetadataOperand.FromDynamicScope _ -> false
+                    | MetadataOperand.FromMetadata t ->
+                        match ownerOf t.Token with
+                        | Some th -> not (hasInitialiser.Contains th)
+                        | None -> false
 
                 /// Is this instruction's operand a member of the type this `.cctor` initialises?
                 let touchesOwnType (operand : MetadataOperand) : bool =
@@ -344,19 +489,37 @@ module Escape =
                         | _ -> opaqueHere off Incompleteness.UntypedThrow
                     | OpcodeFaults.Raises xs ->
                         if includeImplicit then
-                            let selfInit =
+                            // Two reasons an instruction's `TypeInitialization` entry cannot fire:
+                            // this body *is* the initializer it would trigger, or the type it
+                            // touches has no initializer to trigger.
+                            let noTypeInit =
                                 match op with
-                                | IlOp.UnaryMetadataToken (_, operand) -> touchesOwnType operand
+                                | IlOp.UnaryMetadataToken (_, operand) ->
+                                    touchesOwnType operand || touchesTypeWithoutInitialiser operand
                                 | _ -> false
 
                             for x in xs do
-                                if not (selfInit && x = OpcodeFault.TypeInitialization) then
-                                    raises.Add (off, Some (keyOfQualifiedName (OpcodeFault.typeName x)))
+                                if not (noTypeInit && x = OpcodeFault.TypeInitialization) then
+                                    let x =
+                                        if List.contains (OpcodeFault.kind x) options.ExcludeKinds then
+                                            None
+                                        else
+                                            Some x
+
+                                    match x with
+                                    | Some x -> raises.Add (off, Some (keyOfQualifiedName (OpcodeFault.typeName x)))
+                                    | None -> ()
 
                     // 2. What the instruction throws explicitly.
                     match op with
                     | IlOp.Nullary NullaryIlOp.Throw ->
-                        let prev = if i > 0 then Some (fst ops.[i - 1]) else None
+                        // Only trust the instruction above when control can only have come from
+                        // it.
+                        let prev =
+                            if i > 0 && not (branchTargets.Contains off) then
+                                Some (fst ops.[i - 1])
+                            else
+                                None
 
                         let thrown =
                             match prev with
@@ -384,18 +547,24 @@ module Escape =
                     // 3. What the instruction calls.
                     match op with
                     | IlOp.UnaryMetadataToken (mop, operand) ->
-                        // Count the virtual-dispatch wall from the opcode, independently of how
-                        // the token happened to be encoded.
+                        // Count the virtual-dispatch wall from the opcode, independently of how the
+                        // token happened to be encoded.
+                        //
+                        // `ldvirtftn` is *not* here despite selecting a method: it pushes a pointer
+                        // and invokes nothing, so a body that does `ldvirtftn; pop; ret` has only
+                        // the opcode's own null-receiver fault. Whatever uncertainty the pointer
+                        // carries belongs to the `calli` that eventually uses it.
                         match mop with
-                        | UnaryMetadataTokenIlOp.Callvirt
-                        | UnaryMetadataTokenIlOp.Ldvirtftn -> opaqueHere off Incompleteness.VirtualCall
+                        | UnaryMetadataTokenIlOp.Callvirt -> opaqueHere off Incompleteness.VirtualCall
                         | _ -> ()
 
                         match mop with
-                        | UnaryMetadataTokenIlOp.Calli
-                        | UnaryMetadataTokenIlOp.Jmp -> opaqueHere off Incompleteness.IndirectCall
+                        // `calli` has no metadata target at all. `jmp` does, so it is followed
+                        // below like any other named call.
+                        | UnaryMetadataTokenIlOp.Calli -> opaqueHere off Incompleteness.IndirectCall
                         | UnaryMetadataTokenIlOp.Call
                         | UnaryMetadataTokenIlOp.Callvirt
+                        | UnaryMetadataTokenIlOp.Jmp
                         | UnaryMetadataTokenIlOp.Newobj ->
                             match operand with
                             | MetadataOperand.FromDynamicScope _ -> opaqueHere off Incompleteness.IndirectCall

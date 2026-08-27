@@ -1,5 +1,5 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 140ms
+read docs/probes/exception-escape/Fixture/bin/Release/net10.0/Fixture.dll in 133ms
 methods: 19 (IL bodies: 19, 100.0%)
 
 -- body kinds --
@@ -32,7 +32,7 @@ throw sites: 3 ; rethrow sites: 1 ; call sites: 21 ; indirect transfers: 0
 
 -- implicit (opcode-raised) exception site counts --
   System.TypeInitializationException                25
-  System.OutOfMemoryException                        5
+  System.OutOfMemoryException                        7
   System.NullReferenceException                      3
   unmodelled opcode                                  1
 
@@ -41,7 +41,7 @@ throw sites: 3 ; rethrow sites: 1 ; call sites: 21 ; indirect transfers: 0
   System.FormatException                                       1
   Fixture.Derived                                              1
 
-escape analysis (implicit on) took 21ms
+escape analysis (implicit on) took 25ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 3
@@ -71,7 +71,35 @@ types: 7, of which 2 have a .cctor
 
 -- types whose initializer can throw: 0 in all, 0 of them hand-written --
 
-===== sound, with self-initialisation pruned =====
+===== sound, with both type-initialisation prunes =====
+fixpoint rounds: 3
+methods: 19
+  provably throws nothing:                 2   10.5%
+  exact non-empty escaping set:            2   10.5%
+  Unknown (analysis envelope hit):        15   78.9%
+  escaping-set size (exact answers): median 1, p90 1, max 1
+  incompleteness reasons (site counts):
+    ForeignCallee                   7
+    Rethrow                         1
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 7, of which 2 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (21 sites)
+  NoInitializer                      13   61.9%
+  TargetNotLocal                      7   33.3%
+  InitializerMayThrow                 1    4.8%
+
+-- the .cctors themselves --
+  Unknown (analysis envelope)                 2
+    ...of which beforefieldinit               2
+
+-- what the throwing .cctors carry (exact answers only) --
+
+-- types whose initializer can throw: 0 in all, 0 of them hand-written --
+
+===== practical: sound, minus resource exhaustion (UNSOUND by choice) =====
 fixpoint rounds: 3
 methods: 19
   provably throws nothing:                 2   10.5%

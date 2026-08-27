@@ -51,6 +51,9 @@ module CctorCensus =
         | InitializerCannotThrow
         /// The target type has a `.cctor` that can throw, or whose answer is `Unknown`.
         | InitializerMayThrow
+        /// The target type is not decided by the token: a virtual dispatch can land on an override
+        /// in another type, whose initializer is a different one.
+        | TargetNotDecidedByToken
         /// The target is not a MethodDef in this assembly, so its declaring type is not reachable
         /// from here. This is the same wall the escape analysis reports, showing up again.
         | TargetNotLocal
@@ -80,7 +83,16 @@ module CctorCensus =
             | true, s -> not s.Unknown && Set.isEmpty s.Types
             | _ -> false
 
-        let verdictFor (token : MetadataToken) : Verdict =
+        let verdictFor (mop : UnaryMetadataTokenIlOp) (token : MetadataToken) : Verdict =
+            match mop with
+            // The token names where dispatch *starts*, not where it lands. An override in another
+            // type has a different initializer, so nothing here may be pruned on the strength of
+            // the statically named one — least of all an interface method, which has no `.cctor`
+            // at all and would otherwise prune to `NoInitializer` even when the implementation is
+            // a value type whose initializer can fail.
+            | UnaryMetadataTokenIlOp.Callvirt -> Verdict.TargetNotDecidedByToken
+            | _ ->
+
             match token with
             | MetadataToken.MethodDef mh ->
                 match typeOfMethod.TryGetValue mh with
@@ -104,16 +116,22 @@ module CctorCensus =
                 | MethodBody.Il instrs ->
                     for op, _ in instrs.Instructions do
                         match op with
-                        | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp),
+                        | IlOp.UnaryMetadataToken ((UnaryMetadataTokenIlOp.Call | UnaryMetadataTokenIlOp.Callvirt | UnaryMetadataTokenIlOp.Newobj | UnaryMetadataTokenIlOp.Jmp) as mop,
                                                    operand) ->
                             invokingSites <- invokingSites + 1
 
                             let v =
                                 match operand with
-                                | MetadataOperand.FromMetadata t -> verdictFor t.Token
+                                | MetadataOperand.FromMetadata t -> verdictFor mop t.Token
                                 | MetadataOperand.FromDynamicScope _ -> Verdict.TargetNotLocal
 
                             sites.Bump $"%O{v}"
+                        // `calli` invokes too, and `OpcodeFaults` gives it `TypeInitialization`
+                        // accordingly. Counted, and never pruned: there is no metadata target whose
+                        // declaring type could be looked at.
+                        | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Calli, _) ->
+                            invokingSites <- invokingSites + 1
+                            sites.Bump $"%O{Verdict.TargetNotLocal}"
                         | _ -> ()
                 | _ -> ()
 

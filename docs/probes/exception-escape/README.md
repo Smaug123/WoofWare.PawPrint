@@ -40,9 +40,9 @@ trusting them if the pin moves.
 * `Census.fs` — counts the raw material: body kinds, `throw` sites and what precedes them, exception
   regions and their clause types, callee token kinds, and MemberRef parents.
 * `Escape.fs` — the interprocedural fixpoint. `Unknown` is the top element, reached at eight named
-  walls, each counted by site. Its `pruneSelfInitialisation` parameter switches on one refinement —
-  a `.cctor` touching its own type does not pick up `TypeInitialization` from doing so — and the
-  driver runs both ways so the size of what it buys is measured rather than assumed.
+  walls, each counted by site. Its `Options` record switches the refinements on and off — the two
+  type-initialisation prunes, and the report-level kind filter — and the driver runs several
+  combinations so the size of what each buys is measured rather than assumed.
 * `CctorCensus.fs` — how much of the `TypeInitializationException` load a static checker could
   discharge: invoking sites classified by whether the target type has an initializer at all, and by
   whether that initializer can throw. Also names the types whose initializers can, since a
@@ -61,6 +61,21 @@ references almost nothing outside itself, so every one of its 19,588 MemberRef c
 its `ForeignCallee` count is exactly zero. System.Text.Json inverts this: foreign callees are its
 largest wall at 41.8% of call sites. Measuring "the cross-assembly wall" on CoreLib alone measures
 nothing, which is why both are checked in.
+
+## The modes
+
+The driver runs four:
+
+| mode | what it is for |
+| --- | --- |
+| sound, without the self-initialisation prune | shows what that one refinement is worth |
+| sound | the honest answer, both type-initialisation prunes on |
+| practical | the honest answer minus `FaultKind.ResourceExhaustion` — **unsound by choice**, and labelled so |
+| control | opcode-raised faults suppressed entirely; not an answer, a measurement of how much they swamp |
+
+The practical mode is the one a person would read. It is deliberately not the default and never the
+one an "is this safe?" claim should rest on: dropping a kind means the result is no longer an
+over-approximation.
 
 ## What it is not
 

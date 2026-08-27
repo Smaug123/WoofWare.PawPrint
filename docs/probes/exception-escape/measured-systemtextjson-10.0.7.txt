@@ -1,5 +1,5 @@
 warning: Git tree '/Users/patrick/Documents/GitHub/WoofWare.PawPrint/.claude/worktrees/symbolic-analysis-spike' has uncommitted changes
-read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 322ms
+read /nix/store/fmkdxq8nv51yha9bqkc2695mcqxgrdq1-dotnet-linux-x64-framework-10.0.7/System.Text.Json.dll in 457ms
 methods: 4067 (IL bodies: 3975, 97.7%)
 
 -- body kinds --
@@ -8,7 +8,7 @@ methods: 4067 (IL bodies: 3975, 97.7%)
   RuntimeProvided(DelegateCtor)                 3    0.1%
   RuntimeProvided(DelegateInvoke)               3    0.1%
 
-IL methods with at least one implicitly-raising opcode: 3861 (97.1%)
+IL methods with at least one implicitly-raising opcode: 3863 (97.2%)
 IL methods with any exception region: 113 (2.8%)
 throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
 
@@ -53,7 +53,7 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
 -- implicit (opcode-raised) exception site counts --
   System.TypeInitializationException             18330
   System.NullReferenceException                  12340
-  System.OutOfMemoryException                     1386
+  System.OutOfMemoryException                     2197
   System.InvalidCastException                      229
   System.IndexOutOfRangeException                  218
   System.ArrayTypeMismatchException                140
@@ -76,13 +76,13 @@ throw sites: 245 ; rethrow sites: 16 ; call sites: 17887 ; indirect transfers: 0
   System.ObjectDisposedException                               2
   System.OperationCanceledException                            2
 
-escape analysis (implicit on) took 260ms
+escape analysis (implicit on) took 339ms
 
 ===== sound: opcode-raised exceptions included =====
 fixpoint rounds: 11
 methods: 4067
-  provably throws nothing:               115    2.8%
-  exact non-empty escaping set:          600   14.8%
+  provably throws nothing:               114    2.8%
+  exact non-empty escaping set:          601   14.8%
   Unknown (analysis envelope hit):      3352   82.4%
   escaping-set size (exact answers): median 1, p90 1, max 6
   incompleteness reasons (site counts):
@@ -99,9 +99,10 @@ types: 378, of which 40 have a .cctor
 
 -- invoking instructions, by what their target type's initializer could do --
    (17887 sites)
-  TargetNotLocal                   8184   45.8%
-  InitializerMayThrow              5092   28.5%
-  NoInitializer                    4611   25.8%
+  TargetNotLocal                   6537   36.5%
+  InitializerMayThrow              4217   23.6%
+  NoInitializer                    3851   21.5%
+  TargetNotDecidedByToken          3282   18.3%
 
 -- the .cctors themselves --
     ...of which beforefieldinit              40
@@ -116,11 +117,11 @@ types: 378, of which 40 have a .cctor
   System.Text.Json.JsonHelpers                             System.TypeInitializationException
   System.Text.Json.Utf8JsonWriter                          System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException, System.TypeInitializationException
 
-===== sound, with self-initialisation pruned =====
+===== sound, with both type-initialisation prunes =====
 fixpoint rounds: 11
 methods: 4067
-  provably throws nothing:               115    2.8%
-  exact non-empty escaping set:          600   14.8%
+  provably throws nothing:               114    2.8%
+  exact non-empty escaping set:          601   14.8%
   Unknown (analysis envelope hit):      3352   82.4%
   escaping-set size (exact answers): median 1, p90 1, max 5
   incompleteness reasons (site counts):
@@ -137,9 +138,10 @@ types: 378, of which 40 have a .cctor
 
 -- invoking instructions, by what their target type's initializer could do --
    (17887 sites)
-  TargetNotLocal                   8184   45.8%
-  InitializerMayThrow              5092   28.5%
-  NoInitializer                    4611   25.8%
+  TargetNotLocal                   6537   36.5%
+  InitializerMayThrow              4217   23.6%
+  NoInitializer                    3851   21.5%
+  TargetNotDecidedByToken          3282   18.3%
 
 -- the .cctors themselves --
     ...of which beforefieldinit              40
@@ -154,7 +156,46 @@ types: 378, of which 40 have a .cctor
   System.Text.Json.JsonHelpers                             System.TypeInitializationException
   System.Text.Json.Utf8JsonWriter                          System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OutOfMemoryException, System.OverflowException
 
-escape analysis (implicit off) took 47ms
+===== practical: sound, minus resource exhaustion (UNSOUND by choice) =====
+fixpoint rounds: 11
+methods: 4067
+  provably throws nothing:               117    2.9%
+  exact non-empty escaping set:          598   14.7%
+  Unknown (analysis envelope hit):      3352   82.4%
+  escaping-set size (exact answers): median 1, p90 1, max 4
+  incompleteness reasons (site counts):
+    ForeignCallee                6805
+    VirtualCall                  3282
+    GenericInstantiation         1379
+    AbstractBody                   86
+    UntypedThrow                   54
+    Rethrow                        16
+    NativeBody                      6
+
+===== can a static checker discharge the TypeInitializationException load? =====
+types: 378, of which 40 have a .cctor
+
+-- invoking instructions, by what their target type's initializer could do --
+   (17887 sites)
+  TargetNotLocal                   6537   36.5%
+  InitializerMayThrow              4217   23.6%
+  NoInitializer                    3851   21.5%
+  TargetNotDecidedByToken          3282   18.3%
+
+-- the .cctors themselves --
+    ...of which beforefieldinit              40
+  Unknown (analysis envelope)                38
+  can throw a named type                      2
+
+-- what the throwing .cctors carry (exact answers only) --
+       1  System.TypeInitializationException
+       1  System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
+
+-- types whose initializer can throw: 2 in all, 2 of them hand-written --
+  System.Text.Json.JsonHelpers                             System.TypeInitializationException
+  System.Text.Json.Utf8JsonWriter                          System.ArrayTypeMismatchException, System.IndexOutOfRangeException, System.NullReferenceException, System.OverflowException
+
+escape analysis (implicit off) took 77ms
 
 ===== control: opcode-raised exceptions suppressed =====
 fixpoint rounds: 9

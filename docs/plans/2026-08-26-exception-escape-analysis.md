@@ -79,9 +79,12 @@ problem.** Here is what is.
 ### It needs almost no IL semantics
 
 97.2% of CoreLib's 8,704 `throw` sites are preceded *immediately* by the `newobj` that constructed
-the thrown object, so the thrown type is available by looking one instruction back. Only 228 sites
-(2.6%) need to know a callee's return type, and 11 sites in the whole of CoreLib need real
-dataflow. There are 41 `rethrow` sites and 33 `calli`.
+the thrown object. That adjacency may only be *used* where control cannot have arrived from
+anywhere else — a `throw` that is a branch target may be shared by two arms constructing different
+exceptions — so the probe checks the offset against the method's branch targets and handler entries
+first, and 248 sites end up untyped rather than 244. Only 228 sites (2.6%) need to know a callee's
+return type, and 11 in the whole of CoreLib need real dataflow. There are 41 `rethrow` sites and 33
+`calli`.
 
 Catching is rarer still: only 947 IL methods (2.4%) have any exception region — 796 `finally`, 396
 named `catch`, 24 `filter`, 3 `fault`.
@@ -108,13 +111,18 @@ stable across assemblies, and the difference is the most useful thing the probe 
 | wall | CoreLib | System.Text.Json | what would remove it |
 | --- | ---: | ---: | --- |
 | generic instantiation (`MethodSpec`, or a MemberRef with a `TypeSpec` parent rooted locally) | 34,720 | 1,379 | resolving an instantiation to its definition |
-| `callvirt` / `ldvirtftn` | 17,027 | 3,282 | devirtualisation, or a join over every override |
+| `callvirt` | 17,021 | 3,282 | devirtualisation, or a join over every override |
 | callee in another assembly | **0** | 6,805 | cross-assembly member resolution |
 | abstract method | 1,116 | 86 | the same dispatch machinery: join the overrides |
 | native body (`InternalCall`/`PInvoke`/`RuntimeProvided`) | 979 | 6 | a declared summary per native target |
-| untyped `throw` | 244 | 54 | a small stack-dataflow pass |
+| untyped `throw` | 248 | 54 | a small stack-dataflow pass |
 | `rethrow` | 41 | 16 | track the handler's clause type into its body |
-| `calli` / `jmp` | 33 | 0 | function-pointer targets, or accept `Unknown` |
+| `calli` | 33 | 0 | function-pointer targets, or accept `Unknown` |
+
+`ldvirtftn` is deliberately *not* a wall despite selecting a method: it pushes a pointer and invokes
+nothing, so whatever uncertainty that pointer carries belongs to the `calli` that eventually uses
+it. `jmp` is not one either — unlike `calli` it names its target by token, so it is followed like
+any other call.
 
 CoreLib references almost nothing outside itself, so **every one of its 19,588 MemberRef call sites
 has a `TypeSpec` parent rooted in CoreLib** — an instantiation of a local type, not a foreign call.
@@ -139,33 +147,45 @@ be about `.cctor`s at all.
 
 **Only 275 of CoreLib's 2,759 types (10.0%) have a `.cctor`.** A call to a type without one cannot
 raise `TypeInitializationException`, exactly and by metadata alone, with no analysis and no
-approximation. That prunes **46.6% of CoreLib's 117,535 invoking sites** today. On System.Text.Json
-it is 25.8%.
+approximation. That prunes **39.1% of CoreLib's 117,568 invoking sites**.
 
-Of the rest:
+Of the rest, over CoreLib:
 
-| | CoreLib | System.Text.Json |
-| --- | ---: | ---: |
-| target type has no `.cctor` — pruned exactly | 46.6% | 25.8% |
-| target not resolvable from here — the existing wall | 29.5% | 45.8% |
-| target's `.cctor` may throw | 23.2% | 28.5% |
-| target's `.cctor` provably cannot throw — pruned | 0.7% | 0.0% |
+| | share of sites |
+| --- | ---: |
+| target type has no `.cctor` — pruned exactly | 39.1% |
+| target not resolvable from here — the existing wall | 26.8% |
+| target's `.cctor` may throw | 18.7% |
+| target decided by dispatch, not by the token — not pruned | 14.5% |
+| target's `.cctor` provably cannot throw — pruned | 1.0% |
 
-The third row is not irreducible. Of the 275 `.cctor`s, **158 are `Unknown`** — blocked by the same
-generic-instantiation, devirtualisation and cross-assembly walls as everything else, not by
+The fourth row is a `callvirt`, whose token names where dispatch *starts*. Pruning on the statically
+named type would be wrong in exactly the case that matters: an interface method has no `.cctor` at
+all, so it would prune to "no initializer" even when the implementation is a value type whose
+initializer can fail.
+
+The third row is not irreducible either. Of the 275 `.cctor`s, **158 are `Unknown`** — blocked by
+the same generic-instantiation, devirtualisation and cross-assembly walls as everything else, not by
 anything specific to initialisers. So the ceiling on this prune is set by the four walls already
 identified, and rises with them.
 
 Two things were measured on the way that are worth recording.
 
-**A `.cctor` inflates its own answer, and the fix is small.** A `.cctor` that writes its own type's
-statics picks up `TypeInitialization` from `stsfld`, which then propagates to every call site of
-its type — a cycle the analysis inflicts on itself, since the initializer it would supposedly
-trigger is the one already running. The CLI lets the initializing thread straight through
-(ECMA-335 I.8.9.5), so suppressing it is sound. Before the refinement, *not one* of the 275
-`.cctor`s was provably harmless and all 117 "throwing" ones carried `TypeInitialization`
-themselves. After it, 8 are provably harmless and 800 sites prune. Real, and much smaller than the
-cycle's appearance suggested: the refinement is worth having but is not what is holding this back.
+**A `.cctor` inflates its own answer, and so does an absent one.** Two refinements, both sound,
+both needed before the measurement means anything:
+
+* A `.cctor` that writes its own type's statics picks up `TypeInitialization` from `stsfld`, which
+  then propagates to every call site of its type — a cycle the analysis inflicts on itself, since
+  the initializer it would supposedly trigger is the one already running. The CLI lets the
+  initializing thread straight through (ECMA-335 I.8.9.5).
+* The no-`.cctor` prune has to participate in the *fixpoint*, not be applied to its output
+  afterwards. Applied afterwards, a `.cctor` that only calls harmless methods on types with no
+  initializer still carries a synthetic `TypeInitializationException` and is counted as throwing.
+
+Their combined effect is most of the story. Before either, *not one* of the 275 `.cctor`s was
+provably harmless, and all 117 "throwing" ones carried `TypeInitialization` themselves. With both,
+71 of the 110 that can throw carry **only** `OutOfMemoryException` — the self-propagation is gone,
+and what is left is allocation.
 
 **`beforefieldinit` is not available as a prune here**, though it looks like the obvious one.
 ECMA-335 I.8.9.5 does not list method invocation as a trigger for such a type — only static field
@@ -175,9 +195,9 @@ analyser taking that prune would disagree with the interpreter that is meant to 
 prune is available in principle to an analyser targeting CoreCLR's schedule; it is not available to
 one whose oracle is PawPrint.
 
-**What is left is mostly one thing.** Of the 109 `.cctor`s that can throw a named type, 60 are
-hand-written (the rest are Roslyn closure caches), and the commonest shape by far is
-`OutOfMemoryException` — a `.cctor` that allocates. A sample of what remains:
+**What is left is mostly one thing.** Of the 110 `.cctor`s that can throw a named type, the
+commonest shape by far is `OutOfMemoryException` alone — a `.cctor` that allocates. A sample of
+what remains, from the run before resource exhaustion is filtered:
 
 ```text
 System.Collections.Generic.List`1     OutOfMemory, Overflow, TypeInitialization
@@ -190,11 +210,19 @@ System.Diagnostics.Stopwatch          DivideByZero, Overflow
 `Stopwatch` is the one worth looking at: its initializer divides by the timer frequency, so
 `DivideByZeroException` is a real fault a value domain could discharge and a syntactic analysis
 cannot. `Convert` carries nothing but `TypeInitialization`, meaning it only calls into other types
-— it is pure propagation. And the ubiquitous `OutOfMemoryException` raises a design question worth
-settling before any of this is reported to a user: whether resource-exhaustion faults
-(`OutOfMemoryException`, `StackOverflowException`) belong in the same set as faults the program's
-own logic produces, or in a separate class the reader can ignore, as Java's `Error` hierarchy and
-most practical checkers do.
+— it is pure propagation.
+
+**And filtering resource exhaustion is what makes this question answerable.** `OutOfMemoryException`
+and `StackOverflowException` are `FaultKind.ResourceExhaustion`; `OpcodeFaults.excludingKind` drops
+them from a report, deliberately unsoundly and saying so. Measured over CoreLib, hiding them takes
+the initializers that are **provably harmless from 7 to 78** and those that can throw a named type
+from 110 to 39. That is the difference between "a fifth of call sites carry an initializer risk you
+cannot discharge" and "most of them do not".
+
+It barely moves the *aggregate* method numbers — 15.1% to 15.4% provably-throws-nothing — because
+those are dominated by the four walls, and a method that carries `OutOfMemoryException` usually
+carries `Unknown` too. The filter's value is in the individual answer, not the summary statistic,
+and it is worth being clear about which.
 
 ### It needs a value domain to be *useful*, as opposed to *sound*
 
@@ -385,6 +413,20 @@ Only then, and only after stage 9: the native registry.
   have to be addressed eventually regardless.
 * **The A-versus-B architectural choice is deferred**, on the grounds above that the first two
   increments belong to both.
+* **Resource exhaustion is tagged, not dropped.** `OutOfMemoryException` and
+  `StackOverflowException` are `FaultKind.ResourceExhaustion` and stay in the model, because they
+  are genuinely possible and a model that hid them would be lying. What filters is the *report*:
+  `OpcodeFaults.excludingKind` drops a kind, is documented as unsound in its own docstring, and
+  returns `Unmodelled` unchanged — an unclassified instruction might raise a fault of any kind,
+  including one the caller did not ask to drop, so there is nothing there that filtering could
+  honestly remove. The interpreter's own check never uses it.
+
+  One consequence to keep in view: `TypeInitializationException` is classified `Logic`, because
+  whether it can arise is decided by the initializer's code. So an initializer that can fail *only*
+  because it allocates still contributes one, and filtering resource exhaustion does not remove
+  every fault whose ultimate cause is resource exhaustion. Whether that wants a third kind, or
+  tracking of what causes a `TypeInitializationException`, is a question for when someone is
+  reading real reports.
 
 ## Where the fault table lives
 

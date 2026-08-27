@@ -189,7 +189,14 @@ module Driver =
         Census.run assy
 
         let sw2 = Stopwatch.StartNew ()
-        let withImplicit = Escape.run true false assy
+
+        let withImplicit =
+            Escape.run
+                { Escape.sound with
+                    PruneSelfInitialisation = false
+                }
+                assy
+
         printfn ""
         printfn "escape analysis (implicit on) took %dms" sw2.ElapsedMilliseconds
         report "sound: opcode-raised exceptions included" withImplicit
@@ -199,12 +206,33 @@ module Driver =
         // The same sound run, with one refinement: a `.cctor` touching its own type's members does
         // not pick up `TypeInitialization` from doing so. Reported as a separate run rather than
         // folded in, so the size of what the refinement buys is visible rather than assumed.
-        let refined = Escape.run true true assy
-        report "sound, with self-initialisation pruned" refined
+        let refined = Escape.run Escape.sound assy
+        report "sound, with both type-initialisation prunes" refined
         CctorCensus.run assy refined
 
+        // The mode a person would actually read: everything above, with resource exhaustion
+        // hidden. Deliberately unsound, and reported as its own run so that nobody mistakes it for
+        // the answer above.
+        let practical =
+            Escape.run
+                { Escape.sound with
+                    ExcludeKinds = [ FaultKind.ResourceExhaustion ]
+                }
+                assy
+
+        report "practical: sound, minus resource exhaustion (UNSOUND by choice)" practical
+        CctorCensus.run assy practical
+
         let sw3 = Stopwatch.StartNew ()
-        let withoutImplicit = Escape.run false false assy
+
+        let withoutImplicit =
+            Escape.run
+                { Escape.sound with
+                    IncludeImplicit = false
+                    PruneSelfInitialisation = false
+                }
+                assy
+
         printfn ""
         printfn "escape analysis (implicit off) took %dms" sw3.ElapsedMilliseconds
         report "control: opcode-raised exceptions suppressed" withoutImplicit
