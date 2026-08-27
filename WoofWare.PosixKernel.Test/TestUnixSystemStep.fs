@@ -2652,3 +2652,360 @@ module TestUnixSystemStep =
         // and the two flavours differ in whether the destination matters at all.
         UnixSystem.getcwd (UserBuffer.Unmapped 123UL) 1000 (atOrphan linux)
         |> shouldEqual (Ok (GetCwdAnswer.Failed UnixError.ENOENT))
+
+    // ---- `open` ------------------------------------------------------------
+
+    /// Read-only, no flags set: the shape every row below varies one field of.
+    let private plainOpen : OpenFlags =
+        {
+            Access = FileAccessMode.ReadOnly
+            Create = false
+            Exclusive = false
+            Truncate = false
+            NoFollow = false
+            CloseOnExec = false
+            Synchronous = false
+        }
+
+    let private openedFd (answer : SyscallAnswer * UnixSystem<int, string>) : int =
+        match answer with
+        | SyscallAnswer.Completed fd, _ -> int fd
+        | other -> failwith $"expected a descriptor, got %O{other}"
+
+    let private openFailed (answer : SyscallAnswer * UnixSystem<int, string>) : UnixError =
+        match answer with
+        | SyscallAnswer.Failed error, _ -> error
+        | other -> failwith $"expected a failure, got %O{other}"
+
+    [<Test>]
+    let ``O_EXCL does nothing without O_CREAT`` () : unit =
+        // The rule the record's shape exists to keep testable. `Exclusive` is
+        // passed through as the caller set it rather than pre-combined with
+        // `Create`, so this row can ask the question at all: measured on both,
+        // `open(existing, O_WRONLY|O_EXCL)` succeeds and
+        // `open(missing, O_WRONLY|O_EXCL)` is ENOENT, exactly as without it.
+        //
+        // A client that had ANDed the two before calling would make this row
+        // vacuous — it would be asserting its own arithmetic, not this kernel's
+        // rule.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let exclusiveOnly =
+                { plainOpen with
+                    Exclusive = true
+                }
+
+            UnixSystem.openPath exclusiveOnly (statPath "/d/inner/t") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+            UnixSystem.openPath exclusiveOnly (statPath "/d/inner/nope") 0o666 system
+            |> openFailed
+            |> shouldEqual UnixError.ENOENT
+
+            // On a *symbolic link*, which is the row that makes the rule
+            // load-bearing rather than merely stated. `O_EXCL` with `O_CREAT`
+            // stops the walk at the link (the next test), so an implementation
+            // that read `Exclusive` without `Create` would answer ELOOP here.
+            // Measured on both: `open(link, O_RDONLY|O_EXCL)` follows to the
+            // file and succeeds, exactly as without the flag.
+            UnixSystem.openPath exclusiveOnly (statPath "/l") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+            // And with `Create` it bites, which is what says the field is read
+            // at all.
+            UnixSystem.openPath
+                { exclusiveOnly with
+                    Create = true
+                }
+                (statPath "/d/inner/t")
+                0o666
+                system
+            |> openFailed
+            |> shouldEqual UnixError.EEXIST
+
+    [<Test>]
+    let ``O_CREAT|O_EXCL does not follow a final symlink`` () : unit =
+        // Measured unanimously: an existing link is EEXIST whether it dangles or
+        // points at a file, and nothing is created. Following it would create the
+        // *target* of `/dangling` instead, so the row asserts the target is still
+        // absent afterwards rather than only reading the errno.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let creatingExclusive =
+                { plainOpen with
+                    Create = true
+                    Exclusive = true
+                }
+
+            let answer, after =
+                UnixSystem.openPath creatingExclusive (statPath "/dangling") 0o666 system
+
+            answer |> shouldEqual (SyscallAnswer.Failed UnixError.EEXIST)
+
+            UnixSystem.stat SymlinkPolicy.Follow (statPath "/d/inner/gone") after
+            |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+
+    [<Test>]
+    let ``a directory opens for reading but not for writing`` () : unit =
+        // CoreLib depends on both halves: `SafeFileHandle.Init` skips its own
+        // directory check when write access was asked for, on the strength of
+        // "open will have failed with EISDIR", and it opens-then-fstats to raise
+        // `UnauthorizedAccessException` for a read.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.openPath plainOpen (statPath "/d/inner") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+            UnixSystem.openPath
+                { plainOpen with
+                    Access = FileAccessMode.WriteOnly
+                }
+                (statPath "/d/inner")
+                0o666
+                system
+            |> openFailed
+            |> shouldEqual UnixError.EISDIR
+
+    [<Test>]
+    let ``O_TRUNC refuses a directory even opened read-only`` () : unit =
+        // The one row where the directory arm fires for a *read-only* open:
+        // measured, `open(d, O_RDONLY | O_TRUNC)` is EISDIR on both.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.openPath
+                { plainOpen with
+                    Truncate = true
+                }
+                (statPath "/d/inner")
+                0o666
+                system
+            |> openFailed
+            |> shouldEqual UnixError.EISDIR
+
+    [<Test>]
+    let ``O_TRUNC empties a regular file opened read-only`` () : unit =
+        // `O_TRUNC` is not confined to a write access mode: measured on both,
+        // `open(f, O_RDONLY | O_TRUNC)` on a writable file succeeds and empties
+        // it. The file is seeded with three bytes, so an implementation that
+        // skipped the truncation would leave them.
+        for flavour in [ linux ; darwin ] do
+            let _, target, _, system = withTree flavour
+
+            let _, after =
+                UnixSystem.openPath
+                    { plainOpen with
+                        Truncate = true
+                    }
+                    (statPath "/d/inner/t")
+                    0o666
+                    system
+
+            match UnixSystem.statOf target after with
+            | Some status -> status.Size |> shouldEqual 0L
+            | None -> failwith "the file vanished"
+
+    [<Test>]
+    let ``O_TRUNC demands the write bit that the access mode did not`` () : unit =
+        // Measured at uid 1000 on both: `0400` with `RDONLY|TRUNC` is EACCES,
+        // where plain `RDONLY` succeeds. Two rows rather than one, because the
+        // EACCES alone cannot tell "TRUNC demands write" from "this file was
+        // unopenable anyway".
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let vfs =
+                match
+                    VirtualFileSystem.createFile
+                        (VirtualFileSystem.root system.Machine.FileSystem)
+                        (FileName.parseOrFail context "readable")
+                        (PermissionBits.parseOrFail context 0o400)
+                        epoch
+                        (ImmutableArray.CreateRange [ 1uy ])
+                        system.Machine.FileSystem
+                with
+                | Ok (_, vfs) -> vfs
+                | Error error -> failwith $"could not seed: %O{error}"
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = vfs
+                        }
+                }
+
+            UnixSystem.openPath plainOpen (statPath "/readable") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+            UnixSystem.openPath
+                { plainOpen with
+                    Truncate = true
+                }
+                (statPath "/readable")
+                0o666
+                system
+            |> openFailed
+            |> shouldEqual UnixError.EACCES
+
+    [<Test>]
+    let ``O_NOFOLLOW makes opening a symbolic link ELOOP`` () : unit =
+        // What `SafeFileHandle.OpenNoFollowSymlink` reads back to decide a path
+        // was a symlink without racing. Paired with the same open *without* the
+        // flag, which follows to the file — otherwise the row could not tell
+        // ELOOP from "this link was broken".
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.openPath plainOpen (statPath "/l") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+            UnixSystem.openPath
+                { plainOpen with
+                    NoFollow = true
+                }
+                (statPath "/l")
+                0o666
+                system
+            |> openFailed
+            |> shouldEqual UnixError.ELOOP
+
+    [<Test>]
+    let ``O_CLOEXEC and O_SYNC are accepted and change nothing`` () : unit =
+        // They are in the record so a caller can say they were asked for rather
+        // than drop them silently; this kernel models neither `exec` nor
+        // durability. Asserted as "the same answer as without them" rather than
+        // as "no error", which would pass for an implementation that rejected
+        // every open.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let plain = UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 system
+
+            let withBoth =
+                UnixSystem.openPath
+                    { plainOpen with
+                        CloseOnExec = true
+                        Synchronous = true
+                    }
+                    (statPath "/d/inner/t")
+                    0o666
+                    system
+
+            withBoth |> shouldEqual plain
+
+    [<Test>]
+    let ``a created file takes its permissions from mode and the umask`` () : unit =
+        // `mode` crosses raw and unvalidated. Asserted at 0o777 against the
+        // fixture's umask of 0o022, which is the pair that discriminates: 0o666
+        // and 0o777 both land on 0o644 and 0o755 respectively, but a mode the
+        // umask does not touch would agree with an implementation that ignored
+        // the umask entirely.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let _, after =
+                UnixSystem.openPath
+                    { plainOpen with
+                        Create = true
+                        Access = FileAccessMode.WriteOnly
+                    }
+                    (statPath "/made")
+                    0o777
+                    system
+
+            match UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/made") after with
+            | Ok inode ->
+                match UnixSystem.statOf inode after with
+                | Some status -> status.Mode &&& 0o7777 |> shouldEqual 0o755
+                | None -> failwith "the created file has no status"
+            | Error error -> failwith $"the created file is unreachable: %O{error}"
+
+    [<Test>]
+    let ``a nonzero mode without O_CREAT is not rejected`` () : unit =
+        // `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only open of
+        // an existing file, so a kernel that validated `mode` here would refuse
+        // the BCL's own read path.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+    [<Test>]
+    let ``a creating open picks its own trailing-separator rule, and the flavours differ`` () : unit =
+        // The cell that discriminates is a *free* name carrying a trailing
+        // separator: an existing directory is EISDIR on both, so it cannot tell
+        // the two rules apart. Measured, `open("new/", O_CREAT|O_WRONLY)` is
+        // EISDIR on Linux and ENOENT on Darwin, and neither creates anything.
+        //
+        // A non-creating open demands a directory on both, which is why the
+        // policy is chosen from `Create` at all rather than being one constant.
+        let creating =
+            { plainOpen with
+                Create = true
+                Access = FileAccessMode.WriteOnly
+            }
+
+        for flavour, expected in [ linux, UnixError.EISDIR ; darwin, UnixError.ENOENT ] do
+            let _, _, _, system = withTree flavour
+
+            let answer, after = UnixSystem.openPath creating (statPath "/new/") 0o666 system
+
+            answer |> shouldEqual (SyscallAnswer.Failed expected)
+
+            // Nothing was created under either rule, which is the half an errno
+            // alone does not assert.
+            UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/new") after
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            // The same name *without* the separator creates, so the row above is
+            // about the separator rather than about the name being unreachable.
+            UnixSystem.openPath creating (statPath "/new") 0o666 system
+            |> openedFd
+            |> shouldBeGreaterThan 2
+
+    [<Test>]
+    let ``the descriptor carries the access mode that was asked for`` () : unit =
+        // Every other row reads the *number* the open returned, which cannot
+        // tell one access mode from another. What can is using the descriptor:
+        // a write-only description refuses `read` with EBADF and a read-only one
+        // refuses `write`, so the two directions pin the field in both
+        // directions rather than only asserting it is not read-only.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let writeOnlyFd, afterWriteOnly =
+                match
+                    UnixSystem.openPath
+                        { plainOpen with
+                            Access = FileAccessMode.WriteOnly
+                        }
+                        (statPath "/d/inner/t")
+                        0o666
+                        system
+                with
+                | SyscallAnswer.Completed fd, after -> int fd, after
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            match UnixSystem.read writeOnlyFd UserBuffer.Mapped 8 afterWriteOnly with
+            | Ok (ReadAnswer.Failed UnixError.EBADF, _) -> ()
+            | other -> failwith $"a write-only descriptor should refuse read: %O{other}"
+
+            let readOnlyFd, afterReadOnly =
+                match UnixSystem.openPath plainOpen (statPath "/d/inner/t") 0o666 system with
+                | SyscallAnswer.Completed fd, after -> int fd, after
+                | other -> failwith $"expected a descriptor, got %O{other}"
+
+            match UnixSystem.admitWrite readOnlyFd UserBuffer.Mapped 3 afterReadOnly with
+            | Ok (WriteAdmission.Answered (WriteAnswer.Failed UnixError.EBADF)) -> ()
+            | other -> failwith $"a read-only descriptor should refuse write: %O{other}"

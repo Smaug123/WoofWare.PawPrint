@@ -2557,8 +2557,8 @@ Ordered so that each has an oracle before the next depends on it.
   not — is visible only through a descriptor *held across the call*, an unheld
   inode being reaped with nothing left to ask. Each of those is the same trap in
   a different costume: an input whose two candidate rules agree.
-* **8k — `open`** (333 lines), the largest of the file syscalls, and the one
-  whose flags are PAL values. **`opendir`/`readdir` are not bundled with it**:
+* **8k — `open`** (done; 333 lines), the largest of the file syscalls, and the
+  one whose flags are PAL values. **`opendir`/`readdir` are not bundled with it**:
   8h taught that this list's bundlings are worth re-checking, and those two
   return an opaque `DIR*` that PawPrint materialises as guest memory, which is a
   different boundary question from `open`'s. They are 8l.
@@ -2571,34 +2571,35 @@ Ordered so that each has an oracle before the next depends on it.
   is open. **This needs confirming before the code is written**, because it adds
   a public vocabulary type to a package that is about to be released.
 
-  **(A) Raw POSIX flag bits cross as an `int`.** PawPrint translates the PAL enum
-  to the simulated platform's own `<fcntl.h>` numbering, and the library decodes
-  that. Faithful to a real `open(2)`, and it is the shape a future `fcntl`
-  (`F_GETFL`) would want, that syscall handing a guest its raw flags back.
-  Against it: the per-flavour numbering *is* platform knowledge — `O_CREAT` is
-  0o100 on Linux and 0x200 on Darwin — and `SimulatedUnixPlatform` is the
-  library. (A) puts that knowledge on the client's side, or else exports it for
-  the client to apply, both of which invert the split the rest of stage 8 has
-  drawn.
-
-  **(B) A parsed `OpenFlags` record crosses**: access mode, and a bool per
+  **Decided: (B), a parsed `OpenFlags` record** — access mode, and a bool per
   `O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_NOFOLLOW`/`O_CLOEXEC`/`O_SYNC`. PawPrint maps
-  PAL bits onto it and the library never sees a numbering at all. This is what
-  `UserBuffer` does, and for the same reason the rule gives: only the client can
-  classify (it holds the PAL enum), and the library owns the consequence. It
-  also makes the two shim-level rejections stay where they belong — an
-  unrecognised *bit* is EINVAL and so is an access mode that is none of the
-  three, both of which are the C's own checks rather than any kernel's, and
-  neither of which is expressible once the flags are parsed. Against it: a
-  future `fcntl(F_GETFL)` would have to invent a numbering, and this makes the
-  library unable to model a kernel that rejects a flag *combination* by its bits.
+  the PAL bits onto it and the library never sees a numbering.
 
-  **Recommended: (B).** The `fcntl` objection is the only real cost and it is
-  speculative — nothing needs it, and if it arrives it wants a per-flavour
-  numbering *in the library*, which is where (B) leaves room for it. (A)'s cost
-  is not speculative: it would either move platform knowledge to the client or
-  export the numbering, and the whole extraction has been moving that knowledge
-  the other way.
+  The argument that settled it is stronger than the one this bullet originally
+  made, which was about where platform knowledge lives (`O_CREAT` is 0o100 on
+  Linux and 0x200 on Darwin, and `SimulatedUnixPlatform` is the library's).
+  Patrick's objection to (A) is about what an `int` lets the *emulator* do:
+  given a bit pattern, a flag this kernel does not model is indistinguishable
+  from one it does, so it would silently do something the caller did not ask
+  for — the caller believing the bits mean something, and the kernel guessing.
+  A record has exactly the fields the kernel acts on, so what is supported is
+  legible at the boundary. An `int -> OpenFlags` decoder can be added later if
+  something wants one; it cannot be taken away once the surface is a number.
+
+  This also keeps the two shim-level rejections where they belong — an
+  unrecognised *bit* is EINVAL and so is an access mode that is none of the
+  three, both being the C's own checks rather than any kernel's, and neither
+  expressible once the flags are parsed. The cost accepted is that a future
+  `fcntl(F_GETFL)` would have to invent a numbering, and that the library
+  cannot model a kernel that rejects a flag *combination* by its bits; if
+  either arrives it wants a per-flavour numbering *in the library*, which is
+  where (B) leaves room for it.
+
+  One rule the shape has to be careful about, and the tests pin it: `O_EXCL`
+  crosses **as the caller set it**, not pre-ANDed with `O_CREAT`. That it does
+  nothing on its own is a measured kernel fact the library owns, and a client
+  that combined them first would leave the library with nothing to be right or
+  wrong about.
 
   Either way the `mode` argument crosses raw and unvalidated, which is settled
   and measured: `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only
@@ -2608,11 +2609,25 @@ Ordered so that each has an oracle before the next depends on it.
   than refused.
 
 * **8l — `opendir` and `readdir`**, split out of the old 8k for the reason given
-  there. Their own question is where the directory stream lives: PawPrint today
+  there. Their own question was where the directory stream lives: PawPrint
   materialises the `DIR*` as guest memory whose address *is* the handle, and the
   `d_name` buffer inside it is sized by an ABI constant — so the stream's
-  identity and its bytes are on different sides of the boundary, which none of
-  stage 8's other syscalls has had to arrange.
+  identity and its bytes look to be on different sides of the boundary, which
+  none of stage 8's other syscalls has had to arrange.
+
+  **Reading the code says the boundary is already drawn**, and Patrick agrees:
+  the stream *state* is library-side already (`DirectoryStreamId`,
+  `DirectoryStream` with its fd, inode and cursor, and the `DirectoryStreams`
+  map on `UnixProcessState`), the address-to-id mapping is client-side already
+  (`DirectoryStreamBlocks : Map<NativeMemoryBlockId, DirectoryStreamId>`, and
+  `NativeMemoryBlockId` is PawPrint's own), and the 1024-byte name buffer is
+  Darwin's `__DARWIN_MAXPATHLEN`, an ABI constant that stays with the client by
+  the raw-versus-PAL rule. It fits by construction: NAME_MAX is 255 bytes on
+  Linux and 255 UTF-16 code units (at most 765 bytes) on Darwin.
+
+  So `readdir` returns a name, an inode type and a new cursor, and PawPrint owns
+  the blob exactly as it owns `getcwd`'s destination. That is a reading rather
+  than a verdict; the increment confirms it or reports otherwise.
 * **8m — `getcwd`** (done), and then **`readlink` and `getsockname`**. These
   three appear in the census table and had no home in the first draft of this
   list, which is a drafting failure the census itself should have caught: an

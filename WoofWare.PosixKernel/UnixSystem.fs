@@ -313,6 +313,61 @@ module PWriteRefusal =
             // from the description's offset, so it says the same sentence.
             WriteRefusal.describeExceedsRepresentableLength inode offset count
 
+/// What a caller asked `open(2)` for, as facts about the open rather than as a
+/// bit pattern.
+///
+/// Parsed rather than raw, unlike `mkdir`'s `mode`, and the reason is not only
+/// that `Interop.Sys.OpenFlags` is a PAL enum whose numbering would have to
+/// cross with it. It is that a bit pattern lets this kernel *guess*: given an
+/// `int`, a flag it does not model is indistinguishable from one it does, and
+/// it would silently do something the caller did not ask for. A record has
+/// exactly the fields this kernel acts on, so a caller can see what is
+/// supported, and a flag that is not here is one the client had to decide about
+/// before calling. An `int -> OpenFlags` decoder can be added later if a caller
+/// wants one; it cannot be taken away once the surface is a number.
+///
+/// The client also owns the two rejections the C shim makes before any kernel
+/// sees the call — an unrecognised bit, and an access mode that is none of the
+/// three — because neither is expressible once the flags are parsed, and
+/// neither is a kernel's decision.
+type OpenFlags =
+    {
+        /// `O_RDONLY`, `O_WRONLY` or `O_RDWR`. A real `open` takes these as the
+        /// low two bits and rejects the fourth combination; by the time the
+        /// flags are a record there is no fourth combination to reject.
+        Access : FileAccessMode
+        /// `O_CREAT`: create the final component if nothing holds that name.
+        Create : bool
+        /// `O_EXCL`: fail EEXIST if the final component exists.
+        ///
+        /// Pass this exactly as the caller set it, **without** first ANDing it
+        /// with `Create`. That it does nothing on its own is a measured kernel
+        /// fact this library owns — `open(existing, O_WRONLY|O_EXCL)` succeeds
+        /// and `open(missing, O_WRONLY|O_EXCL)` is ENOENT, exactly as without
+        /// it — and a client that pre-combined them would be asserting the rule
+        /// rather than exercising it.
+        Exclusive : bool
+        /// `O_TRUNC`: empty a regular file that is opened successfully.
+        ///
+        /// Not confined to a write access mode: measured on both,
+        /// `open(f, O_RDONLY | O_TRUNC)` on a writable file succeeds and empties
+        /// it. What it does instead is demand the write permission bit.
+        Truncate : bool
+        /// `O_NOFOLLOW`: do not follow a symbolic link in the final position,
+        /// which makes opening one ELOOP.
+        NoFollow : bool
+        /// `O_CLOEXEC`. Accepted and ignored: it sets `FD_CLOEXEC`, which
+        /// matters only across `exec`, and this kernel models neither `fork` nor
+        /// `exec`. Here so that a caller can say it was asked for rather than
+        /// having to drop it silently.
+        CloseOnExec : bool
+        /// `O_SYNC`. Accepted and ignored: it governs when a write reaches
+        /// storage rather than whether it is visible, and this filesystem holds
+        /// its bytes in memory, so every write is already as durable as the
+        /// model gets. Here for the same reason as `CloseOnExec`.
+        Synchronous : bool
+    }
+
 /// What `getcwd(3)` does to the caller's buffer and what it returns.
 ///
 /// The success value of a real `getcwd` is the caller's own buffer pointer,
@@ -2417,6 +2472,226 @@ module UnixSystem =
                     }
             }
         )
+
+    /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
+    /// descriptor onto what it names.
+    ///
+    /// Named for the path it takes, `open` being an F# keyword and
+    /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
+    /// opens directories too — for reading, which CoreLib depends on.
+    ///
+    /// `mode` is raw and **unvalidated**, and must stay that way:
+    /// `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only open of an
+    /// existing file, so refusing a nonzero mode without `O_CREAT` would refuse
+    /// the BCL's own read path. It is read only when a file is actually created,
+    /// and then masked rather than rejected: measured, `mode` 0o10777 creates
+    /// 0o0755 on both flavours, so a bit above the permission word is dropped
+    /// exactly as the platform's own mask drops it.
+    ///
+    /// Never refused: every outcome is a descriptor or an errno.
+    let openPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (flags : OpenFlags)
+        (path : UnixPath)
+        (mode : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
+        let privilege = UnixProcessState.callerPrivilege system.Process
+
+        // `O_EXCL` on its own is neither an error nor a refusal: the shim passes
+        // it through and both kernels ignore it entirely, measured. So it is read
+        // only where `Create` is set, and that combining is done here rather than
+        // by the caller -- it is the kernel's rule, and a caller that pre-ANDed
+        // the two would leave it with nothing to be right or wrong about.
+        let exclusive = flags.Create && flags.Exclusive
+
+        /// Hand out a descriptor onto `inode` for the access that was asked for.
+        let opened
+            (inode : InodeNumber)
+            (system : UnixSystem<'Task, 'Handler>)
+            : SyscallAnswer * UnixSystem<'Task, 'Handler>
+            =
+            let fd, registry =
+                FileDescriptorRegistry.openFile inode flags.Access system.Process.FileDescriptors
+
+            SyscallAnswer.Completed (int64 fd),
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        // `O_CREAT|O_EXCL` does not follow a final symlink -- measured
+        // unanimously: an existing link is EEXIST whether it dangles, points at a
+        // file, or points at itself, and nothing is created. Selecting `Follow`
+        // here would create the *target* of a dangling link, and would answer
+        // ELOOP for a cyclic one, where both kernels answer EEXIST.
+        let policy =
+            if flags.NoFollow || exclusive then
+                SymlinkPolicy.NoFollowFinal
+            else
+                SymlinkPolicy.Follow
+
+        let trailingSeparatorPolicy =
+            if flags.Create then
+                rules.TrailingSeparator
+            else
+                TrailingSeparatorPolicy.Demand
+
+        match resolvePathFull policy trailingSeparatorPolicy path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok resolution ->
+
+        match CreatingOpenRules.verdict rules privilege flags.Create exclusive resolution system.Machine.FileSystem with
+        | CreatingOpenVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        | CreatingOpenVerdict.Create (directory, name) ->
+            let permissions =
+                CreatingOpenRules.createdPermissions rules system.Process.Umask mode
+
+            let now = UnixMachineState.fileTimestamp system.Machine
+
+            match
+                VirtualFileSystem.createFile
+                    directory
+                    name
+                    permissions
+                    now
+                    ImmutableArray<byte>.Empty
+                    system.Machine.FileSystem
+            with
+            | Error error ->
+                // `createFile` refuses a name the directory already holds, and a
+                // parent that is not a directory. The walk has just established
+                // neither is the case, so either is a broken graph rather than
+                // something the caller did.
+                failwith
+                    $"UnixSystem.openPath: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+            | Ok (inode, filesystem) ->
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+                |> opened inode
+        | CreatingOpenVerdict.OpenExisting inode ->
+
+        let entry =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixSystem.openPath: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+
+        match entry.Content with
+        | InodeContent.Symlink _ ->
+            // Only reachable under `O_NOFOLLOW`, which is what `NoFollowFinal`
+            // above selects: without it the resolver would have followed the link
+            // (or failed ENOENT on a dangling one). ELOOP rather than anything
+            // more specific is what both Unixes answer, and is what
+            // `SafeFileHandle.OpenNoFollowSymlink` reads back to decide a path
+            // was a symlink without racing.
+            SyscallAnswer.Failed UnixError.ELOOP, system
+        | InodeContent.Directory _ when FileAccessMode.permitsWrite flags.Access || flags.Truncate ->
+            // Measured on both flavours, for `O_WRONLY` and `O_RDWR` alike, and
+            // at uid 0 as well as uid 1000: a directory cannot be opened for
+            // writing, and this beats the EACCES check below (a mode-0000
+            // directory opened `O_WRONLY` is EISDIR, not EACCES). CoreLib
+            // *depends* on it rather than merely tolerating it --
+            // `SafeFileHandle.Init` skips its own directory check entirely when
+            // write access was asked for, on the strength of "open will have
+            // failed with EISDIR".
+            //
+            // This is also what makes every writable descriptor name a regular
+            // file, which `VirtualFileSystem.writeFile` relies on.
+            //
+            // `O_TRUNC` earns the same refusal whatever the access mode:
+            // measured, `open(d, O_RDONLY | O_TRUNC)` is EISDIR on both, so this
+            // is the one row where the arm fires for a *read-only* open. That
+            // includes `O_CREAT | O_RDONLY | O_TRUNC` on the flavour whose
+            // `RefusesExistingDirectory` is false, where the verdict is therefore
+            // `OpenExisting` on the directory itself.
+            SyscallAnswer.Failed UnixError.EISDIR, system
+        | InodeContent.RegularFile _
+        | InodeContent.Directory _ ->
+
+        // A directory opens perfectly well for *reading*, and CoreLib *depends*
+        // on that: `SafeFileHandle.Init` opens, then `FStat`s, and raises
+        // `UnauthorizedAccessException` on seeing `S_IFDIR`, so refusing here
+        // would give `File.ReadAllBytes("d")` the wrong exception. The type check
+        // belongs in what `fstat` reports.
+        let permissionBits =
+            match VirtualFileSystem.permissions entry with
+            | InodePermissions.Stored bits -> bits
+            | InodePermissions.PlatformSymlinkDefault ->
+                failwith
+                    $"UnixSystem.openPath: inode %O{inode} reports platform-default symlink permissions, but the symlink arm above answered ELOOP for every link (this is a bug in this library)."
+
+        // What `open(2)` itself checks: whether this process may open *this
+        // object* for the access it asked for. Measured identically on macOS and
+        // Linux, at uid 1000:
+        //
+        //   mode   O_RDONLY  O_WRONLY  O_RDWR
+        //   0644   ok        ok        ok
+        //   0444   ok        EACCES    EACCES
+        //   0200   EACCES    ok        EACCES
+        //   0000   EACCES    EACCES    EACCES
+        //
+        // Only the owner triple is ever consulted, and that is exact rather than
+        // a simplification: `stat` reports the process's own `UserId` as *every*
+        // inode's `st_uid`, so the emulated process owns everything it can see
+        // and the group and other triples can never be the applicable ones.
+        //
+        // `O_TRUNC` adds the write bit to whatever the access mode already asked
+        // for, and adds nothing else. Measured at uid 1000 on both:
+        //
+        //   mode   flags               answer
+        //   0444   RDONLY|TRUNC        EACCES
+        //   0400   RDONLY|TRUNC        EACCES
+        //   0200   RDONLY|TRUNC        EACCES   (the read bit is still owed)
+        //   0600   RDONLY|TRUNC        ok
+        //   0200   WRONLY|TRUNC        ok
+        //   0400   WRONLY|TRUNC        EACCES
+        let neededBits =
+            (if FileAccessMode.permitsRead flags.Access then 0o400 else 0)
+            ||| (if FileAccessMode.permitsWrite flags.Access || flags.Truncate then
+                     0o200
+                 else
+                     0)
+
+        if PermissionBits.deniedTo privilege neededBits permissionBits then
+            SyscallAnswer.Failed UnixError.EACCES, system
+        else
+
+        // Only now, with every refusal discharged: measured, a refused open
+        // leaves the bytes alone, and specifically `O_CREAT | O_EXCL | O_TRUNC`
+        // on an existing file is EEXIST with its contents intact, while
+        // `O_NOFOLLOW | O_TRUNC` on a symbolic link is ELOOP with its target
+        // intact.
+        //
+        // Unconditional rather than skipped for an already-empty file: the
+        // inode's timestamps move and its set-ID bits go regardless. Only a
+        // regular file is truncated -- a directory cannot reach here at all (the
+        // arm above refuses every truncating open of one), so the match is over
+        // what the descriptor may still name rather than a filter.
+        let system =
+            match entry.Content with
+            | InodeContent.RegularFile _ when flags.Truncate ->
+                match truncateAt inode 0L system with
+                | Ok system -> system
+                | Error refusal ->
+                    // Truncating to zero cannot exceed a length limit and cannot
+                    // be negative, which are the only two refusals `truncateAt`
+                    // has.
+                    failwith
+                        $"UnixSystem.openPath: truncating inode %O{inode} to zero was refused -- %s{TruncationRefusal.describe refusal} (this is a bug in this library)."
+            | InodeContent.RegularFile _
+            | InodeContent.Directory _
+            | InodeContent.Symlink _ -> system
+
+        opened inode system
 
     /// `mkdir(2)`: bind a new directory at `path`.
     ///
