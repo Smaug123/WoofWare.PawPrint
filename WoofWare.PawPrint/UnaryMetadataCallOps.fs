@@ -1565,9 +1565,12 @@ module internal UnaryMetadataCallOps =
 
         match target with
         | None ->
-            // ECMA-335 III.3.20: calli throws NullReferenceException if the function
-            // pointer is null. Don't advance the PC; exception dispatch needs the
-            // faulting instruction's offset.
+            // The CLI does not specify this case. ECMA-335 III.3.20's "Exceptions" lists only
+            // `System.SecurityException`, and its "Correctness" requires `ftn` to hold a method
+            // address, so a null one is not correct CIL. PawPrint chooses a deterministic
+            // catchable exception over emulating CoreCLR's segfault; docs/divergences.md has the
+            // argument. Don't advance the PC; exception dispatch needs the faulting instruction's
+            // offset.
             IlMachineStateExecution.raiseRuntimeException
                 loggerFactory
                 baseClassTypes
