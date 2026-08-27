@@ -150,7 +150,7 @@ module internal UnsafeAccessorDispatch =
     /// `TypeDefn.stripCustomModifiers` is deliberately shallow -- it answers "what type does this
     /// element name", for which a modifier on an array's element is not in the way -- so it is not
     /// this.
-    let rec private stripModifiersDeep (ty : TypeDefn) : TypeDefn =
+    let rec stripModifiersDeep (ty : TypeDefn) : TypeDefn =
         match ty with
         | TypeDefn.Modified m -> stripModifiersDeep m.Unmodified
         | TypeDefn.Array (element, shape) -> TypeDefn.Array (stripModifiersDeep element, shape)
@@ -177,7 +177,7 @@ module internal UnsafeAccessorDispatch =
     /// `void modreq(IsExternalInit)`. Deleting the modifier without folding would leave a
     /// `Returns Void` that no accessor's own `void` return could ever equal, so an `init` setter
     /// would be unreachable.
-    and private stripReturnModifiersDeep (returnType : MethodReturnType<TypeDefn>) : MethodReturnType<TypeDefn> =
+    and stripReturnModifiersDeep (returnType : MethodReturnType<TypeDefn>) : MethodReturnType<TypeDefn> =
         match returnType with
         | MethodReturnType.Void -> MethodReturnType.Void
         | MethodReturnType.Returns ty ->
@@ -185,10 +185,7 @@ module internal UnsafeAccessorDispatch =
             | TypeDefn.Void -> MethodReturnType.Void
             | stripped -> MethodReturnType.Returns stripped
 
-    and private stripSignatureModifiersDeep
-        (signature : TypeMethodSignature<TypeDefn>)
-        : TypeMethodSignature<TypeDefn>
-        =
+    and stripSignatureModifiersDeep (signature : TypeMethodSignature<TypeDefn>) : TypeMethodSignature<TypeDefn> =
         { signature with
             ParameterTypes = signature.ParameterTypes |> List.map stripModifiersDeep
             ReturnType = stripReturnModifiersDeep signature.ReturnType
