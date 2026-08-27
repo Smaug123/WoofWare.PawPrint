@@ -15,6 +15,9 @@ What lives here:
 
 * `ContextSwitchPrior` — how likely interleaving an opcode with another thread's steps is to reveal
   a guest-visible difference. Consumed by PawPrint's Probabilistic Concurrency Testing scheduler.
+* `OpcodeFaults` — which exceptions an instruction can raise by itself, as opposed to which reach it
+  from a callee. Consumed by the interpreter, which raises through it and checks itself against it,
+  and readable by an analyser that never runs anything.
 
 The dependency direction is the invariant: this library sees `WoofWare.PawPrint.Domain` and never
 `WoofWare.PawPrint`, so nothing in here can reach the interpreter's mutable machine state. That is

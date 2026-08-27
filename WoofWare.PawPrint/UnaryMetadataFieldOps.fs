@@ -238,12 +238,7 @@ module internal UnaryMetadataFieldOps =
 
         match currentObj with
         | EvalStackValue.NullObjectRef ->
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
 
         let state =
@@ -373,12 +368,7 @@ module internal UnaryMetadataFieldOps =
 
         match currentObj with
         | EvalStackValue.NullObjectRef ->
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
 
         let state =
@@ -465,12 +455,7 @@ module internal UnaryMetadataFieldOps =
 
         match ptr with
         | NullObjectRef ->
-            IlMachineStateExecution.raiseRuntimeException
-                loggerFactory
-                baseClassTypes
-                baseClassTypes.NullReferenceException
-                thread
-                state
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
         | _ ->
 
         let state, projection =

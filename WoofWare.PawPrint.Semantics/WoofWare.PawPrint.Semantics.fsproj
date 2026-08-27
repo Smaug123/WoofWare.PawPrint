@@ -18,6 +18,7 @@
 
     <ItemGroup>
         <Compile Include="ContextSwitchPrior.fs" />
+        <Compile Include="OpcodeFaults.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
