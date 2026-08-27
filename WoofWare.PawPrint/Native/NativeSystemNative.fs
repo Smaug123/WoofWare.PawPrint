@@ -637,12 +637,14 @@ module NativeSystemNative =
     /// The socket `fd` names, for an entry point that takes one.
     ///
     /// `EBADF` for a descriptor that is not live, and `ENOTSOCK` for one that
-    /// is live but names no socket — measured for each caller of this helper
-    /// rather than generalised across syscalls: `accept(2)`, `bind(2)`,
-    /// `listen(2)` and `getsockname(2)` on a regular file, an event port and
-    /// both pipe ends all answer `ENOTSOCK` on both kernels. The two address
-    /// families PawPrint can create but not operate on are refused rather than
-    /// answered, each for a reason of its own.
+    /// is live but names no socket — measured per syscall rather than
+    /// generalised across them: `accept(2)`, `bind(2)`, `listen(2)` and
+    /// `getsockname(2)` on a regular file, an event port and both pipe ends all
+    /// answer `ENOTSOCK` on both kernels. The first three are this helper's
+    /// callers; `getsockname` asks `UnixSystem.getsockname` the same question
+    /// and gets the same two errnos, which is why its row is still cited here.
+    /// The two address families PawPrint can create but not operate on are
+    /// refused rather than answered, each for a reason of its own.
     let private socketOfFd
         (operation : string)
         (fd : int)
@@ -4696,11 +4698,18 @@ module NativeSystemNative =
             | _, BufferPointer.RawAddress 0UL -> complete (UnixErrorPal.toPal UnixError.EFAULT) state
             | _, _ ->
 
+            // The length pointer is dereferenced by the C itself, so it refuses
+            // rather than answering EFAULT. This is the opposite of the address
+            // blob beside it, which the shim passes through untouched and whose
+            // bad address is therefore the kernel's own EFAULT.
             let lengthCell = requireStorage operation "socketAddressLen" lengthArgument
 
             let declaredLength =
                 BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
 
+            // The shim's own screen (`pal_networking.c:1873`), before the cast to
+            // `socklen_t` that would otherwise make the bound SIZE_MAX. No kernel
+            // is ever asked, which is why the library refuses one instead.
             if declaredLength < 0 then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
@@ -4717,59 +4726,69 @@ module NativeSystemNative =
                 )
                 |> complete (UnixErrorPal.toPal error)
 
-            match socketOfFd operation fd state with
-            | Error error -> failFromSyscall error state
-            | Ok (_, socket) ->
+            match
+                UnixSystem.getsockname
+                    fd
+                    (BufferPointer.toUserBuffer addressArgument)
+                    declaredLength
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (GetSockNameRefusal.Buffer refusal) ->
+                failwith (BufferPointer.refusalMessage addressArgument refusal)
+            | Error (GetSockNameRefusal.UnmodelledDomain (_, domain) as refusal) ->
+                // The library says why no kernel answer exists; PawPrint says how
+                // a guest could be holding such a socket, which is a fact about
+                // CoreLib rather than about any kernel.
+                let reachedBy =
+                    match domain with
+                    | SocketDomain.InterNetworkV6 ->
+                        "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                    | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
+                    | SocketDomain.InterNetwork ->
+                        failwith
+                            $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
-            // `getsockname(2)`'s buffer, like `bind(2)`'s: the wrapper passes it
-            // through untouched, so an address naming no storage is the kernel's
-            // EFAULT rather than a fault in the wrapper — and, as there, only when
-            // bytes actually move. Measured on both: with `*socketAddressLen` of 8
-            // an unmapped pointer is EFAULT, while with 0 the call *succeeds* and
-            // still reports 16, having copied nothing. The *length* pointer is
-            // different — the C reads `*socketAddressLen` itself — so that one
-            // stays a refusal.
-            let addressStorage = BufferPointer.dereferenceable addressArgument
+                failwith $"%s{operation}: fd %d{fd}: %s{GetSockNameRefusal.describe refusal} %s{reachedBy}"
+            | Ok (GetSockNameAnswer.Failed (error, _lengthOverwritten)) ->
+                // `lengthOverwritten` is dropped, and that is what the shim does
+                // rather than an omission: it passes `getsockname(2)` a local
+                // `socklen_t` and copies it back to the caller only when the call
+                // succeeded, so Linux's store of the untruncated length lands on
+                // the shim's stack and dies there. A client speaking raw POSIX
+                // would have to honour it.
+                failFromSyscall error state
+            | Ok (GetSockNameAnswer.Reported (endpoint, reportedLength)) ->
 
-            match addressStorage with
-            | None when declaredLength > 0 -> failFromSyscall UnixError.EFAULT state
-            | _ ->
-
-            let platform = state.Kernel.UnixPlatform
-            let realLength = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
-
-            // An unbound socket reports its family and nothing else: port 0,
-            // address all-zero. Measured on both.
-            let endpoint =
-                match socket.Binding with
-                | Some binding -> binding.Endpoint
-                | None -> InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us
-
-            let blob = internetSockaddrBlob platform endpoint
+            let blob = internetSockaddrBlob state.Kernel.UnixPlatform endpoint
 
             // The caller's declared length bounds what is *written*, and does not
-            // bound what is *reported*: measured on both, `getsockname` with a
-            // declared length of 8 writes eight bytes and reports 16, and with 0
-            // writes nothing and still reports 16. The C's
-            // `assert(addrLen <= *socketAddressLen)` is false on both platforms
-            // and compiled out of the shipped build.
-            let written = min declaredLength realLength
+            // bound what is *reported* -- see `UnixSystem.getsockname`, which is
+            // where that measurement is recorded.
+            let written = min declaredLength reportedLength
 
             let state =
                 if written = 0 then
+                    // A call that writes nothing never resolves the destination,
+                    // which is why a declared length of zero succeeds through a
+                    // pointer naming no storage.
                     state
                 else
-                    // `written` is positive here, so the storage resolved above;
-                    // a zero-length call never reaches this branch.
+                    let storage =
+                        match BufferPointer.dereferenceable addressArgument with
+                        | Some storage -> storage
+                        | None ->
+                            failwith
+                                $"%s{operation}: `socketAddress` is %O{addressArgument}, which names no storage, yet the library answered with %d{written} bytes to write rather than EFAULT. This is an interpreter bug."
+
                     writeBytesThrough
                         ctx
                         operation
-                        (Option.get addressStorage)
+                        storage
                         (ImmutableArray.CreateRange (Array.sub blob 0 written))
                         state
 
             let reported = Array.zeroCreate<byte> 4
-            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, realLength)
+            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, reportedLength)
 
             state
             |> writeBytesThrough ctx operation lengthCell (ImmutableArray.CreateRange reported)

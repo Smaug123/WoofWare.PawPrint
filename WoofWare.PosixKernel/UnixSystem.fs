@@ -330,6 +330,47 @@ type ReadLinkAnswer =
     /// libc keeps errno.
     | Failed of error : UnixError
 
+/// What `getsockname(2)` reports about a socket's own address.
+[<RequireQualifiedAccess>]
+type GetSockNameAnswer =
+    /// The address the socket is bound to, and the length the call reports.
+    ///
+    /// The endpoint rather than the bytes: a `struct sockaddr_in` is the
+    /// client's to lay out, and the client that decoded one for `bind(2)` is the
+    /// one that encodes this. `reportedLength` is that structure's *untruncated*
+    /// size, which the caller's declared length does not bound -- see the
+    /// entry point.
+    | Reported of endpoint : InternetEndpoint * reportedLength : int
+    /// The entry point returns -1, the caller stores `error` wherever its libc
+    /// keeps errno, and `lengthOverwritten` is what the kernel had already put
+    /// in the caller's length cell before it discovered the fault.
+    ///
+    /// `None` on a flavour that had stored nothing yet, and on every failure
+    /// that precedes the copy on either. See `GetSockNameFaultLength`, which is
+    /// where the divergence and its measurement are written down.
+    | Failed of error : UnixError * lengthOverwritten : int option
+
+/// Why this kernel will not answer a `getsockname`.
+[<RequireQualifiedAccess>]
+type GetSockNameRefusal =
+    /// The destination has no answer at the step the call reached.
+    | Buffer of BufferRefusal
+    /// A socket in an address family whose local address this kernel does not
+    /// model. Not an errno: a real kernel in this family answers, and every
+    /// value this one could report would be invented.
+    | UnmodelledDomain of socket : SocketId * domain : SocketDomain
+
+[<RequireQualifiedAccess>]
+module GetSockNameRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half -- which entry point, which descriptor, and how a caller
+    /// could have come by such a socket.
+    let describe (refusal : GetSockNameRefusal) : string =
+        match refusal with
+        | GetSockNameRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | GetSockNameRefusal.UnmodelledDomain (socket, domain) ->
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a local address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
+
 /// What kind of object one directory entry names.
 ///
 /// Not `InodeContent`, which carries the payload as well — a caller enumerating
@@ -2839,6 +2880,96 @@ module UnixSystem =
             Ok (ReadLinkAnswer.Reported all)
         else
             Ok (ReadLinkAnswer.Reported (ImmutableArray.CreateRange (Seq.truncate capacity all)))
+
+    /// `getsockname(2)`: report the local address the socket `fd` names.
+    ///
+    /// Answers an endpoint rather than a `struct sockaddr_in`: the layout is the
+    /// client's, which is the same division `bind(2)` and `connect(2)` already
+    /// use in the other direction.
+    ///
+    /// `declaredLength` is how much of the caller's buffer may be written, and
+    /// **does not bound what is reported**. Measured on both flavours: a call
+    /// declaring 8 writes eight bytes and reports 16, and one declaring 128
+    /// writes 16 and still reports 16. The shim asserts the opposite
+    /// (`assert(addrLen <= *socketAddressLen)`, `pal_networking.c:1887`) and is
+    /// wrong on both platforms; the assertion is compiled out of the shipped
+    /// build, which is why nobody has noticed. A client writes
+    /// `min declaredLength reportedLength` bytes of the address it encodes.
+    ///
+    /// `declaredLength` must not be negative. A kernel never sees one -- the
+    /// shim screens `*socketAddressLen < 0` before it converts to `socklen_t`,
+    /// where the cast would otherwise make the bound `SIZE_MAX` -- so a caller
+    /// that has not screened it is asking a question no kernel this library
+    /// models was ever asked.
+    ///
+    /// Changes nothing and returns no system: a `getsockname` reads.
+    let getsockname<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetSockNameAnswer, GetSockNameRefusal>
+        =
+        if declaredLength < 0 then
+            failwith
+                $"UnixSystem.getsockname: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a shim that casts it to `socklen_t` makes the bound SIZE_MAX rather than passing it on. Screen this in the client (this is a bug in the caller)."
+
+        // The descriptor is classified before the destination is looked at, and
+        // that ordering is measured rather than assumed: with a closed
+        // descriptor or a non-socket one, an unmapped, read-only or null
+        // destination still answers EBADF or ENOTSOCK on both flavours, at every
+        // declared length probed. Both leave the caller's length cell alone
+        // there, which is why neither reports one.
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | None -> Ok (GetSockNameAnswer.Failed (UnixError.EBADF, None))
+        | Some target ->
+
+        match target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort _ -> Ok (GetSockNameAnswer.Failed (UnixError.ENOTSOCK, None))
+        | OpenFileTarget.Socket socketId ->
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        match socket.Domain with
+        | SocketDomain.InterNetworkV6
+        | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.InterNetwork ->
+
+        let reportedLength =
+            (SimulatedUnixPlatform.socketAddressSizes system.Machine.UnixPlatform).InterNetwork
+
+        // An unbound socket reports its family and nothing else: the wildcard
+        // address and port zero. Measured on both flavours -- a fresh AF_INET
+        // socket reads back sixteen bytes whose only content is the family, and
+        // on Darwin the `sa_len` byte its layout puts in front of it.
+        let endpoint =
+            match socket.Binding with
+            | Some binding -> binding.Endpoint
+            | None -> InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 0us
+
+        // A call that may write nothing never consults the destination at all,
+        // so a declared length of zero succeeds through an address naming no
+        // storage -- measured on both flavours, and on both it still reports the
+        // full 16. There is no up-front address screen to fail either: that is
+        // why an `Addressless` destination is refused at the transfer below and
+        // not here.
+        if declaredLength = 0 then
+            Ok (GetSockNameAnswer.Reported (endpoint, reportedLength))
+        else
+
+        match destination with
+        | UserBuffer.Opaque -> Error (GetSockNameRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (GetSockNameRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Unmapped _ ->
+            let overwritten =
+                match SimulatedUnixPlatform.getSockNameFaultLength system.Machine.UnixPlatform with
+                | GetSockNameFaultLength.Untouched -> None
+                | GetSockNameFaultLength.AlreadyReported -> Some reportedLength
+
+            Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, overwritten))
+        | UserBuffer.Mapped -> Ok (GetSockNameAnswer.Reported (endpoint, reportedLength))
 
     /// `opendir(3)`: resolve `path` and start a stream over the directory it
     /// names.

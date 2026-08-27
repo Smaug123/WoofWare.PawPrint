@@ -2650,7 +2650,7 @@ Ordered so that each has an oracle before the next depends on it.
   `UnixSystem.forgetIfUnheld`; what is left of it is block bookkeeping and the
   ordering that reaps a directory whose last name went while a stream held it,
   which is client-side by the same rule.
-* **8m — `getcwd` and `readlink`** (done), and then **`getsockname`**. These
+* **8m — `getcwd`, `readlink` and `getsockname`** (done). These
   three appear in the census table and had no home in the first draft of this
   list, which is a drafting failure the census itself should have caught: an
   increment list that does not partition its own table is not a plan. All three
@@ -2725,9 +2725,49 @@ Ordered so that each has an oracle before the next depends on it.
   whatever the destination is, on both flavours, and a removed current directory
   outranks even that on Linux, where an unmapped destination is ENOENT rather
   than EFAULT.
+
+  `getsockname` went last and is the one that **closes the `poll` asymmetry
+  above**, which is more than its own increment was expected to be worth. The
+  question stage 7 left open was whether a `Failed` should carry writes, and
+  `getcwd` turned out to be the wrong witness: its failure-path writes are
+  libc's. `getsockname`'s are a kernel's, and the two flavours order them
+  differently — measured against a wholly unmapped destination with sentinel
+  lengths of 7, 13, 100 and 4096, Linux 6.18.5 has already stored the
+  untruncated length in the caller's cell when the address copy faults, where
+  macOS 26.6 leaves it reading what it went in with. A descriptor that fails
+  earlier touches it on neither. So `GetSockNameAnswer.Failed` carries an errno
+  **and** a `lengthOverwritten`, and that is the shape `poll` should take: a
+  `Failed` carrying exactly the writes the kernel had committed by the time it
+  failed, not a generic ordered effect list.
+
+  This is invisible to the PAL, which is worth stating so that nobody later
+  reads the field as dead: `SystemNative_GetSockName` hands `getsockname(2)` a
+  local `socklen_t` and copies it back only on success, so Linux's store lands
+  on the shim's stack. The handler drops the field and says why. A client
+  speaking raw POSIX has to honour it, and that is who the library is for.
+
+  The blob does **not** cross. The library answers an `InternetEndpoint` and the
+  reported length; PawPrint keeps `internetSockaddrBlob` and writes
+  `min declaredLength reportedLength` bytes of it. That is the same division
+  `bind(2)` and `connect(2)` already use in the other direction — they hand
+  `EmulatedKernel.connectSocket` a decoded endpoint rather than bytes — and it
+  keeps `SockaddrOffsets` private to PawPrint, where 21 of its 23 uses are. The
+  alternative, moving the encoder into the library on the ground that
+  `struct sockaddr_in` is raw kernel ABI rather than PAL, would have made
+  `getsockname` the only socket entry point whose bytes cross.
+
+  Two of its rules were confirmed rather than changed, both by the size sweep: a
+  descriptor error outranks a destination that names nothing (EBADF and ENOTSOCK
+  at every declared length probed, against unmapped, read-only and null
+  destinations alike), and the declared length bounds what is written without
+  bounding what is reported — the shim's own
+  `assert(addrLen <= *socketAddressLen)` is false on both platforms and is
+  compiled out of the shipped build.
 * **`poll` defers to stage 9**, and not for the reason the others do. It carries
   an array in *and* out, it is the syscall whose failure path writes (the
-  asymmetry left open above), and it is where blocking becomes unavoidable — it
+  asymmetry `getsockname` above now settles: a typed `Failed` carrying the
+  writes the kernel had committed), and it is where blocking becomes
+  unavoidable — it
   needs `WouldBlock`, which stage 9 defines. It is also already entangled with
   8a: it is one of the six `faultsBeforeOperation` call sites, so 8a must re-plumb
   it even though the syscall itself does not move.
