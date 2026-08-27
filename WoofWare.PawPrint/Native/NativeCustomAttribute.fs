@@ -174,13 +174,18 @@ module NativeCustomAttribute =
     /// rather than in the blob.
     /// </remarks>
     let private resolveNamedArgPrimitive (operation : string) (elemType : CustomAttribFieldOrPropType) : PrimitiveType =
-        let describeElem (elem : CustomAttribSerializationType) : string =
+        let describe (elem : CustomAttribSerializationType) : string =
             match elem with
             | CustomAttribSerializationType.Primitive pt -> $"%O{pt}"
             | CustomAttribSerializationType.Type -> "TYPE (0x50)"
             | CustomAttribSerializationType.TaggedObject -> "TAGGED_OBJECT (0x51)"
             | CustomAttribSerializationType.Enum (Some name) -> $"ENUM (0x55) named \"%s{name}\""
             | CustomAttribSerializationType.Enum None -> "ENUM (0x55) named by the SerString null sentinel"
+
+        let describeElem (elem : CustomAttribArrayElement) : string =
+            match elem with
+            | CustomAttribArrayElement.Element inner -> describe inner
+            | CustomAttribArrayElement.Unrecognised tag -> $"the tag 0x%02X{tag}, which names no serialization type"
 
         match elemType with
         | CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Primitive pt) -> pt
@@ -194,7 +199,7 @@ module NativeCustomAttribute =
                 $"TODO: %s{operation}: named argument has SZARRAY type (element %s{describeElem elt}); resolving a named arg's element type from the blob, and reporting the array type for a null value, are not implemented"
         | CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Enum _ as elem) ->
             failwith
-                $"TODO: %s{operation}: named argument has %s{describeElem elem} type; resolving a custom-attribute type name needs the reflection type-name parser (CoreCLR's TypeName::GetTypeReferencedByCustomAttribute), which PawPrint does not have"
+                $"TODO: %s{operation}: named argument has %s{describe elem} type; resolving a custom-attribute type name needs the reflection type-name parser (CoreCLR's TypeName::GetTypeReferencedByCustomAttribute), which PawPrint does not have"
         | CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.Type ->
             failwith
                 $"TODO: %s{operation}: named argument has TYPE (0x50) type; its value is a reflection type name, so it needs the same type-name parser as the ENUM case"

@@ -723,11 +723,16 @@ module TestCustomAttributeBlob =
 
             Array.append [| 0x55uy |] name
 
-    /// Encode a `FieldOrPropType`: an optional SZARRAY (0x1D) prefix, then one serialization type.
+    let private encodeArrayElement (t : CustomAttribArrayElement) : byte array =
+        match t with
+        | CustomAttribArrayElement.Element elt -> encodeSerializationType elt
+        | CustomAttribArrayElement.Unrecognised tag -> [| tag |]
+
+    /// Encode a `FieldOrPropType`: an optional SZARRAY (0x1D) prefix, then one element tag.
     let private encodeFieldOrPropType (t : CustomAttribFieldOrPropType) : byte array =
         match t with
         | CustomAttribFieldOrPropType.Scalar elt -> encodeSerializationType elt
-        | CustomAttribFieldOrPropType.SzArray elt -> Array.append [| 0x1Duy |] (encodeSerializationType elt)
+        | CustomAttribFieldOrPropType.SzArray elt -> Array.append [| 0x1Duy |] (encodeArrayElement elt)
 
     let private encodeSerString (s : string option) : byte array =
         match s with
@@ -799,19 +804,20 @@ module TestCustomAttributeBlob =
             next |> shouldEqual 1
         | Error e -> failwithf "expected Ok TaggedObject, got Error %s" e
 
-    /// Every element type CoreCLR admits after SZARRAY: a primitive, a TYPE, a TAGGED_OBJECT, or
-    /// an ENUM with its name. Each is one tag byte after the 0x1D, except the enum, which carries
-    /// its SerString too.
+    /// Every element tag CoreCLR admits after SZARRAY: a primitive, a TYPE, a TAGGED_OBJECT, an
+    /// ENUM with its name, or a byte naming none of those, which CoreCLR keeps unexamined. Each is
+    /// one byte after the 0x1D, except the enum, which carries its SerString too.
     [<Test>]
     let ``readFieldOrPropType decodes SzArray of each element type`` () : unit =
         let cases =
             [
-                CustomAttribSerializationType.Primitive PrimitiveType.Int32
-                CustomAttribSerializationType.Primitive PrimitiveType.String
-                CustomAttribSerializationType.Type
-                CustomAttribSerializationType.TaggedObject
-                CustomAttribSerializationType.Enum (Some "MyNs.MyEnum, MyAsm")
-                CustomAttribSerializationType.Enum None
+                CustomAttribArrayElement.Element (CustomAttribSerializationType.Primitive PrimitiveType.Int32)
+                CustomAttribArrayElement.Element (CustomAttribSerializationType.Primitive PrimitiveType.String)
+                CustomAttribArrayElement.Element CustomAttribSerializationType.Type
+                CustomAttribArrayElement.Element CustomAttribSerializationType.TaggedObject
+                CustomAttribArrayElement.Element (CustomAttribSerializationType.Enum (Some "MyNs.MyEnum, MyAsm"))
+                CustomAttribArrayElement.Element (CustomAttribSerializationType.Enum None)
+                CustomAttribArrayElement.Unrecognised 0x99uy
             ]
 
         for elt in cases do
@@ -824,25 +830,41 @@ module TestCustomAttributeBlob =
                 next |> shouldEqual encoded.Length
             | Error e -> failwithf "element %O: expected Ok, got Error %s" elt e
 
-    /// The reader consumes at most two tag bytes, so a second SZARRAY is rejected where it sits
-    /// rather than descended into. That is what keeps its stack depth independent of the bytes it
-    /// is decoding: reading ECMA-335's "0x1D followed by the FieldOrPropType of the element type"
-    /// as a recursive grammar instead puts one stack frame per byte under the guest's control, and
-    /// a host stack overflow cannot be caught.
+    /// A second SZARRAY is the first array's element tag, and names no serialization type, so it is
+    /// two bytes whatever follows it -- never a descent. That is what keeps the reader's stack depth
+    /// independent of the bytes it is decoding: reading ECMA-335's "0x1D followed by the
+    /// FieldOrPropType of the element type" as a recursive grammar instead puts one stack frame per
+    /// byte under the guest's control, and a host stack overflow cannot be caught.
+    ///
+    /// Asserting the *consumed length* is what makes this a test of the shape rather than of the
+    /// verdict: a recursive reader accepts `1D 1D 08` too, and differs only in reporting three bytes
+    /// where CoreCLR reports two, which is the offset the member name is then read from.
     [<Test>]
-    let ``readFieldOrPropType refuses to nest arrays, however deep`` () : unit =
+    let ``readFieldOrPropType takes one element tag, however many follow`` () : unit =
+        let expected =
+            CustomAttribFieldOrPropType.SzArray (CustomAttribArrayElement.Unrecognised 0x1Duy)
+
         match CustomAttribute.readFieldOrPropType (immutable [| 0x1Duy ; 0x1Duy ; 0x08uy |]) 0 with
-        | Ok other -> failwithf "expected Error for a nested array, got Ok %A" other
-        | Error e ->
-            e |> shouldContainText "0x1D"
-            e |> shouldContainText "at offset 1"
-            e |> shouldContainText "not a valid serialization type"
+        | Error e -> failwithf "expected Ok for a nested array, got Error %s" e
+        | Ok (decoded, next) ->
+            decoded |> shouldEqual expected
+            next |> shouldEqual 2
 
         let deep = Array.create 4_000_000 0x1Duy
 
         match CustomAttribute.readFieldOrPropType (immutable deep) 0 with
-        | Ok other -> failwithf "expected Error for a 4MB array nest, got Ok %A" other
-        | Error e -> e |> shouldContainText "at offset 1"
+        | Error e -> failwithf "expected Ok for a 4MB run of 0x1D, got Error %s" e
+        | Ok (decoded, next) ->
+            decoded |> shouldEqual expected
+            next |> shouldEqual 2
+
+    /// A truncated array -- an SZARRAY with no element tag at all -- is still an error, so the
+    /// leniency above is about what a *present* byte may say, not about whether one must be there.
+    [<Test>]
+    let ``readFieldOrPropType rejects an SzArray with no element tag`` () : unit =
+        match CustomAttribute.readFieldOrPropType (immutable [| 0x1Duy |]) 0 with
+        | Ok other -> failwithf "expected Error for a bare 0x1D, got Ok %A" other
+        | Error e -> e |> shouldContainText "begins at offset 1"
 
     [<Test>]
     let ``readFieldOrPropType decodes Enum with its type name`` () : unit =
@@ -865,11 +887,23 @@ module TestCustomAttributeBlob =
         | Ok other -> failwithf "expected Error for tag 0x99, got Ok %A" other
         | Error e -> e |> shouldContainText "not a valid serialization type"
 
+    /// In the argument's own position an unrecognised tag is an error, where in the array-element
+    /// position it is data. SZARRAY is one such tag: nothing but `readFieldOrPropType` may consume
+    /// it.
     [<Test>]
-    let ``readSerializationType rejects SZARRAY`` () : unit =
-        match CustomAttribute.readSerializationType (immutable [| 0x1Duy ; 0x08uy |]) 0 with
-        | Ok other -> failwithf "expected Error for tag 0x1D, got Ok %A" other
-        | Error e -> e |> shouldContainText "not a valid serialization type"
+    let ``readSerializationType rejects the tags readArrayElementType keeps`` () : unit =
+        for tag in [ 0x1Duy ; 0x99uy ] do
+            match CustomAttribute.readArrayElementType (immutable [| tag ; 0x08uy |]) 0 with
+            | Error e -> failwithf "tag 0x%02X: expected Ok Unrecognised, got Error %s" tag e
+            | Ok (decoded, next) ->
+                decoded |> shouldEqual (CustomAttribArrayElement.Unrecognised tag)
+                next |> shouldEqual 1
+
+            match CustomAttribute.readSerializationType (immutable [| tag ; 0x08uy |]) 0 with
+            | Ok other -> failwithf "tag 0x%02X: expected Error, got Ok %A" tag other
+            | Error e ->
+                e |> shouldContainText "not a valid serialization type"
+                e |> shouldContainText "at offset 0"
 
     [<Test>]
     let ``readFieldOrPropType rejects an empty slice`` () : unit =

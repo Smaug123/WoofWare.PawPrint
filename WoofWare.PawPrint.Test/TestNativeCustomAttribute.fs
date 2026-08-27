@@ -1087,6 +1087,21 @@ public sealed class CctorAttribute : System.Attribute
                 "ENUM"
                 [| 0x53uy ; 0x50uy ; 0x01uy ; byte 'F' ; 0xFFuy |], "TYPE (0x50)"
                 [| 0x53uy ; 0x51uy ; 0x01uy ; byte 'F' ; 0x0Euy ; 0xFFuy |], "TAGGED_OBJECT (0x51)"
+                // SZARRAY whose element tag is itself SZARRAY. The reader takes that second byte
+                // as the element tag and stops, so this reaches the SZARRAY refusal rather than
+                // spending a host stack frame per 0x1D; the refusal names the tag it kept.
+                [|
+                    0x53uy
+                    0x1Duy
+                    0x1Duy
+                    0x01uy
+                    byte 'F'
+                    0xFFuy
+                    0xFFuy
+                    0xFFuy
+                    0xFFuy
+                |],
+                "0x1D, which names no serialization type"
             ]
 
         for blob, expectedFragment in cases do
@@ -1097,22 +1112,6 @@ public sealed class CctorAttribute : System.Attribute
                 Assert.Throws (fun () -> invokeNamedArgHandler fixture prep.Thread prep.State |> ignore)
 
             exn.Message |> shouldContainText expectedFragment
-
-    /// A blob of nothing but SZARRAY bytes is bounded work for the reader, which takes one element
-    /// tag and rejects a second 0x1D where it sits. Reading ECMA-335's "0x1D followed by the
-    /// FieldOrPropType of the element type" as a recursive grammar instead spends one host stack
-    /// frame per byte here, on bytes the guest assembly chose; a host stack overflow is uncatchable,
-    /// so it takes the interpreter down rather than producing a diagnostic.
-    [<Test>]
-    let ``a deeply nested array is refused, not descended into`` () : unit =
-        let fixture = makeFixture ()
-        let blob = Array.append [| 0x53uy |] (Array.create 100_000 0x1Duy)
-        let prep = prepareNamedArgInvocation fixture blob 0
-
-        let exn =
-            Assert.Throws (fun () -> invokeNamedArgHandler fixture prep.Thread prep.State |> ignore)
-
-        exn.Message |> shouldContainText "not a valid serialization type"
 
     [<Test>]
     let ``a malformed kind tag fails loudly`` () : unit =

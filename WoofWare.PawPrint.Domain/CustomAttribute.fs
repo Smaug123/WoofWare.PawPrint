@@ -151,6 +151,27 @@ type CustomAttribSerializationType =
     | TaggedObject
 
 /// <summary>
+/// The element type of an <c>SZARRAY</c>-typed named argument, exactly as the bytes gave it.
+/// </summary>
+/// <remarks>
+/// CoreCLR takes this byte without checking that it names anything
+/// (<c>customattribute.cpp:1064</c>) and asks what it means only when it has elements to decode
+/// with it. A null array (<c>NumElem = 0xFFFFFFFF</c>) has none, so the tag is never questioned:
+/// measured on .NET 10, an attribute whose named argument is encoded <c>SZARRAY SZARRAY name
+/// FFFFFFFF</c> assigns <c>null</c> to an <c>int[][]</c> field, while the same blob with a non-null
+/// array throws <c>CustomAttributeFormatException</c>. Recording the raw byte is what lets a caller
+/// reproduce that split; deciding it is malformed here would refuse a blob real .NET accepts.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type CustomAttribArrayElement =
+    /// A byte that names a serialization type.
+    | Element of CustomAttribSerializationType
+    /// A byte that names none. Only an array's element tag can be this: an unrecognised tag in the
+    /// argument's own position reaches CoreCLR's <c>default</c> arm, which throws
+    /// (<c>customattribute.cpp:1168</c>).
+    | Unrecognised of tag : byte
+
+/// <summary>
 /// ECMA-335 II.23.3 <c>FieldOrPropType</c>: the serialization type a *named* argument carries in
 /// the blob itself, as opposed to a fixed argument's type, which comes from the constructor
 /// signature.
@@ -163,9 +184,9 @@ type CustomAttribSerializationType =
 /// a <c>CustomAttribArgShape</c> before reading the value, the same two-step the fixed-arg path
 /// already uses.
 ///
-/// An array's element is a <see cref="T:WoofWare.PawPrint.CustomAttribSerializationType"/> rather
-/// than another <c>FieldOrPropType</c>, so arrays cannot nest. Both of CoreCLR's parsers read the
-/// type that way — one tag, and one more tag if the first was <c>SZARRAY</c>
+/// An array's element is a <see cref="T:WoofWare.PawPrint.CustomAttribArrayElement"/> rather than
+/// another <c>FieldOrPropType</c>, so arrays cannot nest. Both of CoreCLR's parsers read the type
+/// that way — one tag, and one more tag if the first was <c>SZARRAY</c>
 /// (<c>customattribute.cpp:1060-1070</c>, and <c>ParseEncodedType</c> in
 /// <c>md/compiler/custattr_emit.cpp</c>, whose <c>CaType</c> is this same pair of fields). Reading
 /// ECMA-335's "0x1D followed by the <c>FieldOrPropType</c> of the element type" as a recursive
@@ -177,8 +198,8 @@ type CustomAttribSerializationType =
 type CustomAttribFieldOrPropType =
     /// The argument's own serialization type: a single tag, plus an enum's name where it has one.
     | Scalar of CustomAttribSerializationType
-    /// <c>SZARRAY</c> (0x1D), followed by exactly one further serialization type: the element's.
-    | SzArray of elements : CustomAttribSerializationType
+    /// <c>SZARRAY</c> (0x1D), followed by exactly one further tag: the element's.
+    | SzArray of elements : CustomAttribArrayElement
 
 /// Whether a named argument sets a field (<c>0x53</c>) or a property (<c>0x54</c>).
 [<RequireQualifiedAccess>]
@@ -779,21 +800,23 @@ module CustomAttribute =
         loop paramShapes 2 []
 
     /// <summary>
-    /// Read one <c>CorSerializationType</c> at <paramref name="offset"/> — the tag byte, plus an
-    /// enum's type name where it has one — returning it and the offset of the first byte after it.
-    /// <c>SZARRAY</c> is not one of these; see <c>readFieldOrPropType</c>.
+    /// Read one array element tag at <paramref name="offset"/> — the tag byte, plus an enum's type
+    /// name where it has one — returning it and the offset of the first byte after it. A byte that
+    /// names no serialization type is <c>Unrecognised</c> rather than an error, which is what
+    /// CoreCLR does in this position; see
+    /// <see cref="T:WoofWare.PawPrint.CustomAttribArrayElement"/>. <c>SZARRAY</c> itself names none,
+    /// so it lands there too.
     /// </summary>
     /// <remarks>
-    /// Total over the tags a named argument's type can take, including the ones no caller can yet
-    /// lower to a runtime value. The partiality lives in the resolution step instead, which is also
-    /// where it lives for fixed args. Byte values are <c>CorSerializationType</c>
-    /// (<c>corhdr.h</c>), which aliases <c>CorElementType</c> for <c>BOOLEAN</c>..<c>R8</c> and
-    /// <c>STRING</c>.
+    /// Total over the tags that do name something, including the ones no caller can yet lower to a
+    /// runtime value. The partiality lives in the resolution step instead, which is also where it
+    /// lives for fixed args. Byte values are <c>CorSerializationType</c> (<c>corhdr.h</c>), which
+    /// aliases <c>CorElementType</c> for <c>BOOLEAN</c>..<c>R8</c> and <c>STRING</c>.
     /// </remarks>
-    let readSerializationType
+    let readArrayElementType
         (blob : ImmutableArray<byte>)
         (offset : int)
-        : Result<CustomAttribSerializationType * int, string>
+        : Result<CustomAttribArrayElement * int, string>
         =
         if offset >= blob.Length then
             Error (
@@ -805,7 +828,7 @@ module CustomAttribute =
         else
 
         let primitive (pt : PrimitiveType) =
-            Ok (CustomAttribSerializationType.Primitive pt, offset + 1)
+            Ok (CustomAttribArrayElement.Element (CustomAttribSerializationType.Primitive pt), offset + 1)
 
         match blob.[offset] with
         | 0x02uy -> primitive PrimitiveType.Boolean
@@ -821,17 +844,32 @@ module CustomAttribute =
         | 0x0Cuy -> primitive PrimitiveType.Single
         | 0x0Duy -> primitive PrimitiveType.Double
         | 0x0Euy -> primitive PrimitiveType.String
-        | 0x50uy -> Ok (CustomAttribSerializationType.Type, offset + 1)
-        | 0x51uy -> Ok (CustomAttribSerializationType.TaggedObject, offset + 1)
+        | 0x50uy -> Ok (CustomAttribArrayElement.Element CustomAttribSerializationType.Type, offset + 1)
+        | 0x51uy -> Ok (CustomAttribArrayElement.Element CustomAttribSerializationType.TaggedObject, offset + 1)
         | 0x55uy ->
             match readSerString blob (offset + 1) with
             | Error e -> Error e
-            | Ok (typeName, next) -> Ok (CustomAttribSerializationType.Enum typeName, next)
-        | other ->
+            | Ok (typeName, next) ->
+                Ok (CustomAttribArrayElement.Element (CustomAttribSerializationType.Enum typeName), next)
+        | other -> Ok (CustomAttribArrayElement.Unrecognised other, offset + 1)
+
+    /// <summary>
+    /// Read one <c>CorSerializationType</c> at <paramref name="offset"/>, in a position where the
+    /// tag must name one: a named argument's own type, as opposed to an array's element type.
+    /// </summary>
+    let readSerializationType
+        (blob : ImmutableArray<byte>)
+        (offset : int)
+        : Result<CustomAttribSerializationType * int, string>
+        =
+        match readArrayElementType blob offset with
+        | Error e -> Error e
+        | Ok (CustomAttribArrayElement.Element elt, next) -> Ok (elt, next)
+        | Ok (CustomAttribArrayElement.Unrecognised tag, _) ->
             Error (
                 sprintf
                     "CustomAttrib blob: byte 0x%02X at offset %d is not a valid serialization type (ECMA-335 II.23.3)"
-                    other
+                    tag
                     offset
             )
 
@@ -840,11 +878,12 @@ module CustomAttribute =
     /// and the offset of the first byte after it.
     /// </summary>
     /// <remarks>
-    /// A leading <c>SZARRAY</c> (0x1D) consumes exactly one further serialization type, so this
-    /// reads at most two tag bytes and never calls itself: see
+    /// A leading <c>SZARRAY</c> (0x1D) consumes exactly one further tag, so this reads at most two
+    /// tag bytes and never calls itself: see
     /// <see cref="T:WoofWare.PawPrint.CustomAttribFieldOrPropType"/> for why the grammar is that
-    /// shape rather than a recursive one. A second <c>SZARRAY</c> is therefore rejected here, at the
-    /// offset it appears at.
+    /// shape rather than a recursive one. A second <c>SZARRAY</c> is therefore the first array's
+    /// element tag, which names no serialization type and so decodes as
+    /// <c>SzArray (Unrecognised 0x1D)</c> — two bytes, whatever follows.
     /// </remarks>
     let readFieldOrPropType
         (blob : ImmutableArray<byte>)
@@ -859,7 +898,7 @@ module CustomAttribute =
                     blob.Length
             )
         elif blob.[offset] = 0x1Duy then
-            match readSerializationType blob (offset + 1) with
+            match readArrayElementType blob (offset + 1) with
             | Error e -> Error e
             | Ok (elt, next) -> Ok (CustomAttribFieldOrPropType.SzArray elt, next)
         else
