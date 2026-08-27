@@ -974,8 +974,8 @@ module NativeSystemNative =
     /// PawPrint.
     let private fileStatusDataSize : int = 116
 
-    /// Fill in a guest's `Interop.Sys.FileStatus` from an inode, and hand back
-    /// the zero that says the call succeeded.
+    /// Fill in a guest's `Interop.Sys.FileStatus` from a status the kernel
+    /// reported, and hand back the zero that says the call succeeded.
     ///
     /// Shared by `SystemNative_Stat`/`LStat`, which reach the inode from a
     /// path, and by `SystemNative_FStat`, which reaches it from a file
@@ -983,6 +983,12 @@ module NativeSystemNative =
     /// contract with the guest, and two copies of it could disagree — a
     /// disagreement no differential test could catch, since the real runtime
     /// would agree with itself either way.
+    ///
+    /// This is the whole of PawPrint's half of `stat`. `UnixSystem.fstat`
+    /// answers what a kernel knows; the layout it goes into is .NET's platform
+    /// abstraction layer, which is PawPrint's business and not a POSIX
+    /// simulator's — so the offsets, the `FileStatusFlags` word and the fields
+    /// this kernel does not model are all decided here.
     ///
     /// The output struct is written as a **byte image at ABI offsets**, not by
     /// setting fields on the pointee type by name. That is what the C does — it
@@ -995,33 +1001,11 @@ module NativeSystemNative =
         (ctx : NativeCallContext)
         (operation : string)
         (fileStatusHandle : ConcreteTypeHandle)
-        (inode : InodeNumber)
-        (entry : Inode)
+        (status : FileStatus)
         (output : ManagedPointerSource)
         (state : IlMachineState)
         : NativeHandlerResult option
         =
-        let permissions =
-            match VirtualFileSystem.permissions entry with
-            | InodePermissions.Stored bits -> bits
-            | InodePermissions.PlatformSymlinkDefault ->
-                SimulatedUnixPlatform.symlinkPermissions state.Kernel.UnixPlatform
-
-        let size =
-            match entry.Content with
-            | InodeContent.RegularFile (contents, _) -> int64 contents.Length
-            // `readlink` reports the target's byte length as the link's size,
-            // and a guest can see it through `FileInfo.Length`.
-            | InodeContent.Symlink target -> int64 (SymlinkTarget.toUtf8 target).Length
-            // Invented, and the only field here that is: PawPrint has no block
-            // allocator, so a directory has no natural size. 4096 is what ext4
-            // reports for a small directory, i.e. the least surprising answer a
-            // guest could read.
-            | InodeContent.Directory _ -> 4096L
-
-        let reportsBirthTime =
-            SimulatedUnixPlatform.reportsBirthTime state.Kernel.UnixPlatform
-
         // How much room the guest gave us. Derived from the pointee handle
         // rather than assumed, because a too-small buffer would otherwise be
         // written past: `MemoryBlock`'s own bounds check bounds the whole
@@ -1033,18 +1017,6 @@ module NativeSystemNative =
         if CliType.sizeOf buffer <> fileStatusSize then
             failwith
                 $"%s{operation}: the output struct is %d{CliType.sizeOf buffer} bytes, but `FileStatus` is %d{fileStatusSize}. Either the guest hand-rolled this P/Invoke with a struct that is not layout-identical to `Interop.Sys.FileStatus`, or upstream has changed the layout — check `ConvertFileStatus` in pal_io.c against `Interop.Stat.cs`."
-
-        let times = entry.Times
-
-        let birthTime =
-            // Zeroed rather than reported when the platform has no
-            // `st_birthtime`, exactly as `pal_io.c` does under `#else`. The
-            // inode knows its birth either way; this governs only what the
-            // guest is told.
-            if reportsBirthTime then
-                times.Birth
-            else
-                UnixTimestamp.epoch
 
         let image : byte array = Array.zeroCreate fileStatusDataSize
 
@@ -1061,32 +1033,41 @@ module NativeSystemNative =
             putInt64 offset (UnixTimestamp.seconds timestamp)
             putInt64 (offset + 8) (int64 (UnixTimestamp.nanoseconds timestamp))
 
-        // `FileStatusFlags.HasBirthTime = 1`; nothing else is defined.
-        putInt32 0 (if reportsBirthTime then 1 else 0)
+        // `FileStatusFlags.HasBirthTime = 1`; nothing else is defined. The
+        // kernel says whether the platform it simulates would report a birth
+        // time at all, and `pal_io.c` zeroes the field under `#else` when it
+        // would not — so a withheld birth time is a zero *and* a clear flag,
+        // which is the pair the BCL reads.
+        putInt32 0 (if status.BirthTime.IsSome then 1 else 0)
 
-        putInt32
-            4
-            (VirtualFileSystem.fileTypeBits entry.Content
-             ||| PermissionBits.toInt permissions)
+        putInt32 4 status.Mode
+        putUInt32 8 status.UserId
+        putUInt32 12 status.GroupId
+        putInt64 16 status.Size
+        putTime 24 status.AccessTime
+        putTime 40 status.ModificationTime
+        putTime 56 status.StatusChangeTime
 
-        putUInt32 8 state.Kernel.UserId
-        putUInt32 12 state.Kernel.GroupId
-        putInt64 16 size
-        putTime 24 times.Access
-        putTime 40 times.Modification
-        putTime 56 times.StatusChange
-        putTime 72 birthTime
-        putInt64 88 EmulatedKernel.simulatedDeviceId
-        // Non-zero only for device nodes, which `InodeContent` cannot represent.
+        putTime
+            72
+            (match status.BirthTime with
+             | Some birth -> birth
+             | None -> UnixTimestamp.epoch)
+
+        putInt64 88 status.DeviceId
+        // `st_rdev`, non-zero only for device nodes, which the emulated
+        // filesystem cannot represent — so this kernel reports no such field and
+        // PawPrint writes what a real runtime would see for a file that is not
+        // one.
         putInt64 96 0L
 
         putInt64
             104
-            (match inode with
+            (match status.Inode with
              | InodeNumber value -> value)
 
-        // macOS's `UF_HIDDEN`, gated on `HAVE_STAT_FLAGS`. PawPrint models no
-        // BSD file flags, and nothing in the emulated filesystem is hidden, so
+        // macOS's `UF_HIDDEN`, gated on `HAVE_STAT_FLAGS`. The emulated kernel
+        // models no BSD file flags and nothing in its filesystem is hidden, so
         // zero is the honest answer on either platform.
         putUInt32 112 0u
 
@@ -1094,6 +1075,21 @@ module NativeSystemNative =
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
         |> NativeHandlerResult.completed
         |> Some
+
+    /// PawPrint's half of a refused `fstat`: which entry point asked, which
+    /// descriptor it named, and what PawPrint would have to decide to lift the
+    /// refusal. The library's half says what it measured and what its model has
+    /// not got.
+    let private fstatRefusalMessage (operation : string) (fd : int) (refusal : FStatRefusal) : string =
+        let reachability =
+            match refusal with
+            | FStatRefusal.StandardStream _ ->
+                "The BCL reaches FStat only through a SafeFileHandle it opened itself, so this is a hand-rolled P/Invoke or a new code path -- and either wants a decision rather than a guess."
+            | FStatRefusal.SocketEventPort
+            | FStatRefusal.Socket _ ->
+                "Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
+
+        $"%s{operation}: fd %d{fd}: %s{FStatRefusal.describe refusal} %s{reachability}"
 
     /// Shared body of `SystemNative_Stat` and `SystemNative_LStat`, which
     /// differ only in whether a symbolic link in the final position is
@@ -1163,11 +1159,11 @@ module NativeSystemNative =
         | Error error -> fail error
         | Ok inode ->
 
-        let vfs = state.Kernel.FileSystem
-
-        let entry =
-            match VirtualFileSystem.tryGet inode vfs with
-            | Some entry -> entry
+        // The same status `fstat` reports, reached from a path rather than from a
+        // descriptor — which is the whole difference between the two syscalls.
+        let status =
+            match UnixSystem.statOf inode (EmulatedKernel.unix state.Kernel) with
+            | Some status -> status
             | None ->
                 failwith
                     $"%s{operation}: resolution returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
@@ -1181,7 +1177,7 @@ module NativeSystemNative =
         | None -> fail UnixError.EFAULT
         | Some output ->
 
-        writeFileStatus ctx operation fileStatusHandle inode entry output state
+        writeFileStatus ctx operation fileStatusHandle status output state
 
     /// Shared body of `SystemNative_GetNonCryptographicallySecureRandomBytes`
     /// and `SystemNative_GetCryptographicallySecureRandomBytes`. The two entry
@@ -3472,79 +3468,31 @@ module NativeSystemNative =
             let operation = "SystemNative_FStat"
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            let fail (error : UnixError) : NativeHandlerResult option =
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+            match UnixSystem.fstat fd (EmulatedKernel.unix state.Kernel) with
+            | Error refusal -> failwith (fstatRefusalMessage operation fd refusal)
+            | Ok (FileStatusAnswer.Failed error) ->
+                withErrnoOnly ctx error state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+            | Ok (FileStatusAnswer.Reported status) ->
 
-            match FileDescriptorRegistry.tryFindObject fd state.Kernel.FileDescriptors with
-            | None -> fail UnixError.EBADF
-            | Some (OpenFileObject.StandardStream role) ->
-                // PawPrint models the standard streams as pipes, and a pipe's
-                // `fstat` is a real answer a real kernel gives — `S_IFIFO`, a
-                // zero size, a device number. Every one of those would be
-                // invented here: the emulated kernel holds no inode for a
-                // stream, so there is nothing to report and no way for a test
-                // to say the invention was wrong. Refuse loudly instead; the
-                // BCL reaches `FStat` only through a `SafeFileHandle` it opened
-                // itself, so this is a hand-rolled P/Invoke or a new
-                // code path, and either wants a decision rather than a guess.
-                failwith
-                    $"%s{operation}: fd %d{fd} is the standard stream %O{role}, and PawPrint holds no inode for one. Every field `fstat` owes a pipe would be invented here; decide what a stream's `struct stat` is (issue #956) rather than guessing."
-            | Some OpenFileObject.AnonymousInode ->
-                // Refused for the same reason as the standard streams above: an
-                // epoll instance is an anonymous kernel object, so PawPrint
-                // holds no inode to report and every field would be invented.
-                //
-                // Measured, the two platforms share not one field, and Linux's
-                // identity fields are facts about the machine that produced
-                // them rather than portable ones — which is precisely what a
-                // deterministic replay must not depend on. Linux gives
-                // `st_mode` 0600 (permission bits, *no* file-type bits),
-                // `st_nlink` 1, `st_blksize` 4096, and a real anon-inode
-                // `st_dev`/`st_ino`; Darwin gives `st_mode` S_IFIFO (no
-                // permission bits), `st_nlink` 0, `st_blksize` 32, and zero for
-                // both identity fields.
-                failwith
-                    $"%s{operation}: fd %d{fd} is a socket event port, an anonymous kernel object for which PawPrint holds no inode. Every field `fstat` owes one would be invented here, and the platforms agree on none of them; decide what an inode-free descriptor's `struct stat` is — for streams, ports and sockets together (issue #956) — rather than guessing."
-            | Some (OpenFileObject.Socket socketId) ->
-                // Refused for the same reason as the streams and the port above.
-                // A socket does have an identity here, but `SocketId` is not an
-                // inode: measured, only Linux gives a socket one (`st_dev` 8 and
-                // a distinct `st_ino` per socket, on `sockfs`), while a Darwin
-                // `AF_INET` socket reports 0 for both. And the remaining fields
-                // would be invented either way — measured, `st_mode` is
-                // `S_IFSOCK|0777` on Linux against `S_IFSOCK|0666` on Darwin,
-                // `st_nlink` 1 against 0, and Darwin's `st_blksize` varies with
-                // the socket itself (131072 for TCP, 9216 for UDP, 8192 for a
-                // Unix-domain socket).
-                failwith
-                    $"%s{operation}: fd %d{fd} is socket %O{socketId}, for which PawPrint holds no inode — `SocketId` is a contention key, not an inode number, and Darwin gives an AF_INET socket no inode at all. Every field `fstat` owes one would be invented here, and the platforms agree on none of them; decide what an inode-free descriptor's `struct stat` is — for streams, ports and sockets together (issue #956) — rather than guessing."
-            | Some (OpenFileObject.File inode) ->
-
-            let entry =
-                match VirtualFileSystem.tryGet inode state.Kernel.FileSystem with
-                | Some entry -> entry
-                | None ->
-                    // Not reachable: `UnixSystem.pinnedInodes` names every
-                    // inode an open description holds, and `forgetIfUnheld`
-                    // refuses to free one of those — so a descriptor outlives
-                    // the last name bound to its inode, exactly as it does on a
-                    // real kernel. Stated rather than assumed, because a
-                    // deletion path that forgot to ask would otherwise present
-                    // as a wrong `fstat` rather than as a crash.
-                    failwith
-                        $"%s{operation}: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive."
-
+            // The output pointer is decoded only here, on the path that actually
+            // writes through it — which is also the order the C has: `fstat_`
+            // runs before `ConvertFileStatus` touches the caller's struct, so a
+            // bad descriptor beats a bad address.
             match
                 bufferPointerArgument operation "output" instruction.Arguments.[1]
                 |> BufferPointer.dereferenceable
             with
-            | None -> fail UnixError.EFAULT
+            | None ->
+                withErrnoOnly ctx UnixError.EFAULT state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
             | Some output ->
 
-            writeFileStatus ctx operation fileStatusHandle inode entry output state
+            writeFileStatus ctx operation fileStatusHandle status output state
         // `int32_t SystemNative_FLock(intptr_t fd, int32_t operation)`
         // (pal_io.c:744). The operation parameter is matched loosely for the
         // same reason `SystemNative_Open`'s flags are: CoreLib declares it as

@@ -2445,14 +2445,73 @@ Ordered so that each has an oracle before the next depends on it.
   this increment is really about: giving `pwrite` `pread`'s per-flavour offset
   flag dies on the nine-row table above.
 
-* **8h — `fstat`, then `stat`/`lstat`**, first because it is the smallest
-  structured answer and it is what settles (3) against a real encoder. `stat`
-  and `lstat` follow for free: they already share one `statLike`.
-* **8i — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
+* **8h — `fstat`**, the smallest structured answer, and what settles (3) against
+  a real encoder.
+
+  **`stat`/`lstat` do *not* come along for free, and the draft was wrong to say
+  so.** What they share with `fstat` is the *encoder*, which stays in PawPrint
+  either way, being .NET's ABI. What they do differently is the whole of the
+  path side — reading a NUL-terminated name out of guest memory, parsing it,
+  resolving it under a symlink policy — and only the resolution part crosses.
+  So they are 8i, and 8h is `fstat` alone. Meanwhile `statLike` keeps its own
+  resolution and asks the library for the answer, which is `statOf`.
+
+  **The answer is a record of POSIX facts, and it omits rather than zeroes.**
+  There is no `st_nlink`, no `st_blksize`, no `st_blocks` and no BSD `st_flags`
+  in `FileStatus`, because this kernel models none of them and a zero in a
+  client's struct is indistinguishable from a measurement. A client whose ABI
+  has those fields writes what its own runtime writes for a filesystem with no
+  such notion — which is exactly what PawPrint's encoder now does, in its own
+  comments, rather than the library pretending to an answer.
+
+  `BirthTime` is an option for the same reason and it is the sharper case: on a
+  Linux flavour `stat(2)` has no such field, and `None` says so where a zero
+  would be a claim that the inode was born at the epoch — a distinction that,
+  for an inode *actually* created at the epoch, no zeroed field could carry.
+  PawPrint turns the option into the pair the BCL reads: a cleared
+  `FileStatusFlags.HasBirthTime` and a zeroed field, which is what `pal_io.c`
+  writes under `#else`.
+
+  **`st_mode` is one `int`, composed by the library.** The alternative was a
+  `FileType` DU plus `PermissionBits`, with the client assembling the two bands
+  — more structured, and the project's usual preference. Rejected because the
+  assembly is correctness-critical knowledge that belongs where the type bits
+  are defined: splitting it moves a chance to get it wrong to every client, and
+  buys only a match-instead-of-mask for a question no client currently asks. It
+  can gain an accessor later without a surface break, which the reverse could
+  not.
+
+  **Three refusals**, one per descriptor this kernel holds no inode for: a
+  standard stream, a socket event port, a socket. One genus — "a real kernel
+  answers this and the model has no inode to answer it from" — but three
+  `describe`s, because their measurements are different: the flavours agree on
+  not one field for a port, and only Linux gives a socket an inode at all. A
+  shared sentence would hand a client rendering one of them the other's
+  evidence.
+
+  `EmulatedKernel.simulatedDeviceId` moves to `VirtualFileSystem.deviceId`, the
+  encoder being its last reader. A public deletion from a published package.
+
+  Measured, on macOS and in a Linux container: `fstat(999, (struct stat*)-1)` is
+  EBADF on both, so a bad descriptor beats a bad address and the output pointer
+  is decoded only on the path that writes through it; and a failed `fstat`
+  leaves the caller's struct byte-for-byte untouched on both, which is what
+  `ConvertFileStatus` relies on. Twelve mutants, all killed — including the two
+  that drop one band of `st_mode`, and the one that compares the device id
+  against the constant it came from, which is why that row asserts the literal.
+
+* **8i — `stat` and `lstat`**, which is the path resolution crossing: a library
+  `resolvePath` over `VirtualFileSystem.resolveFull`, taking the cwd inode, the
+  privilege and the limits that `UnixSystem` already holds. PawPrint keeps the
+  guest-memory half — reading a NUL-terminated name within `PATH_MAX` — because
+  that is its memory and not a kernel's. Once it exists, `mkdir`/`rmdir`/
+  `unlink` and `open` all want it, which is why it is its own increment rather
+  than a rider on one of them.
+* **8j — `mkdir`, `rmdir`, `unlink`**, three nearly identical path syscalls that
   land together once 8b exists.
-* **8j — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
+* **8k — `open`** (333 lines) and **`opendir`/`readdir`**, the largest of the
   file syscalls, and `open`'s flags are PAL values.
-* **8k — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
+* **8l — `getcwd`, `readlink`, `getsockname`.** These three appear in the census
   table and had no home in the first draft of this list, which is a drafting
   failure the census itself should have caught: an increment list that does not
   partition its own table is not a plan. All three are destination-buffer

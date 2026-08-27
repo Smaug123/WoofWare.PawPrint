@@ -1367,8 +1367,19 @@ module VirtualFileSystem =
         | InodeContent.Directory _ -> 0o40000
         | InodeContent.Symlink _ -> 0o120000
 
+    /// The `st_dev` every inode in this filesystem reports.
+    ///
+    /// One device for the whole tree, since this kernel models no mounts. The
+    /// value itself is unobservable beyond comparison — a runtime reads
+    /// `(st_dev, st_ino)` pairs to decide whether two paths name the same file,
+    /// and never interprets the device number — but it is *non-zero*: no mounted
+    /// filesystem reports 0, so a zero here would be indistinguishable from a
+    /// field nobody remembered to write.
+    let deviceId : int64 = 0x1000001L
+
     /// An inode's permission bits, as something the caller must match rather
     /// than a number it might default. See `InodePermissions`.
+
     let permissions (inode : Inode) : InodePermissions =
         match inode.Content with
         | InodeContent.RegularFile (_, permissions) -> InodePermissions.Stored permissions
