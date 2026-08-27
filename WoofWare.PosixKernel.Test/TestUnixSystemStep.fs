@@ -3028,14 +3028,23 @@ module TestUnixSystemStep =
         (system : UnixSystem<int, string>)
         : (string * DirectoryEntryKind) list * UnixSystem<int, string>
         =
-        let rec go acc system =
+        let rec go fuel acc system =
+            if fuel <= 0 then
+                failwith
+                    $"readdir yielded %d{List.length acc} entries without reaching end-of-stream; the cursor is not advancing."
+            else
+
             match UnixSystem.readdir id system with
             | ReadDirAnswer.EndOfStream, system -> List.rev acc, system
             | ReadDirAnswer.Entry (name, kind), system ->
                 let text = System.Text.Encoding.UTF8.GetString (name.AsSpan ())
-                go ((text, kind) :: acc) system
+                go (fuel - 1) ((text, kind) :: acc) system
 
-        go [] system
+        // Bounded rather than "until end-of-stream": a `readdir` that fails to
+        // advance its cursor is a real thing to get wrong, and an unbounded loop
+        // would hang the suite rather than report it. No fixture here holds more
+        // than a handful of entries.
+        go 64 [] system
 
     [<Test>]
     let ``a stream yields every binding, then dotdot, then dot`` () : unit =
