@@ -2005,11 +2005,12 @@ public static class TypicalHolder<T>
         exn.Message |> shouldContainText "null IRuntimeMethodInfo"
 
     [<Test>]
-    let ``IsTypicalMethodDefinition refuses an IRuntimeMethodInfo that is not a stub`` () : unit =
-        // PawPrint reads the handle out of `RuntimeMethodInfoStub.m_value` by name. CoreCLR instead
-        // reads it by layout, which is why `RuntimeMethodInfoStub` pads itself to match
-        // `RuntimeMethodInfo`; PawPrint has no such coincidence to exploit, so anything else must
-        // say so rather than read some other class's first field.
+    let ``IsTypicalMethodDefinition refuses a class that implements no IRuntimeMethodInfo`` () : unit =
+        // PawPrint reads the handle out of a named field, so it can only serve the three CoreLib
+        // classes whose field name it knows. CoreCLR reads by layout instead, which is why
+        // `RuntimeMethodInfoStub` pads itself to match `RuntimeMethodInfo`; PawPrint has no such
+        // coincidence to exploit, so a fourth class must say so rather than read whatever happens to
+        // sit in some other class's first slot.
         let loggerFactory, baseClassTypes, _assembly, _seed, state =
             typicalFixture "TypicalWrongClassAssembly"
 
@@ -2034,4 +2035,5 @@ public static class TypicalHolder<T>
                 |> ignore
             )
 
-        exn.Message |> shouldContainText "expected a RuntimeMethodInfoStub"
+        exn.Message
+        |> shouldContainText "is not one of CoreLib's three IRuntimeMethodInfo implementers"

@@ -503,57 +503,6 @@ module NativeRuntimeMethodHandle =
             failwith $"%s{operation}: registry id %d{methodHandleId} did not resolve to a known MethodHandle"
         )
 
-    /// Resolve an `IRuntimeMethodInfo` argument to the `MethodHandle` it denotes.
-    ///
-    /// CoreCLR reaches the `MethodDesc*` by *layout*: the FCalls taking one of these declare the
-    /// parameter as `ReflectMethodObject*` and read its last field (object.h:1106-1120), which
-    /// works because `RuntimeMethodInfoStub` carries eight unused reference fields deliberately, to
-    /// "ensure that this class has the same layout as RuntimeMethodInfo" (RuntimeHandles.cs:931).
-    /// PawPrint reads fields by name, and the two classes do not agree on one:
-    /// `RuntimeMethodInfoStub.m_value` is a `RuntimeMethodHandleInternal` while
-    /// `RuntimeMethodInfo.m_handle` is a bare `IntPtr` (RuntimeMethodInfo.CoreCLR.cs:19).
-    ///
-    /// So this accepts a `RuntimeMethodInfoStub` and refuses every other implementation by name.
-    /// That is the whole reachable set rather than a slice of it: the one native taking an
-    /// `IRuntimeMethodInfo` is `IsTypicalMethodDefinition`, which is private with a single caller
-    /// (RuntimeHandles.cs:1293), itself called only by `StackFrameHelper.GetMethodBase`
-    /// (StackFrameHelper.cs:148) -- and that allocates the stub it passes.
-    let private resolveMethodHandleFromRuntimeMethodInfoArg
-        (operation : string)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (arg : CliType)
-        : MethodHandle
-        =
-        let addr =
-            match arg with
-            | CliType.ObjectRef (Some addr) -> addr
-            | CliType.ObjectRef None ->
-                // `StackFrameHelper.GetMethodBase` returns early on a zero handle
-                // (StackFrameHelper.cs:145) and allocates the stub itself, so it never passes null.
-                // CoreCLR would dereference it; say so instead.
-                failwith $"%s{operation}: null IRuntimeMethodInfo"
-            | other -> failwith $"%s{operation}: expected an IRuntimeMethodInfo object reference, got %O{other}"
-
-        let stub = ManagedHeap.get addr state.ManagedHeap
-
-        let concreteType =
-            AllConcreteTypes.lookup stub.ConcreteType state.ConcreteTypes
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: object at %O{addr} has concrete type %O{stub.ConcreteType}, which is not registered in ConcreteTypes"
-            )
-
-        if concreteType.Identity <> baseClassTypes.RuntimeMethodInfoStub.Identity then
-            failwith
-                $"%s{operation}: expected a RuntimeMethodInfoStub, got %O{concreteType} at %O{addr}; PawPrint reads the handle out of that class's m_value field by name, and no other IRuntimeMethodInfo implementation keeps it there"
-
-        let valueField =
-            IlMachineState.requiredOwnInstanceFieldId state stub.ConcreteType "m_value"
-
-        AllocatedNonArrayObject.DereferenceFieldById valueField stub
-        |> resolveMethodHandleFromArg operation state
-
     /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
     ///
     /// For consumers that can only work under a concrete instantiation. An open generic type
@@ -1586,20 +1535,14 @@ module NativeRuntimeMethodHandle =
             // FC_RETURN_BOOL(pMethodUNSAFE->GetMethod()->IsTypicalMethodDefinition()).
             // See `isTypicalMethodDefinition` above for the predicate.
             //
-            // Unlike its neighbours here, this one is declared over the whole `IRuntimeMethodInfo`
-            // rather than a bare `RuntimeMethodHandleInternal`; see
-            // `resolveMethodHandleFromRuntimeMethodInfoArg` for what getting the handle back out
-            // of it costs.
+            // Like `GetImplAttributes` above, this is declared over the whole `IRuntimeMethodInfo`
+            // rather than a bare `RuntimeMethodHandleInternal`, so it shares that native's resolver;
+            // see `resolveMethodHandleFromMethodInfoObject` for why naming three classes is what
+            // reading fields by name costs.
             let operation = "RuntimeMethodHandle.IsTypicalMethodDefinition"
 
             let result =
-                match
-                    resolveMethodHandleFromRuntimeMethodInfoArg
-                        operation
-                        ctx.BaseClassTypes
-                        state
-                        instruction.Arguments.[0]
-                with
+                match resolveMethodHandleFromMethodInfoObject operation state instruction.Arguments.[0] with
                 | MethodHandle.FromDynamic _ ->
                     // A `DynamicMethodDesc` is classified `mcDynamic` (dynamicmethod.cpp:163),
                     // never `mcInstantiated`, so `HasMethodInstantiation()` is false; and it is

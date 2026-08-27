@@ -647,7 +647,6 @@ module TestNativeRuntimeMethodHandle =
         |> shouldContain "m_handle"
 
         fieldNames "System.RuntimeMethodInfoStub" |> shouldContain "m_value"
-||||||| parent of 25d6e7d7 (`IsTypicalMethodDefinition`, which asks about two instantiations, not one)
 
     // ---------------------------------------------------------------------------------------
     // `isTypicalMethodDefinition`: CoreCLR's `MethodDesc::IsTypicalMethodDefinition`
