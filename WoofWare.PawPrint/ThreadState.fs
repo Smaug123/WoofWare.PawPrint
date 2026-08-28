@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint
 
 open System.Reflection
-open WoofWare.PosixKernel
 
 /// Scheduling status of a thread. The scheduler only picks Runnable threads; a thread in any
 /// other state is paused until something external (another thread terminating, for instance)
@@ -204,7 +203,7 @@ type ThreadStatus =
     /// parallel map makes the invariant "no deadline once Runnable
     /// again" structural — a wake naturally forgets it.
     | BlockedOnSleep of deadlineTicks : int64 option
-    /// This thread called `SystemNative_WaitForSocketEvents` on the named socket event port
+    /// This thread called `SystemNative_WaitForSocketEvents` on a socket event port
     /// (`epoll_wait` on Linux, `kevent` on Darwin) and is parked until an event occurs on some
     /// descriptor registered with that port. The wake comes from the port's ready set becoming
     /// non-empty, which another thread causes either by making a registered descriptor ready or
@@ -216,20 +215,24 @@ type ThreadStatus =
     /// `kevent(port, NULL, 0, events, n, NULL)`. Both also retry `EINTR` in the native loop, so
     /// signal delivery must not wake this thread.
     ///
-    /// The port is identified by its open file description rather than by descriptor number
-    /// because an epoll instance *is* an open file description: `SystemNative_CloseSocketEventPort`
-    /// is `close(2)` on it, and a `dup`'d port descriptor waits on the same instance.
+    /// Carries nothing, like `BlockedOnFlock` below and for the same reason: which port this
+    /// thread waits on is the `ParkedSocketWait` its task holds, which the kernel must have
+    /// anyway — the wait's re-entry delivers from it, and `UnixSystem.close` refuses a close
+    /// that would strand a waiter, a rule it can only apply to a park it can see. A payload
+    /// here would be a second copy of that fact with nothing keeping the two equal, read by
+    /// the sweep while the delivery read the record.
+    ///
     /// The wake is `Program.fireSocketReadiness`, which flips this thread back to `Runnable`
-    /// once `EmulatedKernel.hasDeliverableSocketEvents` answers yes for the port; the handler
-    /// then re-enters (the park kept its frame) and performs the delivery itself.
-    | BlockedOnSocketEvents of port : OpenFileDescriptionId
+    /// once `EmulatedKernel.hasDeliverableSocketEvents` answers yes for the recorded port; the
+    /// handler then re-enters (the park kept its frame) and performs the delivery itself.
+    | BlockedOnSocketEvents
     /// This thread called `SystemNative_FLock` without `LOCK_NB` on a lock another open file
     /// description holds, and is parked until that lock becomes available.
     ///
-    /// Carries nothing, deliberately, where `BlockedOnSocketEvents` carries its port. What this
-    /// thread is waiting for is the `ParkedFlock` its task holds, which the kernel must have
-    /// anyway — `UnixSystem.close` refuses a close that would destroy a description something is
-    /// parked on, and it can only apply that rule to a park it can see. A payload here would be a
+    /// Carries nothing, exactly as `BlockedOnSocketEvents` does. What this thread is waiting for
+    /// is the `ParkedFlock` its task holds, which the kernel must have anyway —
+    /// `UnixSystem.close` refuses a close that would destroy a description something is parked
+    /// on, and it can only apply that rule to a park it can see. A payload here would be a
     /// second copy of that fact with nothing keeping the two equal.
     ///
     /// Carries no deadline either: an `flock` wait cannot time out, so `Program.waitDeadline`
@@ -299,7 +302,7 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnWaitHandle _ -> false
         | ThreadStatus.BlockedOnWaitHandles _ -> false
         | ThreadStatus.BlockedOnSleep _ -> false
-        | ThreadStatus.BlockedOnSocketEvents _ -> false
+        | ThreadStatus.BlockedOnSocketEvents -> false
         | ThreadStatus.BlockedOnFlock -> false
 
     /// True iff a thread in this status parked with its program counter already advanced
@@ -318,11 +321,11 @@ module ThreadStatus =
     /// when the `.cctor` lock is released (see `NativeHandlerResult.BlockedOnClassInit`).
     /// Nothing has been popped and no PC has advanced.
     ///
-    /// `BlockedOnSocketEvents` answers the same way, but as a constraint rather than a
-    /// description: no handler parks a thread in it yet, and the one that does must park
-    /// re-entrantly — leaving its native frame in place and its caller's PC alone — so that
-    /// re-entry on port readiness re-reads the call's own arguments instead of the wake having
-    /// to write the event buffer from another thread's step.
+    /// `BlockedOnSocketEvents` answers the same way, and for the same reason:
+    /// `SystemNative_WaitForSocketEvents` parks re-entrantly — leaving its native frame in place
+    /// and its caller's PC alone — so that re-entry on port readiness writes the event batch
+    /// through the caller's own buffer instead of the wake having to reach into a frame it does
+    /// not own from another thread's step.
     ///
     /// Only diagnostics consume this; nothing about execution may depend on it. Callers
     /// must still confirm that the preceding instruction really is a call before stepping
@@ -337,7 +340,7 @@ module ThreadStatus =
         | ThreadStatus.Runnable -> false
         | ThreadStatus.Terminated -> false
         | ThreadStatus.BlockedOnClassInit _ -> false
-        | ThreadStatus.BlockedOnSocketEvents _ -> false
+        | ThreadStatus.BlockedOnSocketEvents -> false
         // Parks *on* the call, like the socket wait and for the same reason: the
         // wake re-enters the handler to finish the acquisition.
         | ThreadStatus.BlockedOnFlock -> false

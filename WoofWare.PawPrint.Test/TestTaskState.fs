@@ -257,6 +257,73 @@ module TestTaskState =
         EmulatedKernel.checkTaskInvariants statuses recorded.Kernel |> shouldBeEmpty
 
     [<Test>]
+    let ``a socket waiter with no record is refused`` () : unit =
+        // The status says the thread is asleep in a wait; the record says which port. A thread
+        // with the one and not the other is a state nothing can act on: the readiness sweep
+        // cannot decide whether to wake it, and the re-entered handler cannot decide what to
+        // deliver from.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let statuses = threads state |> Map.add thread ThreadStatus.BlockedOnSocketEvents
+
+        EmulatedKernel.checkTaskInvariants statuses state.Kernel
+        |> shouldEqual [ EmulatedKernelDefect.SocketWaiterWithoutRecord thread ]
+
+    [<Test>]
+    let ``a socket record on a thread that cannot be waiting is refused`` () : unit =
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let recorded =
+            state.MapKernel (
+                EmulatedKernel.mapTasks (
+                    UnixTaskTable.withParkedSocketWait
+                        thread
+                        (Some
+                            {
+                                ParkedSocketWait.Port = OpenFileDescriptionId 3L
+                                MaxEvents = 8
+                            })
+                )
+            )
+
+        let statuses = threads recorded |> Map.add thread ThreadStatus.Terminated
+
+        EmulatedKernel.checkTaskInvariants statuses recorded.Kernel
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.SocketRecordWithoutWaiter (thread, ThreadStatus.Terminated)
+            ]
+
+    [<Test>]
+    let ``a woken socket waiter keeps its record`` () : unit =
+        // The window the invariant exists to permit, exactly as for a woken `flock` waiter:
+        // between the sweep flipping a waiter to Runnable and the woken thread re-entering the
+        // handler, the record must still be there -- it is what tells the re-entry that it is a
+        // re-entry, and what says which port to deliver from.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let recorded =
+            state.MapKernel (
+                EmulatedKernel.mapTasks (
+                    UnixTaskTable.withParkedSocketWait
+                        thread
+                        (Some
+                            {
+                                ParkedSocketWait.Port = OpenFileDescriptionId 3L
+                                MaxEvents = 8
+                            })
+                )
+            )
+
+        let statuses = threads recorded |> Map.add thread ThreadStatus.Runnable
+
+        EmulatedKernel.checkTaskInvariants statuses recorded.Kernel |> shouldBeEmpty
+
+
+    [<Test>]
     let ``registering a thread twice is refused`` () : unit =
         // Re-registration would silently discard the first registration's core
         // and OS thread id, which is how a thread would end up aliasing another.
@@ -293,19 +360,32 @@ module TestTaskState =
                 MaxEvents = 8
             }
 
+        // The status goes with the record, because a park writes both and `checkTaskInvariants`
+        // refuses either alone: a record on a thread that has not started is a state no wait
+        // can have produced.
         let parked =
             state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread (Some wait)))
+            |> Scheduler.blockOnSocketEvents thread
 
         UnixTaskTable.parkedSocketWaitFor thread parked.Kernel.Tasks
         |> shouldEqual (Some wait)
 
         agrees parked
 
+        // Woken first and released second, which is the order a real wake takes: the sweep flips
+        // the status and the record stands until the re-entered handler has finished with it.
+        // Both halves of that sequence are states the invariant permits.
+        let woken = Scheduler.wakeFromSocketEvents thread parked
+
+        agrees woken
+
         let released =
-            parked.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread None))
+            woken.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread None))
 
         UnixTaskTable.parkedSocketWaitFor thread released.Kernel.Tasks
         |> shouldEqual None
+
+        agrees released
 
         // Parking must not disturb the rest of the task.
         UnixTaskTable.cpuOf thread released.Kernel.Tasks

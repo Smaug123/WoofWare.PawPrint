@@ -132,9 +132,11 @@ type UnixTaskState =
         /// The socket wait this task is blocked in, if it is blocked in one.
         ///
         /// A real kernel holds a blocked task's in-flight syscall arguments on
-        /// its stack; this is that, for the one syscall PawPrint parks in. The
-        /// re-entry consults it rather than the guest's argument cells, which
-        /// the guest may have written since.
+        /// its stack; this is that, for a socket wait. The re-entry consults it
+        /// rather than the guest's argument cells, which the guest may have
+        /// written since — and so does whatever a client polls to decide that
+        /// the wait can now be finished, this being the only record of which
+        /// port it is a wait on.
         ParkedSocketWait : ParkedSocketWait option
         /// The `flock` acquisition this task is blocked in, if it is blocked in
         /// one.

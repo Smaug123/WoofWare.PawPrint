@@ -27,8 +27,8 @@ module TestSocketEventsWait =
     let private assy = typeof<RunResult>.Assembly
 
     /// Waits on a *duplicated* port descriptor, which is what makes the identity assertion
-    /// below bite: `dup` gives fd 4 naming the same open file description as fd 3, so the
-    /// status must carry description id 3 and not the descriptor the guest passed. Waiting on
+    /// below bite: `dup` gives fd 4 naming the same open file description as fd 3, so the park
+    /// record must carry description id 3 and not the descriptor the guest passed. Waiting on
     /// fd 3 directly could not tell the two apart, since a fresh registry hands out
     /// description id 3 to the first port and that is also its descriptor number.
     let private source : string =
@@ -69,7 +69,7 @@ class WaitsOnADuplicatedPort
     ///
     /// Fails loudly on any other outcome, exit code 4 included: the guest's `return 4` is
     /// unreachable unless the wait returned, so a run that completes has not covered the park.
-    let private runToDeadlock () : IlMachineState * string =
+    let private runToDeadlock () : Program.PreparedProgram * string =
         let image = Roslyn.compile [ source ]
 
         let _messages, loggerFactory =
@@ -93,12 +93,12 @@ class WaitsOnADuplicatedPort
         // here forever instead of failing.
         let maxSteps = 20_000_000L
 
-        let rec loop (prepared : Program.PreparedProgram) (steps : int64) : IlMachineState * string =
+        let rec loop (prepared : Program.PreparedProgram) (steps : int64) : Program.PreparedProgram * string =
             if steps > maxSteps then
                 failwith $"guest did not deadlock within %d{maxSteps} steps"
 
             match Program.stepPrepared loggerFactory logger prepared with
-            | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) -> prepared.State, stuck
+            | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) -> prepared, stuck
             | Program.ProgramStepOutcome.Completed outcome ->
                 failwith
                     $"guest exited instead of parking in WaitForSocketEvents, so this test covered nothing: %O{outcome}"
@@ -116,7 +116,7 @@ class WaitsOnADuplicatedPort
         |> Map.toList
         |> List.filter (fun (_, ts) ->
             match ts.Status with
-            | ThreadStatus.BlockedOnSocketEvents _ -> true
+            | ThreadStatus.BlockedOnSocketEvents -> true
             | _ -> false
         )
         |> function
@@ -126,13 +126,21 @@ class WaitsOnADuplicatedPort
     /// The wait parks the caller rather than answering it, and the port it parks on is the open
     /// file *description* the descriptor names. Waiting through a `dup` is what separates the
     /// two: a handler that stored the descriptor number would say 4 here.
+    ///
+    /// The port is asserted on the kernel's park record, which is the only place it is written
+    /// down: the status is a marker. That is also the record the readiness sweep reads and the
+    /// re-entered handler delivers from, so this pins the identity for all three of them at once.
     [<Test>]
     let ``the wait parks the caller on the port's open file description`` () : unit =
-        let state, _ = deadlock.Force ()
-        let _, threadState = parkedThread state
+        let prepared, _ = deadlock.Force ()
+        let state = prepared.State
+        let thread, threadState = parkedThread state
 
-        threadState.Status
-        |> shouldEqual (ThreadStatus.BlockedOnSocketEvents (OpenFileDescriptionId 3L))
+        threadState.Status |> shouldEqual ThreadStatus.BlockedOnSocketEvents
+
+        UnixTaskTable.parkedSocketWaitFor thread state.Kernel.Tasks
+        |> Option.map (fun wait -> wait.Port)
+        |> shouldEqual (Some (OpenFileDescriptionId 3L))
 
     /// Re-entrant parking, stated as the frame stack: the dispatcher leaves the native frame in
     /// place, so a wake re-enters the handler and it re-reads the call's own arguments. Kills
@@ -141,7 +149,8 @@ class WaitsOnADuplicatedPort
     /// buffer from some other thread's step.
     [<Test>]
     let ``the parked thread still carries the native frame`` () : unit =
-        let state, _ = deadlock.Force ()
+        let prepared, _ = deadlock.Force ()
+        let state = prepared.State
         let _, threadState = parkedThread state
 
         let active = threadState.MethodStates.[threadState.ActiveMethodState]
@@ -158,7 +167,8 @@ class WaitsOnADuplicatedPort
     /// runs the handler again and would push a second one.
     [<Test>]
     let ``the wait leaves no optimistic return value on the stack`` () : unit =
-        let state, _ = deadlock.Force ()
+        let prepared, _ = deadlock.Force ()
+        let state = prepared.State
         let _, threadState = parkedThread state
 
         let active = threadState.MethodStates.[threadState.ActiveMethodState]
@@ -166,13 +176,49 @@ class WaitsOnADuplicatedPort
 
     /// The deadlock report has to locate the wait, or a wedged `SocketAsyncEngine` thread is
     /// indistinguishable from any other blocked thread. `TestSocketEventsWaitReason` pins the
-    /// rendering against a hand-built position; this pins that a real run reaches it.
+    /// rendering against a hand-built position; this pins that a real run reaches it, and that
+    /// the port survives the status no longer carrying it — the report now derives it from the
+    /// kernel's record, so a derivation that looked at the wrong thread's record, or at none,
+    /// would show up here and nowhere else.
     [<Test>]
     let ``the deadlock report names the wait and the port`` () : unit =
         let _, stuck = deadlock.Force ()
 
-        stuck |> shouldContainText "BlockedOnSocketEvents (OpenFileDescriptionId 3L)"
+        stuck |> shouldContainText "BlockedOnSocketEvents on open file description 3"
         stuck |> shouldContainText "WaitForSocketEvents"
+
+    /// The status says only that a thread is asleep in the wait; the record says on what. A
+    /// waiter with the one and not the other is a state the sweep cannot act on, and the
+    /// alternative to refusing is to skip that thread silently — parking it for ever with no
+    /// diagnostic beyond an eventual deadlock naming a wait nothing is watching.
+    ///
+    /// Reached by taking the record away from a genuinely parked thread rather than by
+    /// building the state by hand, because that is the shape a real regression would have: a
+    /// clear-on-the-wrong-path, or a park that wrote the status without the record.
+    [<Test>]
+    let ``a socket waiter whose record has gone is refused`` () : unit =
+        let prepared, _ = deadlock.Force ()
+        let thread, _ = parkedThread prepared.State
+
+        let stripped =
+            { prepared with
+                State =
+                    prepared.State.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread None))
+            }
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "WaitsOnADuplicatedPort.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let logger = loggerFactory.CreateLogger "TestSocketEventsWait"
+
+        let exn =
+            Assert.Throws<GuestFailureException> (fun () ->
+                Program.stepPrepared loggerFactory logger stripped
+                |> ignore<Program.ProgramStepOutcome>
+            )
+
+        exn.Message |> shouldContainText "holds no ParkedSocketWait"
 
     /// Two waiters parked on one port, and an entry thread that then makes the port
     /// deliverable. The sleep is what makes the order deterministic: while the entry
@@ -290,6 +336,215 @@ class TwoWaitersOnOnePort
 
         exc.Message
         |> shouldContainText "are all parked in SystemNative_WaitForSocketEvents"
+
+    /// Two ports with one waiter each, and an edge on only one of them. The quiet port carries no
+    /// registrations at all, so nothing can ever make it deliverable.
+    ///
+    /// The second sleep is what makes the observation deterministic: after the connect the entry
+    /// thread is blocked again, so a spuriously woken quiet waiter is the only runnable thread
+    /// besides the one that really was woken, and the scheduler must pick it.
+    let private twoPortsSource : string =
+        """
+using System;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+class TwoPortsOneEdge
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_CreateSocketEventPort")]
+    static extern unsafe int CreateSocketEventPort(IntPtr* port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Socket")]
+    static extern unsafe int Socket(int addressFamily, int socketType, int protocolType, IntPtr* createdSocket);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Bind")]
+    static extern unsafe int Bind(IntPtr socket, int protocolType, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Listen")]
+    static extern int Listen(IntPtr socket, int backlog);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Connect")]
+    static extern unsafe int Connect(IntPtr socket, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetSockName")]
+    static extern unsafe int GetSockName(IntPtr socket, byte* socketAddress, int* socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_TryChangeSocketEventRegistration")]
+    static extern int TryChange(IntPtr port, IntPtr socket, int currentEvents, int newEvents, IntPtr data);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_WaitForSocketEvents")]
+    static extern unsafe int WaitForSocketEvents(IntPtr port, byte* buffer, int* count);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetAddressFamily")]
+    static extern unsafe int SetAddressFamily(byte* socketAddress, int socketAddressLen, int addressFamily);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetPort")]
+    static extern unsafe int SetPort(byte* socketAddress, int socketAddressLen, ushort port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_SetIPv4Address")]
+    static extern unsafe int SetIPv4Address(byte* socketAddress, int socketAddressLen, uint address);
+
+    static IntPtr BusyPort;
+    static IntPtr QuietPort;
+
+    static unsafe void BusyWaiter()
+    {
+        byte* buffer = stackalloc byte[32];
+        int count = 1;
+        WaitForSocketEvents(BusyPort, buffer, &count);
+    }
+
+    static unsafe void QuietWaiter()
+    {
+        byte* buffer = stackalloc byte[32];
+        int count = 1;
+        WaitForSocketEvents(QuietPort, buffer, &count);
+    }
+
+    static unsafe int Main()
+    {
+        IntPtr busy;
+        if (CreateSocketEventPort(&busy) != 0) return 1;
+        BusyPort = busy;
+        IntPtr quiet;
+        if (CreateSocketEventPort(&quiet) != 0) return 2;
+        QuietPort = quiet;
+
+        IntPtr listener;
+        if (Socket(2, 1, 6, &listener) != 0) return 3;
+        byte* addr = stackalloc byte[16];
+        for (int i = 0; i < 16; i++) addr[i] = 0;
+        SetAddressFamily(addr, 16, 2);
+        SetIPv4Address(addr, 16, 0x0100007F);
+        SetPort(addr, 16, 0);
+        if (Bind(listener, 6, addr, 16) != 0) return 4;
+        if (Listen(listener, 8) != 0) return 5;
+        int len = 16;
+        if (GetSockName(listener, addr, &len) != 0) return 6;
+        if (TryChange(busy, listener, 0, 0x3, (IntPtr)1) != 0) return 7;
+
+        new Thread(BusyWaiter) { IsBackground = true }.Start();
+        new Thread(QuietWaiter) { IsBackground = true }.Start();
+        Thread.Sleep(100);
+
+        IntPtr client;
+        if (Socket(2, 1, 6, &client) != 0) return 8;
+        if (Connect(client, addr, 16) != 0) return 9;
+        Thread.Sleep(100);
+        return 10;
+    }
+}
+"""
+
+    /// Every thread currently parked in a socket wait, with the port its task records.
+    let private parkedOnPorts (state : IlMachineState) : (ThreadId * OpenFileDescriptionId) list =
+        state.ThreadState
+        |> Map.toList
+        |> List.choose (fun (tid, ts) ->
+            match ts.Status with
+            | ThreadStatus.BlockedOnSocketEvents ->
+                UnixTaskTable.parkedSocketWaitFor tid state.Kernel.Tasks
+                |> Option.map (fun wait -> tid, wait.Port)
+            | _ -> None
+        )
+
+    /// The sweep wakes a waiter because *its own* port has something to deliver, not because
+    /// some port does. With one port in the process the two questions have the same answer, so
+    /// nothing before this test could tell them apart — and the port now lives only in the
+    /// kernel's record, which is precisely what a wrong lookup would get wrong.
+    ///
+    /// A spurious wake is invisible to the guest: the woken waiter re-enters, finds its port
+    /// empty and parks again, and no exit code or event buffer records the excursion. So the
+    /// observation is made on the driver's own steps — the quiet waiter must never be scheduled
+    /// again after it parks — with three vacuity guards, since a guest whose waiters never
+    /// parked, or whose edge never arrived, would pass while covering nothing.
+    [<Test>]
+    let ``a waiter is woken by its own port, not by any port`` () : unit =
+        let image = Roslyn.compile [ twoPortsSource ]
+
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", "TwoPortsOneEdge.cs" ]
+
+        use _loggerFactoryResource = loggerFactory
+        let logger = loggerFactory.CreateLogger "TestSocketEventsWait"
+
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+
+        use peImage = new MemoryStream (image)
+
+        // The ports are the first two descriptions a fresh registry hands out, and the guest
+        // creates the busy one first. Named rather than inferred: identifying the quiet waiter
+        // as "the one that did not wake" would make the assertion below circular.
+        let busyPort = OpenFileDescriptionId 3L
+        let quietPort = OpenFileDescriptionId 4L
+
+        let prepared =
+            match
+                Program.prepare loggerFactory (Some "TwoPortsOneEdge.cs") peImage (HostConfig.Default dotnetRuntimes)
+            with
+            | Program.ProgramStartResult.CompletedBeforeMain outcome ->
+                failwith $"guest completed before Main: %O{outcome}"
+            | Program.ProgramStartResult.Ready prepared -> prepared
+
+        let maxSteps = 20_000_000L
+
+        // `quiet` is `Some` once the quiet waiter has been seen parked; it is consulted *before*
+        // each step, so the step in which the waiter parked is not itself counted as a run after
+        // parking.
+        let rec loop
+            (prepared : Program.PreparedProgram)
+            (steps : int64)
+            (quiet : ThreadId option)
+            (busyParked : bool)
+            (busyWoke : bool)
+            (ranAfterParking : ThreadId list)
+            : bool * bool * bool * ThreadId list
+            =
+            if steps > maxSteps then
+                failwith $"guest did not terminate within %d{maxSteps} steps"
+
+            let parked = parkedOnPorts prepared.State
+
+            let quiet =
+                match quiet with
+                | Some _ -> quiet
+                | None ->
+                    parked
+                    |> List.tryPick (fun (tid, port) -> if port = quietPort then Some tid else None)
+
+            let busyParked =
+                busyParked || (parked |> List.exists (fun (_, port) -> port = busyPort))
+
+            let busyWoke =
+                busyWoke
+                || (busyParked && not (parked |> List.exists (fun (_, port) -> port = busyPort)))
+
+            let ranAfter (ran : ThreadId) : ThreadId list =
+                match quiet with
+                | Some q when q = ran -> ran :: ranAfterParking
+                | _ -> ranAfterParking
+
+            match Program.stepPrepared loggerFactory logger prepared with
+            | Program.ProgramStepOutcome.Completed _ -> quiet.IsSome, busyParked, busyWoke, ranAfterParking
+            | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
+                failwith $"guest deadlocked rather than completing. Stuck: %s{stuck}"
+            | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) ->
+                loop prepared (steps + 1L) quiet busyParked busyWoke ranAfterParking
+            | Program.ProgramStepOutcome.InstructionStepped (prepared, ran, _, _) ->
+                loop prepared (steps + 1L) quiet busyParked busyWoke (ranAfter ran)
+
+        let quietParked, busyParked, busyWoke, ranAfterParking =
+            loop prepared 0L None false false []
+
+        // Vacuity: both waiters really did park, and the edge really did wake the busy one. A
+        // guest that never got there would satisfy the assertion below trivially.
+        quietParked |> shouldEqual true
+        busyParked |> shouldEqual true
+        busyWoke |> shouldEqual true
+
+        ranAfterParking |> shouldEqual []
+
 
     /// A waiter parked on a port whose last descriptor the entry thread then closes.
     let private closesParkedPortSource : string =

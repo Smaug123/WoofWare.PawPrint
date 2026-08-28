@@ -71,7 +71,18 @@ module DebuggerServer =
         | Some value -> writer.WriteNumberValue (heapAddressValue value)
         | None -> writer.WriteNullValue ()
 
-    let private writeThreadStatus (writer : Utf8JsonWriter) (status : ThreadStatus) : unit =
+    /// `task` is the emulated kernel's record for this thread, which is where the two
+    /// syscall parks keep what they are waiting for: their statuses carry nothing, so a
+    /// renderer handed only the status could say that a thread is parked but not on what.
+    /// `None` — a thread with no task at all — is an interpreter bug that
+    /// `EmulatedKernel.checkTaskInvariants` names; this reports it rather than raising,
+    /// because a debugger is most wanted when the machine is already wrong.
+    let private writeThreadStatus
+        (writer : Utf8JsonWriter)
+        (task : UnixTaskState option)
+        (status : ThreadStatus)
+        : unit
+        =
         match status with
         | ThreadStatus.Runnable -> writer.WriteStringValue "runnable"
         | ThreadStatus.NotStarted -> writer.WriteStringValue "notStarted"
@@ -160,15 +171,41 @@ module DebuggerServer =
             | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnSocketEvents (OpenFileDescriptionId port) ->
+        | ThreadStatus.BlockedOnSocketEvents ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnSocketEvents")
-            writer.WriteNumber ("port", port)
+
+            // The port is written as the open file *description*, which is what
+            // the wait holds: an epoll instance is a description, so a `dup`'d
+            // port waits on the same one and the descriptor number the guest
+            // called through may since have been closed or reused.
+            match task |> Option.bind (fun task -> task.ParkedSocketWait) with
+            | Some wait ->
+                let (OpenFileDescriptionId port) = wait.Port
+                writer.WriteNumber ("port", port)
+            | None -> writer.WriteNull "port"
+
             writer.WriteEndObject ()
-        // No payload to write: what an `flock` waiter waits for lives in the
-        // emulated kernel's task record rather than in its status, and this
-        // renderer is handed only the status.
-        | ThreadStatus.BlockedOnFlock -> writer.WriteStringValue "blockedOnFlock"
+        | ThreadStatus.BlockedOnFlock ->
+            writer.WriteStartObject ()
+            writer.WriteString ("kind", "blockedOnFlock")
+
+            match task |> Option.bind (fun task -> task.ParkedFlock) with
+            | Some parked ->
+                let (OpenFileDescriptionId description) = parked.Requester
+                writer.WriteNumber ("description", description)
+
+                writer.WriteString (
+                    "mode",
+                    match parked.Mode with
+                    | FlockMode.Shared -> "shared"
+                    | FlockMode.Exclusive -> "exclusive"
+                )
+            | None ->
+                writer.WriteNull "description"
+                writer.WriteNull "mode"
+
+            writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
         | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 
@@ -248,7 +285,7 @@ module DebuggerServer =
         writer.WriteStartObject ()
         writer.WriteNumber ("id", threadIdValue threadId)
         writer.WritePropertyName "status"
-        writeThreadStatus writer threadState.Status
+        writeThreadStatus writer (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
 
         if ThreadStatus.hasNoActiveFrame threadState.Status then
             // A frameless thread (pre-`Start`, or a kernel-owned Parked
@@ -599,7 +636,7 @@ module DebuggerServer =
             writer.WriteStartObject ()
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
-            writeThreadStatus writer threadState.Status
+            writeThreadStatus writer (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
 
             if ThreadStatus.hasNoActiveFrame threadState.Status then
                 writer.WriteNull "activeAssembly"
@@ -696,7 +733,7 @@ module DebuggerServer =
             writer.WriteStartObject ()
             writer.WriteNumber ("id", threadIdValue threadId)
             writer.WritePropertyName "status"
-            writeThreadStatus writer threadState.Status
+            writeThreadStatus writer (state.Kernel.Tasks |> Map.tryFind threadId) threadState.Status
 
             if ThreadStatus.hasNoActiveFrame threadState.Status then
                 writer.WriteNull "activeAssembly"

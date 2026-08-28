@@ -71,10 +71,11 @@ type GuestThreadLocation =
         /// What a blocked thread is blocked on, when its status does not say.
         ///
         /// Most blocked statuses carry their own object, and this is `None` for
-        /// them. `ThreadStatus.BlockedOnFlock` deliberately carries nothing —
-        /// what it waits for lives in the emulated kernel's task record, which
-        /// `close` needs anyway — so the reader that would otherwise be told
-        /// only "parked on some lock" is given the lock here.
+        /// them. The two syscall parks — `ThreadStatus.BlockedOnFlock` and
+        /// `ThreadStatus.BlockedOnSocketEvents` — deliberately carry nothing, what
+        /// they wait for living in the emulated kernel's task record, which `close`
+        /// needs anyway. So the reader who would otherwise be told only "parked on
+        /// some lock" is given the lock, and the port, here.
         WaitingFor : string option
     }
 
@@ -303,24 +304,34 @@ module GuestLocation =
         |> Map.toList
         |> List.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
         |> List.map (fun (threadId, ts) ->
+            // Looked up rather than asked for through `UnixTaskTable.parkedFlockFor` /
+            // `parkedSocketWaitFor`, which raise for a thread with no task at all: this
+            // renderer runs while diagnosing a stuck guest, and a diagnostic that throws
+            // replaces the problem with itself. Both absences are reported below instead.
+            let task = state.Kernel.Tasks |> Map.tryFind threadId
+
             {
                 Thread = threadId
                 Status = ts.Status
                 Position = positionOfThread state ts
                 WaitingFor =
                     match ts.Status with
+                    | ThreadStatus.BlockedOnSocketEvents ->
+                        match task |> Option.bind (fun task -> task.ParkedSocketWait) with
+                        // Spelled out for the same reason the lock below is: the
+                        // identity renders as a bare number, and a reader would
+                        // otherwise take it for the descriptor the guest waited
+                        // through, which is the one thing it is not.
+                        | Some wait -> Some $"on open file description %O{wait.Port}"
+                        | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | ThreadStatus.BlockedOnFlock ->
-                        match UnixTaskTable.parkedFlockFor threadId state.Kernel.Tasks with
+                        match task |> Option.bind (fun task -> task.ParkedFlock) with
                         // Spelled out, because the identity renders as a bare
                         // number and a reader would otherwise take it for the
                         // descriptor the guest passed — which is the one thing
                         // it is deliberately not.
                         | Some parked -> Some $"on open file description %O{parked.Requester}, %O{parked.Mode}"
-                        | None ->
-                            // Reported rather than raised: this renderer runs
-                            // while diagnosing a stuck guest, and a diagnostic
-                            // that throws replaces the problem with itself.
-                            Some "on nothing recorded (this is an interpreter bug)"
+                        | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }
         )

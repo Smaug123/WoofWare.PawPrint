@@ -4,26 +4,24 @@ open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.PosixKernel
 
 /// `ThreadStatus.BlockedOnSocketEvents` is the representation of a thread parked inside
-/// `SystemNative_WaitForSocketEvents`. Nothing constructs it yet — the native handler that would
-/// is a separate change — so these tests construct it directly, which is how the other
+/// `SystemNative_WaitForSocketEvents`. These tests construct it directly, which is how the other
 /// thread-status state machines are tested (`TestLowLevelMonitor`, `TestWaitHandle`,
-/// `TestSyncBlockMonitor`).
+/// `TestSyncBlockMonitor`); `TestSocketEventsWait` is the other half, driving a real guest into
+/// the status through the handler.
 ///
 /// What they pin is the set of answers the status is *obliged* to give: two exhaustive
 /// classifiers in `ThreadStatus`, the scheduler's treatment of an unrecognised blocked state, and
-/// the diagnostic rendering. The payload's *identity* (an `OpenFileDescriptionId` rather than a
-/// descriptor number) and the absence of a deadline field are design properties no test can
-/// observe; they are enforced by review.
+/// the diagnostic rendering. The status carries no payload, so *which* port a waiter waits on is
+/// not observable from here at all — that lives in the kernel's `ParkedSocketWait`, and
+/// `TestSocketEventsWait` is where the derivation from it is pinned. The absence of a deadline
+/// field remains a design property no test can observe, and is enforced by review.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSocketEventsWaitReason =
 
-    let private port : OpenFileDescriptionId = OpenFileDescriptionId 7L
-
-    let private blocked : ThreadStatus = ThreadStatus.BlockedOnSocketEvents port
+    let private blocked : ThreadStatus = ThreadStatus.BlockedOnSocketEvents
 
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
@@ -120,7 +118,10 @@ module TestSocketEventsWaitReason =
 
     /// The stuck-thread description has to name the port, or a deadlocked `SocketAsyncEngine`
     /// thread is indistinguishable from any other blocked thread in a process with several
-    /// engines. Kills a payloadless variant, which could not render a port at all.
+    /// engines. What is pinned here is that the renderer *places* the port — a `WaitingFor`
+    /// dropped on the floor would leave the line saying only that the thread is parked. Where
+    /// the string comes from is `GuestLocation.ofState`, and `TestSocketEventsWait` drives a
+    /// real guest through it.
     ///
     /// The position is the shape a real engine thread produces: the innermost frame is the
     /// framework's interop stub, which ships without a PDB, so the report walks out to the caller.
@@ -131,7 +132,7 @@ module TestSocketEventsWaitReason =
                 {
                     Thread = ThreadId 4
                     Status = blocked
-                    WaitingFor = None
+                    WaitingFor = Some "on open file description 7"
                     Position =
                         GuestThreadPosition.CalledFrom (
                             {
@@ -157,7 +158,7 @@ module TestSocketEventsWaitReason =
         // renderer that dropped the port and happened to emit a 7 from an IL offset or line number.
         rendered
         |> shouldEqual (
-            "thread 4 (BlockedOnSocketEvents (OpenFileDescriptionId 7L)) "
+            "thread 4 (BlockedOnSocketEvents on open file description 7) "
             + "in Interop.Sys.WaitForSocketEvents at IL offset 0, "
             + "called 2 frames out from SocketAsyncEngine.EventLoop at IL offset 31 "
             + "(/build/SocketAsyncEngine.Unix.cs:168)"
