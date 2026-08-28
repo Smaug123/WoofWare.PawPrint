@@ -47,6 +47,18 @@ module TestBinaryArithmetic =
         =
         BinaryArithmetic.execute baseClassTypes op state val1 val2 |> fst
 
+    /// Run a faulting operation on operands the test expects not to fault it.
+    let private executeFaultingOk
+        (op : FaultingArithmeticOperation)
+        (state : IlMachineState)
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : EvalStackValue
+        =
+        match BinaryArithmetic.executeFaulting baseClassTypes op state val1 val2 with
+        | Ok (result, _) -> result
+        | Error fault -> failwith $"%s{op.Name} of %O{val1} and %O{val2} unexpectedly faulted with %O{fault}"
+
     let private concreteTypeFor
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : ConcreteType<ConcreteTypeHandle>
@@ -511,18 +523,18 @@ module TestBinaryArithmetic =
                     ]
             ]
 
-    /// `None` means the operation raised OverflowException, which `Sub_ovf`
-    /// translates into a guest `System.OverflowException`.
+    /// `None` means the operation faulted with `OpcodeFault.Overflow`, which `Sub_ovf` raises
+    /// in the guest as `System.OverflowException`.
     let private trySubOvf
         (state : IlMachineState)
         (val1 : EvalStackValue)
         (val2 : EvalStackValue)
         : EvalStackValue option
         =
-        try
-            execute ArithmeticOperation.subOvf state val1 val2 |> Some
-        with :? System.OverflowException ->
-            None
+        match BinaryArithmetic.executeFaulting baseClassTypes ArithmeticOperation.subOvf state val1 val2 with
+        | Ok (result, _) -> Some result
+        | Error OpcodeFault.Overflow -> None
+        | Error fault -> failwith $"sub.ovf faulted with %O{fault}, but overflow is the only fault it can detect"
 
     [<Test>]
     let ``sub ovf on int32 traps exactly when the exact difference leaves int32 range`` () : unit =
@@ -664,10 +676,13 @@ module TestBinaryArithmetic =
             execute ArithmeticOperation.add state nullPointer v |> expect (int64 offset)
             // `int32 + &` is legal and also yields a byref.
             execute ArithmeticOperation.add state v nullPointer |> expect (int64 offset)
-            execute ArithmeticOperation.addOvf state nullPointer v |> expect (int64 offset)
+
+            executeFaultingOk ArithmeticOperation.addOvf state nullPointer v
+            |> expect (int64 offset)
+
             execute ArithmeticOperation.sub state nullPointer v |> expect (-(int64 offset))
 
-            execute ArithmeticOperation.subOvf state nullPointer v
+            executeFaultingOk ArithmeticOperation.subOvf state nullPointer v
             |> expect (-(int64 offset))
 
             if offset = 0 then
@@ -830,15 +845,21 @@ module TestBinaryArithmetic =
         let bigOffset = EvalStackValue.NativeInt (NativeIntSource.Verbatim (1L <<< 62))
 
         // In range: no trap.
-        execute ArithmeticOperation.addOvf state (placeholderPointer 8L) bigOffset
+        executeFaultingOk ArithmeticOperation.addOvf state (placeholderPointer 8L) bigOffset
         |> shouldEqual (placeholderPointer ((1L <<< 62) + 8L))
 
-        // Out of range: traps, and the unchecked form wraps instead.
-        Assert.Throws<System.OverflowException> (fun () ->
-            execute ArithmeticOperation.addOvf state (placeholderPointer System.Int64.MaxValue) bigOffset
-            |> ignore
-        )
-        |> ignore
+        // Out of range: faults, and the unchecked form wraps instead.
+        match
+            BinaryArithmetic.executeFaulting
+                baseClassTypes
+                ArithmeticOperation.addOvf
+                state
+                (placeholderPointer System.Int64.MaxValue)
+                bigOffset
+        with
+        | Error OpcodeFault.Overflow -> ()
+        | Error fault -> failwith $"expected add.ovf to fault with Overflow, but it faulted with %O{fault}"
+        | Ok (result, _) -> failwith $"expected add.ovf to fault with Overflow, but it returned %O{result}"
 
         execute ArithmeticOperation.add state (placeholderPointer System.Int64.MaxValue) bigOffset
         |> shouldEqual (placeholderPointer (System.Int64.MaxValue + (1L <<< 62)))
@@ -934,7 +955,7 @@ module TestBinaryArithmetic =
                 placeholderPointer (int64 bits)
 
         let check
-            (checkedOp : IArithmeticOperation)
+            (checkedOp : FaultingArithmeticOperation)
             (uncheckedOp : IArithmeticOperation)
             (exact : bigint)
             (val1 : EvalStackValue)
@@ -947,24 +968,22 @@ module TestBinaryArithmetic =
             // The unchecked form always produces a (wrapped) pointer.
             execute uncheckedOp state val1 val2 |> ignore
 
-            match
-                (try
-                    execute checkedOp state val1 val2 |> Some
-                 with :? System.OverflowException ->
-                     None)
-            with
-            | Some actual ->
+            match BinaryArithmetic.executeFaulting baseClassTypes checkedOp state val1 val2 with
+            | Ok (actual, _) ->
                 if not inRange then
                     failwith
                         $"%s{checkedOp.Name} of %O{val1} and %O{val2} returned %O{actual}, but %O{exact} is outside native int"
 
                 actual |> shouldEqual (expectedPointer exact)
                 false
-            | None ->
+            | Error OpcodeFault.Overflow ->
                 if inRange then
                     failwith $"%s{checkedOp.Name} of %O{val1} and %O{val2} trapped, but %O{exact} fits in native int"
 
                 true
+            | Error fault ->
+                failwith
+                    $"%s{checkedOp.Name} of %O{val1} and %O{val2} faulted with %O{fault}, but overflow is the only fault it can detect"
 
         let property (bits : int64, offset : int32) : unit =
             let ptr = placeholderPointer bits
@@ -1072,7 +1091,7 @@ module TestBinaryArithmetic =
             | Some result -> failwith $"expected sub to refuse %O{val1} - %O{val2}, but it gave %O{result}"
             | None ->
 
-            match run ArithmeticOperation.subOvf val1 val2 with
+            match run ArithmeticOperation.subOvf.Op val1 val2 with
             | Some result -> failwith $"sub refused %O{val1} - %O{val2}, but sub.ovf gave %O{result}"
             | None -> ()
 

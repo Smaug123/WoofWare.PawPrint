@@ -744,7 +744,7 @@ module NativeHandlerResult =
     /// parameterless ctor's own default is the faithful answer, and `raiseException` is the
     /// shorter spelling of `None`. The `string option` shape mirrors
     /// `IlMachineStateExecution.raiseRuntimeException` and its `WithMessage` sibling, so a
-    /// caller holding a message it did not choose itself (`SzArrayAllocation.exceptionFor`,
+    /// caller holding a message it did not choose itself (`SzArrayAllocation.faultFor`,
     /// say) can pass it straight through.
     let raiseExceptionWithMessage
         (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)

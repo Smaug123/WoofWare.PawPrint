@@ -111,6 +111,16 @@ type private OverflowBehaviour =
     | Wrap
     | Trap
 
+/// The carrier by which a host-detected operand fault crosses `execute`'s dispatch to
+/// `BinaryArithmetic.executeFaulting`, which converts it to an `Error`. Private so that
+/// provenance holds by construction: only `hostFaultingArith`, wrapped immediately around a
+/// host arithmetic operation, can construct one, so converting it to a guest fault can never
+/// misread a `DivideByZeroException` or `OverflowException` that some interpreter bug raised
+/// elsewhere — those escape and crash the run.
+type private ArithmeticFaultException (fault : OpcodeFault) =
+    inherit System.Exception ($"host-detected arithmetic fault: %O{fault}")
+    member _.Fault : OpcodeFault = fault
+
 type IArithmeticOperation =
     abstract Int32Int32 : int32 -> int32 -> int32
     abstract Int32NativeInt : int32 -> nativeint -> nativeint
@@ -151,23 +161,52 @@ type IArithmeticOperation =
 
     abstract Name : string
 
+/// An arithmetic operation whose host instruction can fault on its operands (`div`, `rem`,
+/// `rem.un`, and the checked add/sub/mul family). The wrapper is what confines the fault
+/// carrier: the only way to run one of these is `BinaryArithmetic.executeFaulting`, which
+/// hands the fault back as data, so a caller outside this assembly cannot reach a faulting
+/// operation through plain `execute` and be met by an exception type it cannot name.
+type FaultingArithmeticOperation =
+    internal
+        {
+            Op : IArithmeticOperation
+        }
+
+    /// The host instruction's name, for diagnostics.
+    member this.Name : string = this.Op.Name
+
 [<RequireQualifiedAccess>]
 module ArithmeticOperation =
     let private verbatimInt64 (value : int64) : NativeIntSource = NativeIntSource.Verbatim value
 
-    /// Arithmetic on a `NativeIntPlaceholder`'s bit pattern. `Trap` raises
-    /// OverflowException, which the opcode handlers turn into a guest
-    /// `System.OverflowException`.
+    /// Evaluate one host arithmetic operation — an embedded IL instruction or a `Checked`
+    /// operator — converting the operand fault the operation itself detects into the private
+    /// carrier that `BinaryArithmetic.executeFaulting` returns as data. The host instruction is
+    /// the detector, so there is no table of faulting operand values here that could drift from
+    /// the semantics the host implements.
+    ///
+    /// Keep the wrapped expression to exactly the host operation: any other code in here that
+    /// raised `DivideByZeroException` or `OverflowException` would be misread as the guest's
+    /// fault.
+    let inline private hostFaultingArith ([<InlineIfLambda>] f : unit -> 'a) : 'a =
+        try
+            f ()
+        with
+        | :? System.DivideByZeroException -> raise (ArithmeticFaultException OpcodeFault.DivideByZero)
+        | :? System.OverflowException -> raise (ArithmeticFaultException OpcodeFault.Overflow)
+
+    /// Arithmetic on a `NativeIntPlaceholder`'s bit pattern. `Trap` faults on overflow, which
+    /// `BinaryArithmetic.executeFaulting` hands back as `OpcodeFault.Overflow`.
     let private addPlaceholderBits (behaviour : OverflowBehaviour) (a : int64) (b : int64) : int64 =
         match behaviour with
         | OverflowBehaviour.Wrap -> a + b
-        | OverflowBehaviour.Trap -> Checked.(+) a b
+        | OverflowBehaviour.Trap -> hostFaultingArith (fun () -> Checked.(+) a b)
 
     /// See <see cref="addPlaceholderBits"/>.
     let private subPlaceholderBits (behaviour : OverflowBehaviour) (a : int64) (b : int64) : int64 =
         match behaviour with
         | OverflowBehaviour.Wrap -> a - b
-        | OverflowBehaviour.Trap -> Checked.(-) a b
+        | OverflowBehaviour.Trap -> hostFaultingArith (fun () -> Checked.(-) a b)
 
     /// Symbolic byrefs are a root plus an int32 offset (an array index, a
     /// field byte offset), so an offset that does not fit cannot be
@@ -428,14 +467,25 @@ module ArithmeticOperation =
             member _.Name = "add"
         }
 
-    let addOvf =
+    let private addOvfImpl =
         { new IArithmeticOperation with
-            member _.Int32Int32 a b = (# "add.ovf" a b : int32 #)
-            member _.Int64Int64 a b = (# "add.ovf" a b : int64 #)
-            member _.FloatFloat a b = (# "add.ovf" a b : float #)
-            member _.NativeIntNativeInt a b = (# "add.ovf" a b : nativeint #)
-            member _.Int32NativeInt a b = (# "add.ovf" a b : nativeint #)
-            member _.NativeIntInt32 a b = (# "add.ovf" a b : nativeint #)
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "add.ovf" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "add.ovf" a b : int64 #))
+
+            member _.FloatFloat a b =
+                hostFaultingArith (fun () -> (# "add.ovf" a b : float #))
+
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "add.ovf" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "add.ovf" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "add.ovf" a b : nativeint #))
 
             member _.CrossArrayOffsets a b =
                 if a = SyntheticCrossArrayOffset.negate b then
@@ -456,6 +506,11 @@ module ArithmeticOperation =
                 addOffsetToManagedPtr OverflowBehaviour.Trap baseClassTypes state val2 ptr1
 
             member _.Name = "add.ovf"
+        }
+
+    let addOvf : FaultingArithmeticOperation =
+        {
+            Op = addOvfImpl
         }
 
     /// Whether both pointers reach into the *same* argument slot.
@@ -786,10 +841,13 @@ module ArithmeticOperation =
             member _.Name = "sub"
         }
 
-    let subOvf =
+    let private subOvfImpl =
         { new IArithmeticOperation with
-            member _.Int32Int32 a b = (# "sub.ovf" a b : int32 #)
-            member _.Int64Int64 a b = (# "sub.ovf" a b : int64 #)
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "sub.ovf" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "sub.ovf" a b : int64 #))
 
             // ECMA-335 III.3.68: sub.ovf takes int32, int64, native int and &.
             // Floats have no overflow trap, so a verifier would reject float
@@ -797,9 +855,14 @@ module ArithmeticOperation =
             member _.FloatFloat a b =
                 failwith $"refusing to sub.ovf float values: %f{a} and %f{b}"
 
-            member _.NativeIntNativeInt a b = (# "sub.ovf" a b : nativeint #)
-            member _.Int32NativeInt a b = (# "sub.ovf" a b : nativeint #)
-            member _.NativeIntInt32 a b = (# "sub.ovf" a b : nativeint #)
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "sub.ovf" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "sub.ovf" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "sub.ovf" a b : nativeint #))
 
             member _.CrossArrayOffsets a b =
                 if a = b then
@@ -816,6 +879,11 @@ module ArithmeticOperation =
                 subOffsetFromManagedPtr OverflowBehaviour.Trap baseClassTypes state ptr1 val2
 
             member _.Name = "sub.ovf"
+        }
+
+    let subOvf : FaultingArithmeticOperation =
+        {
+            Op = subOvfImpl
         }
 
     let mul =
@@ -842,14 +910,25 @@ module ArithmeticOperation =
             member _.Name = "mul"
         }
 
-    let rem =
+    let private remImpl =
         { new IArithmeticOperation with
-            member _.Int32Int32 a b = (# "rem" a b : int32 #)
-            member _.Int64Int64 a b = (# "rem" a b : int64 #)
-            member _.FloatFloat a b = (# "rem" a b : float #)
-            member _.NativeIntNativeInt a b = (# "rem" a b : nativeint #)
-            member _.Int32NativeInt a b = (# "rem" a b : nativeint #)
-            member _.NativeIntInt32 a b = (# "rem" a b : nativeint #)
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "rem" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "rem" a b : int64 #))
+
+            member _.FloatFloat a b =
+                hostFaultingArith (fun () -> (# "rem" a b : float #))
+
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "rem" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "rem" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "rem" a b : nativeint #))
 
             member _.CrossArrayOffsets a b =
                 failwith "refusing to rem SyntheticCrossArrayOffsets"
@@ -863,17 +942,30 @@ module ArithmeticOperation =
             member _.Name = "rem"
         }
 
-    let remUn =
+    let rem : FaultingArithmeticOperation =
+        {
+            Op = remImpl
+        }
+
+    let private remUnImpl =
         { new IArithmeticOperation with
-            member _.Int32Int32 a b = (# "rem.un" a b : int32 #)
-            member _.Int64Int64 a b = (# "rem.un" a b : int64 #)
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "rem.un" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "rem.un" a b : int64 #))
 
             member _.FloatFloat a b =
                 failwith $"refusing to rem.un float values: %f{a} and %f{b}"
 
-            member _.NativeIntNativeInt a b = (# "rem.un" a b : nativeint #)
-            member _.Int32NativeInt a b = (# "rem.un" a b : nativeint #)
-            member _.NativeIntInt32 a b = (# "rem.un" a b : nativeint #)
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "rem.un" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "rem.un" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "rem.un" a b : nativeint #))
 
             member _.CrossArrayOffsets a b =
                 failwith "refusing to rem_un SyntheticCrossArrayOffsets"
@@ -887,14 +979,30 @@ module ArithmeticOperation =
             member _.Name = "rem.un"
         }
 
-    let mulOvf =
+    let remUn : FaultingArithmeticOperation =
+        {
+            Op = remUnImpl
+        }
+
+    let private mulOvfImpl =
         { new IArithmeticOperation with
-            member _.Int32Int32 a b = (# "mul.ovf" a b : int32 #)
-            member _.Int64Int64 a b = (# "mul.ovf" a b : int64 #)
-            member _.FloatFloat a b = (# "mul.ovf" a b : float #)
-            member _.NativeIntNativeInt a b = (# "mul.ovf" a b : nativeint #)
-            member _.Int32NativeInt a b = (# "mul.ovf" a b : nativeint #)
-            member _.NativeIntInt32 a b = (# "mul.ovf" a b : nativeint #)
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "mul.ovf" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "mul.ovf" a b : int64 #))
+
+            member _.FloatFloat a b =
+                hostFaultingArith (fun () -> (# "mul.ovf" a b : float #))
+
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "mul.ovf" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "mul.ovf" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "mul.ovf" a b : nativeint #))
 
             member _.CrossArrayOffsets a b =
                 failwith "refusing to mul_ovf SyntheticCrossArrayOffsets"
@@ -911,17 +1019,30 @@ module ArithmeticOperation =
             member _.Name = "mul_ovf"
         }
 
-    let mulOvfUn =
+    let mulOvf : FaultingArithmeticOperation =
+        {
+            Op = mulOvfImpl
+        }
+
+    let private mulOvfUnImpl =
         { new IArithmeticOperation with
-            member _.Int32Int32 a b = (# "mul.ovf.un" a b : int32 #)
-            member _.Int64Int64 a b = (# "mul.ovf.un" a b : int64 #)
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "mul.ovf.un" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "mul.ovf.un" a b : int64 #))
 
             member _.FloatFloat a b =
                 failwith $"refusing to mul.ovf.un float values: %f{a} and %f{b}"
 
-            member _.NativeIntNativeInt a b = (# "mul.ovf.un" a b : nativeint #)
-            member _.Int32NativeInt a b = (# "mul.ovf.un" a b : nativeint #)
-            member _.NativeIntInt32 a b = (# "mul.ovf.un" a b : nativeint #)
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "mul.ovf.un" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "mul.ovf.un" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "mul.ovf.un" a b : nativeint #))
 
             member _.CrossArrayOffsets a b =
                 failwith "refusing to mul_ovf_un SyntheticCrossArrayOffsets"
@@ -935,14 +1056,30 @@ module ArithmeticOperation =
             member _.Name = "mul.ovf.un"
         }
 
-    let div =
+    let mulOvfUn : FaultingArithmeticOperation =
+        {
+            Op = mulOvfUnImpl
+        }
+
+    let private divImpl =
         { new IArithmeticOperation with
-            member _.Int32Int32 a b = (# "div" a b : int32 #)
-            member _.Int64Int64 a b = (# "div" a b : int64 #)
-            member _.FloatFloat a b = (# "div" a b : float #)
-            member _.NativeIntNativeInt a b = (# "div" a b : nativeint #)
-            member _.Int32NativeInt a b = (# "div" a b : nativeint #)
-            member _.NativeIntInt32 a b = (# "div" a b : nativeint #)
+            member _.Int32Int32 a b =
+                hostFaultingArith (fun () -> (# "div" a b : int32 #))
+
+            member _.Int64Int64 a b =
+                hostFaultingArith (fun () -> (# "div" a b : int64 #))
+
+            member _.FloatFloat a b =
+                hostFaultingArith (fun () -> (# "div" a b : float #))
+
+            member _.NativeIntNativeInt a b =
+                hostFaultingArith (fun () -> (# "div" a b : nativeint #))
+
+            member _.Int32NativeInt a b =
+                hostFaultingArith (fun () -> (# "div" a b : nativeint #))
+
+            member _.NativeIntInt32 a b =
+                hostFaultingArith (fun () -> (# "div" a b : nativeint #))
 
             member _.CrossArrayOffsets a b =
                 failwith "refusing to div SyntheticCrossArrayOffsets"
@@ -965,6 +1102,11 @@ module ArithmeticOperation =
                     failwith "refusing to divide a pointer"
 
             member _.Name = "div"
+        }
+
+    let div : FaultingArithmeticOperation =
+        {
+            Op = divImpl
         }
 
 [<RequireQualifiedAccess>]
@@ -1264,3 +1406,28 @@ module BinaryArithmetic =
         | EvalStackValue.ManagedPointer val1, EvalStackValue.ManagedPointer val2 ->
             managedPtrManagedPtr val1 val2 |> withState
         | val1, val2 -> failwith $"invalid %s{op.Name} operation: {val1} and {val2}"
+
+    /// `execute` for an operation whose host instruction can fault on its operands, handing the
+    /// fault back as data. The `FaultingArithmeticOperation` type makes this the only way to run
+    /// such an operation from outside this assembly.
+    ///
+    /// Only the fault detected by the host operation itself comes back as `Error`: a
+    /// `DivideByZeroException` or `OverflowException` raised by any interpreter code around it
+    /// is an interpreter bug and escapes rather than being misread as the guest's fault,
+    /// because the conversion keys on a private carrier that nothing but the wrappers
+    /// immediately around the host operations can construct.
+    ///
+    /// On `Error` the input state still stands: any state the faulting attempt accumulated is
+    /// discarded with the attempt.
+    let executeFaulting
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (op : FaultingArithmeticOperation)
+        (state : IlMachineState)
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : Result<EvalStackValue * IlMachineState, OpcodeFault>
+        =
+        try
+            execute baseClassTypes op.Op state val1 val2 |> Ok
+        with :? ArithmeticFaultException as e ->
+            Error e.Fault
