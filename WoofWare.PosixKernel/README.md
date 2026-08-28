@@ -34,10 +34,11 @@ I expect it may be of independent interest, so it is now extracted as a standalo
 
 ## Status
 
-Two leaf functions still convert to and from an encoding designed for WoofWare.PawPrint's CoreCLR platform abstraction:
-the managed `PosixSignal` enum.
-They are on the way out, and three other clusters have already gone: this library now states the raw `<errno.h>` number,
-epoll's own readiness conditions, and the set of sockets it will create, leaving each client to encode those as it pleases.
+Nothing here converts to or from the encodings designed for WoofWare.PawPrint's CoreCLR platform abstraction any more.
+All four clusters have gone the other side of the boundary: errno numbering, the socket-event bits, the address-family and
+socket-type numbering, and the managed `PosixSignal` enum. This library states a raw `<errno.h>` number, epoll's own
+readiness conditions, the set of sockets it will create, and a signo, and each client encodes those as it pleases.
+A flake check (`scripts/check-pal-residue.py`) keeps it that way.
 
 The simulation is incomplete and expected to change wildly during development.
 The syscall request/response layer has started: `UnixSystem` exposes a handful of syscalls
