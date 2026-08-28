@@ -41,10 +41,18 @@ readiness conditions, the set of sockets it will create, and a signo, and each c
 A flake check (`scripts/check-pal-residue.py`) keeps it that way.
 
 The simulation is incomplete and expected to change wildly during development.
-The syscall request/response layer has started: `UnixSystem` exposes a handful of syscalls
-(`geteuid`, `dup`, `lseek`, `flock`, `ftruncate`, `close`) both individually and through a `step` dispatcher.
+The syscall request/response layer has started: `UnixSystem` exposes nine syscalls
+(`geteuid`, `dup`, `lseek`, `flock`, `ftruncate`, `close`, `mkdir`, `unlink`, `rmdir`)
+both individually and through a `step` dispatcher.
 Everything else is still reached through the state modules directly.
 There is also no constructor for a fresh `UnixSystem` yet, so a client must assemble one field by field.
+
+A syscall that would block does not block: `step` answers `SyscallOutcome.WouldBlock` carrying a
+`WakeCondition`, and the client decides what to do with the calling task.
+`WakeCondition.isSatisfied` answers whether the condition holds yet, so a client's scheduler can poll it;
+the state that comes back with a `WouldBlock` is the state after whatever the call did before sleeping,
+which is why it is returned rather than discarded.
+This library has no scheduler and does not want one.
 
 ### Slop status
 

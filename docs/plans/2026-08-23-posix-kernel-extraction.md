@@ -2908,7 +2908,9 @@ descriptor-table advance a real kernel makes before it sleeps, which a refusal
 cannot. PawPrint's `Program` readiness
 sweep becomes a poll of that predicate. Then: `README`, the
 `emulated-posix-kernel` skill's paths, `docs/divergences.md`, and the
-packaging decision from the open questions.
+packaging decision from the open questions. (Of those four, one was already done
+in stage 1 and one needed nothing; see "Stage 9 packaging" at the end of this
+document for what the other two actually owed.)
 
 **Correctness oracle**:
 * `SocketFuzz` against real Linux epoll, driven through `step` rather than
@@ -3693,5 +3695,56 @@ did `flake.nix`'s comment and AGENTS.md's paragraph.
 * `toEnum` gets tests **for the first time** — it had none in either suite before this
   stage, and the battery had nothing to kill its mutants with until they were written.
 
-**What is left of stage 9**: the four socket entry points' own moves into the library,
+**What is left after 9i**: the four socket entry points' own moves into the library,
 and the packaging items — which are what finish the extraction.
+
+#### Stage 9 packaging: the documents catch up
+
+**Dependencies**: 9i, because most of what these documents were wrong about is what
+9g–9i changed.
+
+Stage 9's own text listed four packaging items. Two of them cost almost nothing, and what
+was *checked* about them is worth recording so that nobody re-checks:
+
+* **The packaging decision** was made and implemented in stage 1 — `WoofWare.PosixKernel`
+  is `IsPackable` with its own `PackageId`, `version.json` and `README.md`, and entries in
+  the `nuget-pack`, `expected-pack` and `github-release-dry-run` jobs. The forward
+  reference here to "the open questions" pointed at a section that does not exist in this
+  document; it was stale rather than outstanding.
+* **`docs/divergences.md`** needed one line. Both of its pointers into the library
+  (`UnixSystem.getcwd`, `UnixSystem.getsockname`) still resolve, but it pinned its
+  directory-enumeration cases on `WoofWare.PawPrint.Test/TestDirectoryEnumeration.fs`, and
+  that file moved to `WoofWare.PosixKernel.Test` during the extraction. Reading the
+  document had not caught it; a path checker did, which is the argument for running one
+  rather than trusting a careful read.
+* **The skill's paths** were the item that genuinely needed nothing: its four
+  `reference/*.md` files all exist. Its *content* is another matter — see below.
+
+What cost more:
+
+* **The package README** described the syscall layer as of stage 1: six syscalls, where
+  `step` now dispatches nine, and no mention at all of the blocking model that 9a–9f
+  built. A client evaluating this package would have read that it cannot express a
+  blocking call. It now says that `step` answers `WouldBlock` with a `WakeCondition`, that
+  `isSatisfied` is how a client's scheduler polls it, and that the state returned
+  alongside is the state after whatever the call did before sleeping.
+* **The skill had no section on the PAL boundary at all** — the rule stages 7 and 9g–9i
+  established, and the one a future agent in this area is most likely to break, since
+  writing the conversion in the library is the locally convenient thing to do. It now has
+  one, naming the four `*Pal` modules and the flake check.
+  It also carries the two blind spots, because those are what make the check weaker than
+  it looks: it cannot see PAL vocabulary in *prose*, which three consecutive stages hit
+  while retiring a cluster, and it can no longer lean on the library's PAL constants
+  living in one `module private Pal`, that module having gone to `SocketArgumentsPal`.
+  The skill's `description` gained `UnixSystem.fs`, `Signal.fs` and `Native/*Pal.fs`, so
+  that it loads for the files this stage made important.
+
+**Correctness oracle**: prose, so there is none beyond the suites being unchanged — with
+one exception worth having. Every repo path these documents name was resolved
+mechanically, which is what found the moved `TestDirectoryEnumeration.fs`; the remaining
+reports are upstream CoreCLR filenames and a glob, and the two `docs/divergences.md` code
+pointers were checked by hand. That check is a throwaway script rather than a committed
+one: it needs a list of plausible roots to resolve project-relative paths and it cannot
+tell an upstream filename from a repo one, so as a permanent check it would cry wolf.
+
+**What is left of stage 9**: the four socket entry points' own moves into the library.

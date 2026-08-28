@@ -1,6 +1,6 @@
 ---
 name: emulated-posix-kernel
-description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (SimulatedUnixPlatform.fs, VirtualFileSystem.fs, FileDescriptorRegistry.fs), in EmulatedKernel.fs or SignalState.fs, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
+description: Deciding how the emulated kernel should answer a syscall — whether a fact belongs to the flavour, to configuration, or to the interpreter; whose encoding a value is stated in; where per-thread state lives; which test tier can observe the answer. Use when adding or changing anything in WoofWare.PosixKernel (UnixSystem.fs, SimulatedUnixPlatform.fs, VirtualFileSystem.fs, FileDescriptorRegistry.fs, Signal.fs), in EmulatedKernel.fs or SignalState.fs, in a Native/*Pal.fs adapter, or in a Native/ handler that reports kernel state. Carries measured Linux/Darwin divergence tables — consult them rather than re-measuring.
 ---
 
 # Deciding what the emulated kernel says
@@ -74,7 +74,41 @@ determinism. `SignalState.unblock` says so, and `TestSignalState.fs` /
 `TestLastError.fs` property-test it against a store-everything oracle: reads must
 agree, **and** no default may ever be stored.
 
-## 3. Is this an identity, or a contention key?
+## 3. Whose encoding is this?
+
+`WoofWare.PosixKernel` is a published package meant to be usable by a client that
+has never heard of .NET, so **it states POSIX values and no client's encoding of
+them**: a raw `<errno.h>` number, epoll's own readiness conditions, a signo, the
+set of sockets it will create. A conversion between one of those and a .NET
+encoding goes on PawPrint's side, in `WoofWare.PawPrint/Native/`, beside the four
+that live there — `UnixErrorPal` (`Interop.Error`'s numbering),
+`SocketEventsPal` (the `SocketEvents` bits), `SocketArgumentsPal` (the
+`AF_*`/`SOCK_*`/`PT_*` numbering and the shim's argument screens) and
+`PosixSignalPal` (the managed `PosixSignal` enum).
+
+`scripts/check-pal-residue.py` enforces this as the `pal-residue` flake check.
+The allowlist is **empty**, and the check is now a ratchet: adding an entry is a
+visible act you will be asked to justify.
+
+Two things about it are worth knowing before you touch this area.
+
+- **It cannot see prose.** Docstrings are excluded before the body scan, so a
+  declaration with a POSIX name and a PAL-flavoured docstring reads as clean.
+  Three consecutive stages of the extraction found one while retiring a cluster
+  — `SocketEventInterest`'s fields named as the PAL's five bits, `SocketDomain`
+  documented as "`AF_INET`, PAL 2", `Signal.Other` claiming to carry "the raw
+  managed `PosixSignal` enum value", which it never could. Each would have turned
+  the check green over a residue it cannot read. **Read the prose when you move
+  or retire something**; nothing else will.
+- **It cannot see a bare numeric table** under an innocent name. It used to be
+  largely covered by the library's PAL constants living in one
+  `module private Pal`, so an adapter essentially had to write `Pal.` to exist;
+  that module has gone to `SocketArgumentsPal`, so this is now guarded by the
+  name markers alone.
+
+The script's own header lists these and the rest of what it deliberately misses.
+
+## 4. Is this an identity, or a contention key?
 
 `OpenFileObject` is the `flock` contention key, *not* a general-purpose identity.
 Code that needs to tell two descriptions apart wants `OpenFileDescriptionId`.
@@ -92,7 +126,7 @@ descriptor kind on `anon_inodefs` may well need its own identity. Sockets are on
 Giving each epoll port its own identity granted two exclusive locks where Linux
 grants one — guest-visible, and invisible to any test that only locks one port.
 
-## 4. Refuse rather than invent — but check for an observer first
+## 5. Refuse rather than invent — but check for an observer first
 
 When the platforms disagree and PawPrint has not modelled the distinguishing
 state, `failwith` naming the missing input beats returning a plausible constant:
@@ -108,7 +142,7 @@ can bisect, and such a row belongs in `sourcesImpure` by construction, because a
 real 64-bit libc succeeds at every count. Keep any machine-state unit test too:
 it pins the value where the boundary pins only the ratio.
 
-## 5. Establish the fact by measuring, not by reading source
+## 6. Establish the fact by measuring, not by reading source
 
 For any kernel-behaviour constant, write the measure-the-host test *first* and
 let it name the value. Use source only to learn the rule's **shape** — is this a
@@ -123,7 +157,7 @@ measured `TASK_SIZE_MAX`, because x86 changed the rule between 6.9 and 6.12.
 See `reference/probing.md` for the probe technique, including the two ways a
 set-ID measurement reads as "unsupported" when it is not.
 
-## 6. Which test tier can see it?
+## 7. Which test tier can see it?
 
 Summarised here; `reference/testing.md` has the detail.
 
