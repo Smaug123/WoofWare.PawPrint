@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
+
 /// <summary>
 /// One frame of a guest thread, described for a developer reading a PawPrint diagnostic.
 /// </summary>
@@ -66,6 +68,14 @@ type GuestThreadLocation =
         Thread : ThreadId
         Status : ThreadStatus
         Position : GuestThreadPosition
+        /// What a blocked thread is blocked on, when its status does not say.
+        ///
+        /// Most blocked statuses carry their own object, and this is `None` for
+        /// them. `ThreadStatus.BlockedOnFlock` deliberately carries nothing —
+        /// what it waits for lives in the emulated kernel's task record, which
+        /// `close` needs anyway — so the reader that would otherwise be told
+        /// only "parked on some lock" is given the lock here.
+        WaitingFor : string option
     }
 
 /// <summary>
@@ -297,6 +307,21 @@ module GuestLocation =
                 Thread = threadId
                 Status = ts.Status
                 Position = positionOfThread state ts
+                WaitingFor =
+                    match ts.Status with
+                    | ThreadStatus.BlockedOnFlock ->
+                        match UnixTaskTable.parkedFlockFor threadId state.Kernel.Tasks with
+                        // Spelled out, because the identity renders as a bare
+                        // number and a reader would otherwise take it for the
+                        // descriptor the guest passed — which is the one thing
+                        // it is deliberately not.
+                        | Some parked -> Some $"on open file description %O{parked.Requester}, %O{parked.Mode}"
+                        | None ->
+                            // Reported rather than raised: this renderer runs
+                            // while diagnosing a stuck guest, and a diagnostic
+                            // that throws replaces the problem with itself.
+                            Some "on nothing recorded (this is an interpreter bug)"
+                    | _ -> None
             }
         )
 
@@ -305,7 +330,11 @@ module GuestLocation =
 
     let renderThread (location : GuestThreadLocation) : string =
         let (ThreadId i) = location.Thread
-        let prefix = $"thread %d{i} (%O{location.Status})"
+
+        let prefix =
+            match location.WaitingFor with
+            | None -> $"thread %d{i} (%O{location.Status})"
+            | Some waiting -> $"thread %d{i} (%O{location.Status} %s{waiting})"
 
         match location.Position with
         | GuestThreadPosition.NoFrame -> prefix

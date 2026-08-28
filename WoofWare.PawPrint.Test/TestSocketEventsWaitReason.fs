@@ -131,6 +131,7 @@ module TestSocketEventsWaitReason =
                 {
                     Thread = ThreadId 4
                     Status = blocked
+                    WaitingFor = None
                     Position =
                         GuestThreadPosition.CalledFrom (
                             {

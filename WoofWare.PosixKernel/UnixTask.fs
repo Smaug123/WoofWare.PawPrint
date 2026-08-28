@@ -79,6 +79,23 @@ type ParkedSocketWait =
         MaxEvents : int
     }
 
+/// One task's in-flight `flock` acquisition: which open file description it is
+/// waiting to lock, and how.
+///
+/// Exactly the payload of the `WakeCondition` that parked it, and derived from
+/// that condition rather than built beside it (`UnixSystem.parkFlock`), so that
+/// a record disagreeing with the condition a client is polling is unwritable
+/// rather than merely unwritten.
+type ParkedFlock =
+    {
+        /// The open file description whose lock is being waited for.
+        Requester : OpenFileDescriptionId
+        /// The lock that was asked for. A conversion has already dropped
+        /// whatever this description held, so this is what it will hold if the
+        /// acquisition ever completes, not what it holds now.
+        Mode : FlockMode
+    }
+
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
 ///
@@ -119,6 +136,20 @@ type UnixTaskState =
         /// re-entry consults it rather than the guest's argument cells, which
         /// the guest may have written since.
         ParkedSocketWait : ParkedSocketWait option
+        /// The `flock` acquisition this task is blocked in, if it is blocked in
+        /// one.
+        ///
+        /// Held by *description identity*, exactly as `ParkedSocketWait` holds
+        /// its port and for the same reason: a sleeping task keeps the kernel
+        /// object rather than the descriptor number, and descriptor numbers are
+        /// reused as soon as they are free. The re-entry finishes the
+        /// acquisition against this rather than against the number the call was
+        /// made through.
+        ///
+        /// It is also what lets `close` refuse to destroy a description
+        /// something is waiting on: a rule about kernel objects, which this
+        /// library can only apply to a park it can see.
+        ParkedFlock : ParkedFlock option
     }
 
 /// The tasks a simulated process owns, by whatever a client uses to name one.
@@ -162,6 +193,7 @@ module UnixTaskTable =
                 Cpu = cpu
                 OsThreadId = osThreadId
                 ParkedSocketWait = None
+                ParkedFlock = None
             }
             tasks
 
@@ -195,6 +227,35 @@ module UnixTaskTable =
             name
             { existing with
                 ParkedSocketWait = wait
+            }
+            tasks
+
+    /// The `flock` acquisition `name` is blocked in, if any.
+    let parkedFlockFor<'Task when 'Task : comparison>
+        (name : 'Task)
+        (tasks : Map<'Task, UnixTaskState>)
+        : ParkedFlock option
+        =
+        (get name tasks).ParkedFlock
+
+    /// Record that `name` has parked in an `flock`, or (with `None`) that it is
+    /// no longer in one.
+    ///
+    /// Clients park through `UnixSystem.parkFlock` rather than through this,
+    /// which is what ties the record to the condition that produced it; this is
+    /// how the record is cleared, and how `parkFlock` writes it.
+    let withParkedFlock<'Task when 'Task : comparison>
+        (name : 'Task)
+        (parked : ParkedFlock option)
+        (tasks : Map<'Task, UnixTaskState>)
+        : Map<'Task, UnixTaskState>
+        =
+        let existing = get name tasks
+
+        Map.add
+            name
+            { existing with
+                ParkedFlock = parked
             }
             tasks
 

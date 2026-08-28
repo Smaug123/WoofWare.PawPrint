@@ -159,6 +159,7 @@
     <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestFlockBlocking.fs" />
+    <Compile Include="TestFlockPark.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
     <Compile Include="TestLSeek.fs" />
     <Compile Include="TestUserBufferCheck.fs" />
