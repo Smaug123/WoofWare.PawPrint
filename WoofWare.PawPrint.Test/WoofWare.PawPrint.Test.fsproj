@@ -108,6 +108,7 @@
     <Compile Include="TestCrossAssemblyInitSetter.fs" />
     <Compile Include="TestCrossAssemblyFnPtrOverload.fs" />
     <Compile Include="TestCrossAssemblyOverloadTokenSpace.fs" />
+    <Compile Include="TestCrossAssemblyTypeForwarding.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />

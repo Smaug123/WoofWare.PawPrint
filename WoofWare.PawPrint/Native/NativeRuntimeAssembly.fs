@@ -4,6 +4,29 @@ namespace WoofWare.PawPrint
 module NativeRuntimeAssembly =
     open System.Collections.Immutable
 
+    /// <summary>
+    /// How <c>AssemblyNative_GetTypeCore</c> answers when following a forwarder did not produce a
+    /// type.
+    /// </summary>
+    /// <remarks>
+    /// Three cases because .NET 10 does three different things, measured at both
+    /// <c>throwOnError</c> settings. They are not interchangeable: collapsing any two makes one of
+    /// the two answers wrong.
+    /// </remarks>
+    [<RequireQualifiedAccess>]
+    type private ForwarderMiss =
+        /// Leave <c>retType</c> null and let <c>TypeNameResolver</c> decide whether that becomes a
+        /// <c>TypeLoadException</c>, which it does only when the caller asked to be thrown at.
+        | AnswerNull
+
+        /// Raise <c>FileNotFoundException</c>, which <c>RuntimeAssembly.GetTypeCore</c> catches
+        /// itself when the caller did not ask to be thrown at.
+        | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+
+        /// Raise <c>TypeLoadException</c>. Nothing on the way out catches it, so the guest sees it
+        /// whichever way it asked.
+        | BaseTypeAbsent of TypeResolutionMiss
+
     let private splitAtLastDot (name : string) : string * string =
         // CoreCLR's ns::FindSep walks back from the end and splits at the
         // final '.': everything before becomes the namespace, everything
@@ -1429,12 +1452,63 @@ module NativeRuntimeAssembly =
 
             let ns, simple = splitAtLastDot typeName
 
-            let topLevel = assembly.TryGetTopLevelTypeDef ns simple
+            // The asking assembly's class loader consults the manifest's `ExportedType` rows when
+            // it has no `TypeDef` of that name, so a forwarder is followed here and the answer is
+            // the type as the assembly that *defines* it declares it. That assembly is then also
+            // where any nested names are looked up: a nested type lives in the same module as its
+            // declaring type, so re-following a forwarder chain for it would be meaningless
+            // (vm/assemblynative.cpp:387-393 re-roots `pClassLoader` for exactly that reason).
+            // A chain that does not arrive is not a crash here. `Assembly.GetType(name,
+            // throwOnError: false)` answers `null` for both ways of not arriving, and
+            // `throwOnError: true` distinguishes them — so the two are reported differently and
+            // CoreLib decides what the guest sees.
+            let miss, state, topLevel =
+                match assembly.TryGetTopLevelTypeDef ns simple with
+                | Some typeDef -> ForwarderMiss.AnswerNull, state, Some (assembly, typeDef)
+                | None ->
+
+                match assembly.TryGetTopLevelExportedType (Some ns) simple with
+                | None -> ForwarderMiss.AnswerNull, state, None
+                | Some export ->
+
+                match
+                    IlMachineTypeResolution.tryResolveTypeFromExport
+                        ctx.LoggerFactory
+                        assembly
+                        export
+                        ImmutableArray.Empty
+                        state
+                with
+                | state, ExportedTypeResolution.Forwarded (definingAssembly, forwarded) ->
+                    // Back to the type as its own metadata declares it: no generic arguments were
+                    // supplied above, so nothing was substituted, and the allocation below wants
+                    // the declared generic parameters rather than an instantiation of them.
+                    ForwarderMiss.AnswerNull,
+                    state,
+                    Some (definingAssembly, definingAssembly.TypeDefs.[forwarded.TypeDefHandle])
+                | state, ExportedTypeResolution.TypeAbsent _ ->
+                    // Every assembly in the chain bound, and none declares the type. CoreCLR's
+                    // loader hands back a null TypeHandle, and `TypeNameResolver` is what turns
+                    // that into a `TypeLoadException` when the caller asked to be thrown at — so
+                    // reporting absence here is reporting it at the right layer.
+                    ForwarderMiss.AnswerNull, state, None
+                | state, ExportedTypeResolution.AssemblyUnavailable reference ->
+                    // The chain named an assembly nothing supplies. CoreCLR raises
+                    // `FileNotFoundException` out of the QCall, and `RuntimeAssembly.GetTypeCore`
+                    // catches it `when (!throwOnFileNotFound)` — so raising it is what lets
+                    // `throwOnError: false` answer null while `throwOnError: true` throws.
+                    ForwarderMiss.AssemblyUnavailable reference, state, None
+                | state, ExportedTypeResolution.BaseTypeAbsent typeMiss ->
+                    // The type was found; something in its base chain is not declared where the
+                    // metadata says. That is a load failure of a *type*, not of an assembly, so the
+                    // catch in `RuntimeAssembly.GetTypeCore` does not apply and the guest sees it
+                    // either way.
+                    ForwarderMiss.BaseTypeAbsent typeMiss, state, None
 
             let resolved =
                 match topLevel with
                 | None -> None
-                | Some top ->
+                | Some (definingAssembly, top) ->
                     let rec walk
                         (parent : TypeInfo<GenericParamFromMetadata, TypeDefn>)
                         (rest : string list)
@@ -1448,7 +1522,7 @@ module NativeRuntimeAssembly =
                             // when consumers smuggle a dotted name through.
                             let _, nestedSimple = splitAtLastDot name
 
-                            match assembly.TryGetNestedTypeDef parent.TypeDefHandle nestedSimple with
+                            match definingAssembly.TryGetNestedTypeDef parent.TypeDefHandle nestedSimple with
                             | None -> None
                             | Some child -> walk child rest
 
@@ -1456,16 +1530,50 @@ module NativeRuntimeAssembly =
 
             match resolved with
             | None ->
-                // CoreCLR also follows type forwarders (manifest exported types)
-                // here when the TypeDef lookup misses. Be explicit about that
-                // unimplemented path so tests that hit it fail loudly rather
-                // than silently returning null.
-                if assembly.TryGetTopLevelExportedType (Some ns) simple |> Option.isSome then
-                    failwith $"TODO: %s{operation} type forwarding for %s{ns}.%s{simple} in %s{assemblyFullName}"
+                match miss with
+                | ForwarderMiss.AnswerNull ->
+                    // Caller's local was preinitialized to null (Type? type = null);
+                    // leaving retType untouched preserves that.
+                    NativeHandlerResult.completed state |> Some
+                | ForwarderMiss.AssemblyUnavailable reference ->
+                    // `FileName` stays null where the real runtime names the assembly: this channel
+                    // runs the parameterless constructor and can then set only `_message`.
+                    //
+                    // Elsewhere PawPrint declines to write a message it cannot pair with the field
+                    // that agrees with it (`_paramName`, `_className`), because a half-populated
+                    // exception invites a guest to trust one half. The reasoning does not reach
+                    // here: the alternative is not a duller exception but no exception, i.e. the
+                    // host abort this replaced, which diverges from the real runtime in the
+                    // *control flow* a guest can actually branch on. Under `throwOnError: false`,
+                    // the overwhelmingly common caller, CoreLib swallows this whole and neither
+                    // half is observable at all.
+                    NativeHandlerResult.raiseExceptionWithMessage
+                        ctx.BaseClassTypes.FileNotFoundException
+                        (Some $"Could not load file or assembly '%s{reference.Name.FullName}'.")
+                        state
+                    |> Some
+                | ForwarderMiss.BaseTypeAbsent typeMiss ->
+                    // Wording measured off .NET 10, which reports the *base* type's name and the
+                    // assembly that was supposed to declare it. `TypeName` is that same name there
+                    // and stays null here, for the reason given on the sibling arm above.
+                    let message =
+                        match typeMiss with
+                        | TypeResolutionMiss.TopLevelTypeAbsent (searchedIn, missNs, missName) ->
+                            let qualified =
+                                match missNs with
+                                | None
+                                | Some "" -> missName
+                                | Some missNs -> $"%s{missNs}.%s{missName}"
 
-                // Caller's local was preinitialized to null (Type? type = null);
-                // leaving retType untouched preserves that.
-                NativeHandlerResult.completed state |> Some
+                            $"Could not load type '%s{qualified}' from assembly '%s{searchedIn}'."
+                        | TypeResolutionMiss.NestedTypeAbsent (searchedIn, declaringType, missName) ->
+                            $"Could not load type '%s{declaringType}+%s{missName}' from assembly '%s{searchedIn}'."
+
+                    NativeHandlerResult.raiseExceptionWithMessage
+                        ctx.BaseClassTypes.TypeLoadException
+                        (Some message)
+                        state
+                    |> Some
             | Some typeInfo ->
                 let runtimeTypeAddr, state =
                     if typeInfo.Generics.IsEmpty then

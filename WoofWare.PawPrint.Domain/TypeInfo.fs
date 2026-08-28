@@ -345,6 +345,12 @@ type BaseClassTypes<'corelib> =
         /// shape ("Bad class token"). Reachable from `Reflection.Emit` by rewriting a
         /// `DynamicScope` entry to a different kind after the method was minted.
         BadImageFormatException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+
+        /// <c>System.IO.FileNotFoundException</c>, which the runtime raises when an assembly a
+        /// type depends on cannot be bound. CoreLib catches it by type in
+        /// <c>RuntimeAssembly.GetTypeCore</c>, so a native handler raising it is asking CoreLib
+        /// to classify the failure rather than classifying it itself.
+        FileNotFoundException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentOutOfRangeException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingFieldException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Raised by the runtime — not the BCL — when reflection is asked to set a static
