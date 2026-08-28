@@ -6,6 +6,32 @@ open System.Reflection
 open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
+/// <summary>
+/// What following an assembly's type forwarders to the type they name produced.
+/// </summary>
+/// <remarks>
+/// The two failure cases are distinct facts about the world, and callers that report them to a
+/// guest must tell them apart: a reference nobody can bind is what the real runtime reports as
+/// <c>FileNotFoundException</c>, whereas a chain that binds every assembly and still finds no such
+/// type is a plain absence, which <c>Assembly.GetType</c> reports as <c>null</c> (and
+/// <c>TypeNameResolver</c> turns into <c>TypeLoadException</c> when the caller asked it to throw).
+/// </remarks>
+type ExportedTypeResolution =
+    /// The chain ended at a type definition, in the assembly that declares it.
+    | Forwarded of DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+
+    /// A reference in the chain names an assembly no runtime directory supplies.
+    | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+
+    /// Every assembly in the chain bound, and none of them declares the type.
+    | TypeAbsent of TypeResolutionMiss
+
+    /// The chain arrived at the type, and a type in *its* base chain is not declared where the
+    /// metadata says it is. Distinct from <c>TypeAbsent</c> because the real runtime answers the
+    /// two differently: this one reaches a guest as a <c>TypeLoadException</c> whether or not the
+    /// caller asked to be thrown at, whereas an absent type is simply not found.
+    | BaseTypeAbsent of TypeResolutionMiss
+
 /// Functions for resolving type metadata (TypeRefs, TypeDefs, TypeSpecs) to concrete TypeInfo values.
 /// Operates on the loaded-assemblies dictionary directly, without requiring IlMachineState.
 [<RequireQualifiedAccess>]
@@ -26,18 +52,18 @@ module TypeResolution =
     /// identity of what it binds to (the .NET Framework compatibility facades reference
     /// implementation assemblies as <c>Version=0.0.0.0</c>).
     /// </remarks>
-    let internal loadAssembly
+    let internal tryLoadAssembly
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (referencedInAssembly : DumpedAssembly)
         (r : AssemblyReferenceHandle)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * DumpedAssembly * AssemblyName
+        : (LoadedAssemblies * DumpedAssembly * AssemblyName) option
         =
         let assemblyRef = referencedInAssembly.AssemblyReferences.[r]
 
         match assemblies.TryResolveReference assemblyRef with
-        | Some v -> assemblies, v, v.Name
+        | Some v -> Some (assemblies, v, v.Name)
         | None ->
             let assemblyName = assemblyRef.Name
             let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
@@ -60,12 +86,30 @@ module TypeResolution =
                 )
 
             match assy with
-            | None -> failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
+            | None -> None
             | Some assy ->
                 // Record both the assembly (under its own definition identity) and the binding
                 // that got us here, so the next probe with this reference identity is a hit.
                 let assemblies, canonical = assemblies.WithBoundReference assemblyRef assy
-                assemblies, canonical, canonical.Name
+                Some (assemblies, canonical, canonical.Name)
+
+    /// <summary>
+    /// As <see cref="tryLoadAssembly"/>, for the majority of callers that have no way to report a
+    /// failed bind and so must terminate on one.
+    /// </summary>
+    let internal loadAssembly
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (referencedInAssembly : DumpedAssembly)
+        (r : AssemblyReferenceHandle)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * DumpedAssembly * AssemblyName
+        =
+        match tryLoadAssembly loggerFactory dotnetRuntimeDirs referencedInAssembly r assemblies with
+        | Some loaded -> loaded
+        | None ->
+            let assemblyName = referencedInAssembly.AssemblyReferences.[r].Name
+            failwith $"Could not find a readable DLL in any runtime dir with name %s{assemblyName.Name}.dll"
 
     /// <summary>
     /// The interpreter's assembly loader: binds AssemblyReferences by simple name against
@@ -78,11 +122,12 @@ module TypeResolution =
     /// </remarks>
     let directoryLoader (loggerFactory : ILoggerFactory) (dotnetRuntimeDirs : string seq) : IAssemblyLoad =
         { new IAssemblyLoad with
-            member _.LoadAssembly loaded referencedIn ref =
-                let assemblies, targetAssy, _name =
-                    loadAssembly loggerFactory dotnetRuntimeDirs loaded.[referencedIn] ref loaded
-
-                assemblies, targetAssy
+            member _.TryLoadAssembly loaded referencedIn ref =
+                match tryLoadAssembly loggerFactory dotnetRuntimeDirs loaded.[referencedIn] ref loaded with
+                | Some (assemblies, targetAssy, _name) -> Ok (assemblies, targetAssy)
+                | None ->
+                    AssemblyLoadFailure.NoSuchAssembly loaded.[referencedIn].AssemblyReferences.[ref]
+                    |> Error
         }
 
     /// <summary>
@@ -104,6 +149,20 @@ module TypeResolution =
     /// loading its base type, and so has the same closure property for free.
     /// </para>
     /// </remarks>
+    let private tryPrimeBaseChain
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (assemblies : LoadedAssemblies)
+        (definedIn : DumpedAssembly)
+        (ty : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
+        : LoadedAssemblies * BaseChainFailure option
+        =
+        Concretization.tryEnsureTypeDefinitionBaseAssembliesLoaded
+            (directoryLoader loggerFactory dotnetRuntimeDirs)
+            assemblies
+            definedIn
+            ty.TypeDefHandle
+
     let private primeBaseChain
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
@@ -112,11 +171,9 @@ module TypeResolution =
         (ty : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
         : LoadedAssemblies
         =
-        Concretization.ensureTypeDefinitionBaseAssembliesLoaded
-            (directoryLoader loggerFactory dotnetRuntimeDirs)
-            assemblies
-            definedIn
-            ty.TypeDefHandle
+        match tryPrimeBaseChain loggerFactory dotnetRuntimeDirs assemblies definedIn ty with
+        | assemblies, None -> assemblies
+        | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
     let rec internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
@@ -131,6 +188,7 @@ module TypeResolution =
         match Assembly.resolveTopLevelTypeFromName assy assemblies ns name genericArgs with
         | TypeResolutionResult.Resolved (assy, _, typeDef) ->
             primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
+        | TypeResolutionResult.NotFound miss -> failwithf "Top-level type resolution failed: %O" miss
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let assemblies, _, _ =
                 loadAssembly
@@ -145,7 +203,68 @@ module TypeResolution =
 
             resolveTopLevelTypeFromName loggerFactory dotnetRuntimeDirs ns name genericArgs assy assemblies
 
-    let rec internal resolveTypeFromExport
+    /// <summary>
+    /// Follow <paramref name="ty" />'s forwarder chain to the assembly that declares the type,
+    /// loading assemblies along the way, and report what happened rather than terminating on a
+    /// chain that does not arrive anywhere.
+    /// </summary>
+    /// <remarks>
+    /// The returned <c>LoadedAssemblies</c> carries every load the walk did manage, in every
+    /// outcome: a chain that binds two assemblies and then fails on a third must not discard the
+    /// two.
+    /// </remarks>
+    let rec internal tryResolveTypeFromExport
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (fromAssembly : DumpedAssembly)
+        (ty : WoofWare.PawPrint.ExportedType)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * ExportedTypeResolution
+        =
+        match Assembly.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
+        | TypeResolutionResult.Resolved (assy, _, typeDef) ->
+            // Arriving at the type is not enough to hand it over: the pure walks a caller will run
+            // on it cannot load, so its base chain has to be primed first — and priming can itself
+            // need an assembly nobody supplies. The real runtime reports that the same way it
+            // reports a missing forwarder target, because it is the same fact: a type this one
+            // depends on could not be loaded.
+            // Whatever priming managed is kept in every arm below: a chain that loads two
+            // assemblies and then fails on a third must not lose the two, because a guest can
+            // enumerate what is loaded.
+            match tryPrimeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef with
+            | assemblies, None -> assemblies, ExportedTypeResolution.Forwarded (assy, typeDef)
+            | assemblies, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.NoSuchAssembly reference)) ->
+                assemblies, ExportedTypeResolution.AssemblyUnavailable reference
+            | assemblies, Some (BaseChainFailure.BaseTypeAbsent miss) ->
+                assemblies, ExportedTypeResolution.BaseTypeAbsent miss
+            | _, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) as failure) ->
+                // Unreachable: the loader used here reads files. A caller's mistaken belief about
+                // what is already loaded is a bug in us, not a fact to report onwards.
+                failwith (string<BaseChainFailure> failure)
+        | TypeResolutionResult.NotFound miss -> assemblies, ExportedTypeResolution.TypeAbsent miss
+        | TypeResolutionResult.FirstLoadAssy loadFirst ->
+            match
+                tryLoadAssembly
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    assemblies.[snd loadFirst.Handle]
+                    (fst loadFirst.Handle)
+                    assemblies
+            with
+            | None -> assemblies, ExportedTypeResolution.AssemblyUnavailable loadFirst
+            | Some (assemblies, _, _) ->
+
+            let assemblies =
+                LoadedAssemblies.assertReferenceBound $"exported type %s{ty.Name}" loadFirst assemblies
+
+            tryResolveTypeFromExport loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies
+
+    /// <summary>
+    /// As <see cref="tryResolveTypeFromExport"/>, for callers that have no way to report a chain
+    /// which does not arrive anywhere and so must terminate on one.
+    /// </summary>
+    let internal resolveTypeFromExport
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (fromAssembly : DumpedAssembly)
@@ -154,22 +273,18 @@ module TypeResolution =
         (assemblies : LoadedAssemblies)
         : LoadedAssemblies * DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
         =
-        match Assembly.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) ->
-            primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
-        | TypeResolutionResult.FirstLoadAssy loadFirst ->
-            let assemblies, _, _ =
-                loadAssembly
-                    loggerFactory
-                    dotnetRuntimeDirs
-                    assemblies.[snd loadFirst.Handle]
-                    (fst loadFirst.Handle)
-                    assemblies
-
-            let assemblies =
-                LoadedAssemblies.assertReferenceBound $"exported type %s{ty.Name}" loadFirst assemblies
-
-            resolveTypeFromExport loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies
+        match tryResolveTypeFromExport loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies with
+        | assemblies, ExportedTypeResolution.Forwarded (assy, typeDef) -> assemblies, assy, typeDef
+        | _, ExportedTypeResolution.AssemblyUnavailable reference ->
+            failwith $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
+        | _, ExportedTypeResolution.TypeAbsent miss ->
+            failwithf "Type forwarder %s from %s does not arrive: %O" ty.Name fromAssembly.Name.FullName miss
+        | _, ExportedTypeResolution.BaseTypeAbsent miss ->
+            failwithf
+                "Type forwarder %s from %s arrives at a type whose base chain is broken: %O"
+                ty.Name
+                fromAssembly.Name.FullName
+                miss
 
     let rec internal resolveTypeFromRef
         (loggerFactory : ILoggerFactory)
@@ -183,6 +298,12 @@ module TypeResolution =
         match Assembly.resolveTypeRef assemblies referencedInAssembly typeGenericArgs target with
         | TypeResolutionResult.Resolved (assy, _, typeDef) ->
             primeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef, assy, typeDef
+        | TypeResolutionResult.NotFound miss ->
+            failwithf
+                "Type reference %s from %s does not resolve: %O"
+                target.Name
+                referencedInAssembly.Name.FullName
+                miss
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let assemblies, _, _ =
                 loadAssembly

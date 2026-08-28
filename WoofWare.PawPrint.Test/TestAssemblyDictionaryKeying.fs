@@ -55,9 +55,10 @@ module TestAssemblyDictionaryKeying =
         let rec go (assemblies : LoadedAssemblies) : LoadedAssemblies * DumpedAssembly * ResolvedTypeIdentity =
             match Assembly.resolveTopLevelTypeFromName fromAssembly assemblies (Some ns) name ImmutableArray.Empty with
             | TypeResolutionResult.Resolved (assy, identity, _) -> assemblies, assy, identity
+            | TypeResolutionResult.NotFound miss -> failwithf "%O" miss
             | TypeResolutionResult.FirstLoadAssy assyRef ->
                 let handle, referencedIn = assyRef.Handle
-                let assemblies, _ = loadAssembly.LoadAssembly assemblies referencedIn handle
+                let assemblies, _ = IAssemblyLoad.load loadAssembly assemblies referencedIn handle
 
                 // Same guard production uses: a load that leaves the reference unbound would make
                 // this retry spin forever, so fail with a diagnosis instead of hanging.

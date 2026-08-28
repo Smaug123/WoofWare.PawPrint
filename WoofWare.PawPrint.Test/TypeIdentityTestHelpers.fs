@@ -11,7 +11,7 @@ module TypeIdentityTestHelpers =
 
     type NoAssemblyLoad () =
         interface IAssemblyLoad with
-            member _.LoadAssembly _loadedAssemblies _referencedIn _handle =
+            member _.TryLoadAssembly _loadedAssemblies _referencedIn _handle =
                 failwith "Test unexpectedly attempted to load an assembly"
 
     type RecordingAssemblyLoad (availableAssemblies : LoadedAssemblies) =
@@ -20,11 +20,11 @@ module TypeIdentityTestHelpers =
         member _.Calls : (string * string) list = calls |> Seq.toList
 
         interface IAssemblyLoad with
-            member _.LoadAssembly
+            member _.TryLoadAssembly
                 (loadedAssemblies : LoadedAssemblies)
                 (referencedIn : System.Reflection.AssemblyName)
                 (handle : AssemblyReferenceHandle)
-                : LoadedAssemblies * DumpedAssembly
+                : Result<LoadedAssemblies * DumpedAssembly, AssemblyLoadFailure>
                 =
                 let referencedInAssembly =
                     match loadedAssemblies.TryByDefinition referencedIn with
@@ -44,7 +44,7 @@ module TypeIdentityTestHelpers =
                 calls.Add (referencedIn.FullName, targetAssembly.Name.FullName)
                 // Same bookkeeping production does: register under the definition identity and
                 // record the binding that got us here.
-                loadedAssemblies.WithBoundReference assemblyRef targetAssembly
+                loadedAssemblies.WithBoundReference assemblyRef targetAssembly |> Ok
 
     // Factory intentionally undisposed: f's return value (e.g. a DumpedAssembly) may close over
     // the factory's sinks, so disposing here would silently drop later log events.
@@ -103,6 +103,7 @@ module TypeIdentityTestHelpers =
         match result with
         | TypeResolutionResult.FirstLoadAssy assyRef ->
             failwithf "Expected a resolved type, but the resolver requested assembly load for %s" assyRef.Name.FullName
+        | TypeResolutionResult.NotFound miss -> failwithf "Expected a resolved type, but: %O" miss
         | TypeResolutionResult.Resolved (assy, identity, typeInfo) -> assy, identity, typeInfo
 
     let findTypeRef (predicate : TypeRef -> bool) (assy : DumpedAssembly) : TypeRef =
