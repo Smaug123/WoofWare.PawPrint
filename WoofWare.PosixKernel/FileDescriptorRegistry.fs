@@ -290,43 +290,30 @@ type FlockMode =
     | Exclusive
 
 /// Which readiness conditions one registration with a socket event port
-/// watches, as the PAL names them (`SocketEvents`, pal_networking.h).
+/// watches: the maskable part of the epoll interest set `epoll_ctl` stores.
 ///
-/// The epoll mask a real kernel stores is a bijection of these five bits
-/// (`GetEPollEvents`, pal_networking.c) plus an unconditional `EPOLLET`, so
-/// edge-triggering is a constant of the wrapper rather than state here.
+/// `EPOLLERR` and `EPOLLHUP` have no field because they are not interest.
+/// `epoll_ctl` forces them into every stored mask, so a registration that
+/// asked for them and one that did not are the same registration — measured
+/// on Linux 6.18.5 through `/proc/self/fdinfo`, the only surface that shows a
+/// stored mask at all: interest 0 and `EPOLLHUP|EPOLLERR` both read back
+/// `events: 18`, and `EPOLLIN` and `EPOLLIN|EPOLLHUP|EPOLLERR` both read back
+/// `19` (`docs/plans/2026-08-23-posix-kernel-extraction/fdinfo.c`). The two
+/// conditions are still *reported*, which is `ReadinessLevel.reportedUnder`'s
+/// business rather than this record's.
+///
+/// Edge-triggering is likewise absent: a client that sets `EPOLLET` on every
+/// registration, as .NET's shim does, has made it a constant rather than
+/// state.
 type SocketEventInterest =
     {
-        /// `SA_READ` (0x01); `EPOLLIN`.
-        Read : bool
-        /// `SA_WRITE` (0x02); `EPOLLOUT`.
-        Write : bool
-        /// `SA_READCLOSE` (0x04); `EPOLLRDHUP`.
-        ReadClose : bool
-        /// `SA_CLOSE` (0x08); `EPOLLHUP`.
-        Close : bool
-        /// `SA_ERROR` (0x10); `EPOLLERR`.
-        Error : bool
+        /// Report `EPOLLIN` when it is present.
+        In : bool
+        /// Report `EPOLLOUT` when it is present.
+        Out : bool
+        /// Report `EPOLLRDHUP` when it is present.
+        RdHup : bool
     }
-
-[<RequireQualifiedAccess>]
-module SocketEventInterest =
-    /// Parse a PAL `SocketEvents` mask the wrapper has already screened.
-    /// Partial: `SystemNative_TryChangeSocketEventRegistration` answers EINVAL
-    /// for bits outside 0x1F before any state is touched, so receiving one
-    /// here is an interpreter bug rather than a guest error.
-    let ofBits (context : string) (bits : int) : SocketEventInterest =
-        if bits &&& ~~~0x1F <> 0 then
-            failwith
-                $"%s{context}: SocketEvents mask 0x%x{bits} has bits outside READ|WRITE|READCLOSE|CLOSE|ERROR (0x1F); the wrapper's EINVAL screen should have refused it before any registration was attempted (this is an interpreter bug)."
-
-        {
-            Read = bits &&& 0x01 <> 0
-            Write = bits &&& 0x02 <> 0
-            ReadClose = bits &&& 0x04 <> 0
-            Close = bits &&& 0x08 <> 0
-            Error = bits &&& 0x10 <> 0
-        }
 
 /// The set of readiness conditions a descriptor presents right now, or the
 /// subset of one that a particular waiter reports.
@@ -338,12 +325,12 @@ module SocketEventInterest =
 /// *projection* at the boundary, which is each waiter's own business:
 /// `reportedUnder` for epoll, `PollEvents.ofLevel` for poll.
 ///
-/// The fields are named in epoll's terms rather than the PAL's `SocketEvents`
-/// because those two disagree at delivery: the PAL folds `EPOLLHUP` into
-/// `EPOLLIN|EPOLLOUT` before converting, so `Hup` here does not correspond to
-/// a deliverable `SA_CLOSE`. Poll's projection drops `RdHup` for a different
-/// boundary reason — neither direction of the PAL's poll conversion has an
-/// `RDHUP` row, so the PAL can never ask for it.
+/// The fields are epoll's own bits, and a client's delivery encoding may not
+/// correspond to them one for one: .NET's shim folds `EPOLLHUP` into
+/// `EPOLLIN|EPOLLOUT` before converting, so `Hup` reaches a guest as those two
+/// rather than as a condition of its own. Poll's projection drops `RdHup` for
+/// a different boundary reason — neither direction of that shim's poll
+/// conversion has an `RDHUP` row, so it can never ask for it.
 type ReadinessLevel =
     {
         /// `EPOLLIN`.
@@ -372,14 +359,17 @@ module ReadinessLevel =
     let isEmpty (readiness : ReadinessLevel) : bool = readiness = none
 
     /// The subset of `level` a registration with `interest` reports: `IN`,
-    /// `OUT` and `RDHUP` only when asked for, `ERR` and `HUP` always —
-    /// epoll ignores those two bits in an interest set (measured: a pending
-    /// refusal registered with interest 0 still reports `ERR|HUP`).
+    /// `OUT` and `RDHUP` only when asked for, `ERR` and `HUP` always.
+    ///
+    /// That those two are unconditional is why `SocketEventInterest` has no
+    /// field for them: they are reported to a registration that could not have
+    /// asked (measured, a pending refusal registered with interest 0 still
+    /// reports `ERR|HUP`), and `epoll_ctl` does not keep the asking either.
     let reportedUnder (interest : SocketEventInterest) (level : ReadinessLevel) : ReadinessLevel =
         {
-            In = level.In && interest.Read
-            Out = level.Out && interest.Write
-            RdHup = level.RdHup && interest.ReadClose
+            In = level.In && interest.In
+            Out = level.Out && interest.Out
+            RdHup = level.RdHup && interest.RdHup
             Hup = level.Hup
             Err = level.Err
         }
@@ -393,9 +383,10 @@ module ReadinessLevel =
 /// on the way in or out.
 ///
 /// A distinct alphabet from `SocketEventInterest`, and deliberately not shared
-/// with it: that one is .NET's `SocketEvents` (`SA_READ` 0x01 …), these are
-/// poll's bits (`POLLIN` 0x01 …), and the two number different conditions with
-/// the same small integers.
+/// with it. That one is epoll's interest set and carries no numbering at all;
+/// these are poll's bits, and this type is a caller's `events` *and* the
+/// `revents` it reads back — which is why it keeps `Err`, `Hup` and `Nval`
+/// where the interest record drops the conditions nobody can ask for.
 type PollEvents =
     {
         /// `POLLIN`, 0x01.
@@ -483,8 +474,8 @@ module PollEvents =
 type SocketEventRegistration =
     {
         /// Which conditions this registration watches. `EPOLLERR` and
-        /// `EPOLLHUP` are reported whether or not `Error`/`Close` are set,
-        /// exactly as epoll ignores those two bits in an interest set.
+        /// `EPOLLHUP` are reported on top of these whatever the caller asked
+        /// for, so they are not among them.
         Interest : SocketEventInterest
         /// The caller's `uintptr_t data`, delivered verbatim in
         /// `SocketEvent.Data` when an event fires. CoreLib passes

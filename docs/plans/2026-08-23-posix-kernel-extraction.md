@@ -3465,5 +3465,77 @@ The refusal sits ahead of every wake, but as hygiene rather than as a guarantee:
 is discarded when the exception leaves the driver and nothing can observe it. A mutant
 that wakes first is equivalent, and is not claimed otherwise.
 
+**What is left after 9f**: the socket PAL cluster, the four socket entry points' own
+moves into the library, and the packaging items.
+
+#### Stage 9g: the `SocketEvents` alphabet leaves the library
+
+**Dependencies**: none beyond stage 7's precedent.
+
+Not an entry-point move and not packaging: the third PAL-residue cluster, which this
+document assigned to "stages 8 and 9, alongside the syscalls that use them". Stage 8's
+entry-point moves never happened, so it sat unretired while 9a–9f went past. It is the
+smallest remaining unit in stage 9, and it takes the allowlist from eight definitions to
+seven.
+
+`SocketEventInterest.ofBits` was the entry. Retiring it *alone* would have been worse
+than leaving it: the checker flags that function only through the word `SocketEvents` in
+its failure message, and the type it returns trips no marker at all — so deleting the
+function turns the check green while five PAL-named fields stay in the library with
+nothing recording them. The rename is the same decision, not scope beside it.
+
+**What the interest type becomes.** Three fields, `In`/`Out`/`RdHup`, named for epoll's
+bits. `Close` and `Error` are deleted rather than renamed, and the argument is not that
+nothing reads them today — though nothing does; `reportedUnder` is the only consumer of a
+registration's interest at all — but that no client *could*. `epoll_ctl` forces
+`EPOLLERR|EPOLLHUP` into every stored mask, so a caller that asks for them and one that
+does not have made the same registration.
+
+That is measured rather than reasoned, on the one surface that shows a stored interest
+mask at all (`docs/plans/2026-08-23-posix-kernel-extraction/fdinfo.c`, Linux 6.18.5):
+`/proc/self/fdinfo` reports `events: 18` for both interest 0 and `EPOLLHUP|EPOLLERR`, and
+`19` for both `EPOLLIN` and `EPOLLIN|EPOLLHUP|EPOLLERR`. The bits a caller passes are not
+recoverable even there, and what fdinfo shows is derivable from the three that remain.
+
+The alternative was five epoll-named fields with `Hup` and `Err` forced true by a
+constructor, which makes the record literally the mask `epoll_ctl` stored and
+`reportedUnder` a uniform five-way `&&` with no exception to remember. Rejected: it buys
+that uniformity with an invariant an F# record cannot enforce — two fields whose only
+lawful value is `true`, which any record-update expression can violate silently.
+
+A third shape, reusing `ReadinessLevel` as the interest type, was rejected for erasing
+the distinction between what is asked for and what is ready: `reportedUnder` could then
+be called with its arguments swapped and still typecheck.
+
+The *name* `SocketEventInterest` stays, because the singular `SocketEvent*` family is the
+library's own vocabulary (stage 9e's decision) and renaming one member of it would leave
+the family inconsistent.
+
+**Where the alphabet goes.** `WoofWare.PawPrint/Native/SocketEventsPal.fs`, modelled on
+stage 7's `Native/UnixErrorPal.fs` down to having the pinned upstream tree as its oracle.
+It takes the *out* direction with it: the `EPOLLHUP` fold and the mask construction in
+`SystemNative_WaitForSocketEvents` were inline and unnamed, transcribing two upstream
+functions with no unit test between them and no way to say which had drifted. They are
+now `ofReadiness` (`GetSocketEvents`, all five rows) and `delivered`
+(`ConvertEventEPollToSocketAsync`, the fold then that), kept apart precisely so the
+pinned source can check each one alone. The wrapper's EINVAL screen and the parse now
+share `supported` rather than writing `0x1F` in two projects.
+
+**Correctness oracle**:
+* The five `SocketEvents` values, the `SupportedEvents` screen, and the whole
+  `GetSocketEvents` table re-derived from the pinned `pal_networking.{c,h}` — including
+  that the screen *names* those five, not merely that it ORs to the same number.
+* `delivered` against `ofReadiness` composed with the fold, over all 32 readiness levels
+  rather than a sample, and the consequence a guest actually sees: no level delivers
+  `SA_CLOSE`.
+* `toInterest 0x18 = toInterest 0x00`, which is the collapse the three-field record
+  asserts, pinned as its own row.
+* The refusal row uses the literal `0x20` rather than `supported`, so that a `supported`
+  widened by mutation cannot move the boundary the row is testing.
+* `SocketEventDeliveryLinux.cs`, the Guest-tier fixture that asserts exact `Events` ints
+  including the fold, is what covers `delivered` end to end; `TestSocketEventDelivery`
+  operates upstream of the fold and cannot see it.
+
 **What is left of stage 9**: the four socket entry points' own moves into the library,
+the two remaining PAL clusters (socket creation, and the managed-enum signal mapping),
 and the packaging items.

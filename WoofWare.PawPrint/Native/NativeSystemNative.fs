@@ -5158,11 +5158,9 @@ module NativeSystemNative =
             // not a lookup), so the fds are decoded only past them: a guest
             // may pass a pointer as `port` beside equal masks, and the real
             // wrapper truncates it unread.
-            let supportedEvents = 0x1F
-
             if
-                currentEvents &&& ~~~supportedEvents <> 0
-                || newEvents &&& ~~~supportedEvents <> 0
+                currentEvents &&& ~~~SocketEventsPal.supported <> 0
+                || newEvents &&& ~~~SocketEventsPal.supported <> 0
             then
                 complete (UnixErrorPal.toPal UnixError.EINVAL) state
             elif currentEvents = newEvents then
@@ -5221,7 +5219,7 @@ module NativeSystemNative =
                 if newEvents = 0 then
                     SocketEventRegistrationChange.Remove
                 else
-                    let interest = SocketEventInterest.ofBits operation newEvents
+                    let interest = SocketEventsPal.toInterest operation newEvents
 
                     let placeholder =
                         match data with
@@ -5411,12 +5409,8 @@ module NativeSystemNative =
 
             // What one `epoll_wait` returning does: drain up to
             // `requestedCount` events from the port's ready list and convert
-            // each to the PAL's `SocketEvent` shape. The conversion is
-            // `ConvertEventEPollToSocketAsync`'s exactly: `EPOLLHUP` folds
-            // into `EPOLLIN|EPOLLOUT` and is dropped ("epoll does not play
-            // well with disconnected connection-oriented sockets" —
-            // pal_networking.c), so `SA_CLOSE` is never delivered under this
-            // flavour.
+            // each to the PAL's `SocketEvent` shape, which is
+            // `SocketEventsPal.delivered`.
             let deliver
                 (delivered : (uint64 * ReadinessLevel) list)
                 (kernel : EmulatedKernel)
@@ -5436,21 +5430,7 @@ module NativeSystemNative =
 
                 delivered
                 |> List.iteri (fun i (data, reported) ->
-                    let folded =
-                        if reported.Hup then
-                            { reported with
-                                Hup = false
-                                In = true
-                                Out = true
-                            }
-                        else
-                            reported
-
-                    let palEvents =
-                        (if folded.In then 0x01 else 0)
-                        ||| (if folded.Out then 0x02 else 0)
-                        ||| (if folded.RdHup then 0x04 else 0)
-                        ||| (if folded.Err then 0x10 else 0)
+                    let palEvents = SocketEventsPal.delivered reported
 
                     BinaryPrimitives.WriteUInt64LittleEndian (Span<byte> (bytes, i * elementSize, 8), data)
 

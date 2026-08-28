@@ -1735,11 +1735,9 @@ module TestFileDescriptorRegistry =
 
     let private readWrite : SocketEventInterest =
         {
-            Read = true
-            Write = true
-            ReadClose = false
-            Close = false
-            Error = false
+            In = true
+            Out = true
+            RdHup = false
         }
 
     let private change
@@ -1788,7 +1786,7 @@ module TestFileDescriptorRegistry =
 
         let readOnly =
             { readWrite with
-                Write = false
+                Out = false
             }
 
         let registry =
