@@ -2523,6 +2523,54 @@ module NativeRuntimeTypeHelpers =
             |> Some
         | other -> failwith $"%s{operation}: expected %s{argName} to hold an array reference, got %O{other}"
 
+    /// The declaring type CoreCLR reports for a MethodDef token: the *typical* one, which is the
+    /// generic type definition when the method's declaring type has type parameters and the closed
+    /// type otherwise.
+    ///
+    /// No caller-supplied substitution context is taken, deliberately.
+    /// `MemberLoader::GetMethodDescFromMethodDef` (memberload.cpp:587) takes no `SigTypeContext`,
+    /// so a MethodDef resolves to "the corresponding fully uninstantiated descriptor" whatever the
+    /// caller passed as type or method instantiation.
+    ///
+    /// Extracted from the `ModuleHandle_ResolveMethod` QCall so the identity it picks can be pinned
+    /// on its own: `RuntimeType.GetMethodBase` re-derives a declaring type from the *reflected*
+    /// type before any guest sees the result, so no differential case can tell a typical declaring
+    /// type from a closed one here.
+    let typicalDeclaringTypeTarget
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assembly : DumpedAssembly)
+        (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * RuntimeTypeHandleTarget
+        =
+        // `lookupTypeDefn` walks the declaring type's base chain and cannot load, so the chain has
+        // to be closed first: a MethodDef token may name a type whose base class lives in an
+        // assembly this run has not touched, and `Module.ResolveMethod` is allowed to be the first
+        // thing that touches it. Same discharge as `ExecutionConcretization.concretizeFieldDeclaringType`.
+        let state =
+            { state with
+                _LoadedAssemblies =
+                    Concretization.ensureTypeDefinitionBaseAssembliesLoaded
+                        (IlMachineState.loader loggerFactory state)
+                        state._LoadedAssemblies
+                        assembly
+                        method.RequiredDeclaringType.Definition.Get
+            }
+
+        let state, declaringTypeDefn =
+            IlMachineState.lookupTypeDefn baseClassTypes state assembly method.RequiredDeclaringType.Definition.Get
+
+        IlMachineState.runtimeTypeHandleTargetForTypeToken
+            loggerFactory
+            baseClassTypes
+            assembly
+            true
+            ImmutableArray.Empty
+            ImmutableArray.Empty
+            declaringTypeDefn
+            state
+
 /// Why `RuntimeTypeHandle_GetActivationInfo` refused to describe a type. Each case names the
 /// check in CoreCLR's `ValidateTypeAbleToBeInstantiated` (reflectioninvocation.cpp) that it
 /// corresponds to, and carries the guest exception CoreCLR throws for it. Message text is not

@@ -211,3 +211,74 @@ public class Holder
 
         resolved.Name |> shouldEqual "FSharpFunc`2"
         DumpedAssembly.isValueType baseTypes loadedAfter resolved |> shouldEqual false
+
+    /// FSharp.Core loaded as the entry assembly beside corelib, with the `netstandard` facade its
+    /// base-type TypeRefs point at still unloaded -- `setUp`'s state, as an `IlMachineState`.
+    let private machineStateWithUnloadedFacade
+        ()
+        : Microsoft.Extensions.Logging.ILoggerFactory * DumpedAssembly * BaseClassTypes<DumpedAssembly> * IlMachineState
+        =
+        let fsharpCore, baseTypes, _loaded, runtimeDirs = setUp ()
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let corelib = readAssembly Netstandard21FSharpCore.corelibPath
+
+        let state =
+            IlMachineState.initial loggerFactory (ImmutableArray.CreateRange runtimeDirs) fsharpCore
+
+        let state = state.WithLoadedAssembly corelib
+
+        Netstandard21FSharpCore.isLoaded state._LoadedAssemblies.DefinitionNames
+        |> shouldEqual false
+
+        loggerFactory, fsharpCore, baseTypes, state
+
+    [<Test>]
+    let ``the typical declaring type of a MethodDef needs no facade to be loaded`` () : unit =
+        // `ModuleHandle.ResolveMethod` reaches this for any MethodDef token, including one whose
+        // declaring type's base chain runs through an assembly nothing has loaded yet. There is no
+        // loading capability at hand, so the answer has to be derivable without a base-chain walk.
+        let loggerFactory, fsharpCore, baseTypes, state = machineStateWithUnloadedFacade ()
+
+        let unit = topLevelTypeDef fsharpCore "Microsoft.FSharp.Core" "Unit"
+
+        let method =
+            fsharpCore.Methods.Values
+            |> Seq.tryFind (fun method ->
+                match method.Owner.TryDeclaringType with
+                | Some declaringType -> declaringType.Identity = unit.Identity
+                | None -> false
+            )
+            |> Option.defaultWith (fun () -> failwith "expected Microsoft.FSharp.Core.Unit to declare a method")
+
+        let state, target =
+            NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget loggerFactory baseTypes fsharpCore method state
+
+        match target with
+        | RuntimeTypeHandleTarget.Closed handle ->
+            AllConcreteTypes.lookup handle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "declaring type was not registered in ConcreteTypes")
+            |> fun concreteType -> concreteType.Identity |> shouldEqual unit.Identity
+        | other -> failwithf "expected the closed non-generic type Unit, got %A" other
+
+    [<Test>]
+    let ``the typical declaring type of a method on a generic type needs no facade either`` () : unit =
+        let loggerFactory, fsharpCore, baseTypes, state = machineStateWithUnloadedFacade ()
+
+        let fsharpFunc = topLevelTypeDef fsharpCore "Microsoft.FSharp.Core" "FSharpFunc`2"
+
+        let method =
+            fsharpCore.Methods.Values
+            |> Seq.tryFind (fun method ->
+                match method.Owner.TryDeclaringType with
+                | Some declaringType -> declaringType.Identity = fsharpFunc.Identity
+                | None -> false
+            )
+            |> Option.defaultWith (fun () -> failwith "expected FSharpFunc`2 to declare a method")
+
+        let _state, target =
+            NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget loggerFactory baseTypes fsharpCore method state
+
+        match target with
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition -> definition |> shouldEqual fsharpFunc.Identity
+        | other -> failwithf "expected the open generic definition of FSharpFunc`2, got %A" other

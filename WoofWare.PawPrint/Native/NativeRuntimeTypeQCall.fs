@@ -1128,72 +1128,88 @@ module NativeRuntimeTypeQCall =
                     failwith $"%s{operation}: module's assembly %s{assemblyFullName} is not loaded"
                 )
 
-            // Decode the caller-supplied substitution context up front. Mirrors CoreCLR's
+            // The caller-supplied substitution context is CoreCLR's
             // SigTypeContext(Instantiation(typeArgs, ...), Instantiation(methodArgs, ...)): the
-            // arrays are used to substitute any GenericTypeParameter / GenericMethodParameter
-            // references the token's signatures contain, and may be empty for tokens that don't
-            // need them.
-            let typeInstantiation =
+            // arrays substitute any GenericTypeParameter / GenericMethodParameter references the
+            // token's signatures contain. Decoded per token kind rather than up front, because
+            // only the MemberRef arm consumes them and decoding narrows each element to a closed
+            // type: a MethodDef whose caller passed `typeof(G<>)` as a method-generic argument is
+            // one CoreCLR answers (it never looks), and reading the array here would refuse it.
+            let decodeInstantiation
+                (pointer : ManagedPointerSource)
+                (count : int)
+                : ImmutableArray<ConcreteTypeHandle>
+                =
                 ImmutableArray.CreateRange (
                     seq {
-                        for index in 0 .. typeInstCount - 1 ->
-                            readTypeHandleInstantiationElement ctx.BaseClassTypes operation state typeInstArgsPtr index
+                        for index in 0 .. count - 1 ->
+                            readTypeHandleInstantiationElement ctx.BaseClassTypes operation state pointer index
                     }
                 )
 
-            let methodInstantiation =
-                ImmutableArray.CreateRange (
-                    seq {
-                        for index in 0 .. methodInstCount - 1 ->
-                            readTypeHandleInstantiationElement
-                                ctx.BaseClassTypes
-                                operation
-                                state
-                                methodInstArgsPtr
-                                index
-                    }
-                )
-
-            let state, concretizedMethod =
+            let state, handleValue =
                 match MetadataToken.ofInt methodToken with
                 | MetadataToken.MethodDef h ->
-                    // CoreCLR's ModuleHandle.ResolveMethod returns the metadata definition for
-                    // a MethodDef token without consulting the caller-supplied
-                    // type/method-instantiation arrays:
-                    //   MemberLoader::GetMethodDescFromMemberDefOrRefOrSpec
-                    //     -> GetMethodDescFromMethodDef (no SigTypeContext parameter)
-                    // (memberload.cpp). So `ResolveMethodHandle(token)` for a method like
-                    // `Generic<T>.M` returns the open `Generic<T>.M`, even if the caller
-                    // supplied `typeInst = [string]`. Our registry only stores fully concretised
-                    // methods; faithfully representing the open form is not yet supported.
+                    // The caller's `typeInstArgs`/`methodInstArgs` are not consulted for a MethodDef
+                    // token, and the answer is the *typical* definition:
+                    // `MemberLoader::GetMethodDescFromMemberDefOrRefOrSpec` dispatches to
+                    // `GetMethodDescFromMethodDef` (memberload.cpp:749), which takes no
+                    // `SigTypeContext` at all and documents itself as resolving to "the
+                    // corresponding fully uninstantiated descriptor"; the re-association that
+                    // follows (memberload.cpp:776-786) binds `pMD->LoadMethodInstantiation()`, the
+                    // method's own formals, because `strictMetadataChecks` is set only for a
+                    // MethodSpec (runtimehandles.cpp:2357).
+                    //
+                    // Ignoring the context is load-bearing rather than incidental:
+                    // `Associates.AssignAssociates` (Associates.cs:53-66) resolves a property or
+                    // event accessor's MethodDef while passing the *declaring type's full
+                    // instantiation* as `typeArgs`, and relies on getting the definition back --
+                    // `RuntimeType.GetMethodBase` then binds the exact method from the reflected
+                    // type.
+                    //
+                    // So `Holder<T>.Get` comes back declared on the typical `Holder<T>` even when
+                    // the caller supplied `typeInst = [int]`, and `Statics.Generic<U>` comes back a
+                    // generic-method definition. That is exactly the identity
+                    // `MethodHandleRegistry.getOrAllocateInternalHandle` mints: a declaring type
+                    // that may be an `OpenGenericTypeDefinition`, and no method-generic arguments.
+                    // A non-generic method on a non-generic type takes the same path and gets
+                    // `Closed`, which is the identity the concretising path used to mint for it, so
+                    // the registry dedups rather than issuing a second id.
+                    //
+                    // Not modelled: for a value type CoreCLR hands back an unboxing stub for a
+                    // virtual (genmeth.cpp:1268), since the typical `S<T>` method table
+                    // canonicalises to `S<__Canon>`. PawPrint has no stub notion, and no guest can
+                    // see the difference -- every managed route to a `MethodBase` normalises
+                    // through this QCall or through the `PopulateMethods`/`PopulateConstructors`
+                    // that mint the same identity, so both sides of any comparison agree.
                     let method = assembly.Methods.[h]
 
-                    if method.DeclaringTypeGenerics.Length > 0 then
-                        failwith
-                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} declared on generic type %s{MethodOwner.describe method.Owner} (%d{method.DeclaringTypeGenerics.Length} type generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's typeInstantiation, but the MethodHandle registry only supports fully concretised methods."
-
-                    if method.Generics.Length > 0 then
-                        failwith
-                            $"TODO: %s{operation}: MethodDef token 0x%08x{methodToken} resolves to generic method %s{method.Name} (%d{method.Generics.Length} method generic parameter(s)); CoreCLR returns the open metadata definition without consuming the caller's methodInstantiation, but the MethodHandle registry only supports fully concretised methods."
-
-                    let methodMapped =
-                        method
-                        |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
-
-                    // Pass empty instantiation arrays: for MethodDef tokens, CoreCLR does not
-                    // consume the caller's type/method instantiation context, and after the
-                    // guards above the method has no generic parameters to substitute anyway.
-                    let state, concretized, _ =
-                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                    let state, declaringTarget =
+                        NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
-                            ImmutableArray.Empty
-                            methodMapped
-                            ImmutableArray.Empty
+                            assembly
+                            method
                             state
 
-                    state, concretized
+                    let value, reg =
+                        MethodHandleRegistry.getOrAllocateInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            method.DeclaringAssemblyFullName
+                            declaringTarget
+                            method
+                            state.MethodHandles
+
+                    { state with
+                        MethodHandles = reg
+                    },
+                    value
                 | MetadataToken.MemberReference h ->
+                    let typeInstantiation = decodeInstantiation typeInstArgsPtr typeInstCount
+
+                    let methodInstantiation = decodeInstantiation methodInstArgsPtr methodInstCount
+
                     // Surface typeInstantiation/methodInstantiation as TypeDefn arrays so the
                     // MemberRef resolver can substitute any GenericTypeParameter /
                     // GenericMethodParameter appearing in the TypeSpec parent or member
@@ -1269,7 +1285,17 @@ module NativeRuntimeTypeQCall =
                             methodInstantiation
                             state
 
-                    state, concretized
+                    let value, reg =
+                        MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            concretized
+                            state.MethodHandles
+
+                    { state with
+                        MethodHandles = reg
+                    },
+                    value
                 | MetadataToken.MethodSpecification _ ->
                     // MethodSpec encodes its method-generic instantiation in the spec itself
                     // rather than via the caller-supplied methodInstantiation buffer, so this
@@ -1279,18 +1305,6 @@ module NativeRuntimeTypeQCall =
                 | other ->
                     failwith
                         $"%s{operation}: unexpected metadata token kind %O{other} from token 0x%08x{methodToken}; the managed wrapper should only forward MethodDef/MemberReference/MethodSpec"
-
-            let handleValue, reg =
-                MethodHandleRegistry.getOrAllocateConcreteInternalHandle
-                    ctx.BaseClassTypes
-                    state.ConcreteTypes
-                    concretizedMethod
-                    state.MethodHandles
-
-            let state =
-                { state with
-                    MethodHandles = reg
-                }
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ValueType handleValue) ctx.Thread state
