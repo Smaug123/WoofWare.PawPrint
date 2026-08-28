@@ -62,6 +62,7 @@ module internal IntrinsicHelpers =
     val spanHelpersSequenceEqual :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
+        advanceCaller : (IlMachineState -> IlMachineState) ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
             IlMachineState
@@ -76,6 +77,7 @@ module internal IntrinsicHelpers =
         loggerFactory : ILoggerFactory ->
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
+        advanceCaller : (IlMachineState -> IlMachineState) ->
         wasConstructing : ConstructionState ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
@@ -87,6 +89,7 @@ module internal IntrinsicHelpers =
         loggerFactory : ILoggerFactory ->
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
+        advanceCaller : (IlMachineState -> IlMachineState) ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
             IlMachineState
@@ -96,6 +99,7 @@ module internal IntrinsicHelpers =
     val memoryExtensionsEquals :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
+        advanceCaller : (IlMachineState -> IlMachineState) ->
         methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> ->
         state : IlMachineState ->
             IlMachineState
@@ -139,6 +143,7 @@ module internal IntrinsicHelpers =
     val executeSpanHelpersMemmove :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
+        advanceCaller : (IlMachineState -> IlMachineState) ->
         operation : string ->
         state : IlMachineState ->
             IlMachineState
@@ -150,6 +155,7 @@ module internal IntrinsicHelpers =
     val executeSpanHelpersClearWithoutReferences :
         baseClassTypes : BaseClassTypes<DumpedAssembly> ->
         currentThread : ThreadId ->
+        advanceCaller : (IlMachineState -> IlMachineState) ->
         operation : string ->
         state : IlMachineState ->
             IlMachineState

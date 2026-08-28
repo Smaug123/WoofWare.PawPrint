@@ -843,6 +843,34 @@ module internal UnsafeAccessorDispatch =
             state, Error UnsafeAccessorRefusal.BadImageFormat
         else
 
+        // The mirror of the check above, and the one shape with no answer to give. A *reference*
+        // type's receiver reached through a byref is accepted by CoreCLR -- `ValidateTargetType`
+        // strips the byref and the stub emits its `callvirt`/`ldflda` against a `Target&` where a
+        // `Target` belongs -- and what runs is a read of whatever the byref addresses as though it
+        // were the object. Measured on real .NET 10, `[UnsafeAccessor(Field, Name = "_f")]
+        // static extern ref int F(ref Target t)` over a local returns a number derived from that
+        // local's address, and the method kind likewise; the values differ from run to run and mean
+        // nothing. PawPrint models a reference as an opaque handle rather than an address, so there
+        // is no such number for it to produce, and inventing one would be a fabricated answer to a
+        // question whose real answer is undefined.
+        //
+        // Only the two kinds that *use* the first argument as a receiver: the static kinds read it
+        // for its type alone and never dereference it, so a byref there is harmless.
+        let referenceReceiverThroughByref =
+            match kind with
+            | UnsafeAccessorKind.Method
+            | UnsafeAccessorKind.Field ->
+                isByref rawTarget
+                && not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo)
+            | UnsafeAccessorKind.Constructor
+            | UnsafeAccessorKind.StaticMethod
+            | UnsafeAccessorKind.StaticField -> false
+
+        if referenceReceiverThroughByref then
+            failwith
+                $"TODO: %s{describe} reaches a reference type's member through a `ref` to the reference. CoreCLR accepts that and dereferences the byref as though it addressed the object, so what it produces is derived from an address and differs from run to run; PawPrint models a reference as an opaque handle and has no address to produce one from"
+        else
+
         match kind with
         | UnsafeAccessorKind.Constructor
         | UnsafeAccessorKind.Method

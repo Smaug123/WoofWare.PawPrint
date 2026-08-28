@@ -221,18 +221,19 @@ module Intrinsics =
                 loggerFactory
                 baseClassTypes
                 currentThread
+                advanceCaller
                 wasConstructing
                 methodToCall
                 state
             |> IntrinsicResult.Completed
         | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), "ToString" ->
-            spanToString loggerFactory baseClassTypes currentThread methodToCall state
+            spanToString loggerFactory baseClassTypes currentThread advanceCaller methodToCall state
             |> IntrinsicResult.Completed
         | CorelibAssembly, "MemoryExtensions", "Equals" ->
-            memoryExtensionsEquals baseClassTypes currentThread methodToCall state
+            memoryExtensionsEquals baseClassTypes currentThread advanceCaller methodToCall state
             |> IntrinsicResult.Completed
         | CorelibAssembly, "SpanHelpers", "SequenceEqual" when isSpanHelpersByteSequenceEqual state methodToCall ->
-            spanHelpersSequenceEqual baseClassTypes currentThread methodToCall state
+            spanHelpersSequenceEqual baseClassTypes currentThread advanceCaller methodToCall state
             |> IntrinsicResult.Completed
         | CorelibAssembly, ("Vector128" | "Vector256" | "Vector512"), "get_IsHardwareAccelerated"
         | CorelibAssembly, "Vector", "get_IsHardwareAccelerated" when
@@ -1914,7 +1915,7 @@ module Intrinsics =
               MethodReturnType.Void ->
                 let operation = "SpanHelpers.Memmove"
 
-                executeSpanHelpersMemmove baseClassTypes currentThread operation state
+                executeSpanHelpersMemmove baseClassTypes currentThread advanceCaller operation state
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
         | CorelibAssembly, "SpanHelpers", "ClearWithoutReferences" ->
@@ -1934,7 +1935,7 @@ module Intrinsics =
               MethodReturnType.Void ->
                 let operation = "SpanHelpers.ClearWithoutReferences"
 
-                executeSpanHelpersClearWithoutReferences baseClassTypes currentThread operation state
+                executeSpanHelpersClearWithoutReferences baseClassTypes currentThread advanceCaller operation state
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
         | CorelibAssembly, "String", "op_Implicit" ->
