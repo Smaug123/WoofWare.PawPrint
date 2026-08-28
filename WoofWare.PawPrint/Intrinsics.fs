@@ -136,9 +136,23 @@ module Intrinsics =
         (wasConstructing : ConstructionState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (currentThread : ThreadId)
+        (advanceProgramCounterOfCaller : bool)
         (state : IlMachineState)
         : IntrinsicResult
         =
+        // An intrinsic completes inline rather than pushing a frame, so it is what moves the
+        // caller's program counter past the call site -- the job a returning frame would otherwise
+        // do. A caller with no IL body has no program counter to move, and says so through the
+        // flag `callMethodWithCommitment` passes straight through: an `[UnsafeAccessor]` accessor
+        // dispatching to its target, or the struct-marshal stub calling its date marshaller.
+        // Advancing one of those reaches `MethodState.advanceProgramCounter`, which has no
+        // instruction stream to look the next offset up in.
+        let advanceCaller (state : IlMachineState) : IlMachineState =
+            if advanceProgramCounterOfCaller then
+                IlMachineState.advanceProgramCounter currentThread state
+            else
+                state
+
         let intrinsicKey = methodKey state methodToCall
 
         // Every `Interlocked` overload documents
@@ -196,7 +210,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool false) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), ".ctor" when
             intrinsicKey.ParameterShapes = [ "*" ; "System.Int32" ]
@@ -241,7 +255,7 @@ module Intrinsics =
                 vectorAccelerationAvailable methodToCall.RequiredDeclaringType.Name state.HardwareIntrinsics
 
             IlMachineState.pushToEvalStack (CliType.ofBool isAccelerated) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Object", "MemberwiseClone" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Object.CoreCLR.cs#L26-L45
@@ -268,7 +282,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef clone) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
@@ -334,7 +348,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some runtimeTypeAddr)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "RuntimeHelpers", "GetMethodTable" ->
             match methodToCall.Signature.ParameterTypes with
@@ -378,7 +392,7 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack'
                 (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Closed concreteType)))
                 currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "AsPointer" ->
             // Method signature: 1 generic parameter, we take a Byref of that parameter, and return a TypeDefn.Pointer(Void)
@@ -390,7 +404,7 @@ module Intrinsics =
                 | x -> failwith $"TODO: Unsafe.AsPointer(%O{x})"
 
             IlMachineState.pushToEvalStack (CliType.RuntimePointer toPush) currentThread state
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "SkipInit" ->
             // `SkipInit<T>(out T)` is a JIT intrinsic that deliberately leaves
@@ -412,9 +426,7 @@ module Intrinsics =
             | EvalStackValue.ManagedPointer _ -> ()
             | other -> failwith $"Unsafe.SkipInit: expected managed byref argument, got %O{other}"
 
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
+            state |> advanceCaller |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "AsRef" ->
             // `AsRef<T>(ref readonly T)` and `AsRef<T>(void* source)` are JIT
             // intrinsics. The CoreLib bodies in this runtime throw
@@ -469,7 +481,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' toPush currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "NullRef" ->
             // CoreCLR's UNSAFE__BYREF_NULLREF intrinsic replaces the CoreLib
@@ -489,7 +501,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "IsNullRef" ->
             // The JIT intrinsic compares the byref argument against the null
@@ -518,7 +530,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Interlocked", ("Add" | "ExchangeAdd") ->
             // `Add` returns the newly-stored sum; the private `ExchangeAdd`
@@ -565,7 +577,7 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack'
                         (EvalStackValue.Int32 (Int32Source.Verbatim result))
                         currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
 
             let executeInt64 (operation : string) (state : IlMachineState) : IntrinsicResult =
@@ -615,7 +627,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 result) currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
 
             let operation = $"Interlocked.%s{methodToCall.Name}"
@@ -674,7 +686,7 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack'
                         (EvalStackValue.Int32 (Int32Source.Verbatim current))
                         currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
 
             let executeInt64 (operation : string) (state : IlMachineState) : IntrinsicResult =
@@ -714,7 +726,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int64 current) currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
 
             let operation = $"Interlocked.%s{methodToCall.Name}"
@@ -740,9 +752,7 @@ module Intrinsics =
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Interlocked.MemoryBarrier: unexpected signature %A{methodToCall.Signature}"
 
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
+            state |> advanceCaller |> IntrinsicResult.Completed
 
         | CorelibAssembly, "Interlocked", "CompareExchange" ->
             // The native-int-shaped overloads need their own path: the shipped IL wrappers do
@@ -780,7 +790,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack currentValue currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -844,7 +854,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
                 ConcretePrimitive state.ConcreteTypes valuePrimitive
@@ -898,7 +908,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack currentValue currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
             | [ ConcreteByref locationType ; valueType ; comparandType ], MethodReturnType.Returns returnType when
                 locationType = valueType
@@ -965,7 +975,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack currentValue currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
 
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1022,7 +1032,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt currentSrc) currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
             | [ ConcreteByref (ConcretePrimitive state.ConcreteTypes locationPrimitive)
                 ConcretePrimitive state.ConcreteTypes valuePrimitive ],
@@ -1055,7 +1065,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack currentValue currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
             | [ ConcreteByref locationType ; valueType ], MethodReturnType.Returns returnType when
                 locationType = valueType && locationType = returnType
@@ -1094,9 +1104,7 @@ module Intrinsics =
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Thread.FastPollGC: unexpected signature %A{methodToCall.Signature}"
 
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
+            state |> advanceCaller |> IntrinsicResult.Completed
         | CorelibAssembly, "Volatile", ("ReadBarrier" | "WriteBarrier") ->
             // [Intrinsic] public static void Volatile.{Read,Write}Barrier() => Volatile.{Read,Write}Barrier();
             // Same shape as Thread.FastPollGC: the managed body is infinite self-recursion
@@ -1110,9 +1118,7 @@ module Intrinsics =
             | [], MethodReturnType.Void -> ()
             | _ -> failwith $"Volatile.%s{methodToCall.Name}: unexpected signature %A{methodToCall.Signature}"
 
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
+            state |> advanceCaller |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "SingleToInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteSingle state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) -> ()
@@ -1130,7 +1136,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "Int32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1149,7 +1155,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "DoubleToUInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1173,7 +1179,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "UInt64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1193,7 +1199,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "Int64BitsToDouble" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1212,7 +1218,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "DoubleToInt64Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1229,7 +1235,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "SingleToUInt32Bits" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1250,7 +1256,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitConverter", "UInt32BitsToSingle" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1270,7 +1276,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' result currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitOperations", "TrailingZeroCount" when
             intrinsicKey.DeclaringTypeFullName = "System.Numerics.BitOperations"
@@ -1302,7 +1308,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.TrailingZeroCount: unexpected signature %s{formatMethodKey intrinsicKey}"
         | CorelibAssembly, "BitOperations", "LeadingZeroCount" when
@@ -1352,7 +1358,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "BitOperations", "Log2" ->
             // BitOperations.Log2 is a JIT intrinsic in the real CLR. The BCL IL body falls
@@ -1373,7 +1379,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | [ ConcreteUInt64 state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1387,7 +1393,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | [ ConcreteUIntPtr state.ConcreteTypes ], MethodReturnType.Returns (ConcreteInt32 state.ConcreteTypes) ->
                 let arg, state = IlMachineState.popEvalStack currentThread state
@@ -1404,7 +1410,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | _ -> failwith $"BitOperations.Log2: unexpected signature %s{formatMethodKey intrinsicKey}"
         | CorelibAssembly, "Math", "Pow" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
@@ -1441,7 +1447,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Cos" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // As with `Math.Pow` above: `[Intrinsic]` + `MethodImplOptions.InternalCall` with
@@ -1472,7 +1478,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Sin" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // The twin of `Math.Cos` above, and the same shape: `[Intrinsic]` +
@@ -1503,7 +1509,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Sqrt" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared the same way as the three above -- `[Intrinsic]` +
@@ -1541,7 +1547,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Ceiling" when intrinsicKey.DeclaringTypeFullName = "System.Math" ->
             // Declared like the four above -- `[Intrinsic]` + `MethodImplOptions.InternalCall`,
@@ -1577,7 +1583,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Round" when
             intrinsicKey.DeclaringTypeFullName = "System.Math"
@@ -1622,7 +1628,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Math", "Truncate" when
             intrinsicKey.DeclaringTypeFullName = "System.Math"
@@ -1666,7 +1672,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Float64 result)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "String", "Equals" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -1703,7 +1709,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ofBool areEqual) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | _ -> IntrinsicResult.Unrecognised
         | CorelibAssembly, "Unsafe", "ReadUnaligned" ->
@@ -1749,7 +1755,7 @@ module Intrinsics =
 
                     state
                     |> IlMachineState.pushToEvalStack v currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
                 | _ -> failwith $"TODO: Unsafe.ReadUnaligned: expected ManagedPointer, got %O{ptr}"
             | [ ConcretePointer _ ] ->
@@ -1767,10 +1773,7 @@ module Intrinsics =
 
                 let v = IlMachineState.readManagedByrefBytesAs baseClassTypes state src tZero
 
-                let state =
-                    state
-                    |> IlMachineState.pushToEvalStack v currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                let state = state |> IlMachineState.pushToEvalStack v currentThread |> advanceCaller
 
                 IntrinsicResult.Completed state
             | _ -> IntrinsicResult.Unrecognised
@@ -1819,7 +1822,7 @@ module Intrinsics =
                             $"Unsafe.WriteUnaligned: coerced value has size %d{valueSize}, expected %d{tSize} for %O{valueAsCli}"
 
                     IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
                 | _ -> failwith $"TODO: Unsafe.WriteUnaligned: expected ManagedPointer, got %O{ptr}"
             | [ ConcretePointer _ ; _ ] ->
@@ -1850,7 +1853,7 @@ module Intrinsics =
                 let state =
                     IlMachineState.writeManagedByrefBytesOrTypedCell baseClassTypes state src valueAsCli
 
-                let state = state |> IlMachineState.advanceProgramCounter currentThread
+                let state = state |> advanceCaller
                 IntrinsicResult.Completed state
             | _ -> IntrinsicResult.Unrecognised
         | CorelibAssembly, "Unsafe", ("InitBlock" | "InitBlockUnaligned") ->
@@ -1872,10 +1875,7 @@ module Intrinsics =
                 let operation = $"Unsafe.%s{methodToCall.Name}"
 
                 match IntrinsicHelpers.executeInitBlock baseClassTypes currentThread operation state with
-                | InitBlockOutcome.Filled state ->
-                    state
-                    |> IlMachineState.advanceProgramCounter currentThread
-                    |> IntrinsicResult.Completed
+                | InitBlockOutcome.Filled state -> state |> advanceCaller |> IntrinsicResult.Completed
                 | InitBlockOutcome.NullDestination state ->
                     IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | _ -> IntrinsicResult.Unrecognised
@@ -1894,10 +1894,7 @@ module Intrinsics =
                 let operation = $"Unsafe.%s{methodToCall.Name}"
 
                 match IntrinsicHelpers.executeCopyBlock baseClassTypes currentThread operation state with
-                | CopyBlockOutcome.Copied state ->
-                    state
-                    |> IlMachineState.advanceProgramCounter currentThread
-                    |> IntrinsicResult.Completed
+                | CopyBlockOutcome.Copied state -> state |> advanceCaller |> IntrinsicResult.Completed
                 | CopyBlockOutcome.NullEndpoint state ->
                     IntrinsicResult.RaiseException (state, baseClassTypes.NullReferenceException, None)
             | _ -> IntrinsicResult.Unrecognised
@@ -1980,7 +1977,7 @@ module Intrinsics =
             let state =
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
 
             IntrinsicResult.Completed state
         | CorelibAssembly, "RuntimeHelpers", "InitializeArray" ->
@@ -2258,7 +2255,7 @@ module Intrinsics =
                     IlMachineState.setArrayValue arrayAddr decoded i state
                 )
 
-            let state = state |> IlMachineState.advanceProgramCounter currentThread
+            let state = state |> advanceCaller
             IntrinsicResult.Completed state
         | CorelibAssembly, "RuntimeHelpers", "IsBitwiseEquatable" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -2296,7 +2293,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "GC", "KeepAlive" ->
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
@@ -2305,9 +2302,7 @@ module Intrinsics =
 
             let _, state = IlMachineState.popEvalStack currentThread state
 
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
+            state |> advanceCaller |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "As" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L64
             let byrefAs () =
@@ -2374,9 +2369,7 @@ module Intrinsics =
                     | EvalStackValue.UserDefinedValueType evalStackValueUserType -> failwith "todo"
 
                 let state =
-                    state
-                    |> IlMachineState.pushToEvalStack' ptr currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    state |> IlMachineState.pushToEvalStack' ptr currentThread |> advanceCaller
 
                 IntrinsicResult.Completed state
 
@@ -2392,7 +2385,7 @@ module Intrinsics =
                 | EvalStackValue.NullObjectRef ->
                     state
                     |> IlMachineState.pushToEvalStack' obj currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
                 | other -> failwith $"Unsafe.As<T>(object): expected object reference, got %O{other}"
             | _ -> byrefAs ()
@@ -2500,7 +2493,7 @@ module Intrinsics =
                 // throws, so this arm deliberately sits after it rather than before.
                 state
                 |> IlMachineState.pushToEvalStack inputCli currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             elif not inputAddressable || not targetAddressable then
                 let reason =
@@ -2517,7 +2510,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack result currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "SizeOf" ->
             // https://github.com/dotnet/runtime/blob/721fdf6dcb032da1f883d30884e222e35e3d3c99/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L51
@@ -2536,7 +2529,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 size)) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "AreSame" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L55
@@ -2583,7 +2576,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool areSame) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "IsAddressLessThan" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L62-L67
@@ -2605,7 +2598,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool isLessThan) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "Add" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L99
@@ -2639,7 +2632,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "Subtract" ->
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L812-L833
@@ -2685,7 +2678,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "AddByteOffset" ->
             // CoreCLR's managed body throws PlatformNotSupportedException; the JIT replaces
@@ -2758,7 +2751,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | ValueNone ->
 
@@ -2863,7 +2856,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Unsafe", "ByteOffset" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/coreclr/tools/Common/TypeSystem/IL/Stubs/UnsafeIntrinsics.cs#L69
@@ -2902,7 +2895,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack'
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
                     currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | _ ->
 
@@ -2958,7 +2951,7 @@ module Intrinsics =
                 |> IlMachineState.pushToEvalStack'
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim byteOffset))
                     currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             else
                 let byteOffset =
@@ -2966,7 +2959,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt byteOffset) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
         | CorelibAssembly, ("ReadOnlySpan`1" | "Span`1"), "get_Item" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L141
@@ -3042,7 +3035,7 @@ module Intrinsics =
 
             state
             |> IlMachineState.pushToEvalStack' ptr currentThread
-            |> IlMachineState.advanceProgramCounter currentThread
+            |> advanceCaller
             |> IntrinsicResult.Completed
         | CorelibAssembly, "Span`1", "Clear" ->
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L280
@@ -3116,9 +3109,7 @@ module Intrinsics =
                     IlMachineState.writeManagedByrefWithBase baseClassTypes state byrefSrc zero
                 )
 
-            state
-            |> IlMachineState.advanceProgramCounter currentThread
-            |> IntrinsicResult.Completed
+            state |> advanceCaller |> IntrinsicResult.Completed
         | CorelibAssembly, "RuntimeHelpers", "CreateSpan" ->
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             IntrinsicResult.Unrecognised
@@ -3189,7 +3180,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' toPush currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
@@ -3228,7 +3219,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef clone) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
@@ -3324,7 +3315,7 @@ module Intrinsics =
 
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
+                |> advanceCaller
                 |> IntrinsicResult.Completed
             | EvalStackValue.NullObjectRef
             | EvalStackValue.ManagedPointer ManagedPointerSource.Null ->
@@ -3388,7 +3379,7 @@ module Intrinsics =
                     |> IlMachineState.pushToEvalStack'
                         (EvalStackValue.Int32 (Int32Source.Verbatim (if result then 1 else 0)))
                         currentThread
-                    |> IlMachineState.advanceProgramCounter currentThread
+                    |> advanceCaller
                     |> IntrinsicResult.Completed
             | Some _, Some EvalStackValue.NullObjectRef ->
                 // Null flag: `ArgumentNullException.ThrowIfNull(flag)` (Enum.cs:401), which runs

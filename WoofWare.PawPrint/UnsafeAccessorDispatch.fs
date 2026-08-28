@@ -208,6 +208,27 @@ module internal UnsafeAccessorDispatch =
         | TypeDefn.Modified m -> namesGenericParameter m.Unmodified
         | _ -> false
 
+    /// Is this signature position a `ref` to a generic parameter -- the one shape whose target type
+    /// CoreCLR resolves against a *shared* instantiation rather than the exact one?
+    ///
+    /// A generic method over a reference type is compiled once for `System.__Canon`, so the
+    /// declaration's own type context resolves its `T` to `__Canon` and the member lookup runs
+    /// against a class that declares nothing. Measured on real .NET 10:
+    /// `[UnsafeAccessor(Field, Name = "x")] static extern ref int X<T>(ref T t)` reaches a struct
+    /// `T`'s field and reports `'System.__Canon.x'` missing for a class `T`.
+    ///
+    /// Only the bare variable canonicalises. A target spelled `C<T>` is a real instantiation whose
+    /// declared members are the definition's either way, so it is unaffected.
+    let rec private namesByrefToGenericParameter (ty : TypeDefn) : bool =
+        match ty with
+        | TypeDefn.Modified m -> namesByrefToGenericParameter m.Unmodified
+        | TypeDefn.Byref inner -> namesGenericParameter inner
+        | _ -> false
+
+    /// The name CoreCLR reports for a shared reference instantiation's target type.
+    [<Literal>]
+    let private canonTypeName = "System.__Canon"
+
     /// Is this a byref, once custom modifiers are peeled off? The `ref` return a field accessor
     /// must declare, and the `ref` receiver an instance member of a value type must take.
     let rec private isByref (ty : TypeDefn) : bool =
@@ -774,6 +795,33 @@ module internal UnsafeAccessorDispatch =
         else
 
         let name = targetMemberName kind targetName accessor.Name
+
+        // A `ref T` target whose `T` is a reference type is `System.__Canon`, which declares no
+        // member of any name -- see `namesByrefToGenericParameter`.
+        let targetIsShared =
+            namesByrefToGenericParameter rawTarget
+            && (
+                match concreteTarget with
+                | ConcreteTypeHandle.Byref inner ->
+                    AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes inner
+                    |> Option.map (fun (_, typeInfo) ->
+                        not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                    )
+                    // An array or a string reaches here as a structural handle, and both are
+                    // reference types; nothing else can be a type argument.
+                    |> Option.defaultValue true
+                | _ -> false
+            )
+
+        if targetIsShared then
+            match kind with
+            | UnsafeAccessorKind.Field
+            | UnsafeAccessorKind.StaticField -> state, Error (UnsafeAccessorRefusal.MissingField (canonTypeName, name))
+            | UnsafeAccessorKind.Constructor
+            | UnsafeAccessorKind.Method
+            | UnsafeAccessorKind.StaticMethod ->
+                state, Error (UnsafeAccessorRefusal.MissingMethod (canonTypeName, name))
+        else
 
         match validateTargetType state kind name describe concreteTarget with
         | Error refusal -> state, Error refusal

@@ -2207,7 +2207,16 @@ module IlMachineStateExecution =
                 | Some result -> Some result
                 | None ->
 
-                match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
+                match
+                    Intrinsics.call
+                        loggerFactory
+                        baseClassTypes
+                        wasConstructing
+                        methodToCall
+                        thread
+                        advanceProgramCounterOfCaller
+                        state
+                with
                 | IntrinsicResult.Completed result -> Some (result, CallCommitment.Committed)
                 | IntrinsicResult.RaiseException (state, exnType, message) ->
                     // The intrinsic described an exception rather than raising it, because it
