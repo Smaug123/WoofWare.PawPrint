@@ -71,7 +71,10 @@ public class TestUnsafeAccessorStructVirtualIsAmbiguous
             Overridden(ref s);
             return 1;
         }
-        catch (AmbiguousMatchException) { }
+        catch (AmbiguousMatchException e)
+        {
+            if (e.HResult != unchecked((int) 0x8000211D)) return 10;
+        }
 
         try
         {

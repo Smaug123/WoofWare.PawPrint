@@ -79,8 +79,17 @@ public class TestUnsafeAccessorRefusedTargets
         r = Check<BadImageFormatException>(1, () => StaticAbstractTarget(null));
         if (r != 0) return r;
 
-        r = Check<InvalidOperationException>(2, () => NewAbstract());
-        if (r != 0) return r;
+        // The HResult is checked too: a synthesised exception whose type is right but whose
+        // HResult is the fallback `COR_E_EXCEPTION` is a difference a guest can read.
+        try
+        {
+            NewAbstract();
+            return 2;
+        }
+        catch (InvalidOperationException e)
+        {
+            if (e.HResult != unchecked((int) 0x80131509)) return 20;
+        }
 
         // The class is abstract *and* has no matching constructor; the lookup failure is what is
         // reported, so the abstract check happens after it.

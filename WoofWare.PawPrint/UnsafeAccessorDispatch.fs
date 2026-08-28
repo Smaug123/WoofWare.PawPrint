@@ -96,7 +96,15 @@ module internal UnsafeAccessorDispatch =
         | UnsafeAccessorKind.Method
         | UnsafeAccessorKind.StaticMethod
         | UnsafeAccessorKind.Field
-        | UnsafeAccessorKind.StaticField -> targetName |> Option.defaultValue accessorName
+        | UnsafeAccessorKind.StaticField ->
+            // Truncated at the first NUL, because CoreCLR hands the attribute's UTF-8 buffer
+            // to `strcmp`. `Name = "M\0suffix"` is valid C#, and measured on real .NET 10 it binds
+            // the member called `M`.
+            let name = targetName |> Option.defaultValue accessorName
+
+            match name.IndexOf '\000' with
+            | -1 -> name
+            | i -> name.Substring (0, i)
 
     /// Whether the member the accessor reaches is a static one, which is what decides both the
     /// candidate filter and whether the declaration's first argument is passed on or merely read
@@ -728,6 +736,13 @@ module internal UnsafeAccessorDispatch =
         let describe =
             $"[UnsafeAccessor] %s{MethodOwner.describe accessor.Owner}::%s{accessor.Name}"
 
+        // `UnsafeAccessor` must be on a static method (unsafeaccessors.cpp:1046), and CoreCLR asks
+        // that before it parses anything: an instance accessor that is *also* an unsupported shape
+        // is a `BadImageFormatException` the guest can catch, not a refusal.
+        if not accessor.IsStatic then
+            state, Error UnsafeAccessorRefusal.BadImageFormat
+        else
+
         if hasTypeNameOverrides then
             failwith
                 $"TODO: %s{describe} names at least one of its types with [UnsafeAccessorType], which gives the type as an assembly-qualified string rather than in the signature. PawPrint resolves the target from the signature, so it would look the member up on the wrong type (usually System.Object) and silently miss it"
@@ -743,11 +758,6 @@ module internal UnsafeAccessorDispatch =
                 $"TODO: %s{describe} declares a vararg signature; no C# accessor is one, and the comparison here assumes every parameter is required"
 
         let concreteSignature = accessor.Signature
-
-        // `UnsafeAccessor` must be on a static method (unsafeaccessors.cpp:1046).
-        if not accessor.IsStatic then
-            state, Error UnsafeAccessorRefusal.BadImageFormat
-        else
 
         // The type whose members are searched, read from the return type for a constructor and
         // from the first parameter for everything else (unsafeaccessors.cpp:1063).
@@ -843,33 +853,37 @@ module internal UnsafeAccessorDispatch =
             state, Error UnsafeAccessorRefusal.BadImageFormat
         else
 
-        // The mirror of the check above, and the one shape with no answer to give. A *reference*
-        // type's receiver reached through a byref is accepted by CoreCLR -- `ValidateTargetType`
-        // strips the byref and the stub emits its `callvirt`/`ldflda` against a `Target&` where a
-        // `Target` belongs -- and what runs is a read of whatever the byref addresses as though it
-        // were the object. Measured on real .NET 10, `[UnsafeAccessor(Field, Name = "_f")]
-        // static extern ref int F(ref Target t)` over a local returns a number derived from that
-        // local's address, and the method kind likewise; the values differ from run to run and mean
-        // nothing. PawPrint models a reference as an opaque handle rather than an address, so there
-        // is no such number for it to produce, and inventing one would be a fabricated answer to a
-        // question whose real answer is undefined.
-        //
-        // Only the two kinds that *use* the first argument as a receiver: the static kinds read it
-        // for its type alone and never dereference it, so a byref there is harmless.
-        let referenceReceiverThroughByref =
-            match kind with
-            | UnsafeAccessorKind.Method
-            | UnsafeAccessorKind.Field ->
-                isByref rawTarget
-                && not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo)
-            | UnsafeAccessorKind.Constructor
-            | UnsafeAccessorKind.StaticMethod
-            | UnsafeAccessorKind.StaticField -> false
 
-        if referenceReceiverThroughByref then
-            failwith
-                $"TODO: %s{describe} reaches a reference type's member through a `ref` to the reference. CoreCLR accepts that and dereferences the byref as though it addressed the object, so what it produces is derived from an address and differs from run to run; PawPrint models a reference as an opaque handle and has no address to produce one from"
-        else
+        // The mirror of the value-type check above, and the one shape with no answer to give. A
+        // *reference* type's receiver reached through a byref is accepted by CoreCLR --
+        // `ValidateTargetType` strips the byref and the stub emits its `callvirt`/`ldflda` against a
+        // `Target&` where a `Target` belongs -- and what runs is a read of whatever the byref
+        // addresses as though it were the object. Measured on real .NET 10,
+        // `[UnsafeAccessor(Field, Name = "_f")] static extern ref int F(ref Target t)` over a local
+        // returns a number derived from that local's address, and the method kind likewise; the
+        // values differ from run to run and mean nothing. PawPrint models a reference as an opaque
+        // handle rather than an address, so there is no such number for it to produce.
+        //
+        // Asked only once the lookup has succeeded, because this is the *body* refusing rather than
+        // the binding: measured, an accessor of this shape naming a member that does not exist
+        // reports the missing member. And only for the two kinds that use the first argument as a
+        // receiver -- the static kinds read it for its type alone and never dereference it.
+        let refuseByrefReferenceReceiver () : unit =
+            let usesReceiver =
+                match kind with
+                | UnsafeAccessorKind.Method
+                | UnsafeAccessorKind.Field -> true
+                | UnsafeAccessorKind.Constructor
+                | UnsafeAccessorKind.StaticMethod
+                | UnsafeAccessorKind.StaticField -> false
+
+            if
+                usesReceiver
+                && isByref rawTarget
+                && not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo)
+            then
+                failwith
+                    $"TODO: %s{describe} reaches a reference type's member through a `ref` to the reference. CoreCLR accepts that and dereferences the byref as though it addressed the object, so what it produces is derived from an address and differs from run to run; PawPrint models a reference as an opaque handle and has no address to produce one from"
 
         match kind with
         | UnsafeAccessorKind.Constructor
@@ -890,6 +904,8 @@ module internal UnsafeAccessorDispatch =
             match found with
             | Error refusal -> state, Error refusal
             | Ok target ->
+
+            refuseByrefReferenceReceiver ()
 
             match
                 verifyConstraints baseClassTypes state describe targetType targetTypeInfo accessor.Generics target
@@ -971,6 +987,8 @@ module internal UnsafeAccessorDispatch =
         match found with
         | Error refusal -> state, Error refusal
         | Ok field ->
+
+        refuseByrefReferenceReceiver ()
 
         let plan =
             match kind with

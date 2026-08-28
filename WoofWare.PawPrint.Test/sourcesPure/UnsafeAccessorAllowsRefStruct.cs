@@ -46,8 +46,9 @@ public class TestUnsafeAccessorAllowsRefStruct
             Span<int> got = Id<Span<int>>(null, span);
             return got[0] == 7 ? 2 : 3;
         }
-        catch (System.Security.VerificationException)
+        catch (System.Security.VerificationException e)
         {
+            if (e.HResult != unchecked((int) 0x8013150D)) return 10;
         }
 
         // The permissive target accepts both, so the refusal above is about the target's own
