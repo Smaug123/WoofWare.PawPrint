@@ -2908,9 +2908,9 @@ descriptor-table advance a real kernel makes before it sleeps, which a refusal
 cannot. PawPrint's `Program` readiness
 sweep becomes a poll of that predicate. Then: `README`, the
 `emulated-posix-kernel` skill's paths, `docs/divergences.md`, and the
-packaging decision from the open questions. (Two of those four turned out to
-need nothing and one was already done in stage 1; see "Stage 9 packaging" at the
-end of this document for what was actually owed.)
+packaging decision from the open questions. (Of those four, one was already done
+in stage 1 and one needed nothing; see "Stage 9 packaging" at the end of this
+document for what the other two actually owed.)
 
 **Correctness oracle**:
 * `SocketFuzz` against real Linux epoll, driven through `step` rather than
@@ -3703,8 +3703,8 @@ and the packaging items — which are what finish the extraction.
 **Dependencies**: 9i, because most of what these documents were wrong about is what
 9g–9i changed.
 
-Stage 9's own text listed four packaging items. One of them was already done and two
-of them turned out not to be wrong, which is worth recording so nobody re-checks:
+Stage 9's own text listed four packaging items. Two of them cost almost nothing, and what
+was *checked* about them is worth recording so that nobody re-checks:
 
 * **The packaging decision** was made and implemented in stage 1 — `WoofWare.PosixKernel`
   is `IsPackable` with its own `PackageId`, `version.json` and `README.md`, and entries in
@@ -3717,10 +3717,10 @@ of them turned out not to be wrong, which is worth recording so nobody re-checks
   that file moved to `WoofWare.PosixKernel.Test` during the extraction. Reading the
   document had not caught it; a path checker did, which is the argument for running one
   rather than trusting a careful read.
-* **The skill's paths** were all fine: its four `reference/*.md` files exist. A path
-  checker over the three documents reports zero dangling references.
+* **The skill's paths** were the item that genuinely needed nothing: its four
+  `reference/*.md` files all exist. Its *content* is another matter — see below.
 
-What *was* owed:
+What cost more:
 
 * **The package README** described the syscall layer as of stage 1: six syscalls, where
   `step` now dispatches nine, and no mention at all of the blocking model that 9a–9f
