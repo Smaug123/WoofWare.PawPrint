@@ -374,14 +374,16 @@ module TestContextSwitchPrior =
             UnaryMetadataTokenIlOp.Ldvirtftn
         ]
 
+    /// No metadata op is `InterpreterOnly`, which is why this fixture has no anchor list for
+    /// that band here (`Ldstr` still is, and is pinned by the routing test below). The
+    /// token-resolution ops are in this band because a first touch of a type from an unloaded
+    /// assembly registers it in `_LoadedAssemblies`, which `AppDomain.GetAssemblies()` reports —
+    /// so which thread gets there first is guest-readable, on the once-per-assembly execution
+    /// that does the loading.
     let private metadataRarelyGuestVisible : UnaryMetadataTokenIlOp list =
         [
             // `Refanyval` throws `InvalidCastException` on type mismatch.
             UnaryMetadataTokenIlOp.Refanyval
-        ]
-
-    let private metadataInterpreterOnly : UnaryMetadataTokenIlOp list =
-        [
             UnaryMetadataTokenIlOp.Ldftn
             UnaryMetadataTokenIlOp.Sizeof
             UnaryMetadataTokenIlOp.Constrained
@@ -400,12 +402,6 @@ module TestContextSwitchPrior =
         for op in metadataRarelyGuestVisible do
             ContextSwitchPrior.ofUnaryMetadata op
             |> shouldEqual ContextSwitchPrior.RarelyGuestVisible
-
-    [<Test>]
-    let ``metadata ops banded InterpreterOnly classify as InterpreterOnly`` () : unit =
-        for op in metadataInterpreterOnly do
-            ContextSwitchPrior.ofUnaryMetadata op
-            |> shouldEqual ContextSwitchPrior.InterpreterOnly
 
     // ---------- Routing at the top-level classifier ----------
 
@@ -441,7 +437,7 @@ module TestContextSwitchPrior =
         ContextSwitchPrior.ofIlOp (
             IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, MetadataOperand.FromMetadata token)
         )
-        |> shouldEqual ContextSwitchPrior.InterpreterOnly
+        |> shouldEqual ContextSwitchPrior.RarelyGuestVisible
 
     [<Test>]
     let ``ofIlOp dispatches to unary-string classifier`` () : unit =

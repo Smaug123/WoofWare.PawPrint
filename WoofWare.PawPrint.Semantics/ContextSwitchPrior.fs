@@ -409,11 +409,7 @@ module ContextSwitchPrior =
         // token through `IlMachineState.resolveTypeMetadataToken` /
         // `ExecutionConcretizationModule.concretizeMethodForExecution`,
         // both of which lazily populate `state.ConcreteTypes` and may
-        // load assemblies into `_LoadedAssemblies`. The caches are keyed
-        // by stable token identity, so the *values* are deterministic
-        // after fill; only the *insertion order* is schedule-dependent.
-        // That's interpreter-bookkeeping leakage rather than direct
-        // guest semantic effect.
+        // load assemblies into `_LoadedAssemblies`.
         //   - `Ldftn`: `concretizeMethodForExecution` + `resolveMember`.
         //   - `Sizeof`: `resolveTypeMetadataToken` + `concretizeType`.
         //   - `Constrained`: prefix that resolves the constrained type.
@@ -422,11 +418,29 @@ module ContextSwitchPrior =
         //   - `Ldtoken`: pushes a `RuntimeXHandle`; first touch allocates
         //     the handle on the shared heap, later touches return the
         //     cached identity.
+        //
+        // The concretisation and handle caches are keyed by stable token
+        // identity, so their *values* are deterministic once filled and
+        // only their fill order varies with the schedule — bookkeeping
+        // leakage, which on its own would band these `InterpreterOnly`.
+        // `_LoadedAssemblies` is not in that position: it is exactly what
+        // `AppDomain.GetAssemblies()` reports, both in membership and in
+        // order, so which of two threads first touches a type from an
+        // as-yet-unloaded assembly is directly guest-readable. (That
+        // follows from the QCall existing at all, not from the order it
+        // reports: a thread that has not yet reached its first touch
+        // leaves that assembly out of a sibling's snapshot however the
+        // snapshot is sorted.)
+        //
+        // Rarely rather than always: an assembly is loaded once, so only
+        // the first execution at a given site can change what a guest
+        // sees — a precondition that holds only some of the time, which
+        // is what this band means.
         | UnaryMetadataTokenIlOp.Ldftn
         | UnaryMetadataTokenIlOp.Sizeof
         | UnaryMetadataTokenIlOp.Constrained
         | UnaryMetadataTokenIlOp.Mkrefany
-        | UnaryMetadataTokenIlOp.Ldtoken -> ContextSwitchPrior.InterpreterOnly
+        | UnaryMetadataTokenIlOp.Ldtoken -> ContextSwitchPrior.RarelyGuestVisible
 
     /// Classify a `UnaryStringTokenIlOp`.
     let ofUnaryString (op : UnaryStringTokenIlOp) : ContextSwitchPrior =
@@ -445,9 +459,10 @@ module ContextSwitchPrior =
         // An operand naming a `DynamicScope` entry is read out of the guest heap when the
         // instruction runs — `m_scope.m_tokens` is an ordinary `List<object>` that guest code holds
         // a reference to — so the instruction depends on mutable shared state whatever its opcode
-        // would otherwise say. `sizeof` is the case that makes this visible: it is `InterpreterOnly`
-        // for a metadata operand, but must not keep that 0.01 prior for a scope operand
-        // whose entry another thread can rewrite.
+        // would otherwise say. `sizeof` is the case that makes this visible: it is
+        // `RarelyGuestVisible` for a metadata operand, where the precondition is a first
+        // assembly load, but a scope operand has no such precondition — another thread can
+        // rewrite the entry at any time — so it must not keep the lower prior.
         | IlOp.UnaryMetadataToken (_, MetadataOperand.FromDynamicScope _)
         | IlOp.UnaryStringToken (_, StringOperand.FromDynamicScope _) -> ContextSwitchPrior.AlwaysGuestVisible
         | IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata _) -> ofUnaryMetadata op
