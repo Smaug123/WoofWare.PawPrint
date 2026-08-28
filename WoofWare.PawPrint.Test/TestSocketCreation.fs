@@ -14,12 +14,16 @@ open WoofWare.PosixKernel
 /// the set of sockets each kernel will actually make, which is not. So the
 /// oracle here is a *measurement* rather than a restatement.
 ///
-/// `socketMatrix/linux.tsv` and `socketMatrix/darwin.tsv` were produced by
-/// sweeping all 330 PAL triples through a C program that mirrors the shim's
-/// conversions and then calls `socket(2)`, run on a real Linux 6.18.5 container
-/// and on a real macOS 25.6.0 host. Each row records which of the shim's screens
-/// refused it, or what the syscall answered. See the files' own headers for the
-/// method and for why the Linux sweep was taken at euid 1000.
+/// `WoofWare.PosixKernel.Test/socketMatrix/{linux,darwin}.tsv`, linked into this
+/// project so that both suites read one copy, were produced by sweeping all 330
+/// PAL triples through a C program that mirrors the shim's conversions and then
+/// calls `socket(2)`, run on a real Linux 6.18.5 container and on a real macOS
+/// 25.6.0 host. Each row records which of the shim's screens refused it, or what
+/// the syscall answered. See the files' own headers for the method and for why
+/// the Linux sweep was taken at euid 1000.
+///
+/// This fixture reads their `SCREEN` rows, which are about the shim;
+/// `TestCreatableSockets` reads their `OK` rows, which are about the kernel.
 ///
 /// The correspondence being checked is total, which is what makes this more than
 /// a spot check: every row must map onto exactly one classifier answer, and a
