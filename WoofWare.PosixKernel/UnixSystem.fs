@@ -1395,8 +1395,8 @@ module UnixSystem =
     ///
     /// The record is derived from the condition rather than built beside it, so
     /// that a client cannot park a task on one lock while polling for another.
-    /// Clearing it is `UnixTaskTable.withParkedFlock task None`, which the
-    /// client does when the acquisition finishes.
+    /// Clearing it is `UnixTaskTable.withParked task None`, which the client does
+    /// when the acquisition finishes.
     let parkFlock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (task : 'Task)
         (condition : WakeCondition)
@@ -1407,13 +1407,15 @@ module UnixSystem =
         | WakeCondition.FlockGrantable (requester, mode) ->
             { system with
                 Tasks =
-                    UnixTaskTable.withParkedFlock
+                    UnixTaskTable.withParked
                         task
-                        (Some
-                            {
-                                ParkedFlock.Requester = requester
-                                Mode = mode
-                            })
+                        (Some (
+                            ParkedSyscall.Flock
+                                {
+                                    ParkedFlock.Requester = requester
+                                    Mode = mode
+                                }
+                        ))
                         system.Tasks
             }
 
@@ -1474,8 +1476,8 @@ module UnixSystem =
             let waiter =
                 system.Tasks
                 |> Map.tryPick (fun task state ->
-                    match state.ParkedSocketWait with
-                    | Some wait when wait.Port = closingId -> Some task
+                    match state.Parked with
+                    | Some (ParkedSyscall.SocketWait wait) when wait.Port = closingId -> Some task
                     | Some _
                     | None -> None
                 )
@@ -1498,6 +1500,16 @@ module UnixSystem =
         // The same question for a lock rather than a port, and the reason
         // `WakeCondition.isSatisfied` may treat a vanished description as an
         // interpreter bug rather than as something to answer.
+        //
+        // Two ladders over one park record rather than one ladder, because they
+        // ask different questions of different things: this one fires only on a
+        // close that destroys the description and does not care what kind of
+        // object it names, where the port one is gated on the object being a
+        // port and fires on any Darwin close. A description can in principle
+        // match both — nothing on Linux refuses an `flock` of a port descriptor,
+        // so one description can hold a lock and carry a waiter — in which case
+        // the port refusal above wins and this one is never named. Either way it
+        // is a refusal, so the shadowing costs only which message is reported.
         let flockRefusal : CloseRefusal<'Task> option =
             match destroyed with
             | None -> None
@@ -1509,8 +1521,8 @@ module UnixSystem =
 
             system.Tasks
             |> Map.tryPick (fun task state ->
-                match state.ParkedFlock with
-                | Some parked when parked.Requester = closingId ->
+                match state.Parked with
+                | Some (ParkedSyscall.Flock parked) when parked.Requester = closingId ->
                     Some (CloseRefusal.LastFlockedDescriptorWithWaiter (closingId, task))
                 | Some _
                 | None -> None

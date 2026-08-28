@@ -96,6 +96,25 @@ type ParkedFlock =
         Mode : FlockMode
     }
 
+/// The syscall a task is blocked in, if it is blocked in one.
+///
+/// One case per parking syscall, and one *field* on the task holding it, because
+/// a task blocks in one syscall at a time. Two independent optional records made
+/// "blocked in both" representable, and — worse — made a completion that forgot
+/// to clear its record self-heal: the task's next park in the other syscall would
+/// simply overwrite the stale one, destroying the evidence. `UnixTaskTable.withParked`
+/// refuses that overwrite, which is the runtime half of the guarantee this type
+/// states.
+///
+/// Each case's payload is its own syscall's business, and stays so: what parks a
+/// task is per-syscall (`UnixSystem.parkFlock` derives its record from the wake
+/// condition; a socket wait's `MaxEvents` is re-entry state that no wake condition
+/// carries), so merging the record did not merge the writers.
+[<RequireQualifiedAccess>]
+type ParkedSyscall =
+    | SocketWait of ParkedSocketWait
+    | Flock of ParkedFlock
+
 /// What the emulated kernel knows about one task — one scheduling entity, what
 /// `gettid(2)` names.
 ///
@@ -129,29 +148,22 @@ type UnixTaskState =
         /// recycle thread ids, but a recycled one here would let a stale
         /// `Lock._owningThreadId` be mistaken for a live owner.
         OsThreadId : OsThreadId
-        /// The socket wait this task is blocked in, if it is blocked in one.
+        /// The syscall this task is blocked in, if it is blocked in one.
         ///
         /// A real kernel holds a blocked task's in-flight syscall arguments on
-        /// its stack; this is that, for a socket wait. The re-entry consults it
-        /// rather than the guest's argument cells, which the guest may have
-        /// written since — and so does whatever a client polls to decide that
-        /// the wait can now be finished, this being the only record of which
-        /// port it is a wait on.
-        ParkedSocketWait : ParkedSocketWait option
-        /// The `flock` acquisition this task is blocked in, if it is blocked in
-        /// one.
+        /// its stack; this is that. Three readers, and they must agree, which is
+        /// why there is one of it: the re-entry consults it rather than the
+        /// guest's argument cells, which the guest may have written since;
+        /// whatever a client polls to decide the call can be finished reads it
+        /// to learn what the call is waiting for; and `close` reads it to refuse
+        /// destroying a description something is waiting on — a rule about
+        /// kernel objects, which this library can only apply to a park it can
+        /// see.
         ///
-        /// Held by *description identity*, exactly as `ParkedSocketWait` holds
-        /// its port and for the same reason: a sleeping task keeps the kernel
-        /// object rather than the descriptor number, and descriptor numbers are
-        /// reused as soon as they are free. The re-entry finishes the
-        /// acquisition against this rather than against the number the call was
-        /// made through.
-        ///
-        /// It is also what lets `close` refuse to destroy a description
-        /// something is waiting on: a rule about kernel objects, which this
-        /// library can only apply to a park it can see.
-        ParkedFlock : ParkedFlock option
+        /// Every payload holds kernel objects by *identity*, never by descriptor
+        /// number: a sleeping task keeps the object rather than the number, and
+        /// descriptor numbers are reused as soon as they are free.
+        Parked : ParkedSyscall option
     }
 
 /// The tasks a simulated process owns, by whatever a client uses to name one.
@@ -194,8 +206,7 @@ module UnixTaskTable =
             {
                 Cpu = cpu
                 OsThreadId = osThreadId
-                ParkedSocketWait = None
-                ParkedFlock = None
+                Parked = None
             }
             tasks
 
@@ -207,57 +218,52 @@ module UnixTaskTable =
     let osThreadIdOf<'Task when 'Task : comparison> (name : 'Task) (tasks : Map<'Task, UnixTaskState>) : OsThreadId =
         (get name tasks).OsThreadId
 
-    /// The socket wait `name` is blocked in, if any.
-    let parkedSocketWaitFor<'Task when 'Task : comparison>
+    /// The syscall `name` is blocked in, if any.
+    let parkedFor<'Task when 'Task : comparison>
         (name : 'Task)
         (tasks : Map<'Task, UnixTaskState>)
-        : ParkedSocketWait option
+        : ParkedSyscall option
         =
-        (get name tasks).ParkedSocketWait
+        (get name tasks).Parked
 
-    /// Record that `name` has parked in a socket wait, or (with `None`) that it
-    /// is no longer in one.
-    let withParkedSocketWait<'Task when 'Task : comparison>
-        (name : 'Task)
-        (wait : ParkedSocketWait option)
-        (tasks : Map<'Task, UnixTaskState>)
-        : Map<'Task, UnixTaskState>
-        =
-        let existing = get name tasks
-
-        Map.add
-            name
-            { existing with
-                ParkedSocketWait = wait
-            }
-            tasks
-
-    /// The `flock` acquisition `name` is blocked in, if any.
-    let parkedFlockFor<'Task when 'Task : comparison>
-        (name : 'Task)
-        (tasks : Map<'Task, UnixTaskState>)
-        : ParkedFlock option
-        =
-        (get name tasks).ParkedFlock
-
-    /// Record that `name` has parked in an `flock`, or (with `None`) that it is
+    /// Record that `name` has parked in a syscall, or (with `None`) that it is
     /// no longer in one.
     ///
-    /// Clients park through `UnixSystem.parkFlock` rather than through this,
-    /// which is what ties the record to the condition that produced it; this is
-    /// how the record is cleared, and how `parkFlock` writes it.
-    let withParkedFlock<'Task when 'Task : comparison>
+    /// Refuses to replace a park of one syscall with a park of another. A task
+    /// runs no guest code between a wake and its re-entry into the syscall it
+    /// woke from, so the only lawful writes are onto an absent record and onto a
+    /// park of the same syscall — the re-park a beaten waiter performs. Anything
+    /// else means a completion path failed to clear its record, and without this
+    /// the next park would quietly overwrite the evidence: the invariant check is
+    /// a test-time oracle, so this is where a live run gets told.
+    ///
+    /// Equality is deliberately not required of a same-syscall re-park. A
+    /// re-parking call may lawfully revise its own re-entry state — a timeout
+    /// with less of itself left to run is the obvious future instance — and that
+    /// is the syscall's business rather than this table's.
+    ///
+    /// Clients park in an `flock` through `UnixSystem.parkFlock` rather than
+    /// through this, which is what ties that record to the condition that
+    /// produced it; this is how any park is cleared, and how `parkFlock` writes.
+    let withParked<'Task when 'Task : comparison>
         (name : 'Task)
-        (parked : ParkedFlock option)
+        (parked : ParkedSyscall option)
         (tasks : Map<'Task, UnixTaskState>)
         : Map<'Task, UnixTaskState>
         =
         let existing = get name tasks
 
+        match existing.Parked, parked with
+        | Some (ParkedSyscall.SocketWait _), Some (ParkedSyscall.Flock _)
+        | Some (ParkedSyscall.Flock _), Some (ParkedSyscall.SocketWait _) ->
+            failwith
+                $"UnixTaskTable.withParked: task %O{name} is parked in %A{existing.Parked} and something is parking it in %A{parked} without clearing the first. A task blocks in one syscall at a time, so the earlier park's completion failed to clear its record."
+        | _ -> ()
+
         Map.add
             name
             { existing with
-                ParkedFlock = parked
+                Parked = parked
             }
             tasks
 

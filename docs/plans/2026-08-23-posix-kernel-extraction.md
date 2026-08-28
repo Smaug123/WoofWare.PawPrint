@@ -3207,4 +3207,91 @@ description and mode at the same time, that being the gap its own comment descri
   no wait can produce.
 
 **What is left of stage 9**: the four socket syscalls, and the packaging items.
+#### Stage 9d: one park per task, recorded once and named once
+
+**Dependencies**: stage 9c.
+
+The follow-up 9c recorded as owed, plus the status merge 9c deferred — together,
+because separating them rewrites the same functions twice and because 9c's reason for
+deferring the second dissolves under the first.
+
+`UnixTaskState` held two independent optional park records, and `ThreadStatus` had a
+marker per parking syscall. Now it is one `Parked : ParkedSyscall option` and one
+`BlockedInSyscall`. Nothing about what any guest sees changes.
+
+**Why before the socket conversions.** Not "each conversion adds a field" — the
+`WaitForSocketEvents` conversion adds none, since its record already exists and what
+moves is the *decision*. It is `poll`, `accept` and `connect` that would each add a
+field, an accessor pair, an invariant block and two defect cases. Merging first is also
+the incomplete-migration tax paid early, and it changes `WoofWare.PosixKernel`'s
+published surface, which deserves a PR a reviewer can judge on its own.
+
+**The status merge, reconsidered.** 9c rejected `BlockedInSyscall` on two grounds and
+the decisive one was that, with two independent record fields, a merged status would
+force each sweep to *skip* threads lacking its record — making "no record at all"
+indistinguishable from "someone else's waiter" and destroying the fail-loud property
+9c's own sweep test pins. One record field dissolves exactly that: "parked with a
+`Flock` record" is a legitimate thing for `fireSocketReadiness` to skip, and "parked
+with no record" is the bug both sweeps still refuse.
+
+The residual objection was that two exhaustive classifiers would answer once for all
+parking syscalls while four are unmeasured. That turns out to be derivable rather than
+unmeasured: a parking syscall completes by writing through the caller's own pointers —
+`poll`'s `revents`, `accept`'s sockaddr, the wait's event buffer — or, for `connect`,
+with a result unknowable at park time, and PawPrint can only write a caller's memory
+from that caller's frame. So all four are necessarily frame-retaining re-entrant parks,
+and `hasNoActiveFrame` and `parksPastTheBlockingCall` are forced, not guessed. A future
+syscall that broke that gets its own status, which the compiler drives from the one
+match arm.
+
+**A hazard the merge creates, and where it is caught.** Two fields kept the evidence of
+a completion that forgot to clear its record: both set at once is a state
+`checkTaskInvariants` reports. One field would instead let the task's next park
+*overwrite* the stale record, destroying the evidence and passing every check. So
+`UnixTaskTable.withParked` refuses to replace a park of one syscall with a park of
+another, and each handler's entry probe refuses a record of the wrong kind rather than
+treating it as a first entry. That refusal has to be at the write rather than in the
+invariant, because `checkTaskInvariants` is a test-time oracle that nothing in the
+driver loop runs.
+
+Equality is deliberately not required of a *same*-syscall re-park: a beaten `flock`
+waiter re-parks on the same condition today, but a re-parking call may lawfully revise
+its own re-entry state, and a timeout with less of itself left to run is the obvious
+future instance.
+
+**What licenses the merge at all** is that no task can legitimately hold two records,
+which rests on four things worth stating because a future `Thread.Interrupt` or `fork`
+would have to re-establish them: every write of `Runnable` outside the two wake helpers
+is gated on a status that is not a park; signal dispatch runs handlers on the dedicated
+dispatcher thread and never touches a waiter's status, and both parks are `EINTR`-immune
+by their PALs' own retry loops; nothing terminates or interrupts another thread; and both
+handlers probe their own record before any argument read, so the first scheduled step
+after a wake re-enters the same syscall.
+
+**What each reader does now.** The sweeps fold `BlockedInSyscall` threads and select on
+the record's kind. `GuestLocation` names the syscall as well as its object, because the
+status no longer does — "for a lock on open file description 3, Exclusive". The debugger
+derives its `kind` string from the record, so the wire shapes for a well-formed park are
+unchanged and the kind-less object is reached only in a state the invariant calls a
+defect. `close`'s two refusal ladders stay two: the port one is flavour-split, gated on
+the object kind and fires on any Darwin close, where the lock one is flavour-blind and
+fires only on destruction. A description can match both — nothing on Linux refuses an
+`flock` of a port descriptor — in which case the port refusal wins and the lock one is
+never named; a refusal either way, so the shadowing costs only which message is reported.
+
+**Correctness oracle**:
+* `checkTaskInvariants`' park agreement, now one block, exercised once per park kind —
+  which is the point: the rule is about *whether* a thread is parked and *whether* it
+  recorded a park, and a fifth syscall needs no fifth statement of it.
+* The cross-kind overwrite refused, the same-kind re-park allowed, and a cleared park
+  followed by the other syscall allowed — the three rows that pin the refusal at the
+  strength it has rather than at "no park may ever be overwritten".
+* Library-side rows for `close`'s *port* ladder, which had none: it was covered only
+  from `WoofWare.PawPrint.Test`, so a mutant in the library's own scan needed another
+  package's tests to die.
+* The socket and flock park fixtures unchanged in what they assert, save for the
+  diagnostic strings the merge rewrites.
+
+**What is left of stage 9**: the four socket syscalls, and the packaging items.
+
 

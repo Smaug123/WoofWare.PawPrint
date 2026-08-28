@@ -2798,13 +2798,15 @@ module TestUnixSystemStep =
 
         let recorded = UnixSystem.parkFlock 7 condition (withTask 7 parkedIn)
 
-        UnixTaskTable.parkedFlockFor 7 recorded.Tasks
+        UnixTaskTable.parkedFor 7 recorded.Tasks
         |> shouldEqual (
-            Some
-                {
-                    ParkedFlock.Requester = descriptionOf second parkedIn
-                    Mode = FlockMode.Exclusive
-                }
+            Some (
+                ParkedSyscall.Flock
+                    {
+                        ParkedFlock.Requester = descriptionOf second parkedIn
+                        Mode = FlockMode.Exclusive
+                    }
+            )
         )
 
     [<Test>]
@@ -2858,6 +2860,124 @@ module TestUnixSystemStep =
 
             ignore<int> alias
         | other -> failwith $"expected the close to succeed, got %A{other}"
+
+    /// A socket event port, and the descriptor onto it.
+    let private withPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let fd, registry =
+            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+
+        fd,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    /// Task 7 parked in a socket wait on the port `fd` names.
+    let private parkedOnPort (fd : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let system = withTask 7 system
+
+        { system with
+            Tasks =
+                UnixTaskTable.withParked
+                    7
+                    (Some (
+                        ParkedSyscall.SocketWait
+                            {
+                                ParkedSocketWait.Port = descriptionOf fd system
+                                MaxEvents = 8
+                            }
+                    ))
+                    system.Tasks
+        }
+
+    [<Test>]
+    let ``closing the last descriptor onto a parked-on port is refused under Linux`` () : unit =
+        // A real `epoll_wait` holds a file reference, so the port and its registrations outlive
+        // every descriptor and a later edge still completes the wait. This table sweeps the
+        // description away, which would strand the waiter in a sleep a real kernel can end.
+        let fd, system = withPort linux
+        let description = descriptionOf fd system
+        let parked = parkedOnPort fd system
+
+        match UnixSystem.close fd parked with
+        | Error (CloseRefusal.LinuxLastPortDescriptorWithWaiter (refused, task)) ->
+            refused |> shouldEqual description
+            task |> shouldEqual 7
+        | other -> failwith $"expected the close to be refused, got %A{other}"
+
+    [<Test>]
+    let ``closing an aliased descriptor onto a parked-on port is served under Linux`` () : unit =
+        // The narrowness of that refusal, and what separates it from Darwin's below: only
+        // destroying the description strands the waiter, and a `dup` alias keeps it alive. Without
+        // this row the refusal could be "no descriptor onto a waited-on port may close".
+        let fd, system = withPort linux
+
+        let alias, registry =
+            match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+            | Ok pair -> pair
+            | Error error -> failwith $"expected the dup to succeed, got %O{error}"
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let parked = parkedOnPort fd system
+
+        match UnixSystem.close fd parked with
+        | Ok (SyscallAnswer.Completed 0L, closed) ->
+            // The description really did survive, which is what the waiter needs.
+            FileDescriptorRegistry.tryFindId alias closed.Process.FileDescriptors
+            |> shouldEqual (Some (descriptionOf fd parked))
+        | other -> failwith $"expected the close to succeed, got %A{other}"
+
+    [<Test>]
+    let ``any close of a descriptor onto a parked-on port is refused under Darwin`` () : unit =
+        // The measured flavour split: a Darwin `kevent` *ends* with an error when the descriptor
+        // it was entered through closes, so even a close that leaves the kqueue alive changes what
+        // the waiter sees — which error, and what closing a different descriptor onto the same
+        // kqueue does, are unmeasured. The alias is what makes this a different answer from
+        // Linux's rather than the same one reached twice.
+        let fd, system = withPort darwin
+
+        let alias, registry =
+            match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+            | Ok pair -> pair
+            | Error error -> failwith $"expected the dup to succeed, got %O{error}"
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let description = descriptionOf fd system
+        let parked = parkedOnPort fd system
+
+        match UnixSystem.close alias parked with
+        | Error (CloseRefusal.DarwinPortDescriptorWithWaiter (refused, task)) ->
+            refused |> shouldEqual description
+            task |> shouldEqual 7
+        | other -> failwith $"expected the close to be refused, got %A{other}"
+
+    [<Test>]
+    let ``closing a port nothing waits on is served`` () : unit =
+        // Vacuity guard for all three rows above: the refusals are about the *waiter*, not about
+        // ports, so a port with no waiter closes on either flavour.
+        for system in [ linux ; darwin ] do
+            let fd, system = withPort system
+
+            match UnixSystem.close fd (withTask 7 system) with
+            | Ok (SyscallAnswer.Completed 0L, _) -> ()
+            | other -> failwith $"expected the close to succeed, got %A{other}"
+
 
     [<Test>]
     let ``truncateAt refuses a negative length rather than emptying the file`` () : unit =

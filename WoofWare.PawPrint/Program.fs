@@ -207,14 +207,12 @@ module Program =
         | ThreadStatus.BlockedOnSyncBlockAcquire (_, None)
         | ThreadStatus.BlockedOnJoin (_, None)
         | ThreadStatus.BlockedOnSleep None
-        // `BlockedOnSocketEvents` has no deadline to project: `WaitForSocketEvents` takes no
+        // `BlockedInSyscall` has no deadline to project: neither parking syscall takes a
         // timeout, so the clock can never wake such a thread. There is deliberately no
-        // `FiredDeadline` case for it, which is what makes that unrepresentable rather than
-        // merely unwritten.
-        | ThreadStatus.BlockedOnSocketEvents
-        // Nor has `BlockedOnFlock`: an `flock` wait takes no timeout either, so the
-        // clock can never wake one.
-        | ThreadStatus.BlockedOnFlock
+        // `FiredDeadline` case for one, which is what makes that unrepresentable rather than
+        // merely unwritten. A parking syscall that *does* take a timeout puts its deadline in
+        // the task's park record, and this function will have to consult it.
+        | ThreadStatus.BlockedInSyscall
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnClassInit _
@@ -375,7 +373,7 @@ module Program =
             (state.ThreadState, [])
             ||> Map.foldBack (fun tid ts acc ->
                 match ts.Status with
-                | ThreadStatus.BlockedOnSocketEvents -> tid :: acc
+                | ThreadStatus.BlockedInSyscall -> tid :: acc
                 | _ -> acc
             )
 
@@ -383,19 +381,22 @@ module Program =
         | [] -> state
         | waiters ->
 
-        // Which port each waiter waits on is the kernel's record, not the
-        // status: the status says only that the thread is asleep in the wait.
-        // That is the same record the re-entered handler delivers from, so the
-        // question this sweep asks and the question the delivery answers cannot
-        // drift apart.
+        // *Which* syscall each thread is parked in, and what it waits for, is
+        // the kernel's record: the status says only that the thread is asleep in
+        // one. That is the same record the re-entered handler delivers from, so
+        // the question this sweep asks and the question the delivery answers
+        // cannot drift apart. A thread parked in some other syscall is not this
+        // sweep's business and is dropped; a thread parked in none is a park
+        // that wrote no record, which nothing could ever wake.
         let waiters =
             waiters
-            |> List.map (fun tid ->
-                match UnixTaskTable.parkedSocketWaitFor tid state.Kernel.Tasks with
+            |> List.choose (fun tid ->
+                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
                 | None ->
                     failwith
-                        $"fireSocketReadiness: thread %O{tid} is parked in BlockedOnSocketEvents but its task holds no ParkedSocketWait, so there is nothing to say which port it waits on. The park writes the record and the status together (this is an interpreter bug)."
-                | Some wait -> tid, wait.Port
+                        $"fireSocketReadiness: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. The park writes the record and the status together (this is an interpreter bug)."
+                | Some (ParkedSyscall.SocketWait wait) -> Some (tid, wait.Port)
+                | Some (ParkedSyscall.Flock _) -> None
             )
 
         let deliverable =
@@ -452,7 +453,7 @@ module Program =
             (state.ThreadState, [])
             ||> Map.foldBack (fun tid ts acc ->
                 match ts.Status with
-                | ThreadStatus.BlockedOnFlock -> tid :: acc
+                | ThreadStatus.BlockedInSyscall -> tid :: acc
                 | _ -> acc
             )
 
@@ -462,14 +463,18 @@ module Program =
 
         let unix = EmulatedKernel.unix state.Kernel
 
+        // As in `fireSocketReadiness`: the record says which syscall, a thread
+        // parked in another one is dropped, and a thread parked in none is a
+        // park nothing could ever wake.
         let grantable =
             waiters
             |> List.filter (fun tid ->
-                match UnixTaskTable.parkedFlockFor tid state.Kernel.Tasks with
+                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
                 | None ->
                     failwith
-                        $"fireFlockGrantable: thread %O{tid} is parked in BlockedOnFlock but its task holds no ParkedFlock, so there is nothing to say what it is waiting for. The park writes the record and the status together (this is an interpreter bug)."
-                | Some parked ->
+                        $"fireFlockGrantable: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. The park writes the record and the status together (this is an interpreter bug)."
+                | Some (ParkedSyscall.SocketWait _) -> false
+                | Some (ParkedSyscall.Flock parked) ->
                     WakeCondition.isSatisfied (WakeCondition.FlockGrantable (parked.Requester, parked.Mode)) unix
             )
 

@@ -11,7 +11,7 @@ open WoofWare.PosixKernel
 /// The park in `SystemNative_WaitForSocketEvents` -- the row the wait exists for, and the one
 /// no guest can report on, because a parked guest never returns an exit code.
 ///
-/// `TestSocketEventsWaitReason` covers what `ThreadStatus.BlockedOnSocketEvents` is obliged to
+/// `TestSocketEventsWaitReason` covers what `ThreadStatus.BlockedInSyscall` is obliged to
 /// answer, constructing the status directly. These tests are the other half: that the handler
 /// *reaches* it, and reaches it re-entrantly.
 ///
@@ -116,7 +116,7 @@ class WaitsOnADuplicatedPort
         |> Map.toList
         |> List.filter (fun (_, ts) ->
             match ts.Status with
-            | ThreadStatus.BlockedOnSocketEvents -> true
+            | ThreadStatus.BlockedInSyscall -> true
             | _ -> false
         )
         |> function
@@ -136,11 +136,18 @@ class WaitsOnADuplicatedPort
         let state = prepared.State
         let thread, threadState = parkedThread state
 
-        threadState.Status |> shouldEqual ThreadStatus.BlockedOnSocketEvents
+        threadState.Status |> shouldEqual ThreadStatus.BlockedInSyscall
 
-        UnixTaskTable.parkedSocketWaitFor thread state.Kernel.Tasks
-        |> Option.map (fun wait -> wait.Port)
-        |> shouldEqual (Some (OpenFileDescriptionId 3L))
+        UnixTaskTable.parkedFor thread state.Kernel.Tasks
+        |> shouldEqual (
+            Some (
+                ParkedSyscall.SocketWait
+                    {
+                        ParkedSocketWait.Port = OpenFileDescriptionId 3L
+                        MaxEvents = 1
+                    }
+            )
+        )
 
     /// Re-entrant parking, stated as the frame stack: the dispatcher leaves the native frame in
     /// place, so a wake re-enters the handler and it re-reads the call's own arguments. Kills
@@ -184,7 +191,9 @@ class WaitsOnADuplicatedPort
     let ``the deadlock report names the wait and the port`` () : unit =
         let _, stuck = deadlock.Force ()
 
-        stuck |> shouldContainText "BlockedOnSocketEvents on open file description 3"
+        stuck
+        |> shouldContainText "BlockedInSyscall for events on open file description 3"
+
         stuck |> shouldContainText "WaitForSocketEvents"
 
     /// The status says only that a thread is asleep in the wait; the record says on what. A
@@ -202,8 +211,7 @@ class WaitsOnADuplicatedPort
 
         let stripped =
             { prepared with
-                State =
-                    prepared.State.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread None))
+                State = prepared.State.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread None))
             }
 
         let _messages, loggerFactory =
@@ -218,7 +226,7 @@ class WaitsOnADuplicatedPort
                 |> ignore<Program.ProgramStepOutcome>
             )
 
-        exn.Message |> shouldContainText "holds no ParkedSocketWait"
+        exn.Message |> shouldContainText "records no park"
 
     /// Two waiters parked on one port, and an entry thread that then makes the port
     /// deliverable. The sleep is what makes the order deterministic: while the entry
@@ -442,9 +450,11 @@ class TwoPortsOneEdge
         |> Map.toList
         |> List.choose (fun (tid, ts) ->
             match ts.Status with
-            | ThreadStatus.BlockedOnSocketEvents ->
-                UnixTaskTable.parkedSocketWaitFor tid state.Kernel.Tasks
-                |> Option.map (fun wait -> tid, wait.Port)
+            | ThreadStatus.BlockedInSyscall ->
+                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
+                | Some (ParkedSyscall.SocketWait wait) -> Some (tid, wait.Port)
+                | Some (ParkedSyscall.Flock _)
+                | None -> None
             | _ -> None
         )
 

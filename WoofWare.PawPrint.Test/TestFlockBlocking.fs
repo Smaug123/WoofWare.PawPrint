@@ -143,7 +143,8 @@ class Program
         // Deadlock rather than a crash, and named precisely enough that a stuck run says which
         // thread is waiting for which lock rather than merely that flock was unhappy.
         exn.Message |> shouldContainText "deadlocked"
-        exn.Message |> shouldContainText "BlockedOnFlock"
+        exn.Message |> shouldContainText "BlockedInSyscall"
+        exn.Message |> shouldContainText "for a lock on"
         exn.Message |> shouldContainText "open file description"
         exn.Message |> shouldContainText "Exclusive"
 
@@ -183,7 +184,8 @@ class Program
             Assert.Catch (fun () -> run "FlockBlocksShared.cs" conflicting |> ignore<RunOutcome>)
 
         exn.Message |> shouldContainText "deadlocked"
-        exn.Message |> shouldContainText "BlockedOnFlock"
+        exn.Message |> shouldContainText "BlockedInSyscall"
+        exn.Message |> shouldContainText "for a lock on"
         exn.Message |> shouldContainText "Shared"
 
         let compatible =

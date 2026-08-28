@@ -71,11 +71,11 @@ type GuestThreadLocation =
         /// What a blocked thread is blocked on, when its status does not say.
         ///
         /// Most blocked statuses carry their own object, and this is `None` for
-        /// them. The two syscall parks — `ThreadStatus.BlockedOnFlock` and
-        /// `ThreadStatus.BlockedOnSocketEvents` — deliberately carry nothing, what
-        /// they wait for living in the emulated kernel's task record, which `close`
-        /// needs anyway. So the reader who would otherwise be told only "parked on
-        /// some lock" is given the lock, and the port, here.
+        /// them. `ThreadStatus.BlockedInSyscall` deliberately carries nothing —
+        /// not even which syscall — what it waits for living in the emulated
+        /// kernel's task record, which `close` needs anyway. So the reader who
+        /// would otherwise be told only "parked in some syscall" is told which
+        /// one, and on what, here.
         WaitingFor : string option
     }
 
@@ -304,10 +304,10 @@ module GuestLocation =
         |> Map.toList
         |> List.filter (fun (_, ts) -> ts.Status <> ThreadStatus.Terminated)
         |> List.map (fun (threadId, ts) ->
-            // Looked up rather than asked for through `UnixTaskTable.parkedFlockFor` /
-            // `parkedSocketWaitFor`, which raise for a thread with no task at all: this
-            // renderer runs while diagnosing a stuck guest, and a diagnostic that throws
-            // replaces the problem with itself. Both absences are reported below instead.
+            // Looked up rather than asked for through `UnixTaskTable.parkedFor`, which
+            // raises for a thread with no task at all: this renderer runs while
+            // diagnosing a stuck guest, and a diagnostic that throws replaces the
+            // problem with itself. Both absences are reported below instead.
             let task = state.Kernel.Tasks |> Map.tryFind threadId
 
             {
@@ -316,21 +316,19 @@ module GuestLocation =
                 Position = positionOfThread state ts
                 WaitingFor =
                     match ts.Status with
-                    | ThreadStatus.BlockedOnSocketEvents ->
-                        match task |> Option.bind (fun task -> task.ParkedSocketWait) with
-                        // Spelled out for the same reason the lock below is: the
-                        // identity renders as a bare number, and a reader would
-                        // otherwise take it for the descriptor the guest waited
-                        // through, which is the one thing it is not.
-                        | Some wait -> Some $"on open file description %O{wait.Port}"
-                        | None -> Some "on nothing recorded (this is an interpreter bug)"
-                    | ThreadStatus.BlockedOnFlock ->
-                        match task |> Option.bind (fun task -> task.ParkedFlock) with
-                        // Spelled out, because the identity renders as a bare
-                        // number and a reader would otherwise take it for the
-                        // descriptor the guest passed — which is the one thing
-                        // it is deliberately not.
-                        | Some parked -> Some $"on open file description %O{parked.Requester}, %O{parked.Mode}"
+                    | ThreadStatus.BlockedInSyscall ->
+                        // Names the syscall as well as its object, because the
+                        // status no longer does: a reader told only "parked in a
+                        // syscall on description 3" cannot tell an `epoll_wait`
+                        // from an `flock`. The descriptions are spelled out for a
+                        // second reason — the identity renders as a bare number,
+                        // and a reader would otherwise take it for the descriptor
+                        // the guest passed, which is the one thing it is not.
+                        match task |> Option.bind (fun task -> task.Parked) with
+                        | Some (ParkedSyscall.SocketWait wait) ->
+                            Some $"for events on open file description %O{wait.Port}"
+                        | Some (ParkedSyscall.Flock parked) ->
+                            Some $"for a lock on open file description %O{parked.Requester}, %O{parked.Mode}"
                         | None -> Some "on nothing recorded (this is an interpreter bug)"
                     | _ -> None
             }

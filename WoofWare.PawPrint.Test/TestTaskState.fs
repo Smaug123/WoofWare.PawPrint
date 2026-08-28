@@ -50,7 +50,7 @@ module TestTaskState =
         UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
         |> shouldEqual (EmulatedKernel.osThreadId thread)
 
-        UnixTaskTable.parkedSocketWaitFor thread state.Kernel.Tasks |> shouldEqual None
+        UnixTaskTable.parkedFor thread state.Kernel.Tasks |> shouldEqual None
 
     [<Test>]
     let ``a parked interpreter thread gets a task too`` () : unit =
@@ -191,137 +191,116 @@ module TestTaskState =
         EmulatedKernel.checkTaskInvariants (threads haunted) haunted.Kernel
         |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread ghost ]
 
-    [<Test>]
-    let ``a flock waiter with no record is refused`` () : unit =
-        // The status says the thread is parked on a lock; the record says which lock. A thread
-        // with the one and not the other is a state nothing can act on: the sweep cannot decide
-        // whether to wake it, and the re-entered handler cannot decide what to finish.
+    let private aLock : ParkedSyscall =
+        ParkedSyscall.Flock
+            {
+                ParkedFlock.Requester = OpenFileDescriptionId 3L
+                Mode = FlockMode.Exclusive
+            }
+
+    let private aWait : ParkedSyscall =
+        ParkedSyscall.SocketWait
+            {
+                ParkedSocketWait.Port = OpenFileDescriptionId 3L
+                MaxEvents = 8
+            }
+
+    /// Every kind of park, so that the rows below say the invariant is about *whether* a thread
+    /// is parked rather than about which syscall it is parked in. One record field and one park
+    /// status are exactly what let one statement of the rule cover every parking syscall, and a
+    /// row per kind is what would otherwise have to be written again for a fifth.
+    let private parks : ParkedSyscall list = [ aLock ; aWait ]
+
+    /// A thread with a task, and `parked` written on it.
+    let private threadParkedIn (parked : ParkedSyscall) : IlMachineState * ThreadId =
         let state, thread =
             machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
 
-        let statuses = threads state |> Map.add thread ThreadStatus.BlockedOnFlock
+        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some parked))), thread
+
+    [<Test>]
+    let ``a syscall waiter with no record is refused`` () : unit =
+        // The status says the thread is asleep in a syscall; the record says which, and in what.
+        // A thread with the one and not the other is a state nothing can act on: no sweep can
+        // decide whether to wake it, and no re-entered handler could decide what to finish.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let statuses = threads state |> Map.add thread ThreadStatus.BlockedInSyscall
 
         EmulatedKernel.checkTaskInvariants statuses state.Kernel
-        |> shouldEqual [ EmulatedKernelDefect.FlockWaiterWithoutRecord thread ]
+        |> shouldEqual [ EmulatedKernelDefect.SyscallWaiterWithoutRecord thread ]
 
-    [<Test>]
-    let ``a flock record on a thread that cannot be waiting is refused`` () : unit =
-        let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
-
-        let recorded =
-            state.MapKernel (
-                EmulatedKernel.mapTasks (
-                    UnixTaskTable.withParkedFlock
-                        thread
-                        (Some
-                            {
-                                ParkedFlock.Requester = OpenFileDescriptionId 3L
-                                Mode = FlockMode.Exclusive
-                            })
-                )
-            )
-
+    [<TestCaseSource(nameof parks)>]
+    let ``a park record on a thread that cannot be waiting is refused`` (parked : ParkedSyscall) : unit =
+        let recorded, thread = threadParkedIn parked
         let statuses = threads recorded |> Map.add thread ThreadStatus.Terminated
 
         EmulatedKernel.checkTaskInvariants statuses recorded.Kernel
         |> shouldEqual
             [
-                EmulatedKernelDefect.FlockRecordWithoutWaiter (thread, ThreadStatus.Terminated)
+                EmulatedKernelDefect.SyscallRecordWithoutWaiter (thread, ThreadStatus.Terminated)
             ]
 
-    [<Test>]
-    let ``a woken flock waiter keeps its record`` () : unit =
+    [<TestCaseSource(nameof parks)>]
+    let ``a woken waiter keeps its record`` (parked : ParkedSyscall) : unit =
         // Not slack in the invariant, but the window it exists to permit: between the sweep
-        // flipping a waiter to Runnable and the woken thread re-entering the handler, the record
+        // flipping a waiter to Runnable and the woken thread re-entering its handler, the record
         // must still be there -- it is what tells the re-entry that it is a re-entry, and what
-        // says which description to finish against.
-        let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
-
-        let recorded =
-            state.MapKernel (
-                EmulatedKernel.mapTasks (
-                    UnixTaskTable.withParkedFlock
-                        thread
-                        (Some
-                            {
-                                ParkedFlock.Requester = OpenFileDescriptionId 3L
-                                Mode = FlockMode.Exclusive
-                            })
-                )
-            )
-
+        // says what to finish against.
+        let recorded, thread = threadParkedIn parked
         let statuses = threads recorded |> Map.add thread ThreadStatus.Runnable
 
         EmulatedKernel.checkTaskInvariants statuses recorded.Kernel |> shouldBeEmpty
 
-    [<Test>]
-    let ``a socket waiter with no record is refused`` () : unit =
-        // The status says the thread is asleep in a wait; the record says which port. A thread
-        // with the one and not the other is a state nothing can act on: the readiness sweep
-        // cannot decide whether to wake it, and the re-entered handler cannot decide what to
-        // deliver from.
-        let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
-
-        let statuses = threads state |> Map.add thread ThreadStatus.BlockedOnSocketEvents
-
-        EmulatedKernel.checkTaskInvariants statuses state.Kernel
-        |> shouldEqual [ EmulatedKernelDefect.SocketWaiterWithoutRecord thread ]
-
-    [<Test>]
-    let ``a socket record on a thread that cannot be waiting is refused`` () : unit =
-        let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
-
-        let recorded =
-            state.MapKernel (
-                EmulatedKernel.mapTasks (
-                    UnixTaskTable.withParkedSocketWait
-                        thread
-                        (Some
-                            {
-                                ParkedSocketWait.Port = OpenFileDescriptionId 3L
-                                MaxEvents = 8
-                            })
-                )
-            )
-
-        let statuses = threads recorded |> Map.add thread ThreadStatus.Terminated
-
-        EmulatedKernel.checkTaskInvariants statuses recorded.Kernel
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.SocketRecordWithoutWaiter (thread, ThreadStatus.Terminated)
-            ]
-
-    [<Test>]
-    let ``a woken socket waiter keeps its record`` () : unit =
-        // The window the invariant exists to permit, exactly as for a woken `flock` waiter:
-        // between the sweep flipping a waiter to Runnable and the woken thread re-entering the
-        // handler, the record must still be there -- it is what tells the re-entry that it is a
-        // re-entry, and what says which port to deliver from.
-        let state, thread =
-            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
-
-        let recorded =
-            state.MapKernel (
-                EmulatedKernel.mapTasks (
-                    UnixTaskTable.withParkedSocketWait
-                        thread
-                        (Some
-                            {
-                                ParkedSocketWait.Port = OpenFileDescriptionId 3L
-                                MaxEvents = 8
-                            })
-                )
-            )
-
-        let statuses = threads recorded |> Map.add thread ThreadStatus.Runnable
+    [<TestCaseSource(nameof parks)>]
+    let ``a parked waiter agrees with its record`` (parked : ParkedSyscall) : unit =
+        let recorded, thread = threadParkedIn parked
+        let statuses = threads recorded |> Map.add thread ThreadStatus.BlockedInSyscall
 
         EmulatedKernel.checkTaskInvariants statuses recorded.Kernel |> shouldBeEmpty
 
+    [<Test>]
+    let ``parking over another syscall's park is refused`` () : unit =
+        // A task blocks in one syscall at a time, and no completion may leave its record behind.
+        // Two independent optional fields let a forgotten clear be *found* -- both set at once is
+        // a state the invariant reports -- but one field would instead let the next park silently
+        // overwrite it, which is why the write refuses rather than the check catching it later.
+        // `checkTaskInvariants` is a test-time oracle; nothing in the driver loop runs it, so this
+        // is the only place a live run is told.
+        let parked, thread = threadParkedIn aWait
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                parked.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some aLock)))
+                |> ignore<IlMachineState>
+            )
+
+        exn.Message |> shouldContainText "blocks in one syscall at a time"
+
+    [<TestCaseSource(nameof parks)>]
+    let ``re-parking in the same syscall is allowed`` (parked : ParkedSyscall) : unit =
+        // The lawful overwrite, and the reason the refusal above is by kind rather than by
+        // equality: a beaten `flock` waiter re-parks on the same condition, and a socket waiter
+        // whose port was drained before it ran parks again on the same port.
+        let state, thread = threadParkedIn parked
+
+        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some parked)))
+        |> fun state -> UnixTaskTable.parkedFor thread state.Kernel.Tasks
+        |> shouldEqual (Some parked)
+
+    [<TestCaseSource(nameof parks)>]
+    let ``clearing a park lets the other syscall park`` (parked : ParkedSyscall) : unit =
+        // The refusal is about an *unclosed* park, not about a task's history: a completion that
+        // clears its record leaves the task free to block in anything.
+        let state, thread = threadParkedIn parked
+
+        let other = parks |> List.find (fun p -> p <> parked)
+
+        state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread None))
+        |> fun state -> state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some other)))
+        |> fun state -> UnixTaskTable.parkedFor thread state.Kernel.Tasks
+        |> shouldEqual (Some other)
 
     [<Test>]
     let ``registering a thread twice is refused`` () : unit =
@@ -364,11 +343,13 @@ module TestTaskState =
         // refuses either alone: a record on a thread that has not started is a state no wait
         // can have produced.
         let parked =
-            state.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread (Some wait)))
-            |> Scheduler.blockOnSocketEvents thread
+            state.MapKernel (
+                EmulatedKernel.mapTasks (UnixTaskTable.withParked thread (Some (ParkedSyscall.SocketWait wait)))
+            )
+            |> Scheduler.parkInSyscall thread
 
-        UnixTaskTable.parkedSocketWaitFor thread parked.Kernel.Tasks
-        |> shouldEqual (Some wait)
+        UnixTaskTable.parkedFor thread parked.Kernel.Tasks
+        |> shouldEqual (Some (ParkedSyscall.SocketWait wait))
 
         agrees parked
 
@@ -380,10 +361,9 @@ module TestTaskState =
         agrees woken
 
         let released =
-            woken.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait thread None))
+            woken.MapKernel (EmulatedKernel.mapTasks (UnixTaskTable.withParked thread None))
 
-        UnixTaskTable.parkedSocketWaitFor thread released.Kernel.Tasks
-        |> shouldEqual None
+        UnixTaskTable.parkedFor thread released.Kernel.Tasks |> shouldEqual None
 
         agrees released
 

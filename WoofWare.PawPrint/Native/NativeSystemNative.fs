@@ -3056,7 +3056,7 @@ module NativeSystemNative =
                 // another; and `close` needs it, to refuse destroying the
                 // description this thread is waiting on.
                 withAnswered (UnixSystem.parkFlock ctx.Thread condition system) state
-                |> Scheduler.blockOnFlock ctx.Thread
+                |> Scheduler.parkInSyscall ctx.Thread
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
 
@@ -3079,8 +3079,15 @@ module NativeSystemNative =
             // the descriptor the guest passed cannot be trusted for that, since
             // numbers are reused as soon as they are freed and another thread
             // may have closed and reopened this one while this call slept.
-            match UnixTaskTable.parkedFlockFor ctx.Thread state.Kernel.Tasks with
-            | Some parked ->
+            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            | Some (ParkedSyscall.SocketWait _) ->
+                // Unreachable: a task parked in a socket wait is not running IL,
+                // and a woken one re-enters its own handler before it can reach
+                // this one. Refused rather than treated as a first entry, which
+                // would park over the stale record and destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a socket wait. A task blocks in one syscall at a time, so the wait's completion failed to clear its record (this is an interpreter bug)."
+            | Some (ParkedSyscall.Flock parked) ->
                 match UnixSystem.flockAcquire parked.Requester parked.Mode (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refused refusal
                 | Ok (SyscallOutcome.WouldBlock condition, system) ->
@@ -3093,7 +3100,7 @@ module NativeSystemNative =
 
                 let system =
                     { system with
-                        Tasks = UnixTaskTable.withParkedFlock ctx.Thread None system.Tasks
+                        Tasks = UnixTaskTable.withParked ctx.Thread None system.Tasks
                     }
 
                 match answer with
@@ -5387,16 +5394,18 @@ module NativeSystemNative =
                 // question from the one the delivery below answers.
                 state.MapKernel (
                     EmulatedKernel.mapTasks (
-                        UnixTaskTable.withParkedSocketWait
+                        UnixTaskTable.withParked
                             ctx.Thread
-                            (Some
-                                {
-                                    ParkedSocketWait.Port = port
-                                    MaxEvents = requestedCount
-                                })
+                            (Some (
+                                ParkedSyscall.SocketWait
+                                    {
+                                        ParkedSocketWait.Port = port
+                                        MaxEvents = requestedCount
+                                    }
+                            ))
                     )
                 )
-                |> Scheduler.blockOnSocketEvents ctx.Thread
+                |> Scheduler.parkInSyscall ctx.Thread
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
 
@@ -5456,9 +5465,7 @@ module NativeSystemNative =
                 // A successful wait leaves errno alone. The wait is over, so
                 // the captured in-flight state (if this was a re-entry) goes
                 // with it.
-                state.MapKernel (fun _ ->
-                    EmulatedKernel.mapTasks (UnixTaskTable.withParkedSocketWait ctx.Thread None) kernel
-                )
+                state.MapKernel (fun _ -> EmulatedKernel.mapTasks (UnixTaskTable.withParked ctx.Thread None) kernel)
                 |> writeBytesThrough ctx operation bufferPointer (ImmutableArray.CreateRange bytes)
                 |> writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange countBytes)
                 |> IlMachineState.pushToEvalStack'
@@ -5488,8 +5495,16 @@ module NativeSystemNative =
             // last descriptor from destroying it). So a re-entry consults no
             // screen and no descriptor table: it delivers from the captured
             // description, or parks again.
-            match UnixTaskTable.parkedSocketWaitFor ctx.Thread state.Kernel.Tasks with
-            | Some inFlight -> deliverOrPark inFlight.Port inFlight.MaxEvents
+            match UnixTaskTable.parkedFor ctx.Thread state.Kernel.Tasks with
+            | Some (ParkedSyscall.SocketWait inFlight) -> deliverOrPark inFlight.Port inFlight.MaxEvents
+            | Some (ParkedSyscall.Flock _) ->
+                // Unreachable, and refused rather than treated as a first entry
+                // for the reason `SystemNative_FLock`'s mirror of this gives: a
+                // task parked in an `flock` is not running IL, so this can only
+                // mean the acquisition's completion failed to clear its record,
+                // and parking over it would destroy the evidence.
+                failwith
+                    $"%s{operation}: thread %O{ctx.Thread} entered a socket wait while its task is parked in an flock. A task blocks in one syscall at a time, so the acquisition's completion failed to clear its record (this is an interpreter bug)."
             | None ->
 
             let requestedCount =

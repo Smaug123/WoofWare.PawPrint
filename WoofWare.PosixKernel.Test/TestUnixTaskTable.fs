@@ -24,7 +24,7 @@ module TestUnixTaskTable =
 
         UnixTaskTable.cpuOf 7 tasks |> shouldEqual (CpuId 3)
         UnixTaskTable.osThreadIdOf 7 tasks |> shouldEqual (OsThreadId 8u)
-        UnixTaskTable.parkedSocketWaitFor 7 tasks |> shouldEqual None
+        UnixTaskTable.parkedFor 7 tasks |> shouldEqual None
 
     [<Test>]
     let ``a name that was never registered is refused loudly`` () : unit =
@@ -56,13 +56,16 @@ module TestUnixTaskTable =
                 MaxEvents = 8
             }
 
-        let parked = UnixTaskTable.withParkedSocketWait 7 (Some wait) tasks
-        UnixTaskTable.parkedSocketWaitFor 7 parked |> shouldEqual (Some wait)
+        let parked = UnixTaskTable.withParked 7 (Some (ParkedSyscall.SocketWait wait)) tasks
+
+        UnixTaskTable.parkedFor 7 parked
+        |> shouldEqual (Some (ParkedSyscall.SocketWait wait))
+
         UnixTaskTable.cpuOf 7 parked |> shouldEqual (CpuId 3)
         UnixTaskTable.osThreadIdOf 7 parked |> shouldEqual (OsThreadId 8u)
 
-        let released = UnixTaskTable.withParkedSocketWait 7 None parked
-        UnixTaskTable.parkedSocketWaitFor 7 released |> shouldEqual None
+        let released = UnixTaskTable.withParked 7 None parked
+        UnixTaskTable.parkedFor 7 released |> shouldEqual None
         UnixTaskTable.cpuOf 7 released |> shouldEqual (CpuId 3)
 
     [<Test>]
