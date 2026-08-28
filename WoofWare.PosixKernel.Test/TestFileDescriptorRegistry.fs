@@ -1720,6 +1720,141 @@ module TestFileDescriptorRegistry =
         let registry = FileDescriptorRegistry.setNonBlocking portFd false registry
         nonBlockingOf portFd registry |> shouldEqual false
 
+    // --- what a registration reports ---
+
+    /// Every `ReadinessLevel` there is: five booleans, so 32 of them.
+    let private allLevels : ReadinessLevel list =
+        [
+            for bits in 0..31 ->
+                {
+                    In = bits &&& 0x01 <> 0
+                    Out = bits &&& 0x02 <> 0
+                    RdHup = bits &&& 0x04 <> 0
+                    Hup = bits &&& 0x08 <> 0
+                    Err = bits &&& 0x10 <> 0
+                }
+        ]
+
+    /// Every `SocketEventInterest` there is: three booleans, so eight.
+    let private allInterests : SocketEventInterest list =
+        [
+            for bits in 0..7 ->
+                {
+                    In = bits &&& 0x01 <> 0
+                    Out = bits &&& 0x02 <> 0
+                    RdHup = bits &&& 0x04 <> 0
+                }
+        ]
+
+    /// The two ends of `reportedUnder`. Asking for everything reports the level
+    /// itself; asking for nothing still reports `HUP` and `ERR`, which is what
+    /// makes them not interest and why the record has no field for them
+    /// (measured, a pending refusal registered with interest 0 reports 0x18).
+    [<Test>]
+    let ``a full interest reports the level, and an empty one reports HUP and ERR`` () : unit =
+        let everything : SocketEventInterest =
+            {
+                In = true
+                Out = true
+                RdHup = true
+            }
+
+        let nothing : SocketEventInterest =
+            {
+                In = false
+                Out = false
+                RdHup = false
+            }
+
+        for level in allLevels do
+            ReadinessLevel.reportedUnder everything level |> shouldEqual level
+
+            ReadinessLevel.reportedUnder nothing level
+            |> shouldEqual
+                { ReadinessLevel.none with
+                    Hup = level.Hup
+                    Err = level.Err
+                }
+
+    /// A report never invents readiness, and widening what was asked for never
+    /// withdraws any.
+    [<Test>]
+    let ``a report is a sub-level, and grows with the interest`` () : unit =
+        let subLevel (small : ReadinessLevel) (big : ReadinessLevel) : bool =
+            (not small.In || big.In)
+            && (not small.Out || big.Out)
+            && (not small.RdHup || big.RdHup)
+            && (not small.Hup || big.Hup)
+            && (not small.Err || big.Err)
+
+        for level in allLevels do
+            for interest in allInterests do
+                let reported = ReadinessLevel.reportedUnder interest level
+
+                if not (subLevel reported level) then
+                    failwith $"reportedUnder %O{interest} %O{level} = %O{reported}, which is not a sub-level of it"
+
+                let widened =
+                    { interest with
+                        In = true
+                    }
+
+                if not (subLevel reported (ReadinessLevel.reportedUnder widened level)) then
+                    failwith $"widening %O{interest} to %O{widened} withdrew part of %O{reported}"
+
+    /// Which field each interest bit gates, pinned one bit at a time: clearing
+    /// exactly one of them may change exactly its own condition, and nothing
+    /// else. This is what a swapped pair of fields fails.
+    [<Test>]
+    let ``each interest bit gates its own condition alone`` () : unit =
+        let clearings
+            : (string * (SocketEventInterest -> SocketEventInterest) * (ReadinessLevel -> ReadinessLevel)) list =
+            [
+                "In",
+                (fun i ->
+                    { i with
+                        In = false
+                    }
+                ),
+                (fun r ->
+                    { r with
+                        In = false
+                    }
+                )
+                "Out",
+                (fun i ->
+                    { i with
+                        Out = false
+                    }
+                ),
+                (fun r ->
+                    { r with
+                        Out = false
+                    }
+                )
+                "RdHup",
+                (fun i ->
+                    { i with
+                        RdHup = false
+                    }
+                ),
+                (fun r ->
+                    { r with
+                        RdHup = false
+                    }
+                )
+            ]
+
+        for level in allLevels do
+            for interest in allInterests do
+                for name, clearInterest, clearReport in clearings do
+                    let before = ReadinessLevel.reportedUnder interest level
+                    let after = ReadinessLevel.reportedUnder (clearInterest interest) level
+
+                    if after <> clearReport before then
+                        failwith
+                            $"clearing %s{name} from %O{interest} took %O{level} from %O{before} to %O{after}, which is not %O{before} with %s{name} cleared"
+
     // --- socket event registrations ---
 
     /// The interest table of the port `portFd` names. Fails on anything else, so
@@ -1735,11 +1870,9 @@ module TestFileDescriptorRegistry =
 
     let private readWrite : SocketEventInterest =
         {
-            Read = true
-            Write = true
-            ReadClose = false
-            Close = false
-            Error = false
+            In = true
+            Out = true
+            RdHup = false
         }
 
     let private change
@@ -1788,7 +1921,7 @@ module TestFileDescriptorRegistry =
 
         let readOnly =
             { readWrite with
-                Write = false
+                Out = false
             }
 
         let registry =

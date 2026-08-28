@@ -697,7 +697,7 @@ module TestEmulatedKernelSockets =
             }
 
         level
-        |> ReadinessLevel.reportedUnder (SocketEventInterest.ofBits "test" 0)
+        |> ReadinessLevel.reportedUnder (SocketEventsPal.toInterest "test" 0)
         |> shouldEqual
             { ReadinessLevel.none with
                 Hup = true
@@ -705,7 +705,7 @@ module TestEmulatedKernelSockets =
             }
 
         level
-        |> ReadinessLevel.reportedUnder (SocketEventInterest.ofBits "test" 0x01)
+        |> ReadinessLevel.reportedUnder (SocketEventsPal.toInterest "test" 0x01)
         |> shouldEqual
             { ReadinessLevel.none with
                 In = true
@@ -1020,7 +1020,7 @@ module TestEmulatedKernelSockets =
     let ``connect onto a registered listener makes the registration pending and deliverable`` () : unit =
         let registration =
             {
-                Interest = SocketEventInterest.ofBits "test" 0x3
+                Interest = SocketEventsPal.toInterest "test" 0x3
                 Data = 0xBEEFUL
                 RegisteredAt = 0L
             }

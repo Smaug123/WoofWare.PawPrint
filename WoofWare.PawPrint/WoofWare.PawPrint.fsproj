@@ -119,6 +119,7 @@
     <Compile Include="SyncBlockMonitor.fs" />
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
     <Compile Include="Native\UnixErrorPal.fs" />
+    <Compile Include="Native\SocketEventsPal.fs" />
     <Compile Include="Native\NativeCall.fs" />
     <Compile Include="Native\NativeGc.fs" />
     <Compile Include="Native\NativeGcFrameRegistration.fs" />

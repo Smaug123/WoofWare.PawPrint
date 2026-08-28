@@ -118,7 +118,7 @@ module TestSocketEventDelivery =
             EmulatedKernel.changeSocketEventRegistration
                 portFd
                 targetFd
-                (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "test" allInterest, data))
+                (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" allInterest, data))
                 kernel
         with
         | Ok kernel -> kernel
@@ -406,7 +406,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     listenerFd
-                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" allInterest, 7UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 7UL))
                     kernel
             with
             | Ok kernel -> kernel
@@ -434,7 +434,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     l2Fd
-                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" allInterest, 2UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 2UL))
                     kernel
             with
             | Ok kernel -> kernel
@@ -584,7 +584,7 @@ module TestSocketEventDelivery =
             EmulatedKernel.changeSocketEventRegistration
                 portFd
                 listenerFd
-                (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "test" allInterest, 8UL))
+                (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" allInterest, 8UL))
                 kernel
         with
         | Ok _ -> failwith "expected EEXIST"
@@ -639,13 +639,19 @@ module TestSocketEventDelivery =
         assertSound kernel
 
     /// The FIN is a *state-change* wake, unkeyed (measured, `order8.c`): it
-    /// pends even a registration whose CLOSE|ERROR-only interest the
-    /// half-closed level misses, the entry keeps the FIN's position through
-    /// a later interest change, and delivery's re-poll is what filters — so
-    /// nothing is deliverable until the interest widens, and once it does
-    /// the entry delivers ahead of newer edges.
+    /// pends even a registration the half-closed level cannot satisfy, the
+    /// entry keeps the FIN's position through a later interest change, and
+    /// delivery's re-poll is what filters — so nothing is deliverable until
+    /// the interest widens, and once it does the entry delivers ahead of newer
+    /// edges.
+    ///
+    /// The registration asks for `SA_CLOSE|SA_ERROR` and nothing else, which
+    /// is an *empty* interest: those two are what epoll reports unasked, so
+    /// `SocketEventsPal.toInterest` maps 0x18 and 0x00 to the same record.
+    /// That collapse is what makes this the strongest available shape for
+    /// "pended but not deliverable".
     [<Test>]
-    let ``a peer close pends a CLOSE-and-ERROR-only interest, which delivery filters until widened`` () : unit =
+    let ``a peer close pends an interest the half-closed level cannot satisfy, until it widens`` () : unit =
         let portFd, portId, kernel = addPort EmulatedKernel.initial
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
@@ -657,7 +663,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     clientFd
-                    (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "test" 0x18, 5UL))
+                    (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" 0x18, 5UL))
                     kernel
             with
             | Ok kernel -> kernel
@@ -688,7 +694,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     clientFd
-                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" allInterest, 5UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 5UL))
                     kernel
             with
             | Ok kernel -> kernel
@@ -849,7 +855,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     l1Fd
-                    (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "test" 0x2, 1UL))
+                    (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" 0x2, 1UL))
                     kernel
             with
             | Ok kernel -> kernel
@@ -868,7 +874,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     l1Fd
-                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" allInterest, 1UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 1UL))
                     kernel
             with
             | Ok kernel -> kernel
@@ -895,7 +901,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     listenerFd
-                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" 0x2, 6UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" 0x2, 6UL))
                     kernel
             with
             | Ok kernel -> kernel
@@ -938,7 +944,7 @@ module TestSocketEventDelivery =
                 EmulatedKernel.changeSocketEventRegistration
                     portFd
                     listenerFd
-                    (SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "test" allInterest, 1UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 1UL))
                     kernel
             with
             | Ok kernel -> kernel

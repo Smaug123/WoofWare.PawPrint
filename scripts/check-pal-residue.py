@@ -4,11 +4,13 @@
 WoofWare.PosixKernel is meant to be a POSIX simulator that a client other than
 WoofWare.PawPrint could use, so its vocabulary should be POSIX's: raw errno
 numbers, `SIGTERM`, `AF_INET`. A handful of leaf functions instead speak the
-encodings of .NET's platform abstraction layer -- `Interop.Error`'s numbering,
-the `PosixSignal` managed enum, the PAL's `SocketEvents` bits, the PAL's
-`AF_*` numbering. Moving them out is stage 7's job (see
-docs/plans/2026-08-23-posix-kernel-extraction.md); until then this check stops
-the set from growing.
+encodings of .NET's platform abstraction layer -- the `PosixSignal` managed
+enum, the PAL's `AF_*`/`SOCK_*` numbering. Moving them out is what the stages
+in docs/plans/2026-08-23-posix-kernel-extraction.md do, one cluster at a time;
+until they are all gone this check stops the set from growing. The markers
+below also name encodings no allowlisted definition speaks any more
+(`Interop.Error`'s numbering, the PAL's `SocketEvents` bits), which is the
+point: those clusters have left, and this is what stops them coming back.
 
 A definition is taken to speak the PAL if its own name says so, or if its body
 mentions one of the PAL's encodings. That is a proxy rather than a proof -- a
@@ -25,10 +27,11 @@ What it does not see, accepted deliberately:
     `let managedError e = UnixError.toPal e`. Detecting those means a transitive
     closure over call sites, which is a bigger tool than this.
 
-And one thing it sees for a weak reason: `SocketEventInterest.ofBits` is
-recognised only by the word `SocketEvents` in its failure message, because its
-body is bare hex masks. Rewording that message reports the entry as stale rather
-than removing the conversion; the stale message says so.
+And one thing it can see for a weak reason: a conversion whose body is bare hex
+masks is recognised only if a *string literal* in it names the encoding, which
+is how `SocketEventInterest.ofBits` was caught until stage 9g retired it.
+Rewording such a message reports the entry as stale rather than removing the
+conversion; the stale message below says so.
 
 None of these is closed because the library is written in module-and-`let` style
 throughout, and the extraction work stream finishes before other development

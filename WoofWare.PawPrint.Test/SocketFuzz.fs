@@ -375,7 +375,7 @@ module SocketFuzz =
                 }
         | FuzzOp.Add (port, target, mask) ->
             let change =
-                SocketEventRegistrationChange.Add (SocketEventInterest.ofBits "SocketFuzz" mask, uint64 target)
+                SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "SocketFuzz" mask, uint64 target)
 
             match
                 EmulatedKernel.changeSocketEventRegistration
@@ -392,7 +392,7 @@ module SocketFuzz =
             | Error e -> registrationErrName e, state
         | FuzzOp.Mod (port, target, mask) ->
             let change =
-                SocketEventRegistrationChange.Modify (SocketEventInterest.ofBits "SocketFuzz" mask, uint64 target)
+                SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "SocketFuzz" mask, uint64 target)
 
             match
                 EmulatedKernel.changeSocketEventRegistration

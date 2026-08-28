@@ -3002,11 +3002,9 @@ module TestUnixSystemStep =
                     0L
                     (SocketEventRegistrationChange.Add (
                         {
-                            SocketEventInterest.Read = false
-                            Write = false
-                            ReadClose = false
-                            Close = false
-                            Error = false
+                            SocketEventInterest.In = false
+                            Out = false
+                            RdHup = false
                         },
                         0xBEEFUL
                     ))

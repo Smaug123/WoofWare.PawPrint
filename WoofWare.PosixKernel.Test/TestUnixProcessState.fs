@@ -19,6 +19,14 @@ module TestUnixProcessState =
 
     let private context : string = "TestUnixProcessState"
 
+    /// A registration watching `EPOLLIN` alone.
+    let private readInterest : SocketEventInterest =
+        {
+            In = true
+            Out = false
+            RdHup = false
+        }
+
     /// A process holding nothing but its current directory: the least a client
     /// has to supply for any of these operations to mean something.
     let private empty : UnixProcessState<int, string> =
@@ -199,7 +207,7 @@ module TestUnixProcessState =
                 portFd
                 watchedFd
                 0L
-                (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits context 0x01, 0UL))
+                (SocketEventRegistrationChange.Add (readInterest, 0UL))
                 registry
             |> function
                 | Ok registry -> registry
@@ -230,7 +238,7 @@ module TestUnixProcessState =
                 portFd
                 watchedFd
                 0L
-                (SocketEventRegistrationChange.Add (SocketEventInterest.ofBits context 0x01, 0UL))
+                (SocketEventRegistrationChange.Add (readInterest, 0UL))
                 registry
             |> function
                 | Ok registry -> registry
