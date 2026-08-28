@@ -63,9 +63,9 @@ type ConnectionId =
 /// it (`AddressFamily` in `pal_networking.h`).
 ///
 /// Only the domains a socket can actually *be*: `AF_UNSPEC`, `AF_PACKET` and
-/// `AF_CAN` all convert in the shim's address-family screen but reach no socket
-/// PawPrint models, so they are refused by `EmulatedKernel.createSocket` rather
-/// than represented here.
+/// `AF_CAN` all convert in the shim's address-family screen but name no socket
+/// this kernel creates (`SimulatedUnixPlatform.creatableSockets`), so they have
+/// no case here and the conversion into this type refuses them.
 [<RequireQualifiedAccess>]
 type SocketDomain =
     /// `AF_INET`, PAL 2.

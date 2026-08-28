@@ -2847,6 +2847,57 @@ module SimulatedUnixPlatform =
     /// about the argument.
     let isTcpProtocolType (palProtocolType : int) : bool = palProtocolType = Pal.PtTcp
 
+    /// The socket shapes both flavours create for an unprivileged process.
+    let private portableCreatableSockets : (SocketDomain * SocketKind * SocketProtocol) list =
+        [
+            SocketDomain.InterNetwork, SocketKind.Stream, SocketProtocol.Unspecified
+            SocketDomain.InterNetwork, SocketKind.Stream, SocketProtocol.Tcp
+            SocketDomain.InterNetwork, SocketKind.Datagram, SocketProtocol.Unspecified
+            SocketDomain.InterNetwork, SocketKind.Datagram, SocketProtocol.Udp
+            SocketDomain.InterNetworkV6, SocketKind.Stream, SocketProtocol.Unspecified
+            SocketDomain.InterNetworkV6, SocketKind.Stream, SocketProtocol.Tcp
+            SocketDomain.InterNetworkV6, SocketKind.Datagram, SocketProtocol.Unspecified
+            SocketDomain.InterNetworkV6, SocketKind.Datagram, SocketProtocol.Udp
+            SocketDomain.Unix, SocketKind.Stream, SocketProtocol.Unspecified
+            SocketDomain.Unix, SocketKind.Datagram, SocketProtocol.Unspecified
+        ]
+
+    /// The two Linux adds, and they are the kernel's own divergence rather than
+    /// any shim's: Darwin answers `EPROTONOSUPPORT` for both from `socket(2)`,
+    /// having passed every screen a caller's runtime could apply.
+    let private linuxOnlyCreatableSockets : (SocketDomain * SocketKind * SocketProtocol) list =
+        [
+            SocketDomain.Unix, SocketKind.Raw, SocketProtocol.Unspecified
+            SocketDomain.Unix, SocketKind.SeqPacket, SocketProtocol.Unspecified
+        ]
+
+    let private linuxCreatableSockets : Set<SocketDomain * SocketKind * SocketProtocol> =
+        Set.ofList (portableCreatableSockets @ linuxOnlyCreatableSockets)
+
+    let private darwinCreatableSockets : Set<SocketDomain * SocketKind * SocketProtocol> =
+        Set.ofList portableCreatableSockets
+
+    /// Every socket shape this emulated kernel creates, under `platform`. A
+    /// `socket(2)` for anything else is refused rather than answered.
+    ///
+    /// This is the kernel's declared protocol table, and it is deliberately
+    /// smaller than what the platform would really create. The rows outside it
+    /// are absent for three different reasons — some are privilege-dependent
+    /// (every raw and packet socket: measured, 70 Linux rows change answer
+    /// between euid 1000 and euid 0), some sysctl-dependent (Linux's ping
+    /// sockets, gated by `net.ipv4.ping_group_range`), and some deterministic
+    /// but simply not modelled. A shape outside this set is a socket PawPrint
+    /// has not decided how to be, and refusing leaves that decision open where
+    /// a guessed errno would not.
+    ///
+    /// Exposed as data rather than as a predicate because the set is the fact:
+    /// a caller deciding whether to create one wants to ask, and a reader
+    /// wanting to know what this kernel is wants to enumerate.
+    let creatableSockets (platform : SimulatedUnixPlatform) : Set<SocketDomain * SocketKind * SocketProtocol> =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> linuxCreatableSockets
+        | SimulatedUnixFlavour.Darwin -> darwinCreatableSockets
+
     /// What `SystemNative_Socket` does with a domain, type and protocol, all in
     /// the PAL numbering its caller supplies them in.
     ///
@@ -2859,16 +2910,18 @@ module SimulatedUnixPlatform =
     /// their flavour-dependence is the shim's `#ifdef`s rather than any kernel's
     /// behaviour.
     ///
-    /// The fourth, `Unmodelled`, stands where the kernel's answer would be. The
-    /// combinations that do *not* get one are refused rather than reported for
-    /// three different reasons — some are privilege-dependent (every raw and
-    /// packet socket: measured, 70 Linux rows change answer between euid 1000
-    /// and euid 0), some sysctl-dependent (Linux's ping sockets, gated by
-    /// `net.ipv4.ping_group_range`), and some deterministic but simply not
-    /// modelled (`AF_INET`/`SOCK_STREAM`/`PT_UDP` and friends). The set below is
-    /// this emulated kernel's declared protocol table; a row outside it is a
-    /// socket PawPrint has not decided how to be, and a refusal leaves that
-    /// decision open where a guessed errno would not.
+    /// The fourth, `Unmodelled`, stands where the kernel's answer would be, and
+    /// is `creatableSockets` — which says why the set is as small as it is.
+    /// Reaching it means every screen a caller's runtime applies has passed, so
+    /// a real run would now call `socket(2)`.
+    ///
+    /// Two shapes reach it for a reason that is not about the table at all: a
+    /// PAL triple can pass every screen and still name no `SocketDomain`,
+    /// `SocketKind` or `SocketProtocol` — `AF_UNSPEC`, `AF_PACKET`, `AF_CAN`,
+    /// `SOCK_RDM` and every protocol but the three modelled ones convert
+    /// without having a word here. Those answer `Unmodelled` too. The
+    /// distinction is real but has no consumer: nothing maps `Unmodelled` to an
+    /// errno, so it costs a client only which diagnostic it writes.
     let socketCreation
         (platform : SimulatedUnixPlatform)
         (palAddressFamily : int)
@@ -2876,11 +2929,6 @@ module SimulatedUnixPlatform =
         (palProtocolType : int)
         : Result<SocketDomain * SocketKind * SocketProtocol, SocketCreationRefusal>
         =
-        let isLinux =
-            match flavour platform with
-            | SimulatedUnixFlavour.Linux -> true
-            | SimulatedUnixFlavour.Darwin -> false
-
         // `TryConvertAddressFamilyPalToPlatform`, which is
         // `addressFamilyPalToPlatform` above — the same C function screens
         // `SystemNative_Socket`'s first argument and converts
@@ -2964,39 +3012,35 @@ module SimulatedUnixPlatform =
         else
 
         // Past every screen the shim applies, so a real run would now call
-        // `socket(2)`. These are the rows measured to succeed unprivileged, on
-        // Linux 6.18.5 and Darwin 25.6.0 respectively.
-        //
-        // The protocol conjunct on the `AF_UNIX` rows is not falsifiable: the
-        // conversion above already refused every protocol but `PT_UNSPECIFIED`
-        // for that family. It is written out because the alternative — a
-        // wildcard — would read as a claim that any protocol is accepted, which
-        // is a claim about a *different* screen and would silently become true
-        // if that screen ever changed.
-        match palAddressFamily, palSocketType, palProtocolType with
-        | Pal.AfInet, Pal.SockStream, Pal.PtUnspecified ->
-            Ok (SocketDomain.InterNetwork, SocketKind.Stream, SocketProtocol.Unspecified)
-        | Pal.AfInet, Pal.SockStream, Pal.PtTcp -> Ok (SocketDomain.InterNetwork, SocketKind.Stream, SocketProtocol.Tcp)
-        | Pal.AfInet, Pal.SockDgram, Pal.PtUnspecified ->
-            Ok (SocketDomain.InterNetwork, SocketKind.Datagram, SocketProtocol.Unspecified)
-        | Pal.AfInet, Pal.SockDgram, Pal.PtUdp ->
-            Ok (SocketDomain.InterNetwork, SocketKind.Datagram, SocketProtocol.Udp)
-        | Pal.AfInet6, Pal.SockStream, Pal.PtUnspecified ->
-            Ok (SocketDomain.InterNetworkV6, SocketKind.Stream, SocketProtocol.Unspecified)
-        | Pal.AfInet6, Pal.SockStream, Pal.PtTcp ->
-            Ok (SocketDomain.InterNetworkV6, SocketKind.Stream, SocketProtocol.Tcp)
-        | Pal.AfInet6, Pal.SockDgram, Pal.PtUnspecified ->
-            Ok (SocketDomain.InterNetworkV6, SocketKind.Datagram, SocketProtocol.Unspecified)
-        | Pal.AfInet6, Pal.SockDgram, Pal.PtUdp ->
-            Ok (SocketDomain.InterNetworkV6, SocketKind.Datagram, SocketProtocol.Udp)
-        | Pal.AfUnix, Pal.SockStream, Pal.PtUnspecified ->
-            Ok (SocketDomain.Unix, SocketKind.Stream, SocketProtocol.Unspecified)
-        | Pal.AfUnix, Pal.SockDgram, Pal.PtUnspecified ->
-            Ok (SocketDomain.Unix, SocketKind.Datagram, SocketProtocol.Unspecified)
-        // Linux-only, and measured rather than reasoned: Darwin refuses both
-        // with EPROTONOSUPPORT from the kernel, not from a shim screen.
-        | Pal.AfUnix, Pal.SockRaw, Pal.PtUnspecified when isLinux ->
-            Ok (SocketDomain.Unix, SocketKind.Raw, SocketProtocol.Unspecified)
-        | Pal.AfUnix, Pal.SockSeqPacket, Pal.PtUnspecified when isLinux ->
-            Ok (SocketDomain.Unix, SocketKind.SeqPacket, SocketProtocol.Unspecified)
-        | _, _, _ -> Error SocketCreationRefusal.Unmodelled
+        // `socket(2)`. What this kernel creates is `creatableSockets`, and the
+        // only work left here is naming the PAL triple in that set's
+        // vocabulary. Every axis is partial: a value can convert in a screen
+        // above and still have no word here (`AF_PACKET`, `SOCK_RDM`,
+        // `PT_ICMP`), which is not the same thing as a shape the table omits,
+        // though both answer `Unmodelled`.
+        let domain =
+            match palAddressFamily with
+            | Pal.AfInet -> Some SocketDomain.InterNetwork
+            | Pal.AfInet6 -> Some SocketDomain.InterNetworkV6
+            | Pal.AfUnix -> Some SocketDomain.Unix
+            | _ -> None
+
+        let kind =
+            match palSocketType with
+            | Pal.SockStream -> Some SocketKind.Stream
+            | Pal.SockDgram -> Some SocketKind.Datagram
+            | Pal.SockRaw -> Some SocketKind.Raw
+            | Pal.SockSeqPacket -> Some SocketKind.SeqPacket
+            | _ -> None
+
+        let protocol =
+            match palProtocolType with
+            | Pal.PtUnspecified -> Some SocketProtocol.Unspecified
+            | Pal.PtTcp -> Some SocketProtocol.Tcp
+            | Pal.PtUdp -> Some SocketProtocol.Udp
+            | _ -> None
+
+        match domain, kind, protocol with
+        | Some domain, Some kind, Some protocol when Set.contains (domain, kind, protocol) (creatableSockets platform) ->
+            Ok (domain, kind, protocol)
+        | _ -> Error SocketCreationRefusal.Unmodelled
