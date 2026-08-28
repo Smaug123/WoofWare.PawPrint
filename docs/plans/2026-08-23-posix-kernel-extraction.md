@@ -3748,3 +3748,148 @@ one: it needs a list of plausible roots to resolve project-relative paths and it
 tell an upstream filename from a repo one, so as a permanent check it would cry wolf.
 
 **What is left of stage 9**: the four socket entry points' own moves into the library.
+
+#### Stage 9j: `accept(2)` moves into the library
+
+**Dependencies**: 9 packaging, only for the document this appends to. Nothing in the
+code depends on it.
+
+The first of the four socket entry points. `SystemNative_Accept` was 173 lines in
+`Native/NativeSystemNative.fs`, and almost all of what it said is `accept(2)`'s own
+ladder: the descriptor's kind, its phase, whether the description is non-blocking,
+whether the queue has anything in it, and what a peer-address copy-out reports.
+
+**Which of the four goes first.** Four candidates, and the argument is not size alone:
+
+| entry point | handler lines | where its kernel ladder is |
+| --- | --- | --- |
+| `accept` | 173 | **inline in the handler**, plus `EmulatedKernel.acceptConnection` (80) |
+| `connect` | 135 | already factored out, into `EmulatedKernel.connectSocket` (~370) |
+| `poll` | 231 | inline, and it is the entry point that refuses to park |
+| `WaitForSocketEvents` | 344 | inline, and it *does* park |
+
+`connect` has the shortest handler but the largest move, because its ladder is a
+separate 370-line function that has to travel with it. `poll` and
+`WaitForSocketEvents` each carry the parking vocabulary, which is a second concern on
+top of the move. `accept` is the only one whose kernel logic is genuinely interleaved
+with guest-memory code in the handler body — which is the thing this stage exists to
+separate — and it is the one for which every piece of library vocabulary it needs
+already exists.
+
+So `accept` first, and this slice invents exactly one new library concept: why an
+`accept` can be refused.
+
+**The precedent it follows.** `UnixSystem.getsockname`, from stage 8m. Both classify a
+descriptor and then copy a `sockaddr_in` out under a caller-declared length that bounds
+what is *written* and not what is *reported*. `accept` reuses that shape wholesale:
+`(fd, destination : UserBuffer, declaredLength, system)`, a negative declared length
+`failwith`n because a shim screens it before the cast to `socklen_t` that would
+otherwise make the bound `SIZE_MAX`, and an answer carrying an `InternetEndpoint` plus
+a reported length rather than an encoded blob.
+
+**The encoding stays in PawPrint, deliberately.** `internetSockaddrBlob` and
+`SockaddrOffsets` are `struct sockaddr_in`'s wire layout, which is a kernel fact and
+not a .NET one, so by stage 9g–9i's rule they have a claim on the library. They stay
+where they are for this slice anyway, because `getsockname` already decided it: the
+same private helpers serve ten other PAL handlers (`SystemNative_GetPort`,
+`SetIPv4Address`, and the rest) that involve no kernel at all, so moving the layout is
+a separate concern with its own option set. Recorded here so the next person does not
+have to re-derive that it was a choice rather than an oversight.
+
+**Where the state transition lands.** `EmulatedKernel.acceptConnection` — dequeue the
+head of the listener's queue, mint the accepted socket, hand back a descriptor — is
+pure POSIX kernel state manipulation sitting on PawPrint's side, and it has to move.
+The question is what happens to its callers, of which there are **ten**, all in
+fixtures (`TestEmulatedKernelSockets`, `TestSocketEventDelivery`, `SocketFuzz`). They
+want the state transition and not the entry point: each holds a `SocketId` rather than
+a descriptor, and none has any use for a user buffer.
+
+* **Option A: publish `UnixSystem.acceptConnection`; keep `EmulatedKernel.acceptConnection`
+  as an adapter over it.** Zero churn at the ten sites.
+* **Option B: publish it, delete the PawPrint one, retarget the ten sites.** Each
+  becomes three lines rather than one: `EmulatedKernel.unix` in, the call, `withUnix`
+  back out.
+* **Option C: leave the transition in `EmulatedKernel`, and have `UnixSystem.accept`
+  return a *description* of it for PawPrint to apply.**
+
+C is wrong outright: it would make `accept` the only library entry point that does not
+apply its own effect, against `opendir`, `read` and `write`, which all return the
+system they produced.
+
+B was the initial choice, on the argument that `TestEmulatedKernelInodeLifetime.fs`
+already calls `UnixSystem.opendir (EmulatedKernel.unix kernel)` from a PawPrint
+fixture, so the three-line shape is established rather than imposed — and that a
+wrapper existing only to save lines in fixtures is the sort of thing this repository
+deletes. Counting the sites is what overturned it: that precedent is *one* call site,
+and this is ten across three files. Ten copies of the same three-line dance is the
+adapter written out ten times, and the first thing anyone would do is factor it back
+into a private helper per file — which is Option A, three times over.
+
+So A, with the adapter's docstring saying why it exists rather than merely what it
+does. It is not indirection for its own sake: `EmulatedKernel` already documents the
+same convention for its `Process` and `Machine` reads, so that moving a field in or out
+costs no call site.
+
+Publishing `acceptConnection` publishes its precondition — the socket must be listening
+with a non-empty queue — and that is stated on the function, as `UnixSystem.readdir`
+states that a stream this kernel never issued is a caller bug rather than an errno.
+
+**What the library refuses.** Four cases, each a `failwith` in the handler today:
+
+* `UnmodelledDomain of socket * domain` — an IPv6 or Unix-domain socket. Today this
+  comes out of `socketOfFd`, a *shared* PawPrint helper that `bind`, `listen` and
+  `connect` also use; `accept` stops using it and the other three keep it until their
+  own moves. PawPrint supplies the other half of the message, exactly as the
+  `getsockname` handler already does: which CoreLib path could be holding such a socket
+  is a fact about CoreLib rather than about any kernel.
+* `UnmeasuredKind of socket * kind` — `SOCK_RAW` or `SOCK_SEQPACKET`, whose `accept(2)`
+  nobody has measured.
+* `WouldPark of listener` — a *blocking* listener with an empty queue. A real kernel
+  sleeps; this kernel has no wake to end that sleep, because accept-side delivery is
+  not modelled. It is a refusal rather than `SyscallOutcome.WouldBlock` for exactly
+  that reason: `WouldBlock` promises a `WakeCondition`, and there is none to give.
+* `UnmeasuredCopyOutFault of listener` — the connection would be dequeued and the peer
+  address copied out, but the destination names no storage. All three of `Opaque`,
+  `Addressless` and `Unmapped` collapse into this one case, and that is not laziness:
+  the unanswerable question is the same for all three — whether a real kernel loses the
+  connection when the copy-out faults *after* it has selected one — and it is a question
+  about the measurement rather than about how the client classified the buffer. Which
+  is also why it is not a `BufferRefusal`: that type names dead ends in classification.
+
+**What the library answers.** `Failed of error` (EBADF, ENOTSOCK, EOPNOTSUPP, EINVAL,
+EAGAIN) and `Accepted of fd * peer * reportedLength`. PawPrint keeps every byte of the
+guest-memory work: the three null-pointer screens the shim performs before it decodes
+the descriptor, reading the caller's length cell, resolving the `acceptedSocket` cell
+(which every failure writes -1 through, so it is resolved before the syscall rather
+than after), encoding the blob, and writing the three results back.
+
+One unreachable arm went with the move. The handler re-looked-up the descriptor to read
+`NonBlocking` and `failwith`'d if it had vanished, having looked it up already inside
+`socketOfFd`; the library does its own lookup once and reads the flag off the
+description it already has.
+
+**Correctness oracle**:
+
+* The guest tier is unchanged and must stay so. `sourcesPure/SocketAccept.cs` covers
+  success, EAGAIN, EINVAL, EOPNOTSUPP, ENOTSOCK, EBADF, all four EFAULT screens and the
+  reported-versus-written length split; `sourcesImpure/SocketAccept{Linux,Darwin}.cs`
+  cover the three errno numbers that are not portable.
+* A new `WoofWare.PosixKernel.Test/TestAccept.fs`, 40 cases, driving `UnixSystem.accept`
+  on a constructed system — which is the tier that reaches what a guest cannot: both
+  flavours (a guest runs one), every refusal (a guest cannot hold a `SOCK_RAW` socket
+  or ask for a copy-out through a buffer whose bytes nobody can produce), and the two
+  orderings that matter (the domain screen before the phase screen, the queue check
+  before the buffer screen).
+* Two of those cases assert what a *refusal* leaves behind, which is the property that
+  makes refusing safe: the connection is still queued, so the caller has lost nothing
+  by asking. A refusal carries no system, so this is true by construction — and stating
+  it is what would catch a future arm that refuses after mutating.
+
+**A trap worth recording for whoever builds the next fixture.** An accept mints its
+socket at `Machine.NextSocketId`, so a hand-built system whose sockets were inserted
+without advancing that counter has the accepted socket *overwrite* the listener in the
+table. The failure names the listener's phase and says nothing about ids, which makes
+it look like an accept bug; `withSocket` in `TestAccept.fs` advances the counter, and
+says why.
+
+**What is left after 9j**: `connect`, `poll` and `WaitForSocketEvents`.
