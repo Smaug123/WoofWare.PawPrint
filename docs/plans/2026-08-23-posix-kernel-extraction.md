@@ -3387,3 +3387,83 @@ not been written that way.
 
 **What is left of stage 9**: the socket wait's `WakeCondition` and the sweep merge (9f),
 the socket syscalls' own moves, and the packaging items.
+
+#### Stage 9f: one wake condition vocabulary, and one sweep
+
+**Dependencies**: stage 9e.
+
+The socket wait's park now names a `WakeCondition` — `SocketEventDeliverable of port` —
+which `isSatisfied` answers through the predicate 9e moved into the library. With that,
+both parking syscalls speak one vocabulary, and `Program`'s two readiness sweeps and
+`Scheduler`'s two wake helpers become one each. Nothing a guest sees changes.
+
+**Why the sweeps merge.** 9d gave each sweep its own *typed* list of waiters so that
+mis-selecting — a socket sweep reading a lock waiter's requester as a port — was a
+compile error rather than a rule to keep. One sweep gives that up in form and recovers
+it in substance: nothing in the sweep destructures a park at all, because it asks
+`WakeCondition.ofPark` and compares conditions. The mistake becomes writable in exactly
+one place, `ofPark` itself, which is three lines with a direct test.
+
+That is a relocation, not a strengthening, and it is worth saying which way each shape
+fails. Under two sweeps a future parking syscall whose author forgets to add a sweep
+fails at runtime, as a silent deadlock. Under one it fails at compile time, in `ofPark`
+and `isSatisfied`. Three more parking syscalls are scheduled, which is what decides it.
+The merge also deletes the two kind assertions 9d added and recorded as deliberately
+untested second lines.
+
+**The trap in the merge, and the test that was owed first.** A merged sweep still has to
+keep the two syscalls' wake policies apart: epoll queues waiters *exclusively*, so
+several threads parked on one deliverable port is unmodelled and refused, where `flock`
+wakes every blocker on a release. Written as "refuse any group of more than one", that
+refusal crashes a lawful guest — two threads that block on `flock` through one *shared*
+descriptor record structurally equal conditions, because the lock belongs to the open
+file description rather than to the descriptor.
+
+Nothing in the suite covered that shape. The existing two-waiter guest opens a
+description *per thread*, deliberately — conflicts are between descriptions, so two
+threads sharing one would not contend at all — which makes its waiters' conditions
+differ in the requester. Measured: with a shared descriptor the parked records collapse
+to one distinct value, and with per-thread opens there are two. So the guest was written
+first, and the refusal matches exhaustively on the condition's case rather than counting,
+which also forces a future syscall to state its own policy instead of inheriting
+"broadcast" by silence.
+
+**The direction that generalises.** A park record is *richer* than its condition: a
+socket wait also carries the event count its finishing call copies out with, which no
+condition mentions. So record to condition is total, and condition to record is not —
+only `flock`, whose record is exactly its condition, has a `parkFlock` going the other
+way, and that function now refuses a socket condition rather than approximating one.
+Deriving rather than storing is what keeps the two from disagreeing: a client cannot
+park a task on one object while polling for another, because the thing polled *is* the
+thing parked on.
+
+**The naming constraint, again.** `SocketEventsDeliverable` would carry the plural token
+`SocketEvents`, which `check-pal-residue.py` reads as PAL vocabulary. Measured on a copy
+of the library carrying the whole change: the plural name reports four definitions —
+`WakeCondition`, `isSatisfied`, `ofPark`, and `parkFlock`, whose refusal arm has to name
+the case it refuses — and the singular one reports the allowlisted eight.
+
+**Correctness oracle**:
+* Two threads parked through one shared descriptor, asserted to record *one* distinct
+  condition between them — the input a group-size refusal would crash, and the one no
+  existing fixture produced. Its own vacuity guard is measured, not assumed: giving each
+  worker its own `open` makes the assertion fail with two.
+* `ofPark` per park kind, directly, including a lock whose requester is itself a port
+  description — the corner where a mis-map would find a real port and answer an ordinary
+  "not yet" instead of refusing.
+* The round trip between the two derivations: `ofPark` of the record `parkFlock` derives
+  from a condition gives that condition back.
+* `parkFlock`'s refusal of a socket condition, which is one call away in a published
+  package.
+* The socket condition through `isSatisfied`, unsatisfied on a quiet port and satisfied
+  on a pending one.
+* The exclusivity refusal unchanged in what it asserts, including the message text a
+  guest fixture pins.
+
+The refusal sits ahead of every wake, but as hygiene rather than as a guarantee:
+`IlMachineState` is immutable and the refusal is a `failwith`, so a partially-woken state
+is discarded when the exception leaves the driver and nothing can observe it. A mutant
+that wakes first is equivalent, and is not claimed otherwise.
+
+**What is left of stage 9**: the four socket entry points' own moves into the library,
+and the packaging items.

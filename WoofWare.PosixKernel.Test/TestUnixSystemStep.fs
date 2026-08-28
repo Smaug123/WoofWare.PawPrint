@@ -3125,6 +3125,91 @@ module TestUnixSystemStep =
         exn.Message |> shouldContainText "is not positive"
 
     [<Test>]
+    let ``the two derivations agree: a park records what its condition says, and says it back`` () : unit =
+        // `parkFlock` goes condition to record and `ofPark` goes back. Each looks right alone, and
+        // a client polls what `ofPark` returns for a task parked by `parkFlock`, so a disagreement
+        // between them is a task waiting for one thing while the sweep watches another.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let recorded = UnixSystem.parkFlock 7 condition (withTask 7 parkedIn)
+
+        match UnixTaskTable.parkedFor 7 recorded.Tasks with
+        | Some parked -> WakeCondition.ofPark parked |> shouldEqual condition
+        | None -> failwith "expected the park to have been recorded"
+
+    [<Test>]
+    let ``a lock waiter is never read as a port waiter`` () : unit =
+        // The one place the two parks' payloads can be confused. Both are largely an
+        // `OpenFileDescriptionId`, so mapping a lock's requester to a port condition type-checks
+        // and reads as plausible; the sweep that consumes this never destructures a record, so
+        // this function is where such a mistake would live.
+        //
+        // The requester here is a *port* description, which is the corner where nothing else would
+        // catch it: `flock` of an epoll descriptor is permitted, so a mis-mapped condition would
+        // find a real port and answer an ordinary "not yet" instead of refusing.
+        let fd, system = withPort linux
+
+        let parked =
+            ParkedSyscall.Flock
+                {
+                    ParkedFlock.Requester = descriptionOf fd system
+                    Mode = FlockMode.Shared
+                }
+
+        WakeCondition.ofPark parked
+        |> shouldEqual (WakeCondition.FlockGrantable (descriptionOf fd system, FlockMode.Shared))
+
+    [<Test>]
+    let ``a port waiter is never read as a lock waiter`` () : unit =
+        let fd, system = withPort linux
+
+        let parked =
+            ParkedSyscall.SocketWait
+                {
+                    ParkedSocketWait.Port = descriptionOf fd system
+                    MaxEvents = 8
+                }
+
+        // The event count is re-entry state for the finishing call, and no part of what is being
+        // waited for: one deliverable event satisfies a wait for any number of them.
+        WakeCondition.ofPark parked
+        |> shouldEqual (WakeCondition.SocketEventDeliverable (descriptionOf fd system))
+
+    [<Test>]
+    let ``a socket wait cannot be parked through parkFlock`` () : unit =
+        // The direction that does not generalise, refused rather than approximated: a socket
+        // wait's record carries an event count its condition does not, so there is nothing to
+        // derive it from. Unreachable from a correct client — both park sites feed this a
+        // condition `flock` produced — but it is one call away in a published package.
+        let fd, system = withPort linux
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixSystem.parkFlock 7 (WakeCondition.SocketEventDeliverable (descriptionOf fd system)) system
+                |> ignore<UnixSystem<int, string>>
+            )
+
+        exn.Message |> shouldContainText "cannot be derived from one"
+
+    [<Test>]
+    let ``a wait on a port with nothing pending is not satisfied, and a pending entry satisfies it`` () : unit =
+        // The socket condition through `isSatisfied`, which is what a client actually polls —
+        // `SocketEventPort.hasDeliverableEvent` has its own rows, and this is the wiring between
+        // them.
+        let quiet, system = withPort linux
+
+        WakeCondition.isSatisfied (WakeCondition.SocketEventDeliverable (descriptionOf quiet system)) system
+        |> shouldEqual false
+
+        let ready, system = withPendingPort linux
+
+        WakeCondition.isSatisfied (WakeCondition.SocketEventDeliverable (descriptionOf ready system)) system
+        |> shouldEqual true
+
+    [<Test>]
     let ``truncateAt refuses a negative length rather than emptying the file`` () : unit =
         // `truncateAt` is shared with `open`'s `O_TRUNC`, so unlike `ftruncate`
         // it has callers that have not screened the length. A negative one

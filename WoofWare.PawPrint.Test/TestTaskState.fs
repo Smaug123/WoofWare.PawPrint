@@ -356,7 +356,7 @@ module TestTaskState =
         // Woken first and released second, which is the order a real wake takes: the sweep flips
         // the status and the record stands until the re-entered handler has finished with it.
         // Both halves of that sequence are states the invariant permits.
-        let woken = Scheduler.wakeFromSocketEvents thread parked
+        let woken = Scheduler.wakeFromSyscall thread parked
 
         agrees woken
 

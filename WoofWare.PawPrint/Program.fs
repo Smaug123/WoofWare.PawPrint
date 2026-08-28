@@ -351,41 +351,18 @@ module Program =
             )
             state
 
-    /// The threads parked in a syscall, split by which one.
+
+    /// The threads parked in a syscall, each with what it parked in.
     ///
-    /// Each sweep below takes its own field, and takes it *typed*: a sweep needs
-    /// the payload its syscall parked with, and no other syscall's payload has
-    /// that type. So mis-selecting — a socket sweep treating a lock waiter as its
-    /// own — is a compile error here rather than a rule the sweeps have to keep,
-    /// which matters because both payloads are largely `OpenFileDescriptionId`
-    /// and a wrong one reads as a plausible port.
+    /// Runs once per scheduler tick — that is, once per interpreted instruction —
+    /// so it accumulates only matches rather than materialising the thread map.
     ///
     /// With one park status, "asleep in a syscall" and "asleep in *this* syscall"
     /// are different questions and only the record answers the second. A thread
-    /// parked with no record at all is neither sweep's to skip — nothing could
-    /// ever wake it — so it is refused here, once, rather than by whichever sweep
-    /// happened to run first.
-    type private SyscallWaiters =
-        {
-            SocketWaits : (ThreadId * ParkedSocketWait) list
-            Flocks : (ThreadId * ParkedFlock) list
-        }
-
-    /// The seed, hoisted so that the overwhelmingly common case — a workload with
-    /// nothing parked in a syscall at all — allocates nothing whatever: the fold
-    /// below returns this very value when no thread matches.
-    let private noSyscallWaiters : SyscallWaiters =
-        {
-            SocketWaits = []
-            Flocks = []
-        }
-
-    /// Runs once per scheduler tick — that is, once per interpreted instruction —
-    /// so it accumulates only matches rather than materialising the thread map,
-    /// and its result is collected by `advanceToDecision` and handed to both
-    /// sweeps rather than computed by each.
-    let private syscallWaiters (state : IlMachineState) : SyscallWaiters =
-        ((state.ThreadState, noSyscallWaiters)
+    /// parked with no record at all could never be woken by anything, so it is
+    /// refused here rather than quietly skipped.
+    let private syscallWaiters (state : IlMachineState) : (ThreadId * ParkedSyscall) list =
+        ((state.ThreadState, [])
          ||> Map.foldBack (fun tid ts acc ->
              match ts.Status with
              | ThreadStatus.BlockedInSyscall ->
@@ -393,113 +370,95 @@ module Program =
                  | None ->
                      failwith
                          $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
-                 | Some (ParkedSyscall.SocketWait wait) ->
-                     { acc with
-                         SocketWaits = (tid, wait) :: acc.SocketWaits
-                     }
-                 | Some (ParkedSyscall.Flock parked) ->
-                     { acc with
-                         Flocks = (tid, parked) :: acc.Flocks
-                     }
+                 | Some parked -> (tid, parked) :: acc
              | _ -> acc
          ))
 
-    /// Wake every thread parked in `SystemNative_WaitForSocketEvents` whose
-    /// port would deliver at least one event right now. The park is
-    /// re-entrant — the native frame stays and the caller's program counter
-    /// still names the call — so waking is exactly a flip to `Runnable`; the
-    /// re-entered handler asks `SocketEventPort.drain`, whose
-    /// walk is the same one `SocketEventPort.hasDeliverableEvent` consulted here, so
-    /// the woken thread cannot find the port empty unless another thread
-    /// drained it first — in which case the handler parks it again.
+    /// Wake every thread whose syscall could get further now.
     ///
-    /// Runs every tick beside `fireExpiredDeadlines` rather than being
-    /// pushed by the producing syscalls: a sweep asks the same question of
-    /// the same state each time, so a new producer cannot forget to wake
-    /// anyone — where a push from each producer would fail silently, as a
-    /// deadlock, on the first one that did.
-    let private fireSocketReadiness
-        (parked : (ThreadId * ParkedSocketWait) list)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        let waiters = parked |> List.map (fun (tid, wait) -> tid, wait.Port)
-
-        match waiters with
-        | [] -> state
-        | waiters ->
-
-        // Projected once, outside the filter: this runs on every tick that has
-        // a socket waiter at all, and assembling the view allocates.
-        let unix = EmulatedKernel.unix state.Kernel
-
-        let deliverable =
-            waiters
-            |> List.filter (fun (_, port) -> SocketEventPort.hasDeliverableEvent port unix)
-
-        // An edge arriving with several threads parked on one port is
-        // unmodelled: `ep_poll` adds each waiter to the port's wait queue
-        // *exclusively*, so a real event wakes one of them — in an order
-        // PawPrint keeps no state to reproduce (the queue is park-order) and
-        // has not measured. No managed caller can reach this
-        // (`SocketAsyncEngine` dedicates one thread per port), so refuse
-        // loudly rather than wake every waiter and let the scheduler invent
-        // the winner.
-        for port, sharing in deliverable |> List.groupBy snd do
-            if List.length sharing > 1 then
-                let tids = sharing |> List.map (fun (tid, _) -> $"%O{tid}") |> String.concat ", "
-
-                failwith
-                    $"fireSocketReadiness: threads %s{tids} are all parked in SystemNative_WaitForSocketEvents on port %O{port}, which now has a deliverable event. epoll parks waiters exclusively, so a real kernel wakes exactly one of them, chosen by park order — state PawPrint does not record and semantics it has not measured. Implement the one-wakeup rule before parking several threads on one port."
-
-        (state, deliverable)
-        ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSocketEvents tid s)
-
-    /// Wake every thread parked in `SystemNative_FLock` whose lock could be
-    /// granted right now. The park is re-entrant — the native frame stays and
-    /// the caller's program counter still names the call — so waking is exactly
-    /// a flip to `Runnable`; the re-entered handler finishes the acquisition
-    /// against the description its record names.
+    /// One sweep for every parking syscall rather than one each, because the
+    /// question is the same for all of them: ask the record what it is waiting
+    /// for, and ask the kernel whether that has happened. Nothing here reads a
+    /// park's payload — `WakeCondition.ofPark` is the only thing that
+    /// destructures one — so no syscall's sweep can mistake another's waiter for
+    /// its own, and a new parking syscall needs no sweep at all: it needs a
+    /// `WakeCondition` case, and the compiler asks for one.
     ///
-    /// Runs every tick beside `fireSocketReadiness`, and for the same reason: a
-    /// sweep asks the same question of the same state each time, so a new
-    /// producer cannot forget to wake anyone. That matters more here than there,
-    /// because a lock is released by more than the obvious call — the holder's
-    /// last `close` drops its lock too, and nothing about `close` knows that
-    /// somebody is waiting.
+    /// Every park here is re-entrant — the native frame stays and the caller's
+    /// program counter still names the call — so waking is exactly a flip to
+    /// `Runnable`, and the re-entered handler finishes the call from the caller's
+    /// own frame.
     ///
-    /// **Every** satisfied waiter wakes, unlike `fireSocketReadiness`, which
-    /// refuses when several threads share a port. That refusal is about epoll:
-    /// it adds waiters to a port's wait queue *exclusively*, so a real edge
-    /// wakes exactly one of them chosen by park order, which PawPrint keeps no
-    /// state to reproduce. `flock` has no exclusive handoff — a release wakes
-    /// every blocker and they race — and, decisively for a simulator, *which*
-    /// waiter wins is not observable from userspace on any platform. So waking
-    /// them all and letting the scheduler pick is not inventing a winner; it is
-    /// declining to, and handing the choice to the machinery whose purpose is
-    /// exploring exactly such choices under a seed. The losers re-enter, find
-    /// the lock taken, and park again.
-    let private fireFlockGrantable (waiters : (ThreadId * ParkedFlock) list) (state : IlMachineState) : IlMachineState =
+    /// Runs every tick beside `fireExpiredDeadlines` rather than being pushed by
+    /// the syscalls that make conditions true: a sweep asks the same question of
+    /// the same state each time, so a new producer cannot forget to wake anyone —
+    /// where a push from each producer would fail silently, as a deadlock, on the
+    /// first one that did. That matters most for `flock`, whose lock is released
+    /// by more than the obvious call: the holder's last `close` drops it too, and
+    /// nothing about `close` knows that somebody is waiting.
+    ///
+    /// A wake is not a promise. Two threads can be woken for one lock and only
+    /// one of them get it; the loser re-enters, finds it taken, and parks again
+    /// on the record it still holds.
+    let private fireSyscallWakes (parked : (ThreadId * ParkedSyscall) list) (state : IlMachineState) : IlMachineState =
         // Before projecting the kernel, which allocates a `UnixSystem`: this runs
-        // on every tick of every workload, and almost none of them ever hold a
-        // lock at all.
-        match waiters with
+        // on every tick of every workload, and almost none of them ever park.
+        match parked with
         | [] -> state
-        | waiters ->
+        | parked ->
 
         let unix = EmulatedKernel.unix state.Kernel
 
-        let grantable =
-            waiters
+        let satisfied =
+            parked
             |> List.choose (fun (tid, parked) ->
-                if WakeCondition.isSatisfied (WakeCondition.FlockGrantable (parked.Requester, parked.Mode)) unix then
-                    Some tid
+                let condition = WakeCondition.ofPark parked
+
+                if WakeCondition.isSatisfied condition unix then
+                    Some (tid, condition)
                 else
                     None
             )
 
-        (state, grantable)
-        ||> List.fold (fun s tid -> Scheduler.wakeFromFlockGrantable tid s)
+        // How many waiters one satisfied condition may wake is a question each
+        // syscall answers for itself, so this matches on the condition rather
+        // than counting: exhaustively, so that a future one has to say which
+        // answer it gives instead of inheriting "all of them" by silence.
+        for condition, sharing in satisfied |> List.groupBy snd do
+            match condition with
+            | WakeCondition.SocketEventDeliverable port ->
+                // An edge arriving with several threads parked on one port is
+                // unmodelled: `ep_poll` adds each waiter to the port's wait queue
+                // *exclusively*, so a real event wakes one of them — in an order
+                // PawPrint keeps no state to reproduce (the queue is park-order)
+                // and has not measured. No managed caller can reach this
+                // (`SocketAsyncEngine` dedicates one thread per port), so refuse
+                // loudly rather than wake every waiter and let the scheduler
+                // invent the winner.
+                if List.length sharing > 1 then
+                    let tids = sharing |> List.map (fun (tid, _) -> $"%O{tid}") |> String.concat ", "
+
+                    failwith
+                        $"fireSyscallWakes: threads %s{tids} are all parked in SystemNative_WaitForSocketEvents on port %O{port}, which now has a deliverable event. epoll parks waiters exclusively, so a real kernel wakes exactly one of them, chosen by park order — state PawPrint does not record and semantics it has not measured. Implement the one-wakeup rule before parking several threads on one port."
+            | WakeCondition.FlockGrantable _ ->
+                // The opposite rule, and deliberately: `flock` has no exclusive
+                // handoff — a release wakes every blocker and they race, exactly
+                // as `flock(2)` does — and, decisively for a simulator, *which*
+                // waiter wins is not observable from userspace on any platform.
+                // So waking them all and letting the scheduler pick is not
+                // inventing a winner; it is declining to, and handing the choice
+                // to the machinery whose purpose is exploring exactly such
+                // choices under a seed.
+                //
+                // Several threads really can share one condition here, which is
+                // what makes this arm load-bearing rather than a formality: locks
+                // belong to the open file description, so two threads blocking
+                // through one shared descriptor for the same mode park on
+                // structurally equal conditions and land in one group.
+                ()
+
+        (state, satisfied)
+        ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSyscall tid s)
 
     /// The minimum wait deadline among currently-blocked threads, or
     /// `None` if no thread is parked with a finite timeout. Used by the
@@ -680,24 +639,11 @@ module Program =
         // scheduler from ever stalling.
         let state = fireExpiredDeadlines state
 
-        // Who is parked in what, collected once for both sweeps below: this runs
-        // per interpreted instruction, so a second walk of the thread map would
-        // be paid by every guest whether or not it ever blocks in a syscall.
-        let parked = syscallWaiters state
-
-        // Wake any socket-events waiter whose port has become deliverable
-        // since it parked. Before the jump-to-deadline fallback below, so a
-        // deliverable port is never mistaken for quiescence.
-        let state = fireSocketReadiness parked.SocketWaits state
-
-        // ...and any flock waiter whose lock has become available, for the same
-        // reason: a grantable lock is not quiescence.
-        //
-        // Handed the list collected *before* the sweep above, which is sound
-        // because a sweep only ever wakes waiters of its own kind: nothing the
-        // socket sweep does can add, remove or re-park a lock waiter. Whether
-        // each lock is grantable is still asked of the current state.
-        let state = fireFlockGrantable parked.Flocks state
+        // Wake anything parked in a syscall whose wake condition now holds — a
+        // port that has become deliverable, a lock that has become available.
+        // Before the jump-to-deadline fallback below, so neither is mistaken for
+        // quiescence.
+        let state = fireSyscallWakes (syscallWaiters state) state
 
         // Drive the signal-dispatcher state machine before the scheduler
         // picks its next thread. If a pending signal is deliverable and

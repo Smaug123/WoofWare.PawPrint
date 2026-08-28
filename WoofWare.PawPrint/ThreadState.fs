@@ -236,9 +236,9 @@ type ThreadStatus =
     /// loops — the socket wait in its own, and `while ((result = flock(...)) < 0 && errno ==
     /// EINTR);` (pal_io.c) — so no managed caller can observe `EINTR` from either.
     ///
-    /// The wakes are `Program.fireSocketReadiness` and `Program.fireFlockGrantable`, each
-    /// flipping a thread whose record is its own back to `Runnable` once the thing it waits for
-    /// has happened; the handler then re-enters and finishes the call itself.
+    /// The wake is `Program.fireSyscallWakes`, one sweep for every parking syscall: it asks each
+    /// parked task's record what it is waiting for and the kernel whether that has happened, then
+    /// flips the thread back to `Runnable`; the handler re-enters and finishes the call itself.
     | BlockedInSyscall
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
