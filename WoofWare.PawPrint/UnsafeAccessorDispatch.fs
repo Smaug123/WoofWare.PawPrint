@@ -596,13 +596,16 @@ module internal UnsafeAccessorDispatch =
 
                 if matches then state, candidate :: acc else state, acc
             )
+            |> fun (state, matching) -> state, List.rev matching
 
+        // The *first* match in metadata order wins, and there is no ambiguity check:
+        // `TrySetTargetField` returns as soon as one matches (unsafeaccessors.cpp:761), unlike
+        // `TrySetTargetMethod`, which keeps looking so that it can report an ambiguity. Two fields
+        // of one type may share a name if their signatures differ, and a modifier-blind comparison
+        // can leave both -- no C# compiler emits that, but a metadata writer may.
         match matching with
-        | [ single ] -> state, Ok single
+        | first :: _ -> state, Ok first
         | [] -> state, Error (UnsafeAccessorRefusal.MissingField (describeTargetType targetTypeInfo, name))
-        | _ :: _ :: _ ->
-            failwith
-                $"BUG: [UnsafeAccessor] found %d{List.length matching} declared fields named %s{name} on %s{targetTypeInfo.Namespace}.%s{targetTypeInfo.Name}; a field name is unique within a type, so the candidate filter is wrong"
 
     /// What `TypeVarTypeDesc::SatisfiesConstraints` would say about one (parameter, argument) pair,
     /// for the pairs PawPrint can decide.
