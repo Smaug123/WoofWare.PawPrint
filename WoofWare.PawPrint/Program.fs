@@ -351,6 +351,32 @@ module Program =
             )
             state
 
+    /// Every thread parked in a syscall, with what its task records it waiting
+    /// for.
+    ///
+    /// Shared by the sweeps below, which each select the parks they own: with one
+    /// park status, "asleep in a syscall" and "asleep in *this* syscall" are
+    /// different questions, and only the record answers the second. A thread
+    /// parked with no record at all is neither sweep's to skip — nothing could
+    /// ever wake it — so it is refused here, once, rather than by whichever sweep
+    /// happened to run first.
+    ///
+    /// Runs on every tick of every workload, so the no-waiter case must cost no
+    /// allocation: a fold that accumulates only matches, rather than
+    /// materialising the thread map.
+    let private syscallWaiters (state : IlMachineState) : (ThreadId * ParkedSyscall) list =
+        (state.ThreadState, [])
+        ||> Map.foldBack (fun tid ts acc ->
+            match ts.Status with
+            | ThreadStatus.BlockedInSyscall ->
+                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
+                | None ->
+                    failwith
+                        $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
+                | Some parked -> (tid, parked) :: acc
+            | _ -> acc
+        )
+
     /// Wake every thread parked in `SystemNative_WaitForSocketEvents` whose
     /// port would deliver at least one event right now. The park is
     /// re-entrant — the native frame stays and the caller's program counter
@@ -366,38 +392,19 @@ module Program =
     /// anyone — where a push from each producer would fail silently, as a
     /// deadlock, on the first one that did.
     let private fireSocketReadiness (state : IlMachineState) : IlMachineState =
-        // Runs on every tick of every workload, so the no-waiter case must
-        // cost no allocation: a fold that accumulates only matches, rather
-        // than materialising the thread map.
+        // Only the socket waits: a thread parked in some other syscall is not
+        // this sweep's business, and the record is what says which it is.
         let waiters =
-            (state.ThreadState, [])
-            ||> Map.foldBack (fun tid ts acc ->
-                match ts.Status with
-                | ThreadStatus.BlockedInSyscall -> tid :: acc
-                | _ -> acc
+            syscallWaiters state
+            |> List.choose (fun (tid, parked) ->
+                match parked with
+                | ParkedSyscall.SocketWait wait -> Some (tid, wait.Port)
+                | ParkedSyscall.Flock _ -> None
             )
 
         match waiters with
         | [] -> state
         | waiters ->
-
-        // *Which* syscall each thread is parked in, and what it waits for, is
-        // the kernel's record: the status says only that the thread is asleep in
-        // one. That is the same record the re-entered handler delivers from, so
-        // the question this sweep asks and the question the delivery answers
-        // cannot drift apart. A thread parked in some other syscall is not this
-        // sweep's business and is dropped; a thread parked in none is a park
-        // that wrote no record, which nothing could ever wake.
-        let waiters =
-            waiters
-            |> List.choose (fun tid ->
-                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
-                | None ->
-                    failwith
-                        $"fireSocketReadiness: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. The park writes the record and the status together (this is an interpreter bug)."
-                | Some (ParkedSyscall.SocketWait wait) -> Some (tid, wait.Port)
-                | Some (ParkedSyscall.Flock _) -> None
-            )
 
         let deliverable =
             waiters
@@ -446,36 +453,31 @@ module Program =
     /// exploring exactly such choices under a seed. The losers re-enter, find
     /// the lock taken, and park again.
     let private fireFlockGrantable (state : IlMachineState) : IlMachineState =
-        // Runs on every tick of every workload, so the no-waiter case must cost
-        // no allocation: a fold that accumulates only matches, rather than
-        // materialising the thread map.
+        // Only the locks, as `fireSocketReadiness` takes only the socket waits.
         let waiters =
-            (state.ThreadState, [])
-            ||> Map.foldBack (fun tid ts acc ->
-                match ts.Status with
-                | ThreadStatus.BlockedInSyscall -> tid :: acc
-                | _ -> acc
+            syscallWaiters state
+            |> List.choose (fun (tid, parked) ->
+                match parked with
+                | ParkedSyscall.SocketWait _ -> None
+                | ParkedSyscall.Flock parked -> Some (tid, parked)
             )
 
+        // Before projecting the kernel, which allocates a `UnixSystem`: this runs
+        // on every tick of every workload, and almost none of them ever hold a
+        // lock at all.
         match waiters with
         | [] -> state
         | waiters ->
 
         let unix = EmulatedKernel.unix state.Kernel
 
-        // As in `fireSocketReadiness`: the record says which syscall, a thread
-        // parked in another one is dropped, and a thread parked in none is a
-        // park nothing could ever wake.
         let grantable =
             waiters
-            |> List.filter (fun tid ->
-                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
-                | None ->
-                    failwith
-                        $"fireFlockGrantable: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. The park writes the record and the status together (this is an interpreter bug)."
-                | Some (ParkedSyscall.SocketWait _) -> false
-                | Some (ParkedSyscall.Flock parked) ->
-                    WakeCondition.isSatisfied (WakeCondition.FlockGrantable (parked.Requester, parked.Mode)) unix
+            |> List.choose (fun (tid, parked) ->
+                if WakeCondition.isSatisfied (WakeCondition.FlockGrantable (parked.Requester, parked.Mode)) unix then
+                    Some tid
+                else
+                    None
             )
 
         (state, grantable)

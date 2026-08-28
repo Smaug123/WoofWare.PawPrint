@@ -192,6 +192,7 @@
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
     <Compile Include="TestSocketEventsWaitReason.fs" />
+    <Compile Include="TestSyscallPark.fs" />
     <Compile Include="TestSocketEventsWait.fs" />
     <Compile Include="TestSocketEventBuffer.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />

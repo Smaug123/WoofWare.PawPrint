@@ -3268,8 +3268,11 @@ by their PALs' own retry loops; nothing terminates or interrupts another thread;
 handlers probe their own record before any argument read, so the first scheduled step
 after a wake re-enters the same syscall.
 
-**What each reader does now.** The sweeps fold `BlockedInSyscall` threads and select on
-the record's kind. `GuestLocation` names the syscall as well as its object, because the
+**What each reader does now.** The two sweeps share one collection of parked threads with
+their records — `syscallWaiters` — and each selects the parks it owns. That the refusal of
+a record-less waiter lives there rather than in each sweep is not tidiness: with both
+sweeps validating every parked thread, whichever ran first would report and the other's
+arm would be unreachable. `GuestLocation` names the syscall as well as its object, because the
 status no longer does — "for a lock on open file description 3, Exclusive". The debugger
 derives its `kind` string from the record, so the wire shapes for a well-formed park are
 unchanged and the kind-less object is reached only in a state the invariant calls a
@@ -3289,8 +3292,20 @@ never named; a refusal either way, so the shadowing costs only which message is 
 * Library-side rows for `close`'s *port* ladder, which had none: it was covered only
   from `WoofWare.PawPrint.Test`, so a mutant in the library's own scan needed another
   package's tests to die.
+* `TestSyscallPark`: one thread parked on a lock and another on an event port at the
+  same time, which is the workload that tells "select the parks I own" apart from "take
+  every parked thread". Every other park fixture has one kind of waiter, under which the
+  two agree. Driven by stepping, because a waiter woken by the wrong sweep would simply
+  park again and no exit code would record it — so the assertion is that the port waiter
+  is never scheduled after it parks, with a guard that the two-park state occurred at all.
 * The socket and flock park fixtures unchanged in what they assert, save for the
   diagnostic strings the merge rewrites.
+
+Two refusals are deliberately left untested, and neither is reachable by a single change:
+each handler's wrong-kind entry probe, and each wake helper's kind guard. The first fires
+only if a completion leaves a record behind — which `withParked` now refuses at the write
+— and the second only if a sweep mis-selects, which is itself a mutation. They are second
+lines, and a test for either would have to break two things at once.
 
 **What is left of stage 9**: the four socket syscalls, and the packaging items.
 
