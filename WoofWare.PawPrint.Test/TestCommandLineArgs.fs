@@ -211,3 +211,54 @@ class EchoArgv0
         Roslyn.compile [ echoArgv0Source ]
         |> argv0Reported None
         |> shouldEqual "PawPrintTestAssembly.exe"
+
+    /// Run `image` under PawPrint with the given command-line configuration, returning the
+    /// message it refused with. Fails the test if the run is *accepted*.
+    let private refusalFor (assemblyPath : string option) (argv : string list) (image : byte[]) : string =
+        let dotnetRuntimes =
+            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+            |> ImmutableArray.CreateRange
+
+        use loggerFactory =
+            LoggerFactory.Create (fun b -> b.SetMinimumLevel LogLevel.Warning |> ignore)
+
+        use peImage = new MemoryStream (image)
+
+        let hostConfig =
+            { HostConfig.Default dotnetRuntimes with
+                Guest =
+                    { GuestConfig.Default dotnetRuntimes with
+                        AssemblyPath = assemblyPath
+                        Argv = argv
+                    }
+            }
+
+        let exn =
+            Assert.Throws (fun () ->
+                Program.run loggerFactory (Some "EchoArgv0.cs") peImage hostConfig
+                |> ignore<RunOutcome>
+            )
+
+        exn.Message
+
+    [<Test>]
+    let ``An argument containing a NUL is refused, naming which one`` () : unit =
+        // No `execve` can produce this, so a host asking for it is describing a process that
+        // cannot exist. The failure mode being guarded is *silent* truncation: the value would
+        // otherwise reach the guest as "a", because the marshalled buffer is NUL-terminated and
+        // CoreLib rebuilds each element with `new string(char*)`.
+        let message =
+            Roslyn.compile [ echoArgv0Source ] |> refusalFor None [ "fine" ; "a\000b" ]
+
+        // The index localises it: a host with many arguments should not have to bisect.
+        message |> shouldContainText "GuestConfig.Argv[1]"
+        message |> shouldContainText "NUL at index 1"
+
+    [<Test>]
+    let ``An assembly path containing a NUL is refused`` () : unit =
+        // The same rule on the other string that reaches the same buffer. Asserted separately
+        // because it is a different knob with a different name in the message, so a guard
+        // covering only the arguments would pass the test above and fail this.
+        Roslyn.compile [ echoArgv0Source ]
+        |> refusalFor (Some "/opt/app/Gu\000est.dll") []
+        |> shouldContainText "GuestConfig.AssemblyPath"

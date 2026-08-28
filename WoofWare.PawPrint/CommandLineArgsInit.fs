@@ -31,6 +31,28 @@ module CommandLineArgsInit =
     let private Purpose =
         "install the process's command line, which is what Environment.GetCommandLineArgs reads"
 
+    /// Refuse a command-line string that `execve` could not have produced, naming what it
+    /// describes.
+    ///
+    /// A Unix process's arguments arrive as NUL-terminated C strings, so no argument a real
+    /// `Main` receives contains one — the kernel makes it unrepresentable rather than
+    /// truncating it. A host asking for one is describing a process that cannot exist, and the
+    /// marshalling below would answer by silently truncating: the buffers are NUL-terminated
+    /// and CoreLib rebuilds each element with `new string(char*)`, so `"a\000b"` would reach
+    /// the guest as `"a"`. Refusing keeps `GuestConfig.Argv`'s contract — that these are the
+    /// values `Main` receives — true rather than nearly true.
+    ///
+    /// Distinct from what `AppContextProperties` does with the same character, and
+    /// deliberately: there a real `hostpolicy` genuinely truncates, when it assigns a
+    /// `char_t*` into a `pal::string_t`, so truncating is what faithfulness *means*. No such
+    /// truncation happens to argv, because the value never gets as far as being truncated.
+    let private rejectInteriorNul (describe : unit -> string) (value : string) : unit =
+        match value.IndexOf '\000' with
+        | -1 -> ()
+        | index ->
+            failwith
+                $"%s{describe ()} contains a NUL at index %i{index}, so it cannot appear on a command line: a Unix process's arguments are NUL-terminated C strings, and no `execve` could have produced this one. Remove it, or truncate the value yourself if truncation is what you meant."
+
     /// Build the call that installs `exePath` and `argv` as the process's command line,
     /// returning the machine state with the argument buffers allocated and a frame ready to
     /// be installed and run. The frame's return value is the `string[]` that `Main` must be
@@ -56,6 +78,14 @@ module CommandLineArgsInit =
         (state : IlMachineState)
         : IlMachineState * MethodState
         =
+        // `exePath` is named as `GuestConfig.AssemblyPath` because that is the only way a host
+        // can put a NUL there: the fallback it defaults to comes from the image's `Module` row,
+        // and a metadata string is itself NUL-terminated in the `#Strings` heap.
+        rejectInteriorNul (fun () -> "GuestConfig.AssemblyPath") exePath
+
+        argv
+        |> List.iteri (fun i arg -> rejectInteriorNul (fun () -> $"GuestConfig.Argv[%i{i}]") arg)
+
         let exePathPointer, state = HostStartupCall.allocateWideString exePath state
 
         let argPointers, state =

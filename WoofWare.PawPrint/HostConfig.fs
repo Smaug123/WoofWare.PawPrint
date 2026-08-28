@@ -28,6 +28,11 @@ type GuestConfig =
         /// excluding the program name. Distinct from `Kernel.Environment`
         /// because the runtime hands these to `Main` directly rather than the
         /// guest reading them back through a syscall.
+        ///
+        /// An element containing a NUL is refused when the run starts: a Unix
+        /// process's arguments are NUL-terminated C strings, so no `execve`
+        /// could have produced one, and the guest would otherwise see the value
+        /// silently truncated at it.
         Argv : string list
         /// How the host names the assembly it is launching: what CoreCLR passes
         /// to `ExecuteAssembly`, and hence what the guest reads back as
@@ -49,6 +54,8 @@ type GuestConfig =
         /// installed either way: every route to `Main` runs through
         /// `ExecuteAssembly`, which refuses a null assembly path outright, so
         /// "a guest running with no command line at all" is not a state to model.
+        ///
+        /// Refused if it contains a NUL, for the reason given on `Argv`.
         AssemblyPath : string option
         /// Properties to seed `System.AppContext` with before any guest code
         /// runs, as `hostpolicy` does from `runtimeOptions.configProperties` in
