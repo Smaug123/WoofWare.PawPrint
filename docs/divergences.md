@@ -1179,7 +1179,7 @@ foreach (string entry in Directory.EnumerateFileSystemEntries("d"))
 ```
 
 **Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry` and the `DirectoryCursor` type
-beside it. `WoofWare.PawPrint.Test/TestDirectoryEnumeration.fs` pins every case above, including
+beside it. `WoofWare.PosixKernel.Test/TestDirectoryEnumeration.fs` pins every case above, including
 the property that deleting each name as it is returned always empties the directory.
 
 ## Directory enumeration order is the model's own, not any kernel's
