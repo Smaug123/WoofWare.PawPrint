@@ -32,6 +32,37 @@ module TestEmulatedKernelSockets =
     /// resampled with replacement.
     let private genWalkSeed : Gen<int> = Gen.choose (0, System.Int32.MaxValue)
 
+    /// `SocketEventPort.drain` against a kernel, with the claim its two readers
+    /// exist to satisfy checked on every call: the predicate a parked waiter is
+    /// polled against and the drain its woken handler performs read the same
+    /// annotated walk, so a drain reports something exactly when the predicate
+    /// said it would.
+    let private deliverSocketEvents
+        (portId : OpenFileDescriptionId)
+        (maxCount : int)
+        (kernel : EmulatedKernel)
+        : (uint64 * ReadinessLevel) list * EmulatedKernel
+        =
+        let system = EmulatedKernel.unix kernel
+        let predicted = SocketEventPort.hasDeliverableEvent portId system
+        let delivered, system = SocketEventPort.drain portId maxCount system
+
+        if List.isEmpty delivered = predicted then
+            failwith
+                $"SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
+
+        delivered, EmulatedKernel.withUnix system kernel
+
+    let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : EmulatedKernel) : bool =
+        SocketEventPort.hasDeliverableEvent portId (EmulatedKernel.unix kernel)
+
+    let private epollReadinessOfDescription
+        (targetId : OpenFileDescriptionId)
+        (kernel : EmulatedKernel)
+        : ReadinessLevel
+        =
+        SocketEventPort.epollReadinessOfDescription targetId (EmulatedKernel.unix kernel)
+
     /// A kernel whose socket table and descriptor table are built by hand, so
     /// that `checkInvariants` has something unsound to reject. Every operation
     /// the kernel offers maintains the invariant, which is exactly why the
@@ -688,14 +719,14 @@ module TestEmulatedKernelSockets =
     /// `initial`'s standard streams.
     [<Test>]
     let ``the standard streams present their pipe-end levels`` () : unit =
-        EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId 0L) EmulatedKernel.initial
+        epollReadinessOfDescription (OpenFileDescriptionId 0L) EmulatedKernel.initial
         |> shouldEqual
             { ReadinessLevel.none with
                 Hup = true
             }
 
         for id in 1L .. 2L do
-            EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId id) EmulatedKernel.initial
+            epollReadinessOfDescription (OpenFileDescriptionId id) EmulatedKernel.initial
             |> shouldEqual
                 { ReadinessLevel.none with
                     Out = true
@@ -708,7 +739,7 @@ module TestEmulatedKernelSockets =
     let ``a dangling readiness target crashes rather than answering`` () : unit =
         let exc =
             Assert.Throws<System.Exception> (fun () ->
-                EmulatedKernel.epollReadinessOfDescription (OpenFileDescriptionId 99L) EmulatedKernel.initial
+                epollReadinessOfDescription (OpenFileDescriptionId 99L) EmulatedKernel.initial
                 |> ignore
             )
 
@@ -1035,18 +1066,17 @@ module TestEmulatedKernelSockets =
                     }
             }
 
-        EmulatedKernel.hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
         |> shouldEqual false
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
         outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
 
-        EmulatedKernel.hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
         |> shouldEqual true
 
-        let delivered, kernel =
-            EmulatedKernel.deliverSocketEvents (OpenFileDescriptionId 50L) 8 kernel
+        let delivered, kernel = deliverSocketEvents (OpenFileDescriptionId 50L) 8 kernel
 
         delivered
         |> shouldEqual
@@ -1058,7 +1088,7 @@ module TestEmulatedKernelSockets =
             ]
 
         // Consumed: nothing further until the next edge.
-        EmulatedKernel.hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
+        hasDeliverableSocketEvents (OpenFileDescriptionId 50L) kernel
         |> shouldEqual false
 
     [<Test>]

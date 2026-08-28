@@ -408,8 +408,8 @@ module Program =
     /// port would deliver at least one event right now. The park is
     /// re-entrant — the native frame stays and the caller's program counter
     /// still names the call — so waking is exactly a flip to `Runnable`; the
-    /// re-entered handler asks `EmulatedKernel.deliverSocketEvents`, whose
-    /// walk is the same one `hasDeliverableSocketEvents` consulted here, so
+    /// re-entered handler asks `SocketEventPort.drain`, whose
+    /// walk is the same one `SocketEventPort.hasDeliverableEvent` consulted here, so
     /// the woken thread cannot find the port empty unless another thread
     /// drained it first — in which case the handler parks it again.
     ///
@@ -429,9 +429,13 @@ module Program =
         | [] -> state
         | waiters ->
 
+        // Projected once, outside the filter: this runs on every tick that has
+        // a socket waiter at all, and assembling the view allocates.
+        let unix = EmulatedKernel.unix state.Kernel
+
         let deliverable =
             waiters
-            |> List.filter (fun (_, port) -> EmulatedKernel.hasDeliverableSocketEvents port state.Kernel)
+            |> List.filter (fun (_, port) -> SocketEventPort.hasDeliverableEvent port unix)
 
         // An edge arriving with several threads parked on one port is
         // unmodelled: `ep_poll` adds each waiter to the port's wait queue
