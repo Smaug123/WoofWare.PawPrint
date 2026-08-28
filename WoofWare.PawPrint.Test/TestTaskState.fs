@@ -318,6 +318,20 @@ module TestTaskState =
         exn.Message |> shouldContainText "already names a task"
 
     [<Test>]
+    let ``waking a thread that is not parked in a syscall is refused`` () : unit =
+        // The sweep observes a thread parked and then wakes it, so a thread that is no longer
+        // parked by the time it is woken means the sweep raced its own observation — and waking
+        // it anyway would set a thread Runnable that some *other* mechanism had meanwhile put to
+        // sleep, losing that wait with nothing to say so.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let exn =
+            Assert.Throws<exn> (fun () -> Scheduler.wakeFromSyscall thread state |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "is not parked in a syscall"
+
+    [<Test>]
     let ``a park and its release round-trip`` () : unit =
         // On a machine with several cores, and on the *second* thread, so that
         // the task under test is not on core 0: a fixture whose thread already
