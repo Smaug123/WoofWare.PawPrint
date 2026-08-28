@@ -216,6 +216,8 @@ module CrossAssemblyHarness =
 
     let private runTestWith
         (divergences : AssemblyRefRowDivergence list)
+        (omitFromDisk : string list)
+        (replacements : CrossAssemblySpec list)
         (case : CrossAssemblyEndToEndTestCase)
         : unit
         =
@@ -228,10 +230,34 @@ module CrossAssemblyHarness =
                 "Expected return code %d cannot be carried by a process exit code (0-255), so the real runtime cannot act as the oracle for it. Have the guest return a small discriminating value instead."
                 case.ExpectedReturnCode
 
-        let compiled = compileAssemblies case.Assemblies
+        for replacement in replacements do
+            if not (case.Assemblies |> List.exists (fun spec -> spec.Name = replacement.Name)) then
+                failwithf
+                    "Replacement %s does not share a name with any assembly in the case, so it replaces nothing."
+                    replacement.Name
+
+            if replacement.Name = case.EntryAssemblyName then
+                failwithf "Replacing the entry assembly %s would change what is under test." replacement.Name
+
+        // Compiled last, so each replacement may reference anything already built, and so its
+        // image is the one `compileAssemblies` leaves under that name.
+        let compiled = compileAssemblies (case.Assemblies @ replacements)
 
         for divergence in divergences do
             checkAssemblyRefDivergence compiled divergence
+
+        for omitted in omitFromDisk do
+            if not (compiled |> Map.containsKey omitted) then
+                failwithf
+                    "Asked to omit %s from disk, but it was not among the compiled assemblies: %s. An omission that names nothing tests nothing."
+                    omitted
+                    (compiled |> Map.toSeq |> Seq.map fst |> String.concat ", ")
+
+            if omitted = case.EntryAssemblyName then
+                failwithf "Asked to omit the entry assembly %s from disk; there would be nothing to run." omitted
+
+        let onDisk =
+            compiled |> Map.filter (fun name _ -> not (List.contains name omitFromDisk))
 
 
         let entryBytes =
@@ -245,7 +271,7 @@ module CrossAssemblyHarness =
         Directory.CreateDirectory tempDir |> ignore
 
         try
-            writeAssemblies tempDir compiled
+            writeAssemblies tempDir onDisk
 
             let entryPath = Path.Combine (tempDir, case.EntryAssemblyName + ".dll")
 
@@ -262,7 +288,39 @@ module CrossAssemblyHarness =
             | :? IOException
             | :? UnauthorizedAccessException -> ()
 
-    let runTest (case : CrossAssemblyEndToEndTestCase) : unit = runTestWith [] case
+    let runTest (case : CrossAssemblyEndToEndTestCase) : unit = runTestWith [] [] [] case
+
+    /// <summary>
+    /// As <c>runTest</c>, but the named assemblies are compiled — so the others can reference them
+    /// and bind their types at compile time — and then left off disk.
+    /// </summary>
+    /// <remarks>
+    /// This is how a test builds a deployment no single compilation can produce: one where a
+    /// reference that resolved when the referrer was built does not resolve when it runs. Both
+    /// runtimes see the same directory, so the oracle is answering the same question.
+    /// </remarks>
+    let runTestWithout (omitFromDisk : string list) (case : CrossAssemblyEndToEndTestCase) : unit =
+        if List.isEmpty omitFromDisk then
+            failwith "runTestWithout was given nothing to omit; use runTest if every assembly is meant to be present."
+
+        runTestWith [] omitFromDisk [] case
+
+    /// <summary>
+    /// As <c>runTest</c>, but each replacement is compiled under a name the case already uses, and
+    /// its image is what lands on disk under that name.
+    /// </summary>
+    /// <remarks>
+    /// This is how a test builds a deployment where a referrer was compiled against a different
+    /// build of a dependency than the one it runs against. The replacement declares the same
+    /// assembly name as what it replaces, so binding by name behaves identically on both runtimes;
+    /// only the assembly's *contents* differ from what the referrer saw.
+    /// </remarks>
+    let runTestReplacing (replacements : CrossAssemblySpec list) (case : CrossAssemblyEndToEndTestCase) : unit =
+        if List.isEmpty replacements then
+            failwith
+                "runTestReplacing was given no replacements; use runTest if every assembly runs as it was compiled."
+
+        runTestWith [] [] replacements case
 
     /// As `runTest`, but first assert that each stated `AssemblyRefRowDivergence` actually holds of
     /// the compiled images. Use this for any test whose point is that a type reference is resolved
@@ -272,4 +330,4 @@ module CrossAssemblyHarness =
             failwith
                 "runTestRequiring was given no divergence requirements; use runTest if the test does not depend on AssemblyRef row layout."
 
-        runTestWith divergences case
+        runTestWith divergences [] [] case

@@ -108,6 +108,7 @@
     <Compile Include="TestCrossAssemblyInitSetter.fs" />
     <Compile Include="TestCrossAssemblyFnPtrOverload.fs" />
     <Compile Include="TestCrossAssemblyOverloadTokenSpace.fs" />
+    <Compile Include="TestCrossAssemblyTypeForwarding.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
     <Compile Include="TestNativeKernel32.fs" />
@@ -142,6 +143,7 @@
     <Compile Include="TestAssemblyDefinitionName.fs" />
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
+    <Compile Include="TestForwarderResolutionOutcomes.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />

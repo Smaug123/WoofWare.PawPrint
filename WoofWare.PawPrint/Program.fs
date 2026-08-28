@@ -998,6 +998,12 @@ module Program =
                             IlMachineState.loadAssembly loggerFactory state._LoadedAssemblies.[definedIn] handle state
 
                         go state
+                    | TypeResolutionResult.NotFound miss ->
+                        failwithf
+                            "Base type reference %s from %s does not resolve: %O"
+                            typeRef.Name
+                            currentAssembly.Name.FullName
+                            miss
                     | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
                         continueWithResolved state resolvedType resolvedAssembly
 

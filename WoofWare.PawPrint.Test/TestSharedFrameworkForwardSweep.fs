@@ -47,6 +47,10 @@ module TestSharedFrameworkForwardSweep =
         facadeNames
         |> List.filter (fun n -> File.Exists (Path.Combine (runtimeDir, n + ".dll")))
 
+    let private loggerFactoryForResolution () =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        loggerFactory
+
     [<TestCaseSource(nameof facades)>]
     let ``every type forwarded by a facade resolves to a findable assembly`` (facadeName : string) : unit =
         let corelib = readAssembly corelibPath
@@ -82,7 +86,34 @@ module TestSharedFrameworkForwardSweep =
 
         if not skippedForMissingTarget.IsEmpty then
             TestContext.Progress.WriteLine
-                $"%s{facadeName}: skipping %d{skippedForMissingTarget.Length} forwards whose target assembly is not present in the shared framework"
+                $"%s{facadeName}: %d{skippedForMissingTarget.Length} forwards whose target assembly is not present in the shared framework"
+
+            // Not merely skipped: an uninstalled target is the one outcome real framework metadata
+            // supplies here, so assert resolution reports exactly that rather than resolving to
+            // something, or crashing. These are the rows the sweep below cannot use, and without
+            // this they would be the rows nothing checks at all.
+            use loggerFactory = loggerFactoryForResolution ()
+
+            for exported in skippedForMissingTarget do
+                let expectedTarget =
+                    match exported.Data with
+                    | ExportedTypeData.ForwardsTo assyRefHandle -> facade.AssemblyReferences.[assyRefHandle]
+                    | other -> failwith $"partitioned as a forwarder, but its implementation is %O{other}"
+
+                match
+                    TypeResolution.tryResolveTypeFromExport
+                        loggerFactory
+                        [ runtimeDir ]
+                        facade
+                        exported
+                        ImmutableArray.Empty
+                        (LoadedAssemblies.ofAssemblies [ corelib ; facade ])
+                with
+                | _, ExportedTypeResolution.AssemblyUnavailable reference ->
+                    reference.Name.Name |> shouldEqual expectedTarget.Name.Name
+                | _, other ->
+                    failwith
+                        $"%s{facadeName} forwards %s{exported.Name} to %s{expectedTarget.Name.Name}, which is not installed, but resolution reported %O{other}"
 
         let topLevelForwards = allForwards
 
@@ -103,8 +134,9 @@ module TestSharedFrameworkForwardSweep =
                     match Assembly.resolveTypeFromExport facade assemblies ImmutableArray.Empty exported with
                     | TypeResolutionResult.FirstLoadAssy assyRef ->
                         let handle, referencedIn = assyRef.Handle
-                        let assemblies, _ = loadAssembly.LoadAssembly assemblies referencedIn handle
+                        let assemblies, _ = IAssemblyLoad.load loadAssembly assemblies referencedIn handle
                         go (LoadedAssemblies.assertReferenceBound describe assyRef assemblies) (fuel - 1)
+                    | TypeResolutionResult.NotFound miss -> failwithf "%O" miss
                     | TypeResolutionResult.Resolved (targetAssembly, identity, _) ->
                         assemblies, targetAssembly, identity
 

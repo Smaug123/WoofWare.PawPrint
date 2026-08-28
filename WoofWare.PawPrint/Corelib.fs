@@ -119,6 +119,9 @@ module Corelib =
         let badImageFormatException =
             findCorelibType corelib "System" "BadImageFormatException"
 
+        let fileNotFoundException =
+            findCorelibType corelib "System.IO" "FileNotFoundException"
+
         let argumentOutOfRangeException =
             findCorelibType corelib "System" "ArgumentOutOfRangeException"
 
@@ -222,6 +225,7 @@ module Corelib =
             ArrayTypeMismatchException = arrayTypeMismatchException
             InvalidProgramException = invalidProgramException
             BadImageFormatException = badImageFormatException
+            FileNotFoundException = fileNotFoundException
             ArgumentOutOfRangeException = argumentOutOfRangeException
             MissingFieldException = missingFieldException
             FieldAccessException = fieldAccessException

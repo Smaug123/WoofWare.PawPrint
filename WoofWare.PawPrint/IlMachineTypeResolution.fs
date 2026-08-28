@@ -249,6 +249,35 @@ module IlMachineTypeResolution =
         resolvedAssy,
         typeInfo
 
+    /// <summary>
+    /// Follow <paramref name="ty" />'s forwarder chain, reporting a chain that does not arrive
+    /// rather than terminating on one.
+    /// </summary>
+    /// <remarks>
+    /// The returned state carries every load the walk managed, whichever outcome it reports.
+    /// </remarks>
+    let tryResolveTypeFromExport
+        (loggerFactory : ILoggerFactory)
+        (fromAssembly : DumpedAssembly)
+        (ty : WoofWare.PawPrint.ExportedType)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * ExportedTypeResolution
+        =
+        let assemblies, outcome =
+            TypeResolution.tryResolveTypeFromExport
+                loggerFactory
+                state.DotnetRuntimeDirs
+                fromAssembly
+                ty
+                genericArgs
+                state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        outcome
+
     let resolveTypeFromExport
         (loggerFactory : ILoggerFactory)
         (fromAssembly : DumpedAssembly)

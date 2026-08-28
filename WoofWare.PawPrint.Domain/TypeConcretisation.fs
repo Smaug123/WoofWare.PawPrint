@@ -703,20 +703,84 @@ module ConcreteActivePatterns =
         | ConcreteTypeHandle.FunctionPointer signature -> Some signature
         | _ -> None
 
+/// Why a loader declined to bind an AssemblyReference.
+type AssemblyLoadFailure =
+    /// Nowhere the loader is willing to look supplies this assembly.
+    | NoSuchAssembly of WoofWare.PawPrint.AssemblyReference
+
+    /// The reference is not in the load context, and this loader is not permitted to read files
+    /// to get it. Always a bug in the caller's reasoning about what has been loaded, never a
+    /// fact about the world.
+    | LoadingNotPermitted of WoofWare.PawPrint.AssemblyReference
+
+    override this.ToString () : string =
+        match this with
+        | AssemblyLoadFailure.NoSuchAssembly reference ->
+            $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
+        | AssemblyLoadFailure.LoadingNotPermitted reference ->
+            let referencedIn = snd reference.Handle
+
+            $"Assembly %s{reference.Name.FullName}, referenced by %s{referencedIn.FullName}, is not loaded, and this context is not permitted to load it."
+
+    /// The reference that did not bind, whichever way it failed to.
+    member this.Reference : WoofWare.PawPrint.AssemblyReference =
+        match this with
+        | AssemblyLoadFailure.NoSuchAssembly reference
+        | AssemblyLoadFailure.LoadingNotPermitted reference -> reference
+
+/// <summary>
+/// Why a type's base-type chain could not be walked to its end.
+/// </summary>
+/// <remarks>
+/// The two are different facts and the real runtime reports them differently, so a caller that
+/// surfaces them to a guest must not collapse them: an unbindable assembly is a
+/// <c>FileNotFoundException</c> that <c>RuntimeAssembly.GetTypeCore</c> catches when it was told
+/// not to throw, whereas a base type absent from an assembly that did bind is a
+/// <c>TypeLoadException</c> that escapes that catch and reaches the guest either way (measured
+/// against .NET 10, at both <c>throwOnError</c> values).
+/// </remarks>
+type BaseChainFailure =
+    /// A reference in the chain names an assembly the loader would not bind.
+    | LoadFailed of AssemblyLoadFailure
+
+    /// Every assembly in the chain bound, and one of them does not declare a base type the
+    /// metadata says it does.
+    | BaseTypeAbsent of TypeResolutionMiss
+
+    override this.ToString () : string =
+        match this with
+        | BaseChainFailure.LoadFailed failure -> string<AssemblyLoadFailure> failure
+        | BaseChainFailure.BaseTypeAbsent miss -> $"base type is not declared where the metadata says: %O{miss}"
+
 type IAssemblyLoad =
     /// <param name="referencedIn">
     /// The <em>definition</em> identity of the assembly whose AssemblyReference table
     /// <c>handle</c> indexes. AssemblyReferenceHandles are only meaningful relative to the
     /// assembly that declares them.
     /// </param>
-    abstract LoadAssembly :
+    abstract TryLoadAssembly :
         loadedAssemblies : LoadedAssemblies ->
         referencedIn : AssemblyName ->
         handle : AssemblyReferenceHandle ->
-            LoadedAssemblies * DumpedAssembly
+            Result<LoadedAssemblies * DumpedAssembly, AssemblyLoadFailure>
 
 [<RequireQualifiedAccess>]
 module IAssemblyLoad =
+    /// <summary>
+    /// Bind an AssemblyReference, terminating if it does not bind. This is what most callers want:
+    /// they are walking metadata that has to be there, and have nowhere to put a failure.
+    /// </summary>
+    let load
+        (loader : IAssemblyLoad)
+        (loadedAssemblies : LoadedAssemblies)
+        (referencedIn : AssemblyName)
+        (handle : AssemblyReferenceHandle)
+        : LoadedAssemblies * DumpedAssembly
+        =
+        match loader.TryLoadAssembly loadedAssemblies referencedIn handle with
+        | Ok loaded -> loaded
+        | Error failure -> failwith (string<AssemblyLoadFailure> failure)
+
     /// <summary>
     /// An <c>IAssemblyLoad</c> which refuses to go to disk: it binds an AssemblyReference only if
     /// the load context already holds the assembly. Use it where everything that could possibly
@@ -743,16 +807,12 @@ module IAssemblyLoad =
     /// </remarks>
     let alreadyLoadedOnly : IAssemblyLoad =
         { new IAssemblyLoad with
-            member _.LoadAssembly loaded referencedIn handle =
+            member _.TryLoadAssembly loaded referencedIn handle =
                 let targetRef = loaded.[referencedIn].AssemblyReferences.[handle]
 
                 match loaded.TryResolveReference targetRef with
-                | Some target -> loaded, target
-                | None ->
-                    failwithf
-                        "Assembly %s, referenced by %s, is not loaded, and this context is not permitted to load it."
-                        targetRef.Name.FullName
-                        referencedIn.FullName
+                | Some target -> Ok (loaded, target)
+                | None -> AssemblyLoadFailure.LoadingNotPermitted targetRef |> Error
         }
 
 [<RequireQualifiedAccess>]
@@ -820,11 +880,13 @@ module TypeConcretization =
 
             match Assembly.resolveTypeRef ctx.LoadedAssemblies currentAssy ImmutableArray.Empty typeRef with
             | TypeResolutionResult.Resolved (targetAssy, identity, typeInfo) -> (targetAssy, identity, typeInfo), ctx
+            | TypeResolutionResult.NotFound miss ->
+                failwithf "Concretizing type reference %s from %s: %O" typeRef.Name currentAssemblyFullName miss
             | TypeResolutionResult.FirstLoadAssy assemblyRef ->
                 let handle, referencedIn = assemblyRef.Handle
 
                 let newAssemblies, _ =
-                    loadAssembly.LoadAssembly ctx.LoadedAssemblies referencedIn handle
+                    IAssemblyLoad.load loadAssembly ctx.LoadedAssemblies referencedIn handle
 
                 let newCtx =
                     { ctx with
@@ -2025,14 +2087,18 @@ module Concretization =
         (assemblies : LoadedAssemblies)
         (sourceAssembly : DumpedAssembly)
         (typeRef : TypeRef)
-        : LoadedAssemblies * DumpedAssembly * TypeDefinitionHandle
+        : LoadedAssemblies * Result<DumpedAssembly * TypeDefinitionHandle, BaseChainFailure>
         =
         match Assembly.resolveTypeRef assemblies sourceAssembly ImmutableArray.Empty typeRef with
         | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
-            assemblies, resolvedAssembly, resolvedType.TypeDefHandle
+            assemblies, Ok (resolvedAssembly, resolvedType.TypeDefHandle)
+        | TypeResolutionResult.NotFound miss -> assemblies, Error (BaseChainFailure.BaseTypeAbsent miss)
         | TypeResolutionResult.FirstLoadAssy assemblyRef ->
             let handle, referencedIn = assemblyRef.Handle
-            let newAssemblies, _ = loadAssembly.LoadAssembly assemblies referencedIn handle
+
+            match loadAssembly.TryLoadAssembly assemblies referencedIn handle with
+            | Error failure -> assemblies, Error (BaseChainFailure.LoadFailed failure)
+            | Ok (newAssemblies, _) ->
 
             let newAssemblies =
                 LoadedAssemblies.assertReferenceBound $"base type reference %s{typeRef.Name}" assemblyRef newAssemblies
@@ -2045,7 +2111,7 @@ module Concretization =
         (assemblies : LoadedAssemblies)
         (sourceAssembly : DumpedAssembly)
         (ty : TypeDefn)
-        : LoadedAssemblies * DumpedAssembly * TypeDefinitionHandle
+        : LoadedAssemblies * Result<DumpedAssembly * TypeDefinitionHandle, BaseChainFailure>
         =
         match ty with
         | TypeDefn.GenericInstantiation (generic, _) ->
@@ -2055,7 +2121,7 @@ module Concretization =
         | TypeDefn.Modified m -> ensureTypeDefnResolved loadAssembly assemblies sourceAssembly m.Unmodified
         | TypeDefn.FromDefinition (identity, _) ->
             let resolvedAssembly = assemblies.ByDefinitionName identity.AssemblyFullName
-            assemblies, resolvedAssembly, identity.TypeDefinition.Get
+            assemblies, Ok (resolvedAssembly, identity.TypeDefinition.Get)
         | TypeDefn.FromReference (typeRef, _) -> ensureTypeRefResolved loadAssembly assemblies sourceAssembly typeRef
         | unexpected ->
             failwithf
@@ -2076,32 +2142,55 @@ module Concretization =
         (assemblies : LoadedAssemblies)
         (assy : DumpedAssembly)
         (baseTypeInfo : BaseTypeInfo option)
-        : LoadedAssemblies
+        : LoadedAssemblies * BaseChainFailure option
         =
         match baseTypeInfo with
-        | None -> assemblies
+        | None -> assemblies, None
         | Some (BaseTypeInfo.TypeDef handle) ->
             let baseType = assy.TypeDefs.[handle]
             ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy baseType.BaseType
         | Some (BaseTypeInfo.TypeRef handle) ->
             let typeRef = assy.TypeRefs.[handle]
 
-            let newAssemblies, resolvedAssembly, resolvedHandle =
-                ensureTypeRefResolved loadAssembly assemblies assy typeRef
+            match ensureTypeRefResolved loadAssembly assemblies assy typeRef with
+            | newAssemblies, Error failure -> newAssemblies, Some failure
+            | newAssemblies, Ok (resolvedAssembly, resolvedHandle) ->
 
             let resolvedType = resolvedAssembly.TypeDefs.[resolvedHandle]
             ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly resolvedType.BaseType
         | Some (BaseTypeInfo.TypeSpec handle) ->
             let typeSpec = assy.TypeSpecs.[handle].Signature
 
-            let newAssemblies, resolvedAssembly, resolvedHandle =
-                ensureTypeDefnResolved loadAssembly assemblies assy typeSpec
+            match ensureTypeDefnResolved loadAssembly assemblies assy typeSpec with
+            | newAssemblies, Error failure -> newAssemblies, Some failure
+            | newAssemblies, Ok (resolvedAssembly, resolvedHandle) ->
 
             let resolvedType = resolvedAssembly.TypeDefs.[resolvedHandle]
             ensureBaseTypeAssembliesLoaded loadAssembly newAssemblies resolvedAssembly resolvedType.BaseType
 
-    /// Load every assembly reachable from the base-type chain of the given type definition.
-    /// <paramref name="assy"/> must be the canonical instance for the assembly which defines it.
+    /// <summary>
+    /// Load every assembly reachable from the base-type chain of the given type definition, or
+    /// report the first reference that would not bind.
+    /// </summary>
+    /// <remarks>
+    /// <para><paramref name="assy"/> must be the canonical instance for the assembly which defines
+    /// it.</para>
+    /// <para>The returned load context carries every load the walk managed before it stopped, so a
+    /// caller that adopts it on the failure path does not lose an assembly that really was read —
+    /// which a guest can observe, since loaded assemblies are enumerable.</para>
+    /// </remarks>
+    let tryEnsureTypeDefinitionBaseAssembliesLoaded
+        (loadAssembly : IAssemblyLoad)
+        (assemblies : LoadedAssemblies)
+        (assy : DumpedAssembly)
+        (typeDefinitionHandle : TypeDefinitionHandle)
+        : LoadedAssemblies * BaseChainFailure option
+        =
+        let typeDef = assy.TypeDefs.[typeDefinitionHandle]
+        ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy typeDef.BaseType
+
+    /// As <see cref="tryEnsureTypeDefinitionBaseAssembliesLoaded"/>, for the callers that have
+    /// nowhere to put a failed bind.
     let ensureTypeDefinitionBaseAssembliesLoaded
         (loadAssembly : IAssemblyLoad)
         (assemblies : LoadedAssemblies)
@@ -2109,8 +2198,9 @@ module Concretization =
         (typeDefinitionHandle : TypeDefinitionHandle)
         : LoadedAssemblies
         =
-        let typeDef = assy.TypeDefs.[typeDefinitionHandle]
-        ensureBaseTypeAssembliesLoaded loadAssembly assemblies assy typeDef.BaseType
+        match tryEnsureTypeDefinitionBaseAssembliesLoaded loadAssembly assemblies assy typeDefinitionHandle with
+        | assemblies, None -> assemblies
+        | _, Some failure -> failwith (string<BaseChainFailure> failure)
 
     /// Force-load every assembly needed for CliType.zeroOf to zero-initialise the
     /// given concrete handle. zeroOf calls DumpedAssembly.isValueType on the top
