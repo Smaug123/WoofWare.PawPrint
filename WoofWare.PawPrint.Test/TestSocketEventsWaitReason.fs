@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// `ThreadStatus.BlockedOnSocketEvents` is the representation of a thread parked inside
+/// `ThreadStatus.BlockedInSyscall` is the representation of a thread parked inside
 /// `SystemNative_WaitForSocketEvents`. These tests construct it directly, which is how the other
 /// thread-status state machines are tested (`TestLowLevelMonitor`, `TestWaitHandle`,
 /// `TestSyncBlockMonitor`); `TestSocketEventsWait` is the other half, driving a real guest into
@@ -21,7 +21,7 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestSocketEventsWaitReason =
 
-    let private blocked : ThreadStatus = ThreadStatus.BlockedOnSocketEvents
+    let private blocked : ThreadStatus = ThreadStatus.BlockedInSyscall
 
     let private corelib : DumpedAssembly =
         let corelibPath = typeof<obj>.Assembly.Location
@@ -83,7 +83,7 @@ module TestSocketEventsWaitReason =
     /// Regression tripwire, not coverage of this change: `Scheduler.runnableThreads` and
     /// `Scheduler.hasAnyRunnable` match `Runnable` against a wildcard, so no way of writing the
     /// change that introduced this status could have made it schedulable. The mutant this exists
-    /// for is a later edit adding `| ThreadStatus.BlockedOnSocketEvents _ -> tid :: acc` to
+    /// for is a later edit adding `| ThreadStatus.BlockedInSyscall -> tid :: acc` to
     /// `runnableThreads`' fold, which would resume a thread whose `epoll_wait` has not returned.
     ///
     /// The Runnable thread makes the assertion non-vacuous: `chooseNext` returning `None` because
@@ -132,7 +132,7 @@ module TestSocketEventsWaitReason =
                 {
                     Thread = ThreadId 4
                     Status = blocked
-                    WaitingFor = Some "on open file description 7"
+                    WaitingFor = Some "for events on open file description 7"
                     Position =
                         GuestThreadPosition.CalledFrom (
                             {
@@ -158,7 +158,7 @@ module TestSocketEventsWaitReason =
         // renderer that dropped the port and happened to emit a 7 from an IL offset or line number.
         rendered
         |> shouldEqual (
-            "thread 4 (BlockedOnSocketEvents on open file description 7) "
+            "thread 4 (BlockedInSyscall for events on open file description 7) "
             + "in Interop.Sys.WaitForSocketEvents at IL offset 0, "
             + "called 2 frames out from SocketAsyncEngine.EventLoop at IL offset 31 "
             + "(/build/SocketAsyncEngine.Unix.cs:168)"

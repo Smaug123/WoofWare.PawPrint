@@ -106,10 +106,20 @@ class Program
         | Program.ProgramStartResult.Ready prepared -> prepared
 
     /// How many threads are parked in an `flock`.
+    ///
+    /// The status says only that a thread is parked in *some* syscall, so the record is what
+    /// makes this count locks rather than parks. These guests reach no other parking syscall,
+    /// but a counter that would silently include one is not what any assertion below means.
     let private parkedCount (state : IlMachineState) : int =
         state.ThreadState
         |> Map.toSeq
-        |> Seq.filter (fun (_, ts) -> ts.Status = ThreadStatus.BlockedOnFlock)
+        |> Seq.filter (fun (tid, ts) ->
+            ts.Status = ThreadStatus.BlockedInSyscall
+            && match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
+               | Some (ParkedSyscall.Flock _) -> true
+               | Some (ParkedSyscall.SocketWait _)
+               | None -> false
+        )
         |> Seq.length
 
     /// Whether any thread is parked in an `flock`.
@@ -127,7 +137,7 @@ class Program
             /// The most threads ever parked on locks at once. A multi-waiter test that never got
             /// two threads parked together would pass vacuously without this.
             MostParkedAtOnce : int
-            /// Whether some single step took two or more threads out of `BlockedOnFlock` together.
+            /// Whether some single step took two or more threads out of the lock park together.
             ///
             /// This is what tells wake-all apart from wake-one. The two differ only in *which*
             /// waiter wins a released lock, which is unobservable to a guest — so the observation
@@ -180,7 +190,7 @@ class Program
                     Stuck = stuck
                 }
 
-            // Two or more leaving `BlockedOnFlock` in one step is the wake-all rule firing; one
+            // Two or more leaving the lock park in one step is the wake-all rule firing; one
             // leaving is a thread being scheduled, which says nothing.
             let woke (after : IlMachineState) : bool =
                 sawWake || (before - parkedCount after >= 2)
@@ -467,7 +477,7 @@ class Program
 
     [<Test>]
     let ``the stuck-thread report names the lock a parked thread waits for`` () : unit =
-        // `ThreadStatus.BlockedOnFlock` carries no payload, so the report has to reach into the
+        // `ThreadStatus.BlockedInSyscall` carries no payload, so the report has to reach into the
         // kernel's park record for it. Without that, a person debugging a stuck guest is told
         // only that some thread is parked on some lock.
         let source =
@@ -485,7 +495,9 @@ class Program
         match journey.Stuck with
         | None -> failwith "expected the guest to deadlock"
         | Some stuck ->
-            stuck |> shouldContainText "BlockedOnFlock"
+            stuck |> shouldContainText "BlockedInSyscall"
+            // *Which* syscall, which the status no longer says either.
+            stuck |> shouldContainText "for a lock on"
             // The mode, and the description rather than the descriptor number.
             stuck |> shouldContainText "Shared"
             stuck |> shouldContainText "open file description"

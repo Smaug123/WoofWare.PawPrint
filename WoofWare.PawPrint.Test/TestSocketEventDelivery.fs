@@ -953,13 +953,15 @@ module TestSocketEventDelivery =
                     UnixTaskTable.register (ThreadId 1) (CpuId 0) (EmulatedKernel.osThreadId (ThreadId 1))
                 )
                 |> EmulatedKernel.mapTasks (
-                    UnixTaskTable.withParkedSocketWait
+                    UnixTaskTable.withParked
                         (ThreadId 1)
-                        (Some
-                            {
-                                ParkedSocketWait.Port = portId
-                                MaxEvents = 8
-                            })
+                        (Some (
+                            ParkedSyscall.SocketWait
+                                {
+                                    ParkedSocketWait.Port = portId
+                                    MaxEvents = 8
+                                }
+                        ))
                 )
 
             portFd, dupFd, kernel

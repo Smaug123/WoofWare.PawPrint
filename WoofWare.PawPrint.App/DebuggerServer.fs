@@ -71,12 +71,12 @@ module DebuggerServer =
         | Some value -> writer.WriteNumberValue (heapAddressValue value)
         | None -> writer.WriteNullValue ()
 
-    /// `task` is the emulated kernel's record for this thread, which is where the two
-    /// syscall parks keep what they are waiting for: their statuses carry nothing, so a
-    /// renderer handed only the status could say that a thread is parked but not on what.
-    /// `None` — a thread with no task at all — is an interpreter bug that
-    /// `EmulatedKernel.checkTaskInvariants` names; this reports it rather than raising,
-    /// because a debugger is most wanted when the machine is already wrong.
+    /// `task` is the emulated kernel's record for this thread, which is where a syscall park
+    /// keeps both which syscall it is in and what it is waiting for: `BlockedInSyscall`
+    /// carries neither, so a renderer handed only the status could say that a thread is
+    /// parked and nothing else. `None` — a thread with no task at all — is an interpreter
+    /// bug that `EmulatedKernel.checkTaskInvariants` names; this reports it rather than
+    /// raising, because a debugger is most wanted when the machine is already wrong.
     let private writeThreadStatus
         (writer : Utf8JsonWriter)
         (task : UnixTaskState option)
@@ -171,27 +171,27 @@ module DebuggerServer =
             | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnSocketEvents ->
+        | ThreadStatus.BlockedInSyscall ->
             writer.WriteStartObject ()
-            writer.WriteString ("kind", "blockedOnSocketEvents")
 
-            // The port is written as the open file *description*, which is what
-            // the wait holds: an epoll instance is a description, so a `dup`'d
-            // port waits on the same one and the descriptor number the guest
+            // `kind` names the syscall, which the status no longer does: the
+            // record is where that lives, and reporting "blockedInSyscall" for
+            // every park would tell a debugger client strictly less than it used
+            // to be told. The wire shapes are therefore unchanged for a
+            // well-formed park, and the kind-less object below is reached only in
+            // a state `EmulatedKernel.checkTaskInvariants` calls a defect.
+            //
+            // Both objects are written as the open file *description*, which is
+            // what a park holds: an epoll instance is a description, so a `dup`'d
+            // port waits on the same one, and the descriptor number the guest
             // called through may since have been closed or reused.
-            match task |> Option.bind (fun task -> task.ParkedSocketWait) with
-            | Some wait ->
+            match task |> Option.bind (fun task -> task.Parked) with
+            | Some (ParkedSyscall.SocketWait wait) ->
+                writer.WriteString ("kind", "blockedOnSocketEvents")
                 let (OpenFileDescriptionId port) = wait.Port
                 writer.WriteNumber ("port", port)
-            | None -> writer.WriteNull "port"
-
-            writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnFlock ->
-            writer.WriteStartObject ()
-            writer.WriteString ("kind", "blockedOnFlock")
-
-            match task |> Option.bind (fun task -> task.ParkedFlock) with
-            | Some parked ->
+            | Some (ParkedSyscall.Flock parked) ->
+                writer.WriteString ("kind", "blockedOnFlock")
                 let (OpenFileDescriptionId description) = parked.Requester
                 writer.WriteNumber ("description", description)
 
@@ -201,9 +201,7 @@ module DebuggerServer =
                     | FlockMode.Shared -> "shared"
                     | FlockMode.Exclusive -> "exclusive"
                 )
-            | None ->
-                writer.WriteNull "description"
-                writer.WriteNull "mode"
+            | None -> writer.WriteString ("kind", "blockedInSyscall")
 
             writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"

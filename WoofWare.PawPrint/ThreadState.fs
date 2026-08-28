@@ -203,48 +203,43 @@ type ThreadStatus =
     /// parallel map makes the invariant "no deadline once Runnable
     /// again" structural — a wake naturally forgets it.
     | BlockedOnSleep of deadlineTicks : int64 option
-    /// This thread called `SystemNative_WaitForSocketEvents` on a socket event port
-    /// (`epoll_wait` on Linux, `kevent` on Darwin) and is parked until an event occurs on some
-    /// descriptor registered with that port. The wake comes from the port's ready set becoming
-    /// non-empty, which another thread causes either by making a registered descriptor ready or
-    /// by registering an already-ready one.
+    /// This thread is parked inside a blocking syscall, and will run again only when that
+    /// syscall can be finished. Today that is `SystemNative_WaitForSocketEvents` (`epoll_wait`
+    /// on Linux, `kevent` on Darwin), waiting for an event on some descriptor registered with a
+    /// socket event port, and `SystemNative_FLock` without `LOCK_NB`, waiting for a lock another
+    /// open file description holds.
     ///
-    /// Carries no deadline, unlike every other blocked variant: the wait cannot time out.
-    /// `Interop.Sys.WaitForSocketEvents` takes no timeout parameter on any CoreLib flavour, and
-    /// both PAL implementations wait indefinitely — `epoll_wait(port, events, *count, -1)` and
-    /// `kevent(port, NULL, 0, events, n, NULL)`. Both also retry `EINTR` in the native loop, so
-    /// signal delivery must not wake this thread.
+    /// **Carries nothing**, not even which syscall. What the thread waits for is the
+    /// `ParkedSyscall` its task holds, which the emulated kernel must have anyway — the
+    /// re-entry finishes the call from it, and `UnixSystem.close` refuses a close that would
+    /// strand a waiter, a rule it can only apply to a park it can see. A payload here would be a
+    /// second copy of that record with nothing keeping the two equal, read by the sweep while
+    /// the completion read the record.
     ///
-    /// Carries nothing, like `BlockedOnFlock` below and for the same reason: which port this
-    /// thread waits on is the `ParkedSocketWait` its task holds, which the kernel must have
-    /// anyway — the wait's re-entry delivers from it, and `UnixSystem.close` refuses a close
-    /// that would strand a waiter, a rule it can only apply to a park it can see. A payload
-    /// here would be a second copy of that fact with nothing keeping the two equal, read by
-    /// the sweep while the delivery read the record.
+    /// One case rather than one per syscall, for the same reason: the syscall's identity is in
+    /// the record, and every exhaustive match over this type would otherwise answer the same
+    /// thing once per parking syscall. That the answers really are the same is forced rather
+    /// than observed — a parking syscall completes by writing through the caller's own
+    /// pointers, which PawPrint can only do from the caller's frame, so every one of them parks
+    /// re-entrantly, keeping its native frame and leaving its program counter naming the call.
+    /// A future syscall that broke that would need its own status, which is a change the
+    /// compiler drives from here.
     ///
-    /// The wake is `Program.fireSocketReadiness`, which flips this thread back to `Runnable`
-    /// once `EmulatedKernel.hasDeliverableSocketEvents` answers yes for the recorded port; the
-    /// handler then re-enters (the park kept its frame) and performs the delivery itself.
-    | BlockedOnSocketEvents
-    /// This thread called `SystemNative_FLock` without `LOCK_NB` on a lock another open file
-    /// description holds, and is parked until that lock becomes available.
+    /// **Carries no deadline**, and neither park can time out, so `Program.waitDeadline` answers
+    /// `None` and the clock can never wake such a thread. `Interop.Sys.WaitForSocketEvents`
+    /// takes no timeout parameter on any CoreLib flavour and both PAL implementations wait
+    /// indefinitely — `epoll_wait(port, events, *count, -1)` and
+    /// `kevent(port, NULL, 0, events, n, NULL)`. A parking syscall that *does* take a timeout
+    /// puts the deadline in its record, where a client reads it as data.
     ///
-    /// Carries nothing, exactly as `BlockedOnSocketEvents` does. What this thread is waiting for
-    /// is the `ParkedFlock` its task holds, which the kernel must have anyway —
-    /// `UnixSystem.close` refuses a close that would destroy a description something is parked
-    /// on, and it can only apply that rule to a park it can see. A payload here would be a
-    /// second copy of that fact with nothing keeping the two equal.
+    /// **Signal delivery must not wake such a thread.** Both PALs retry `EINTR` in their native
+    /// loops — the socket wait in its own, and `while ((result = flock(...)) < 0 && errno ==
+    /// EINTR);` (pal_io.c) — so no managed caller can observe `EINTR` from either.
     ///
-    /// Carries no deadline either: an `flock` wait cannot time out, so `Program.waitDeadline`
-    /// answers `None` and the clock can never wake this thread. The only wake is
-    /// `Program.fireFlockGrantable`, which flips it back to `Runnable` once
-    /// `WakeCondition.isSatisfied` holds; the handler then re-enters (the park kept its frame)
-    /// and finishes the acquisition against the description its record names.
-    ///
-    /// Signal delivery must not wake this thread. Real `flock(2)` is interruptible, but the PAL
-    /// retries it in the native loop — `while ((result = flock(...)) < 0 && errno == EINTR);`
-    /// (pal_io.c) — so no managed caller can observe `EINTR` from it.
-    | BlockedOnFlock
+    /// The wakes are `Program.fireSocketReadiness` and `Program.fireFlockGrantable`, each
+    /// flipping a thread whose record is its own back to `Runnable` once the thing it waits for
+    /// has happened; the handler then re-enters and finishes the call itself.
+    | BlockedInSyscall
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
@@ -302,8 +297,7 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnWaitHandle _ -> false
         | ThreadStatus.BlockedOnWaitHandles _ -> false
         | ThreadStatus.BlockedOnSleep _ -> false
-        | ThreadStatus.BlockedOnSocketEvents -> false
-        | ThreadStatus.BlockedOnFlock -> false
+        | ThreadStatus.BlockedInSyscall -> false
 
     /// True iff a thread in this status parked with its program counter already advanced
     /// *past* the call that blocked it, so the active frame's `IlOpIndex` names the
@@ -321,11 +315,11 @@ module ThreadStatus =
     /// when the `.cctor` lock is released (see `NativeHandlerResult.BlockedOnClassInit`).
     /// Nothing has been popped and no PC has advanced.
     ///
-    /// `BlockedOnSocketEvents` answers the same way, and for the same reason:
-    /// `SystemNative_WaitForSocketEvents` parks re-entrantly — leaving its native frame in place
-    /// and its caller's PC alone — so that re-entry on port readiness writes the event batch
-    /// through the caller's own buffer instead of the wake having to reach into a frame it does
-    /// not own from another thread's step.
+    /// `BlockedInSyscall` answers the same way, and for the same reason: a parking syscall
+    /// completes by writing through the caller's own pointers, which can only be done from the
+    /// caller's frame, so every one of them parks re-entrantly — leaving its native frame in
+    /// place and its caller's PC alone — rather than the wake having to reach into a frame it
+    /// does not own from another thread's step.
     ///
     /// Only diagnostics consume this; nothing about execution may depend on it. Callers
     /// must still confirm that the preceding instruction really is a call before stepping
@@ -340,10 +334,7 @@ module ThreadStatus =
         | ThreadStatus.Runnable -> false
         | ThreadStatus.Terminated -> false
         | ThreadStatus.BlockedOnClassInit _ -> false
-        | ThreadStatus.BlockedOnSocketEvents -> false
-        // Parks *on* the call, like the socket wait and for the same reason: the
-        // wake re-enters the handler to finish the acquisition.
-        | ThreadStatus.BlockedOnFlock -> false
+        | ThreadStatus.BlockedInSyscall -> false
         | ThreadStatus.BlockedOnJoin _ -> true
         | ThreadStatus.BlockedOnMonitorAcquire _ -> true
         | ThreadStatus.BlockedOnMonitorWait _ -> true
