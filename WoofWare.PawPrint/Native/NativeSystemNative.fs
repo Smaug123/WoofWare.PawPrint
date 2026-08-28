@@ -1371,7 +1371,7 @@ module NativeSystemNative =
             // on the way to returning false, and this entry point then overwrites
             // it, so that value never reaches a guest.
             let palFamily =
-                match SimulatedUnixPlatform.addressFamilyPlatformToPal platform platformFamily with
+                match SocketArgumentsPal.addressFamilyPlatformToPal platform platformFamily with
                 | Some pal -> pal
                 | None -> -1
 
@@ -1422,7 +1422,7 @@ module NativeSystemNative =
             // truncated to the field's width, and *then* returns EAFNOSUPPORT. So
             // an unconvertible family leaves the low byte or two of the value
             // behind in the blob rather than leaving it as it was.
-            let converted = SimulatedUnixPlatform.addressFamilyPalToPlatform platform palFamily
+            let converted = SocketArgumentsPal.addressFamilyPalToPlatform platform palFamily
 
             let written =
                 match converted with
@@ -3847,7 +3847,7 @@ module NativeSystemNative =
                 |> Some
 
             match
-                SimulatedUnixPlatform.socketCreation
+                SocketArgumentsPal.socketCreation
                     state.Kernel.UnixPlatform
                     palAddressFamily
                     palSocketType
@@ -3861,16 +3861,25 @@ module NativeSystemNative =
                     | SocketCreationRefusal.Protocol -> UnixError.EPROTONOSUPPORT
                     | SocketCreationRefusal.Unmodelled ->
                         // Past every screen the shim applies, so a real run
-                        // would call `socket(2)` here. What it would answer is
-                        // either configuration PawPrint does not model
-                        // (`CAP_NET_RAW` for any raw or packet socket,
-                        // `net.ipv4.ping_group_range` for Linux's ICMP datagram
-                        // sockets) or a deterministic kernel refusal PawPrint
-                        // has simply not modelled. Either way the creatable set
-                        // is this emulated kernel's declared protocol table, and
-                        // a row outside it wants a decision rather than a guess.
-                        failwith
-                            $"%s{operation}: PawPrint does not model a socket with PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} under %O{state.Kernel.UnixPlatform}. Every screen the native shim applies passed, so a real run would reach socket(2); what that answers is privilege-dependent for a raw or packet socket, sysctl-dependent for a Linux ICMP datagram socket, and otherwise a deterministic kernel refusal nobody has modelled. Extend SimulatedUnixPlatform.socketCreation with a measured row rather than guessing an errno."
+                        // would call `socket(2)` here, and PawPrint has not
+                        // decided what this socket is. Two quite different
+                        // decisions are owed depending on why, so ask which:
+                        // `shapeOf` failing means the shape has no name in the
+                        // library's vocabulary at all, where `shapeOf`
+                        // succeeding means it has one and the kernel's table
+                        // simply does not list it.
+                        match SocketArgumentsPal.shapeOf palAddressFamily palSocketType palProtocolType with
+                        | None ->
+                            failwith
+                                $"%s{operation}: PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType} pass every screen the native shim applies, but name no socket WoofWare.PosixKernel can represent — SocketDomain, SocketKind and SocketProtocol each cover only the values a modelled socket can take. Deciding what this socket *is* comes before deciding whether the kernel creates it: widen the library's vocabulary first, and note that AF_PACKET and AF_CAN sockets also need send/receive paths nothing offers yet."
+                        | Some _ ->
+                            // The remaining answers are configuration PawPrint
+                            // does not model (`CAP_NET_RAW` for any raw socket,
+                            // `net.ipv4.ping_group_range` for Linux's ICMP
+                            // datagram sockets) or a deterministic kernel
+                            // refusal nobody has measured.
+                            failwith
+                                $"%s{operation}: PawPrint names the socket with PAL address family %d{palAddressFamily}, type %d{palSocketType} and protocol %d{palProtocolType}, but SimulatedUnixPlatform.creatableSockets does not list it under %O{state.Kernel.UnixPlatform}. Every screen the native shim applies passed, so a real run would reach socket(2); what that answers is privilege-dependent for a raw socket, sysctl-dependent for a Linux ICMP datagram socket, and otherwise a deterministic kernel refusal nobody has modelled. Add a measured row to that table rather than guessing an errno."
 
                 // Each of the three conversion failures stores -1 before
                 // returning, so a caller that ignores the return code sees an
@@ -3937,7 +3946,7 @@ module NativeSystemNative =
             // the address fault included. Measured: after a bind that answered
             // EFAULT, the option still reads back set.
             let socket =
-                if SimulatedUnixPlatform.isTcpProtocolType palProtocolType then
+                if SocketArgumentsPal.isTcpProtocolType palProtocolType then
                     { socket with
                         ReuseAddress = true
                     }

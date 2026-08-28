@@ -3,20 +3,18 @@
 
 WoofWare.PosixKernel is meant to be a POSIX simulator that a client other than
 WoofWare.PawPrint could use, so its vocabulary should be POSIX's: raw errno
-numbers, `SIGTERM`, `AF_INET`. A handful of leaf functions instead speak the
-encodings of .NET's platform abstraction layer -- the `PosixSignal` managed
-enum, the PAL's `AF_*`/`SOCK_*` numbering. Moving them out is what the stages
-in docs/plans/2026-08-23-posix-kernel-extraction.md do, one cluster at a time;
-until they are all gone this check stops the set from growing. The markers
-below also name encodings no allowlisted definition speaks any more
-(`Interop.Error`'s numbering, the PAL's `SocketEvents` bits), which is the
-point: those clusters have left, and this is what stops them coming back.
+numbers, `SIGTERM`, `AF_INET`. Two leaf functions still speak an encoding of
+.NET's platform abstraction layer -- the `PosixSignal` managed enum. Moving
+them out is what the stages in docs/plans/2026-08-23-posix-kernel-extraction.md
+do, one cluster at a time; until they are gone this check stops the set from
+growing. The markers below also name encodings no allowlisted definition speaks
+any more (`Interop.Error`'s numbering, the PAL's `SocketEvents` bits, its
+`AF_*`/`SOCK_*` numbering), which is the point: those clusters have left, and
+this is what stops them coming back.
 
 A definition is taken to speak the PAL if its own name says so, or if its body
-mentions one of the PAL's encodings. That is a proxy rather than a proof -- a
-PAL-encoded `int` is indistinguishable from any other `int` -- but the PAL
-constants in this library live in one `module private Pal`, so a new adapter
-essentially has to mention one of these tokens to be written at all.
+mentions one of the PAL's encodings. That is a proxy rather than a proof: a
+PAL-encoded `int` is indistinguishable from any other `int`.
 
 What it does not see, accepted deliberately:
 
@@ -26,6 +24,18 @@ What it does not see, accepted deliberately:
   * A new definition that merely *delegates* to an allowlisted one, such as
     `let managedError e = UnixError.toPal e`. Detecting those means a transitive
     closure over call sites, which is a bigger tool than this.
+  * A bare numeric table with no PAL word anywhere in it. This used to be
+    largely covered by the library's PAL constants living in one
+    `module private Pal`, so that an adapter essentially had to write `Pal.` to
+    exist at all; stage 9h moved that module out, so the socket numbering is now
+    guarded by the name markers alone -- weaker than the distinctive word that
+    guards the retired `SocketEvents` cluster. A re-accreted `AF_*` table under
+    an innocent name would pass.
+  * Prose. Docstrings are excluded before the body scan, so a type *documented*
+    in the PAL's terms reads as clean however it is defined. Stage 9h found
+    exactly that: `SocketDomain` and its siblings were POSIX-named and
+    PAL-defined ("`AF_INET`, PAL 2"), and retiring their cluster would have
+    turned this check green over a residue it cannot see.
 
 And one thing it can see for a weak reason: a conversion whose body is bare hex
 masks is recognised only if a *string literal* in it names the encoding, which
@@ -51,7 +61,7 @@ from pathlib import Path
 
 # A definition whose *name* contains one of these is speaking the PAL by its own
 # admission. `pal` is matched on camelCase boundaries, so `Pal`, `toPal`,
-# `palSuccess` and `addressFamilyPalToPlatform` hit while `Palette` and
+# `palSuccess` and `addressFamilyPalToPlatform` would hit while `Palette` and
 # `principal` do not.
 NAME_MARKERS = [
     re.compile(r"(?<![A-Za-z])pal(?![a-z])"),
@@ -93,10 +103,10 @@ def is_comment(line: str) -> bool:
 def qualify(stack: list[tuple[int, str]]) -> str:
     """Name a definition by its top-level container and the member inside it.
 
-    That is the granularity the allowlist wants: a helper nested inside
-    `socketCreation` is part of `socketCreation`, not a separate entry to
-    approve, but `Signal.ofPosixSignalEnum` and `Signal.toPosixSignalEnum` are
-    two independent things to retire.
+    That is the granularity the allowlist wants: a helper nested inside a
+    function is part of that function, not a separate entry to approve, but
+    `Signal.ofPosixSignalEnum` and `Signal.toPosixSignalEnum` are two
+    independent things to retire.
     """
     return ".".join(name for _, name in stack[:2])
 

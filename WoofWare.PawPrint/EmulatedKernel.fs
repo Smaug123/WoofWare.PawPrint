@@ -1798,7 +1798,7 @@ module EmulatedKernel =
     /// names, and splitting them would let a caller do one without the other.
     ///
     /// Says nothing about whether this domain/kind/protocol combination *can*
-    /// exist — `SimulatedUnixPlatform.socketCreation` answers that, and this is
+    /// exist — `SocketArgumentsPal.socketCreation` answers that, and this is
     /// reached only once it has said yes.
     let createSocket
         (domain : SocketDomain)

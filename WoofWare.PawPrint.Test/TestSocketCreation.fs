@@ -9,7 +9,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `SimulatedUnixPlatform.socketCreation` is a transcription of two things at
+/// `SocketArgumentsPal.socketCreation` is a transcription of two things at
 /// once: the native shim's three argument screens, which are C we can read, and
 /// the set of sockets each kernel will actually make, which is not. So the
 /// oracle here is a *measurement* rather than a restatement.
@@ -135,7 +135,7 @@ module TestSocketCreation =
 
     let private actual (platform : SimulatedUnixPlatform) (row : MeasuredRow) : string =
         let result =
-            SimulatedUnixPlatform.socketCreation
+            SocketArgumentsPal.socketCreation
                 platform
                 palAddressFamily.[row.Family]
                 palSocketType.[row.Kind]
@@ -263,7 +263,7 @@ module TestSocketCreation =
         (expectedProtocol : string)
         : unit
         =
-        match SimulatedUnixPlatform.socketCreation SimulatedUnixPlatform.linuxX64 family kind protocol with
+        match SocketArgumentsPal.socketCreation SimulatedUnixPlatform.linuxX64 family kind protocol with
         | Error refusal -> failwith $"expected a socket, got %O{refusal}"
         | Ok (domain, socketKind, socketProtocol) ->
             sprintf "%O" domain |> shouldEqual expectedDomain
@@ -312,7 +312,7 @@ module TestSocketCreation =
             |> List.fold
                 (fun (count, disagreements) row ->
                     let expected =
-                        SimulatedUnixPlatform.socketCreation
+                        SocketArgumentsPal.socketCreation
                             platform
                             palAddressFamily.[row.Family]
                             palSocketType.[row.Kind]

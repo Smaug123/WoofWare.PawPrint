@@ -3552,6 +3552,87 @@ share `supported` rather than writing `0x1F` in two projects.
   including the fold, is what covers `delivered` end to end; `TestSocketEventDelivery`
   operates upstream of the fold and cannot see it.
 
-**What is left of stage 9**: the four socket entry points' own moves into the library,
+**What is left after 9g**: the four socket entry points' own moves into the library,
 the two remaining PAL clusters (socket creation, and the managed-enum signal mapping),
+and the packaging items.
+
+#### Stage 9h: the socket-creation numbering leaves the library
+
+**Dependencies**: none beyond stage 7's precedent. Shipped as two PRs, and the split
+is the interesting part rather than a convenience.
+
+This is the cluster the allowlist called "the mixed case": `socketCreation` held the
+shim's three argument screens **and** this kernel's own declared protocol table in one
+function, so splitting it was a design question rather than a move. It takes the
+residue from seven definitions to two.
+
+**Which side each piece belongs on**, by the question this whole extraction asks —
+would a second client, not speaking .NET's PAL, need this fact? The `AF_*`/`SOCK_*`/
+`PT_*` numbering, the three screens and their order, and `isTcpProtocolType` are the
+shim's: no. The twelve measured rows, and their flavour dependence, are facts about the
+simulated kernel: yes.
+
+**What crosses the boundary.** The client screens, names its PAL triple in the
+library's own vocabulary, and asks whether that shape is one the kernel creates. Two
+alternatives were rejected. Handing over *platform* numbers is closer to what the real
+shim does but would have the library re-derive a `SocketDomain` from an `int` it had
+just been given. Moving `socketCreation` wholesale is cheapest and inverts exactly the
+dependency this work exists to untangle: the twelve rows are the one part a second
+client would have to re-derive.
+
+**PR1 (#1224) made the table data and gave it an oracle**, changing no vocabulary. The
+rows had *no library-side test at all* — `TestSocketCreation` lives in
+`WoofWare.PawPrint.Test` — which is the gap 9g found in `reportedUnder`, one size up.
+They became `SimulatedUnixPlatform.creatableSockets`, a set per flavour; data rather
+than a predicate, because a caller wants to ask and a reader wants to enumerate, and
+because a `bool` gate would be a classifier whose contract someone then has to keep
+true. The oracle is the measurement rather than the data — a table checked against a
+copy of itself catches a later typo and nothing else — which meant moving
+`socketMatrix/{linux,darwin}.tsv` to `WoofWare.PosixKernel.Test` and linking it back,
+so the two suites cannot drift onto different rows.
+
+**PR2 moved the PAL half** into `WoofWare.PawPrint/Native/SocketArgumentsPal.fs`.
+Named for the arguments rather than the shim because CoreLib has a managed
+`System.Net.Sockets.SocketPal` of its own that comments in `NativeSystemNative` already
+cite; a module called `SocketPal` there would have read as that one.
+
+**The sub-decision, and why the obvious answer is wrong.** A PAL triple can pass every
+screen and still name no `SocketDomain`, `SocketKind` or `SocketProtocol` —
+`AF_UNSPEC`, `AF_PACKET`, `AF_CAN`, `SOCK_RDM` and every protocol but three. That is a
+different failure from a shape the table omits, and the first draft of this plan split
+`Unmodelled` into two union cases to keep the two crash instructions correct. Wrong:
+the 330-row correspondence maps every `SYSCALL` row to one answer, and the measurement
+cannot distinguish the two, so splitting the case forces that oracle either to accept
+both answers — weakening the totality it exists for — or to re-derive vocabulary
+membership itself. The benefit needs no type change: the refusal type is client-side
+after the move, so the `failwith` branches its *message* on `SocketArgumentsPal.shapeOf`,
+which is public exactly so a caller who cares can ask.
+
+**A residue the checker cannot see, and nearly did not catch.** `SocketDomain`,
+`SocketKind` and `SocketProtocol` were POSIX-named and *PAL-defined in their own
+docstrings* — "`AF_INET`, PAL 2", and `SocketProtocol`'s "*not* as the platform numbers
+it … it is the PAL value that `SystemNative_GetSocketType` will owe a caller".
+Docstrings are comment-excluded from the residue scan, so retiring the five entries
+without rewriting them would have turned the check green over a worse residue than the
+one it reports — 9g's trap one level up. The case names stay (they are POSIX
+conditions); the prose stops naming a client's numbering.
+
+The same move weakens the checker in a way worth recording rather than discovering: the
+library's PAL constants used to live in one `module private Pal`, so an adapter
+essentially had to write `Pal.` to exist. That module has gone, so a re-accreted `AF_*`
+table under an innocent name would now pass. The script's "what it does not see" list
+says so.
+
+**Correctness oracle**:
+* The 330-row correspondence and the host `libSystem.Native` differential, unchanged
+  and still passing: the screens moved, they did not change.
+* `TestCreatableSockets` against the measurement's `OK` rows, which is what makes the
+  library's own suite able to see a dropped row.
+* A mutation battery run against **both** suites, whose split is itself the evidence:
+  table mutants die in both, PAL-mapping mutants die only in PawPrint's, and the
+  library's silence there is correct rather than a gap.
+
+**What is left of stage 9**: the four socket entry points' own moves into the library,
+`Signal.{of,to}PosixSignalEnum` — the last two entries, which have an oracle the others
+lacked, since `PosixSignal` is a managed enum the test can read from the running BCL —
 and the packaging items.
