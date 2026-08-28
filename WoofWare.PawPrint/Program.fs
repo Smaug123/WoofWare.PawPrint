@@ -9,47 +9,6 @@ open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module Program =
-    /// Returns the pointer to the resulting array on the heap.
-    let allocateArgs
-        (loggerFactory : ILoggerFactory)
-        (args : string list)
-        (corelib : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        : ManagedHeapAddress * IlMachineState
-        =
-        let state, stringType =
-            DumpedAssembly.typeInfoToTypeDefn' corelib state._LoadedAssemblies corelib.String
-            |> IlMachineState.concretizeType
-                loggerFactory
-                corelib
-                state
-                corelib.Corelib.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-
-        let argsAllocations, state =
-            (state, args)
-            ||> Seq.mapFold (fun state arg ->
-                IlMachineRuntimeMetadata.allocateManagedString loggerFactory corelib arg state
-            )
-
-        let stringArrayType = ConcreteTypeHandle.OneDimArrayZero stringType
-
-        let arrayAllocation, state =
-            IlMachineState.allocateArray stringArrayType (fun () -> CliType.ObjectRef None) args.Length state
-
-        let state =
-            ((state, 0), argsAllocations)
-            ||> Seq.fold (fun (state, i) arg ->
-                let state =
-                    IlMachineState.setArrayValue arrayAllocation (CliType.ofManagedObject arg) i state
-
-                state, i + 1
-            )
-            |> fst
-
-        arrayAllocation, state
-
     type PreparedProgram =
         {
             State : IlMachineState
@@ -964,6 +923,15 @@ module Program =
 
         let dumped = Assembly.read loggerFactory originalPath fileStream
 
+        // How the guest sees itself named on its own command line. `originalPath` is
+        // deliberately not consulted: that is where the *host* read the image from, used to
+        // find a sidecar PDB, and it is not part of the replay contract — the test harness
+        // passes a `.cs` source name there. `ScopeName` is the file name the compiler stamped
+        // into the image, so a host that expresses no preference still gets a name that came
+        // from the image rather than from the machine it is running on.
+        let exePath : string =
+            hostConfig.Guest.AssemblyPath |> Option.defaultValue dumped.ScopeName
+
         let entryPoint =
             match dumped.MainMethod with
             | None -> failwith "No entry point in input DLL"
@@ -1221,18 +1189,6 @@ module Program =
             =
             loadInitialState state, StartupPhase.InitialisingClasses mainArgs
 
-        /// `Main`'s arguments built by PawPrint rather than obtained from CoreLib.
-        ///
-        /// Only for the case where there is no command line to install, which is the one shape
-        /// in which upstream's `InitializeCommandLineArgs` does not run either — so this is not
-        /// a second way of answering the same question, and cannot disagree with the first.
-        let allocateMainArgsDirectly (state : IlMachineState) : IlMachineState * ImmutableArray<CliType> =
-            if mainTakesStringArrayArg then
-                let arrayAllocation, state = allocateArgs loggerFactory argv baseClassTypes state
-                state, ImmutableArray.Create (CliType.ofManagedObject arrayAllocation)
-            else
-                state, ImmutableArray.Empty
-
         let installMain (state : IlMachineState) (mainArgs : ImmutableArray<CliType>) : ProgramStartResult =
             logger.LogInformation "Main method class now initialised"
 
@@ -1346,45 +1302,39 @@ module Program =
         /// immediately before it runs `Main`. The array CoreLib returns is the one `Main`
         /// receives, so there is no second construction of it to disagree.
         let enterCommandLineInit (state : IlMachineState) : IlMachineState * StartupPhase =
-            match CommandLineArgsInit.prepareCall loggerFactory baseClassTypes originalPath argv state with
-            | None ->
-                // The host named no assembly path, so there is no command line to install and
-                // `Environment.GetCommandLineArgs` will answer from CoreLib's empty-array
-                // fallback — exactly as it does upstream for a runtime not entered through
-                // `ExecuteAssembly`. `Main` still needs its arguments.
-                let state, mainArgs = allocateMainArgsDirectly state
-                enterClassInit mainArgs state
-            | Some (state, initFrame) ->
-                logger.LogInformation "Installing the guest's command line"
+            let state, initFrame =
+                CommandLineArgsInit.prepareCall loggerFactory baseClassTypes exePath argv state
 
-                let onInitialised (state : IlMachineState) : IlMachineState * StartupPhase =
-                    // `InitializeCommandLineArgs` returns the arguments `Main` is to be given,
-                    // having just built `s_commandLineArgs` from the same input in the same
-                    // pass. The entry thread has terminated, so its eval stack holds the return
-                    // value the way it holds `Main`'s exit code.
-                    let returned =
-                        match state.ThreadState.[mainThread].MethodState.EvaluationStack.Values with
-                        | EvalStackValue.ObjectRef addr :: _ -> addr
-                        | [] ->
-                            failwith
-                                "System.Environment::InitializeCommandLineArgs returned without leaving its string[] on the eval stack."
-                        | other :: _ ->
-                            failwith
-                                $"System.Environment::InitializeCommandLineArgs left %O{other} on the eval stack; expected the string[] of Main's arguments."
+            logger.LogInformation "Installing the guest's command line"
 
-                    let mainArgs =
-                        if mainTakesStringArrayArg then
-                            ImmutableArray.Create (CliType.ofManagedObject returned)
-                        else
-                            // The call is made regardless — `ExecuteAssembly` makes it before
-                            // it knows the entry point's signature, and `GetCommandLineArgs`
-                            // must work for a `Main` that takes nothing — so the array is
-                            // simply not passed on.
-                            ImmutableArray.Empty
+            let onInitialised (state : IlMachineState) : IlMachineState * StartupPhase =
+                // `InitializeCommandLineArgs` returns the arguments `Main` is to be given,
+                // having just built `s_commandLineArgs` from the same input in the same
+                // pass. The entry thread has terminated, so its eval stack holds the return
+                // value the way it holds `Main`'s exit code.
+                let returned =
+                    match state.ThreadState.[mainThread].MethodState.EvaluationStack.Values with
+                    | EvalStackValue.ObjectRef addr :: _ -> addr
+                    | [] ->
+                        failwith
+                            "System.Environment::InitializeCommandLineArgs returned without leaving its string[] on the eval stack."
+                    | other :: _ ->
+                        failwith
+                            $"System.Environment::InitializeCommandLineArgs left %O{other} on the eval stack; expected the string[] of Main's arguments."
 
-                    state |> reinstateStartupFrame |> enterClassInit mainArgs
+                let mainArgs =
+                    if mainTakesStringArrayArg then
+                        ImmutableArray.Create (CliType.ofManagedObject returned)
+                    else
+                        // The call is made regardless — `ExecuteAssembly` makes it before
+                        // it knows the entry point's signature, and `GetCommandLineArgs`
+                        // must work for a `Main` that takes nothing — so the array is
+                        // simply not passed on.
+                        ImmutableArray.Empty
 
-                installCall initFrame state, StartupPhase.InitialisingCommandLine onInitialised
+                state |> reinstateStartupFrame |> enterClassInit mainArgs
+
+            installCall initFrame state, StartupPhase.InitialisingCommandLine onInitialised
 
         match AppContextSeed.prepareCall loggerFactory baseClassTypes propertiesToSeed state with
         | None ->

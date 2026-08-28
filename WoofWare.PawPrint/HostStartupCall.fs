@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
 /// Shared machinery for the CoreLib entry points a runtime host calls during startup:
@@ -154,7 +155,7 @@ module HostStartupCall =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-        (args : System.Collections.Immutable.ImmutableArray<CliType>)
+        (args : ImmutableArray<CliType>)
         (purpose : string)
         (state : IlMachineState)
         : IlMachineState * MethodState
@@ -163,11 +164,11 @@ module HostStartupCall =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
-                System.Collections.Immutable.ImmutableArray.Empty
+                ImmutableArray.Empty
                 method
                 None
                 baseClassTypes.Corelib.DefinitionFullName
-                System.Collections.Immutable.ImmutableArray.Empty
+                ImmutableArray.Empty
                 state
 
         match
@@ -177,7 +178,7 @@ module HostStartupCall =
                 state._LoadedAssemblies
                 baseClassTypes.Corelib
                 concretized
-                System.Collections.Immutable.ImmutableArray.Empty
+                ImmutableArray.Empty
                 args
                 None
         with

@@ -36,31 +36,26 @@ module CommandLineArgsInit =
     /// be installed and run. The frame's return value is the `string[]` that `Main` must be
     /// given.
     ///
-    /// `exePath` is the assembly path the host launched, which is what CoreCLR passes: for a
-    /// non-bundled app `SetCommandLineArgs` forwards `ExecuteAssembly`'s `pwzAssemblyPath`
-    /// verbatim, so `GetCommandLineArgs()[0]` names the *managed assembly* and not the
-    /// executable that started the process. (Those differ: under `dotnet app.dll` the
-    /// executable is the muxer. `Environment.ProcessPath` is where that one is reported; see
-    /// `KernelConfig.ProcessPath`.)
+    /// `exePath` is how the host names the assembly it is launching, which is what CoreCLR
+    /// passes: for a non-bundled app `SetCommandLineArgs` forwards `ExecuteAssembly`'s
+    /// `pwzAssemblyPath` verbatim, so `GetCommandLineArgs()[0]` names the *managed assembly*
+    /// and not the executable that started the process. (Those differ: under `dotnet app.dll`
+    /// the executable is the muxer. `Environment.ProcessPath` is where that one is reported.)
+    /// See `GuestConfig.AssemblyPath`, which is where a host chooses it.
     ///
-    /// `None` when the host named no path. That is not a defaulting decision but the other
-    /// arm of the same fork upstream has: `InitializeCommandLineArgs` is reached only from
-    /// `ExecuteAssembly`, which by definition has an assembly path, and a runtime entered any
-    /// other way leaves `s_commandLineArgs` null — which is precisely the state
-    /// `GetCommandLineArgsNative`'s empty array exists to serve. Skipping the call reproduces
-    /// it exactly.
+    /// There is no arm that declines to install a command line. `ExecuteAssembly` is the only
+    /// route to `Main` and it refuses a null assembly path (`E_POINTER`), so a guest that runs
+    /// `Main` while `Environment.GetCommandLineArgs()` reports nothing is a state no real
+    /// runtime reaches. CoreLib's empty-array fallback exists for a *library* hosted from
+    /// native code, which is not what PawPrint does.
     let prepareCall
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (exePath : string option)
+        (exePath : string)
         (argv : string list)
         (state : IlMachineState)
-        : (IlMachineState * MethodState) option
+        : IlMachineState * MethodState
         =
-        match exePath with
-        | None -> None
-        | Some exePath ->
-
         let exePathPointer, state = HostStartupCall.allocateWideString exePath state
 
         let argPointers, state =
@@ -91,4 +86,3 @@ module CommandLineArgsInit =
                 ]
 
         HostStartupCall.buildFrame loggerFactory baseClassTypes method args Purpose state
-        |> Some
