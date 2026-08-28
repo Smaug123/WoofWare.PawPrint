@@ -59,54 +59,54 @@ type ConnectionId =
         match this with
         | ConnectionId value -> string<int64> value
 
-/// The communication domain of a socket PawPrint can create, as the PAL numbers
-/// it (`AddressFamily` in `pal_networking.h`).
+/// The communication domain of a socket this kernel can create.
 ///
-/// Only the domains a socket can actually *be*: `AF_UNSPEC`, `AF_PACKET` and
-/// `AF_CAN` all convert in the shim's address-family screen but name no socket
-/// this kernel creates (`SimulatedUnixPlatform.creatableSockets`), so they have
-/// no case here and the conversion into this type refuses them.
+/// Only the domains a socket can actually *be*, so this is narrower than any
+/// `AF_*` list: `AF_UNSPEC`, `AF_PACKET` and `AF_CAN` name no socket this kernel
+/// creates (`SimulatedUnixPlatform.creatableSockets`), and a client's
+/// conversion into this type has nothing to convert them to.
 [<RequireQualifiedAccess>]
 type SocketDomain =
-    /// `AF_INET`, PAL 2.
+    /// `AF_INET`.
     | InterNetwork
-    /// `AF_INET6`, PAL 23.
+    /// `AF_INET6`.
     | InterNetworkV6
-    /// `AF_UNIX`, PAL 1.
+    /// `AF_UNIX`.
     | Unix
 
-/// The communication semantics of a socket PawPrint can create, as the PAL
-/// numbers it (`SocketType` in `pal_networking.h`).
+/// The communication semantics of a socket this kernel can create.
 ///
-/// `SOCK_RDM` is absent: it converts in the shim's screen but no kernel we model
-/// creates one, so it never reaches a live socket.
+/// `SOCK_RDM` is absent: no kernel modelled here creates one, so it never
+/// reaches a live socket.
 [<RequireQualifiedAccess>]
 type SocketKind =
-    /// `SOCK_STREAM`, PAL 1.
+    /// `SOCK_STREAM`.
     | Stream
-    /// `SOCK_DGRAM`, PAL 2.
+    /// `SOCK_DGRAM`.
     | Datagram
-    /// `SOCK_RAW`, PAL 3. Reachable only in the `AF_UNIX` domain under the Linux
+    /// `SOCK_RAW`. Reachable only in the `AF_UNIX` domain under the Linux
     /// flavour: an IP raw socket needs `CAP_NET_RAW`, which is not modelled.
     | Raw
-    /// `SOCK_SEQPACKET`, PAL 5. Reachable only in the `AF_UNIX` domain under the
-    /// Linux flavour.
+    /// `SOCK_SEQPACKET`. Reachable only in the `AF_UNIX` domain under the Linux
+    /// flavour.
     | SeqPacket
 
-/// The protocol of a socket PawPrint can create, as the PAL numbers it
-/// (`ProtocolType` in `pal_networking.h`) — *not* as the platform numbers it.
-/// The shim's conversion can change the value (`AF_INET6` with `PT_ICMP`
-/// becomes `IPPROTO_ICMPV6`), and it is the PAL value that
-/// `SystemNative_GetSocketType` will owe a caller.
+/// The protocol of a socket this kernel can create.
+///
+/// Which protocol *number* this is depends on who is asking — a client whose
+/// own encoding differs from the platform's must convert both ways, and the two
+/// can disagree about more than the number (a runtime asking for ICMP under
+/// `AF_INET6` reaches the kernel as `IPPROTO_ICMPV6`). This type is the
+/// condition, and holds no numbering of its own.
 [<RequireQualifiedAccess>]
 type SocketProtocol =
-    /// `PT_UNSPECIFIED`, PAL 0: "the default protocol for this domain and kind".
-    /// Not resolved to that default here — the kernel resolves it, and what it
-    /// resolves to is `SystemNative_GetSocketType`'s question to measure.
+    /// "The default protocol for this domain and kind". Not resolved to that
+    /// default here — the kernel resolves it, and what it resolves to is
+    /// `getsockopt(SO_PROTOCOL)`'s question to measure.
     | Unspecified
-    /// `PT_TCP`, PAL 6.
+    /// TCP.
     | Tcp
-    /// `PT_UDP`, PAL 17.
+    /// UDP.
     | Udp
 
 /// The local address a socket holds, once `bind(2)` — or `listen(2)`'s implicit
@@ -1155,8 +1155,8 @@ module FileDescriptorRegistry =
     /// description naming it, and the lowest non-negative descriptor not in use.
     ///
     /// Says nothing about whether this domain/kind/protocol combination *can*
-    /// exist — that is `SimulatedUnixPlatform.socketCreation`'s question, and
-    /// this is reached only once it has answered yes.
+    /// exist — that is `SimulatedUnixPlatform.creatableSockets`'s question, and
+    /// this is reached only once a caller has asked it.
     ///
     /// `socketId` is minted by the caller, because the socket it names lives in
     /// the emulated kernel's socket table rather than here; `EmulatedKernel.createSocket`
