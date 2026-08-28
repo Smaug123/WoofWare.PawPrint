@@ -203,7 +203,7 @@ type ThreadStatus =
     /// parallel map makes the invariant "no deadline once Runnable
     /// again" structural — a wake naturally forgets it.
     | BlockedOnSleep of deadlineTicks : int64 option
-    /// This thread called `SystemNative_WaitForSocketEvents` on the named socket event port
+    /// This thread called `SystemNative_WaitForSocketEvents` on a socket event port
     /// (`epoll_wait` on Linux, `kevent` on Darwin) and is parked until an event occurs on some
     /// descriptor registered with that port. The wake comes from the port's ready set becoming
     /// non-empty, which another thread causes either by making a registered descriptor ready or

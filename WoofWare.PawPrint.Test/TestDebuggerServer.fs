@@ -786,3 +786,90 @@ class Program
 
             frame.GetProperty("sourceLocation").ValueKind |> shouldEqual JsonValueKind.Null
         }
+
+    /// Parks for ever in `SystemNative_WaitForSocketEvents`, on a `dup` of the port so that the
+    /// description the wait holds (3) is not the descriptor it was called through (4).
+    let private socketParkSource =
+        """
+using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_CreateSocketEventPort")]
+    static extern unsafe int CreateSocketEventPort(IntPtr* port);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Dup")]
+    static extern IntPtr Dup(IntPtr fd);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_WaitForSocketEvents")]
+    static extern unsafe int WaitForSocketEvents(IntPtr port, byte* buffer, int* count);
+
+    static unsafe int Main(string[] args)
+    {
+        IntPtr port;
+        if (CreateSocketEventPort(&port) != 0) return 1;
+        IntPtr alias = Dup(port);
+        byte* buffer = stackalloc byte[32];
+        int count = 1;
+        WaitForSocketEvents(alias, buffer, &count);
+        return 2;
+    }
+}
+"""
+
+    /// A thread parked in a syscall carries no payload in its status — what it waits on lives in
+    /// the emulated kernel's task record — so this renderer has to reach for that record. Were it
+    /// handed only the status, as it was before, it could report that a thread is stuck without
+    /// being able to say on what, which for two statuses is the whole content of the report.
+    ///
+    /// Asserted through a real park rather than by constructing the JSON, because the failure
+    /// mode is precisely the renderer looking somewhere that has nothing in it.
+    [<Test>]
+    let ``Debugger HTTP names the port a parked socket waiter is waiting on`` () : Task =
+        task {
+            use server = startServer socketParkSource
+            use client = client server (Some token)
+
+            // `run` stops of its own accord at the deadlock; the loop is only because one call
+            // is capped at a million steps and reaching the park costs more than that.
+            let mutable session : JsonElement option = None
+            let mutable remaining = 30
+
+            while session.IsNone && remaining > 0 do
+                remaining <- remaining - 1
+
+                let! response = client.PostAsync ("run?maxSteps=1000000", emptyContent ())
+                response.StatusCode |> shouldEqual HttpStatusCode.OK
+
+                let! state = client.GetAsync "state"
+                state.StatusCode |> shouldEqual HttpStatusCode.OK
+                use! stateJson = jsonDocument state
+                let candidate = stateJson.RootElement.GetProperty "session"
+
+                if candidate.GetProperty("status").GetString () = "deadlocked" then
+                    // Cloned because the document it belongs to is disposed at the end of this
+                    // iteration.
+                    session <- Some (candidate.Clone ())
+
+            let session =
+                match session with
+                | Some session -> session
+                | None -> failwith "the socket-park guest did not deadlock within 30 million debugger steps"
+
+            let parked =
+                session.GetProperty("threads").EnumerateArray ()
+                |> Seq.map (fun thread -> thread.GetProperty "status")
+                |> Seq.filter (fun status ->
+                    status.ValueKind = JsonValueKind.Object
+                    && status.GetProperty("kind").GetString () = "blockedOnSocketEvents"
+                )
+                |> Seq.toList
+
+            match parked with
+            | [ status ] ->
+                // The open file description, which is 3; the descriptor the guest waited through
+                // is 4, so a renderer reporting the number the call named would say that instead.
+                status.GetProperty("port").GetInt64 () |> shouldEqual 3L
+            | other -> failwith $"expected exactly one thread parked on socket events, got %d{List.length other}"
+        }

@@ -261,7 +261,7 @@ type OpenFileObject =
     /// grants one. `OpenFileObject` is the contention key (see this type's
     /// summary), not a general-purpose identity — code that wants to tell two
     /// ports apart wants `OpenFileDescriptionId`, which is what
-    /// `ThreadStatus.BlockedOnSocketEvents` keys on.
+    /// `ParkedSocketWait` keys on.
     ///
     /// Not the answer for a socket: Linux puts those on `sockfs` with an inode
     /// each, not on `anon_inodefs`. See `Socket`.

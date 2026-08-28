@@ -204,10 +204,9 @@ module TestFileDescriptorRegistry =
     /// one port and finds the other excluded — so this test exists for the
     /// description half, which has none: nothing a guest can call tells two
     /// ports apart. That half matters for the wait rather than for `flock`.
-    /// `ThreadStatus.BlockedOnSocketEvents` keys a parked thread on the port's
+    /// `ParkedSocketWait` keys a parked task on the port's
     /// `OpenFileDescriptionId`, so two ports sharing one description identity
-    /// would wake the wrong waiter once `SystemNative_WaitForSocketEvents`
-    /// lands.
+    /// would wake the wrong waiter.
     [<Test>]
     let ``two socket event ports are two descriptions but one flock object`` () : unit =
         let a, registry =
