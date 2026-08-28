@@ -30,6 +30,9 @@ public class TestUnsafeAccessorSharedGenericTarget
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "Peek")]
     private static extern int Peek<T>(ref T t);
 
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "x")]
+    private static extern ref int DirectlyOnArray(int[] a);
+
     private static int Run()
     {
         // Each value-type instantiation is its own type, so the field is reached.
@@ -60,14 +63,29 @@ public class TestUnsafeAccessorSharedGenericTarget
             if (!e.Message.Contains("System.__Canon.Peek")) return 5;
         }
 
-        // An array argument is a reference type too.
+        // An array argument is a reference type too, so it canonicalises like any other -- and the
+        // reported name is what says so: the *same* accessor named directly on `int[]` reports
+        // `System.Int32[].x` instead, because nothing is shared there.
         try
         {
             int[] a = new int[1];
             Field<int[]>(ref a);
             return 6;
         }
-        catch (MissingFieldException) { }
+        catch (MissingFieldException e)
+        {
+            if (!e.Message.Contains("System.__Canon.x")) return 7;
+        }
+
+        try
+        {
+            DirectlyOnArray(new int[1]);
+            return 8;
+        }
+        catch (MissingFieldException e)
+        {
+            if (!e.Message.Contains("System.Int32[].x")) return 9;
+        }
 
         return 0;
     }
