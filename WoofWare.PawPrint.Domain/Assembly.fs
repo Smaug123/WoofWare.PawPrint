@@ -102,6 +102,132 @@ type PEImageHeaders =
     }
 
 /// <summary>
+/// Why a case-insensitive type-name lookup could not give a definite answer.
+/// </summary>
+/// <remarks>
+/// Both cases are refusals rather than answers, because in both the real runtime's answer is
+/// something PawPrint cannot reproduce: one is a tie broken by a rule that is not written down
+/// anywhere and is demonstrably not metadata order, the other is the host's Unicode casing
+/// tables. Answering anyway would risk handing a guest a *different type* from the one the real
+/// runtime hands it, which is worse than stopping.
+/// </remarks>
+type CaseInsensitiveLookupRefusal =
+    /// Two or more names in the searched scope fold to the queried one. CoreCLR returns one of
+    /// them, deterministically, but by an internal hash ordering: measured on .NET 10, reversing
+    /// the two types' metadata order does not change which one comes back.
+    | Ambiguous of folded : string * candidates : string list
+
+    /// A name that might have matched carries a character outside ASCII. CoreCLR folds ASCII with
+    /// a plain <c>A</c>-<c>Z</c> map (<c>SIMPLE_DOWNCASE</c>, utilcode/sstring.cpp:103-105) and
+    /// sends everything else to <c>MapChar(.., LCMAP_LOWERCASE)</c>, which is the platform's
+    /// casing table — so the answer would depend on the machine the run happened on. Measured: on
+    /// .NET 10 a query of <c>ci.İtyp</c> (U+0130) does match a type named <c>Ityp</c>.
+    | NotAsciiFoldable of name : string * offending : char
+
+    override this.ToString () : string =
+        match this with
+        | CaseInsensitiveLookupRefusal.Ambiguous (folded, candidates) ->
+            let candidates = candidates |> List.sort |> String.concat ", "
+
+            $"case-insensitive lookup of %s{folded} is ambiguous between %s{candidates}"
+        | CaseInsensitiveLookupRefusal.NotAsciiFoldable (name, offending) ->
+            $"case-insensitive lookup could collide with %s{name}, whose character U+%04X{int offending} is outside ASCII and so folds by the host's casing tables"
+
+/// How an ASCII-only case fold compares a candidate name against an already-folded query.
+[<RequireQualifiedAccess>]
+type internal FoldComparison =
+    /// The two are equal once ASCII letters are folded, and nothing outside ASCII was involved.
+    | Matches
+
+    /// No case mapping could make these equal: they differ in length, or at a position where the
+    /// candidate's character is ASCII and so already folded.
+    | CannotMatch
+
+    /// They agree except at positions where the candidate has a character outside ASCII, whose
+    /// fold is the platform's business rather than ours. Carries the first such character.
+    | MightMatch of offending : char
+
+[<RequireQualifiedAccess>]
+module internal AsciiCaseFold =
+    let private foldChar (c : char) : char =
+        if c >= 'A' && c <= 'Z' then
+            char (int c - int 'A' + int 'a')
+        else
+            c
+
+    /// <summary>
+    /// Lower-case <paramref name="s" /> exactly as CoreCLR's fast path does, or report the first
+    /// character for which CoreCLR would instead consult the platform.
+    /// </summary>
+    /// <remarks>
+    /// CoreCLR folds a character below 0x80 with a plain <c>A</c>-<c>Z</c> map and sends the rest
+    /// to <c>MapChar(.., LCMAP_LOWERCASE)</c> (utilcode/sstring.cpp:103-105, 1623). Only the first
+    /// half is a fact about the CLI; the second is a fact about the machine.
+    /// </remarks>
+    let tryFold (s : string) : Result<string, char> =
+        match s |> Seq.tryFind (fun c -> int c >= 0x80) with
+        | Some offending -> Error offending
+        | None -> s |> String.map foldChar |> Ok
+
+    /// Fold a namespace and a name together, so a caller reports whichever of the two was the
+    /// problem rather than a half-folded pair.
+    let tryFoldPair (ns : string) (name : string) : Result<string * string, char> =
+        match tryFold ns, tryFold name with
+        | Error c, _ -> Error c
+        | _, Error c -> Error c
+        | Ok ns, Ok name -> Ok (ns, name)
+
+    /// <summary>
+    /// Compare an already-folded query against a candidate that has not been folded.
+    /// </summary>
+    /// <remarks>
+    /// <c>MightMatch</c> is a deliberate over-approximation: this cannot compute the fold of a
+    /// character outside ASCII, so a position where the candidate has one is treated as a position
+    /// that might agree. It is sound in the direction that matters — a candidate that really does
+    /// match is never called <c>CannotMatch</c> — and it stops a name PawPrint cannot fold from
+    /// poisoning lookups it could never have collided with. CoreCLR's mapping is one character to
+    /// one character, so a length difference really does settle it.
+    /// </remarks>
+    let compareFolded (foldedQuery : string) (candidate : string) : FoldComparison =
+        if foldedQuery.Length <> candidate.Length then
+            FoldComparison.CannotMatch
+        else
+
+        let mutable verdict = FoldComparison.Matches
+        let mutable i = 0
+
+        while i < candidate.Length do
+            let c = candidate.[i]
+
+            if int c >= 0x80 then
+                match verdict with
+                | FoldComparison.Matches -> verdict <- FoldComparison.MightMatch c
+                | FoldComparison.CannotMatch
+                | FoldComparison.MightMatch _ -> ()
+
+                i <- i + 1
+            elif foldChar c <> foldedQuery.[i] then
+                verdict <- FoldComparison.CannotMatch
+                i <- candidate.Length
+            else
+                i <- i + 1
+
+        verdict
+
+    /// As <see cref="compareFolded"/>, over a namespace and a name at once.
+    let compareFoldedPair
+        (foldedNs : string, foldedName : string)
+        (candidateNs : string, candidateName : string)
+        : FoldComparison
+        =
+        match compareFolded foldedNs candidateNs, compareFolded foldedName candidateName with
+        | FoldComparison.CannotMatch, _
+        | _, FoldComparison.CannotMatch -> FoldComparison.CannotMatch
+        | FoldComparison.MightMatch c, _ -> FoldComparison.MightMatch c
+        | _, FoldComparison.MightMatch c -> FoldComparison.MightMatch c
+        | FoldComparison.Matches, FoldComparison.Matches -> FoldComparison.Matches
+
+/// <summary>
 /// Represents a fully parsed .NET assembly with all its metadata components.
 /// This serves as the main container for accessing assembly information in the PawPrint library.
 /// </summary>
@@ -714,6 +840,75 @@ type DumpedAssembly =
         | false, _ -> None
         | true, v -> Some v
 
+    /// <summary>
+    /// Turn a case-insensitive scan's findings into an answer, or into the reason there isn't one.
+    /// </summary>
+    /// <remarks>
+    /// A name PawPrint cannot fold is only worth refusing over when it could have collided with
+    /// the query, so <paramref name="unfoldable" /> is whatever the scan judged <c>MightMatch</c>
+    /// rather than merely whatever was non-ASCII. It outranks a clean single match: if it really
+    /// does fold to the query then there are two matches, and the honest answer is the ambiguous
+    /// one.
+    /// </remarks>
+    static member private DecideCaseInsensitive
+        (folded : string)
+        (matches : ResizeArray<string * 'a>)
+        (unfoldable : ResizeArray<string * char>)
+        : Result<'a option, CaseInsensitiveLookupRefusal>
+        =
+        // Sorted, not "whichever the dictionary yielded first": these scans walk an
+        // `ImmutableDictionary` keyed on strings, whose enumeration order follows per-process
+        // randomised string hashes. Taking the first would name a different type in the refusal on
+        // otherwise identical runs, which is exactly what this interpreter exists not to do.
+        match unfoldable |> List.ofSeq |> List.sortBy fst with
+        | (name, offending) :: _ -> CaseInsensitiveLookupRefusal.NotAsciiFoldable (name, offending) |> Error
+        | [] ->
+
+        match matches |> List.ofSeq |> List.sortBy fst with
+        | [] -> Ok None
+        | [ (_, only) ] -> Ok (Some only)
+        | several ->
+            CaseInsensitiveLookupRefusal.Ambiguous (folded, several |> List.map fst)
+            |> Error
+
+    /// <summary>
+    /// As <see cref="TryGetTopLevelTypeDef"/>, comparing names case-insensitively.
+    /// </summary>
+    /// <param name="isCandidate">
+    /// Which definitions the caller is searching among. A parameter rather than something the
+    /// caller filters off the result, because whether a folded query is *ambiguous* depends on
+    /// which definitions count: filtering afterwards would let this refuse a query as colliding
+    /// with something the caller does not consider a candidate at all.
+    /// </param>
+    /// <remarks>
+    /// A linear scan rather than a second index: CoreCLR builds one lazily too
+    /// (<c>m_pAvailableClassesCaseIns</c>), and paying for it on every assembly load to serve the
+    /// rare <c>ignoreCase: true</c> caller is the wrong trade in an interpreter this slow.
+    /// </remarks>
+    member this.TryGetTopLevelTypeDefIgnoreCase
+        (``namespace`` : string)
+        (name : string)
+        (isCandidate : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> -> bool)
+        : Result<WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> option, CaseInsensitiveLookupRefusal>
+        =
+        match AsciiCaseFold.tryFoldPair ``namespace`` name with
+        | Error c ->
+            CaseInsensitiveLookupRefusal.NotAsciiFoldable ($"%s{``namespace``}.%s{name}", c)
+            |> Error
+        | Ok folded ->
+
+        let unfoldable = ResizeArray ()
+        let matches = ResizeArray ()
+
+        for KeyValue ((candidateNs, candidateName), candidate) in this._TopLevelTypeDefsLookup do
+            if isCandidate candidate then
+                match AsciiCaseFold.compareFoldedPair folded (candidateNs, candidateName) with
+                | FoldComparison.CannotMatch -> ()
+                | FoldComparison.Matches -> matches.Add ($"%s{candidateNs}.%s{candidateName}", candidate)
+                | FoldComparison.MightMatch c -> unfoldable.Add ($"%s{candidateNs}.%s{candidateName}", c)
+
+        DumpedAssembly.DecideCaseInsensitive $"%s{fst folded}.%s{snd folded}" matches unfoldable
+
     member this.TryGetNestedTypeDef
         (declaringType : TypeDefinitionHandle)
         (name : string)
@@ -722,6 +917,31 @@ type DumpedAssembly =
         match this._NestedTypeDefsLookup.TryGetValue ((ComparableTypeDefinitionHandle.Make declaringType, name)) with
         | false, _ -> None
         | true, v -> Some v
+
+    /// <summary>
+    /// As <see cref="TryGetNestedTypeDef"/>, comparing names case-insensitively.
+    /// </summary>
+    member this.TryGetNestedTypeDefIgnoreCase
+        (declaringType : TypeDefinitionHandle)
+        (name : string)
+        : Result<WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn> option, CaseInsensitiveLookupRefusal>
+        =
+        match AsciiCaseFold.tryFold name with
+        | Error c -> CaseInsensitiveLookupRefusal.NotAsciiFoldable (name, c) |> Error
+        | Ok foldedName ->
+
+        let declaring = ComparableTypeDefinitionHandle.Make declaringType
+        let unfoldable = ResizeArray ()
+        let matches = ResizeArray ()
+
+        for KeyValue ((candidateParent, candidateName), candidate) in this._NestedTypeDefsLookup do
+            if candidateParent = declaring then
+                match AsciiCaseFold.compareFolded foldedName candidateName with
+                | FoldComparison.CannotMatch -> ()
+                | FoldComparison.Matches -> matches.Add (candidateName, candidate)
+                | FoldComparison.MightMatch c -> unfoldable.Add (candidateName, c)
+
+        DumpedAssembly.DecideCaseInsensitive foldedName matches unfoldable
 
     member this.TryGetTopLevelExportedType
         (``namespace`` : string option)
@@ -738,6 +958,40 @@ type DumpedAssembly =
         match this._TopLevelExportedTypesLookup.TryGetValue ((ns, name)) with
         | false, _ -> None
         | true, v -> Some v
+
+    /// <summary>
+    /// As <see cref="TryGetTopLevelExportedType"/>, comparing names case-insensitively.
+    /// </summary>
+    /// <remarks>
+    /// Needed as well as the <c>TypeDef</c> lookup because CoreCLR's case-insensitive walk goes
+    /// through the same class loader as the exact one, forwarders included: measured, a facade
+    /// answers <c>GetType("ci.target", ignoreCase: true)</c> with the forwarded type.
+    /// </remarks>
+    member this.TryGetTopLevelExportedTypeIgnoreCase
+        (``namespace`` : string option)
+        (name : string)
+        : Result<WoofWare.PawPrint.ExportedType option, CaseInsensitiveLookupRefusal>
+        =
+        let nsString = ``namespace`` |> Option.defaultValue ""
+
+        match AsciiCaseFold.tryFoldPair nsString name with
+        | Error c ->
+            CaseInsensitiveLookupRefusal.NotAsciiFoldable ($"%s{nsString}.%s{name}", c)
+            |> Error
+        | Ok folded ->
+
+        let unfoldable = ResizeArray ()
+        let matches = ResizeArray ()
+
+        for KeyValue ((candidateNs, candidateName), candidate) in this._TopLevelExportedTypesLookup do
+            let candidateNsString = candidateNs |> Option.defaultValue ""
+
+            match AsciiCaseFold.compareFoldedPair folded (candidateNsString, candidateName) with
+            | FoldComparison.CannotMatch -> ()
+            | FoldComparison.Matches -> matches.Add ($"%s{candidateNsString}.%s{candidateName}", candidate)
+            | FoldComparison.MightMatch c -> unfoldable.Add ($"%s{candidateNsString}.%s{candidateName}", c)
+
+        DumpedAssembly.DecideCaseInsensitive $"%s{fst folded}.%s{snd folded}" matches unfoldable
 
     member this.TryGetNestedExportedType
         (parent : ExportedTypeHandle)
