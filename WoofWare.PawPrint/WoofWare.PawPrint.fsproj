@@ -177,7 +177,9 @@
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
+    <Compile Include="HostStartupCall.fs" />
     <Compile Include="AppContextSeed.fs" />
+    <Compile Include="CommandLineArgsInit.fs" />
     <Compile Include="Program.fs" />
     <EmbeddedResource Include="version.json" />
   </ItemGroup>

@@ -411,7 +411,7 @@ module TestNullaryIlOp =
                     (EvalStackValue.Int32 (Int32Source.Verbatim case.Numerator))
                     (EvalStackValue.Int32 (Int32Source.Verbatim case.Denominator))
             with
-            | EvalStackValue.Int32 (Int32Source.Verbatim actual) -> actual |> shouldEqual expected
+            | Ok (EvalStackValue.Int32 (Int32Source.Verbatim actual)) -> actual |> shouldEqual expected
             | other -> failwith $"Expected Int32 Div_un result, got %O{other}"
 
         Check.One (config, Prop.forAll (Arb.fromGen genInt32DivUnCase) property)
@@ -439,7 +439,7 @@ module TestNullaryIlOp =
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim case.Numerator))
                     (EvalStackValue.NativeInt (NativeIntSource.Verbatim case.Denominator))
             with
-            | EvalStackValue.NativeInt (NativeIntSource.Verbatim actual) -> actual |> shouldEqual expected
+            | Ok (EvalStackValue.NativeInt (NativeIntSource.Verbatim actual)) -> actual |> shouldEqual expected
             | other -> failwith $"Expected native int Div_un result, got %O{other}"
 
         Check.One (config, Prop.forAll (Arb.fromGen genInt64DivUnCase) property)

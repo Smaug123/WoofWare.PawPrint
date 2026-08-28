@@ -818,14 +818,11 @@ module ManagedPointerSource =
                     //
                     // Summed in `int64` and then checked for representability, rather than left
                     // to this file's `open Checked`. Both spellings refuse, but a bare
-                    // `OverflowException` names neither the byref nor the offsets, and it is
-                    // *catchable in the wrong place*: `add.ovf`/`sub.ovf` (`NullaryIlOp.fs`)
-                    // wrap `BinaryArithmetic.execute` in `with :? OverflowException` and turn it
-                    // into a guest `System.OverflowException`, so PawPrint's inability to store
-                    // a cursor wider than `int32` would surface to the guest as a CLI arithmetic
-                    // overflow that real .NET's 64-bit `add.ovf` does not raise. A `failwith` is
-                    // the honest refusal: this is a representational limit of `ByteOffset`, not
-                    // an overflow in the guest's arithmetic.
+                    // `OverflowException` names neither the byref nor the offsets, and it
+                    // misdescribes the failure: this is a representational limit of `ByteOffset`
+                    // — PawPrint cannot store a cursor wider than `int32` — not an overflow in
+                    // the guest's arithmetic, which real .NET's 64-bit `add.ovf` would not raise
+                    // here. A `failwith` is the honest refusal.
                     let total = int64<int> m + int64<int> n
 
                     if total = 0L then

@@ -458,6 +458,7 @@ module DebuggerServer =
                         { GuestConfig.Default dotnetRuntimeDirs with
                             Kernel = kernelConfig
                             Argv = argv
+                            AssemblyPath = Some dllPath
                             AppContext = HostRuntimeConfig.forAssembly dllPath
                         }
                     PctSeed = pctSeed

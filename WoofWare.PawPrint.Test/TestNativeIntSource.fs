@@ -335,7 +335,7 @@ module TestNativeIntSource =
     [<Test>]
     let ``ArithmeticOperation.addOvf of opposite cross-array offsets returns int64 zero`` () : unit =
         let property (s : SyntheticCrossArrayOffset) : unit =
-            ArithmeticOperation.addOvf.CrossArrayOffsets s (SyntheticCrossArrayOffset.negate s)
+            ArithmeticOperation.addOvf.Op.CrossArrayOffsets s (SyntheticCrossArrayOffset.negate s)
             |> shouldEqual 0L
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genSyntheticCrossArrayOffset) property)
@@ -386,7 +386,7 @@ module TestNativeIntSource =
     let ``ArithmeticOperation.div refuses any cross-array offset pair`` () : unit =
         let property (a : SyntheticCrossArrayOffset) (b : SyntheticCrossArrayOffset) : unit =
             let ex =
-                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.div.CrossArrayOffsets a b |> ignore)
+                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.div.Op.CrossArrayOffsets a b |> ignore)
 
             ex.Message |> shouldContainText "refusing to div SyntheticCrossArrayOffsets"
 
@@ -401,7 +401,7 @@ module TestNativeIntSource =
     let ``ArithmeticOperation.rem refuses any cross-array offset pair`` () : unit =
         let property (a : SyntheticCrossArrayOffset) (b : SyntheticCrossArrayOffset) : unit =
             let ex =
-                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.rem.CrossArrayOffsets a b |> ignore)
+                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.rem.Op.CrossArrayOffsets a b |> ignore)
 
             ex.Message |> shouldContainText "refusing to rem SyntheticCrossArrayOffsets"
 
@@ -416,7 +416,7 @@ module TestNativeIntSource =
     let ``ArithmeticOperation.remUn refuses any cross-array offset pair`` () : unit =
         let property (a : SyntheticCrossArrayOffset) (b : SyntheticCrossArrayOffset) : unit =
             let ex =
-                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.remUn.CrossArrayOffsets a b |> ignore)
+                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.remUn.Op.CrossArrayOffsets a b |> ignore)
 
             ex.Message |> shouldContainText "refusing to rem_un SyntheticCrossArrayOffsets"
 
@@ -431,7 +431,9 @@ module TestNativeIntSource =
     let ``ArithmeticOperation.mulOvf refuses any cross-array offset pair`` () : unit =
         let property (a : SyntheticCrossArrayOffset) (b : SyntheticCrossArrayOffset) : unit =
             let ex =
-                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.mulOvf.CrossArrayOffsets a b |> ignore)
+                Assert.Throws<System.Exception> (fun () ->
+                    ArithmeticOperation.mulOvf.Op.CrossArrayOffsets a b |> ignore
+                )
 
             ex.Message |> shouldContainText "refusing to mul_ovf SyntheticCrossArrayOffsets"
 
@@ -446,7 +448,9 @@ module TestNativeIntSource =
     let ``ArithmeticOperation.mulOvfUn refuses any cross-array offset pair`` () : unit =
         let property (a : SyntheticCrossArrayOffset) (b : SyntheticCrossArrayOffset) : unit =
             let ex =
-                Assert.Throws<System.Exception> (fun () -> ArithmeticOperation.mulOvfUn.CrossArrayOffsets a b |> ignore)
+                Assert.Throws<System.Exception> (fun () ->
+                    ArithmeticOperation.mulOvfUn.Op.CrossArrayOffsets a b |> ignore
+                )
 
             ex.Message
             |> shouldContainText "refusing to mul_ovf_un SyntheticCrossArrayOffsets"

@@ -204,6 +204,80 @@ Console.WriteLine(typeof(Program).Assembly.CodeBase);
 
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetCodeBase` case.
 
+## `AppDomain.GetAssemblies()` reports a different set, in a different order
+
+**CoreCLR**: `AssemblyNative_GetLoadedAssemblies` (`appdomainnative.cpp`) walks the AppDomain's
+assembly iterator and returns each assembly's cached `GetExposedObject()`, in the order the
+assemblies were loaded — corelib first, then the entry assembly, then dependencies as the JIT
+resolves them. The array's element type is `CLASS__ASSEMBLY`, which is
+`System.Reflection.RuntimeAssembly` (`vm/corelib.h:133`) rather than the `Assembly` the managed
+wrapper's local is typed as.
+
+**Neither the set nor the order is a property of the program, on CoreCLR either.** The function's
+own comments say so — the count "will usually be correct, but there may be assemblies that are
+still loading", and it stops filling early "in case assemblies have been loaded into this
+appdomain, on another thread". Measured, 60 runs of one unchanged binary on one machine, whose
+background thread touched `Regex`, `Linq` and `IPAddress` while the main thread took its snapshot:
+
+| answer | runs |
+| --- | --- |
+| 8 assemblies (…, System.Text.RegularExpressions, System.Linq, System.Net.Primitives) | 57 |
+| 9 (also System.Collections.Concurrent) | 2 |
+| 7 (no System.Net.Primitives) | 1 |
+
+**PawPrint**: every assembly its load context holds, in the order each definition identity was
+first registered, as a `RuntimeAssembly[]`. Reproducible under a fixed scheduler seed, and — like
+the real runtime's — varying with the interleaving under a different one.
+
+The set differs because PawPrint interprets rather than jitting, so it loads an assembly at the
+moment a type in it is first resolved rather than when a method referencing it is compiled. The
+same single-file guest measured above reports four assemblies on real .NET
+(`System.Private.CoreLib`, the guest, `System.Runtime`, `System.Console`) and three under PawPrint,
+which has not yet reached the `Console` call. The order differs for the same reason, and because
+PawPrint registers the entry assembly before corelib.
+
+**Spec status**: unspecified. Neither the documentation nor CoreCLR fixes an order or a membership
+rule, and the table above shows CoreCLR does not deliver a stable one; no portable program may
+depend on either.
+
+**Why we chose this**: load order was chosen over sorting by definition display name, which is the
+other way to get a deterministic answer out of the load context. The load context's own index is an
+`ImmutableDictionary<string, DumpedAssembly>`, and *its* enumeration order may not be shown to a
+guest at all: it is a hash order over string hash codes, which .NET randomises per process.
+Measured — the same five assembly display names, inserted in the same order, enumerated in three
+different orders across three processes. A replay would then depend on the process that produced
+it, which is the determinism leak the interpreter exists to prevent.
+
+Between the two lawful candidates, sorting was rejected because the stability it appears to buy is
+not real: under PawPrint the *set* is already a function of the run, so sorting only makes the
+order a function of the set, and the guest's answer still changes with the seed. Load order costs
+the same, has the same shape as the real runtime's answer, and preserves strictly more information
+— the load context now records the order, which a future `AppDomain.AssemblyLoad` event or a
+load-order diagnostic can read.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  4, then System.Private.CoreLib
+// PawPrint:        3, then the guest's own assembly
+Assembly[] loaded = AppDomain.CurrentDomain.GetAssemblies();
+Console.WriteLine(loaded.Length);
+Console.WriteLine(loaded[0].GetName().Name);
+```
+
+**Testing note**: `sourcesPure/AppDomainGetAssemblies.cs` is a comparison test, but it asserts
+neither the length nor the order — there is no cross-runtime fact there. What it does assert holds
+on both: the `RuntimeAssembly[]` element type, that corelib and the executing assembly are members
+*by reference* (the elements are cached exposed objects, not copies), that no element is null or
+repeated, and that a second call yields a different array whose contents are a superset. The order
+itself is pinned PawPrint-only, by `GetLoadedAssemblies reports the load context in load order` in
+`TestAssemblyNativeQCalls.fs`, which registers two libraries in reverse alphabetical order so that
+a sorted implementation cannot pass, and by the load-order arm of `LoadedAssemblies agrees with a
+naive reference implementation` in `TestLoadedAssemblies.fs`.
+
+**Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the
+`AssemblyNative_GetLoadedAssemblies` case, over `LoadedAssemblies.DefinitionNamesInLoadOrder`.
+
 ## `Environment.ProcessPath` reports no executable, and is never resolved against the filesystem
 
 **CoreCLR**: `SystemNative_GetProcessPath` (`pal_process.c:898-901`) is `return minipal_getexepath();`, and both of the arms PawPrint models in `minipal_getexepath` (`src/native/minipal/getexepath.h`) end in `realpath(..., NULL)` — macOS on the buffer `_NSGetExecutablePath` filled, Linux on `/proc/self/exe` and then on `AT_EXECFN`. So the answer is a `malloc`'d canonical path, and it exists only if every component resolved. Measured on .NET 10.0.7: `dotnet app.dll` reports the *muxer* (`/usr/share/dotnet/dotnet`), an apphost-launched app reports the apphost. The app's own `.dll` is never the answer — that is `GetCommandLineArgs()[0]`.
@@ -241,6 +315,41 @@ Console.WriteLine(File.Exists(Environment.ProcessPath));
 **Testing note**: Cannot be a `sourcesPure` comparison test. The real runtime reports whatever launched the test host, so there is no cross-runtime value to assert, and under the `None` default the PawPrint side would skip the whole non-null spine — leaving a differential that was green without checking anything. Covered instead by the PawPrint-only `sourcesImpure/ProcessPathConfigured.cs` (the exact configured bytes, plus the entry point's allocation contract: two live pointers distinct, equal bytes, both freeable through `NativeMemory.Free`, and a further call after the frees) and `sourcesImpure/ProcessPathAbsent.cs` (NULL, errno 2, and a null `Environment.ProcessPath`). Both were run on real .NET on both flavours — the latter with a self-delete preamble, to put a real runtime in the state it describes — so their expected exit codes are measured rather than assumed. `TestProcessPath.fs` pins the config-to-kernel wiring, which no guest can distinguish from a write that `applyTo` discards. Note that no test may assert errno on a *successful* call: measured, macOS leaves a pre-set errno alone while Linux clobbers it with `EINVAL`, and CoreLib cannot see either, because its `SetLastError = true` stub zeroes the slot before the call and rewrites it after.
 
 **Where this lives in code**: the `SystemNative_GetProcessPath` case in `NativeSystemNative.fs`; `EmulatedKernel.ProcessPath` and `defaultProcessPath` for the state and the default; `KernelConfig.ProcessPath` is where a host names one.
+
+## `GetCommandLineArgs()[0]` is a bare file name unless the host names a path
+
+**CoreCLR**: `CorHost2::ExecuteAssembly` calls `SetCommandLineArgs(pwzAssemblyPath, argc, argv)`, which forwards to the managed `Environment.InitializeCommandLineArgs(char* exePath, int argc, char** argv)` (`Environment.CoreCLR.cs`). `exePath` is `pwzAssemblyPath` verbatim — only a single-file bundle substitutes `Bundle::AppBundle->Path()` — and the managed body builds `commandLineArgs` (the program name followed by every argument) and `mainMethodArgs` (the arguments alone) in one pass, assigns the former to `s_commandLineArgs`, and returns the latter. So the two arrays cannot disagree, and element 0 is whatever path the host passed. Under `dotnet app.dll` that is the app's own `.dll`, which is *not* `Environment.ProcessPath` — see the entry above.
+
+**PawPrint**: runs that same CoreLib method during startup, so the relationship between the two arrays holds by construction. What differs is only element 0's value: it is `GuestConfig.AssemblyPath`, and when the host names none it falls back to the file name the compiler stamped into the image (`DumpedAssembly.ScopeName`, from the `Module` row — ECMA-335 II.22.30). That is a bare name such as `"Guest.dll"`, where a real launch reports an absolute path.
+
+**Spec status**: Outside ECMA-335, which says nothing about how a process learns its command line. Compliant with what the runtime's own source says the slot holds. CoreCLR's comment on `SetCommandLineArgs` (`corhost.cpp`) records that the answer "might not always return the exact same identity as the cmdLine used to invoke the method", with the worked example of `Foo arg1 arg2` reported as `Full_path_to_Foo arg1 arg2` — so the identity in element 0 is explicitly not pinned to any one rendering. NativeAOT's startup path describes the slot only as "the executable name" (`StartupCodeHelpers.Extensions.cs`, on why `Main`'s arguments are the tail rather than the whole). A non-path element 0 is therefore a shape upstream contemplates rather than one PawPrint invented.
+
+**Why we chose this**: the alternatives are worse in the two ways this project already rejects.
+
+* *Read the host's path.* `Program.prepare`'s `originalPath` is where the host read the image from, used to find a sidecar PDB; it is not part of `GuestConfig` and so not part of the replay contract, and the test harness passes a `.cs` source name there. Letting it reach the guest would make guest control flow depend on the machine that produced the run.
+* *Synthesise a path* (say `/app/Guest.dll`). The fiction rejected under `Environment.ProcessPath` above. `ScopeName` is not that: it is a fact recorded in the image, so it is the same on every machine, and it is not claimed to be a path at all.
+* *Decline to install a command line when the host names nothing.* This is the one that looks most principled and is in fact unreachable upstream: `ExecuteAssembly` refuses a null assembly path with `E_POINTER`, and it is the only route to `Main`. A guest running `Main` while `GetCommandLineArgs()` reports nothing is a state no real runtime is ever in — and it is worse than a wrong string, because `Main` would receive arguments that `GetCommandLineArgs()` then denied. CoreLib's empty-array fallback (`GetCommandLineArgsNative`, which on Unix is `return Array.Empty<string>()`) serves a *library* hosted from native code, not an executed assembly.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  "/path/to/app.dll"
+// PawPrint:        "app.dll"   (GuestConfig.AssemblyPath = None)
+Console.WriteLine(Environment.GetCommandLineArgs()[0]);
+
+// Unaffected, and true on both: element 0 then Main's arguments, from one shared pass.
+static int Main(string[] args) =>
+    Environment.GetCommandLineArgs().Length == args.Length + 1 ? 0 : 1;
+```
+
+**Testing note**: the *relationship* between the two arrays is a cross-runtime fact and is a `sourcesPure` comparison, `CommandLineArgs.cs`; because the pure harness launches every guest with no arguments, its tail comparison is vacuous there, so `TestCommandLineArgs.fs` runs the same shape under both runtimes with three arguments — and asserts the tail elements are the *same string objects* as `Main`'s, which only one shared pass produces. Element 0's *value* has no cross-runtime oracle (the real runtime reports whatever launched the test host), so it is pinned PawPrint-only: the exact bytes a configured `AssemblyPath` produces, and the exact bytes its absence falls back to.
+
+**Where this lives in code**: `CommandLineArgsInit.fs` builds the call and `Program.beginStartup` pumps it as its own startup phase; `GuestConfig.AssemblyPath` is where a host names one.
+
+**A NUL in either string is refused rather than modelled.** This is a refusal of *host configuration*, not a guest-visible divergence: no `execve` can produce an argument containing a NUL, because argv arrives as NUL-terminated C strings, so a host asking for one is describing a process the kernel could not have created. PawPrint fails at startup naming the knob and the index. The two alternatives are both worse than crashing: passing it through — which is what PawPrint's own managed-string allocation used to do — hands the guest a value no real `Main` can hold; and letting the marshalling truncate it, which is what happens by default (the buffer is NUL-terminated and CoreLib rebuilds each element with `new string(char*)`, so `"a\0b"` arrives as `"a"`), silently substitutes a value the host never asked for.
+
+Note this is deliberately *unlike* the same character in `AppContextProperties`, which truncates. The difference is not a preference: a real `hostpolicy` genuinely truncates a config property when it assigns a `char_t*` into a `pal::string_t`, so truncation there is what faithfulness means, whereas nothing truncates argv because the value never comes into existence to be truncated.
+
 
 ## A `runtimeconfig.json` is validated only where PawPrint reads it
 
@@ -845,7 +954,7 @@ try { var a = new string[Neg()]; } catch (OverflowException e) { Console.WriteLi
 //                    Arithmetic operation resulted in an overflow.
 ```
 
-**Where this lives in code**: `SzArrayAllocation.exceptionFor` chooses the exception and message
+**Where this lives in code**: `SzArrayAllocation.faultFor` chooses the fault and message
 for both routes into a single-dimensional allocation (`UnaryMetadataArrayOps.executeNewarr` and
 `NativeGc`'s `GCInterface_AllocateNewArray`). `sourcesPure/NewarrLengthValidation.cs` asserts the
 exception *type* differentially across element types on both sides of the split, and
