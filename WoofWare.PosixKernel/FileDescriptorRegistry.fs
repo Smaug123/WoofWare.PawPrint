@@ -1215,6 +1215,91 @@ module FileDescriptorRegistry =
         | FlockMode.Shared, FlockMode.Shared -> false
         | _, _ -> true
 
+    /// Would an `flock` acquisition of `mode`, by the open file description
+    /// `requester` onto `object`, have to wait? True exactly when some *other*
+    /// description naming `object` holds a lock that could not be held
+    /// alongside it.
+    ///
+    /// `requester`'s own lock is never an obstacle: `Acquire` replaces it, which
+    /// is how `flock(2)` spells conversion. `requester` need not still be a live
+    /// description — a caller polling this on behalf of a parked waiter is
+    /// asking whether the lock *would* be granted, and the answer does not
+    /// depend on the requester holding anything.
+    ///
+    /// The acquire path is the primary caller, and a client's wake predicate is
+    /// the other: parking on a lock means waiting for exactly the condition the
+    /// acquire tested, so the two must be one function rather than two that
+    /// agree.
+    let flockConflicts
+        (object : OpenFileObject)
+        (requester : OpenFileDescriptionId)
+        (mode : FlockMode)
+        (registry : FileDescriptorRegistry)
+        : bool
+        =
+        registry.Descriptions
+        |> Map.exists (fun otherId (other : OpenFileDescription) ->
+            otherId <> requester
+            // Identity, not the whole description: two descriptions on one
+            // file contend however far apart their offsets are.
+            && OpenFileDescription.object other = object
+            && (
+                match other.Flock with
+                | None -> false
+                | Some held -> locksConflict mode held
+            )
+        )
+
+    /// `flock(2)` on the open file description directly, for a caller that holds
+    /// one rather than a descriptor.
+    ///
+    /// The primitive: `flock` above is this with a descriptor resolved first,
+    /// and everything that docstring says about conversion, contention and the
+    /// dropped old lock is decided here.
+    ///
+    /// A caller finishing a *parked* acquisition wants this rather than the
+    /// by-fd version, and not as a convenience: descriptor numbers are reused as
+    /// soon as they are free, so the number a waiter parked on can name an
+    /// entirely different object by the time the lock becomes available.
+    ///
+    /// Loudly partial in `id`, which is not a guest-reachable failure: a
+    /// description a client still holds an identity for is one it must not have
+    /// let `close` destroy.
+    let flockOn
+        (id : OpenFileDescriptionId)
+        (request : FlockRequest)
+        (registry : FileDescriptorRegistry)
+        : FileDescriptorRegistry * FlockError option
+        =
+        let description =
+            match Map.tryFind id registry.Descriptions with
+            | Some description -> description
+            | None -> failwith $"open file description %O{id} is not present in the table (this is an interpreter bug)"
+
+        let withFlock (flock : FlockMode option) : FileDescriptorRegistry =
+            { registry with
+                Descriptions =
+                    Map.add
+                        id
+                        { description with
+                            Flock = flock
+                        }
+                        registry.Descriptions
+            }
+
+        match request with
+        | FlockRequest.Release -> withFlock None, None
+        | FlockRequest.Acquire mode ->
+
+        let blocked =
+            flockConflicts (OpenFileDescription.object description) id mode registry
+
+        if blocked then
+            // The old lock is gone either way — see the note on `flock`.
+            withFlock None, Some FlockError.WouldBlock
+        else
+            withFlock (Some mode), None
+
     /// Mirrors `flock(2)`.
     ///
     /// The lock belongs to the open file description `fd` names, so two
@@ -1262,51 +1347,7 @@ module FileDescriptorRegistry =
         =
         match Map.tryFind fd registry.Fds with
         | None -> registry, Some FlockError.BadFd
-        | Some id ->
-
-        let description =
-            match Map.tryFind id registry.Descriptions with
-            | Some description -> description
-            | None ->
-                failwith
-                    $"file descriptor %d{fd} names open file description %O{id}, which is not present in the table (this is an interpreter bug)"
-
-        let withFlock (flock : FlockMode option) : FileDescriptorRegistry =
-            { registry with
-                Descriptions =
-                    Map.add
-                        id
-                        { description with
-                            Flock = flock
-                        }
-                        registry.Descriptions
-            }
-
-        match request with
-        | FlockRequest.Release -> withFlock None, None
-        | FlockRequest.Acquire mode ->
-
-        let blocked =
-            registry.Descriptions
-            |> Map.exists (fun otherId (other : OpenFileDescription) ->
-                // `otherId <> id` is what makes conversion work: this
-                // description's own lock is not an obstacle to replacing it.
-                otherId <> id
-                // Identity, not the whole description: two descriptions on one
-                // file contend however far apart their offsets are.
-                && OpenFileDescription.object other = OpenFileDescription.object description
-                && (
-                    match other.Flock with
-                    | None -> false
-                    | Some held -> locksConflict mode held
-                )
-            )
-
-        if blocked then
-            // The old lock is gone either way — see the note above.
-            withFlock None, Some FlockError.WouldBlock
-        else
-            withFlock (Some mode), None
+        | Some id -> flockOn id request registry
 
     /// Move the file offset of the description `fd` names.
     ///

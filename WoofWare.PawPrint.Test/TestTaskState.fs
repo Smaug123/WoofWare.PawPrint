@@ -30,8 +30,8 @@ module TestTaskState =
         let _, loggerFactory = LoggerFactory.makeTest ()
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
 
-    let private threads (state : IlMachineState) : Set<ThreadId> =
-        state.ThreadState |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+    let private threads (state : IlMachineState) : Map<ThreadId, ThreadStatus> =
+        state.ThreadState |> Map.map (fun _ ts -> ts.Status)
 
     /// The invariant this whole change rests on.
     let private agrees (state : IlMachineState) : unit =
@@ -78,8 +78,8 @@ module TestTaskState =
         // another as a `Lock` owner.
         let ids =
             threads state
-            |> Set.toList
-            |> List.map (fun t -> UnixTaskTable.osThreadIdOf t state.Kernel.Tasks)
+            |> Map.toList
+            |> List.map (fun (t, _) -> UnixTaskTable.osThreadIdOf t state.Kernel.Tasks)
 
         ids |> List.distinct |> List.length |> shouldEqual ids.Length
         ids |> List.contains (EmulatedKernel.osThreadId parked) |> shouldEqual true
@@ -190,6 +190,71 @@ module TestTaskState =
 
         EmulatedKernel.checkTaskInvariants (threads haunted) haunted.Kernel
         |> shouldEqual [ EmulatedKernelDefect.TaskWithoutThread ghost ]
+
+    [<Test>]
+    let ``a flock waiter with no record is refused`` () : unit =
+        // The status says the thread is parked on a lock; the record says which lock. A thread
+        // with the one and not the other is a state nothing can act on: the sweep cannot decide
+        // whether to wake it, and the re-entered handler cannot decide what to finish.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let statuses = threads state |> Map.add thread ThreadStatus.BlockedOnFlock
+
+        EmulatedKernel.checkTaskInvariants statuses state.Kernel
+        |> shouldEqual [ EmulatedKernelDefect.FlockWaiterWithoutRecord thread ]
+
+    [<Test>]
+    let ``a flock record on a thread that cannot be waiting is refused`` () : unit =
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let recorded =
+            state.MapKernel (
+                EmulatedKernel.mapTasks (
+                    UnixTaskTable.withParkedFlock
+                        thread
+                        (Some
+                            {
+                                ParkedFlock.Requester = OpenFileDescriptionId 3L
+                                Mode = FlockMode.Exclusive
+                            })
+                )
+            )
+
+        let statuses = threads recorded |> Map.add thread ThreadStatus.Terminated
+
+        EmulatedKernel.checkTaskInvariants statuses recorded.Kernel
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.FlockRecordWithoutWaiter (thread, ThreadStatus.Terminated)
+            ]
+
+    [<Test>]
+    let ``a woken flock waiter keeps its record`` () : unit =
+        // Not slack in the invariant, but the window it exists to permit: between the sweep
+        // flipping a waiter to Runnable and the woken thread re-entering the handler, the record
+        // must still be there -- it is what tells the re-entry that it is a re-entry, and what
+        // says which description to finish against.
+        let state, thread =
+            machine () |> IlMachineState.allocateUnstartedThread (ManagedHeapAddress 1)
+
+        let recorded =
+            state.MapKernel (
+                EmulatedKernel.mapTasks (
+                    UnixTaskTable.withParkedFlock
+                        thread
+                        (Some
+                            {
+                                ParkedFlock.Requester = OpenFileDescriptionId 3L
+                                Mode = FlockMode.Exclusive
+                            })
+                )
+            )
+
+        let statuses = threads recorded |> Map.add thread ThreadStatus.Runnable
+
+        EmulatedKernel.checkTaskInvariants statuses recorded.Kernel |> shouldBeEmpty
 
     [<Test>]
     let ``registering a thread twice is refused`` () : unit =

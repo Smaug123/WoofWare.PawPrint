@@ -212,6 +212,9 @@ module Program =
         // `FiredDeadline` case for it, which is what makes that unrepresentable rather than
         // merely unwritten.
         | ThreadStatus.BlockedOnSocketEvents _
+        // Nor has `BlockedOnFlock`: an `flock` wait takes no timeout either, so the
+        // clock can never wake one.
+        | ThreadStatus.BlockedOnFlock
         | ThreadStatus.Runnable
         | ThreadStatus.NotStarted
         | ThreadStatus.BlockedOnClassInit _
@@ -402,6 +405,62 @@ module Program =
         (state, deliverable)
         ||> List.fold (fun s (tid, _) -> Scheduler.wakeFromSocketEvents tid s)
 
+    /// Wake every thread parked in `SystemNative_FLock` whose lock could be
+    /// granted right now. The park is re-entrant — the native frame stays and
+    /// the caller's program counter still names the call — so waking is exactly
+    /// a flip to `Runnable`; the re-entered handler finishes the acquisition
+    /// against the description its record names.
+    ///
+    /// Runs every tick beside `fireSocketReadiness`, and for the same reason: a
+    /// sweep asks the same question of the same state each time, so a new
+    /// producer cannot forget to wake anyone. That matters more here than there,
+    /// because a lock is released by more than the obvious call — the holder's
+    /// last `close` drops its lock too, and nothing about `close` knows that
+    /// somebody is waiting.
+    ///
+    /// **Every** satisfied waiter wakes, unlike `fireSocketReadiness`, which
+    /// refuses when several threads share a port. That refusal is about epoll:
+    /// it adds waiters to a port's wait queue *exclusively*, so a real edge
+    /// wakes exactly one of them chosen by park order, which PawPrint keeps no
+    /// state to reproduce. `flock` has no exclusive handoff — a release wakes
+    /// every blocker and they race — and, decisively for a simulator, *which*
+    /// waiter wins is not observable from userspace on any platform. So waking
+    /// them all and letting the scheduler pick is not inventing a winner; it is
+    /// declining to, and handing the choice to the machinery whose purpose is
+    /// exploring exactly such choices under a seed. The losers re-enter, find
+    /// the lock taken, and park again.
+    let private fireFlockGrantable (state : IlMachineState) : IlMachineState =
+        // Runs on every tick of every workload, so the no-waiter case must cost
+        // no allocation: a fold that accumulates only matches, rather than
+        // materialising the thread map.
+        let waiters =
+            (state.ThreadState, [])
+            ||> Map.foldBack (fun tid ts acc ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnFlock -> tid :: acc
+                | _ -> acc
+            )
+
+        match waiters with
+        | [] -> state
+        | waiters ->
+
+        let unix = EmulatedKernel.unix state.Kernel
+
+        let grantable =
+            waiters
+            |> List.filter (fun tid ->
+                match UnixTaskTable.parkedFlockFor tid state.Kernel.Tasks with
+                | None ->
+                    failwith
+                        $"fireFlockGrantable: thread %O{tid} is parked in BlockedOnFlock but its task holds no ParkedFlock, so there is nothing to say what it is waiting for. The park writes the record and the status together (this is an interpreter bug)."
+                | Some parked ->
+                    WakeCondition.isSatisfied (WakeCondition.FlockGrantable (parked.Requester, parked.Mode)) unix
+            )
+
+        (state, grantable)
+        ||> List.fold (fun s tid -> Scheduler.wakeFromFlockGrantable tid s)
+
     /// The minimum wait deadline among currently-blocked threads, or
     /// `None` if no thread is parked with a finite timeout. Used by the
     /// driver loop's jump-to-deadline fallback: if no thread is Runnable
@@ -585,6 +644,10 @@ module Program =
         // since it parked. Before the jump-to-deadline fallback below, so a
         // deliverable port is never mistaken for quiescence.
         let state = fireSocketReadiness state
+
+        // ...and any flock waiter whose lock has become available, for the same
+        // reason: a grantable lock is not quiescence.
+        let state = fireFlockGrantable state
 
         // Drive the signal-dispatcher state machine before the scheduler
         // picks its next thread. If a pending signal is deliverable and

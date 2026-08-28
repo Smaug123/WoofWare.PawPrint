@@ -138,6 +138,25 @@ module TestUnixSystemStep =
         | Ok (answer, _) -> answer
         | Error e -> failwith $"expected an answer, got a refusal: %O{e}"
 
+    /// The answer, for a call whose outcome could not have been a park.
+    let private answeredOutcome (result : Result<SyscallOutcome * UnixSystem<int, string>, 'a>) : SyscallAnswer =
+        match result with
+        | Ok (SyscallOutcome.Answered answer, _) -> answer
+        | Ok (SyscallOutcome.WouldBlock condition, _) -> failwith $"expected an answer, got a park on %O{condition}"
+        | Error e -> failwith $"expected an answer, got a refusal: %O{e}"
+
+    /// A `step` result with its outcome unwrapped to the answer it carries, so
+    /// that a row which cannot block can be compared against the per-syscall
+    /// function's own narrower type.
+    let private stepAnswered
+        (result : Result<SyscallOutcome * UnixSystem<int, string>, 'a>)
+        : Result<SyscallAnswer * UnixSystem<int, string>, 'a>
+        =
+        match result with
+        | Ok (SyscallOutcome.Answered answer, system) -> Ok (answer, system)
+        | Ok (SyscallOutcome.WouldBlock condition, _) -> failwith $"expected an answer, got a park on %O{condition}"
+        | Error e -> Error e
+
     // -------------------------------------------------------------------- read
 
     let private readBytes (result : Result<ReadAnswer * UnixSystem<int, string>, ReadRefusal>) : byte list =
@@ -1984,7 +2003,7 @@ module TestUnixSystemStep =
                 Syscall.Unlink (statPath "/d/inner/t"), UnixSystem.unlink (statPath "/d/inner/t") system
                 Syscall.RmDir (statPath "/d"), UnixSystem.rmdir (statPath "/d") system
             ] do
-            UnixSystem.step call system |> shouldEqual (Ok expected)
+            UnixSystem.step call system |> stepAnswered |> shouldEqual (Ok expected)
 
     [<Test>]
     let ``close of a descriptor that is not open is EBADF and changes nothing`` () : unit =
@@ -2013,6 +2032,7 @@ module TestUnixSystemStep =
         let fd, system = withOpenFile linux
 
         UnixSystem.step (Syscall.Close fd) system
+        |> stepAnswered
         |> shouldEqual (UnixSystem.close fd system |> Result.mapError SyscallRefusal.Close)
 
     [<Test>]
@@ -2154,7 +2174,7 @@ module TestUnixSystemStep =
     let ``step agrees with the primitive it dispatches to`` () : unit =
         // The dispatcher is sugar. If the two ever disagree, the surface a client
         // logs and replays through is not the surface it computes through.
-        match UnixSystem.step Syscall.GetEffectiveUserId linux with
+        match UnixSystem.step Syscall.GetEffectiveUserId linux |> stepAnswered with
         | Ok (SyscallAnswer.Completed answer, after) ->
             answer |> shouldEqual (int64 (UnixSystem.effectiveUserId linux))
             after |> shouldEqual linux
@@ -2312,6 +2332,81 @@ module TestUnixSystemStep =
         |> answered
         |> shouldEqual (SyscallAnswer.Completed 2L)
 
+    // ------------------------------------------------------------------- flock
+
+    /// The system a granted `flock` left behind.
+    let private granted
+        (result : Result<SyscallOutcome * UnixSystem<int, string>, FLockRefusal>)
+        : UnixSystem<int, string>
+        =
+        match result with
+        | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system) -> system
+        | other -> failwith $"expected the lock to be granted, got %A{other}"
+
+    /// The condition a parked `flock` is waiting on, and the system a real
+    /// kernel would have slept in.
+    let private parked
+        (result : Result<SyscallOutcome * UnixSystem<int, string>, FLockRefusal>)
+        : WakeCondition * UnixSystem<int, string>
+        =
+        match result with
+        | Ok (SyscallOutcome.WouldBlock condition, system) -> condition, system
+        | other -> failwith $"expected a park, got %A{other}"
+
+    /// Two descriptors from two separate `open` calls on one file, which is what
+    /// makes them contend: an `flock` lock belongs to the open file description,
+    /// so a `dup` would share one lock where these hold two.
+    let private withTwoDescriptions (system : UnixSystem<int, string>) : int * int * UnixSystem<int, string> =
+        let first, system = withOpenFile system
+
+        let inode =
+            match FileDescriptorRegistry.tryFindTarget first system.Process.FileDescriptors with
+            | Some (OpenFileTarget.File (inode, _)) -> inode
+            | other -> failwith $"expected a file, got %O{other}"
+
+        let second, registry =
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+
+        first,
+        second,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    /// A third description on the file `fd` already names, so that a test can
+    /// have a lock taken by something neither of the two contenders.
+    let private withAnotherDescription (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | Some (OpenFileTarget.File (inode, _)) ->
+            let another, registry =
+                FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+
+            another,
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+        | other -> failwith $"expected a file, got %O{other}"
+
+    /// A system with task `name` registered, since a park is recorded against a
+    /// task and `UnixTaskTable` is loudly partial in names it has never minted.
+    let private withTask (name : int) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        { system with
+            Tasks = UnixTaskTable.register name (CpuId 0) (OsThreadId (uint32 name + 1u)) system.Tasks
+        }
+
+    /// The open file description a descriptor names, which is what a wake
+    /// condition is keyed on.
+    let private descriptionOf (fd : int) (system : UnixSystem<int, string>) : OpenFileDescriptionId =
+        match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+        | Some id -> id
+        | None -> failwith $"fd %d{fd} is not open"
+
     [<Test>]
     let ``an unlockable operation is EINVAL on Linux and refused on Darwin`` () : unit =
         // Linux validates strictly: exactly one of SH/EX/UN, optionally with NB.
@@ -2320,7 +2415,7 @@ module TestUnixSystemStep =
         let shAndEx = 1 ||| 2
 
         UnixSystem.flock 0 shAndEx linux
-        |> answered
+        |> answeredOutcome
         |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL)
 
         UnixSystem.flock 0 shAndEx darwin
@@ -2332,7 +2427,7 @@ module TestUnixSystemStep =
         // returns 0; Darwin answers ENOTSUP, and what that leaves the lock state
         // as is unmeasured.
         UnixSystem.flock 0 2 linux
-        |> answered
+        |> answeredOutcome
         |> shouldEqual (SyscallAnswer.Completed 0L)
 
         match UnixSystem.flock 0 2 darwin with
@@ -2340,19 +2435,159 @@ module TestUnixSystemStep =
         | other -> failwith $"expected a Darwin standard-stream refusal, got %O{other}"
 
     [<Test>]
-    let ``a contended blocking lock is refused, and a non-blocking one is EAGAIN`` () : unit =
+    let ``a contended blocking lock parks, and a non-blocking one is EAGAIN`` () : unit =
         // Two descriptions of one file, so the second acquire genuinely
-        // contends. The refusal must not quietly become the non-blocking answer:
+        // contends. Parking must not quietly become the non-blocking answer:
         // that would hand a caller an EWOULDBLOCK no kernel would have produced.
-        let first, system = withOpenFile linux
+        let first, second, system = withTwoDescriptions linux
 
-        let inode =
-            match FileDescriptorRegistry.tryFindTarget first system.Process.FileDescriptors with
-            | Some (OpenFileTarget.File (inode, _)) -> inode
-            | other -> failwith $"expected a file, got %O{other}"
+        let held = UnixSystem.flock first 2 system |> granted
 
-        let second, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+        UnixSystem.flock second (2 ||| 4) held
+        |> answeredOutcome
+        |> shouldEqual (SyscallAnswer.Failed UnixError.EAGAIN)
+
+        let condition, _ = UnixSystem.flock second 2 held |> parked
+
+        // Keyed on the description rather than on the descriptor: a `dup` of
+        // `second` waits on the same lock.
+        condition
+        |> shouldEqual (WakeCondition.FlockGrantable (descriptionOf second held, FlockMode.Exclusive))
+
+    [<Test>]
+    let ``a park is never already satisfied`` () : unit =
+        // The failure mode this shape can most easily introduce: a condition
+        // that already holds in the state it was produced in is a lost wakeup,
+        // and a client polling it would re-enter the syscall for ever.
+        //
+        // Both directions of contention, since the conflict rule is not
+        // symmetric in the mode: exclusive-on-shared and shared-on-exclusive
+        // both park.
+        let first, second, system = withTwoDescriptions linux
+
+        for holder, requester in [ 1, 2 ; 2, 1 ] do
+            let held = UnixSystem.flock first holder system |> granted
+            let condition, parkedIn = UnixSystem.flock second requester held |> parked
+
+            WakeCondition.isSatisfied condition parkedIn |> shouldEqual false
+
+        // ...and shared-on-shared is the control: it is granted, so there is no
+        // condition for the predicate to be wrong about.
+        let held = UnixSystem.flock first 1 system |> granted
+        UnixSystem.flock second 1 held |> granted |> ignore
+
+    [<Test>]
+    let ``a release satisfies the condition it was blocking`` () : unit =
+        // Without this, "never already satisfied" is passed by a predicate that
+        // is simply always false.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let released = UnixSystem.flock first 8 parkedIn |> granted
+
+        WakeCondition.isSatisfied condition released |> shouldEqual true
+
+    [<Test>]
+    let ``a condition names the lock it wants, not the holder it is waiting out`` () : unit =
+        // A waiter waits for its lock to become available, not for one
+        // particular obstacle to go away. An implementation that recorded the
+        // holders observed at park time would pass every test above and wake
+        // this one into a lock it cannot have.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let released = UnixSystem.flock first 8 parkedIn |> granted
+
+        // A third description takes the lock in the window between the release
+        // and the wake, which on a real kernel puts the waiter back to sleep.
+        let third, opened = withAnotherDescription first released
+        let contended = UnixSystem.flock third 2 opened |> granted
+
+        WakeCondition.isSatisfied condition contended |> shouldEqual false
+
+    [<Test>]
+    let ``two holders must both release before the condition holds`` () : unit =
+        // A conflict scan that stopped at the first holder it found would pass
+        // the release test above and deadlock here.
+        let first, second, system = withTwoDescriptions linux
+        let third, system = withAnotherDescription first system
+
+        // `first` and `second` both hold shared locks; `third` wants exclusive.
+        let held = UnixSystem.flock first 1 system |> granted
+        let held = UnixSystem.flock second 1 held |> granted
+
+        let condition, parkedIn = UnixSystem.flock third 2 held |> parked
+
+        let oneReleased = UnixSystem.flock first 8 parkedIn |> granted
+        WakeCondition.isSatisfied condition oneReleased |> shouldEqual false
+
+        let bothReleased = UnixSystem.flock second 8 oneReleased |> granted
+        WakeCondition.isSatisfied condition bothReleased |> shouldEqual true
+
+    [<Test>]
+    let ``a parked conversion is holding nothing`` () : unit =
+        // The reason blocking is an outcome rather than a refusal. `flock`
+        // removes the old lock before it establishes the new one, so a
+        // conversion that has to wait is already holding nothing by the time it
+        // sleeps -- and a refusal, which carries no system, could not say so.
+        //
+        // A *fresh* contended acquire cannot witness this: the requester held
+        // nothing to begin with, so the advanced table is the one that went in.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock second 1 system |> granted
+        let both = UnixSystem.flock first 1 held |> granted
+
+        let _, parkedIn = UnixSystem.flock first 2 both |> parked
+
+        // `None` rather than merely "not what it was": an implementation that
+        // established the exclusive lock and *then* reported the contention
+        // would also have changed it.
+        FileDescriptorRegistry.tryFind first parkedIn.Process.FileDescriptors
+        |> Option.map (fun description -> description.Flock)
+        |> shouldEqual (Some None)
+
+        parkedIn |> shouldNotEqual both
+
+    [<Test>]
+    let ``a description's own lock does not obstruct its pending acquisition`` () : unit =
+        // What makes a conversion a conversion: `Acquire` replaces whatever this
+        // description held, so its own lock is never the obstacle. The wake
+        // predicate has to agree with the acquire about that, because they are
+        // the same question asked at two different times.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock second 1 system |> granted
+        let both = UnixSystem.flock first 1 held |> granted
+        let condition, parkedIn = UnixSystem.flock first 2 both |> parked
+
+        // The parked description takes a shared lock again while it waits, which
+        // a `dup` of its descriptor could do from another task. That lock is its
+        // own, so it must not stand in the way of the exclusive one it wants.
+        let reacquired = UnixSystem.flock first 1 parkedIn |> granted
+        let released = UnixSystem.flock second 8 reacquired |> granted
+
+        WakeCondition.isSatisfied condition released |> shouldEqual true
+
+    [<Test>]
+    let ``a descriptor number is not a stable name for what a waiter waits on`` () : unit =
+        // Why the condition is keyed on the description. Descriptor numbers are
+        // reused as soon as they are free, so the number a parked call was made
+        // through can be naming something else entirely by the time the waiter
+        // wakes -- and a client that "finished" the call by re-issuing it
+        // against that number would take a lock on the wrong object.
+        let first, second, system = withTwoDescriptions linux
+
+        // A second descriptor onto `second`'s description, so that closing
+        // `second` destroys nothing.
+        let alias, registry =
+            match FileDescriptorRegistry.dup second system.Process.FileDescriptors with
+            | Ok pair -> pair
+            | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
         let system =
             { system with
@@ -2362,43 +2597,175 @@ module TestUnixSystemStep =
                     }
             }
 
-        let held =
-            match UnixSystem.flock first 2 system with
-            | Ok (SyscallAnswer.Completed 0L, held) -> held
-            | other -> failwith $"expected the first lock to be granted, got %O{other}"
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
 
-        UnixSystem.flock second (2 ||| 4) held
-        |> answered
-        |> shouldEqual (SyscallAnswer.Failed UnixError.EAGAIN)
+        let waitedOn = descriptionOf second parkedIn
 
-        UnixSystem.flock second 2 held
-        |> shouldEqual (Error (FLockRefusal.WouldBlockIndefinitely FlockMode.Exclusive))
+        let closed =
+            match UnixSystem.close second parkedIn with
+            | Ok (SyscallAnswer.Completed 0L, closed) -> closed
+            | other -> failwith $"expected the close to succeed, got %A{other}"
 
-        // And the refusal carries no system, so the caller still holds the one it
-        // passed in. That is deliberate and it costs something real: a kernel
-        // that could park would have dropped the caller's old lock before
-        // sleeping, and this discards that. The alternative — a refusal that
-        // carries a state — reintroduces exactly the "which state is this?"
-        // ambiguity refusals exist to remove. When blocking gets an outcome of
-        // its own, this row is what will have to change on purpose.
-        match UnixSystem.flock second 2 held with
-        | Error _ -> ()
-        | Ok (answer, _) -> failwith $"expected a refusal carrying no system, got %O{answer}"
+        // The description survives the close, because the alias still names it.
+        WakeCondition.isSatisfied condition closed |> shouldEqual false
+
+        // ...and the number it was waited on through is now free, so the next
+        // open takes it and it names something the waiter never asked about.
+        let reused, opened = withAnotherDescription first closed
+        reused |> shouldEqual second
+        descriptionOf reused opened |> shouldNotEqual waitedOn
+
+        // The condition is unmoved by all of that: it still names the
+        // description, which is still what the release must satisfy.
+        condition
+        |> shouldEqual (WakeCondition.FlockGrantable (waitedOn, FlockMode.Exclusive))
+
+        let released = UnixSystem.flock first 8 opened |> granted
+        WakeCondition.isSatisfied condition released |> shouldEqual true
+
+    [<Test>]
+    let ``a condition whose description has gone gets no answer`` () : unit =
+        // A real waiter holds a reference to the open file it waits on, so this
+        // cannot arise on a kernel; this table models no such reference, so it is
+        // the client's job to refuse the close -- as `close` already refuses one
+        // that would strand a task parked in a socket-event wait. Until a client
+        // parks at all there is nothing to refuse, and this is the arm that says
+        // so out loud rather than picking one of two wrong answers.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let closed =
+            match UnixSystem.close second parkedIn with
+            | Ok (SyscallAnswer.Completed 0L, closed) -> closed
+            | other -> failwith $"expected the close to succeed, got %A{other}"
+
+        let exn =
+            Assert.Throws<exn> (fun () -> WakeCondition.isSatisfied condition closed |> ignore)
+
+        exn.Message |> shouldContainText "closed underneath it"
+
+    [<Test>]
+    let ``flock through step parks with the system the park advanced to`` () : unit =
+        // The dispatcher is sugar, and blocking is the outcome it could most
+        // easily drop: an arm that lifted every answer would have nowhere to put
+        // a park, and one that forwarded the system it was handed would strand
+        // the advance the park exists to carry.
+        //
+        // A blocked *conversion* rather than a blocked fresh acquire, for the
+        // reason `a parked conversion is holding nothing` gives: a fresh
+        // requester held nothing to drop, so the two systems are equal and a
+        // dispatcher that forwarded the wrong one would be invisible here.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock second 1 system |> granted
+        let both = UnixSystem.flock first 1 held |> granted
+
+        UnixSystem.step (Syscall.FLock (first, 2)) both
+        |> shouldEqual (UnixSystem.flock first 2 both |> Result.mapError SyscallRefusal.FLock)
+
+        match UnixSystem.step (Syscall.FLock (first, 2)) both with
+        | Ok (SyscallOutcome.WouldBlock _, after) ->
+            FileDescriptorRegistry.tryFind first after.Process.FileDescriptors
+            |> Option.map (fun description -> description.Flock)
+            |> shouldEqual (Some None)
+        | other -> failwith $"expected a park through step, got %A{other}"
 
     [<Test>]
     let ``a failing flock still advances the descriptor table`` () : unit =
         // The design's most distinctive claim, and the reason state rides
         // alongside a `Failed` rather than being withheld: a conversion that
         // cannot be granted has already dropped the caller's old lock.
-        let first, system = withOpenFile linux
+        let first, second, system = withTwoDescriptions linux
 
-        let inode =
-            match FileDescriptorRegistry.tryFindTarget first system.Process.FileDescriptors with
-            | Some (OpenFileTarget.File (inode, _)) -> inode
-            | other -> failwith $"expected a file, got %O{other}"
+        // `second` holds a shared lock; `first` takes one too, then tries to
+        // convert to exclusive, which cannot be granted while `second` holds its.
+        let held = UnixSystem.flock second 1 system |> granted
+        let both = UnixSystem.flock first 1 held |> granted
 
-        let second, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadWrite system.Process.FileDescriptors
+        let afterFailedConversion =
+            match UnixSystem.flock first (2 ||| 4) both with
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EAGAIN), after) -> after
+            | other -> failwith $"expected EAGAIN, got %A{other}"
+
+        // The failure dropped `first`'s lock rather than leaving it: the table
+        // the caller gets back is not the one it passed in.
+        afterFailedConversion |> shouldNotEqual both
+
+    [<Test>]
+    let ``a parked acquisition finishes on the description once the lock frees`` () : unit =
+        // The resume path, which no guest can reach without a scheduler: what a client does when
+        // its wake predicate answers true.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let requester = descriptionOf second parkedIn
+        let released = UnixSystem.flock first 8 parkedIn |> granted
+
+        WakeCondition.isSatisfied condition released |> shouldEqual true
+
+        let finished =
+            UnixSystem.flockAcquire requester FlockMode.Exclusive released |> granted
+
+        FileDescriptorRegistry.tryFind second finished.Process.FileDescriptors
+        |> Option.map (fun description -> description.Flock)
+        |> shouldEqual (Some (Some FlockMode.Exclusive))
+
+    [<Test>]
+    let ``a resume that has been beaten to the lock parks again`` () : unit =
+        // The ordinary case rather than an edge one: a release wakes every waiter and they race,
+        // so all but one find the lock gone. A resume must be able to say so rather than crash or
+        // report an EAGAIN the caller never asked for by passing LOCK_NB.
+        let first, second, system = withTwoDescriptions linux
+        let third, system = withAnotherDescription first system
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let requester = descriptionOf second parkedIn
+        let released = UnixSystem.flock first 8 parkedIn |> granted
+
+        // Somebody else takes it in the window between the wake and the resume.
+        let taken = UnixSystem.flock third 2 released |> granted
+
+        let again, _ = UnixSystem.flockAcquire requester FlockMode.Exclusive taken |> parked
+        again |> shouldEqual condition
+
+    [<Test>]
+    let ``a resume is not a fresh syscall, so it does not re-validate what cannot have changed`` () : unit =
+        // Everything `flock` screens is over facts that cannot change while a task sleeps — the
+        // operation bits, which this signature cannot even express, and the description's object
+        // kind. So a resume under Darwin is served, where a fresh Darwin call on the same
+        // descriptor would have to decide the flavour's rules all over again.
+        let first, second, system = withTwoDescriptions darwin
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let _, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let requester = descriptionOf second parkedIn
+        let released = UnixSystem.flock first 8 parkedIn |> granted
+
+        UnixSystem.flockAcquire requester FlockMode.Exclusive released
+        |> granted
+        |> ignore<UnixSystem<int, string>>
+
+    [<Test>]
+    let ``a resume that has become a conversion is refused under Darwin`` () : unit =
+        // The one screen a resume must re-apply, because it is over state that *can* change while
+        // a task sleeps. While this waiter held nothing, another task through a `dup` of its
+        // descriptor took a lock on its description — a first acquisition, which Darwin serves.
+        // The resume is now a conversion, and Darwin's keep-versus-drop divergence on a failed
+        // conversion is exactly what `DarwinConversion` refuses to guess at.
+        let first, second, system = withTwoDescriptions darwin
+
+        let alias, registry =
+            match FileDescriptorRegistry.dup second system.Process.FileDescriptors with
+            | Ok pair -> pair
+            | Error error -> failwith $"expected the dup to succeed, got %O{error}"
 
         let system =
             { system with
@@ -2408,26 +2775,89 @@ module TestUnixSystemStep =
                     }
             }
 
-        // `second` holds a shared lock; `first` takes one too, then tries to
-        // convert to exclusive, which cannot be granted while `second` holds its.
-        let held =
-            match UnixSystem.flock second 1 system with
-            | Ok (SyscallAnswer.Completed 0L, held) -> held
-            | other -> failwith $"expected the shared lock to be granted, got %O{other}"
+        let held = UnixSystem.flock first 2 system |> granted
+        let _, parkedIn = UnixSystem.flock second 2 held |> parked
 
-        let both =
-            match UnixSystem.flock first 1 held with
-            | Ok (SyscallAnswer.Completed 0L, both) -> both
-            | other -> failwith $"expected the second shared lock to be granted, got %O{other}"
+        let requester = descriptionOf second parkedIn
+        let released = UnixSystem.flock first 8 parkedIn |> granted
 
-        let afterFailedConversion =
-            match UnixSystem.flock first (2 ||| 4) both with
-            | Ok (SyscallAnswer.Failed UnixError.EAGAIN, after) -> after
-            | other -> failwith $"expected EAGAIN, got %O{other}"
+        // The alias names the same description, so this is a first acquisition on it.
+        let aliased = UnixSystem.flock alias 1 released |> granted
 
-        // The failure dropped `first`'s lock rather than leaving it: the table
-        // the caller gets back is not the one it passed in.
-        afterFailedConversion |> shouldNotEqual both
+        UnixSystem.flockAcquire requester FlockMode.Exclusive aliased
+        |> shouldEqual (Error FLockRefusal.DarwinConversion)
+
+    [<Test>]
+    let ``parkFlock records exactly what the condition says`` () : unit =
+        // The record and the condition are one fact. A client that built the record separately
+        // could park a task on one lock while polling for another, and nothing would notice.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+
+        let recorded = UnixSystem.parkFlock 7 condition (withTask 7 parkedIn)
+
+        UnixTaskTable.parkedFlockFor 7 recorded.Tasks
+        |> shouldEqual (
+            Some
+                {
+                    ParkedFlock.Requester = descriptionOf second parkedIn
+                    Mode = FlockMode.Exclusive
+                }
+        )
+
+    [<Test>]
+    let ``closing the last descriptor onto a parked lock is refused`` () : unit =
+        // What makes `WakeCondition.isSatisfied`'s vanished-description arm unreachable, and what
+        // `flockAcquire` relies on to be total. A real kernel's blocked `flock` holds the file, so
+        // the description outlives every descriptor; this table has no such reference.
+        let first, second, system = withTwoDescriptions linux
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+        let requester = descriptionOf second parkedIn
+
+        let recorded = UnixSystem.parkFlock 7 condition (withTask 7 parkedIn)
+
+        match UnixSystem.close second recorded with
+        | Error (CloseRefusal.LastFlockedDescriptorWithWaiter (description, task)) ->
+            description |> shouldEqual requester
+            task |> shouldEqual 7
+        | other -> failwith $"expected the close to be refused, got %A{other}"
+
+    [<Test>]
+    let ``closing a descriptor that is not the last one onto a parked lock is served`` () : unit =
+        // The narrowness of that refusal: only destroying the description strands the waiter, and
+        // a `dup` alias keeps it alive. Without this the refusal could be "no descriptor onto a
+        // parked description may close", which would also pass the test above.
+        let first, second, system = withTwoDescriptions linux
+
+        let alias, registry =
+            match FileDescriptorRegistry.dup second system.Process.FileDescriptors with
+            | Ok pair -> pair
+            | Error error -> failwith $"expected the dup to succeed, got %O{error}"
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        let held = UnixSystem.flock first 2 system |> granted
+        let condition, parkedIn = UnixSystem.flock second 2 held |> parked
+        let recorded = UnixSystem.parkFlock 7 condition (withTask 7 parkedIn)
+
+        match UnixSystem.close second recorded with
+        | Ok (SyscallAnswer.Completed 0L, closed) ->
+            // ...and the condition is still answerable afterwards, which is the whole point of
+            // refusing the other case.
+            WakeCondition.isSatisfied condition closed |> shouldEqual false
+
+            ignore<int> alias
+        | other -> failwith $"expected the close to succeed, got %A{other}"
 
     [<Test>]
     let ``truncateAt refuses a negative length rather than emptying the file`` () : unit =

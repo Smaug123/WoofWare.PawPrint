@@ -56,19 +56,6 @@ type FLockRefusal =
     /// refused on the request rather than on the outcome, so that the refusal is
     /// a property of what was asked rather than of who else held a lock.
     | DarwinConversion
-    /// A blocking acquisition against a conflicting holder. Waiting is a
-    /// scheduler feature rather than a filesystem one, and this library has no
-    /// scheduler.
-    ///
-    /// Unlike every other case here, this one is not a gap in what has been
-    /// *measured*: a real kernel parks the caller, and it does so having already
-    /// dropped the caller's old lock, because `flock` removes before it
-    /// establishes. That advance is discarded with the refusal — a refused call
-    /// hands back no system at all, which is what stops a client continuing from
-    /// a half-step — so a client that could park must not treat this as a park.
-    /// When blocking gets an outcome of its own rather than a refusal, this case
-    /// moves there and carries the advance with it.
-    | WouldBlockIndefinitely of mode : FlockMode
 
 /// Why this kernel will not commit a truncation.
 [<RequireQualifiedAccess>]
@@ -97,6 +84,17 @@ type CloseRefusal<'Task> =
     /// The last descriptor onto a listening socket whose accept queue still
     /// holds a connection whose client is open.
     | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
+    /// The last descriptor onto an open file description that `task` is parked
+    /// on an `flock` of.
+    ///
+    /// Unlike the two port cases above, this does not split by flavour, because
+    /// it models no platform's behaviour: a real kernel of either flavour keeps
+    /// the file alive — a blocked `flock` holds a reference to it — and
+    /// eventually grants the waiter its lock on a file nothing names any more.
+    /// This table cannot represent that reference at all, so the refusal is a
+    /// fact about the model and is the same on both. There is nothing here to
+    /// measure and complete.
+    | LastFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
 
 /// What `stat(2)` and its siblings report about one inode.
 ///
@@ -573,13 +571,6 @@ module FLockRefusal =
             $"the descriptor is socket %O{socket}. Linux permits `flock` on a socket and returns 0; Darwin refuses it with ENOTSUP (raw 45)."
         | FLockRefusal.DarwinConversion ->
             "the descriptor is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place -- measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
-        | FLockRefusal.WouldBlockIndefinitely mode ->
-            let requested =
-                match mode with
-                | FlockMode.Shared -> "shared"
-                | FlockMode.Exclusive -> "exclusive"
-
-            $"a blocking %s{requested} lock was requested, and another open file description holds a conflicting one. This library cannot block a caller on a lock: that needs a scheduler to park it and wake it when the holder releases. If the holder is the same task, a real kernel would deadlock here rather than return. Pass LOCK_NB to get EWOULDBLOCK instead."
 
 [<RequireQualifiedAccess>]
 module CloseRefusal =
@@ -592,6 +583,8 @@ module CloseRefusal =
             $"it is the last descriptor onto socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Linux's epoll_wait holds the port by file reference: the last close leaves the in-flight wait's registrations live, and a later edge can still complete it. Representing that needs the port to outlive its last descriptor, which this kernel's descriptor table cannot express."
         | CloseRefusal.DarwinPortDescriptorWithWaiter (port, task) ->
             $"the descriptor names socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Darwin's kevent *ends* such a wait with an error when the fd it was entered through closes -- but which error is not measured precisely, and what a close of a *different* descriptor onto the same kqueue does is not measured at all."
+        | CloseRefusal.LastFlockedDescriptorWithWaiter (description, task) ->
+            $"the descriptor is the last one onto open file description %O{description}, and task %O{task} is parked on an `flock` of it. A real kernel's blocked `flock` holds a reference to the file, so the description outlives every descriptor onto it and the waiter is eventually granted its lock; this table has no such reference to represent, so destroying the description would either strand the waiter for ever or wake it into an EBADF no kernel produces."
         | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
             $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
 
@@ -637,6 +630,61 @@ type SyscallAnswer =
     /// descriptor table before it can discover the conflict that fails it.
     | Failed of error : UnixError
 
+/// What a task parked in a syscall is waiting for.
+///
+/// Data, and deliberately transparent: a client that cannot make progress needs
+/// to *read* a condition as well as evaluate it — PawPrint's driver advances the
+/// virtual clock to the nearest deadline when nothing is runnable, which a
+/// predicate cannot answer. So no case may carry a function.
+///
+/// A condition names live kernel objects rather than a snapshot of them, and
+/// stays true to what a real kernel waits on rather than to what is convenient
+/// to evaluate. Keeping those objects alive while something waits on them is the
+/// client's obligation, and it is what `close` refuses to break.
+[<RequireQualifiedAccess>]
+type WakeCondition =
+    /// An `flock` acquisition of `mode` by the open file description
+    /// `requester`, parked because another description naming the same object
+    /// holds a conflicting lock.
+    ///
+    /// Note what this does *not* say: nothing about which description obstructs
+    /// it. A waiter waits for its lock to become available, not for a particular
+    /// holder to go away — a new acquirer between the release and the wake puts
+    /// it back to sleep, as it does on a real kernel.
+    ///
+    /// `requester` is the open file description rather than the descriptor the
+    /// call was made through, because the lock belongs to the description: a
+    /// `dup` of that descriptor waits on the same lock, and the number itself is
+    /// reusable while the description lives on.
+    | FlockGrantable of requester : OpenFileDescriptionId * mode : FlockMode
+
+/// What became of a request this kernel could answer, where "answer" may be
+/// "the calling task sleeps".
+[<RequireQualifiedAccess>]
+type SyscallOutcome =
+    /// The entry point returned.
+    | Answered of SyscallAnswer
+    /// The entry point did not return. The calling task sleeps until
+    /// `WakeCondition.isSatisfied` holds of this condition, and then finishes
+    /// the call; what sleeping means, and when to re-ask, are the client's
+    /// scheduler's business, which is why this library has no opinion on either.
+    ///
+    /// **Finishing is not re-issuing the original call.** The syscall's
+    /// arguments named a descriptor; the condition names the kernel object that
+    /// descriptor stood for, and a sleeping task keeps the object rather than
+    /// the number. Descriptor numbers are reused as soon as they are free, so a
+    /// `close` of the number this call was made through — which a `dup` elsewhere
+    /// makes survivable — can leave that number naming something else entirely
+    /// by the time the waiter wakes. `ParkedSocketWait` holds its port by
+    /// description identity for exactly this reason.
+    ///
+    /// The system this rides with is the one a real kernel sleeps *in*, not the
+    /// one the call arrived with: `flock` removes the caller's old lock before
+    /// it establishes the new one, so a parked conversion is already holding
+    /// nothing. That advance is the whole reason blocking is an outcome here
+    /// rather than a refusal, which by design carries no system at all.
+    | WouldBlock of WakeCondition
+
 /// What a `read` will operate on, once the descriptor's access mode has been
 /// checked and before its buffer is screened.
 ///
@@ -681,6 +729,45 @@ type private DescriptorFault =
     /// The descriptor names something with no file offset — a pipe, which is
     /// what this kernel models the standard streams as; `ESPIPE`.
     | NotSeekable
+
+[<RequireQualifiedAccess>]
+module WakeCondition =
+
+    /// Would the syscall that parked on this condition get further now?
+    ///
+    /// Pure, and cheap enough to poll: a client that has parked a task asks this
+    /// of each candidate state until it answers `true`, then finishes the call
+    /// against the object the condition names — see `SyscallOutcome.WouldBlock`
+    /// for why that is not the same as re-issuing it against the descriptor it
+    /// was made through. It is never a promise that finishing succeeds: another
+    /// task can take the lock in between, and the caller then parks again.
+    ///
+    /// **A condition is only ever asked of a system whose kernel objects it
+    /// still names.** A `flock` waiter on a real kernel holds a reference to the
+    /// open file it waits on, so that file cannot be destroyed underneath it;
+    /// this library's descriptor table models no such reference, so a client
+    /// that parks a task must also stop the description being closed while it
+    /// waits — as `close` already refuses to strand a task parked in
+    /// `SystemNative_WaitForSocketEvents`. Asking about a description that has
+    /// gone is that obligation being broken, and it fails loudly rather than
+    /// answering: the honest answers are "grantable", which wakes the task into
+    /// an `EBADF` no kernel produces, and "not yet", which sleeps forever.
+    let isSatisfied<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (condition : WakeCondition)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        match condition with
+        | WakeCondition.FlockGrantable (requester, mode) ->
+            let registry = system.Process.FileDescriptors
+
+            match FileDescriptorRegistry.descriptions registry |> Map.tryFind requester with
+            | None ->
+                failwith
+                    $"WakeCondition.isSatisfied: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does for a task parked in a socket-event wait)."
+            | Some description ->
+                FileDescriptorRegistry.flockConflicts (OpenFileDescription.object description) requester mode registry
+                |> not
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
@@ -1124,11 +1211,16 @@ module UnixSystem =
     ///
     /// Models Linux's rules and refuses under Darwin rather than guessing, for
     /// each of the divergences `FLockRefusal` names.
+    ///
+    /// A blocking acquisition that another description's lock stands in the way
+    /// of answers `SyscallOutcome.WouldBlock`, in the system a real kernel would
+    /// have slept in — which is not the system the call arrived with, because
+    /// the caller's own old lock has already gone.
     let flock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (operation : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, FLockRefusal>
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
         =
         // Unlike a foreign-function layer's error and open-flag encodings, these
         // are *not* values anything translates: `flock(2)` takes them verbatim,
@@ -1158,7 +1250,7 @@ module UnixSystem =
         match request with
         | None ->
             match flavour with
-            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+            | SimulatedUnixFlavour.Linux -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINVAL), system)
             | SimulatedUnixFlavour.Darwin -> Error (FLockRefusal.DarwinMalformedOperation operation)
         | Some request ->
 
@@ -1200,28 +1292,130 @@ module UnixSystem =
             }
 
         match error with
-        | Some FlockError.BadFd -> Ok (SyscallAnswer.Failed UnixError.EBADF, advanced)
+        | Some FlockError.BadFd -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EBADF), advanced)
         | Some FlockError.WouldBlock ->
             if nonBlocking then
-                Ok (SyscallAnswer.Failed UnixError.EAGAIN, advanced)
+                Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EAGAIN), advanced)
             else
-                // A blocking acquisition that *can* be satisfied is served above,
-                // so only genuine contention reaches here. Refusing must never
-                // convert the request into a non-blocking one, which would hand
-                // the caller an EWOULDBLOCK no kernel would have produced.
-                //
-                // `advanced` is deliberately dropped: see the case's own note.
-                // The registry has already removed the caller's old lock, which
-                // is what a real kernel does before it sleeps — but a refusal
-                // carries no system, so a client cannot mistake this for a park.
-                let requested =
-                    if mode = lockShared then
-                        FlockMode.Shared
-                    else
-                        FlockMode.Exclusive
 
-                Error (FLockRefusal.WouldBlockIndefinitely requested)
-        | None -> Ok (SyscallAnswer.Completed 0L, advanced)
+            // A blocking acquisition that *can* be satisfied is served above, so
+            // only genuine contention reaches here. Parking must never quietly
+            // become the non-blocking answer, which would hand the caller an
+            // EWOULDBLOCK no kernel would have produced.
+            let requested =
+                match request with
+                | FlockRequest.Acquire mode -> mode
+                | FlockRequest.Release ->
+                    // `FileDescriptorRegistry.flock` grants every release, so a
+                    // release cannot be what contended.
+                    failwith
+                        $"flock: fd %d{fd} reported contention for a release, which cannot contend (this is an interpreter bug)"
+
+            // The requester is the description rather than the descriptor: a
+            // `dup` of `fd` waits on the same lock, and a wake keyed on the
+            // number would miss a waiter that had closed the one it asked
+            // through.
+            let requester =
+                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                | Some id -> id
+                | None ->
+                    failwith
+                        $"flock: fd %d{fd} reported contention but names no open file description (this is an interpreter bug)"
+
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, requested)), advanced)
+        | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
+
+    /// Finish an `flock` acquisition that parked, against the open file
+    /// description it parked on.
+    ///
+    /// This rather than re-issuing `flock` with the descriptor the call was made
+    /// through, and not as a convenience: descriptor numbers are allocated
+    /// lowest-free and reused as soon as they are freed, so a `close` of that
+    /// number elsewhere — survivable whenever a `dup` keeps the description
+    /// alive — can leave it naming a different object by the time the lock frees.
+    /// A real kernel has no such hazard: the sleeping call holds the file.
+    ///
+    /// Answers `WouldBlock` again, with the same condition, when the lock has
+    /// been taken since the waiter was woken. That is the ordinary case rather
+    /// than an edge one: a release wakes every waiter and they race, so all but
+    /// one of them find it gone.
+    ///
+    /// Most of what `flock` screens is not re-screened, because a screen over
+    /// facts that cannot change is spent: the operation bits were validated
+    /// before the park, and this signature makes a malformed resume
+    /// unrepresentable; the Darwin refusals for a pipe, a socket and a socket
+    /// event port are about the description's object kind, which never changes.
+    /// `DarwinConversion` is the exception, because it screens *mutable* state —
+    /// while this task held nothing, another through a `dup` of its descriptor
+    /// could have taken a lock on this same description, which Darwin serves as
+    /// a first acquisition, and the resume is then the conversion whose
+    /// keep-versus-drop divergence is unmeasured.
+    let flockAcquire<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (requester : OpenFileDescriptionId)
+        (mode : FlockMode)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
+        =
+        let descriptions =
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+
+        match Map.tryFind requester descriptions with
+        | None ->
+            failwith
+                $"UnixSystem.flockAcquire: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. `close` refuses such a close precisely so that this cannot happen (this is an interpreter bug)."
+        | Some description ->
+
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, description.Flock with
+        | SimulatedUnixFlavour.Darwin, Some _ -> Error FLockRefusal.DarwinConversion
+        | SimulatedUnixFlavour.Darwin, None
+        | SimulatedUnixFlavour.Linux, _ ->
+
+        let registry, error =
+            FileDescriptorRegistry.flockOn requester (FlockRequest.Acquire mode) system.Process.FileDescriptors
+
+        let advanced =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        match error with
+        | Some FlockError.BadFd ->
+            // `flockOn` never resolves a descriptor, so it has no bad one to
+            // report.
+            failwith
+                $"UnixSystem.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is an interpreter bug)."
+        | Some FlockError.WouldBlock ->
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, mode)), advanced)
+        | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
+
+    /// Record that `task` has parked in the `flock` `condition` describes.
+    ///
+    /// The record is derived from the condition rather than built beside it, so
+    /// that a client cannot park a task on one lock while polling for another.
+    /// Clearing it is `UnixTaskTable.withParkedFlock task None`, which the
+    /// client does when the acquisition finishes.
+    let parkFlock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (condition : WakeCondition)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        match condition with
+        | WakeCondition.FlockGrantable (requester, mode) ->
+            { system with
+                Tasks =
+                    UnixTaskTable.withParkedFlock
+                        task
+                        (Some
+                            {
+                                ParkedFlock.Requester = requester
+                                Mode = mode
+                            })
+                        system.Tasks
+            }
 
     /// `close(2)`: drop `fd` from the process's table, together with the kernel
     /// objects the description it named was the last reference to — the socket,
@@ -1298,6 +1492,31 @@ module UnixSystem =
                 | SimulatedUnixFlavour.Darwin -> Some (CloseRefusal.DarwinPortDescriptorWithWaiter (closingId, task))
 
         match portRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        // The same question for a lock rather than a port, and the reason
+        // `WakeCondition.isSatisfied` may treat a vanished description as an
+        // interpreter bug rather than as something to answer.
+        let flockRefusal : CloseRefusal<'Task> option =
+            match destroyed with
+            | None -> None
+            | Some _ ->
+
+            match closing with
+            | None -> None
+            | Some (closingId, _) ->
+
+            system.Tasks
+            |> Map.tryPick (fun task state ->
+                match state.ParkedFlock with
+                | Some parked when parked.Requester = closingId ->
+                    Some (CloseRefusal.LastFlockedDescriptorWithWaiter (closingId, task))
+                | Some _
+                | None -> None
+            )
+
+        match flockRefusal with
         | Some refusal -> Error refusal
         | None ->
 
@@ -3238,8 +3457,8 @@ module UnixSystem =
     /// Sugar over the per-syscall functions above, for a client that wants one
     /// surface — to log every syscall, to replay a recorded sequence, or to
     /// generate them. Where a syscall's own function has a narrower type (the
-    /// answer to `GetEffectiveUserId` cannot be a failure, and `Dup` cannot be
-    /// refused), that type is the one to prefer.
+    /// answer to `GetEffectiveUserId` cannot be a failure, `Dup` cannot be
+    /// refused, and only `FLock` can block), that type is the one to prefer.
     ///
     /// **Not every syscall this module answers is reachable through here.** A
     /// syscall whose answer carries more than an integer — `read`, whose answer
@@ -3252,15 +3471,34 @@ module UnixSystem =
     let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (call : Syscall)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, SyscallRefusal<'Task>>
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, SyscallRefusal<'Task>>
         =
+        // `flock` is the only one of these that can block, so it is the only one
+        // whose own function already speaks `SyscallOutcome`; the rest answer
+        // and are lifted. That is this layer being uniform where the individual
+        // functions are precise, which is what its docstring above says it is
+        // for.
+        let answered
+            (result : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, 'refusal>)
+            : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, 'refusal>
+            =
+            result
+            |> Result.map (fun (answer, system) -> SyscallOutcome.Answered answer, system)
+
         match call with
-        | Syscall.GetEffectiveUserId -> Ok (SyscallAnswer.Completed (int64 (effectiveUserId system)), system)
-        | Syscall.Dup fd -> Ok (dup fd system)
-        | Syscall.LSeek (fd, offset, whence) -> lseek fd offset whence system |> Result.mapError SyscallRefusal.LSeek
+        | Syscall.GetEffectiveUserId ->
+            Ok (SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (effectiveUserId system))), system)
+        | Syscall.Dup fd -> Ok (dup fd system) |> answered
+        | Syscall.LSeek (fd, offset, whence) ->
+            lseek fd offset whence system
+            |> answered
+            |> Result.mapError SyscallRefusal.LSeek
         | Syscall.FLock (fd, operation) -> flock fd operation system |> Result.mapError SyscallRefusal.FLock
-        | Syscall.FTruncate (fd, length) -> ftruncate fd length system |> Result.mapError SyscallRefusal.FTruncate
-        | Syscall.Close fd -> close fd system |> Result.mapError SyscallRefusal.Close
-        | Syscall.MkDir (path, mode) -> Ok (mkdir path mode system)
-        | Syscall.Unlink path -> Ok (unlink path system)
-        | Syscall.RmDir path -> Ok (rmdir path system)
+        | Syscall.FTruncate (fd, length) ->
+            ftruncate fd length system
+            |> answered
+            |> Result.mapError SyscallRefusal.FTruncate
+        | Syscall.Close fd -> close fd system |> answered |> Result.mapError SyscallRefusal.Close
+        | Syscall.MkDir (path, mode) -> Ok (mkdir path mode system) |> answered
+        | Syscall.Unlink path -> Ok (unlink path system) |> answered
+        | Syscall.RmDir path -> Ok (rmdir path system) |> answered

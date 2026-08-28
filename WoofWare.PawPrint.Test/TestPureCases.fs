@@ -484,8 +484,9 @@ module TestPureCases =
     /// `calli` through a null function pointer. This cannot be a comparison test in
     /// `sourcesPure`: the real runtime does not raise a catchable NullReferenceException
     /// here, it segfaults (observed as exit 139 on osx-arm64), which would take the test
-    /// host down with it. PawPrint instead implements the behaviour ECMA-335 III.3.20
-    /// actually specifies. See docs/divergences.md.
+    /// host down with it. A null function pointer is not correct CIL and ECMA-335 III.3.20
+    /// does not say what happens to it, so PawPrint picks the deterministic catchable
+    /// answer; see docs/divergences.md for why that one.
     [<Test>]
     let ``calli through a null function pointer throws NullReferenceException`` () =
         let source =

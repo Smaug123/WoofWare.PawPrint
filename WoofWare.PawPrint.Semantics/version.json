@@ -1,12 +1,12 @@
 {
-  "version": "0.6",
+  "version": "0.1",
   "publicReleaseRefSpec": [
     "^refs/heads/main$"
   ],
   "pathFilters": [
     "./",
+    ":/WoofWare.PawPrint.Domain",
     ":/Directory.Build.props",
-    ":/README.md",
     ":/logos/light.png"
   ]
 }

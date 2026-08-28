@@ -165,6 +165,10 @@ module DebuggerServer =
             writer.WriteString ("kind", "blockedOnSocketEvents")
             writer.WriteNumber ("port", port)
             writer.WriteEndObject ()
+        // No payload to write: what an `flock` waiter waits for lives in the
+        // emulated kernel's task record rather than in its status, and this
+        // renderer is handed only the status.
+        | ThreadStatus.BlockedOnFlock -> writer.WriteStringValue "blockedOnFlock"
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
         | ThreadStatus.Parked -> writer.WriteStringValue "parked"
 

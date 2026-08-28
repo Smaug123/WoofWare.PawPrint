@@ -197,6 +197,8 @@ module NativeSystemNative =
                 "Implement port retention for in-flight waits before closing one out from under a waiter."
             | CloseRefusal.DarwinPortDescriptorWithWaiter _ ->
                 "Measure what the woken wait reports before closing a kqueue out from under a waiter, or configure a Linux platform."
+            | CloseRefusal.LastFlockedDescriptorWithWaiter _ ->
+                "Model a blocked flock's reference to the file it waits on before closing the description out from under a waiter."
             | CloseRefusal.ListenerWouldResetUnacceptedClient _ ->
                 "Accept the connection or close the client before closing the listener."
 
@@ -3042,36 +3044,81 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
             let request = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            match UnixSystem.flock fd request (EmulatedKernel.unix state.Kernel) with
-            | Error refusal ->
-                // The library says which measured divergence it will not answer
-                // across; PawPrint says which managed caller could have asked,
-                // which is a fact about CoreLib rather than about any kernel.
-                let reachability =
-                    match refusal with
-                    | FLockRefusal.WouldBlockIndefinitely _ ->
-                        // Parking the caller is PawPrint's scheduler's job, so
-                        // PawPrint owns the issue tracking it — the library has
-                        // no scheduler to point at.
-                        "Parking a thread on a lock is a scheduler feature PawPrint has not built (issue #956). CoreLib never reaches this: SafeFileHandle.Init always sets LOCK_NB."
-                    | FLockRefusal.DarwinMalformedOperation _
-                    | FLockRefusal.DarwinStandardStream _
-                    | FLockRefusal.DarwinSocketEventPort
-                    | FLockRefusal.DarwinSocket _
-                    | FLockRefusal.DarwinConversion ->
-                        "Configure a Linux platform, or model Darwin's flock (issue #956)."
-
-                failwith $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal} %s{reachability}"
-            | Ok (SyscallAnswer.Failed error, system) ->
-                withErrno ctx error system state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
-                |> NativeHandlerResult.completed
+            // Park re-entrantly: leave the native frame on the stack and the
+            // caller's program counter naming the call, so a wake —
+            // `Program.fireFlockGrantable` flipping this thread back to
+            // Runnable once the lock could be granted — re-enters this handler
+            // and finishes the acquisition from the caller's own frame.
+            let park (condition : WakeCondition) (system : UnixSystem<ThreadId, SignalHandler>) =
+                // The record and the status are written together. The record is
+                // derived from the condition rather than built beside it, so a
+                // task cannot be parked on one lock while the sweep polls for
+                // another; and `close` needs it, to refuse destroying the
+                // description this thread is waiting on.
+                withAnswered (UnixSystem.parkFlock ctx.Thread condition system) state
+                |> Scheduler.blockOnFlock ctx.Thread
+                |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
-            | Ok (SyscallAnswer.Completed _, system) ->
+
+            let granted (system : UnixSystem<ThreadId, SignalHandler>) =
                 withAnswered system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+
+            let refused (refusal : FLockRefusal) : NativeHandlerResult option =
+                // The library says which measured divergence it will not answer
+                // across; PawPrint says which managed caller could have asked,
+                // which is a fact about CoreLib rather than about any kernel.
+                failwith
+                    $"%s{operation}: fd %d{fd}: %s{FLockRefusal.describe refusal} Configure a Linux platform, or model Darwin's flock (issue #956)."
+
+            // A re-entry is told apart from a first entry by the record, not by
+            // anything about the frame: the wake leaves the call site exactly as
+            // the park found it. The record is also what says *what* to finish —
+            // the descriptor the guest passed cannot be trusted for that, since
+            // numbers are reused as soon as they are freed and another thread
+            // may have closed and reopened this one while this call slept.
+            match UnixTaskTable.parkedFlockFor ctx.Thread state.Kernel.Tasks with
+            | Some parked ->
+                match UnixSystem.flockAcquire parked.Requester parked.Mode (EmulatedKernel.unix state.Kernel) with
+                | Error refusal -> refused refusal
+                | Ok (SyscallOutcome.WouldBlock condition, system) ->
+                    // Woken and beaten: a release wakes every waiter and they
+                    // race, so all but one of them find the lock gone. Park
+                    // again on the same condition, which is the ordinary case
+                    // rather than an edge one.
+                    park condition system
+                | Ok (SyscallOutcome.Answered answer, system) ->
+
+                let system =
+                    { system with
+                        Tasks = UnixTaskTable.withParkedFlock ctx.Thread None system.Tasks
+                    }
+
+                match answer with
+                | SyscallAnswer.Completed _ -> granted system
+                | SyscallAnswer.Failed error ->
+                    failwith
+                        $"%s{operation}: finishing a parked acquisition on %O{parked.Requester} answered %O{error}. A resume acquires on a description the close path is obliged to keep alive, so it can only be granted or still blocked (this is an interpreter bug)."
+            | None ->
+
+            match UnixSystem.flock fd request (EmulatedKernel.unix state.Kernel) with
+            | Error refusal -> refused refusal
+            | Ok (SyscallOutcome.WouldBlock condition, system) ->
+                // The system this parks with is not the one the call arrived
+                // with: a conversion has already dropped the caller's old lock,
+                // which is what a real kernel does before it sleeps.
+                //
+                // CoreLib never reaches this: SafeFileHandle.Init always sets
+                // LOCK_NB. A guest hand-rolling the P/Invoke can.
+                park condition system
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed _), system) -> granted system
         // `int32_t SystemNative_PRead(intptr_t fd, void* buffer, int32_t
         // bufferSize, int64_t fileOffset)` (pal_io.c:1832): `pread(2)` verbatim,
         // with an EINTR retry and — unlike `SystemNative_Read`, which goes

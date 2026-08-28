@@ -565,6 +565,64 @@ module Scheduler =
 
         setThreadStatus thread ThreadStatus.Runnable state
 
+    /// Park `blocked` in `BlockedOnFlock`, transitioning out of `Runnable`.
+    /// Called from the `SystemNative_FLock` handler, which is the only producer
+    /// this status will ever have.
+    ///
+    /// Takes no payload, unlike `blockOnSocketEvents`: what the thread waits for
+    /// is the `ParkedFlock` its task holds, which the kernel needs anyway so
+    /// that `close` can refuse to destroy the description underneath it. The
+    /// caller must have written that record — `UnixSystem.parkFlock` — before
+    /// calling this.
+    ///
+    /// Carries no deadline: an `flock` wait cannot time out, so
+    /// `Program.waitDeadline` will never route a thread out of this status. The
+    /// one wake is `Program.fireFlockGrantable`.
+    ///
+    /// As with `blockOnSocketEvents`, the caller must *not* advance the program
+    /// counter past the call site before parking: the wake has to re-enter the
+    /// handler so it can finish the acquisition and push the caller's return
+    /// value. `NativeHandlerResult.BlockedRetainingFrame` is what keeps the
+    /// frame in place for that.
+    let blockOnFlock (blocked : ThreadId) (state : IlMachineState) : IlMachineState =
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    blocked
+                    (Option.map (fun s ->
+                        { s with
+                            Status = ThreadStatus.BlockedOnFlock
+                        }
+                    ))
+        }
+
+    /// Wake a thread out of `BlockedOnFlock`: the sweep has observed that the
+    /// lock it waits for could be granted now. The park kept the native frame
+    /// and the caller's program counter, so flipping the status is the whole
+    /// wake — the re-entered `SystemNative_FLock` handler finishes the
+    /// acquisition itself.
+    ///
+    /// A wake is not a promise. A release wakes every waiter on the lock and
+    /// they race, exactly as `flock(2)` does, so a woken thread may find the
+    /// lock taken and park again; the record it was parked with is untouched by
+    /// this, which is what lets it.
+    ///
+    /// Fails loud if `thread` is not actually parked there: the only caller is
+    /// `Program.fireFlockGrantable`, which enumerates the statuses itself, so a
+    /// miss means the sweep raced its own observation.
+    let wakeFromFlockGrantable (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+        match state.ThreadState |> Map.tryFind thread with
+        | None -> failwith $"Scheduler.wakeFromFlockGrantable: thread %O{thread} has no ThreadState."
+        | Some ts ->
+            match ts.Status with
+            | ThreadStatus.BlockedOnFlock -> ()
+            | other ->
+                failwith
+                    $"Scheduler.wakeFromFlockGrantable: thread %O{thread} is not parked in BlockedOnFlock (status: %O{other}); the sweep observed a grantable lock against a thread that is not waiting for one."
+
+        setThreadStatus thread ThreadStatus.Runnable state
+
     /// Fire a `Thread.Sleep` timeout: the deadline-firing path has
     /// observed that `thread` is parked in `BlockedOnSleep (Some _)` and
     /// the virtual clock has advanced past its deadline. Flip the status
