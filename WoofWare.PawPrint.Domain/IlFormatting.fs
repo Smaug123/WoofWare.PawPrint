@@ -480,6 +480,11 @@ module IlFormatting =
                 header
                 $"  // No IL body (runtime-provided UnsafeAccessor: {kind}, target={nameStr}{overrides})"
             ]
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind raw) ->
+            [
+                header
+                $"  // No IL body (runtime-provided UnsafeAccessor naming no kind: {raw})"
+            ]
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             [ header ; $"  // No IL body (runtime-provided, unclassified: {name})" ]
         | MethodBody.Abstract -> [ header ; "  // No IL body (abstract)" ]

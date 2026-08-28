@@ -1549,6 +1549,8 @@ module Assembly =
                             ""
 
                     Console.WriteLine $"<runtime-provided: UnsafeAccessor %O{kind}, target=%s{nameStr}%s{overrides}>"
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind raw) ->
+                    Console.WriteLine $"<runtime-provided: UnsafeAccessor naming no kind (%d{raw})>"
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
                     Console.WriteLine $"<runtime-provided: unclassified ({name})>"
                 | MethodBody.Abstract -> Console.WriteLine "<abstract: no IL>"

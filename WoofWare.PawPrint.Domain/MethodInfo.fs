@@ -219,6 +219,20 @@ type RuntimeBehaviour =
     | UnsafeAccessor of kind : UnsafeAccessorKind * targetName : string option * hasTypeNameOverrides : bool
 
     /// <summary>
+    /// A C# 12+ <c>[UnsafeAccessor]</c> whose <c>UnsafeAccessorKind</c> is an integer that names
+    /// none of the five kinds. The attribute's constructor takes an enum, and an enum-typed
+    /// argument may hold any <c>int32</c> -- <c>[UnsafeAccessor((UnsafeAccessorKind)99)]</c> is
+    /// legal C# -- so this is a shape the metadata really can carry.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from the attribute being absent, which is a malformed image and fails the read.
+    /// CoreCLR parses the value, keeps it, and refuses at the <c>switch</c> that consumes it, so
+    /// the refusal reaches the guest as a catchable <c>BadImageFormatException</c> on the
+    /// accessor's first invocation rather than stopping the assembly from loading.
+    /// </remarks>
+    | UnsafeAccessorInvalidKind of raw : int
+
+    /// <summary>
     /// The Runtime-impl flag is set but PawPrint has no specific handler. This currently
     /// covers <c>BeginInvoke</c>/<c>EndInvoke</c> on delegates and any other
     /// Runtime-impl method we have not classified. Reaching this at dispatch time is a
@@ -1109,26 +1123,19 @@ module MethodInfo =
     /// We only recognise the <c>Name</c> property; any unexpected named arg makes us
     /// abandon parsing and treat the attribute as malformed.
     /// </summary>
-    let private tryParseUnsafeAccessorBlob (reader : byref<BlobReader>) : (UnsafeAccessorKind * string option) option =
+    let private tryParseUnsafeAccessorBlob (reader : byref<BlobReader>) : (int * string option) option =
         let prolog = reader.ReadUInt16 ()
 
         if prolog <> 0x0001us then
             None
         else
-            let kindRaw = reader.ReadInt32 ()
+            let kind = reader.ReadInt32 ()
 
-            let kind =
-                match kindRaw with
-                | 0 -> Some UnsafeAccessorKind.Constructor
-                | 1 -> Some UnsafeAccessorKind.Method
-                | 2 -> Some UnsafeAccessorKind.StaticMethod
-                | 3 -> Some UnsafeAccessorKind.Field
-                | 4 -> Some UnsafeAccessorKind.StaticField
-                | _ -> None
-
-            match kind with
-            | None -> None
-            | Some kind ->
+            // The value is *not* validated here. An enum-typed attribute argument may hold any
+            // int32, so an unrecognised one is a shape the metadata carries rather than a
+            // malformed blob, and it is the difference between "no accessor attribute" (which
+            // fails the read) and "an accessor naming no kind" (which the guest catches).
+            if true then
                 let namedCount = int (reader.ReadUInt16 ())
 
                 let mutable parsedName : string option = None
@@ -1165,6 +1172,8 @@ module MethodInfo =
                     i <- i + 1
 
                 if malformed then None else Some (kind, parsedName)
+            else
+                None
 
     /// Does any of the method's Param rows carry <c>[UnsafeAccessorType("...")]</c>?
     ///
@@ -1193,7 +1202,7 @@ module MethodInfo =
     let private tryReadUnsafeAccessor
         (metadataReader : MetadataReader)
         (methodDef : MethodDefinition)
-        : (UnsafeAccessorKind * string option * bool) option
+        : (int * string option * bool) option
         =
         let mutable result = None
 
@@ -1295,10 +1304,22 @@ module MethodInfo =
                     // is genuinely unexpected and we fail loudly so we surface the gap rather
                     // than silently synthesising an Abstract method.
                     match tryReadUnsafeAccessor metadataReader methodDef with
-                    | Some (kind, targetName, hasTypeNameOverrides) ->
-                        MethodBody.RuntimeProvided (
-                            RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)
-                        )
+                    | Some (rawKind, targetName, hasTypeNameOverrides) ->
+                        let kind =
+                            match rawKind with
+                            | 0 -> Some UnsafeAccessorKind.Constructor
+                            | 1 -> Some UnsafeAccessorKind.Method
+                            | 2 -> Some UnsafeAccessorKind.StaticMethod
+                            | 3 -> Some UnsafeAccessorKind.Field
+                            | 4 -> Some UnsafeAccessorKind.StaticField
+                            | _ -> None
+
+                        match kind with
+                        | Some kind ->
+                            MethodBody.RuntimeProvided (
+                                RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)
+                            )
+                        | None -> MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind rawKind)
                     | None ->
                         failwith
                             $"%s{assemblyName.Name}::%s{declaringTypeNamespace}.%s{declaringTypeName}::%s{methodName}: RVA=0 but no InternalCall/PInvoke/Runtime/Abstract flag and no [UnsafeAccessor] attribute (ImplAttributes=%O{implAttrs}, MethodAttributes=%O{methodAttrs}); malformed metadata or unhandled body classification"

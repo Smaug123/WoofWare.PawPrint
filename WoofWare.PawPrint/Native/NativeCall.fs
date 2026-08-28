@@ -870,6 +870,7 @@ module NativeCall =
                             ""
 
                     $"Runtime (UnsafeAccessor: kind=%O{kind}, target=%s{nameStr}%s{overrides})"
+                | RuntimeBehaviour.UnsafeAccessorInvalidKind raw -> $"Runtime (UnsafeAccessor naming no kind: %d{raw})"
                 | RuntimeBehaviour.Unrecognised name -> $"Runtime (unrecognised: %s{name})"
             | MethodBody.Abstract -> "Abstract"
             | MethodBody.Il _ -> "IL"

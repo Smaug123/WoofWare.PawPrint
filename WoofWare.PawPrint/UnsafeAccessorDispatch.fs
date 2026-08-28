@@ -1031,6 +1031,34 @@ module internal UnsafeAccessorDispatch =
     [<Literal>]
     let private dispatchedProgramCounter = 1
 
+    /// Refuse an accessor whose `UnsafeAccessorKind` names none of the five kinds.
+    ///
+    /// CoreCLR parses the attribute's integer, keeps it, and reaches the `default:` of the switch
+    /// that consumes it (unsafeaccessors.cpp:1146), which is the same `BFA_INVALID_UNSAFEACCESSOR`
+    /// refusal a malformed declaration gets -- measured on real .NET 10 as a catchable
+    /// `BadImageFormatException` on the first invocation. Nothing about the declaration is read
+    /// before that, so there is nothing here to resolve.
+    let executeInvalidKind
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : ExecutionResult
+        =
+        let exceptionType, message =
+            exceptionFor baseClassTypes UnsafeAccessorRefusal.BadImageFormat
+
+        let state, _whatWeDid =
+            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                loggerFactory
+                baseClassTypes
+                exceptionType
+                (Some message)
+                thread
+                state
+
+        ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+
     /// Run an `[UnsafeAccessor]` accessor's synthesised body.
     ///
     /// The accessor's own frame is a real declared method's frame, not a trampoline: real .NET
