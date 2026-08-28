@@ -371,15 +371,21 @@ module Program =
             Flocks : (ThreadId * ParkedFlock) list
         }
 
-    /// Runs on every tick of every workload, so the no-waiter case must cost no
-    /// allocation beyond the one record: a fold that accumulates only matches,
-    /// rather than materialising the thread map.
+    /// The seed, hoisted so that the overwhelmingly common case — a workload with
+    /// nothing parked in a syscall at all — allocates nothing whatever: the fold
+    /// below returns this very value when no thread matches.
+    let private noSyscallWaiters : SyscallWaiters =
+        {
+            SocketWaits = []
+            Flocks = []
+        }
+
+    /// Runs once per scheduler tick — that is, once per interpreted instruction —
+    /// so it accumulates only matches rather than materialising the thread map,
+    /// and its result is collected by `advanceToDecision` and handed to both
+    /// sweeps rather than computed by each.
     let private syscallWaiters (state : IlMachineState) : SyscallWaiters =
-        ((state.ThreadState,
-          {
-              SocketWaits = []
-              Flocks = []
-          })
+        ((state.ThreadState, noSyscallWaiters)
          ||> Map.foldBack (fun tid ts acc ->
              match ts.Status with
              | ThreadStatus.BlockedInSyscall ->
@@ -412,10 +418,12 @@ module Program =
     /// the same state each time, so a new producer cannot forget to wake
     /// anyone — where a push from each producer would fail silently, as a
     /// deadlock, on the first one that did.
-    let private fireSocketReadiness (state : IlMachineState) : IlMachineState =
-        let waiters =
-            (syscallWaiters state).SocketWaits
-            |> List.map (fun (tid, wait) -> tid, wait.Port)
+    let private fireSocketReadiness
+        (parked : (ThreadId * ParkedSocketWait) list)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let waiters = parked |> List.map (fun (tid, wait) -> tid, wait.Port)
 
         match waiters with
         | [] -> state
@@ -467,9 +475,7 @@ module Program =
     /// declining to, and handing the choice to the machinery whose purpose is
     /// exploring exactly such choices under a seed. The losers re-enter, find
     /// the lock taken, and park again.
-    let private fireFlockGrantable (state : IlMachineState) : IlMachineState =
-        let waiters = (syscallWaiters state).Flocks
-
+    let private fireFlockGrantable (waiters : (ThreadId * ParkedFlock) list) (state : IlMachineState) : IlMachineState =
         // Before projecting the kernel, which allocates a `UnixSystem`: this runs
         // on every tick of every workload, and almost none of them ever hold a
         // lock at all.
@@ -670,14 +676,24 @@ module Program =
         // scheduler from ever stalling.
         let state = fireExpiredDeadlines state
 
+        // Who is parked in what, collected once for both sweeps below: this runs
+        // per interpreted instruction, so a second walk of the thread map would
+        // be paid by every guest whether or not it ever blocks in a syscall.
+        let parked = syscallWaiters state
+
         // Wake any socket-events waiter whose port has become deliverable
         // since it parked. Before the jump-to-deadline fallback below, so a
         // deliverable port is never mistaken for quiescence.
-        let state = fireSocketReadiness state
+        let state = fireSocketReadiness parked.SocketWaits state
 
         // ...and any flock waiter whose lock has become available, for the same
         // reason: a grantable lock is not quiescence.
-        let state = fireFlockGrantable state
+        //
+        // Handed the list collected *before* the sweep above, which is sound
+        // because a sweep only ever wakes waiters of its own kind: nothing the
+        // socket sweep does can add, remove or re-park a lock waiter. Whether
+        // each lock is grantable is still asked of the current state.
+        let state = fireFlockGrantable parked.Flocks state
 
         // Drive the signal-dispatcher state machine before the scheduler
         // picks its next thread. If a pending signal is deliverable and
