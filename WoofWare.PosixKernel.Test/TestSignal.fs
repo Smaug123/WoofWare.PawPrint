@@ -40,6 +40,17 @@ module TestSignal =
             Signal.SIGWINCH, 28
         ]
 
+    /// The ceiling's *value*, which nothing else pins: every other test here
+    /// and in `TestPosixSignalPal` names `linuxSignalMax` symbolically, so all
+    /// of them move with it and none of them can see it being wrong.
+    ///
+    /// 64 is `SIGRTMAX`, measured on Linux 6.18.5 rather than recalled
+    /// (`SIGRTMAX=64 SIGRTMIN=34 NSIG=65`). Getting it wrong is guest-visible:
+    /// at 63, a guest registering signal 64 is refused where real Linux
+    /// accepts it.
+    [<Test>]
+    let ``the signo ceiling is SIGRTMAX`` () : unit = Signal.linuxSignalMax |> shouldEqual 64
+
     [<Test>]
     let ``toLinuxSigno produces the documented signo for every named case`` () : unit =
         for signal, signo in modelledSignals do
@@ -78,11 +89,6 @@ module TestSignal =
         Signal.ofLinuxSigno 100 |> shouldEqual ValueNone
         Signal.ofLinuxSigno -1 |> shouldEqual ValueNone // negatives never match
 
-
-
-
-
-
     [<Test>]
     let ``isUncatchable flags SIGKILL and SIGSTOP and nothing else`` () : unit =
         // The POSIX standard names exactly two uncatchable signals: SIGKILL
@@ -104,7 +110,6 @@ module TestSignal =
         Signal.isUncatchable (Signal.Other 11) |> shouldEqual false // SIGSEGV
         Signal.isUncatchable (Signal.Other 8) |> shouldEqual false // SIGFPE
         Signal.isUncatchable (Signal.Other 64) |> shouldEqual false
-
 
     [<Test>]
     let ``defaultDisposition classifies modelled terminate-by-default signals`` () : unit =
