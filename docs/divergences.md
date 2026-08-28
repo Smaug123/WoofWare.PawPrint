@@ -272,6 +272,11 @@ static int Main(string[] args) =>
 
 **Where this lives in code**: `CommandLineArgsInit.fs` builds the call and `Program.beginStartup` pumps it as its own startup phase; `GuestConfig.AssemblyPath` is where a host names one.
 
+**A NUL in either string is refused rather than modelled.** This is a refusal of *host configuration*, not a guest-visible divergence: no `execve` can produce an argument containing a NUL, because argv arrives as NUL-terminated C strings, so a host asking for one is describing a process the kernel could not have created. PawPrint fails at startup naming the knob and the index. The two alternatives are both worse than crashing: passing it through — which is what PawPrint's own managed-string allocation used to do — hands the guest a value no real `Main` can hold; and letting the marshalling truncate it, which is what happens by default (the buffer is NUL-terminated and CoreLib rebuilds each element with `new string(char*)`, so `"a\0b"` arrives as `"a"`), silently substitutes a value the host never asked for.
+
+Note this is deliberately *unlike* the same character in `AppContextProperties`, which truncates. The difference is not a preference: a real `hostpolicy` genuinely truncates a config property when it assigns a `char_t*` into a `pal::string_t`, so truncation there is what faithfulness means, whereas nothing truncates argv because the value never comes into existence to be truncated.
+
+
 ## A `runtimeconfig.json` is validated only where PawPrint reads it
 
 **CoreCLR**: `hostpolicy` parses the whole file with rapidjson, which rejects the *entire document* for faults anywhere in it — a numeric token too large to store in a double (`kParseErrorNumberTooBig`, so `1e400`), an unpaired `\uD800` surrogate escape (`kParseErrorStringUnicodeSurrogateInvalid`), and the rest of its error surface. A fault in a section nobody reads is still fatal: for the main config the app does not launch, and for `runtimeconfig.dev.json` the whole sidecar is ignored.
