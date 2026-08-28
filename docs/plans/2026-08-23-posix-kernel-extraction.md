@@ -3313,3 +3313,77 @@ lines, and a test for either would have to break two things at once.
 **What is left of stage 9**: the four socket syscalls, and the packaging items.
 
 
+
+#### Stage 9e: the port's consumer half moves to the library
+
+**Dependencies**: stage 9d.
+
+Stage 9's remaining socket work assumed `WaitForSocketEvents`, `poll`, `accept` and
+`connect` were library syscalls whose blocking case needed converting, as `flock`'s did
+in 9a. They are not: they are hundreds of lines of PAL ladder apiece in
+`Native/NativeSystemNative.fs`, and stage 8's socket entry points never happened. So
+each conversion is a *move* first, of stage-8 size.
+
+This stage moves the part of that which the blocking work needs and which nothing else
+is entangled with: the consumer half of the socket event port.
+`SocketEventPort.epollReadinessOfDescription`, its private `annotatedReady`, the
+deliverability predicate and the drain leave `EmulatedKernel` for
+`WoofWare.PosixKernel`, retyped from `EmulatedKernel` onto `UnixSystem`. Nothing about
+what a guest sees changes.
+
+**Why the consumer half alone.** The producer half — seeding a port's pending list when
+a registration is added or modified, and signalling a registration when its target's
+level changes — stays in PawPrint, because it is reached through the PAL wrapper's own
+screens. That leaves the library able to say whether a port would deliver while owning
+no modelled operation that makes one start to, which is a real asymmetry and is written
+down in the module's docstring rather than left to be discovered. `poll`'s sibling
+readiness function stays too: it belongs to `poll`'s own conversion and nothing in the
+library would call it.
+
+**What the move is for.** `Program`'s two sweeps ask their questions at different
+altitudes: the `flock` sweep evaluates the library's `WakeCondition.isSatisfied`, and
+the socket sweep asks a PawPrint-side predicate, because the predicate was PawPrint's.
+A `WakeCondition` case for the socket wait is only possible once the predicate the
+library would evaluate lives in the library — `WakeCondition` is data, and no case may
+carry a function. So this is the move that stage 9f's condition needs, taken on its own
+because it is mechanical and its diff is mostly call sites.
+
+**The naming constraint, which is not cosmetic.** `scripts/check-pal-residue.py` treats
+the bare token `SocketEvents` — the PAL's socket-event bit names — as evidence that a
+definition speaks .NET's vocabulary rather than POSIX's, and the allowlist it pins may
+shrink but never grow. `hasDeliverableSocketEvents` and `deliverSocketEvents` are caught
+by their own `let` lines, so moving them under their existing names would have failed
+the `pal-residue` flake check. Measured, not reasoned: the plural names report two new
+residue entries and the singular ones report the allowlisted eight. The library's own
+vocabulary is already singular throughout (`SocketEventPortState`,
+`SocketEventRegistration`, `setSocketEventReady`), so `hasDeliverableEvent` and `drain`
+join it.
+
+**The predicate becomes strict.** It answered `false` for a dead or non-port
+description, justified as "a thread can park on a port whose last descriptor later
+closes, and a real `epoll_wait` sleeps on regardless". That justification predates the
+port close refusal stage 7 added: `UnixSystem.close` refuses the last-descriptor close
+on Linux and any close on Darwin precisely so a parked waiter's port cannot be
+destroyed, all three of PawPrint's close sites turn that refusal into a failure, and
+there is no other path that closes a descriptor. So the `false` arms are unreachable
+under a waiter, and both answers are wrong if they are ever reached: "not yet" sleeps
+for ever, and "grantable" wakes the waiter into an `EBADF` no kernel produces. This is
+the rule 9a set for the whole stage — every wake condition keyed on live kernel
+objects, with `close` as what keeps them alive — applied to the one condition that had
+not been written that way.
+
+**Correctness oracle**:
+* The claim the shared walk exists to make true, made executable: a drain reports
+  something exactly when the predicate said it would. It was a docstring assertion with
+  nothing checking it, and each reader looks correct alone. Checked on every call
+  through the test adapters the move needs anyway, so all forty-odd measured delivery
+  rows and every generated `Wait` op of the socket fuzzer carry it, and as its own
+  library-side row over an empty port, a pending one, and the state a drain leaves
+  behind — which is the state a waiter that found nothing parks in.
+* Library rows for the two refusals the strictening adds, and for the drain's
+  non-positive count, which had none.
+* The existing corpus unchanged in what it asserts: `TestSocketEventDelivery`'s measured
+  rows, `TestEmulatedKernelSockets`, `SocketFuzz`, and the socket park fixtures.
+
+**What is left of stage 9**: the socket wait's `WakeCondition` and the sweep merge (9f),
+the socket syscalls' own moves, and the packaging items.

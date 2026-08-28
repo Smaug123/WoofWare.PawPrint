@@ -5479,8 +5479,10 @@ module NativeSystemNative =
             // stale ones — so even a walk that delivers nothing may change
             // the kernel, and that write-back happens before any park.
             let deliverOrPark (port : OpenFileDescriptionId) (requestedCount : int) : NativeHandlerResult option =
-                let delivered, kernel =
-                    EmulatedKernel.deliverSocketEvents port requestedCount state.Kernel
+                let delivered, system =
+                    SocketEventPort.drain port requestedCount (EmulatedKernel.unix state.Kernel)
+
+                let kernel = EmulatedKernel.withUnix system state.Kernel
 
                 match delivered with
                 | [] -> park port requestedCount (state.MapKernel (fun _ -> kernel))

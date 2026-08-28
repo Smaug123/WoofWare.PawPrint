@@ -427,8 +427,19 @@ module SocketFuzz =
                 | Some id -> id
                 | None -> failwith $"INTERPRETER-DRIVER BUG: wait's port slot %d{port} is not live."
 
-            let delivered, kernel =
-                EmulatedKernel.deliverSocketEvents portId maxEvents state.Kernel
+            // The predicate a parked waiter is polled against and the drain its
+            // woken handler performs read the same annotated walk, so they
+            // cannot disagree; asked here because a generated sequence drives
+            // the port through phases no hand-written row reaches.
+            let system = EmulatedKernel.unix state.Kernel
+            let predicted = SocketEventPort.hasDeliverableEvent portId system
+            let delivered, system = SocketEventPort.drain portId maxEvents system
+
+            if List.isEmpty delivered = predicted then
+                failwith
+                    $"INTERPRETER-DRIVER BUG: SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
+
+            let kernel = EmulatedKernel.withUnix system state.Kernel
 
             let batch =
                 delivered

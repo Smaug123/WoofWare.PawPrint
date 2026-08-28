@@ -2979,6 +2979,151 @@ module TestUnixSystemStep =
             | other -> failwith $"expected the close to succeed, got %A{other}"
 
 
+    /// A port with the standard input descriptor registered on it and pending.
+    ///
+    /// Built out of a standard stream rather than a socket, which is what makes
+    /// it constructible here at all: `SocketEventPort.epollReadinessOfDescription`
+    /// reports `EPOLLHUP` for stdin unconditionally — the launcher closed the
+    /// pipe's write end — and `ReadinessLevel.reportedUnder` passes `Hup`
+    /// through whatever the registration asked for. So the interest below asks
+    /// for *nothing at all* and the port is still deliverable, with no socket
+    /// phase to arrange.
+    let private withPendingPort (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
+        let stdin = 0
+        let stdinId = descriptionOf stdin system
+        let portFd, system = withPort system
+        let portId = descriptionOf portFd system
+
+        let registry =
+            match
+                FileDescriptorRegistry.changeSocketEventRegistration
+                    portFd
+                    stdin
+                    0L
+                    (SocketEventRegistrationChange.Add (
+                        {
+                            SocketEventInterest.Read = false
+                            Write = false
+                            ReadClose = false
+                            Close = false
+                            Error = false
+                        },
+                        0xBEEFUL
+                    ))
+                    system.Process.FileDescriptors
+            with
+            | Ok registry -> registry
+            | Error error -> failwith $"expected the registration to succeed, got %O{error}"
+
+        portFd,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors = FileDescriptorRegistry.appendSocketEventReady portId (stdin, stdinId) registry
+                }
+        }
+
+    [<Test>]
+    let ``a port with nothing pending would deliver nothing`` () : unit =
+        let fd, system = withPort linux
+
+        SocketEventPort.hasDeliverableEvent (descriptionOf fd system) system
+        |> shouldEqual false
+
+    [<Test>]
+    let ``a pending entry is deliverable, and draining it consumes it`` () : unit =
+        let fd, system = withPendingPort linux
+        let portId = descriptionOf fd system
+
+        SocketEventPort.hasDeliverableEvent portId system |> shouldEqual true
+
+        let delivered, drained = SocketEventPort.drain portId 8 system
+
+        delivered
+        |> shouldEqual
+            [
+                0xBEEFUL,
+                { ReadinessLevel.none with
+                    Hup = true
+                }
+            ]
+
+        SocketEventPort.hasDeliverableEvent portId drained |> shouldEqual false
+
+    [<Test>]
+    let ``the predicate and the drain cannot disagree`` () : unit =
+        // The claim the shared annotated walk exists to make true, and the one a
+        // parked waiter's correctness rests on: the predicate the sweep polls
+        // and the drain the woken handler performs answer the same question, so
+        // no event can arrive that wakes nobody, and no wake can find nothing.
+        // Each reader looks correct alone.
+        let empty = withPort linux
+        let pending = withPendingPort linux
+
+        for fd, system in [ empty ; pending ] do
+            let portId = descriptionOf fd system
+            let predicted = SocketEventPort.hasDeliverableEvent portId system
+            let delivered, drained = SocketEventPort.drain portId 8 system
+
+            List.isEmpty delivered |> shouldEqual (not predicted)
+
+            // ...and again in the state the drain produced, which is the state a
+            // waiter that found nothing parks in.
+            let predicted = SocketEventPort.hasDeliverableEvent portId drained
+            let delivered, _ = SocketEventPort.drain portId 8 drained
+
+            List.isEmpty delivered |> shouldEqual (not predicted)
+
+    [<Test>]
+    let ``a port that has gone is refused rather than answered`` () : unit =
+        // The obligation `close`'s port refusal exists to keep. Answering would
+        // be wrong either way: `false` sleeps for ever, and `true` wakes the
+        // waiter into an `EBADF` no kernel produces. This library's table models
+        // no reference from a waiter to what it waits on, so only the client can
+        // keep the port alive, and it must be told when it has not.
+        let fd, system = withPendingPort linux
+        let portId = descriptionOf fd system
+
+        let closed =
+            match FileDescriptorRegistry.close fd system.Process.FileDescriptors with
+            | Ok (registry, _) ->
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors = registry
+                        }
+                }
+            | Error error -> failwith $"expected the close to succeed, got %O{error}"
+
+        let exn =
+            Assert.Throws<exn> (fun () -> SocketEventPort.hasDeliverableEvent portId closed |> ignore)
+
+        exn.Message |> shouldContainText "closed underneath it"
+
+    [<Test>]
+    let ``a description that is not a port is refused rather than answered`` () : unit =
+        // `false` here would be a waiter parked on something that can never
+        // deliver, reported as an ordinary "not yet".
+        let exn =
+            Assert.Throws<exn> (fun () -> SocketEventPort.hasDeliverableEvent (descriptionOf 0 linux) linux |> ignore)
+
+        exn.Message |> shouldContainText "is not a socket event port"
+
+    [<Test>]
+    let ``draining nothing is refused`` () : unit =
+        // `epoll_wait` answers EINVAL for a non-positive `maxevents` without
+        // reaching the ready list, so a drain that got here was asked for
+        // something the caller should have refused. It matters beyond tidiness:
+        // a zero count would report no events from a port that has some, which
+        // is precisely the disagreement above.
+        let fd, system = withPendingPort linux
+        let portId = descriptionOf fd system
+
+        let exn =
+            Assert.Throws<exn> (fun () -> SocketEventPort.drain portId 0 system |> ignore)
+
+        exn.Message |> shouldContainText "is not positive"
+
     [<Test>]
     let ``truncateAt refuses a negative length rather than emptying the file`` () : unit =
         // `truncateAt` is shared with `open`'s `O_TRUNC`, so unlike `ftruncate`

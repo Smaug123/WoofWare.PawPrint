@@ -1627,46 +1627,10 @@ module EmulatedKernel =
         OsThreadId (uint32 i + 1u)
 
 
-    /// The epoll readiness of the descriptor `targetId` names, for computing
-    /// what a registration on it would report.
-    ///
-    /// A standard stream's level is a constant of the launch shape PawPrint
-    /// models (measured, `pipes.c`): stdin is the read end of a pipe whose
-    /// write end the launcher closed — the same claim `SystemNative_Read`'s
-    /// immediate-EOF makes — which presents `EPOLLHUP`, and the output
-    /// streams are write ends with space and a live reader, which present
-    /// `EPOLLOUT`. No modelled operation changes either, so the streams need
-    /// no producer. A file or port target cannot reach here: the registry
-    /// answers EPERM for the one and refuses the other.
-    let epollReadinessOfDescription (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : ReadinessLevel =
-        match Map.tryFind targetId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
-        | None ->
-            failwith
-                $"EmulatedKernel.epollReadinessOfDescription: %O{targetId} names no live open file description. FileDescriptorRegistry.close sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
-        | Some description ->
-
-        match description.Target with
-        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId kernel.Machine
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-            { ReadinessLevel.none with
-                Hup = true
-            }
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
-            { ReadinessLevel.none with
-                Out = true
-            }
-        | OpenFileTarget.File _ ->
-            failwith
-                $"EmulatedKernel.epollReadinessOfDescription: %O{targetId} is a regular file, which epoll_ctl answers EPERM for, so no registration can name it (this is an interpreter bug)."
-        | OpenFileTarget.SocketEventPort _ ->
-            failwith
-                $"EmulatedKernel.epollReadinessOfDescription: %O{targetId} is itself a socket event port; the registry refuses a nested-port registration, so no registration can name it (this is an interpreter bug)."
-
     /// The readiness of the descriptor `targetId` names, for a `poll(2)`
     /// caller.
     ///
-    /// A sibling of `epollReadinessOfDescription` rather than a widening of
+    /// A sibling of `SocketEventPort.epollReadinessOfDescription` rather than a widening of
     /// it: the two dispatchers refuse different things, because `epoll_ctl`
     /// screens targets that `poll(2)` accepts. The per-socket level they share
     /// (`socketReadinessLevel`) is the part measurement says is one function.
@@ -1695,7 +1659,7 @@ module EmulatedKernel =
                 Out = true
             }
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-            // The same launch-shape constants `epollReadinessOfDescription`
+            // The same launch-shape constants `SocketEventPort.epollReadinessOfDescription`
             // holds, and poll agrees with both on Linux (`pollmask.c` rows 19
             // and 20). Not shared with that function: it refuses two of the
             // targets this one answers, so the common part is the socket
@@ -1734,115 +1698,6 @@ module EmulatedKernel =
                             (UnixProcessState.descriptionsNamingSocket socketId kernel.Process)
                             (Some (lazy (UnixMachineState.socketReadinessLevel socketId kernel.Machine)))
                             kernel.FileDescriptors
-                }
-        }
-
-
-    /// Each pending entry of the port, in delivery order, with what it would
-    /// report if `epoll_wait` re-polled it right now: the target's current
-    /// level restricted to the registration's interest.
-    let private annotatedReady
-        (portState : SocketEventPortState)
-        (kernel : EmulatedKernel)
-        : ((int * OpenFileDescriptionId) * SocketEventRegistration * ReadinessLevel) list
-        =
-        portState.Ready
-        |> List.map (fun (_, targetId as key) ->
-            let registration =
-                match Map.tryFind key portState.Registrations with
-                | Some registration -> registration
-                | None ->
-                    failwith
-                        $"EmulatedKernel.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so this is an interpreter bug."
-
-            let reported =
-                epollReadinessOfDescription targetId kernel
-                |> ReadinessLevel.reportedUnder registration.Interest
-
-            key, registration, reported
-        )
-
-    /// Whether an `epoll_wait` on the port `portId` names would return at
-    /// least one event right now — the readiness sweep's wake condition, and
-    /// by construction the same question `deliverSocketEvents` answers,
-    /// because both read the same annotated walk.
-    ///
-    /// Total in `portId`: a dead or non-port description answers `false`,
-    /// because a thread can park on a port whose last descriptor later
-    /// closes, and a real `epoll_wait` sleeps on regardless.
-    let hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : EmulatedKernel) : bool =
-        match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
-        | None -> false
-        | Some description ->
-
-        match description.Target with
-        | OpenFileTarget.StandardStream _
-        | OpenFileTarget.File _
-        | OpenFileTarget.Socket _ -> false
-        | OpenFileTarget.SocketEventPort portState ->
-            annotatedReady portState kernel
-            |> List.exists (fun (_, _, reported) -> not (ReadinessLevel.isEmpty reported))
-
-    /// Drain the port as one `epoll_wait(maxevents = maxCount)` would: walk
-    /// the pending entries in order, re-polling each; report the ones whose
-    /// re-poll is nonempty, silently drop the stale ones, and stop once
-    /// `maxCount` events are reported — every walked entry is consumed, and
-    /// the entries the stop spared stay pending in order (measured,
-    /// `order2.c` row J).
-    ///
-    /// Returns the reported rows — each the registration's `Data` and the
-    /// reported readiness, in epoll's terms; the PAL-level conversion
-    /// (`EPOLLHUP` folding into `EPOLLIN|EPOLLOUT`) is the caller's — and
-    /// the kernel with the walked entries consumed.
-    ///
-    /// Loudly partial in `portId`: callers hold a live port description in
-    /// hand.
-    let deliverSocketEvents
-        (portId : OpenFileDescriptionId)
-        (maxCount : int)
-        (kernel : EmulatedKernel)
-        : (uint64 * ReadinessLevel) list * EmulatedKernel
-        =
-        if maxCount <= 0 then
-            failwith
-                $"EmulatedKernel.deliverSocketEvents: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is an interpreter bug."
-
-        match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
-        | None ->
-            failwith
-                $"EmulatedKernel.deliverSocketEvents: %O{portId} names no live open file description (this is an interpreter bug)."
-        | Some description ->
-
-        match description.Target with
-        | OpenFileTarget.StandardStream _
-        | OpenFileTarget.File _
-        | OpenFileTarget.Socket _ ->
-            failwith
-                $"EmulatedKernel.deliverSocketEvents: %O{portId} is not a socket event port (this is an interpreter bug)."
-        | OpenFileTarget.SocketEventPort portState ->
-
-        let rec walk
-            (delivered : (uint64 * ReadinessLevel) list)
-            (remaining : ((int * OpenFileDescriptionId) * SocketEventRegistration * ReadinessLevel) list)
-            : (uint64 * ReadinessLevel) list * (int * OpenFileDescriptionId) list
-            =
-            match remaining with
-            | [] -> List.rev delivered, []
-            | (_, registration, reported) :: rest ->
-                if List.length delivered = maxCount then
-                    List.rev delivered, remaining |> List.map (fun (key, _, _) -> key)
-                elif ReadinessLevel.isEmpty reported then
-                    walk delivered rest
-                else
-                    walk ((registration.Data, reported) :: delivered) rest
-
-        let delivered, surviving = walk [] (annotatedReady portState kernel)
-
-        delivered,
-        { kernel with
-            Process =
-                { kernel.Process with
-                    FileDescriptors = FileDescriptorRegistry.setSocketEventReady portId surviving kernel.FileDescriptors
                 }
         }
 
@@ -1917,7 +1772,7 @@ module EmulatedKernel =
                     $"EmulatedKernel.changeSocketEventRegistration: %O{portId} was live moments ago (this is an interpreter bug)."
 
         let readyNow =
-            epollReadinessOfDescription targetId kernel
+            SocketEventPort.epollReadinessOfDescription targetId (unix kernel)
             |> ReadinessLevel.reportedUnder interest
             |> ReadinessLevel.isEmpty
             |> not

@@ -730,6 +730,177 @@ type private DescriptorFault =
     /// what this kernel models the standard streams as; `ESPIPE`.
     | NotSeekable
 
+/// What a socket event port -- an `epoll` instance, or a `kqueue` -- would
+/// report if a wait on it were re-polled now, and what draining one does.
+///
+/// The *consumer* half of the port model. The producer half -- seeding the
+/// pending list when a registration is added or modified, and signalling a
+/// registration when its target's level changes -- is still the client's, so
+/// this library can say whether a port would deliver while owning no modelled
+/// operation that makes one start to.
+[<RequireQualifiedAccess>]
+module SocketEventPort =
+
+    /// The epoll readiness of the descriptor `targetId` names, for computing
+    /// what a registration on it would report.
+    ///
+    /// A standard stream's level is a constant of the launch shape PawPrint
+    /// models (measured, `pipes.c`): stdin is the read end of a pipe whose
+    /// write end the launcher closed — the same claim `SystemNative_Read`'s
+    /// immediate-EOF makes — which presents `EPOLLHUP`, and the output
+    /// streams are write ends with space and a live reader, which present
+    /// `EPOLLOUT`. No modelled operation changes either, so the streams need
+    /// no producer. A file or port target cannot reach here: the registry
+    /// answers EPERM for the one and refuses the other.
+    let epollReadinessOfDescription<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (targetId : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadinessLevel
+        =
+        match Map.tryFind targetId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        | None ->
+            failwith
+                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} names no live open file description. FileDescriptorRegistry.close sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
+            { ReadinessLevel.none with
+                Hup = true
+            }
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
+            { ReadinessLevel.none with
+                Out = true
+            }
+        | OpenFileTarget.File _ ->
+            failwith
+                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} is a regular file, which epoll_ctl answers EPERM for, so no registration can name it (this is an interpreter bug)."
+        | OpenFileTarget.SocketEventPort _ ->
+            failwith
+                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} is itself a socket event port; the registry refuses a nested-port registration, so no registration can name it (this is an interpreter bug)."
+
+    /// Each pending entry of the port, in delivery order, with what it would
+    /// report if `epoll_wait` re-polled it right now: the target's current
+    /// level restricted to the registration's interest.
+    let private annotatedReady<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (portState : SocketEventPortState)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ((int * OpenFileDescriptionId) * SocketEventRegistration * ReadinessLevel) list
+        =
+        portState.Ready
+        |> List.map (fun (_, targetId as key) ->
+            let registration =
+                match Map.tryFind key portState.Registrations with
+                | Some registration -> registration
+                | None ->
+                    failwith
+                        $"SocketEventPort.annotatedReady: pending entry %A{key} has no registration. FileDescriptorRegistryDefect.SocketEventReadyEntryUnregistered exists to make this unreachable, so this is an interpreter bug."
+
+            let reported =
+                epollReadinessOfDescription targetId system
+                |> ReadinessLevel.reportedUnder registration.Interest
+
+            key, registration, reported
+        )
+
+    /// Whether an `epoll_wait` on the port `portId` names would return at
+    /// least one event right now — the wake condition a parked waiter is
+    /// polled against, and by construction the same question `drain` answers,
+    /// because both read the same annotated walk.
+    ///
+    /// Loudly partial in `portId`, exactly as a parked `flock`'s wake condition
+    /// is: this library's descriptor table models no reference from a waiter to
+    /// what it waits on, so a client that parks a task on a port must stop that
+    /// port being destroyed while it waits — which is what `close`'s port
+    /// refusal does. Asking about a port that has gone is that obligation being
+    /// broken, and neither answer is honest: `true` wakes the waiter into an
+    /// `EBADF` no kernel produces, and `false` sleeps for ever.
+    let hasDeliverableEvent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (portId : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        | None ->
+            failwith
+                $"SocketEventPort.hasDeliverableEvent: %O{portId} names no live open file description, so a task parked on a wait for it has had that description closed underneath it. This library's table models no reference from a waiter to what it waits on, so a client that parks must refuse such a close (as `close` does)."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ ->
+            failwith
+                $"SocketEventPort.hasDeliverableEvent: %O{portId} is not a socket event port, so no wait can be parked on it (this is an interpreter bug)."
+        | OpenFileTarget.SocketEventPort portState ->
+            annotatedReady portState system
+            |> List.exists (fun (_, _, reported) -> not (ReadinessLevel.isEmpty reported))
+
+    /// Drain the port as one `epoll_wait(maxevents = maxCount)` would: walk
+    /// the pending entries in order, re-polling each; report the ones whose
+    /// re-poll is nonempty, silently drop the stale ones, and stop once
+    /// `maxCount` events are reported — every walked entry is consumed, and
+    /// the entries the stop spared stay pending in order (measured,
+    /// `order2.c` row J).
+    ///
+    /// Returns the reported rows — each the registration's `Data` and the
+    /// reported readiness, in epoll's terms; the conversion to a client's own
+    /// event encoding (the PAL's `EPOLLHUP` folding into `EPOLLIN|EPOLLOUT`)
+    /// is the caller's — and the system with the walked entries consumed.
+    ///
+    /// Loudly partial in `portId`: callers hold a live port description in
+    /// hand.
+    let drain<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (portId : OpenFileDescriptionId)
+        (maxCount : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : (uint64 * ReadinessLevel) list * UnixSystem<'Task, 'Handler>
+        =
+        if maxCount <= 0 then
+            failwith
+                $"SocketEventPort.drain: maxCount %d{maxCount} is not positive; epoll answers EINVAL for it before reaching the ready list, so this is an interpreter bug."
+
+        match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        | None ->
+            failwith
+                $"SocketEventPort.drain: %O{portId} names no live open file description (this is an interpreter bug)."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.File _
+        | OpenFileTarget.Socket _ ->
+            failwith $"SocketEventPort.drain: %O{portId} is not a socket event port (this is an interpreter bug)."
+        | OpenFileTarget.SocketEventPort portState ->
+
+        let rec walk
+            (delivered : (uint64 * ReadinessLevel) list)
+            (remaining : ((int * OpenFileDescriptionId) * SocketEventRegistration * ReadinessLevel) list)
+            : (uint64 * ReadinessLevel) list * (int * OpenFileDescriptionId) list
+            =
+            match remaining with
+            | [] -> List.rev delivered, []
+            | (_, registration, reported) :: rest ->
+                if List.length delivered = maxCount then
+                    List.rev delivered, remaining |> List.map (fun (key, _, _) -> key)
+                elif ReadinessLevel.isEmpty reported then
+                    walk delivered rest
+                else
+                    walk ((registration.Data, reported) :: delivered) rest
+
+        let delivered, surviving = walk [] (annotatedReady portState system)
+
+        delivered,
+        { system with
+            Process =
+                { system.Process with
+                    FileDescriptors =
+                        FileDescriptorRegistry.setSocketEventReady portId surviving system.Process.FileDescriptors
+                }
+        }
+
 [<RequireQualifiedAccess>]
 module WakeCondition =
 
