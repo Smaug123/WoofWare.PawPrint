@@ -277,7 +277,12 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="socketMatrix\*.tsv" />
+    <!-- Linked from WoofWare.PosixKernel.Test rather than held here: the
+         measurement is a fact about the simulated kernel, and both suites
+         reading one copy is what stops them drifting onto different rows. The
+         `Link` keeps the manifest resource name this project already uses. -->
+    <EmbeddedResource Include="..\WoofWare.PosixKernel.Test\socketMatrix\*.tsv"
+                      Link="socketMatrix\%(Filename)%(Extension)" />
     <EmbeddedResource Include="socketFuzz\harness.c" />
     <EmbeddedResource Include="socketFuzzCorpus\*.txt" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
