@@ -26,9 +26,11 @@ type Signal =
     | SIGUSR2
     | SIGABRT
     /// Catch-all for signals the simulator doesn't model semantically yet.
-    /// Carries the raw managed `PosixSignal` enum value (negative for
-    /// cross-platform signals, positive when callers supply a native signo
-    /// directly). Two `Other` values are equal iff their raw values match.
+    /// Carries a raw signo. `ofPlatformSigno` is the only thing here that
+    /// builds one, and it produces only signos in `(0, linuxSignalMax]` — but
+    /// the case is public and enforces nothing, so a client can put any number
+    /// in it and `toLinuxSigno` will hand that number straight back. Two
+    /// `Other` values are equal iff their raw values match.
     | Other of rawSignal : int
 
 /// <summary>
@@ -136,60 +138,6 @@ module Signal =
                 ValueSome (Signal.Other signo)
             else
                 ValueNone
-
-    /// Map a managed `PosixSignal` enum value (as the BCL passes it across
-    /// the P/Invoke boundary) to a domain `Signal`. The managed enum uses negative
-    /// values for cross-platform identities and positive values when the
-    /// caller has supplied a raw native signo directly; this helper
-    /// translates either form. Returns `ValueNone` for values we don't
-    /// recognise — `SystemNative_GetPlatformSignalNumber` returns 0 in that
-    /// case, and `PosixSignalRegistration.Register` then throws.
-    let ofPosixSignalEnum (raw : int) : Signal voption =
-        match raw with
-        | -1 -> ValueSome Signal.SIGHUP
-        | -2 -> ValueSome Signal.SIGINT
-        | -3 -> ValueSome Signal.SIGQUIT
-        | -4 -> ValueSome Signal.SIGTERM
-        | -5 -> ValueSome Signal.SIGCHLD
-        | -6 -> ValueSome Signal.SIGCONT
-        | -7 -> ValueSome Signal.SIGWINCH
-        | -8 -> ValueSome Signal.SIGTTIN
-        | -9 -> ValueSome Signal.SIGTTOU
-        | -10 -> ValueSome Signal.SIGTSTP
-        | n -> ofPlatformSigno n
-
-    /// The `PosixSignal` enum value that the dispatcher should hand to the
-    /// registered handler as its second argument. Modelled cross-platform
-    /// signals produce their negative enum identity (so `SIGINT -> -2`
-    /// round-trips through `ofPosixSignalEnum`).
-    ///
-    /// Signals that have no managed `PosixSignal` enum identity (SIGPIPE,
-    /// SIGABRT, SIGUSR1, SIGUSR2, and arbitrary `Signal.Other` raw signos)
-    /// produce `PosixSignalInvalid` (0). This matches what the real CoreCLR
-    /// dispatcher actually passes: `pal_signal.c` calls
-    /// `TryConvertSignalCodeToPosixSignal`, and on its `false` return path
-    /// the caller overwrites the out-parameter with `PosixSignalInvalid`
-    /// before invoking `g_posixSignalHandler(signalCode, signal)`. The raw
-    /// positive signo the conversion helper writes for unmapped codes is
-    /// dropped on the floor by that overwrite — only the first `signo`
-    /// argument carries the raw signal number to the managed handler.
-    let toPosixSignalEnum (signal : Signal) : int =
-        match signal with
-        | Signal.SIGHUP -> -1
-        | Signal.SIGINT -> -2
-        | Signal.SIGQUIT -> -3
-        | Signal.SIGTERM -> -4
-        | Signal.SIGCHLD -> -5
-        | Signal.SIGCONT -> -6
-        | Signal.SIGWINCH -> -7
-        | Signal.SIGTTIN -> -8
-        | Signal.SIGTTOU -> -9
-        | Signal.SIGTSTP -> -10
-        | Signal.SIGABRT -> 0
-        | Signal.SIGUSR1 -> 0
-        | Signal.SIGUSR2 -> 0
-        | Signal.SIGPIPE -> 0
-        | Signal.Other _ -> 0
 
     /// The POSIX kernel-level default disposition for `signal`. Used by
     /// `SystemNative_HandleNonCanceledPosixSignal` to decide whether the

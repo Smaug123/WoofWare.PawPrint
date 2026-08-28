@@ -167,8 +167,9 @@
       checks = {
         # Fails `nix flake check` when a definition in WoofWare.PosixKernel starts speaking
         # WoofWare.PawPrint's CoreCLR PAL encoding instead of POSIX's. The library is meant to be
-        # usable by a client that has never heard of .NET; the conversions that remain are listed in
-        # scripts/pal-residue-allowlist.txt, which may shrink but not grow.
+        # usable by a client that has never heard of .NET, and as of stage 9i it is: no conversion
+        # remains, and scripts/pal-residue-allowlist.txt is empty. This now guards against one
+        # coming back.
         pal-residue =
           pkgs.runCommand "pal-residue" {}
           ''

@@ -151,6 +151,7 @@
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
     <Compile Include="TestUnixErrorPal.fs" />
+    <Compile Include="TestPosixSignalPal.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
     <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamId.fs" />

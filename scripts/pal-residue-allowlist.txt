@@ -1,23 +1,25 @@
-# WoofWare.PosixKernel definitions that still speak WoofWare.PawPrint's CoreCLR
-# PAL rather than POSIX. Checked by scripts/check-pal-residue.py, which runs as
-# the `pal-residue` flake check.
+# WoofWare.PosixKernel definitions that speak WoofWare.PawPrint's CoreCLR PAL
+# rather than POSIX. Checked by scripts/check-pal-residue.py, which runs as the
+# `pal-residue` flake check.
 #
-# This list may shrink. It may not grow: a new conversion between POSIX and a
-# .NET encoding belongs in WoofWare.PawPrint (Native/NativeSystemNative.fs holds
-# the rest of them), with the POSIX value handed to the library.
+# There are none. This file is deliberately kept, empty, because its job has
+# changed rather than ended: it used to record how much of the extraction was
+# still owed, and it now records that the answer is none, so that adding an
+# entry is a visible act somebody has to argue for in review.
 #
-# Retiring what is here is split, and docs/plans/2026-08-23-posix-kernel-
-# extraction.md says why. Three clusters are gone. Stage 7 moved the PAL errno
-# numbering to WoofWare.PawPrint's `UnixErrorPal`, leaving the library stating
-# only the raw `<errno.h>` number; stage 9g moved the `SocketEvents` bit mask
-# to `SocketEventsPal`, leaving the library holding epoll's own conditions;
-# stage 9h moved the `AF_*`/`SOCK_*`/`PT_*` numbering and the shim's argument
-# screens to `SocketArgumentsPal`, leaving the library holding the set of
-# sockets it will create. What remains is the managed-enum signal mapping.
+# The four clusters, and where each went (docs/plans/2026-08-23-posix-kernel-
+# extraction.md has the reasoning):
 #
-# The grouping matches that plan's table.
-
-# Managed-enum mapping: `System.Runtime.InteropServices.PosixSignal` values,
-# which carry no kernel content whatever.
-Signal.fs:Signal.ofPosixSignalEnum
-Signal.fs:Signal.toPosixSignalEnum
+#   errno numbering        -> WoofWare.PawPrint's `UnixErrorPal`        (stage 7)
+#   `SocketEvents` bits    -> `SocketEventsPal`                         (stage 9g)
+#   `AF_*`/`SOCK_*`/`PT_*` -> `SocketArgumentsPal`                      (stage 9h)
+#   `PosixSignal` enum     -> `PosixSignalPal`                          (stage 9i)
+#
+# The library states the raw `<errno.h>` number, epoll's own readiness
+# conditions, the set of sockets it will create, and a signo; each client
+# encodes those as it pleases.
+#
+# A new conversion between POSIX and a .NET encoding belongs in
+# WoofWare.PawPrint, beside those four, with the POSIX value handed to the
+# library. If you believe an exception is warranted, add it below with a comment
+# saying why, and expect to be asked.

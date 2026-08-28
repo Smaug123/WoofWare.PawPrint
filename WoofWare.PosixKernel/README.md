@@ -34,9 +34,10 @@ I expect it may be of independent interest, so it is now extracted as a standalo
 
 ## Status
 
-A handful of leaf functions still convert to and from the encodings designed for WoofWare.PawPrint's CoreCLR platform abstraction:
-signals, address families, socket-event masks.
-They are on the way out; errno has already gone, and the library now states the raw `<errno.h>` number alone.
+Two leaf functions still convert to and from an encoding designed for WoofWare.PawPrint's CoreCLR platform abstraction:
+the managed `PosixSignal` enum.
+They are on the way out, and three other clusters have already gone: this library now states the raw `<errno.h>` number,
+epoll's own readiness conditions, and the set of sockets it will create, leaving each client to encode those as it pleases.
 
 The simulation is incomplete and expected to change wildly during development.
 The syscall request/response layer has started: `UnixSystem` exposes a handful of syscalls

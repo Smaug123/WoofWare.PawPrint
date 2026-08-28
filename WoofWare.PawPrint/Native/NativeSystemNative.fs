@@ -6118,7 +6118,7 @@ module NativeSystemNative =
                 NativeCall.int32Argument "SystemNative_GetPlatformSignalNumber" instruction.Arguments.[0]
 
             let signo =
-                match Signal.ofPosixSignalEnum raw with
+                match PosixSignalPal.ofEnum raw with
                 | ValueSome signal -> Signal.toLinuxSigno signal
                 | ValueNone -> 0
 
