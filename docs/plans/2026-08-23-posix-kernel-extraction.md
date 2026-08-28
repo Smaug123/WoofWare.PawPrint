@@ -3522,9 +3522,25 @@ pinned source can check each one alone. The wrapper's EINVAL screen and the pars
 share `supported` rather than writing `0x1F` in two projects.
 
 **Correctness oracle**:
-* The five `SocketEvents` values, the `SupportedEvents` screen, and the whole
-  `GetSocketEvents` table re-derived from the pinned `pal_networking.{c,h}` — including
-  that the screen *names* those five, not merely that it ORs to the same number.
+* The five `SocketEvents` values, the `SupportedEvents` screen, the two conversions'
+  *pairings*, and the delivery fold, all read out of the pinned
+  `pal_networking.{c,h}` — the screen by the five constants it names rather than by the
+  number it ORs to, and the conversions by the rows in their own function bodies rather
+  than by the enum alone. Review is what forced that second half: a pin that re-paired
+  `GetSocketEvents` without renumbering anything would have left a numbers-only test
+  entirely green.
+
+  What stays written down on this side is which `ReadinessLevel` field names which epoll
+  bit, because that is a fact about this repo — the type is defined in those terms — and
+  not one upstream can drift.
+
+  The oracle is then checked rather than asserted, by pointing `DOTNET_RUNTIME_SRC` at a
+  doctored copy of those two files: the pinned tree is a read-only store path, so that is
+  the only way to simulate drift. Four counterfactual upstream changes, each caught by
+  the rows that should catch it, and an unmodified copy that passes. Note that
+  `nix develop` sets `DOTNET_RUNTIME_SRC` itself, so it must be set *inside* the shell —
+  exported around the invocation it is silently overridden, and the probe reads the real
+  tree while claiming to read the doctored one.
 * `delivered` against `ofReadiness` composed with the fold, over all 32 readiness levels
   rather than a sample, and the consequence a guest actually sees: no level delivers
   `SA_CLOSE`.
