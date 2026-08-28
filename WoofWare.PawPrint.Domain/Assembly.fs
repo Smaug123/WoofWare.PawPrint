@@ -1016,15 +1016,46 @@ module LoadedAssemblies =
                 reference.Name.FullName
                 (snd reference.Handle).FullName
 
+/// <summary>
+/// A name that resolution looked for and the searched assembly's metadata does not contain.
+/// </summary>
+/// <remarks>
+/// This is "the metadata does not say", not "PawPrint cannot say": a shape PawPrint has not
+/// implemented (a multi-module <c>AssemblyFile</c> export, a <c>ModuleRef</c> scope) still
+/// crashes, because answering "absent" for one would be a lie. The distinction matters because
+/// a caller may legitimately have to report absence rather than terminate —
+/// <c>Assembly.GetType(name, throwOnError: false)</c> answers <c>null</c> for a forwarder whose
+/// target assembly does not declare the type.
+/// </remarks>
+type TypeResolutionMiss =
+    /// No <c>TypeDef</c> and no top-level <c>ExportedType</c> row of this name, in this assembly.
+    | TopLevelTypeAbsent of searchedIn : string * ns : string option * name : string
+
+    /// This assembly declares the given type, but nothing of this name nested inside it.
+    | NestedTypeAbsent of searchedIn : string * declaringType : string * name : string
+
+    override this.ToString () : string =
+        match this with
+        | TypeResolutionMiss.TopLevelTypeAbsent (searchedIn, ns, name) ->
+            let ns = ns |> Option.defaultValue "<global>"
+            $"top-level type %s{ns}.%s{name} is not declared in %s{searchedIn}"
+        | TypeResolutionMiss.NestedTypeAbsent (searchedIn, declaringType, name) ->
+            $"no type named %s{name} is nested inside %s{declaringType} in %s{searchedIn}"
+
 type TypeResolutionResult =
     | FirstLoadAssy of WoofWare.PawPrint.AssemblyReference
     | Resolved of DumpedAssembly * ResolvedTypeIdentity * TypeInfo<TypeDefn, TypeDefn>
+
+    /// The metadata searched does not contain the name asked for. Callers that have no way to
+    /// report absence should <c>failwith</c> the miss's own description.
+    | NotFound of TypeResolutionMiss
 
     override this.ToString () : string =
         match this with
         | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
         | TypeResolutionResult.Resolved (assy, identity, ty) ->
             $"Resolved(%s{assy.Name.FullName}: %O{identity} {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
+        | TypeResolutionResult.NotFound miss -> $"NotFound(%O{miss})"
 
 [<RequireQualifiedAccess>]
 module Assembly =
@@ -1653,11 +1684,8 @@ module Assembly =
             match assy.TryGetTopLevelExportedType ns name with
             | Some export -> resolveTypeFromExport assy assemblies genericArgs export
             | None ->
-                failwithf
-                    "Top-level type resolution failed for %s %s in %s"
-                    (ns |> Option.defaultValue "<global>")
-                    name
-                    assy.Name.FullName
+                TypeResolutionMiss.TopLevelTypeAbsent (assy.Name.FullName, ns, name)
+                |> TypeResolutionResult.NotFound
 
     // No exported-type fallback is needed here (unlike resolveTopLevelTypeInAssembly).
     // This function is only reached after the parent TypeRef has been fully resolved through
@@ -1677,11 +1705,8 @@ module Assembly =
         match assy.TryGetNestedTypeDef declaringType.TypeDefinition.Get childName with
         | Some typeDef -> resolveDefinedType genericArgs assy typeDef
         | None ->
-            failwithf
-                "Failed to resolve nested type %s inside %s in assembly %s"
-                childName
-                (fullName assy declaringType)
-                assy.Name.FullName
+            TypeResolutionMiss.NestedTypeAbsent (assy.Name.FullName, fullName assy declaringType, childName)
+            |> TypeResolutionResult.NotFound
 
     and private resolveTypeRefInAssembly
         (assemblies : LoadedAssemblies)
@@ -1697,29 +1722,35 @@ module Assembly =
         (targetAssembly : DumpedAssembly)
         (resolvedParent : ResolvedTypeIdentity option)
         (exportedType : WoofWare.PawPrint.ExportedType)
-        : ResolvedTypeIdentity
+        : Result<ResolvedTypeIdentity, TypeResolutionMiss>
         =
         match resolvedParent with
         | Some parent ->
             match targetAssembly.TryGetNestedTypeDef parent.TypeDefinition.Get exportedType.Name with
-            | Some nested -> ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name nested.TypeDefHandle
+            | Some nested ->
+                ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name nested.TypeDefHandle
+                |> Ok
             | None ->
-                failwithf
-                    "Failed to resolve nested exported type %s under %s in assembly %s"
+                TypeResolutionMiss.NestedTypeAbsent (
+                    targetAssembly.Name.FullName,
+                    fullName targetAssembly parent,
                     exportedType.Name
-                    (fullName targetAssembly parent)
-                    targetAssembly.Name.FullName
+                )
+                |> Error
         | None ->
             let nsString = exportedType.Namespace |> Option.defaultValue ""
 
             match targetAssembly.TryGetTopLevelTypeDef nsString exportedType.Name with
-            | Some topLevel -> ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name topLevel.TypeDefHandle
+            | Some topLevel ->
+                ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name topLevel.TypeDefHandle
+                |> Ok
             | None ->
-                failwithf
-                    "Failed to resolve top-level exported type %s.%s in assembly %s"
-                    nsString
+                TypeResolutionMiss.TopLevelTypeAbsent (
+                    targetAssembly.Name.FullName,
+                    exportedType.Namespace,
                     exportedType.Name
-                    targetAssembly.Name.FullName
+                )
+                |> Error
 
     and resolveTypeFromExport
         (fromAssembly : DumpedAssembly)
@@ -1740,8 +1771,12 @@ module Assembly =
 
             match resolveTypeFromExport fromAssembly assemblies genericArgs parent with
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
+            | TypeResolutionResult.NotFound miss -> TypeResolutionResult.NotFound miss
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
-                let identity = resolveExportedTypeByChain targetAssembly (Some parentIdentity) ty
+
+            match resolveExportedTypeByChain targetAssembly (Some parentIdentity) ty with
+            | Error miss -> TypeResolutionResult.NotFound miss
+            | Ok identity ->
                 let typeDef = resolveTypeIdentityDefinition targetAssembly identity
                 TypeResolutionResult.Resolved (targetAssembly, identity, applyGenericArgs genericArgs typeDef)
         | ExportedTypeData.AssemblyFile _ ->
@@ -1774,6 +1809,7 @@ module Assembly =
         | TypeRefResolutionScope.TypeRef parent ->
             match resolveTypeRefInAssembly assemblies genericArgs referencedInAssembly parent with
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
+            | TypeResolutionResult.NotFound miss -> TypeResolutionResult.NotFound miss
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
                 resolveNestedTypeInAssembly assemblies genericArgs targetAssembly parentIdentity target.Name
         | TypeRefResolutionScope.ModuleDef _ ->
@@ -1820,6 +1856,8 @@ module DumpedAssembly =
         | TypeResolutionResult.Resolved (resultAssy, _, typeInfo) -> resultAssy, typeInfo
         | TypeResolutionResult.FirstLoadAssy _ ->
             failwith "seems pretty unlikely that we could have constructed this object without loading its base type"
+        | TypeResolutionResult.NotFound miss ->
+            failwithf "Base type reference from %s does not resolve: %O" a.Name.FullName miss
 
     let private getTypeSpec
         (loadedAssemblies : LoadedAssemblies)
@@ -1847,6 +1885,8 @@ module DumpedAssembly =
                         assyRef.Name.FullName
                         signature
                         a.Name.FullName
+                | TypeResolutionResult.NotFound miss ->
+                    failwithf "Base type traversal could not resolve %O from %s: %O" signature a.Name.FullName miss
                 | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
                     resolvedAssembly, resolvedType.TypeDefHandle
             | unexpected ->
