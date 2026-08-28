@@ -28,7 +28,35 @@ type GuestConfig =
         /// excluding the program name. Distinct from `Kernel.Environment`
         /// because the runtime hands these to `Main` directly rather than the
         /// guest reading them back through a syscall.
+        ///
+        /// An element containing a NUL is refused when the run starts: a Unix
+        /// process's arguments are NUL-terminated C strings, so no `execve`
+        /// could have produced one, and the guest would otherwise see the value
+        /// silently truncated at it.
         Argv : string list
+        /// How the host names the assembly it is launching: what CoreCLR passes
+        /// to `ExecuteAssembly`, and hence what the guest reads back as
+        /// `Environment.GetCommandLineArgs().[0]`.
+        ///
+        /// This is *not* the executable that started the process — under
+        /// `dotnet app.dll` that is the muxer, and it is reported separately as
+        /// `KernelConfig.ProcessPath`. CoreCLR forwards this string verbatim
+        /// (only a single-file bundle substitutes its own path), and its own
+        /// comment in `corhost.cpp` records that it need not match the command
+        /// line the process was really invoked with: `Foo arg1` may be reported
+        /// as `Full_path_to_Foo arg1`.
+        ///
+        /// `None` takes the file name the compiler stamped into the image
+        /// (`DumpedAssembly.ScopeName`, such as `"Guest.dll"`). That is a real
+        /// fact about the image rather than an invented path, and since a bare
+        /// file name is a shape CoreCLR itself contemplates here, a host with no
+        /// meaningful path to give need not invent one. A command line is
+        /// installed either way: every route to `Main` runs through
+        /// `ExecuteAssembly`, which refuses a null assembly path outright, so
+        /// "a guest running with no command line at all" is not a state to model.
+        ///
+        /// Refused if it contains a NUL, for the reason given on `Argv`.
+        AssemblyPath : string option
         /// Properties to seed `System.AppContext` with before any guest code
         /// runs, as `hostpolicy` does from `runtimeOptions.configProperties` in
         /// the app's `runtimeconfig.json`. This is where feature switches like
@@ -56,6 +84,7 @@ type GuestConfig =
             DotnetRuntimeDirs = dotnetRuntimeDirs
             Kernel = KernelConfig.Default
             Argv = []
+            AssemblyPath = None
             AppContext = AppContextProperties.empty
         }
 

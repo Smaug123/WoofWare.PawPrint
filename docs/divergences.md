@@ -242,6 +242,41 @@ Console.WriteLine(File.Exists(Environment.ProcessPath));
 
 **Where this lives in code**: the `SystemNative_GetProcessPath` case in `NativeSystemNative.fs`; `EmulatedKernel.ProcessPath` and `defaultProcessPath` for the state and the default; `KernelConfig.ProcessPath` is where a host names one.
 
+## `GetCommandLineArgs()[0]` is a bare file name unless the host names a path
+
+**CoreCLR**: `CorHost2::ExecuteAssembly` calls `SetCommandLineArgs(pwzAssemblyPath, argc, argv)`, which forwards to the managed `Environment.InitializeCommandLineArgs(char* exePath, int argc, char** argv)` (`Environment.CoreCLR.cs`). `exePath` is `pwzAssemblyPath` verbatim — only a single-file bundle substitutes `Bundle::AppBundle->Path()` — and the managed body builds `commandLineArgs` (the program name followed by every argument) and `mainMethodArgs` (the arguments alone) in one pass, assigns the former to `s_commandLineArgs`, and returns the latter. So the two arrays cannot disagree, and element 0 is whatever path the host passed. Under `dotnet app.dll` that is the app's own `.dll`, which is *not* `Environment.ProcessPath` — see the entry above.
+
+**PawPrint**: runs that same CoreLib method during startup, so the relationship between the two arrays holds by construction. What differs is only element 0's value: it is `GuestConfig.AssemblyPath`, and when the host names none it falls back to the file name the compiler stamped into the image (`DumpedAssembly.ScopeName`, from the `Module` row — ECMA-335 II.22.30). That is a bare name such as `"Guest.dll"`, where a real launch reports an absolute path.
+
+**Spec status**: Outside ECMA-335, which says nothing about how a process learns its command line. Compliant with what the runtime's own source says the slot holds. CoreCLR's comment on `SetCommandLineArgs` (`corhost.cpp`) records that the answer "might not always return the exact same identity as the cmdLine used to invoke the method", with the worked example of `Foo arg1 arg2` reported as `Full_path_to_Foo arg1 arg2` — so the identity in element 0 is explicitly not pinned to any one rendering. NativeAOT's startup path describes the slot only as "the executable name" (`StartupCodeHelpers.Extensions.cs`, on why `Main`'s arguments are the tail rather than the whole). A non-path element 0 is therefore a shape upstream contemplates rather than one PawPrint invented.
+
+**Why we chose this**: the alternatives are worse in the two ways this project already rejects.
+
+* *Read the host's path.* `Program.prepare`'s `originalPath` is where the host read the image from, used to find a sidecar PDB; it is not part of `GuestConfig` and so not part of the replay contract, and the test harness passes a `.cs` source name there. Letting it reach the guest would make guest control flow depend on the machine that produced the run.
+* *Synthesise a path* (say `/app/Guest.dll`). The fiction rejected under `Environment.ProcessPath` above. `ScopeName` is not that: it is a fact recorded in the image, so it is the same on every machine, and it is not claimed to be a path at all.
+* *Decline to install a command line when the host names nothing.* This is the one that looks most principled and is in fact unreachable upstream: `ExecuteAssembly` refuses a null assembly path with `E_POINTER`, and it is the only route to `Main`. A guest running `Main` while `GetCommandLineArgs()` reports nothing is a state no real runtime is ever in — and it is worse than a wrong string, because `Main` would receive arguments that `GetCommandLineArgs()` then denied. CoreLib's empty-array fallback (`GetCommandLineArgsNative`, which on Unix is `return Array.Empty<string>()`) serves a *library* hosted from native code, not an executed assembly.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  "/path/to/app.dll"
+// PawPrint:        "app.dll"   (GuestConfig.AssemblyPath = None)
+Console.WriteLine(Environment.GetCommandLineArgs()[0]);
+
+// Unaffected, and true on both: element 0 then Main's arguments, from one shared pass.
+static int Main(string[] args) =>
+    Environment.GetCommandLineArgs().Length == args.Length + 1 ? 0 : 1;
+```
+
+**Testing note**: the *relationship* between the two arrays is a cross-runtime fact and is a `sourcesPure` comparison, `CommandLineArgs.cs`; because the pure harness launches every guest with no arguments, its tail comparison is vacuous there, so `TestCommandLineArgs.fs` runs the same shape under both runtimes with three arguments — and asserts the tail elements are the *same string objects* as `Main`'s, which only one shared pass produces. Element 0's *value* has no cross-runtime oracle (the real runtime reports whatever launched the test host), so it is pinned PawPrint-only: the exact bytes a configured `AssemblyPath` produces, and the exact bytes its absence falls back to.
+
+**Where this lives in code**: `CommandLineArgsInit.fs` builds the call and `Program.beginStartup` pumps it as its own startup phase; `GuestConfig.AssemblyPath` is where a host names one.
+
+**A NUL in either string is refused rather than modelled.** This is a refusal of *host configuration*, not a guest-visible divergence: no `execve` can produce an argument containing a NUL, because argv arrives as NUL-terminated C strings, so a host asking for one is describing a process the kernel could not have created. PawPrint fails at startup naming the knob and the index. The two alternatives are both worse than crashing: passing it through — which is what PawPrint's own managed-string allocation used to do — hands the guest a value no real `Main` can hold; and letting the marshalling truncate it, which is what happens by default (the buffer is NUL-terminated and CoreLib rebuilds each element with `new string(char*)`, so `"a\0b"` arrives as `"a"`), silently substitutes a value the host never asked for.
+
+Note this is deliberately *unlike* the same character in `AppContextProperties`, which truncates. The difference is not a preference: a real `hostpolicy` genuinely truncates a config property when it assigns a `char_t*` into a `pal::string_t`, so truncation there is what faithfulness means, whereas nothing truncates argv because the value never comes into existence to be truncated.
+
+
 ## A `runtimeconfig.json` is validated only where PawPrint reads it
 
 **CoreCLR**: `hostpolicy` parses the whole file with rapidjson, which rejects the *entire document* for faults anywhere in it — a numeric token too large to store in a double (`kParseErrorNumberTooBig`, so `1e400`), an unpaired `\uD800` surrogate escape (`kParseErrorStringUnicodeSurrogateInvalid`), and the rest of its error surface. A fault in a section nobody reads is still fatal: for the main config the app does not launch, and for `runtimeconfig.dev.json` the whole sidecar is ignored.

@@ -363,6 +363,7 @@ module AppProgram =
                         { GuestConfig.Default dotnetRuntimes with
                             Kernel = kernelConfig
                             Argv = args
+                            AssemblyPath = Some dllPath
                             AppContext = HostRuntimeConfig.forAssembly dllPath
                         }
                     PctSeed = pctSeed
