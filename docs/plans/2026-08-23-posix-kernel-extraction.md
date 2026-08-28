@@ -3268,11 +3268,14 @@ by their PALs' own retry loops; nothing terminates or interrupts another thread;
 handlers probe their own record before any argument read, so the first scheduled step
 after a wake re-enters the same syscall.
 
-**What each reader does now.** The two sweeps share one collection of parked threads with
-their records — `syscallWaiters` — and each selects the parks it owns. That the refusal of
-a record-less waiter lives there rather than in each sweep is not tidiness: with both
-sweeps validating every parked thread, whichever ran first would report and the other's
-arm would be unreachable. `GuestLocation` names the syscall as well as its object, because the
+**What each reader does now.** The two sweeps share one collection of parked threads —
+`syscallWaiters` — which hands each of them its own kind, *typed*: a sweep needs the
+payload its syscall parked with, and no other syscall's payload has that type, so
+mis-selecting is a compile error rather than a rule the sweeps have to keep. That matters
+because both payloads are largely `OpenFileDescriptionId`, and a lock waiter's requester
+read as a port is a plausible-looking wrong answer rather than a crash. The refusal of a
+record-less waiter lives there too, for a duller reason: with both sweeps validating every
+parked thread, whichever ran first would report and the other's arm would be unreachable. `GuestLocation` names the syscall as well as its object, because the
 status no longer does — "for a lock on open file description 3, Exclusive". The debugger
 derives its `kind` string from the record, so the wire shapes for a well-formed park are
 unchanged and the kind-less object is reached only in a state the invariant calls a

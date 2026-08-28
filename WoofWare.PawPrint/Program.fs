@@ -351,31 +351,52 @@ module Program =
             )
             state
 
-    /// Every thread parked in a syscall, with what its task records it waiting
-    /// for.
+    /// The threads parked in a syscall, split by which one.
     ///
-    /// Shared by the sweeps below, which each select the parks they own: with one
-    /// park status, "asleep in a syscall" and "asleep in *this* syscall" are
-    /// different questions, and only the record answers the second. A thread
+    /// Each sweep below takes its own field, and takes it *typed*: a sweep needs
+    /// the payload its syscall parked with, and no other syscall's payload has
+    /// that type. So mis-selecting — a socket sweep treating a lock waiter as its
+    /// own — is a compile error here rather than a rule the sweeps have to keep,
+    /// which matters because both payloads are largely `OpenFileDescriptionId`
+    /// and a wrong one reads as a plausible port.
+    ///
+    /// With one park status, "asleep in a syscall" and "asleep in *this* syscall"
+    /// are different questions and only the record answers the second. A thread
     /// parked with no record at all is neither sweep's to skip — nothing could
     /// ever wake it — so it is refused here, once, rather than by whichever sweep
     /// happened to run first.
-    ///
+    type private SyscallWaiters =
+        {
+            SocketWaits : (ThreadId * ParkedSocketWait) list
+            Flocks : (ThreadId * ParkedFlock) list
+        }
+
     /// Runs on every tick of every workload, so the no-waiter case must cost no
-    /// allocation: a fold that accumulates only matches, rather than
-    /// materialising the thread map.
-    let private syscallWaiters (state : IlMachineState) : (ThreadId * ParkedSyscall) list =
-        (state.ThreadState, [])
-        ||> Map.foldBack (fun tid ts acc ->
-            match ts.Status with
-            | ThreadStatus.BlockedInSyscall ->
-                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
-                | None ->
-                    failwith
-                        $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
-                | Some parked -> (tid, parked) :: acc
-            | _ -> acc
-        )
+    /// allocation beyond the one record: a fold that accumulates only matches,
+    /// rather than materialising the thread map.
+    let private syscallWaiters (state : IlMachineState) : SyscallWaiters =
+        ((state.ThreadState,
+          {
+              SocketWaits = []
+              Flocks = []
+          })
+         ||> Map.foldBack (fun tid ts acc ->
+             match ts.Status with
+             | ThreadStatus.BlockedInSyscall ->
+                 match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
+                 | None ->
+                     failwith
+                         $"syscallWaiters: thread %O{tid} is parked in BlockedInSyscall but its task records no park, so there is nothing to say what it waits for. A park writes the record and the status together (this is an interpreter bug)."
+                 | Some (ParkedSyscall.SocketWait wait) ->
+                     { acc with
+                         SocketWaits = (tid, wait) :: acc.SocketWaits
+                     }
+                 | Some (ParkedSyscall.Flock parked) ->
+                     { acc with
+                         Flocks = (tid, parked) :: acc.Flocks
+                     }
+             | _ -> acc
+         ))
 
     /// Wake every thread parked in `SystemNative_WaitForSocketEvents` whose
     /// port would deliver at least one event right now. The park is
@@ -392,15 +413,9 @@ module Program =
     /// anyone — where a push from each producer would fail silently, as a
     /// deadlock, on the first one that did.
     let private fireSocketReadiness (state : IlMachineState) : IlMachineState =
-        // Only the socket waits: a thread parked in some other syscall is not
-        // this sweep's business, and the record is what says which it is.
         let waiters =
-            syscallWaiters state
-            |> List.choose (fun (tid, parked) ->
-                match parked with
-                | ParkedSyscall.SocketWait wait -> Some (tid, wait.Port)
-                | ParkedSyscall.Flock _ -> None
-            )
+            (syscallWaiters state).SocketWaits
+            |> List.map (fun (tid, wait) -> tid, wait.Port)
 
         match waiters with
         | [] -> state
@@ -453,14 +468,7 @@ module Program =
     /// exploring exactly such choices under a seed. The losers re-enter, find
     /// the lock taken, and park again.
     let private fireFlockGrantable (state : IlMachineState) : IlMachineState =
-        // Only the locks, as `fireSocketReadiness` takes only the socket waits.
-        let waiters =
-            syscallWaiters state
-            |> List.choose (fun (tid, parked) ->
-                match parked with
-                | ParkedSyscall.SocketWait _ -> None
-                | ParkedSyscall.Flock parked -> Some (tid, parked)
-            )
+        let waiters = (syscallWaiters state).Flocks
 
         // Before projecting the kernel, which allocates a `UnixSystem`: this runs
         // on every tick of every workload, and almost none of them ever hold a
