@@ -3046,7 +3046,7 @@ module NativeSystemNative =
 
             // Park re-entrantly: leave the native frame on the stack and the
             // caller's program counter naming the call, so a wake —
-            // `Program.fireFlockGrantable` flipping this thread back to
+            // `Program.fireSyscallWakes` flipping this thread back to
             // Runnable once the lock could be granted — re-enters this handler
             // and finishes the acquisition from the caller's own frame.
             let park (condition : WakeCondition) (system : UnixSystem<ThreadId, SignalHandler>) =

@@ -541,68 +541,32 @@ module Scheduler =
                     ))
         }
 
-    /// The park record `thread`'s task holds, or a loud failure describing what
-    /// it holds instead. Shared by the two wakes below, which differ only in
-    /// which syscall they are entitled to wake a thread out of.
-    let private parkedIn
-        (waker : string)
-        (thread : ThreadId)
-        (expected : string)
-        (state : IlMachineState)
-        : ParkedSyscall
-        =
+
+    /// Wake a thread parked in a syscall: the sweep has observed that what it was
+    /// waiting for has happened.
+    ///
+    /// Every park is re-entrant — it kept the native frame and the caller's
+    /// program counter — so flipping the status is the whole wake, and the
+    /// re-entered handler finishes the call itself, from the caller's own frame.
+    /// One wake for all of them, because none of that varies by syscall.
+    ///
+    /// A wake is not a promise. Two threads can be woken for one lock and only
+    /// one of them get it; the loser re-enters, finds it taken, and parks again
+    /// on the record it still holds, which this leaves untouched.
+    ///
+    /// The status check is not ceremony: the only caller sweeps threads it
+    /// observed parked, so a thread that is not parked by the time it is woken
+    /// means the sweep raced its own observation.
+    let wakeFromSyscall (thread : ThreadId) (state : IlMachineState) : IlMachineState =
         match state.ThreadState |> Map.tryFind thread with
-        | None -> failwith $"Scheduler.%s{waker}: thread %O{thread} has no ThreadState."
+        | None -> failwith $"Scheduler.wakeFromSyscall: thread %O{thread} has no ThreadState."
         | Some ts ->
-            match ts.Status with
-            | ThreadStatus.BlockedInSyscall -> ()
-            | other ->
-                failwith
-                    $"Scheduler.%s{waker}: thread %O{thread} is not parked in a syscall (status: %O{other}); the sweep observed a satisfied %s{expected} against a thread that is not waiting on one."
 
-            match UnixTaskTable.parkedFor thread state.Kernel.Tasks with
-            | None ->
-                failwith
-                    $"Scheduler.%s{waker}: thread %O{thread} is parked in a syscall but its task records no park, so nothing says what it is waiting for (this is an interpreter bug)."
-            | Some parked -> parked
-
-    /// Wake a thread parked in `SystemNative_WaitForSocketEvents`: the readiness
-    /// sweep has observed that the port it waits on would deliver at least one
-    /// event. The park kept the native frame and the caller's program counter, so
-    /// flipping the status is the whole wake — the re-entered handler performs
-    /// the delivery itself, from the caller's own frame.
-    ///
-    /// Fails loud if `thread` is parked in some *other* syscall, which one status
-    /// for all of them makes possible to get wrong: the only caller is
-    /// `Program.fireSocketReadiness`, which selects on the record, so a miss means
-    /// it raced its own observation or read the wrong task's record.
-    let wakeFromSocketEvents (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        match parkedIn "wakeFromSocketEvents" thread "port" state with
-        | ParkedSyscall.SocketWait _ -> ()
+        match ts.Status with
+        | ThreadStatus.BlockedInSyscall -> ()
         | other ->
             failwith
-                $"Scheduler.wakeFromSocketEvents: thread %O{thread} is parked in %A{other}, not in a socket wait; the readiness sweep observed a deliverable port against a thread that is waiting for something else."
-
-        setThreadStatus thread ThreadStatus.Runnable state
-
-    /// Wake a thread parked in `SystemNative_FLock`: the sweep has observed that
-    /// the lock it waits for could be granted now. The park kept the native frame
-    /// and the caller's program counter, so flipping the status is the whole
-    /// wake — the re-entered handler finishes the acquisition itself.
-    ///
-    /// A wake is not a promise. A release wakes every waiter on the lock and they
-    /// race, exactly as `flock(2)` does, so a woken thread may find the lock taken
-    /// and park again; the record it was parked with is untouched by this, which
-    /// is what lets it.
-    ///
-    /// Fails loud if `thread` is parked in some other syscall, for the reason
-    /// `wakeFromSocketEvents` gives.
-    let wakeFromFlockGrantable (thread : ThreadId) (state : IlMachineState) : IlMachineState =
-        match parkedIn "wakeFromFlockGrantable" thread "lock" state with
-        | ParkedSyscall.Flock _ -> ()
-        | other ->
-            failwith
-                $"Scheduler.wakeFromFlockGrantable: thread %O{thread} is parked in %A{other}, not in an flock; the sweep observed a grantable lock against a thread that is waiting for something else."
+                $"Scheduler.wakeFromSyscall: thread %O{thread} is not parked in a syscall (status: %O{other}); the sweep observed a satisfied wake condition against a thread that is not waiting on one."
 
         setThreadStatus thread ThreadStatus.Runnable state
 

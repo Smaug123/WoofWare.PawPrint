@@ -657,6 +657,18 @@ type WakeCondition =
     /// `dup` of that descriptor waits on the same lock, and the number itself is
     /// reusable while the description lives on.
     | FlockGrantable of requester : OpenFileDescriptionId * mode : FlockMode
+    /// A wait for events on the socket event port the open file description
+    /// `port` names, parked because the port had nothing to deliver.
+    ///
+    /// Carries no event count, unlike the record a client parks with: how many
+    /// events the caller asked for decides what the *finishing* call copies out,
+    /// and says nothing about whether it can finish at all. A single deliverable
+    /// event satisfies a wait for any number of them.
+    ///
+    /// `port` is the open file description rather than the descriptor, for the
+    /// reason `FlockGrantable`'s requester is: the number can be closed and
+    /// reused while the wait sleeps, and a `dup` of it waits on the same port.
+    | SocketEventDeliverable of port : OpenFileDescriptionId
 
 /// What became of a request this kernel could answer, where "answer" may be
 /// "the calling task sleeps".
@@ -939,6 +951,24 @@ module WakeCondition =
             | Some description ->
                 FileDescriptorRegistry.flockConflicts (OpenFileDescription.object description) requester mode registry
                 |> not
+        | WakeCondition.SocketEventDeliverable port -> SocketEventPort.hasDeliverableEvent port system
+
+    /// What the task holding `parked` is waiting for.
+    ///
+    /// The direction that generalises, and the one every reader of a park should
+    /// use. A record is *richer* than its condition — a socket wait also carries
+    /// the event count its finishing call will copy out with, which no condition
+    /// mentions — so record to condition is total where condition to record is
+    /// not, and only `flock`, whose record is exactly its condition, has a
+    /// `parkFlock` going the other way.
+    ///
+    /// Deriving rather than storing the condition beside the record is what stops
+    /// the two disagreeing: a client cannot park a task on one object while
+    /// polling for another, because the thing polled *is* the thing parked on.
+    let ofPark (parked : ParkedSyscall) : WakeCondition =
+        match parked with
+        | ParkedSyscall.Flock parked -> WakeCondition.FlockGrantable (parked.Requester, parked.Mode)
+        | ParkedSyscall.SocketWait wait -> WakeCondition.SocketEventDeliverable wait.Port
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
@@ -1589,6 +1619,15 @@ module UnixSystem =
                         ))
                         system.Tasks
             }
+        | WakeCondition.SocketEventDeliverable port ->
+            // No sibling of this function exists for the socket wait, and none can:
+            // `ParkedSocketWait` also carries the event count the finishing call
+            // copies out with, which is re-entry state no condition mentions. So a
+            // socket wait's record cannot be derived from its condition, and the
+            // client writes it directly. `WakeCondition.ofPark` is the direction
+            // that works for both.
+            failwith
+                $"UnixSystem.parkFlock: asked to park task %O{task} in an flock, but the condition is a wait for events on open file description %O{port}. A socket wait's record carries an event count its condition does not, so it cannot be derived from one; write the record directly."
 
     /// `close(2)`: drop `fd` from the process's table, together with the kernel
     /// objects the description it named was the last reference to — the socket,

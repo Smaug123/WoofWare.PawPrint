@@ -105,22 +105,26 @@ class Program
         | Program.ProgramStartResult.CompletedBeforeMain outcome -> failwith $"guest completed before Main: %O{outcome}"
         | Program.ProgramStartResult.Ready prepared -> prepared
 
-    /// How many threads are parked in an `flock`.
+    /// The lock each parked thread is waiting for.
     ///
     /// The status says only that a thread is parked in *some* syscall, so the record is what
-    /// makes this count locks rather than parks. These guests reach no other parking syscall,
-    /// but a counter that would silently include one is not what any assertion below means.
-    let private parkedCount (state : IlMachineState) : int =
+    /// makes this locks rather than parks. These guests reach no other parking syscall, but a
+    /// list that would silently include one is not what any assertion below means.
+    let private parkedFlockRecords (state : IlMachineState) : ParkedFlock list =
         state.ThreadState
-        |> Map.toSeq
-        |> Seq.filter (fun (tid, ts) ->
-            ts.Status = ThreadStatus.BlockedInSyscall
-            && match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
-               | Some (ParkedSyscall.Flock _) -> true
-               | Some (ParkedSyscall.SocketWait _)
-               | None -> false
+        |> Map.toList
+        |> List.choose (fun (tid, ts) ->
+            if ts.Status <> ThreadStatus.BlockedInSyscall then
+                None
+            else
+                match UnixTaskTable.parkedFor tid state.Kernel.Tasks with
+                | Some (ParkedSyscall.Flock parked) -> Some parked
+                | Some (ParkedSyscall.SocketWait _)
+                | None -> None
         )
-        |> Seq.length
+
+    /// How many threads are parked in an `flock`.
+    let private parkedCount (state : IlMachineState) : int = List.length (parkedFlockRecords state)
 
     /// Whether any thread is parked in an `flock`.
     let private someoneParked (state : IlMachineState) : bool = parkedCount state > 0
@@ -137,6 +141,12 @@ class Program
             /// The most threads ever parked on locks at once. A multi-waiter test that never got
             /// two threads parked together would pass vacuously without this.
             MostParkedAtOnce : int
+            /// What those threads were waiting for, at that moment.
+            ///
+            /// A count alone cannot tell two waiters on *one* open file description from two
+            /// waiters on two, and the difference decides whether their wake conditions are
+            /// structurally equal — which is the whole subject of one of the tests below.
+            MostParkedRecords : ParkedFlock list
             /// Whether some single step took two or more threads out of the lock park together.
             ///
             /// This is what tells wake-all apart from wake-one. The two differ only in *which*
@@ -159,33 +169,45 @@ class Program
         // failing.
         let maxSteps = 20_000_000L
 
+        /// Keep whichever of the two moments had more threads parked, together with what they
+        /// were waiting for.
+        let deepest (incumbent : ParkedFlock list) (candidate : ParkedFlock list) : ParkedFlock list =
+            if List.length candidate > List.length incumbent then
+                candidate
+            else
+                incumbent
+
         let rec loop
             (prepared : Program.PreparedProgram)
             (steps : int64)
             (firstPark : IlMachineState option)
-            (most : int)
+            (most : ParkedFlock list)
             (sawWake : bool)
             =
             if steps > maxSteps then
                 failwith $"guest ran past %d{maxSteps} steps without terminating or deadlocking"
 
-            let before = parkedCount prepared.State
+            let beforeRecords = parkedFlockRecords prepared.State
+            let before = List.length beforeRecords
 
             let firstPark =
                 match firstPark with
                 | Some _ -> firstPark
                 | None -> if before > 0 then Some prepared.State else None
 
-            let most = max most before
+            let most = deepest most beforeRecords
 
             let finish (state : IlMachineState) (outcome : RunOutcome option) (stuck : string option) : Journey =
+                let most = deepest most (parkedFlockRecords state)
+
                 {
                     Outcome = outcome
                     FirstPark =
                         match firstPark with
                         | Some _ -> firstPark
                         | None -> if someoneParked state then Some state else None
-                    MostParkedAtOnce = max most (parkedCount state)
+                    MostParkedAtOnce = List.length most
+                    MostParkedRecords = most
                     SawSimultaneousWake = sawWake
                     Stuck = stuck
                 }
@@ -207,7 +229,7 @@ class Program
             | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _) ->
                 loop prepared (steps + 1L) firstPark most (woke prepared.State)
 
-        loop (prepared name source) 0L None 0 false
+        loop (prepared name source) 0L None [] false
 
     /// The exit code a terminated guest left on its terminating thread's eval stack.
     let private exitCodeOf (outcome : RunOutcome) : int =
@@ -336,6 +358,68 @@ class Program
         journey.MostParkedAtOnce |> shouldBeGreaterThan 1
 
         journey.SawSimultaneousWake |> shouldEqual true
+
+        completed journey |> shouldEqual 0
+
+    [<Test>]
+    let ``two waiters through one descriptor wait for the very same lock`` () : unit =
+        // The `flock` waiters that a sweep cannot tell apart. Every other multi-waiter guest here
+        // opens a description per thread, deliberately — conflicts are between descriptions, so
+        // two threads sharing one would not contend with each other at all. That makes their wake
+        // conditions *differ* in the requester, and hides the shape this test exists for: two
+        // threads blocked through one shared descriptor, for the same mode, record wake conditions
+        // that are structurally equal.
+        //
+        // A sweep that grouped satisfied waiters and refused to wake a group of more than one —
+        // which is what epoll's exclusive wait queue requires of the socket park — would refuse
+        // this. `flock` has no exclusive handoff: a release wakes every blocker, and both of these
+        // must be woken.
+        let source =
+            guest
+                """
+        IntPtr holder = OpenF();
+        if ((long)holder < 0) return 1;
+        // The one description both workers block through, opened here rather than in each of
+        // them: that is the whole difference from the two-waiter test above.
+        IntPtr shared = OpenF();
+        if ((long)shared < 0) return 2;
+
+        if (FLock(holder, LOCK_EX | LOCK_NB) != 0) return 3;
+
+        var arrived = new CountdownEvent(2);
+        var failed = 0;
+
+        ThreadStart contend = () =>
+        {
+            arrived.Signal();
+            // Both park on `shared`, so both record the same requester and the same mode.
+            if (FLock(shared, LOCK_EX) != 0) { Interlocked.Exchange(ref failed, 4); return; }
+        };
+
+        var first = new Thread(contend);
+        var second = new Thread(contend);
+        first.Start();
+        second.Start();
+
+        arrived.Wait();
+        Thread.Sleep(50);
+
+        if (FLock(holder, LOCK_UN) != 0) return 5;
+
+        first.Join();
+        second.Join();
+        return failed;
+"""
+
+        let journey = journey "FlockParkSharedDescriptionWaiters.cs" source
+
+        // Vacuity guard: without two parked at once there is no group to be right about.
+        journey.MostParkedAtOnce |> shouldEqual 2
+
+        // ...and the point of the test: one distinct condition between them. An accidental
+        // per-thread `open` would satisfy the guard above while quietly degrading this into the
+        // two-description shape the other test already covers.
+        journey.MostParkedRecords |> List.distinct |> List.length |> shouldEqual 1
 
         completed journey |> shouldEqual 0
 
