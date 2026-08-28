@@ -29,6 +29,15 @@
     <Compile Include="TestRenameRules.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestLinuxEpollLimits.fs" />
+    <Compile Include="TestCreatableSockets.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What `socket(2)` really answered, measured per flavour. It lives here
+         rather than beside its first consumer because it is a fact about the
+         kernel this library simulates; `WoofWare.PawPrint.Test` links the same
+         files, so the two suites cannot drift onto different measurements. -->
+    <EmbeddedResource Include="socketMatrix\*.tsv" />
   </ItemGroup>
 
   <ItemGroup>
