@@ -204,6 +204,80 @@ Console.WriteLine(typeof(Program).Assembly.CodeBase);
 
 **Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the `AssemblyNative_GetCodeBase` case.
 
+## `AppDomain.GetAssemblies()` reports a different set, in a different order
+
+**CoreCLR**: `AssemblyNative_GetLoadedAssemblies` (`appdomainnative.cpp`) walks the AppDomain's
+assembly iterator and returns each assembly's cached `GetExposedObject()`, in the order the
+assemblies were loaded — corelib first, then the entry assembly, then dependencies as the JIT
+resolves them. The array's element type is `CLASS__ASSEMBLY`, which is
+`System.Reflection.RuntimeAssembly` (`vm/corelib.h:133`) rather than the `Assembly` the managed
+wrapper's local is typed as.
+
+**Neither the set nor the order is a property of the program, on CoreCLR either.** The function's
+own comments say so — the count "will usually be correct, but there may be assemblies that are
+still loading", and it stops filling early "in case assemblies have been loaded into this
+appdomain, on another thread". Measured, 60 runs of one unchanged binary on one machine, whose
+background thread touched `Regex`, `Linq` and `IPAddress` while the main thread took its snapshot:
+
+| answer | runs |
+| --- | --- |
+| 8 assemblies (…, System.Text.RegularExpressions, System.Linq, System.Net.Primitives) | 57 |
+| 9 (also System.Collections.Concurrent) | 2 |
+| 7 (no System.Net.Primitives) | 1 |
+
+**PawPrint**: every assembly its load context holds, in the order each definition identity was
+first registered, as a `RuntimeAssembly[]`. Reproducible under a fixed scheduler seed, and — like
+the real runtime's — varying with the interleaving under a different one.
+
+The set differs because PawPrint interprets rather than jitting, so it loads an assembly at the
+moment a type in it is first resolved rather than when a method referencing it is compiled. The
+same single-file guest measured above reports four assemblies on real .NET
+(`System.Private.CoreLib`, the guest, `System.Runtime`, `System.Console`) and three under PawPrint,
+which has not yet reached the `Console` call. The order differs for the same reason, and because
+PawPrint registers the entry assembly before corelib.
+
+**Spec status**: unspecified. Neither the documentation nor CoreCLR fixes an order or a membership
+rule, and the table above shows CoreCLR does not deliver a stable one; no portable program may
+depend on either.
+
+**Why we chose this**: load order was chosen over sorting by definition display name, which is the
+other way to get a deterministic answer out of the load context. The load context's own index is an
+`ImmutableDictionary<string, DumpedAssembly>`, and *its* enumeration order may not be shown to a
+guest at all: it is a hash order over string hash codes, which .NET randomises per process.
+Measured — the same five assembly display names, inserted in the same order, enumerated in three
+different orders across three processes. A replay would then depend on the process that produced
+it, which is the determinism leak the interpreter exists to prevent.
+
+Between the two lawful candidates, sorting was rejected because the stability it appears to buy is
+not real: under PawPrint the *set* is already a function of the run, so sorting only makes the
+order a function of the set, and the guest's answer still changes with the seed. Load order costs
+the same, has the same shape as the real runtime's answer, and preserves strictly more information
+— the load context now records the order, which a future `AppDomain.AssemblyLoad` event or a
+load-order diagnostic can read.
+
+**Observable example**:
+
+```csharp
+// dotnet app.dll:  4, then System.Private.CoreLib
+// PawPrint:        3, then the guest's own assembly
+Assembly[] loaded = AppDomain.CurrentDomain.GetAssemblies();
+Console.WriteLine(loaded.Length);
+Console.WriteLine(loaded[0].GetName().Name);
+```
+
+**Testing note**: `sourcesPure/AppDomainGetAssemblies.cs` is a comparison test, but it asserts
+neither the length nor the order — there is no cross-runtime fact there. What it does assert holds
+on both: the `RuntimeAssembly[]` element type, that corelib and the executing assembly are members
+*by reference* (the elements are cached exposed objects, not copies), that no element is null or
+repeated, and that a second call yields a different array whose contents are a superset. The order
+itself is pinned PawPrint-only, by `GetLoadedAssemblies reports the load context in load order` in
+`TestAssemblyNativeQCalls.fs`, which registers two libraries in reverse alphabetical order so that
+a sorted implementation cannot pass, and by the load-order arm of `LoadedAssemblies agrees with a
+naive reference implementation` in `TestLoadedAssemblies.fs`.
+
+**Where this lives in code**: `NativeRuntimeAssembly.tryExecuteQCall`, the
+`AssemblyNative_GetLoadedAssemblies` case, over `LoadedAssemblies.DefinitionNamesInLoadOrder`.
+
 ## `Environment.ProcessPath` reports no executable, and is never resolved against the filesystem
 
 **CoreCLR**: `SystemNative_GetProcessPath` (`pal_process.c:898-901`) is `return minipal_getexepath();`, and both of the arms PawPrint models in `minipal_getexepath` (`src/native/minipal/getexepath.h`) end in `realpath(..., NULL)` — macOS on the buffer `_NSGetExecutablePath` filled, Linux on `/proc/self/exe` and then on `AT_EXECFN`. So the answer is a `malloc`'d canonical path, and it exists only if every component resolved. Measured on .NET 10.0.7: `dotnet app.dll` reports the *muxer* (`/usr/share/dotnet/dotnet`), an apphost-launched app reports the apphost. The app's own `.dll` is never the answer — that is `GetCommandLineArgs()[0]`.

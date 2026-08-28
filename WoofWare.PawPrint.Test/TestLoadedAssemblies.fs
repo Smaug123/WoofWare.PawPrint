@@ -134,6 +134,19 @@ module TestLoadedAssemblies =
                     $"Assembly %s{assy.Name.FullName} is in the load context but is not findable by its own definition identity"
             | Some found -> found.Name.FullName |> shouldEqual assy.Name.FullName
 
+    /// <summary>
+    /// The model's <c>ByDefinition</c> is an append-only association list with first-write-wins,
+    /// so it already <em>is</em> the load order — no separate model state is needed to check it.
+    /// </summary>
+    /// <remarks>
+    /// Load order is guest-visible: it is the order <c>AppDomain.GetAssemblies()</c> reports, so a
+    /// path that appended twice, appended on re-registration, or moved an identity on rebinding
+    /// would be a wrong answer to a guest rather than an internal untidiness.
+    /// </remarks>
+    let private assertLoadOrderMatches (real : LoadedAssemblies) (model : Model) : unit =
+        (real.DefinitionNamesInLoadOrder |> List.ofSeq)
+        |> shouldEqual (model.ByDefinition |> List.map fst)
+
     [<Test>]
     let ``LoadedAssemblies agrees with a naive reference implementation`` () : unit =
         if pool.Value.Length = 0 then
@@ -160,6 +173,7 @@ module TestLoadedAssemblies =
                     canonical.Name.FullName |> shouldEqual assy.Name.FullName
 
                 assertEveryAssemblyFindableByItsOwnName real model
+                assertLoadOrderMatches real model
 
             // Definition-identity lookups agree.
             for assy in pool.Value do
@@ -199,6 +213,11 @@ module TestLoadedAssemblies =
         (twice.DefinitionNames |> Seq.length)
         |> shouldEqual (once.DefinitionNames |> Seq.length)
 
+        // Re-registration must not append a second entry: load order is what a guest sees, so a
+        // duplicate here is an assembly appearing twice in `AppDomain.GetAssemblies()`.
+        (twice.DefinitionNamesInLoadOrder |> List.ofSeq)
+        |> shouldEqual [ assy.Name.FullName ]
+
         twice.ContainsDefinition assy.Name |> shouldEqual true
 
     /// Binding the same reference to the same assembly twice changes nothing, and a second
@@ -234,6 +253,11 @@ module TestLoadedAssemblies =
 
         (third.DefinitionNames |> Seq.length)
         |> shouldEqual (second.DefinitionNames |> Seq.length)
+
+        // A *distinct instance* of an identity already held is the one shape the property test's
+        // pool cannot produce, because `Assembly.readFile` memoises by path. It must not append.
+        (third.DefinitionNamesInLoadOrder |> List.ofSeq)
+        |> shouldEqual [ assy.Name.FullName ]
 
         match third.TryByDefinition assy.Name with
         | None -> Assert.Fail "Expected the assembly to remain findable by its definition identity"

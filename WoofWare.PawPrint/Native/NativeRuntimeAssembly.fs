@@ -528,6 +528,104 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some runtimeAssemblyAddr))
 
             NativeHandlerResult.completed state |> Some
+        // Declared on `System.Runtime.Loader.AssemblyLoadContext` rather than on an assembly type:
+        // it asks about the load context as a whole. `AppDomain.GetAssemblies()` is the only route
+        // a guest has to it today: the one other managed caller, `AssemblyLoadContext.Assemblies`,
+        // filters each result through `GetLoadContext`, whose QCall is not implemented.
+        | "AssemblyNative_GetLoadedAssemblies",
+          "System.Private.CoreLib",
+          "System.Runtime.Loader",
+          "AssemblyLoadContext",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when objectHandleGenerics.IsEmpty ->
+            let operation = "AssemblyNative_GetLoadedAssemblies"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let retAssemblies =
+                NativeCall.objectHandleOnStackTarget operation state "retAssemblies" instruction.Arguments.[0]
+
+            // Load order, not the dictionary's enumeration order — that one is a hash order over
+            // per-process-randomised string hashes, so handing it to a guest would make a replay
+            // depend on the process that produced it. See `DefinitionNames`.
+            let loadOrder = state._LoadedAssemblies.DefinitionNamesInLoadOrder
+
+            // The two are denormalised views of one fact, and only the dictionary is consulted
+            // everywhere else, so a registration path that updated one and not the other would
+            // show up here as an assembly silently missing from the guest's array rather than as
+            // any failure. Cheap to check at the one place the order is read.
+            let definitionCount = state._LoadedAssemblies.DefinitionNames |> Seq.length
+
+            if loadOrder.Length <> definitionCount then
+                failwith
+                    $"%s{operation}: the load context holds %d{definitionCount} definition identities but records %d{loadOrder.Length} in load order. This is an interpreter bug."
+
+            // `AllocateObjectArray(nArrayElems, CoreLibBinder::GetClass(CLASS__ASSEMBLY))`, and
+            // `CLASS__ASSEMBLY` is `System.Reflection.RuntimeAssembly` (vm/corelib.h:133) rather
+            // than the `Assembly` the managed wrapper's local is typed as. Measured on real .NET:
+            // `AppDomain.CurrentDomain.GetAssemblies().GetType()` reports
+            // `System.Reflection.RuntimeAssembly[]`.
+            let state, _, runtimeAssemblyElementHandle =
+                NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    state
+                    "System.Reflection"
+                    "RuntimeAssembly"
+
+            // `GetExposedObject()` is cached per assembly, so an element here is the very object
+            // `Assembly.GetExecutingAssembly()` and `typeof(T).Assembly` report, not an equal one.
+            let state, elementAddrs =
+                loadOrder
+                |> Seq.fold
+                    (fun (state, acc) assemblyFullName ->
+                        let addr, state =
+                            NativeRuntimeType.getOrAllocateRuntimeAssembly
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                assemblyFullName
+                                state
+
+                        state, addr :: acc
+                    )
+                    (state, [])
+
+            let elementAddrs = List.rev elementAddrs
+
+            // CoreCLR's trailing-null trim cannot arise here. It exists because another thread can
+            // load an assembly between the count and the fill, and PawPrint's QCall runs to
+            // completion within one scheduling step; the array is allocated at the length it is
+            // filled to.
+            let arrayAddr, state =
+                IlMachineState.allocateArray
+                    (ConcreteTypeHandle.OneDimArrayZero runtimeAssemblyElementHandle)
+                    (fun () -> CliType.ObjectRef None)
+                    loadOrder.Length
+                    state
+
+            let state =
+                elementAddrs
+                |> List.indexed
+                |> List.fold
+                    (fun state (i, addr) ->
+                        IlMachineState.setArrayValue arrayAddr (CliType.ObjectRef (Some addr)) i state
+                    )
+                    state
+
+            // Written unconditionally: `GetLoadedAssemblies` starts from `null` and returns
+            // `assemblies!` (AssemblyLoadContext.CoreCLR.cs:34-39), so a skipped write is a
+            // NullReferenceException in the guest.
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retAssemblies
+                    (CliType.ObjectRef (Some arrayAddr))
+
+            NativeHandlerResult.completed state |> Some
         // Also declared on `Assembly` rather than on `RuntimeAssembly`: which assembly the answer
         // names is what the stack crawl decides, so there is no assembly to hang the QCall off.
         | "AssemblyNative_GetExecutingAssembly",
