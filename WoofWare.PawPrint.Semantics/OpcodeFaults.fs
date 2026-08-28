@@ -48,8 +48,11 @@ type OpcodeFaults =
     ///   and whatever the target does reaches the caller; that belongs to the call graph. The
     ///   entries here are only what the transfer itself can fault on — a null receiver, say.
     /// * Faults from *binding* the instruction's metadata token, in both of its halves. Finding
-    ///   the target: `TypeLoadException`, `MissingFieldException`, `MissingMethodException`,
-    ///   `BadImageFormatException`, `InvalidProgramException`. And being allowed to touch it once
+    ///   the target: the assembly the token refers into may be missing or unloadable
+    ///   (`FileNotFoundException`, `FileLoadException`, `BadImageFormatException`), and the token
+    ///   may fail to resolve against one that loaded (`TypeLoadException`,
+    ///   `MissingFieldException`, `MissingMethodException`, `InvalidProgramException`). And being
+    ///   allowed to touch it once
     ///   found: `MethodAccessException`, `FieldAccessException`, `TypeAccessException`, which
     ///   ECMA-335 does list per-instruction (III.4.10's `ldfld`, for one, throws
     ///   `System.FieldAccessException` "if field is not accessible"). Access is worth naming
@@ -58,7 +61,7 @@ type OpcodeFaults =
     ///   `InternalsVisibleTo` that a later version withdraws hits it at runtime.
     ///
     ///   Both halves attach uniformly to every token-bearing instruction rather than
-    ///   distinguishing between them, so listing them per-opcode would add the same eight entries
+    ///   distinguishing between them, so listing them per-opcode would add the same ten entries
     ///   to most of the table while telling a reader nothing; and both depend on the *referencing
     ///   context* as much as on the token, which an opcode-keyed table has no way to see. `IlOp`
     ///   already says which instructions bear a token: exactly `UnaryMetadataToken` and

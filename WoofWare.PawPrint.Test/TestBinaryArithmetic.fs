@@ -47,6 +47,18 @@ module TestBinaryArithmetic =
         =
         BinaryArithmetic.execute baseClassTypes op state val1 val2 |> fst
 
+    /// Run a faulting operation on operands the test expects not to fault it.
+    let private executeFaultingOk
+        (op : FaultingArithmeticOperation)
+        (state : IlMachineState)
+        (val1 : EvalStackValue)
+        (val2 : EvalStackValue)
+        : EvalStackValue
+        =
+        match BinaryArithmetic.executeFaulting baseClassTypes op state val1 val2 with
+        | Ok (result, _) -> result
+        | Error fault -> failwith $"%s{op.Name} of %O{val1} and %O{val2} unexpectedly faulted with %O{fault}"
+
     let private concreteTypeFor
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : ConcreteType<ConcreteTypeHandle>
@@ -664,10 +676,13 @@ module TestBinaryArithmetic =
             execute ArithmeticOperation.add state nullPointer v |> expect (int64 offset)
             // `int32 + &` is legal and also yields a byref.
             execute ArithmeticOperation.add state v nullPointer |> expect (int64 offset)
-            execute ArithmeticOperation.addOvf state nullPointer v |> expect (int64 offset)
+
+            executeFaultingOk ArithmeticOperation.addOvf state nullPointer v
+            |> expect (int64 offset)
+
             execute ArithmeticOperation.sub state nullPointer v |> expect (-(int64 offset))
 
-            execute ArithmeticOperation.subOvf state nullPointer v
+            executeFaultingOk ArithmeticOperation.subOvf state nullPointer v
             |> expect (-(int64 offset))
 
             if offset = 0 then
@@ -830,7 +845,7 @@ module TestBinaryArithmetic =
         let bigOffset = EvalStackValue.NativeInt (NativeIntSource.Verbatim (1L <<< 62))
 
         // In range: no trap.
-        execute ArithmeticOperation.addOvf state (placeholderPointer 8L) bigOffset
+        executeFaultingOk ArithmeticOperation.addOvf state (placeholderPointer 8L) bigOffset
         |> shouldEqual (placeholderPointer ((1L <<< 62) + 8L))
 
         // Out of range: faults, and the unchecked form wraps instead.
@@ -940,7 +955,7 @@ module TestBinaryArithmetic =
                 placeholderPointer (int64 bits)
 
         let check
-            (checkedOp : IArithmeticOperation)
+            (checkedOp : FaultingArithmeticOperation)
             (uncheckedOp : IArithmeticOperation)
             (exact : bigint)
             (val1 : EvalStackValue)
@@ -1076,7 +1091,7 @@ module TestBinaryArithmetic =
             | Some result -> failwith $"expected sub to refuse %O{val1} - %O{val2}, but it gave %O{result}"
             | None ->
 
-            match run ArithmeticOperation.subOvf val1 val2 with
+            match run ArithmeticOperation.subOvf.Op val1 val2 with
             | Some result -> failwith $"sub refused %O{val1} - %O{val2}, but sub.ovf gave %O{result}"
             | None -> ()
 

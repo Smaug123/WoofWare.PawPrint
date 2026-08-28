@@ -161,6 +161,20 @@ type IArithmeticOperation =
 
     abstract Name : string
 
+/// An arithmetic operation whose host instruction can fault on its operands (`div`, `rem`,
+/// `rem.un`, and the checked add/sub/mul family). The wrapper is what confines the fault
+/// carrier: the only way to run one of these is `BinaryArithmetic.executeFaulting`, which
+/// hands the fault back as data, so a caller outside this assembly cannot reach a faulting
+/// operation through plain `execute` and be met by an exception type it cannot name.
+type FaultingArithmeticOperation =
+    internal
+        {
+            Op : IArithmeticOperation
+        }
+
+    /// The host instruction's name, for diagnostics.
+    member this.Name : string = this.Op.Name
+
 [<RequireQualifiedAccess>]
 module ArithmeticOperation =
     let private verbatimInt64 (value : int64) : NativeIntSource = NativeIntSource.Verbatim value
@@ -453,7 +467,7 @@ module ArithmeticOperation =
             member _.Name = "add"
         }
 
-    let addOvf =
+    let private addOvfImpl =
         { new IArithmeticOperation with
             member _.Int32Int32 a b =
                 hostFaultingArith (fun () -> (# "add.ovf" a b : int32 #))
@@ -492,6 +506,11 @@ module ArithmeticOperation =
                 addOffsetToManagedPtr OverflowBehaviour.Trap baseClassTypes state val2 ptr1
 
             member _.Name = "add.ovf"
+        }
+
+    let addOvf : FaultingArithmeticOperation =
+        {
+            Op = addOvfImpl
         }
 
     /// Whether both pointers reach into the *same* argument slot.
@@ -822,7 +841,7 @@ module ArithmeticOperation =
             member _.Name = "sub"
         }
 
-    let subOvf =
+    let private subOvfImpl =
         { new IArithmeticOperation with
             member _.Int32Int32 a b =
                 hostFaultingArith (fun () -> (# "sub.ovf" a b : int32 #))
@@ -862,6 +881,11 @@ module ArithmeticOperation =
             member _.Name = "sub.ovf"
         }
 
+    let subOvf : FaultingArithmeticOperation =
+        {
+            Op = subOvfImpl
+        }
+
     let mul =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "mul" a b : int32 #)
@@ -886,7 +910,7 @@ module ArithmeticOperation =
             member _.Name = "mul"
         }
 
-    let rem =
+    let private remImpl =
         { new IArithmeticOperation with
             member _.Int32Int32 a b =
                 hostFaultingArith (fun () -> (# "rem" a b : int32 #))
@@ -918,7 +942,12 @@ module ArithmeticOperation =
             member _.Name = "rem"
         }
 
-    let remUn =
+    let rem : FaultingArithmeticOperation =
+        {
+            Op = remImpl
+        }
+
+    let private remUnImpl =
         { new IArithmeticOperation with
             member _.Int32Int32 a b =
                 hostFaultingArith (fun () -> (# "rem.un" a b : int32 #))
@@ -950,7 +979,12 @@ module ArithmeticOperation =
             member _.Name = "rem.un"
         }
 
-    let mulOvf =
+    let remUn : FaultingArithmeticOperation =
+        {
+            Op = remUnImpl
+        }
+
+    let private mulOvfImpl =
         { new IArithmeticOperation with
             member _.Int32Int32 a b =
                 hostFaultingArith (fun () -> (# "mul.ovf" a b : int32 #))
@@ -985,7 +1019,12 @@ module ArithmeticOperation =
             member _.Name = "mul_ovf"
         }
 
-    let mulOvfUn =
+    let mulOvf : FaultingArithmeticOperation =
+        {
+            Op = mulOvfImpl
+        }
+
+    let private mulOvfUnImpl =
         { new IArithmeticOperation with
             member _.Int32Int32 a b =
                 hostFaultingArith (fun () -> (# "mul.ovf.un" a b : int32 #))
@@ -1017,7 +1056,12 @@ module ArithmeticOperation =
             member _.Name = "mul.ovf.un"
         }
 
-    let div =
+    let mulOvfUn : FaultingArithmeticOperation =
+        {
+            Op = mulOvfUnImpl
+        }
+
+    let private divImpl =
         { new IArithmeticOperation with
             member _.Int32Int32 a b =
                 hostFaultingArith (fun () -> (# "div" a b : int32 #))
@@ -1058,6 +1102,11 @@ module ArithmeticOperation =
                     failwith "refusing to divide a pointer"
 
             member _.Name = "div"
+        }
+
+    let div : FaultingArithmeticOperation =
+        {
+            Op = divImpl
         }
 
 [<RequireQualifiedAccess>]
@@ -1358,8 +1407,9 @@ module BinaryArithmetic =
             managedPtrManagedPtr val1 val2 |> withState
         | val1, val2 -> failwith $"invalid %s{op.Name} operation: {val1} and {val2}"
 
-    /// `execute` for an operation whose host instruction can fault on its operands (`div`,
-    /// `rem`, `rem.un`, and the checked add/sub/mul family), handing the fault back as data.
+    /// `execute` for an operation whose host instruction can fault on its operands, handing the
+    /// fault back as data. The `FaultingArithmeticOperation` type makes this the only way to run
+    /// such an operation from outside this assembly.
     ///
     /// Only the fault detected by the host operation itself comes back as `Error`: a
     /// `DivideByZeroException` or `OverflowException` raised by any interpreter code around it
@@ -1371,13 +1421,13 @@ module BinaryArithmetic =
     /// discarded with the attempt.
     let executeFaulting
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (op : IArithmeticOperation)
+        (op : FaultingArithmeticOperation)
         (state : IlMachineState)
         (val1 : EvalStackValue)
         (val2 : EvalStackValue)
         : Result<EvalStackValue * IlMachineState, OpcodeFault>
         =
         try
-            execute baseClassTypes op state val1 val2 |> Ok
+            execute baseClassTypes op.Op state val1 val2 |> Ok
         with :? ArithmeticFaultException as e ->
             Error e.Fault
