@@ -1506,6 +1506,113 @@ module NativeRuntimeMethodHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeMethodHandle",
+          "GetMethodFromCanonical",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.ConcreteTypes ("System", "RuntimeType", declaringTypeGenerics) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System",
+                                                                     "RuntimeMethodHandleInternal",
+                                                                     returnGenerics)) when
+            handleGenerics.IsEmpty
+            && declaringTypeGenerics.IsEmpty
+            && returnGenerics.IsEmpty
+            ->
+            // CoreCLR (runtimehandles.cpp:1962):
+            //   MethodTable* pCanonMT = instType.GetMethodTable()->GetCanonicalMethodTable();
+            //   return pCanonMT->GetParallelMethodDesc(pMethod);
+            // and `GetParallelMethodDesc` is `GetMethodDescForSlot_NoThrow(pDefMD->GetSlot())`
+            // (methodtable.cpp:8031), i.e. whatever occupies `pMethod`'s slot on the named type's
+            // *canonical* method table.
+            //
+            // The canonical method table is the shared-generic-code artifact: `Holder<string>`
+            // canonicalises to `Holder<__Canon>`, while `Holder<int>` -- having no shareable
+            // instantiation -- canonicalises to itself. PawPrint shares no generic code at all, so
+            // a type's canonical method table is that type, and the answer is the method occupying
+            // that slot on the type the caller named.
+            //
+            // The slot lookup and "the same MethodDef row" coincide here because the sole caller
+            // has already established that the named type and the handle's declaring type are
+            // instantiations of one generic definition: `RuntimeType.GetMethodBase` walks the
+            // reflected type's base chain until `baseDefinition == declaringDefinition` and passes
+            // *that* type (RuntimeType.CoreCLR.cs:1873-1913). Asserted below rather than assumed,
+            // because a violated precondition would otherwise mint an identity claiming a type
+            // declares a MethodDef row it does not, and nothing downstream would notice.
+            //
+            // The result carries no method-generic arguments, matching the invariant the caller
+            // states in that same block: "all RuntimeMethodHandles retrieved off of the canonical
+            // method table are definitions". CoreCLR gets that for free -- `GetSlot` on an
+            // `InstantiatedMethodDesc` is its definition's slot -- and it is why `GetMethodBase`
+            // saves `methodInstantiation` beforehand and lets the following `GetStubIfNeeded`
+            // re-bind it.
+            let operation = "RuntimeMethodHandle.GetMethodFromCanonical"
+
+            let identity =
+                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+
+            let state = IlMachineState.loadArgument ctx.Thread 1 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            // The generic definition the named type is an instantiation of. Only the two
+            // method-table-backed spellings can be one; the rest cannot declare a metadata method
+            // at all, and `MethodHandleRegistry.getOrAllocateInternalHandle` refuses them below.
+            //
+            // One of those refusals is a real gap rather than a contract violation: an *open
+            // construction* such as `Pair<T, int>` is a declaring type CoreCLR serves here, and
+            // the registry's mint-time chokepoint has a named TODO for it, because
+            // `MetadataMethodIdentity` cannot yet carry one. No guest reaches it today -- measured,
+            // both ways in: naming such a type through `Type.MakeGenericType` with a type-variable
+            // argument stops in `RuntimeTypeHandle.Instantiate`, and reaching one as the base of an
+            // open definition stops in `resolveBaseRuntimeTypeHandleTarget`, which
+            // `sourcesPure/ReflectionOpenGenericDefinitionSharedParent.cs` parks. Whichever of
+            // those opens first will arrive here and get the registry's TODO, which is the right
+            // place for it: widening the identity is a change to every consumer of a declaring
+            // type, not to this native.
+            let namedDefinition : ResolvedTypeIdentity option =
+                match target with
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+                    AllConcreteTypes.lookup handle state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: declaring type handle %O{handle} is not registered in ConcreteTypes"
+                    )
+                    |> fun concreteType -> Some concreteType.Identity
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition -> Some definition
+                | _ -> None
+
+            match namedDefinition with
+            | Some definition when definition <> methodInfo.RequiredDeclaringType.Identity ->
+                // CoreCLR would answer with the slot's occupant on the named type, which is a
+                // different method; PawPrint would instead mint "this MethodDef row, declared on
+                // that type", which is a lie about metadata. Neither is useful, and the caller
+                // established this cannot happen, so say so rather than serve either.
+                failwith
+                    $"%s{operation}: asked for %s{methodInfo.Name} on %O{target}, but its MethodDef row is declared by %s{MethodOwner.describe methodInfo.Owner} in %s{identity.GetAssemblyFullName ()}; RuntimeType.GetMethodBase only names a type sharing the method's own generic definition"
+            | _ -> ()
+
+            let handleValue, registry =
+                MethodHandleRegistry.getOrAllocateInternalHandle
+                    ctx.BaseClassTypes
+                    state.ConcreteTypes
+                    (identity.GetAssemblyFullName ())
+                    target
+                    methodInfo
+                    state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = registry
+                }
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ValueType handleValue) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
           "IsGenericMethodDefinition",
           [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->

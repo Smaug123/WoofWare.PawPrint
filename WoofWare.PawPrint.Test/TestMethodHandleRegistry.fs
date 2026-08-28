@@ -587,8 +587,8 @@ public static class GenericMethodHolder
         assembly.TryGetTopLevelTypeDef namespaceName typeName
         |> Option.defaultWith (fun () -> failwith $"type %s{namespaceName}.%s{typeName} not found")
 
-    /// Drive a one-argument `RuntimeMethodHandle` InternalCall directly, with the given
-    /// `RuntimeMethodHandleInternal` as its sole argument, and return what it pushed.
+    /// Drive a `RuntimeMethodHandle` InternalCall directly, with the given arguments, and return
+    /// what it pushed.
     ///
     /// The natives driven this way cannot be reached from guest C#/F# in isolation:
     /// `RuntimeType.GetMethodBase` is the only BCL caller of `IsDynamicMethod`, and on the `false`
@@ -597,11 +597,11 @@ public static class GenericMethodHolder
     /// without reaching the other. `GetMethodBase` then goes on to `IsConstructor`
     /// (RuntimeType.CoreCLR.cs:1934) and `HasMethodInstantiation`, neither of which is implemented,
     /// so the whole chain is exercised here rather than by a case in `sourcesPure/`.
-    let private invokeRuntimeMethodHandleFCall
+    let private invokeRuntimeMethodHandleFCallWith
         (methodName : string)
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (methodHandleInternal : CliType)
+        (arguments : CliType list)
         (state : IlMachineState)
         : EvalStackValue
         =
@@ -619,7 +619,7 @@ public static class GenericMethodHolder
                 let facts = MethodInfo.requireMetadata "test" method
 
                 method.Name = methodName
-                && facts.Parameters.Length = 1
+                && facts.Parameters.Length = List.length arguments
                 && facts.ImplAttributes.HasFlag System.Reflection.MethodImplAttributes.InternalCall
             )
             |> function
@@ -647,7 +647,7 @@ public static class GenericMethodHolder
                     baseClassTypes.Corelib
                     method
                     ImmutableArray.Empty
-                    (ImmutableArray.Create methodHandleInternal)
+                    (ImmutableArray.CreateRange arguments)
                     None
             with
             | Ok methodState -> methodState
@@ -680,6 +680,18 @@ public static class GenericMethodHolder
             | None -> failwith $"RuntimeMethodHandle.%s{methodName} did not match"
 
         IlMachineState.popEvalStack thread state |> fst
+
+    /// The one-argument case, which is every `RuntimeMethodHandle` native below bar
+    /// `GetMethodFromCanonical`.
+    let private invokeRuntimeMethodHandleFCall
+        (methodName : string)
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (methodHandleInternal : CliType)
+        (state : IlMachineState)
+        : EvalStackValue
+        =
+        invokeRuntimeMethodHandleFCallWith methodName loggerFactory baseClassTypes [ methodHandleInternal ] state
 
     let private invokeIsDynamicMethod = invokeRuntimeMethodHandleFCall "IsDynamicMethod"
 
@@ -1408,7 +1420,7 @@ public sealed class Box<T>
                     ImmutableArray.Create (TypeDefn.GenericTypeParameter 0)
                 ))
 
-        baseClassTypes, assembly, ctors, openTarget, RuntimeTypeHandleTarget.Closed closedHandle, state
+        loggerFactory, baseClassTypes, assembly, ctors, openTarget, RuntimeTypeHandleTarget.Closed closedHandle, state
 
     /// The registry id carried by a bare `RuntimeMethodHandleInternal`, as the runtime reads it.
     let private registryIdOf (internalHandle : CliValueType) : int64 =
@@ -1427,7 +1439,8 @@ public sealed class Box<T>
         // definition would collapse them onto one registry id, and the guest can see that
         // (sourcesPure/ReflectionOpenGenericConstructors.cs check 7); this pins it at the registry,
         // where the dedup map actually lives.
-        let baseClassTypes, assembly, ctors, openTarget, closedTarget, state = boxTargets ()
+        let _loggerFactory, baseClassTypes, assembly, ctors, openTarget, closedTarget, state =
+            boxTargets ()
 
         let ctor = ctors.Head
 
@@ -1472,7 +1485,7 @@ public sealed class Box<T>
 
     [<Test>]
     let ``minting twice against an open generic definition dedups to one id`` () : unit =
-        let baseClassTypes, assembly, ctors, openTarget, _closedTarget, state =
+        let _loggerFactory, baseClassTypes, assembly, ctors, openTarget, _closedTarget, state =
             boxTargets ()
 
         let ctor = ctors.Head
@@ -1501,7 +1514,7 @@ public sealed class Box<T>
     let ``distinct methods on one open generic definition never share an id`` () : unit =
         // Injectivity over (declaringTarget, methodDef): the definition's two constructors and its
         // ordinary method are three identities, so three ids.
-        let baseClassTypes, assembly, ctors, openTarget, _closedTarget, state =
+        let _loggerFactory, baseClassTypes, assembly, ctors, openTarget, _closedTarget, state =
             boxTargets ()
 
         let plain =
@@ -1636,7 +1649,7 @@ public class HasNestedGeneric<TKey, TValue>
         // The mint-time chokepoint is what lets consumers of `GetDeclaringType ()` treat the other
         // `RuntimeTypeHandleTarget` arms as contract violations rather than as cases to serve. A
         // generic parameter is a TypeVarTypeDesc: methods live on the type that mentions it.
-        let baseClassTypes, assembly, ctors, _openTarget, _closedTarget, state =
+        let _loggerFactory, baseClassTypes, assembly, ctors, _openTarget, _closedTarget, state =
             boxTargets ()
 
         let declaringIdentity = ctors.Head.RequiredDeclaringType.Identity
@@ -1655,6 +1668,140 @@ public class HasNestedGeneric<TKey, TValue>
 
         exn.Message
         |> shouldContainText "declaring type must be Closed or OpenGenericTypeDefinition"
+
+    // ---------------------------------------------------------------------------------------
+    // `RuntimeMethodHandle.GetMethodFromCanonical` through the machine.
+    //
+    // The native re-reads a method handle against another instantiation of its declaring type, and
+    // is reached from `RuntimeType.GetMethodBase` alone. Guest-level coverage is
+    // `sourcesPure/ReflectionGetMethodFromHandleCrossInstantiation.cs`, which goes through
+    // `MethodBase.GetMethodFromHandle(handle, typeHandle)`. What no guest can reach is the
+    // precondition arm: `GetMethodBase` walks the reflected type's base chain to the instantiation
+    // whose generic definition matches, so it never names an unrelated type.
+    // ---------------------------------------------------------------------------------------
+
+    /// A `System.RuntimeType` object reference naming the given target, as the FCall's second
+    /// argument.
+    let private runtimeTypeArgument
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (target : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let address, state =
+            IlMachineState.getOrAllocateType loggerFactory baseClassTypes target state
+
+        CliType.ObjectRef (Some address), state
+
+    [<Test>]
+    let ``GetMethodFromCanonical rebinds a definition's method onto a named instantiation`` () : unit =
+        // The identity it mints is the one the registry already holds for that instantiation --
+        // not merely an equal-looking second id. `RuntimeType`'s member cache keys on
+        // `MethodHandle.Value` (RuntimeType.CoreCLR.cs:209-231), so a fresh id there means a
+        // duplicate `MethodInfo` where the guest expects reference equality.
+        let loggerFactory, baseClassTypes, assembly, _ctors, openTarget, closedTarget, state =
+            boxTargets ()
+
+        let plain =
+            assembly.Methods.Values
+            |> Seq.find (fun method -> method.RequiredDeclaringType.Name = "Box`1" && method.Name = "Plain")
+
+        let openHandle, reg =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                openTarget
+                plain
+                state.MethodHandles
+
+        let expectedHandle, reg =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                closedTarget
+                plain
+                reg
+
+        let state =
+            { state with
+                MethodHandles = reg
+            }
+
+        let runtimeType, state =
+            runtimeTypeArgument loggerFactory baseClassTypes closedTarget state
+
+        let pushed =
+            invokeRuntimeMethodHandleFCallWith
+                "GetMethodFromCanonical"
+                loggerFactory
+                baseClassTypes
+                [ CliType.ValueType openHandle ; runtimeType ]
+                state
+
+        // Sanity: the two ids really are different, so an implementation that handed back its
+        // input unchanged would not satisfy this by accident.
+        registryIdOf expectedHandle |> shouldNotEqual (registryIdOf openHandle)
+
+        // A single-`IntPtr` struct pushed to the eval stack arrives as the primitive-like
+        // `NativeInt` carrying the registry id, which is the same shape the BCL's own
+        // `RuntimeMethodHandleInternal` locals hold.
+        match pushed with
+        | EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr id) ->
+            id |> shouldEqual (registryIdOf expectedHandle)
+        | other -> failwith $"expected a RuntimeMethodHandleInternal carrying a registry id, got %O{other}"
+
+    [<Test>]
+    let ``GetMethodFromCanonical refuses a type that does not declare the method`` () : unit =
+        // CoreCLR would answer with whatever occupies the method's slot on the named type, which is
+        // a different method entirely; PawPrint would instead mint "this MethodDef row, declared on
+        // that type", which is a claim about metadata that is simply false. The sole BCL caller
+        // rules the case out, so this is a contract violation to fail on rather than a shape to
+        // serve.
+        let loggerFactory, baseClassTypes, assembly, _ctors, openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let plain =
+            assembly.Methods.Values
+            |> Seq.find (fun method -> method.RequiredDeclaringType.Name = "Box`1" && method.Name = "Plain")
+
+        let handle, reg =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                openTarget
+                plain
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = reg
+            }
+
+        let unrelated =
+            RuntimeTypeHandleTarget.Closed (
+                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+            )
+
+        let runtimeType, state =
+            runtimeTypeArgument loggerFactory baseClassTypes unrelated state
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                invokeRuntimeMethodHandleFCallWith
+                    "GetMethodFromCanonical"
+                    loggerFactory
+                    baseClassTypes
+                    [ CliType.ValueType handle ; runtimeType ]
+                    state
+                |> ignore
+            )
+
+        exn.Message
+        |> shouldContainText "RuntimeMethodHandle.GetMethodFromCanonical: asked for Plain"
 
     // ---------------------------------------------------------------------------------------
     // `RuntimeMethodHandle.IsTypicalMethodDefinition` through the machine.
