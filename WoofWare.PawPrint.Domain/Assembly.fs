@@ -819,10 +819,34 @@ type LoadedAssemblies =
             ByDefinition : ImmutableDictionary<string, DumpedAssembly>
             /// AssemblyReference FullName -> the AssemblyDefinition FullName it bound to.
             Bindings : ImmutableDictionary<string, string>
+            /// The keys of <c>ByDefinition</c>, in the order each was first registered.
+            LoadOrder : ImmutableArray<string>
         }
 
-    /// Every definition identity currently loaded. For diagnostics only.
+    /// <summary>
+    /// Every definition identity currently loaded. For diagnostics only — see
+    /// <c>DefinitionNamesInLoadOrder</c> for anything a guest can observe.
+    /// </summary>
+    /// <remarks>
+    /// This is the backing dictionary's own enumeration order, which is a hash order over
+    /// string hash codes — and those are randomised per process, so the same identities
+    /// registered in the same order enumerate differently between runs. Measured: five
+    /// assembly display names inserted identically into an <c>ImmutableDictionary</c> came
+    /// back in three different orders across three processes. Nothing reproducible may rest
+    /// on it.
+    /// </remarks>
     member this.DefinitionNames : string seq = this.ByDefinition.Keys
+
+    /// <summary>
+    /// Every definition identity currently loaded, in the order each was first registered.
+    /// </summary>
+    /// <remarks>
+    /// A function of the run rather than of the set, so it is reproducible under a fixed
+    /// scheduler seed and varies with the interleaving exactly as a real runtime's load order
+    /// does. Registering an identity already held does not move it, so first registration wins
+    /// just as it does for the instance itself.
+    /// </remarks>
+    member this.DefinitionNamesInLoadOrder : ImmutableArray<string> = this.LoadOrder
 
     /// Look an assembly up by its definition identity.
     member this.TryByDefinitionName (fullName : string) : DumpedAssembly option =
@@ -899,6 +923,21 @@ type LoadedAssemblies =
             existing
 
     /// <summary>
+    /// <c>LoadOrder</c> with <paramref name="definitionName"/> appended if it is new, unchanged
+    /// if it is not.
+    /// </summary>
+    /// <remarks>
+    /// Reads <c>this.ByDefinition</c>, so every caller must evaluate it against the load context
+    /// as it stood <em>before</em> the corresponding <c>SetItem</c> — otherwise a re-registration
+    /// of an identity already held would append a duplicate.
+    /// </remarks>
+    member private this.LoadOrderWith (definitionName : string) : ImmutableArray<string> =
+        if this.ByDefinition.ContainsKey definitionName then
+            this.LoadOrder
+        else
+            this.LoadOrder.Add definitionName
+
+    /// <summary>
     /// Register an assembly under its own definition identity. Idempotent for the same build: if
     /// that identity is already loaded, the existing instance wins. Registering a *different*
     /// build under an identity we already hold is an error — see <c>Canonicalise</c>.
@@ -909,6 +948,7 @@ type LoadedAssemblies =
         if Object.ReferenceEquals (canonical, assy) then
             { this with
                 ByDefinition = this.ByDefinition.SetItem (assy.Name.FullName, assy)
+                LoadOrder = this.LoadOrderWith assy.Name.FullName
             }
         else
             this
@@ -931,6 +971,7 @@ type LoadedAssemblies =
             {
                 ByDefinition = this.ByDefinition.SetItem (definitionName, canonical)
                 Bindings = this.Bindings.SetItem (reference.Name.FullName, definitionName)
+                LoadOrder = this.LoadOrderWith definitionName
             }
 
         result, canonical
@@ -941,6 +982,7 @@ module LoadedAssemblies =
         {
             ByDefinition = ImmutableDictionary.Empty
             Bindings = ImmutableDictionary.Empty
+            LoadOrder = ImmutableArray<string>.Empty
         }
 
     /// Build a load context from assemblies indexed by their own definition identities, with no

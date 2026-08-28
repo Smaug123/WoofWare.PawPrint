@@ -2849,3 +2849,200 @@ public static class StreamVersionLibrary
                 invokeGetModules loggerFactory prepared prepared.State guest.Name.FullName false getResourceModules
 
             soleModule state written |> ignore<ManagedHeapAddress * ManagedHeapAddress>
+
+    /// The type declaring `AssemblyNative_GetLoadedAssemblies`. Unlike the rest of this file's
+    /// entry points it hangs off the load context rather than off an assembly, because the
+    /// question it answers is about the context as a whole.
+    let private assemblyLoadContext = ("System.Runtime.Loader", "AssemblyLoadContext")
+
+    /// Runs `AssemblyNative_GetLoadedAssemblies` and returns the array address the handler wrote
+    /// into the `ObjectHandleOnStack`, together with that array's element addresses in order.
+    let private invokeGetLoadedAssemblies
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        : IlMachineState * ManagedHeapAddress * ManagedHeapAddress list
+        =
+        let baseClassTypes = prepared.BaseClassTypes
+
+        let objectHandle, target, state =
+            objectHandleOnStackValue loggerFactory baseClassTypes state
+
+        let state =
+            invokeQCall
+                loggerFactory
+                prepared
+                assemblyLoadContext
+                "AssemblyNative_GetLoadedAssemblies"
+                [ objectHandle ]
+                state
+
+        let arrayAddr =
+            match IlMachineState.readManagedByref baseClassTypes state target with
+            | CliType.ObjectRef (Some addr) -> addr
+            | CliType.ObjectRef None -> failwith "handler left the ObjectHandleOnStack at null"
+            | other -> failwith $"expected ObjectHandleOnStack target to contain an object ref, got %O{other}"
+
+        let shape = ManagedHeap.getArrayShape arrayAddr state.ManagedHeap
+
+        let elements =
+            [ 0 .. shape.Length - 1 ]
+            |> List.map (fun i ->
+                match ManagedHeap.getArrayValue arrayAddr i state.ManagedHeap with
+                | CliType.ObjectRef (Some addr) -> addr
+                | other -> failwith $"expected an assembly reference in element %d{i}, got %O{other}"
+            )
+
+        state, arrayAddr, elements
+
+
+    /// The heap object `getOrAllocateRuntimeAssembly` holds for each of `assemblyFullNames`.
+    /// Called after the handler has run, so every one of these is a cache hit and the addresses
+    /// are the ones the handler must have used.
+    let private cachedRuntimeAssemblies
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (prepared : Program.PreparedProgram)
+        (state : IlMachineState)
+        (assemblyFullNames : string list)
+        : IlMachineState * ManagedHeapAddress list
+        =
+        let state, addrs =
+            assemblyFullNames
+            |> List.fold
+                (fun (state, acc) name ->
+                    let addr, state =
+                        NativeRuntimeType.getOrAllocateRuntimeAssembly loggerFactory prepared.BaseClassTypes name state
+
+                    state, addr :: acc
+                )
+                (state, [])
+
+        state, List.rev addrs
+
+    [<Test>]
+    let ``GetLoadedAssemblies reports the load context in load order`` () : unit =
+        // The order is guest-visible — it is the order `AppDomain.GetAssemblies()` reports — and
+        // it may not be the backing dictionary's own enumeration order, which is a hash order over
+        // per-process-randomised string hash codes. Measured: five assembly display names inserted
+        // identically into an `ImmutableDictionary` enumerated in three different orders across
+        // three processes, so a handler that walked the dictionary would make a replay depend on
+        // the process that produced it.
+        //
+        // The two libraries are registered in *reverse* alphabetical order of their simple names,
+        // which is what makes this test able to fail: sorting by definition name — the obvious
+        // other way to get a deterministic answer — would put `Cultured` before `HashAlgorithm`
+        // and both ahead of the `System.*` framework assemblies already loaded, so it disagrees
+        // with the expectation below in both the pair's order and its position.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let state, _, before =
+            invokeGetLoadedAssemblies loggerFactory prepared prepared.State
+
+        // Registering an assembly must append, so whatever was already loaded keeps its order.
+        before |> shouldNotEqual []
+
+        // One image each, reused below: a second Roslyn invocation is a *different build* of the
+        // same identity, which the load context rejects outright rather than treating as a
+        // re-registration.
+        let hashAlgorithmImage = hashAlgorithmLibraryImage ()
+
+        let hashAlgorithm, state = withLoadedAssembly loggerFactory hashAlgorithmImage state
+
+        let cultured, state =
+            withLoadedAssembly loggerFactory (culturedLibraryImage ()) state
+
+        (hashAlgorithm.Name.Name < cultured.Name.Name) |> shouldEqual false
+
+        let state, _, after = invokeGetLoadedAssemblies loggerFactory prepared state
+
+        let state, expectedTail =
+            cachedRuntimeAssemblies
+                loggerFactory
+                prepared
+                state
+                [ hashAlgorithm.Name.FullName ; cultured.Name.FullName ]
+
+        after |> shouldEqual (before @ expectedTail)
+
+        // Re-registering an assembly already held must not append a second entry, nor move it.
+        // Read afresh from the same bytes, so this really is a distinct `DumpedAssembly` instance
+        // rather than the one already in the context.
+        let _, state = withLoadedAssembly loggerFactory hashAlgorithmImage state
+
+        let _state, _, again = invokeGetLoadedAssemblies loggerFactory prepared state
+
+        again |> shouldEqual after
+
+    [<Test>]
+    let ``GetLoadedAssemblies hands back a fresh RuntimeAssembly array of cached elements`` () : unit =
+        // Two separate claims about the array, both guest-visible through `ReferenceEquals`, and
+        // both matching CoreCLR: the array itself is allocated per call
+        // (`AllocateObjectArray`), while each element is the assembly's cached
+        // `GetExposedObject()`. So `GetAssemblies() != GetAssemblies()` but their contents are
+        // pairwise reference-equal.
+        let _messages, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let image =
+            Roslyn.compileAssembly guestAssemblyName OutputKind.ConsoleApplication [] [ guestSource ]
+
+        let prepared = prepareGuest loggerFactory image
+
+        let state, firstArray, firstElements =
+            invokeGetLoadedAssemblies loggerFactory prepared prepared.State
+
+        let state, secondArray, secondElements =
+            invokeGetLoadedAssemblies loggerFactory prepared state
+
+        firstArray |> shouldNotEqual secondArray
+        secondElements |> shouldEqual firstElements
+
+        // `CLASS__ASSEMBLY` is `System.Reflection.RuntimeAssembly` (vm/corelib.h:133), not the
+        // `Assembly` that the managed `GetLoadedAssemblies` wrapper's local is typed as. Measured
+        // on real .NET: `AppDomain.CurrentDomain.GetAssemblies().GetType().FullName` is
+        // `System.Reflection.RuntimeAssembly[]`. A guest can read that, so the element type is not
+        // free.
+        let state, _, runtimeAssemblyHandle =
+            NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                loggerFactory
+                prepared.BaseClassTypes
+                state
+                "System.Reflection"
+                "RuntimeAssembly"
+
+        (ManagedHeap.getArrayShape firstArray state.ManagedHeap).ConcreteType
+        |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero runtimeAssemblyHandle)
+
+        // An identity oracle that does not go back through the same cache the handler used:
+        // `AssemblyNative_GetEntryAssembly` is the guest's own route to one of these objects, and
+        // its answer must be in the array exactly once.
+        let objectHandle, target, state =
+            objectHandleOnStackValue loggerFactory prepared.BaseClassTypes state
+
+        let state =
+            invokeQCall
+                loggerFactory
+                prepared
+                ("System.Reflection", "Assembly")
+                "AssemblyNative_GetEntryAssembly"
+                [ objectHandle ]
+                state
+
+        let entryAssembly =
+            match IlMachineState.readManagedByref prepared.BaseClassTypes state target with
+            | CliType.ObjectRef (Some addr) -> addr
+            | other -> failwith $"expected GetEntryAssembly to write an assembly reference, got %O{other}"
+
+        (firstElements |> List.filter (fun addr -> addr = entryAssembly) |> List.length)
+        |> shouldEqual 1
+
+        // No duplicates and no nulls anywhere: a fold that appended an identity twice, or an
+        // allocation left unfilled, is invisible to the assertions above.
+        (firstElements |> List.distinct |> List.length)
+        |> shouldEqual firstElements.Length

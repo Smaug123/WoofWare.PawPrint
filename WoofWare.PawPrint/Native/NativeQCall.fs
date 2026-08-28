@@ -125,6 +125,11 @@ module NativeQCall =
             "AssemblyNative_GetIsCollectible", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetIsCollectible"
             "AssemblyNative_GetHashAlgorithm", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetHashAlgorithm"
             "AssemblyNative_GetLocale", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocale"
+            // Declared on `System.Runtime.Loader.AssemblyLoadContext`, not on an assembly type;
+            // grouped with the other `AssemblyNative_*` handlers because its subject is assembly
+            // loading. `AppDomain.GetAssemblies()` is the guest's route to it.
+            "AssemblyNative_GetLoadedAssemblies",
+            NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLoadedAssemblies"
             "AssemblyNative_GetLocation", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetLocation"
             "AssemblyNative_GetModules", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetModules"
             "AssemblyNative_GetPublicKey", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetPublicKey"
