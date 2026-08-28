@@ -3142,3 +3142,69 @@ measurement had been taken and invite someone to complete the Darwin arm.
 
 **What is left of stage 9**: the four socket syscalls, the socket park's move to
 this shape, and the packaging items.
+#### Stage 9c: the socket park moves to the marker shape
+
+**Dependencies**: stage 9b.
+
+The reconciling move 9b promised, taken in the direction 9b said it should go:
+`ThreadStatus.BlockedOnSocketEvents` loses its port and becomes a marker, and the
+readiness sweep, the deadlock report and the debugger all read
+`UnixTaskState.ParkedSocketWait` instead. No behaviour moves — the same threads park,
+wake and deliver, in the same order — so the existing socket fixtures are the oracle for
+that half, and what is new is a question none of them could ask.
+
+**What the duplication was.** The port was written down twice: in the status, by
+`Scheduler.blockOnSocketEvents`, and in the kernel's record, by the handler beside it.
+The library needs the record independently — `close` refuses a close that would strand a
+waiter, and that rule is a kernel's — so the *status* is the copy that goes. The two
+halves that must agree read different ones: `Program.fireSocketReadiness` decided whether
+to wake from the status, and the re-entered handler delivered from the record. Nothing
+today can make them disagree (one producer writes both from one binding), so this is a
+redundancy removed rather than a bug fixed; what it buys is that "woken on the readiness
+of port A, delivering from port B" stops being a thing a later edit can write.
+
+**`BlockedInSyscall` is not taken here**, though the plan names it as where four more
+parking syscalls are heading. Not for the reason that first suggests itself — splitting a
+merged case again is a mechanical change the compiler drives — but because with two
+independent optional record fields, a merged status forces each sweep to *skip* threads
+lacking its record, and a `BlockedInSyscall` thread with no `ParkedFlock` is
+indistinguishable, from `fireFlockGrantable`'s seat, from someone else's waiter. That
+would destroy exactly the fail-loud property the new sweep test pins. The merge becomes
+right after the records are merged, not before.
+
+**Nor are the records merged here**, into the single `Parked : ParkedSyscall option`
+that would make "parked on one thing at a time" true by construction. That is the better
+shape and it is owed; it is a separate slice because it changes `WoofWare.PosixKernel`'s
+published surface, where this one changes only PawPrint's internals and can be judged
+entirely against fixtures that must not move. Note that it does not collapse as much as
+it looks: `close`'s two refusal ladders stay two, the port one being flavour-split and
+gated on the object kind while the lock one is flavour-blind and gated on destruction.
+
+**The debugger keeps its payload.** `DebuggerServer.writeThreadStatus` rendered the
+port out of the status, and was handed only the status — which is why the `flock` park
+beside it had been reduced to a bare `"blockedOnFlock"` since 9b. Dropping the port would
+have been the cheap answer and no client in the tree would have noticed; instead the
+renderer is handed the task, because a renderer that structurally cannot say what a
+thread is waiting for is the wrong shape for a debugger. `flock`'s arm gains its
+description and mode at the same time, that being the gap its own comment described.
+
+**Correctness oracle**:
+* `TestSocketEventsWait`, unchanged except where the port moved: the `dup` guest now
+  asserts the identity on the record, which is where the sweep and the delivery both read
+  it, and the deadlock report asserts the text the new derivation produces.
+* A two-port guest, which is the question one port could never ask: the sweep must wake a
+  waiter because *its own* port has something to deliver, not because some port does. A
+  spurious wake is invisible to the guest — the waiter re-enters, finds its port empty and
+  parks again — so the observation is that the quiet waiter is never *scheduled* again
+  after it parks, made over the driver's own steps, with vacuity guards that both waiters
+  parked and that the edge really woke the other one.
+* A socket waiter whose record is taken away, stepped once: the sweep refuses rather than
+  skipping it. There is no `flock` analogue of this today; `fireFlockGrantable`'s matching
+  failwith is untested, and that is a gap this slice notes rather than closes.
+* `checkTaskInvariants` gains the socket park agreement in the same shape as the `flock`
+  one, and `TestTaskState`'s round-trip now parks the *status* with the record — a
+  `ParkedSocketWait` on a `NotStarted` thread was a state that test constructed and that
+  no wait can produce.
+
+**What is left of stage 9**: the four socket syscalls, and the packaging items.
+

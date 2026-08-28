@@ -211,7 +211,7 @@ module Program =
         // timeout, so the clock can never wake such a thread. There is deliberately no
         // `FiredDeadline` case for it, which is what makes that unrepresentable rather than
         // merely unwritten.
-        | ThreadStatus.BlockedOnSocketEvents _
+        | ThreadStatus.BlockedOnSocketEvents
         // Nor has `BlockedOnFlock`: an `flock` wait takes no timeout either, so the
         // clock can never wake one.
         | ThreadStatus.BlockedOnFlock
@@ -375,13 +375,28 @@ module Program =
             (state.ThreadState, [])
             ||> Map.foldBack (fun tid ts acc ->
                 match ts.Status with
-                | ThreadStatus.BlockedOnSocketEvents port -> (tid, port) :: acc
+                | ThreadStatus.BlockedOnSocketEvents -> tid :: acc
                 | _ -> acc
             )
 
         match waiters with
         | [] -> state
         | waiters ->
+
+        // Which port each waiter waits on is the kernel's record, not the
+        // status: the status says only that the thread is asleep in the wait.
+        // That is the same record the re-entered handler delivers from, so the
+        // question this sweep asks and the question the delivery answers cannot
+        // drift apart.
+        let waiters =
+            waiters
+            |> List.map (fun tid ->
+                match UnixTaskTable.parkedSocketWaitFor tid state.Kernel.Tasks with
+                | None ->
+                    failwith
+                        $"fireSocketReadiness: thread %O{tid} is parked in BlockedOnSocketEvents but its task holds no ParkedSocketWait, so there is nothing to say which port it waits on. The park writes the record and the status together (this is an interpreter bug)."
+                | Some wait -> tid, wait.Port
+            )
 
         let deliverable =
             waiters

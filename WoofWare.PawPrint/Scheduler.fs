@@ -504,15 +504,17 @@ module Scheduler =
                     ))
         }
 
-    /// Park `blocked` in `BlockedOnSocketEvents port`, transitioning out of
+    /// Park `blocked` in `BlockedOnSocketEvents`, transitioning out of
     /// `Runnable`. Called from the `SystemNative_WaitForSocketEvents` handler,
     /// which is the only producer this status will ever have — the entry point
     /// is the only way into an `epoll_wait`.
     ///
-    /// `port` is the open file *description* the waited-on descriptor names, not
-    /// the descriptor number: an epoll instance *is* a description, so a `dup`'d
-    /// port waits on the same one, and a wake keyed on the descriptor would miss
-    /// a waiter that had closed the fd it originally waited through.
+    /// Takes no payload, like `blockOnFlock` below: which port the thread waits
+    /// on is the `ParkedSocketWait` its task holds, which the kernel needs
+    /// anyway so that `close` can refuse to strand a waiter. The caller must
+    /// have written that record before calling this; the readiness sweep reads
+    /// it to decide whether to wake, and the re-entered handler delivers from
+    /// it.
     ///
     /// Carries no deadline, unlike `blockOnJoin` and `blockOnSleep`: the wait
     /// cannot time out, so `Program.fireExpiredDeadlines` will never route a
@@ -525,12 +527,7 @@ module Scheduler =
     /// re-enter the handler so it can write the event batch through the caller's
     /// own buffer argument. `NativeHandlerResult.BlockedRetainingFrame` is what
     /// keeps the frame in place for that.
-    let blockOnSocketEvents
-        (blocked : ThreadId)
-        (port : OpenFileDescriptionId)
-        (state : IlMachineState)
-        : IlMachineState
-        =
+    let blockOnSocketEvents (blocked : ThreadId) (state : IlMachineState) : IlMachineState =
         { state with
             ThreadState =
                 state.ThreadState
@@ -538,7 +535,7 @@ module Scheduler =
                     blocked
                     (Option.map (fun s ->
                         { s with
-                            Status = ThreadStatus.BlockedOnSocketEvents port
+                            Status = ThreadStatus.BlockedOnSocketEvents
                         }
                     ))
         }
@@ -558,7 +555,7 @@ module Scheduler =
         | None -> failwith $"Scheduler.wakeFromSocketEvents: thread %O{thread} has no ThreadState."
         | Some ts ->
             match ts.Status with
-            | ThreadStatus.BlockedOnSocketEvents _ -> ()
+            | ThreadStatus.BlockedOnSocketEvents -> ()
             | other ->
                 failwith
                     $"Scheduler.wakeFromSocketEvents: thread %O{thread} is not parked in BlockedOnSocketEvents (status: %O{other}); the readiness sweep observed a deliverable port against a thread that is not waiting on one."

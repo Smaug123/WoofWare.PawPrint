@@ -5380,7 +5380,11 @@ module NativeSystemNative =
                 =
                 // The capture that survives the park: what the syscall was
                 // entered with, consulted by the re-entry in place of the
-                // arguments the guest may have scribbled on since.
+                // arguments the guest may have scribbled on since. It is also
+                // the only place the port is written down — the park status
+                // carries nothing — so `Program`'s readiness sweep reads this
+                // to decide whether to wake, and cannot ask a different
+                // question from the one the delivery below answers.
                 state.MapKernel (
                     EmulatedKernel.mapTasks (
                         UnixTaskTable.withParkedSocketWait
@@ -5392,7 +5396,7 @@ module NativeSystemNative =
                                 })
                     )
                 )
-                |> Scheduler.blockOnSocketEvents ctx.Thread port
+                |> Scheduler.blockOnSocketEvents ctx.Thread
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
 

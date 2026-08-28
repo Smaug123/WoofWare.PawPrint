@@ -827,6 +827,18 @@ type EmulatedKernelDefect =
     /// with its record intact — and the record is precisely what tells the
     /// re-entered handler that it is a re-entry.
     | FlockRecordWithoutWaiter of thread : ThreadId * status : ThreadStatus
+    /// A thread is parked in `ThreadStatus.BlockedOnSocketEvents` but its task
+    /// records no socket wait, so nothing says which port it waits on: the
+    /// readiness sweep cannot decide whether to wake it and the re-entered
+    /// handler cannot decide what to deliver from.
+    | SocketWaiterWithoutRecord of thread : ThreadId
+    /// A task records a socket wait while its thread is in a status that cannot
+    /// be holding one open.
+    ///
+    /// `Runnable` is legitimate for the same reason it is for a `flock` record:
+    /// the sweep wakes a waiter and the record stands until the woken thread
+    /// re-enters the handler, which is what tells it that it is a re-entry.
+    | SocketRecordWithoutWaiter of thread : ThreadId * status : ThreadStatus
     /// The stream table holds a stream no `DIR*` names, so nothing can ever
     /// read or close it and the directory it pins is held for the run.
     | UnreachableDirectoryStream of stream : DirectoryStreamId
@@ -2907,11 +2919,16 @@ module EmulatedKernel =
         let missing, extra =
             UnixTaskTable.reconcile (liveThreads |> Map.toSeq |> Seq.map fst |> Set.ofSeq) kernel.Tasks
 
-        // The park record and the park status, which are written together and
-        // must be cleared together. Stated as an implication plus a bound rather
-        // than as an equivalence, because the wake leaves the record standing
-        // for the re-entry to find.
-        let parkAgreement =
+        // The park records and the park statuses, which are written together and
+        // must be cleared together. Each is stated as an implication plus a bound
+        // rather than as an equivalence, because the wake leaves the record
+        // standing for the re-entry to find.
+        //
+        // Written out once per parking syscall rather than folded into one
+        // helper: there are two, and what would collapse them is giving
+        // `UnixTaskState` a single `Parked` field, at which point the shared
+        // shape is a match rather than a parameter.
+        let flockAgreement =
             liveThreads
             |> Map.toList
             |> List.collect (fun (thread, status) ->
@@ -2928,9 +2945,27 @@ module EmulatedKernel =
                 | status, Some _ -> [ EmulatedKernelDefect.FlockRecordWithoutWaiter (thread, status) ]
             )
 
+        let socketAgreement =
+            liveThreads
+            |> Map.toList
+            |> List.collect (fun (thread, status) ->
+                let recorded =
+                    match Map.tryFind thread kernel.Tasks with
+                    | Some task -> task.ParkedSocketWait
+                    | None -> None
+
+                match status, recorded with
+                | ThreadStatus.BlockedOnSocketEvents, None -> [ EmulatedKernelDefect.SocketWaiterWithoutRecord thread ]
+                | ThreadStatus.BlockedOnSocketEvents, Some _
+                | ThreadStatus.Runnable, _
+                | _, None -> []
+                | status, Some _ -> [ EmulatedKernelDefect.SocketRecordWithoutWaiter (thread, status) ]
+            )
+
         (missing |> List.map EmulatedKernelDefect.ThreadWithoutTask)
         @ (extra |> List.map EmulatedKernelDefect.TaskWithoutThread)
-        @ parkAgreement
+        @ flockAgreement
+        @ socketAgreement
 
     /// Every way this kernel's tables disagree with each other: the socket
     /// table against the descriptor table, the descriptor table against the
