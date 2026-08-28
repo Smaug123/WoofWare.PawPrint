@@ -119,8 +119,123 @@ module TestSocketEventsPal =
         |> shouldEqual (Set.ofList [ "SA_READ" ; "SA_WRITE" ; "SA_READCLOSE" ; "SA_CLOSE" ; "SA_ERROR" ])
 
     // ---------------------------------------------------------------------
-    // `GetSocketEvents`, which has all five rows.
+    // Which condition maps to which, read out of upstream's own function
+    // bodies. The enum *values* above are only half an oracle: a runtime pin
+    // that re-paired the rows without renumbering them would leave a test that
+    // checked numbers alone entirely green.
     // ---------------------------------------------------------------------
+
+    /// The body of a `static` function in a C file, from its signature to the
+    /// closing brace in column 0.
+    let private functionBody (source : string) (signature : string) : string =
+        match source.IndexOf (signature, StringComparison.Ordinal) with
+        | -1 ->
+            failwith
+                $"TestSocketEventsPal: the pinned pal_networking.c no longer declares `%s{signature}`. The conversion this transcribes has been renamed or resignatured upstream."
+        | start ->
+
+        let body = source.Substring start
+
+        match body.IndexOf ("\n}", StringComparison.Ordinal) with
+        | -1 -> failwith $"TestSocketEventsPal: `%s{signature}` has no closing brace in column 0."
+        | finish -> body.Substring (0, finish)
+
+    /// `((events & EPOLLIN) != 0) ? SocketEvents_SA_READ : 0` and friends: one
+    /// row of a conversion, in whichever direction the function runs.
+    let private conversionRow : Regex =
+        Regex (@"\(\(events\s*&\s*(?<from>\w+)\)\s*!=\s*0\)\s*\?\s*(?<to>\w+)\s*:\s*0")
+
+    let private conversionRows (signature : string) : Map<string, string> =
+        let body = functionBody (File.ReadAllText (palPath "pal_networking.c")) signature
+
+        // The `SocketEvents_` prefix is on whichever side of the row is the
+        // PAL's, which is the `from` in one direction and the `to` in the
+        // other; the names this answers with are bare either way.
+        let bare (name : string) : string = name.Replace ("SocketEvents_", "")
+
+        let rows =
+            conversionRow.Matches body
+            |> Seq.map (fun m -> bare m.Groups.["from"].Value, bare m.Groups.["to"].Value)
+            |> Map.ofSeq
+
+        if rows.Count <> 5 then
+            failwith
+                $"TestSocketEventsPal: read %d{rows.Count} conversion rows from `%s{signature}`, expected 5. The function's shape has changed; teach this test to read it."
+
+        rows
+
+    /// This library's name for each epoll condition, which is the one
+    /// correspondence upstream cannot drift: `ReadinessLevel` is defined in
+    /// terms of these bits, so the pairing is a fact about this repo. What
+    /// upstream owns — which epoll bit is which `SA_*` — is read above.
+    let private levelWithOnly : (string * ReadinessLevel) list =
+        [
+            "EPOLLIN",
+            { ReadinessLevel.none with
+                In = true
+            }
+            "EPOLLOUT",
+            { ReadinessLevel.none with
+                Out = true
+            }
+            "EPOLLRDHUP",
+            { ReadinessLevel.none with
+                RdHup = true
+            }
+            "EPOLLHUP",
+            { ReadinessLevel.none with
+                Hup = true
+            }
+            "EPOLLERR",
+            { ReadinessLevel.none with
+                Err = true
+            }
+        ]
+
+    [<Test>]
+    let ``ofReadiness pairs the conditions as GetSocketEvents does`` () : unit =
+        let rows = conversionRows "static int GetSocketEvents(uint32_t events)"
+
+        for epoll, level in levelWithOnly do
+            match Map.tryFind epoll rows with
+            | None ->
+                failwith
+                    $"TestSocketEventsPal: upstream's GetSocketEvents no longer converts %s{epoll}, so this transcription reports a condition upstream does not."
+            | Some name -> SocketEventsPal.ofReadiness level |> shouldEqual (pinned name)
+
+    /// The reverse direction, which `toInterest` transcribes for the three
+    /// conditions `epoll_ctl` keeps and deliberately discards for the two it
+    /// does not.
+    [<Test>]
+    let ``toInterest pairs the conditions as GetEPollEvents does`` () : unit =
+        let rows = conversionRows "static uint32_t GetEPollEvents(SocketEvents events)"
+
+        let empty : SocketEventInterest =
+            {
+                In = false
+                Out = false
+                RdHup = false
+            }
+
+        for sa, epoll in Map.toList rows do
+            let interest = SocketEventsPal.toInterest "test" (pinned sa)
+
+            let expected =
+                match List.tryFind (fun (name, _) -> name = epoll) levelWithOnly with
+                | None ->
+                    failwith
+                        $"TestSocketEventsPal: upstream's GetEPollEvents maps %s{sa} to %s{epoll}, which is not a condition ReadinessLevel names."
+                | Some (_, level) ->
+                    {
+                        SocketEventInterest.In = level.In
+                        Out = level.Out
+                        RdHup = level.RdHup
+                    }
+
+            if expected = empty && interest <> empty then
+                failwith $"toInterest %s{sa} should register nothing (it asks only for %s{epoll}) but gave %O{interest}"
+
+            interest |> shouldEqual expected
 
     /// Every `ReadinessLevel` there is: five booleans, so 32 of them. Small
     /// enough to enumerate, which beats sampling for a bit-for-bit table.
@@ -136,21 +251,61 @@ module TestSocketEventsPal =
                 }
         ]
 
+    /// The rows above pin one condition at a time; this pins that the whole
+    /// mask is their union, which is the other half of `GetSocketEvents`.
     [<Test>]
-    let ``ofReadiness is upstream's GetSocketEvents on every level`` () : unit =
+    let ``ofReadiness is the union of its rows on every level`` () : unit =
+        let rows = conversionRows "static int GetSocketEvents(uint32_t events)"
+
         for level in allLevels do
             let expected =
-                (if level.In then pinned "SA_READ" else 0)
-                ||| (if level.Out then pinned "SA_WRITE" else 0)
-                ||| (if level.RdHup then pinned "SA_READCLOSE" else 0)
-                ||| (if level.Hup then pinned "SA_CLOSE" else 0)
-                ||| (if level.Err then pinned "SA_ERROR" else 0)
+                levelWithOnly
+                |> List.fold
+                    (fun acc (epoll, only) ->
+                        let present =
+                            (only.In && level.In)
+                            || (only.Out && level.Out)
+                            || (only.RdHup && level.RdHup)
+                            || (only.Hup && level.Hup)
+                            || (only.Err && level.Err)
+
+                        if present then acc ||| pinned rows.[epoll] else acc
+                    )
+                    0
 
             SocketEventsPal.ofReadiness level |> shouldEqual expected
 
     // ---------------------------------------------------------------------
     // `ConvertEventEPollToSocketAsync`, which folds before converting.
     // ---------------------------------------------------------------------
+
+    /// Upstream's fold is one statement, and this reads which bit it clears
+    /// and which it sets rather than assuming. A pin that folded, say, `ERR`
+    /// instead, or that stopped setting `OUT`, changes this text.
+    [<Test>]
+    let ``the delivery fold is upstream's`` () : unit =
+        let body =
+            functionBody
+                (File.ReadAllText (palPath "pal_networking.c"))
+                "static void ConvertEventEPollToSocketAsync(SocketEvent* sae, struct epoll_event* epoll)"
+
+        let fold =
+            Regex.Match (
+                body,
+                @"if\s*\(\(events\s*&\s*(?<tested>\w+)\)\s*!=\s*0\)\s*\{\s*events\s*=\s*\(events\s*&\s*\(\(uint32_t\)~(?<cleared>\w+)\)\)(?<set>(\s*\|\s*\w+)+);"
+            )
+
+        if not fold.Success then
+            failwith
+                $"TestSocketEventsPal: could not read the delivery fold out of ConvertEventEPollToSocketAsync. Its shape has changed upstream; read the body and teach this test, because `SocketEventsPal.delivered` transcribes exactly this statement.\n%s{body}"
+
+        fold.Groups.["tested"].Value |> shouldEqual "EPOLLHUP"
+        fold.Groups.["cleared"].Value |> shouldEqual "EPOLLHUP"
+
+        Regex.Matches (fold.Groups.["set"].Value, @"\w+")
+        |> Seq.map (fun m -> m.Value)
+        |> Set.ofSeq
+        |> shouldEqual (Set.ofList [ "EPOLLIN" ; "EPOLLOUT" ])
 
     [<Test>]
     let ``delivery folds HUP into READ and WRITE`` () : unit =
