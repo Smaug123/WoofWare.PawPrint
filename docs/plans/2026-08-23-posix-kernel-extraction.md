@@ -3632,7 +3632,66 @@ says so.
   table mutants die in both, PAL-mapping mutants die only in PawPrint's, and the
   library's silence there is correct rather than a gap.
 
-**What is left of stage 9**: the four socket entry points' own moves into the library,
+**What is left after 9h**: the four socket entry points' own moves into the library,
 `Signal.{of,to}PosixSignalEnum` — the last two entries, which have an oracle the others
 lacked, since `PosixSignal` is a managed enum the test can read from the running BCL —
 and the packaging items.
+
+#### Stage 9i: the last cluster, and the allowlist reaches zero
+
+**Dependencies**: none. The smallest of the four moves, and the one that ends the
+count: `scripts/pal-residue-allowlist.txt` is now empty.
+
+`System.Runtime.InteropServices.PosixSignal` is ten negative integers naming the
+signals .NET considers portable. It carries no kernel content whatever — a kernel knows
+only signos — so the two conversions go to `Native/PosixSignalPal.fs` and the library
+states the signo alone.
+
+**One table instead of two matches.** The pair used to be two independent exhaustive
+matches, so the round-trip was a property somebody had to keep true. They are now two
+lookups over one list of pairs, which makes `toEnum >> ofEnum = id` true by construction
+rather than by test. The cost is that `toEnum` loses exhaustiveness over `Signal`, and
+that is the right trade: a new `Signal` case genuinely has no enum member, so answering
+`PosixSignalInvalid` for it is correct and a compile error would be noise.
+
+**The trap, for the third stage running.** `Signal.Other`'s docstring said it "carries
+the raw managed `PosixSignal` enum value (negative for cross-platform signals…)". Wrong
+twice: the checker cannot see it (union cases are an admitted blind spot, docstrings are
+comment-excluded), and it was *false* — nothing can put a negative in `Other`, because
+`ofPosixSignalEnum` sent every recognised negative to a named case and an unrecognised
+one to `ofPlatformSigno`, which refuses everything `<= 0`.
+
+Review then caught the replacement being born false in turn: the proposed wording
+claimed a range invariant of `(0, linuxSignalMax]`, and the library's own tests
+deliberately construct `Other -77`, `Other 0` and `Other 999` to pin that `toLinuxSigno`
+stays a projection. The honest statement is what the *conversions* build, plus the
+admission that the public case enforces nothing — and the test comment asserting the
+same falsehood was fixed alongside.
+
+Three instances in three stages says this is how residue comes back, so the script's
+"what it does not see" list now says so, and says why it cannot be fixed there: the
+check would have to tell "cites the PAL to explain a POSIX value", which its own header
+blesses, from "defines this thing in the PAL's terms". That is a judgement, not a regex.
+
+**What the check becomes at zero.** Kept, and rewritten as a ratchet: it used to record
+how much of the extraction was owed and now records that the answer is none, so that
+adding an entry is a visible act somebody has to argue for. Deleting it was the tempting
+option and is wrong — its value from here is that it is cheap and fires on re-accretion.
+Its module docstring, its guidance message and its success line all changed with it, as
+did `flake.nix`'s comment and AGENTS.md's paragraph.
+
+**Correctness oracle**:
+* The enum itself, read from the running BCL. `PosixSignal` is public, unlike the three
+  clusters before it, so no source-parsing is needed and no `Assert.Ignore` either. A
+  pinned-source reader was considered and dropped: `expectedRuntimeVersion` pins the
+  devshell's dotnet *and* the runtime source to the same version, so the two agree by
+  construction and a disagreement could only mean pin drift, which two other checks
+  already police.
+* An exact member-count assertion, whose failure mode is specific: a new upstream member
+  would reach `ofPlatformSigno`, be refused for being non-positive, and make PawPrint
+  throw from `Register` where real .NET registers the signal happily.
+* `toEnum` gets tests **for the first time** — it had none in either suite before this
+  stage, and the battery had nothing to kill its mutants with until they were written.
+
+**What is left of stage 9**: the four socket entry points' own moves into the library,
+and the packaging items — which are what finish the extraction.

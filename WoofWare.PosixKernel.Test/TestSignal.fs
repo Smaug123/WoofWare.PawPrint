@@ -4,16 +4,18 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// Unit tests for the `Signal` conversion helpers that the SystemNative
-/// signal-handling arms rely on. These functions are the only piece of
-/// "business logic" in the four arms (`Initialize`,
-/// `GetPlatformSignalNumber`, `Enable`/`DisablePosixSignalHandling`); the
-/// rest of each arm is plumbing into `SignalState`, which is exercised by
-/// `TestSignalState`. End-to-end coverage for the GetPlatformSignalNumber
-/// arm lives in `sourcesPure/SystemNativeGetPlatformSignalNumber.cs`; the
-/// Enable/Disable arms can't be safely tested via direct P/Invoke on the
-/// real CLR (they install host-process sigaction handlers), so the
-/// conversion math is exhaustively verified here instead.
+/// Unit tests for the `Signal` conversion helpers: the signo table, what a
+/// signal can be caught as, and what a kernel does with one by default.
+///
+/// The other half of the conversion math — anything involving a client's
+/// managed `PosixSignal` enum — is not here, because it is not in this library:
+/// see `WoofWare.PawPrint.Test/TestPosixSignalPal.fs`. What remains is what a
+/// kernel itself knows.
+///
+/// These functions are exhaustively verified rather than sampled because the
+/// arms that consume them cannot be tested any other way: enabling or disabling
+/// a signal through a direct P/Invoke on the real CLR installs a sigaction
+/// handler in the test host's own process.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSignal =
@@ -38,25 +40,16 @@ module TestSignal =
             Signal.SIGWINCH, 28
         ]
 
-    /// PosixSignal cross-platform enum values (negative, defined by the
-    /// managed BCL) paired with their PawPrint Signal identity. The .NET
-    /// `PosixSignal` enum only assigns negative values to 10 of the 14
-    /// modelled signals; the remaining four (SIGPIPE, SIGABRT, SIGUSR1/2)
-    /// have no cross-platform enum member and must be supplied as positive
-    /// native signos directly.
-    let private namedPosixEnumValues : (int * Signal) list =
-        [
-            -1, Signal.SIGHUP
-            -2, Signal.SIGINT
-            -3, Signal.SIGQUIT
-            -4, Signal.SIGTERM
-            -5, Signal.SIGCHLD
-            -6, Signal.SIGCONT
-            -7, Signal.SIGWINCH
-            -8, Signal.SIGTTIN
-            -9, Signal.SIGTTOU
-            -10, Signal.SIGTSTP
-        ]
+    /// The ceiling's *value*, which nothing else pins: every other test here
+    /// and in `TestPosixSignalPal` names `linuxSignalMax` symbolically, so all
+    /// of them move with it and none of them can see it being wrong.
+    ///
+    /// 64 is `SIGRTMAX`, measured on Linux 6.18.5 rather than recalled
+    /// (`SIGRTMAX=64 SIGRTMIN=34 NSIG=65`). Getting it wrong is guest-visible:
+    /// at 63, a guest registering signal 64 is refused where real Linux
+    /// accepts it.
+    [<Test>]
+    let ``the signo ceiling is SIGRTMAX`` () : unit = Signal.linuxSignalMax |> shouldEqual 64
 
     [<Test>]
     let ``toLinuxSigno produces the documented signo for every named case`` () : unit =
@@ -67,10 +60,11 @@ module TestSignal =
     let ``toLinuxSigno on Other returns the raw value unchanged`` () : unit =
         // The `Other` constructor carries raw identity so callers that
         // produced a positive native signo can round-trip it through the
-        // Signal type without losing the value. Negative raws come from
-        // cross-platform PosixSignal enum values the simulator doesn't
-        // model — those are also preserved verbatim, even though there's
-        // no useful signo to send back to the P/Invoke caller.
+        // Signal type without losing the value. The out-of-range values below
+        // are not built by anything here — `ofPlatformSigno` produces only
+        // signos in `(0, linuxSignalMax]` — but the case is public and
+        // enforces nothing, and this pins that `toLinuxSigno` stays a
+        // projection rather than acquiring an opinion about its payload.
         Signal.toLinuxSigno (Signal.Other 42) |> shouldEqual 42
         Signal.toLinuxSigno (Signal.Other 999) |> shouldEqual 999
         Signal.toLinuxSigno (Signal.Other -77) |> shouldEqual -77
@@ -96,72 +90,6 @@ module TestSignal =
         Signal.ofLinuxSigno -1 |> shouldEqual ValueNone // negatives never match
 
     [<Test>]
-    let ``ofPosixSignalEnum maps every cross-platform negative to the right case`` () : unit =
-        for raw, signal in namedPosixEnumValues do
-            Signal.ofPosixSignalEnum raw |> shouldEqual (ValueSome signal)
-
-    [<Test>]
-    let ``ofPosixSignalEnum treats positives as Linux signos`` () : unit =
-        // The BCL allows guests to construct a `PosixSignal` from a raw
-        // native signo (`(PosixSignal)signo`). When that happens the value
-        // arrives at GetPlatformSignalNumber as a positive int; the
-        // real native code accepts it iff it's a recognised host signal,
-        // and PawPrint accepts it iff it's a modelled Linux signo.
-        Signal.ofPosixSignalEnum 1 |> shouldEqual (ValueSome Signal.SIGHUP)
-        Signal.ofPosixSignalEnum 6 |> shouldEqual (ValueSome Signal.SIGABRT)
-        Signal.ofPosixSignalEnum 13 |> shouldEqual (ValueSome Signal.SIGPIPE)
-        Signal.ofPosixSignalEnum 28 |> shouldEqual (ValueSome Signal.SIGWINCH)
-
-    [<Test>]
-    let ``ofPosixSignalEnum returns ValueNone for 0 and unrecognised values`` () : unit =
-        // The cross-platform negative range only covers -1..-10; values
-        // outside that range with no positive interpretation must produce
-        // ValueNone so the arm returns 0 and the BCL raises
-        // ArgumentOutOfRangeException.
-        Signal.ofPosixSignalEnum 0 |> shouldEqual ValueNone // PosixSignalInvalid sentinel
-        Signal.ofPosixSignalEnum -11 |> shouldEqual ValueNone
-        Signal.ofPosixSignalEnum -100 |> shouldEqual ValueNone
-        Signal.ofPosixSignalEnum System.Int32.MinValue |> shouldEqual ValueNone
-        // Positive signos beyond `linuxSignalMax` (Linux's SIGRTMAX = 64) sit
-        // outside any kernel's table and fail the same way real native code
-        // does — the `if (signal > 0 && signal <= GetSignalMax()) return signal;`
-        // branch falls through to `return 0;`.
-        Signal.ofPosixSignalEnum 65 |> shouldEqual ValueNone
-        Signal.ofPosixSignalEnum 100 |> shouldEqual ValueNone
-        Signal.ofPosixSignalEnum System.Int32.MaxValue |> shouldEqual ValueNone
-
-    [<Test>]
-    let ``ofPosixSignalEnum preserves raw identity for valid unmodelled positives`` () : unit =
-        // Mirrors the real native semantics: when a guest casts an arbitrary
-        // native signo to `PosixSignal` (e.g. `(PosixSignal)4` for SIGILL or
-        // `(PosixSignal)11` for SIGSEGV), `SystemNative_GetPlatformSignalNumber`
-        // returns the raw value unchanged when it sits within `GetSignalMax()`.
-        // PawPrint preserves identity via `Signal.Other`, so the value round-
-        // trips back to the BCL and `PosixSignalRegistration.Register`
-        // accepts the registration instead of throwing.
-        Signal.ofPosixSignalEnum 4 |> shouldEqual (ValueSome (Signal.Other 4)) // SIGILL
-        Signal.ofPosixSignalEnum 5 |> shouldEqual (ValueSome (Signal.Other 5)) // SIGTRAP
-        Signal.ofPosixSignalEnum 7 |> shouldEqual (ValueSome (Signal.Other 7)) // SIGBUS
-        Signal.ofPosixSignalEnum 11 |> shouldEqual (ValueSome (Signal.Other 11)) // SIGSEGV
-        // Boundary: `linuxSignalMax` (SIGRTMAX on Linux) is the highest accepted value.
-        Signal.ofPosixSignalEnum Signal.linuxSignalMax
-        |> shouldEqual (ValueSome (Signal.Other Signal.linuxSignalMax))
-
-    [<Test>]
-    let ``ofPlatformSigno agrees with ofPosixSignalEnum on positive inputs`` () : unit =
-        // `ofPlatformSigno` is the helper the enable/disable arms use to
-        // accept a signo arriving from `GetPlatformSignalNumber`. It must
-        // produce the same `Signal` identity that the enum-side helper would
-        // have constructed, otherwise the enable bit would key on a different
-        // case than the registration request.
-        for signo in 1 .. Signal.linuxSignalMax do
-            Signal.ofPlatformSigno signo |> shouldEqual (Signal.ofPosixSignalEnum signo)
-
-        Signal.ofPlatformSigno 0 |> shouldEqual ValueNone
-        Signal.ofPlatformSigno -1 |> shouldEqual ValueNone
-        Signal.ofPlatformSigno (Signal.linuxSignalMax + 1) |> shouldEqual ValueNone
-
-    [<Test>]
     let ``isUncatchable flags SIGKILL and SIGSTOP and nothing else`` () : unit =
         // The POSIX standard names exactly two uncatchable signals: SIGKILL
         // (Linux signo 9) and SIGSTOP (Linux signo 19). The kernel rejects
@@ -182,44 +110,6 @@ module TestSignal =
         Signal.isUncatchable (Signal.Other 11) |> shouldEqual false // SIGSEGV
         Signal.isUncatchable (Signal.Other 8) |> shouldEqual false // SIGFPE
         Signal.isUncatchable (Signal.Other 64) |> shouldEqual false
-
-    [<Test>]
-    let ``ofPosixSignalEnum and toLinuxSigno round-trip through GetPlatformSignalNumber semantics`` () : unit =
-        // Simulates the full GetPlatformSignalNumber arm:
-        //   raw -> Signal.ofPosixSignalEnum -> toLinuxSigno -> signo
-        // for every cross-platform enum value and for every positive
-        // modelled signo. A non-zero result means "the BCL can call
-        // Enable/DisablePosixSignalHandling with this signo and PawPrint
-        // will accept it"; a zero result means the BCL will throw
-        // ArgumentOutOfRangeException at the Register call site.
-        let armBehaviour (raw : int) : int =
-            match Signal.ofPosixSignalEnum raw with
-            | ValueSome s -> Signal.toLinuxSigno s
-            | ValueNone -> 0
-
-        for raw, _signal in namedPosixEnumValues do
-            // Every negative cross-platform enum value must produce a non-zero
-            // signo — these are the values `PosixSignalRegistration.Register`
-            // is documented to accept.
-            armBehaviour raw |> shouldNotEqual 0
-
-        for _signal, signo in modelledSignals do
-            armBehaviour signo |> shouldEqual signo
-
-        // Unmodelled-but-valid positive signos round-trip via `Signal.Other`:
-        // the guest casts `(PosixSignal)4` (SIGILL), the arm must return 4,
-        // and the BCL forwards 4 unchanged to `EnablePosixSignalHandling`.
-        armBehaviour 4 |> shouldEqual 4
-        armBehaviour 11 |> shouldEqual 11
-        armBehaviour Signal.linuxSignalMax |> shouldEqual Signal.linuxSignalMax
-
-        armBehaviour 0 |> shouldEqual 0
-        armBehaviour -11 |> shouldEqual 0
-        // Just past SIGRTMAX, the arm returns 0 — same path as the real native
-        // `if (signal > 0 && signal <= GetSignalMax()) return signal;` falling
-        // through to `return 0;`.
-        armBehaviour (Signal.linuxSignalMax + 1) |> shouldEqual 0
-        armBehaviour 100 |> shouldEqual 0
 
     [<Test>]
     let ``defaultDisposition classifies modelled terminate-by-default signals`` () : unit =

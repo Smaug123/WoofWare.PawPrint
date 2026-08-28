@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Pin the set of WoofWare.PosixKernel definitions that still speak CoreCLR's PAL.
+"""Pin the set of WoofWare.PosixKernel definitions that speak CoreCLR's PAL.
 
 WoofWare.PosixKernel is meant to be a POSIX simulator that a client other than
 WoofWare.PawPrint could use, so its vocabulary should be POSIX's: raw errno
-numbers, `SIGTERM`, `AF_INET`. Two leaf functions still speak an encoding of
-.NET's platform abstraction layer -- the `PosixSignal` managed enum. Moving
-them out is what the stages in docs/plans/2026-08-23-posix-kernel-extraction.md
-do, one cluster at a time; until they are gone this check stops the set from
-growing. The markers below also name encodings no allowlisted definition speaks
-any more (`Interop.Error`'s numbering, the PAL's `SocketEvents` bits, its
-`AF_*`/`SOCK_*` numbering), which is the point: those clusters have left, and
-this is what stops them coming back.
+numbers, `SIGTERM`, `AF_INET`. That is now true -- the allowlist is empty, and
+all four clusters this was written to retire have gone to WoofWare.PawPrint
+(`UnixErrorPal`, `SocketEventsPal`, `SocketArgumentsPal`, `PosixSignalPal`).
+
+So this is a ratchet rather than a countdown. Every marker below names an
+encoding *nothing* in the library speaks any more, and the check's whole job is
+to notice if one comes back.
 
 A definition is taken to speak the PAL if its own name says so, or if its body
 mentions one of the PAL's encodings. That is a proxy rather than a proof: a
@@ -31,11 +30,22 @@ What it does not see, accepted deliberately:
     guarded by the name markers alone -- weaker than the distinctive word that
     guards the retired `SocketEvents` cluster. A re-accreted `AF_*` table under
     an innocent name would pass.
-  * Prose. Docstrings are excluded before the body scan, so a type *documented*
-    in the PAL's terms reads as clean however it is defined. Stage 9h found
-    exactly that: `SocketDomain` and its siblings were POSIX-named and
-    PAL-defined ("`AF_INET`, PAL 2"), and retiring their cluster would have
-    turned this check green over a residue it cannot see.
+  * Prose, and this is the one that actually keeps happening. Docstrings are
+    excluded before the body scan, so a declaration *documented* in the PAL's
+    terms reads as clean however it is defined. Each of the last three stages
+    found an instance while retiring its cluster, and each would have turned
+    this check green over a residue it cannot see:
+      - 9g: `SocketEventInterest`'s fields were the PAL's five bits by name.
+      - 9h: `SocketDomain` and siblings were POSIX-named and PAL-defined
+        ("`AF_INET`, PAL 2").
+      - 9i: `Signal.Other` claimed to carry "the raw managed `PosixSignal`
+        enum value", which it never did.
+    Three for three says this is how residue comes back. It is *not* fixable
+    here: the check would have to tell "cites the PAL to explain where a POSIX
+    value came from", which the header above explicitly blesses, from "defines
+    this thing in the PAL's terms". That is a judgement, not a regex, and
+    pretending otherwise would make this dishonest in a new way. Read the prose
+    when you retire something.
 
 And one thing it can see for a weak reason: a conversion whose body is bare hex
 masks is recognised only if a *string literal* in it names the encoding, which
@@ -44,8 +54,7 @@ Rewording such a message reports the entry as stale rather than removing the
 conversion; the stale message below says so.
 
 None of these is closed because the library is written in module-and-`let` style
-throughout, and the extraction work stream finishes before other development
-resumes, so the accretion this guards against would have to arrive in a form
+throughout, so the accretion this guards against would have to arrive in a form
 nothing here uses. Widen the parser if that stops being true.
 
 Usage:  check-pal-residue.py <library-dir> <allowlist-file>
@@ -104,9 +113,8 @@ def qualify(stack: list[tuple[int, str]]) -> str:
     """Name a definition by its top-level container and the member inside it.
 
     That is the granularity the allowlist wants: a helper nested inside a
-    function is part of that function, not a separate entry to approve, but
-    `Signal.ofPosixSignalEnum` and `Signal.toPosixSignalEnum` are two
-    independent things to retire.
+    function is part of that function rather than a separate entry to approve,
+    while two functions of one module are two independent things.
     """
     return ".".join(name for _, name in stack[:2])
 
@@ -175,11 +183,12 @@ def main() -> int:
         )
     if grew:
         print(
-            "\nPut the conversion in WoofWare.PawPrint (Native/NativeSystemNative.fs "
-            "is where the rest of it lives) and give the library the POSIX value. "
-            f"The residue in {ALLOWLIST_IN_REPO} is allowed to shrink, never to "
-            "grow; stage 7 of "
-            "docs/plans/2026-08-23-posix-kernel-extraction.md retires it.",
+            "\nPut the conversion in WoofWare.PawPrint, beside UnixErrorPal, "
+            "SocketEventsPal, SocketArgumentsPal and PosixSignalPal in Native/, "
+            "and give the library the POSIX value. The residue is currently "
+            f"empty and {ALLOWLIST_IN_REPO} says what it takes to add to it; "
+            "docs/plans/2026-08-23-posix-kernel-extraction.md is why it is "
+            "empty.",
             file=sys.stderr,
         )
 
@@ -195,7 +204,10 @@ def main() -> int:
         )
 
     if not grew and not stale:
-        print(f"PAL residue: {len(detected)} definitions, exactly as allowlisted.")
+        if detected:
+            print(f"PAL residue: {len(detected)} definitions, exactly as allowlisted.")
+        else:
+            print("PAL residue: none, and the allowlist is empty.")
         return 0
     return 1
 

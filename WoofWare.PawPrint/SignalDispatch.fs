@@ -94,14 +94,14 @@ module SignalDispatch =
     /// underlying `int`, so both arguments are plain `CliType.Numeric Int32`.
     /// `signo` is the Linux signal number from `Signal.toLinuxSigno`;
     /// `posixSignalEnumValue` is the negative enum identity from
-    /// `Signal.toPosixSignalEnum` for the modelled cross-platform signals or
+    /// `PosixSignalPal.toEnum` for the modelled cross-platform signals or
     /// `PosixSignalInvalid` (0) for signals with no managed enum value
     /// (matching real CoreCLR `pal_signal.c`, which overwrites the
     /// out-parameter with `PosixSignalInvalid` when
     /// `TryConvertSignalCodeToPosixSignal` returns `false`).
     let private buildArgs (signal : Signal) : ImmutableArray<CliType> =
         let signo = Signal.toLinuxSigno signal
-        let posixEnum = Signal.toPosixSignalEnum signal
+        let posixEnum = PosixSignalPal.toEnum signal
 
         ImmutableArray.CreateRange (
             [
