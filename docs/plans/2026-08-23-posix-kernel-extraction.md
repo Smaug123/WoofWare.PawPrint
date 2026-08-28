@@ -3849,12 +3849,16 @@ states that a stream this kernel never issued is a caller bug rather than an err
   not modelled. It is a refusal rather than `SyscallOutcome.WouldBlock` for exactly
   that reason: `WouldBlock` promises a `WakeCondition`, and there is none to give.
 * `UnmeasuredCopyOutFault of listener` — the connection would be dequeued and the peer
-  address copied out, but the destination names no storage. All three of `Opaque`,
-  `Addressless` and `Unmapped` collapse into this one case, and that is not laziness:
-  the unanswerable question is the same for all three — whether a real kernel loses the
-  connection when the copy-out faults *after* it has selected one — and it is a question
-  about the measurement rather than about how the client classified the buffer. Which
-  is also why it is not a `BufferRefusal`: that type names dead ends in classification.
+  address copied out, but the destination is unmapped, so that copy faults. Not
+  a `BufferRefusal`, which names dead ends in how a buffer was *classified*: by the time
+  the fault happens a connection has been taken off the queue, and whether a real kernel
+  loses it or leaves it queued is unmeasured. This is where `accept` and `getsockname`
+  part company — `getsockname` answers EFAULT, having nothing to lose.
+
+  A destination that is `Opaque` or `Addressless` is a *fifth* refusal,
+  `Buffer of BufferRefusal`, and the distinction is not decoration: there the kernel
+  would have succeeded and dequeued, and it is the client that has run out of
+  representation. That split is what review found; see below.
 
 **What the library answers.** `Failed of error` (EBADF, ENOTSOCK, EOPNOTSUPP, EINVAL,
 EAGAIN) and `Accepted of fd * peer * reportedLength`. PawPrint keeps every byte of the
@@ -3891,5 +3895,77 @@ without advancing that counter has the accepted socket *overwrite* the listener 
 table. The failure names the listener's phase and says nothing about ids, which makes
 it look like an accept bug; `withSocket` in `TestAccept.fs` advances the counter, and
 says why.
+
+**What review found, which is the part worth reading.** Two things, both of which the
+move *created the conditions to see* rather than introduced.
+
+* **The accepted socket's `O_NONBLOCK` was the PAL's answer, not the kernel's.**
+  `FileDescriptorRegistry.createSocket` always mints a blocking description, and while
+  that was PawPrint-internal it was right: the guest goes through
+  `SystemNative_Accept`, which clears the flag. Published as `UnixSystem.accept`, it
+  became a claim about `accept(2)` — and the claim is false on Darwin. Measured with
+  `accept-inherits-nonblock.c` (added beside the other probes in this plan's
+  directory): on Linux 6.18.5 a non-blocking listener yields a **blocking** accepted
+  socket, on Darwin 25.6.0 a **non-blocking** one, and a blocking listener yields a
+  blocking one on both. So the flag is inherited rather than the platform being
+  decisive, which is why the fixture asserts both halves.
+
+  The rule went to `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking` and the
+  normalisation stayed in `SystemNative_Accept`, mirroring upstream's
+  `#if !defined(__linux__)` — applied unconditionally there rather than under a
+  platform test, because on Linux the kernel never set the flag and clearing it is a
+  no-op.
+
+  It is inherited from the *description*, which is why `accept` applies it and
+  `acceptConnection` does not: a `SocketId` names no description, so the state
+  transition structurally cannot answer the question. A fixture pins that, because
+  "scan the registry for a description naming this socket" is a plausible-looking
+  wrong answer.
+
+  **No guest can see any of this**, since the PAL erases it. `TestAccept` is the only
+  tier that can, which is the second time this stage has found something reachable
+  only from the library's own suite.
+
+* **`UserBuffer.Opaque` was grouped with `Unmapped` under one refusal, and should not
+  have been.** The plan above argued that all three unrepresentable destinations ask
+  the same unanswerable question. They do not. `Unmapped` means the copy-out *faults*,
+  after a connection has been taken off the queue, and what a kernel does then is
+  genuinely unmeasured. `Opaque` and `Addressless` mean the kernel would have
+  **succeeded**; it is the client that cannot represent the transfer. Calling that a
+  copy-out fault tells a caller the kernel faulted when it did not. Split:
+  `AcceptRefusal.Buffer of BufferRefusal` for the two representation dead ends —
+  the vocabulary `getsockname` already uses — and `UnmeasuredCopyOutFault` reserved for
+  the genuine one.
+
+**Mutation battery**: twenty-two mutants.
+
+Sixteen of `accept` and `acceptConnection` — every errno, both check orderings, the
+dequeue, the inheritance of `SO_REUSEADDR`, the two addresses a connection carries, the
+reported length — and every one is killed by the *library's own* suite, so PawPrint's
+default suite was never consulted. That is the 9g failure mode not recurring: there,
+`reportedUnder` was a library rule only the client's tests could kill.
+
+Four of the `O_NONBLOCK` rule: the flavour answering `false` everywhere, `true`
+everywhere, `accept` ignoring the listener's own flag, and `accept` ignoring the
+flavour. All four die, and the first two only because `TestAccept` writes the two
+answers out as literals rather than asking
+`acceptedSocketInheritsNonBlocking` — which is the function under test, so a fixture
+that consulted it would move with it and see nothing. That is a mirror oracle, and this
+one was written as a mirror before it was rewritten.
+
+Two in the handler, and these are the interesting ones because neither default suite
+kills either:
+
+* Replacing `EmulatedKernel.withUnix unix` with `id`, so the library's system is
+  computed and thrown away, survives **both** default suites and one of the two guests
+  that do a successful accept: `sourcesPure/SocketEventDelivery.cs` accepts and never
+  uses the descriptor, so only `sourcesImpure/SocketEventDeliveryLinux.cs` kills it.
+* Dropping the PAL's `O_NONBLOCK` clearing had **no killer at all** until this stage
+  added one. It could not have had one: a Linux-flavour guest passes whether the
+  clearing happens or not, since the kernel never set the flag, and no Darwin-flavour
+  guest performed a successful accept. `sourcesImpure/SocketAcceptDarwin.cs` now makes
+  a non-blocking listener, connects, accepts, and reads
+  `SystemNative_FcntlGetIsNonBlocking` off the accepted descriptor; the mutant dies
+  there with exit code 44 against the real macOS runtime's 0.
 
 **What is left after 9j**: `connect`, `poll` and `WaitForSocketEvents`.

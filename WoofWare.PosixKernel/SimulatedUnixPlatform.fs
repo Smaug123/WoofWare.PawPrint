@@ -2099,6 +2099,26 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> GetSockNameFaultLength.AlreadyReported
         | SimulatedUnixFlavour.Darwin -> GetSockNameFaultLength.Untouched
 
+    /// Whether the socket `accept(2)` hands back inherits `O_NONBLOCK` from the
+    /// listening descriptor.
+    ///
+    /// The classic BSD/POSIX divergence, measured 2026-08-28 with
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/accept-inherits-nonblock.c`:
+    /// on Linux 6.18.5 a non-blocking listener yields a *blocking* accepted
+    /// socket, and on Darwin 25.6.0 a non-blocking one. Blocking listeners yield
+    /// blocking sockets on both.
+    ///
+    /// This is the kernel's answer and not a runtime's. A client whose own
+    /// sockets expect one answer everywhere has to normalise it -- CoreCLR's
+    /// `SystemNative_Accept` clears the flag under `#if !defined(__linux__)`,
+    /// with the comment "Our socket code expects new socket to be in blocking
+    /// mode by default" -- and that normalisation belongs to the client rather
+    /// than here.
+    let acceptedSocketInheritsNonBlocking (platform : SimulatedUnixPlatform) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> false
+        | SimulatedUnixFlavour.Darwin -> true
+
     /// What this platform's PAL puts in `DirectoryEntry.NameLength`. See
     /// `DirectoryEntryNameLength`.
     let directoryEntryNameLength (platform : SimulatedUnixPlatform) : DirectoryEntryNameLength =

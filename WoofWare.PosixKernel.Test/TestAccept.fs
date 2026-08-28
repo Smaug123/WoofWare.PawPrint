@@ -495,17 +495,36 @@ module TestAccept =
         UnixSystem.accept fd UserBuffer.Mapped 16 system
         |> shouldEqual (Error (AcceptRefusal.WouldPark (SocketId 0L)))
 
-    /// All three of `Unmapped`, `Opaque` and `Addressless` reach the same
-    /// refusal, and reach it *after* the queue has been consulted: what has no
-    /// answer is what a fault costs once a connection has been selected, not how
-    /// the buffer was classified.
+    /// An unmapped destination faults the copy-out, and the fault happens once a
+    /// connection has already been taken off the queue -- which is the case
+    /// `getsockname` answers EFAULT for and this one cannot.
     [<TestCaseSource(nameof platforms)>]
-    let ``a copy-out through a buffer naming no storage is refused`` (platform : SimulatedUnixPlatform) : unit =
-        for destination in [ UserBuffer.Unmapped 4096UL ; UserBuffer.Opaque ; UserBuffer.Addressless ] do
+    let ``a copy-out through an unmapped destination is refused`` (platform : SimulatedUnixPlatform) : unit =
+        let fd, _, system = listenerWith platform 1
+
+        UnixSystem.accept fd (UserBuffer.Unmapped 4096UL) 16 system
+        |> shouldEqual (Error (AcceptRefusal.UnmeasuredCopyOutFault (SocketId 0L)))
+
+    /// A destination whose bytes the client cannot produce is a different
+    /// refusal, and deliberately so: the kernel would have succeeded here, and
+    /// it is the client that has run out of representation. Calling that a
+    /// copy-out fault would tell a caller the kernel faulted when it did not.
+    [<TestCaseSource(nameof platforms)>]
+    let ``a copy-out through a buffer the client cannot represent is refused``
+        (platform : SimulatedUnixPlatform)
+        : unit
+        =
+        let rows =
+            [
+                UserBuffer.Opaque, BufferRefusal.OpaqueAtTransfer
+                UserBuffer.Addressless, BufferRefusal.AddresslessAtTransfer
+            ]
+
+        for destination, expected in rows do
             let fd, _, system = listenerWith platform 1
 
             UnixSystem.accept fd destination 16 system
-            |> shouldEqual (Error (AcceptRefusal.UnmeasuredCopyOutFault (SocketId 0L)))
+            |> shouldEqual (Error (AcceptRefusal.Buffer expected))
 
     /// A refusal carries no system, so the connection it would have handed over
     /// is still queued. That is what makes the refusal safe to raise from: the
@@ -515,7 +534,7 @@ module TestAccept =
         let fd, connections, system = listenerWith platform 1
 
         UnixSystem.accept fd UserBuffer.Opaque 16 system
-        |> shouldEqual (Error (AcceptRefusal.UnmeasuredCopyOutFault (SocketId 0L)))
+        |> shouldEqual (Error (AcceptRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
         queueOf (SocketId 0L) system |> shouldEqual connections
 
@@ -528,6 +547,125 @@ module TestAccept =
 
         UnixSystem.accept fd UserBuffer.Opaque 16 system
         |> shouldEqual (Error (AcceptRefusal.WouldPark (SocketId 0L)))
+
+
+    // ------------------------------------------------------------------
+    // O_NONBLOCK inheritance
+    // ------------------------------------------------------------------
+
+    let private acceptedDescription (acceptedFd : int) (system : UnixSystem<int, string>) : OpenFileDescription =
+        match FileDescriptorRegistry.tryFind acceptedFd system.Process.FileDescriptors with
+        | Some description -> description
+        | None -> failwith $"the accepted descriptor %d{acceptedFd} is not live"
+
+    /// The measured answers, as literals: Linux 6.18.5 hands back a *blocking*
+    /// socket through a non-blocking listener, Darwin 25.6.0 a non-blocking one.
+    /// Taken 2026-08-28 with
+    /// `docs/plans/2026-08-23-posix-kernel-extraction/accept-inherits-nonblock.c`.
+    ///
+    /// Written out rather than asked of
+    /// `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking`, which is the
+    /// function under test: a test that consults it would move with it and could
+    /// not see it flipped.
+    let private inheritanceRows : obj[] list =
+        [
+            [| box SimulatedUnixPlatform.linuxX64 ; box false |]
+            [| box SimulatedUnixPlatform.macOsArm64 ; box true |]
+        ]
+
+    /// A guest cannot see this at all -- CoreCLR's `SystemNative_Accept` clears
+    /// the flag on the flavours that set it, precisely so that its own socket
+    /// code does not have to care -- so this fixture is the only thing that
+    /// distinguishes the two answers. (`sourcesImpure/SocketAcceptDarwin.cs`
+    /// covers the *clearing*, which is a different claim.)
+    [<TestCaseSource(nameof inheritanceRows)>]
+    let ``a non-blocking listener's accepted socket inherits the flavour's answer``
+        (platform : SimulatedUnixPlatform)
+        (inherits : bool)
+        : unit
+        =
+        let fd, _, system = listenerWith platform 1
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
+                    }
+            }
+
+        match acceptOrFail fd UserBuffer.Mapped 16 system with
+        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptAnswer.Accepted (acceptedFd, _, _), system ->
+
+        (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual inherits
+
+    /// The other half of the same measurement, and the one that keeps the rule
+    /// from being "Darwin's accepted sockets are non-blocking": a blocking
+    /// listener yields a blocking accepted socket on both flavours, so what is
+    /// inherited is the flag rather than the platform.
+    [<TestCaseSource(nameof platforms)>]
+    let ``a blocking listener's accepted socket is blocking`` (platform : SimulatedUnixPlatform) : unit =
+        let fd, _, system = listenerWith platform 1
+
+        match acceptOrFail fd UserBuffer.Mapped 16 system with
+        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptAnswer.Accepted (acceptedFd, _, _), system ->
+
+        (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual false
+
+    /// Inherited from the *description*, not from the descriptor: an accept
+    /// through a `dup` of a non-blocking listener inherits it too, because both
+    /// numbers name the same description.
+    [<TestCaseSource(nameof inheritanceRows)>]
+    let ``inheritance follows the description through a dup``
+        (platform : SimulatedUnixPlatform)
+        (inherits : bool)
+        : unit
+        =
+        let fd, _, system = listenerWith platform 1
+
+        let registry =
+            FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
+
+        let duplicate, registry =
+            match FileDescriptorRegistry.dup fd registry with
+            | Ok result -> result
+            | Error error -> failwith $"could not dup: %A{error}"
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        match acceptOrFail duplicate UserBuffer.Mapped 16 system with
+        | AcceptAnswer.Failed error, _ -> failwith $"expected an accept, got %O{error}"
+        | AcceptAnswer.Accepted (acceptedFd, _, _), system ->
+
+        (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual inherits
+
+    /// `acceptConnection` is the state transition without the entry point, and a
+    /// `SocketId` names no description -- so it cannot inherit anything, and
+    /// says so. This pins that, because the alternative (scanning the registry
+    /// for a description naming the socket) would be a plausible-looking bug.
+    [<Test>]
+    let ``acceptConnection alone does not inherit`` () : unit =
+        let fd, _, system = listenerWith SimulatedUnixPlatform.macOsArm64 1
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = FileDescriptorRegistry.setNonBlocking fd true system.Process.FileDescriptors
+                    }
+            }
+
+        let acceptedFd, _, system = UnixSystem.acceptConnection (SocketId 0L) system
+
+        (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual false
 
     // ------------------------------------------------------------------
     // Caller bugs

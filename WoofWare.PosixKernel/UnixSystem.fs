@@ -412,15 +412,22 @@ type AcceptRefusal =
     /// sleeper, so parking one would be a deadlock rather than a park.
     | WouldPark of listener : SocketId
     /// The accept would succeed and copy the peer address out, but the
-    /// destination names no storage the client can write through.
+    /// destination is one this library has no answer for: its bytes cannot be
+    /// produced, or it is not an address at all.
     ///
-    /// Not a `BufferRefusal`, which names dead ends in how a buffer was
-    /// *classified*: all three of `Unmapped`, `Opaque` and `Addressless` reach
-    /// this together, because the unanswerable question is the same for each and
-    /// is about the kernel rather than the buffer. The connection has been
-    /// selected by the time the copy-out faults, and whether a real kernel loses
-    /// it or leaves it queued is unmeasured -- so, unlike `getsockname`, EFAULT
-    /// is not available as an answer here.
+    /// Reached only once a connection has been selected, which is what makes it
+    /// worth distinguishing from `UnmeasuredCopyOutFault` beside it: here the
+    /// kernel *would* have succeeded and dequeued, and it is the client that
+    /// cannot represent the transfer.
+    | Buffer of BufferRefusal
+    /// The accept would succeed and copy the peer address out, but the
+    /// destination is unmapped, so the copy faults.
+    ///
+    /// `getsockname` answers EFAULT for this and `accept` cannot, which is the
+    /// whole reason the case exists: by the time the fault happens a connection
+    /// has been taken off the queue, and whether a real kernel loses it or
+    /// leaves it queued is unmeasured. Neither answer is available, so there is
+    /// none to give.
     | UnmeasuredCopyOutFault of listener : SocketId
 
 [<RequireQualifiedAccess>]
@@ -436,8 +443,9 @@ module AcceptRefusal =
             $"the descriptor is socket %O{socket}, which is a %O{kind} socket, and what `accept(2)` answers for one is unmeasured. Measure it rather than guessing: SOCK_SEQPACKET does accept connections, so a guess of EOPNOTSUPP there would be a wrong answer rather than an approximate one."
         | AcceptRefusal.WouldPark listener ->
             $"socket %O{listener} is a blocking listener with an empty accept queue, which a real kernel sleeps in. Nothing in this kernel delivers a connection to a sleeping accepter, so a park here would never end. Complete a connect before the accept, or make the listener non-blocking."
+        | AcceptRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
-            $"socket %O{listener} has a connection to hand over, so this call succeeds and copies the peer address out -- but the destination names no storage. Whether a real kernel loses the connection when that copy-out faults, having already selected it, is unmeasured, so EFAULT is not available here as it is for `getsockname`."
+            $"socket %O{listener} has a connection to hand over, so this call succeeds and copies the peer address out -- but the destination is unmapped, so that copy faults. Whether a real kernel loses the connection when it faults, having already taken it off the queue, is unmeasured, so EFAULT is not available here as it is for `getsockname`."
 
 /// What kind of object one directory entry names.
 ///
@@ -3484,9 +3492,14 @@ module UnixSystem =
 
     /// Dequeue the oldest completed connection from `socketId`'s accept queue
     /// and materialise the server-side socket onto it: a fresh socket, bound at
-    /// the connection's server address, on a fresh (blocking) descriptor.
+    /// the connection's server address, on a fresh **blocking** descriptor.
     /// Answers the new fd and the connection, whose `ClientAddress` is what
     /// `accept(2)` reports as the peer.
+    ///
+    /// Blocking unconditionally, which is not the whole of `accept(2)`: on a
+    /// flavour where the accepted socket inherits `O_NONBLOCK`, it inherits it
+    /// from the *description the call was made through*, and a `SocketId` does
+    /// not name one. `accept` applies that, having the descriptor.
     ///
     /// The state transition on its own, without the entry point's screens, for a
     /// client that wants to put a kernel into a state where a connection has
@@ -3586,6 +3599,12 @@ module UnixSystem =
     ///
     /// Every failure leaves the listener exactly as it was, the queue included,
     /// which is why the failing arms hand back the system they were given.
+    ///
+    /// The accepted descriptor inherits `O_NONBLOCK` from the description this
+    /// call was made through, on the flavours whose kernels do that: see
+    /// `SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking`. A client whose
+    /// own sockets want one answer on every platform clears it itself, which is
+    /// what CoreCLR's `SystemNative_Accept` does.
     let accept<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
@@ -3662,21 +3681,44 @@ module UnixSystem =
 
         // The destination is screened after the queue and before the dequeue,
         // which is the only place it can go: there is nothing to copy out until
-        // a connection has been selected, and once one has been the refusal is
-        // about what a fault would cost rather than about the buffer.
-        let destinationWritable =
-            declaredLength = 0
-            || match destination with
-               | UserBuffer.Mapped -> true
-               | UserBuffer.Unmapped _
-               | UserBuffer.Opaque
-               | UserBuffer.Addressless -> false
+        // a connection has been selected. A call that writes nothing never looks
+        // at it at all.
+        let destinationRefusal =
+            if declaredLength = 0 then
+                None
+            else
+                match destination with
+                | UserBuffer.Mapped -> None
+                | UserBuffer.Opaque -> Some (AcceptRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+                | UserBuffer.Addressless -> Some (AcceptRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+                | UserBuffer.Unmapped _ -> Some (AcceptRefusal.UnmeasuredCopyOutFault socketId)
 
-        if not destinationWritable then
-            Error (AcceptRefusal.UnmeasuredCopyOutFault socketId)
-        else
+        match destinationRefusal with
+        | Some refusal -> Error refusal
+        | None ->
 
         let acceptedFd, connection, system = acceptConnection socketId system
+
+        // `O_NONBLOCK` inheritance is the flavour's answer rather than this
+        // kernel's convenience: Darwin's `accept(2)` copies the listening
+        // description's flag onto the accepted socket and Linux's does not
+        // (measured; see `acceptedSocketInheritsNonBlocking`). It is inherited
+        // from the description this call was made through, so a `dup` of a
+        // non-blocking listener passes the flag on too.
+        let system =
+            if
+                description.NonBlocking
+                && SimulatedUnixPlatform.acceptedSocketInheritsNonBlocking system.Machine.UnixPlatform
+            then
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors =
+                                FileDescriptorRegistry.setNonBlocking acceptedFd true system.Process.FileDescriptors
+                        }
+                }
+            else
+                system
 
         Ok (AcceptAnswer.Accepted (acceptedFd, connection.ClientAddress, reportedLength), system)
 

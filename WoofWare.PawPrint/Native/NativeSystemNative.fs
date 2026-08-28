@@ -4518,6 +4518,7 @@ module NativeSystemNative =
                             $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
                 failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} %s{reachedBy}"
+            | Error (AcceptRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage addressArgument refusal)
             | Error (AcceptRefusal.UnmeasuredCopyOutFault _ as refusal) ->
                 // The library never saw the pointer, only how PawPrint
                 // classified it, so naming the argument is PawPrint's half.
@@ -4530,6 +4531,22 @@ module NativeSystemNative =
                 // hid a future change to that contract.
                 failFromSyscall error state
             | Ok (AcceptAnswer.Accepted (acceptedFd, peer, reportedLength), unix) ->
+
+            // `#if !defined(__linux__)`: "On macOS and FreeBSD new socket
+            // inherits flags from accepting fd. Our socket code expects new
+            // socket to be in blocking mode by default"
+            // (pal_networking.c:1733). Applied on every flavour rather than
+            // under a platform test, because on Linux the kernel never set the
+            // flag and clearing it is a no-op. The shim closes the accepted
+            // socket if the `fcntl` fails; nothing here can fail.
+            let unix =
+                { unix with
+                    Process =
+                        { unix.Process with
+                            FileDescriptors =
+                                FileDescriptorRegistry.setNonBlocking acceptedFd false unix.Process.FileDescriptors
+                        }
+                }
 
             let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
