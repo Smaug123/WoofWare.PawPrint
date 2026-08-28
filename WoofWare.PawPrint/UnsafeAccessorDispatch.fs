@@ -1165,6 +1165,34 @@ module internal UnsafeAccessorDispatch =
                 raiseFromAccessor baseClassTypes.NullReferenceException None state
             else
 
+            // A value type whose storage is a bare cell rather than a field map -- `System.Int32`
+            // holding its `m_value`, and every other primitive-like type -- has no field for a
+            // projection to name, so the byref this would hand back could not be read or written.
+            // Real .NET aliases the underlying value: measured on .NET 10, an accessor for
+            // `int`'s `m_value` over a `ref int` returns a reference to that very `int`. Answering
+            // that here means teaching `instanceFieldAddress` that such a field's address *is* its
+            // container's, which is a change to what `ldflda` does for every caller and not to
+            // this dispatcher.
+            let state, targetZero =
+                IlMachineState.cliTypeZeroOfHandle state baseClassTypes declaringType
+                |> fun (zero, state) -> state, zero
+
+            match targetZero with
+            | CliType.ValueType _ -> ()
+            | _ when
+                DumpedAssembly.isValueType
+                    baseClassTypes
+                    state._LoadedAssemblies
+                    (AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes declaringType
+                     |> Option.map snd
+                     |> Option.defaultWith (fun () ->
+                         failwith $"BUG: %s{describe} resolved a field on %O{declaringType}, which has no TypeDef row"
+                     ))
+                ->
+                failwith
+                    $"TODO: %s{describe} names field %s{field.Name} of a primitive-like value type, whose storage is a bare cell with no field to project onto. Real .NET returns a reference to the underlying value itself; giving that answer means teaching `instanceFieldAddress` that such a field's address is its container's, which changes `ldflda` for every caller"
+            | _ -> ()
+
             let fieldId = FieldId.metadata declaringType field.Handle field.Name
 
             let state, pointer =
