@@ -64,6 +64,17 @@ type OpcodeFaults =
     ///   already says which instructions bear a token: exactly `UnaryMetadataToken` and
     ///   `UnaryStringToken`. A consumer analysing a well-formed, fully-resolvable closure may
     ///   ignore them; one analysing an arbitrary package may not.
+    /// * Whatever a real runtime does with an *invalid but non-null* address, which the raw-memory
+    ///   instructions (`cpblk`, `initblk`, the `ldind`/`stind` family, `ldobj`/`stobj`) can be
+    ///   handed by unverifiable IL. ECMA-335's answer is that
+    ///   "System.NullReferenceException *can* be thrown if an invalid address is detected"
+    ///   (III.3.30) — permissive, and naming the fault these entries already carry.
+    ///   `AccessViolationException` appears nowhere in ECMA-335: it is an artefact of hosting the
+    ///   CLI on an OS with virtual memory. CoreCLR raises it from the hardware fault, and it is
+    ///   *uncatchable* there — a corrupted-state exception that ends the process rather than
+    ///   unwinding, as `sourcesPure/UnsafeCopyBlockNullEndpoint.cs` records. So it is not an
+    ///   escaping exception at all, and a table read to answer "what can leave this method" would
+    ///   be made worse, not better, by carrying it on every pointer dereference.
     /// * Faults from CLI *security policy*: `System.Security.SecurityException`, which ECMA-335
     ///   lists against `calli` (III.3.20) and the `ldftn` family. Code Access Security was removed
     ///   in .NET Core, so on any runtime an analyser will meet there is no policy to reject a call
