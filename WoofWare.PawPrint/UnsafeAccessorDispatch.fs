@@ -109,11 +109,58 @@ module internal UnsafeAccessorDispatch =
         | UnsafeAccessorKind.Method
         | UnsafeAccessorKind.Field -> false
 
+    /// A type's name as the runtime's own messages interpolate it -- the constraint violation's
+    /// type argument, and an array target's name in a missing-member report.
+    ///
+    /// Reflection's rendering, not the IL keyword form: `System.Span`1[System.Int32]`,
+    /// `System.Int32[,]`. A handle that is neither nominal nor one of those shapes falls back to
+    /// the diagnostic rendering, whose `#handle` marks it as not having come from here.
+    let rec private renderTypeName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        let recurse = renderTypeName state
+
+        match handle with
+        | ConcreteTypeHandle.Byref inner -> recurse inner + "&"
+        | ConcreteTypeHandle.Pointer inner -> recurse inner + "*"
+        | ConcreteTypeHandle.OneDimArrayZero element -> recurse element + "[]"
+        | ConcreteTypeHandle.Array (element, rank) ->
+            let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
+
+            recurse element + "[" + inside + "]"
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+        | ConcreteTypeHandle.Concrete _ ->
+
+        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle with
+        | None -> AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+        | Some (concreteType, typeInfo) ->
+
+        let bare =
+            if System.String.IsNullOrEmpty typeInfo.Namespace then
+                typeInfo.Name
+            else
+                $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
+
+        if concreteType.Generics.IsEmpty then
+            bare
+        else
+            let args = concreteType.Generics |> Seq.map recurse |> String.concat ","
+            $"%s{bare}[%s{args}]"
+
     /// `ValidateTargetType` (unsafeaccessors.cpp:367) over a concretized handle: strip one `byref`,
-    /// then insist on a nominal type. CoreCLR blocks every `TypeDesc` here -- a pointer, an array,
-    /// a function pointer -- because those degrade in ways its member lookup cannot follow.
+    /// then insist on a type whose members can be enumerated.
+    ///
+    /// CoreCLR blocks every `TypeDesc` -- a pointer, a function pointer -- because those degrade in
+    /// ways its member lookup cannot follow. An *array* is not one of them: modern CoreCLR gives
+    /// arrays MethodTables, and measured on real .NET 10 an `[UnsafeAccessor(Constructor)]`
+    /// returning `int[,]` or `int[]` really does bind the array's constructor. Its other
+    /// runtime-provided members do not bind -- an accessor naming `Get` reports
+    /// `'System.Int32[,].Get'` missing -- so an array target is a lookup failure for every kind but
+    /// the constructor, and the constructor is refused rather than answered wrongly.
     let private validateTargetType
         (state : IlMachineState)
+        (kind : UnsafeAccessorKind)
+        (name : string)
+        (describe : string)
         (handle : ConcreteTypeHandle)
         : Result<
               ConcreteTypeHandle * ConcreteType<ConcreteTypeHandle> * TypeInfo<GenericParamFromMetadata, TypeDefn>,
@@ -125,19 +172,39 @@ module internal UnsafeAccessorDispatch =
             | ConcreteTypeHandle.Byref inner -> inner
             | other -> other
 
+        match stripped with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            match kind with
+            | UnsafeAccessorKind.Constructor ->
+                failwith
+                    $"TODO: %s{describe} names an array's constructor, which real .NET binds -- arrays have MethodTables rather than TypeDescs. PawPrint's `newobj` reaches a multi-dimensional array's constructor only through the metadata token an ordinary call site carries, and reaches a single-dimensional array's not at all (C# emits `newarr`), so there is nothing here for the accessor to dispatch to"
+            | UnsafeAccessorKind.Method
+            | UnsafeAccessorKind.StaticMethod ->
+                Error (UnsafeAccessorRefusal.MissingMethod (renderTypeName state stripped, name))
+            | UnsafeAccessorKind.Field
+            | UnsafeAccessorKind.StaticField ->
+                Error (UnsafeAccessorRefusal.MissingField (renderTypeName state stripped, name))
+        | _ ->
+
         match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes stripped with
         | Some (concreteType, typeInfo) -> Ok (stripped, concreteType, typeInfo)
         | None -> Error UnsafeAccessorRefusal.BadImageFormat
 
-    /// Does this signature element name a generic parameter, once byrefs and custom modifiers are
-    /// peeled off? `ValidateTargetType` refuses `ELEMENT_TYPE_VAR`/`ELEMENT_TYPE_MVAR` in the
-    /// position the target type is read from, and that is a question about the *blob*: the
-    /// concretized handle has already had the variable substituted away.
+    /// Is the *outermost* element of this signature position a generic parameter?
+    ///
+    /// `ValidateTargetType` refuses `ELEMENT_TYPE_VAR`/`ELEMENT_TYPE_MVAR` where the target type is
+    /// read from, and it asks that of the element type it peeks off the blob -- so a `ref T` is a
+    /// BYREF and passes, and only a bare `T` is refused. Measured on real .NET 10:
+    /// `[UnsafeAccessor(Field)] static extern ref int X<T>(ref T target)` reaches a struct `T`'s
+    /// field, while the same accessor over a bare `T` raises `BadImageFormatException`.
+    ///
+    /// This is a question about the *blob*: the concretized handle has already had the variable
+    /// substituted away. Custom modifiers are peeled because `PeekElemType` skips them.
     let rec private namesGenericParameter (ty : TypeDefn) : bool =
         match ty with
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _ -> true
-        | TypeDefn.Byref inner -> namesGenericParameter inner
         | TypeDefn.Modified m -> namesGenericParameter m.Unmodified
         | _ -> false
 
@@ -558,42 +625,6 @@ module internal UnsafeAccessorDispatch =
         else
             ConstraintVerdict.Satisfied
 
-    /// A type argument's name, as CoreCLR's constraint-violation message interpolates it.
-    ///
-    /// Reflection's rendering, not the IL keyword form: `System.Span`1[System.Int32]`. A handle
-    /// that is not one of the shapes a type argument takes falls back to the diagnostic rendering,
-    /// whose `#handle` marks it as not having come from here.
-    let rec private renderTypeArgument (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
-        let recurse = renderTypeArgument state
-
-        match handle with
-        | ConcreteTypeHandle.Byref inner -> recurse inner + "&"
-        | ConcreteTypeHandle.Pointer inner -> recurse inner + "*"
-        | ConcreteTypeHandle.OneDimArrayZero element -> recurse element + "[]"
-        | ConcreteTypeHandle.Array (element, rank) ->
-            let inside = if rank <= 1 then "*" else String.replicate (rank - 1) ","
-
-            recurse element + "[" + inside + "]"
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
-        | ConcreteTypeHandle.Concrete _ ->
-
-        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle with
-        | None -> AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
-        | Some (concreteType, typeInfo) ->
-
-        let bare =
-            if System.String.IsNullOrEmpty typeInfo.Namespace then
-                typeInfo.Name
-            else
-                $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
-
-        if concreteType.Generics.IsEmpty then
-            bare
-        else
-            let args = concreteType.Generics |> Seq.map recurse |> String.concat ","
-            $"%s{bare}[%s{args}]"
-
     /// `VerifyDeclarationSatisfiesTargetConstraints` (unsafeaccessors.cpp:513) for the shapes this
     /// dispatcher accepts. The accessor's declaring type is non-generic, so the declaration
     /// supplies no class instantiation: a target on a generic type therefore has no arguments to
@@ -636,7 +667,7 @@ module internal UnsafeAccessorDispatch =
             Error (
                 UnsafeAccessorRefusal.ConstraintViolation (
                     $"%s{describeTargetType targetTypeInfo}.%s{target.Name}",
-                    renderTypeArgument state argument,
+                    renderTypeName state argument,
                     parameter.Name
                 )
             )
@@ -742,7 +773,9 @@ module internal UnsafeAccessorDispatch =
             state, Error UnsafeAccessorRefusal.BadImageFormat
         else
 
-        match validateTargetType state concreteTarget with
+        let name = targetMemberName kind targetName accessor.Name
+
+        match validateTargetType state kind name describe concreteTarget with
         | Error refusal -> state, Error refusal
         | Ok (targetTypeHandle, targetType, targetTypeInfo) ->
 
@@ -761,8 +794,6 @@ module internal UnsafeAccessorDispatch =
         if instanceOfValueTypeNeedsByref then
             state, Error UnsafeAccessorRefusal.BadImageFormat
         else
-
-        let name = targetMemberName kind targetName accessor.Name
 
         match kind with
         | UnsafeAccessorKind.Constructor
