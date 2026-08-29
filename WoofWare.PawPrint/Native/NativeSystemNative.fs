@@ -5672,22 +5672,6 @@ module NativeSystemNative =
                 complete (UnixErrorPal.toPal UnixError.EINVAL) state
             else
 
-            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
-            | SimulatedUnixFlavour.Darwin ->
-                // Past the wrapper's portable screens, this is the kernel
-                // boundary, and Darwin's answers differ on almost every row that
-                // has been measured (docs/plans/2026-08-23-socket-poll): an idle
-                // TCP socket presents nothing where Linux presents OUT|HUP, a
-                // directory and a character device answer NVAL where Linux
-                // answers IN|OUT, and ERR/HUP are *not* output-only — a poll with
-                // `events = 0` over a socket carrying HUP answers 0 there and 1
-                // on Linux. Answering those needs its own readiness model, which
-                // is the same reason `SystemNative_TryChangeSocketEventRegistration`
-                // refuses this flavour.
-                failwith
-                    $"%s{operation}: the kernel is Darwin-flavoured (%O{state.Kernel.UnixPlatform}), and PawPrint models poll(2)'s readiness only for Linux. The refusal is deliberately coarser than it has to be: it precedes `eventCount`, so it also refuses a zero-entry poll, whose answer (rv 0, store 0) is measured identical on both flavours and consults no readiness at all. Answering that one row would be a branch with no consumer, since no Darwin-flavoured guest reaches this entry point today. The Darwin rows are measured in docs/plans/2026-08-23-socket-poll but not implemented, because they are a second readiness model rather than an extra column: ERR and HUP are not output-only there, an idle stream socket presents nothing, and file targets split by kind. Model Darwin readiness before running a Darwin-flavoured guest through poll."
-            | SimulatedUnixFlavour.Linux ->
-
             let eventCount = NativeCall.uint32Argument operation instruction.Arguments.[1]
 
             // Resolved only when at least one entry is actually read. With
@@ -5704,7 +5688,10 @@ module NativeSystemNative =
 
             // `struct PollEvent` is `{ int32 FileDescriptor; int16 Events; int16
             // TriggeredEvents; }` (Interop.Poll.Structs.cs) — eight bytes, no
-            // padding on either architecture PawPrint models.
+            // padding on either architecture PawPrint models. The layout is the
+            // PAL's own transcription rather than a kernel fact, which is why it
+            // stays here: `struct pollfd` is `{ int; short; short }` too, but a
+            // kernel never sees this array.
             let entryStride = 8
             let eventsOffset = 4
             let triggeredEventsOffset = 6
@@ -5736,7 +5723,7 @@ module NativeSystemNative =
 
             // Decode every entry before answering, exactly as the C fills its
             // whole `struct pollfd` array before calling `poll(2)`.
-            let entries =
+            let entries : PollEntry list =
                 match entriesStorage with
                 | None -> []
                 | Some entriesStorage ->
@@ -5762,55 +5749,33 @@ module NativeSystemNative =
                                 2
                                 state
 
-                        let fd = BinaryPrimitives.ReadInt32LittleEndian (fdBytes.AsSpan ())
-
-                        let requested =
-                            PollEvents.ofBits (BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ()))
-
-                        let reported =
-                            if fd < 0 then
-                                // Measured on both kernels: a negative descriptor is
-                                // ignored, reports nothing, and does not count towards
-                                // the return value. It is not an error and not NVAL.
-                                PollEvents.none
-                            else
-                                match FileDescriptorRegistry.tryFindId fd state.Kernel.FileDescriptors with
-                                | None ->
-                                    // POLLNVAL is a statement about the entry, not a
-                                    // readiness level, and it is reported whether or
-                                    // not anything was asked for.
-                                    { PollEvents.none with
-                                        Nval = true
-                                    }
-                                | Some descriptionId ->
-                                    EmulatedKernel.pollReadinessOfDescription descriptionId state.Kernel
-                                    |> PollEvents.ofLevel requested
-
-                        reported
+                        {
+                            Fd = BinaryPrimitives.ReadInt32LittleEndian (fdBytes.AsSpan ())
+                            Requested =
+                                PollEvents.ofBits (BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ()))
+                        }
                     )
 
-            // What `poll(2)` returns, and what the C stores through `triggered`:
-            // the number of entries carrying anything, which is not `eventCount`
-            // and not the number of *conditions*.
-            let triggeredCount =
-                entries |> List.filter (PollEvents.isEmpty >> not) |> List.length
+            match UnixSystem.poll entries milliseconds (EmulatedKernel.unix state.Kernel) with
+            | Error refusal ->
+                // The library says why no kernel answer exists; PawPrint says
+                // which guest call asked, and what a guest could do instead.
+                let reachedBy =
+                    match refusal with
+                    | PollRefusal.UnmodelledFlavour _ ->
+                        // Deliberately coarser than it has to be: it precedes the
+                        // entries, so it also refuses a zero-entry poll, whose
+                        // answer is measured identical on both flavours. That row
+                        // would be a branch with no consumer, since no
+                        // Darwin-flavoured guest reaches this entry point today.
+                        " The measured Darwin rows are in docs/plans/2026-08-23-socket-poll."
+                    | PollRefusal.UnmeasuredTarget _ ->
+                        " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
+                    | PollRefusal.WouldPark _ ->
+                        " There is no thread status carrying this call's captured entry set and its deadline, and no wake for it beside the readiness sweep that serves SystemNative_WaitForSocketEvents."
 
-            if triggeredCount = 0 && milliseconds <> 0 then
-                // Everything masked to empty and the call would block. Nothing
-                // below this point could be answered without modelling the park:
-                // a real `poll` sleeps here until a descriptor becomes ready or
-                // the timeout expires, and PawPrint has no parked-poll state to
-                // wake.
-                //
-                // Every *other* case is answerable regardless of timeout, and
-                // that is measured rather than assumed: an entry carrying
-                // anything at all — a requested IN/OUT, an unrequested HUP, or
-                // NVAL — makes a real poll return in 0.0ms at timeout 5000 and at
-                // timeout -1 alike (docs/plans/2026-08-23-socket-poll/pollmulti.c
-                // and pollimmediate.c).
-                failwith
-                    $"%s{operation}: no entry of the %d{eventCount} is ready and the timeout is %d{milliseconds}ms, so a real poll(2) would block. PawPrint does not model a parked poll: there is no thread status carrying this call's captured entry set and its deadline, and no wake for it beside the readiness sweep that serves SystemNative_WaitForSocketEvents. A poll with anything already ready is answered at any timeout; only this case needs the park."
-            else
+                failwith $"%s{operation}: %s{PollRefusal.describe refusal}%s{reachedBy}"
+            | Ok (reported, triggeredCount) ->
 
             // Write back only `TriggeredEvents`. The C leaves `FileDescriptor`
             // and `Events` alone (it asserts they are unchanged), so PawPrint
@@ -5820,7 +5785,7 @@ module NativeSystemNative =
                 | None -> state
                 | Some entriesStorage ->
 
-                entries
+                reported
                 |> List.indexed
                 |> List.fold
                     (fun state (i, reported) ->

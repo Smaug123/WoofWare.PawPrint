@@ -459,7 +459,7 @@ module SocketFuzz =
             let reported =
                 match FileDescriptorRegistry.tryFindId (slotFd slot state) state.Kernel.FileDescriptors with
                 | Some descriptionId ->
-                    EmulatedKernel.pollReadinessOfDescription descriptionId state.Kernel
+                    UnixSystem.pollReadinessOfDescription descriptionId (EmulatedKernel.unix state.Kernel)
                     |> PollEvents.ofLevel (PollEvents.ofBits (int16 events))
                 | None -> failwith $"INTERPRETER-DRIVER BUG: poll's slot %d{slot} is not live."
 

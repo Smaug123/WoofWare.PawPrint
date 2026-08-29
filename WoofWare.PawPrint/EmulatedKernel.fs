@@ -1627,56 +1627,6 @@ module EmulatedKernel =
         OsThreadId (uint32 i + 1u)
 
 
-    /// The readiness of the descriptor `targetId` names, for a `poll(2)`
-    /// caller.
-    ///
-    /// A sibling of `SocketEventPort.epollReadinessOfDescription` rather than a widening of
-    /// it: the two dispatchers refuse different things, because `epoll_ctl`
-    /// screens targets that `poll(2)` accepts. The per-socket level they share
-    /// (`socketReadinessLevel`) is the part measurement says is one function.
-    ///
-    /// Linux rows only; the handler refuses the Darwin flavour before calling
-    /// this, which is what lets the file row below be a single answer — on
-    /// Darwin a regular file polls `IN|PRI|OUT` but a directory polls `NVAL`,
-    /// so the same `OpenFileTarget.File` would need two.
-    let pollReadinessOfDescription (targetId : OpenFileDescriptionId) (kernel : EmulatedKernel) : ReadinessLevel =
-        match Map.tryFind targetId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
-        | None ->
-            failwith
-                $"EmulatedKernel.pollReadinessOfDescription: %O{targetId} names no live open file description. `SystemNative_Poll` answers POLLNVAL for an fd that names nothing, without ever reaching here, so this is an interpreter bug."
-        | Some description ->
-
-        match description.Target with
-        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId kernel.Machine
-        | OpenFileTarget.File _ ->
-            // Measured (`pollgaps.c`): a regular file answers IN|OUT at every
-            // offset and under O_RDONLY as much as O_RDWR, and a directory
-            // answers the same. Files have no `->poll` handler, so the VFS
-            // default reports them always-ready; nothing about this varies
-            // with the file's contents or the description's position.
-            { ReadinessLevel.none with
-                In = true
-                Out = true
-            }
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-            // The same launch-shape constants `SocketEventPort.epollReadinessOfDescription`
-            // holds, and poll agrees with both on Linux (`pollmask.c` rows 19
-            // and 20). Not shared with that function: it refuses two of the
-            // targets this one answers, so the common part is the socket
-            // level, not the dispatch.
-            { ReadinessLevel.none with
-                Hup = true
-            }
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
-        | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
-            { ReadinessLevel.none with
-                Out = true
-            }
-        | OpenFileTarget.SocketEventPort _ ->
-            failwith
-                $"EmulatedKernel.pollReadinessOfDescription: %O{targetId} is a socket event port, and what poll(2) reports for one is unmeasured. Unlike the epoll dispatcher's refusal of this case, a guest genuinely can reach it — poll accepts any descriptor — but no managed caller does: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model). Measure what an epoll descriptor with and without ready events reports before answering."
-
-
 
     /// `SystemNative_TryChangeSocketEventRegistration` past the wrapper's
     /// screens: apply `change` to the port's interest table, and bring the
