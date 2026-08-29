@@ -198,8 +198,6 @@
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />
     <Compile Include="TestProcessPath.fs" />
-    <Compile Include="TestSystemTimeAsTicks.fs" />
-    <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestCpuPlacement.fs" />
     <Compile Include="TestOsThreadId.fs" />
     <Compile Include="TestSignalTermination.fs" />
@@ -240,6 +238,7 @@
     <Compile Include="TestUnmanagedCallersOnlyEntry.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
     <Compile Include="TestRetireStep.fs" />
+    <Compile Include="TestKernelConfig.fs" />
     <Compile Include="TestClockJitter.fs" />
     <Compile Include="TestClockJitterFindsBugs.fs" />
     <Compile Include="TestScheduleFork.fs" />

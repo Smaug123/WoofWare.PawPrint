@@ -87,6 +87,20 @@ module TestUnixSystemInitial =
 
         darwin.Machine.NextEphemeralPort |> shouldEqual linux.Machine.NextEphemeralPort
 
+    /// Both clocks belong to the simulation rather than to the machine it
+    /// claims to be, so a recorded trace's timestamps must not depend on which
+    /// flavour the guest thinks it is running on.
+    ///
+    /// `TestMonotonicTimestamp` and `TestSystemTimeAsTicks` derive every reading
+    /// they check from a system booted on one arbitrary flavour, on the strength
+    /// of exactly this.
+    [<TestCaseSource(nameof platforms)>]
+    let ``both clocks boot at zero on every flavour`` (platform : SimulatedUnixPlatform) : unit =
+        let system : UnixSystem<int, string> = UnixSystem.initial platform
+
+        system.Machine.VirtualClockTicks |> shouldEqual 0L
+        system.Machine.WallClockEpochMs |> shouldEqual 0L
+
     /// The cursor is where `bind(2)` for port 0 begins its sweep, and
     /// `allocateEphemeralPort` walks *upward* from it, wrapping at the top. A
     /// cursor parked at the top of the range is therefore not a harmless

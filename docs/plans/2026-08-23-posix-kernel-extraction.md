@@ -5056,3 +5056,47 @@ applying exactly the substitutions above, and compares whitespace-normalised (fa
 reflows when `EmulatedKernel.initial.Machine` shortens to `initialSystem.Machine`).
 The suite counts move exactly: library 1002 → 1016, PawPrint 3181 → 3167, fourteen
 tests.
+**The audit is closed.** Nothing from it remains.
+
+### Stage 22: the clock pair moves, and the instruction cost stays
+
+**Dependencies**: 17 (`UnixSystem.initial`).
+
+`TestMonotonicTimestamp` (16 rows) and `TestSystemTimeAsTicks` (12) test
+`UnixMachineState`'s two clock derivations. They move together because each names the
+other: the monotonic module says the wall clock is the sibling's subject and asserts
+the cross-entry-point agreement here, and both rest on the two being views of one
+field. Moving one alone falsifies the other's docstring in a commit that does not fix
+it.
+
+Both had been asking for a `UnixMachineState` all along and reaching it through an
+`EmulatedKernel` only because that is where `initial` lived. Every use was
+`(kernelWith …).Machine` or `EmulatedKernel.initial.Machine`, so the helpers become
+`machineWith` and `initialMachine` and the round trip disappears. `EmulatedKernel.mapMachine`
+goes the same way it did in stage 21 — a record update wrapped around the function
+under test, where every exception asserted is the writer's own.
+
+**One row does not move.** `the instruction cost is configurable and validated` is
+about `KernelConfig.applyTo`: that its default agrees with
+`EmulatedKernel.defaultInstructionCostTicks`, that it reaches the field, and that it
+rejects a cost below 1. The instruction cost is a charge of virtual time per retired
+IL instruction, so it is PawPrint's in a way the clock derivations are not.
+
+Leaving it behind in a fixture named `TestMonotonicTimestamp` would have made that
+fixture's name a lie, so it goes to a new `TestKernelConfig`, whose subject is the
+config layer itself rather than what any one field means. Stage 24 produces a second
+orphan of exactly this kind (`KernelConfig applies the current directory whatever
+else it sets`), which joins it there.
+
+**The flavour the fixtures boot on.** `initialMachine` picks one arbitrarily, which is
+only sound because both clocks boot at zero on either flavour. That was a claim in a
+docstring, so `TestUnixSystemInitial` gains a row asserting it — mutation-verified:
+booting `UnixSystem.initial` with a non-zero clock fails both its cases. Swapping the
+two fixtures to `macOsArm64` and re-running leaves all 27 green, which is the same
+claim measured from the other side.
+
+**Correctness oracle**: `verify22.py` re-derives both moved files from `origin/main` by
+applying exactly the stated substitutions, and separately asserts that the
+instruction-cost row appears verbatim inside `TestKernelConfig`. Suite counts move
+exactly: library 1016 → 1045, PawPrint 3167 → 3140 — 27 tests across the boundary,
+one row staying on the PawPrint side, and two new cases in the library.

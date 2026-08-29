@@ -1,11 +1,10 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// `UnixMachineState.monotonicTimestampNanos` is the value
@@ -28,22 +27,25 @@ module TestMonotonicTimestamp =
 
     let private maxClockTicks : int64 = UnixMachineState.maxMonotonicTimestampClockTicks
 
+    /// The machine a simulated process boots with. Nothing this module reads is
+    /// flavour-dependent -- both flavours boot the clock at zero -- so the
+    /// flavour here is arbitrary.
+    let private initialMachine : UnixMachineState =
+        (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64).Machine
+
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
     /// throws on `Int64.MinValue` — a value FsCheck does generate.
     let private intoRange (bound : int64) (seed : int64) : int64 =
         let modulus = bound + 1L
         ((seed % modulus) + modulus) % modulus
 
-    /// A kernel whose virtual clock has advanced to the given number of
+    /// A machine whose virtual clock has advanced to the given number of
     /// 100 ns ticks (despite the parameter's name, this is `VirtualClockTicks`,
     /// not milliseconds). Set by record-copy because the driver loop is its
     /// only production writer.
-    let private kernelWith (clockMs : int64) : EmulatedKernel =
-        { EmulatedKernel.initial with
-            Machine =
-                { EmulatedKernel.initial.Machine with
-                    VirtualClockTicks = clockMs
-                }
+    let private machineWith (clockMs : int64) : UnixMachineState =
+        { initialMachine with
+            VirtualClockTicks = clockMs
         }
 
     let private int64s = ArbMap.defaults |> ArbMap.arbitrary<int64>
@@ -55,8 +57,7 @@ module TestMonotonicTimestamp =
         // Stopwatch readings change with it. Real CLOCK_MONOTONIC counts from
         // an unspecified origin (system boot on Linux), which is exactly the
         // kind of host dependence PawPrint exists to remove.
-        UnixMachineState.monotonicTimestampNanos EmulatedKernel.initial.Machine
-        |> shouldEqual 0L
+        UnixMachineState.monotonicTimestampNanos initialMachine |> shouldEqual 0L
 
     [<Test>]
     let ``maxMonotonicTimestampClockTicks is the last non-overflowing millisecond`` () =
@@ -93,7 +94,7 @@ module TestMonotonicTimestamp =
 
             let expected = decimal clockTicks * 100M
 
-            decimal (UnixMachineState.monotonicTimestampNanos (kernelWith clockTicks).Machine) = expected
+            decimal (UnixMachineState.monotonicTimestampNanos (machineWith clockTicks)) = expected
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -111,11 +112,11 @@ module TestMonotonicTimestamp =
         // projection against the clock field — the latter is a tautology about
         // `monotonicTimestampNanos` and covers the low-resolution one not at all.
         let property (seed : int64) : bool =
-            let kernel = kernelWith (intoRange maxClockTicks seed)
+            let machine = machineWith (intoRange maxClockTicks seed)
 
-            let hiResMs = UnixMachineState.monotonicTimestampNanos kernel.Machine / 1_000_000L
+            let hiResMs = UnixMachineState.monotonicTimestampNanos machine / 1_000_000L
 
-            hiResMs = UnixMachineState.lowResolutionTimestampMs kernel.Machine
+            hiResMs = UnixMachineState.lowResolutionTimestampMs machine
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -134,7 +135,7 @@ module TestMonotonicTimestamp =
                 UnixMachineState.ticksPerMillisecond + 1L, 1L
                 7L * UnixMachineState.ticksPerMillisecond - 1L, 6L
             ] do
-            UnixMachineState.lowResolutionTimestampMs (kernelWith ticks).Machine
+            UnixMachineState.lowResolutionTimestampMs (machineWith ticks)
             |> shouldEqual expected
 
     [<Test>]
@@ -150,17 +151,13 @@ module TestMonotonicTimestamp =
             let clockMs = intoRange maxClockTicks clockSeed
 
             let shifted =
-                let baseKernel = kernelWith clockMs
-
-                { baseKernel with
-                    Machine =
-                        { baseKernel.Machine with
-                            WallClockEpochMs = epochMs
-                        }
+                { machineWith clockMs with
+                    WallClockEpochMs = epochMs
                 }
 
-            UnixMachineState.monotonicTimestampNanos shifted.Machine = UnixMachineState.monotonicTimestampNanos
-                (kernelWith clockMs).Machine
+            UnixMachineState.monotonicTimestampNanos shifted = UnixMachineState.monotonicTimestampNanos (
+                machineWith clockMs
+            )
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
@@ -181,12 +178,12 @@ module TestMonotonicTimestamp =
             let second = intoRange bound secondSeed
 
             let elapsedNanos =
-                UnixMachineState.monotonicTimestampNanos (kernelWith second).Machine
-                - UnixMachineState.monotonicTimestampNanos (kernelWith first).Machine
+                UnixMachineState.monotonicTimestampNanos (machineWith second)
+                - UnixMachineState.monotonicTimestampNanos (machineWith first)
 
             let elapsedTicks =
-                UnixMachineState.systemTimeAsTicks (kernelWith second).Machine
-                - UnixMachineState.systemTimeAsTicks (kernelWith first).Machine
+                UnixMachineState.systemTimeAsTicks (machineWith second)
+                - UnixMachineState.systemTimeAsTicks (machineWith first)
 
             elapsedNanos / nanosPerTick = elapsedTicks
 
@@ -201,10 +198,9 @@ module TestMonotonicTimestamp =
             let first = intoRange maxClockTicks firstSeed
             let second = intoRange maxClockTicks secondSeed
 
-            let firstNanos = UnixMachineState.monotonicTimestampNanos (kernelWith first).Machine
+            let firstNanos = UnixMachineState.monotonicTimestampNanos (machineWith first)
 
-            let secondNanos =
-                UnixMachineState.monotonicTimestampNanos (kernelWith second).Machine
+            let secondNanos = UnixMachineState.monotonicTimestampNanos (machineWith second)
 
             compare firstNanos secondNanos = compare first second
 
@@ -215,7 +211,7 @@ module TestMonotonicTimestamp =
         // The guard's whole purpose: a wrapped negative timestamp would make
         // every `Stopwatch` in the guest report a negative elapsed time.
         let property (seed : int64) : bool =
-            UnixMachineState.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed)).Machine
+            UnixMachineState.monotonicTimestampNanos (machineWith (intoRange maxClockTicks seed))
             >= 0L
 
         Check.One (propertyConfig, Prop.forAll int64s property)
@@ -229,7 +225,7 @@ module TestMonotonicTimestamp =
         // thing makes no uniqueness guarantee either.
         let property (seed : int64) : bool =
             let nanos =
-                UnixMachineState.monotonicTimestampNanos (kernelWith (intoRange maxClockTicks seed)).Machine
+                UnixMachineState.monotonicTimestampNanos (machineWith (intoRange maxClockTicks seed))
 
             nanos % UnixMachineState.nanosecondsPerTick = 0L
 
@@ -252,7 +248,7 @@ module TestMonotonicTimestamp =
         let property (clockMs : int64) : bool =
             let derivable = clockMs >= 0L && clockMs <= maxClockTicks
 
-            succeeds (fun () -> UnixMachineState.monotonicTimestampNanos (kernelWith clockMs).Machine) = derivable
+            succeeds (fun () -> UnixMachineState.monotonicTimestampNanos (machineWith clockMs)) = derivable
 
         Check.One (propertyConfig, Prop.forAll int64s property)
 
@@ -265,23 +261,14 @@ module TestMonotonicTimestamp =
         // cheap iterations. Wrapping would hand the next sleeper a negative deadline that fires
         // immediately, and time would stop advancing — a silent wrong answer, so the writer
         // faults instead.
-        let atHorizon =
-            { EmulatedKernel.initial with
-                Machine =
-                    { EmulatedKernel.initial.Machine with
-                        VirtualClockTicks = UnixMachineState.maxMonotonicTimestampClockTicks
-                    }
-            }
+        let atHorizon = machineWith UnixMachineState.maxMonotonicTimestampClockTicks
 
         // The horizon itself is legal: a reading can still be derived from it.
-        UnixMachineState.monotonicTimestampNanos atHorizon.Machine
-        |> shouldBeGreaterThan 0L
+        UnixMachineState.monotonicTimestampNanos atHorizon |> shouldBeGreaterThan 0L
 
         let beyond () =
-            EmulatedKernel.mapMachine
-                (UnixMachineState.withVirtualClockTicks (UnixMachineState.maxMonotonicTimestampClockTicks + 1L))
-                atHorizon
-            |> ignore<EmulatedKernel>
+            UnixMachineState.withVirtualClockTicks (UnixMachineState.maxMonotonicTimestampClockTicks + 1L) atHorizon
+            |> ignore<UnixMachineState>
 
         Assert.Throws<Exception> (TestDelegate beyond) |> ignore<Exception>
 
@@ -290,20 +277,14 @@ module TestMonotonicTimestamp =
         // Monotonicity is the one guarantee every derived clock rests on, and `MapKernel` makes
         // it easy for a future caller to compute a smaller value by accident (a `min` for a
         // `max`, say). Cheap to assert at the writer.
-        let kernel =
-            { EmulatedKernel.initial with
-                Machine =
-                    { EmulatedKernel.initial.Machine with
-                        VirtualClockTicks = 5_000L
-                    }
-            }
+        let machine = machineWith 5_000L
 
-        EmulatedKernel.mapMachine (UnixMachineState.withVirtualClockTicks 5_000L) kernel
-        |> fun k -> k.VirtualClockTicks |> shouldEqual 5_000L
+        UnixMachineState.withVirtualClockTicks 5_000L machine
+        |> fun m -> m.VirtualClockTicks |> shouldEqual 5_000L
 
         let backwards () =
-            EmulatedKernel.mapMachine (UnixMachineState.withVirtualClockTicks 4_999L) kernel
-            |> ignore<EmulatedKernel>
+            UnixMachineState.withVirtualClockTicks 4_999L machine
+            |> ignore<UnixMachineState>
 
         Assert.Throws<Exception> (TestDelegate backwards) |> ignore<Exception>
 
@@ -314,48 +295,10 @@ module TestMonotonicTimestamp =
         // because a kernel assembled by record-copy never passed through the writer, which is the
         // same reason the per-reader guards exist. Left untested, the writer would enforce a
         // narrower range than its own doc comment claims.
-        let negativeKernel =
-            { EmulatedKernel.initial with
-                Machine =
-                    { EmulatedKernel.initial.Machine with
-                        VirtualClockTicks = -20_000L
-                    }
-            }
+        let negativeMachine = machineWith -20_000L
 
         let forwardsButNegative () =
-            EmulatedKernel.mapMachine (UnixMachineState.withVirtualClockTicks -10_000L) negativeKernel
-            |> ignore<EmulatedKernel>
+            UnixMachineState.withVirtualClockTicks -10_000L negativeMachine
+            |> ignore<UnixMachineState>
 
         Assert.Throws<Exception> (TestDelegate forwardsButNegative) |> ignore<Exception>
-
-    [<Test>]
-    let ``the instruction cost is configurable and validated`` () : unit =
-        // The rate is guest-observable — a guest can measure it by counting work against
-        // `Environment.TickCount64`, and it decides whether `SpinWait` reaches its blocking
-        // rung — so it is part of the replay contract and belongs in `KernelConfig` rather than
-        // being a constant a host cannot see.
-        KernelConfig.Default.InstructionCostTicks
-        |> shouldEqual EmulatedKernel.defaultInstructionCostTicks
-
-        let configured =
-            EmulatedKernel.initial
-            |> KernelConfig.applyTo
-                { KernelConfig.Default with
-                    InstructionCostTicks = 10_000L
-                }
-
-        configured.InstructionCostTicks |> shouldEqual 10_000L
-
-        // Zero would freeze the clock, so every guest waiting for time to pass would spin
-        // forever: a hang rather than a wrong answer, and the sort of thing a host sweeping the
-        // knob could reach by off-by-one. Rejected at the setter, like `ProcessorCount`.
-        for bad in [ 0L ; -1L ] do
-            let apply () =
-                EmulatedKernel.initial
-                |> KernelConfig.applyTo
-                    { KernelConfig.Default with
-                        InstructionCostTicks = bad
-                    }
-                |> ignore<EmulatedKernel>
-
-            Assert.Throws<Exception> (TestDelegate apply) |> ignore<Exception>
