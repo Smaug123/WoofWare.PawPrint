@@ -25,7 +25,11 @@
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
     <Compile Include="TestFatalErrorCode.fs" />
-    <Compile Include="HostPlatform.fs" />
+    <!-- One definition of "which kernel is this test host", shared with
+         WoofWare.PosixKernel.Test the way the socket matrix below is: the two
+         suites must not disagree about what they are measuring against. -->
+    <Compile Include="..\WoofWare.PosixKernel.Test\HostPlatform.fs"
+             Link="HostPlatform.fs" />
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
@@ -164,7 +168,6 @@
     <Compile Include="TestLSeek.fs" />
     <Compile Include="TestUserBufferCheck.fs" />
     <Compile Include="TestUserBufferFault.fs" />
-    <Compile Include="TestUserBufferCheckAgainstHost.fs" />
     <Compile Include="TestPlatformSocketSupport.fs" />
     <Compile Include="TestBufferRangeFit.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />

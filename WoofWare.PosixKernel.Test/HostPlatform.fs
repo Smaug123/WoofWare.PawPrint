@@ -1,8 +1,7 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System.Runtime.InteropServices
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// The kernel *this test process* is running on, in the vocabulary the emulated
