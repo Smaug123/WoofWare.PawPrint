@@ -525,6 +525,69 @@ module ConnectRefusal =
         | ConnectRefusal.UnmodelledDomain (socket, domain) ->
             $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a transport address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
 
+/// One entry of a `poll(2)` call, as its caller supplied it: `struct pollfd`'s
+/// `fd` and `events`, without the `revents` the kernel writes back.
+type PollEntry =
+    {
+        /// The descriptor to poll. A negative one is not an error: measured on
+        /// both kernels, it is ignored, reports nothing, and does not count
+        /// towards the return value.
+        Fd : int
+        /// What the caller asked about. `Err`, `Hup` and `Nval` are reported
+        /// whether or not they appear here, so a caller may leave them out and
+        /// still be told about them.
+        Requested : PollEvents
+    }
+
+/// Why this kernel will not answer a `poll`.
+///
+/// Distinct from an errno: an errno is an answer, and these are the inputs for
+/// which this library has measured what real kernels do and found no single
+/// answer to give.
+[<RequireQualifiedAccess>]
+type PollRefusal =
+    /// This kernel models `poll(2)`'s readiness for one flavour only, and it is
+    /// not this one.
+    ///
+    /// Darwin's answers differ on almost every measured row -- an idle TCP
+    /// socket presents nothing where Linux presents `OUT|HUP`, a directory and a
+    /// character device answer `NVAL` where Linux answers `IN|OUT`, and `ERR`
+    /// and `HUP` are not output-only there -- so it is a second readiness model
+    /// rather than an extra column.
+    | UnmodelledFlavour of flavour : SimulatedUnixFlavour
+    /// The entry names a socket event port, and what `poll(2)` reports for one
+    /// is unmeasured.
+    ///
+    /// Reachable in a way epoll's equivalent is not: `epoll_ctl` screens the
+    /// targets it will accept, and `poll(2)` accepts any descriptor.
+    | UnmeasuredTarget of fd : int
+    /// No entry carries anything and the timeout is not zero, so a real `poll`
+    /// sleeps here until a descriptor becomes ready or the timeout expires.
+    ///
+    /// Not `SyscallOutcome.WouldBlock`, for the reason `accept`'s `WouldPark` is
+    /// not: blocking is an outcome only where there is a `WakeCondition` to hand
+    /// back, and this library has none carrying a poll's captured entry set and
+    /// its deadline.
+    ///
+    /// Every *other* case is answerable whatever the timeout, which is measured
+    /// rather than assumed: an entry carrying anything at all -- a requested
+    /// `IN`/`OUT`, an unrequested `HUP`, or `NVAL` -- makes a real poll return
+    /// immediately at any timeout.
+    | WouldPark of timeoutMilliseconds : int
+
+[<RequireQualifiedAccess>]
+module PollRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half -- which entry point asked, and what it should do instead.
+    let describe (refusal : PollRefusal) : string =
+        match refusal with
+        | PollRefusal.UnmodelledFlavour flavour ->
+            $"this kernel is %O{flavour}-flavoured, and `poll(2)`'s readiness is modelled here for Linux only. The Darwin rows are measured but unimplemented, and they are a second readiness model rather than an extra column: ERR and HUP are not output-only there, an idle stream socket presents nothing, and file targets split by kind. Model Darwin readiness before polling under this flavour."
+        | PollRefusal.UnmeasuredTarget fd ->
+            $"fd %d{fd} names a socket event port, and what `poll(2)` reports for one is unmeasured. Measure what such a descriptor reports with and without ready events before answering."
+        | PollRefusal.WouldPark timeoutMilliseconds ->
+            $"no entry carries anything and the timeout is %d{timeoutMilliseconds}ms, so a real `poll(2)` would sleep. This library models no parked poll: `WakeCondition` has no case carrying a poll's entry set and its deadline, so a park here would never end. A poll with anything already ready is answered at any timeout; only this case needs the park."
+
 /// What kind of object one directory entry names.
 ///
 /// Not `InodeContent`, which carries the payload as well — a caller enumerating
@@ -4360,6 +4423,137 @@ module UnixSystem =
                 }
 
             ConnectOutcome.Completed, system
+
+    /// The readiness of the descriptor `targetId` names, for a `poll(2)` caller.
+    ///
+    /// A sibling of `SocketEventPort.epollReadinessOfDescription` rather than a
+    /// widening of it: the two dispatchers refuse different things, because
+    /// `epoll_ctl` screens targets that `poll(2)` accepts. The per-socket level
+    /// they share (`socketReadinessLevel`) is the part measurement says is one
+    /// function.
+    ///
+    /// Linux rows only; `poll` refuses the Darwin flavour before calling this,
+    /// which is what lets the file row below be a single answer -- on Darwin a
+    /// regular file polls `IN|PRI|OUT` but a directory polls `NVAL`, so the same
+    /// `OpenFileTarget.File` would need two.
+    let pollReadinessOfDescription<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (targetId : OpenFileDescriptionId)
+        (system : UnixSystem<'Task, 'Handler>)
+        : ReadinessLevel
+        =
+        match Map.tryFind targetId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+        | None ->
+            failwith
+                $"UnixSystem.pollReadinessOfDescription: %O{targetId} names no live open file description. `poll` answers POLLNVAL for an fd that names nothing, without ever reaching here, so this is a bug in the caller."
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
+        | OpenFileTarget.File _ ->
+            // Measured (`pollgaps.c`): a regular file answers IN|OUT at every
+            // offset and under O_RDONLY as much as O_RDWR, and a directory
+            // answers the same. Files have no `->poll` handler, so the VFS
+            // default reports them always-ready; nothing about this varies
+            // with the file's contents or the description's position.
+            { ReadinessLevel.none with
+                In = true
+                Out = true
+            }
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
+            // The same launch-shape constants `SocketEventPort.epollReadinessOfDescription`
+            // holds, and poll agrees with both on Linux (`pollmask.c` rows 19
+            // and 20). Not shared with that function: it refuses two of the
+            // targets this one answers, so the common part is the socket
+            // level, not the dispatch.
+            { ReadinessLevel.none with
+                Hup = true
+            }
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
+        | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
+            { ReadinessLevel.none with
+                Out = true
+            }
+        | OpenFileTarget.SocketEventPort _ ->
+            failwith
+                $"UnixSystem.pollReadinessOfDescription: %O{targetId} is a socket event port, and what `poll(2)` reports for one is unmeasured. `poll` refuses such an entry before reaching here, so this is a bug in the caller."
+
+    /// `poll(2)`: what each entry reports right now, and how many entries carry
+    /// anything.
+    ///
+    /// The count is `poll(2)`'s own return value, and it is neither the number
+    /// of entries nor the number of *conditions*: it counts entries carrying
+    /// something. Derivable from the list, and answered here so that no client
+    /// re-derives a kernel rule.
+    ///
+    /// `milliseconds` is read as `poll(2)` reads it -- zero means "answer now",
+    /// and every other value means "sleep until something happens", negative
+    /// included. A foreign-function layer that screens some negative values
+    /// itself does that before calling.
+    ///
+    /// Changes nothing and returns no system: a `poll` asks.
+    let poll<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (entries : PollEntry list)
+        (milliseconds : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PollEvents list * int, PollRefusal>
+        =
+        // Ahead of the entries, and so ahead of an empty entry list too: a
+        // zero-entry poll answers `rv = 0` identically on both flavours and
+        // consults no readiness at all, but answering that one row would be a
+        // branch reachable only from a flavour whose every other row refuses.
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin -> Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        let reportOne (entry : PollEntry) : Result<PollEvents, PollRefusal> =
+            if entry.Fd < 0 then
+                // Measured on both kernels: a negative descriptor is ignored,
+                // reports nothing, and does not count towards the return value.
+                // It is not an error and not NVAL.
+                Ok PollEvents.none
+            else
+
+            match FileDescriptorRegistry.tryFindWithId entry.Fd system.Process.FileDescriptors with
+            | None ->
+                // POLLNVAL is a statement about the entry, not a readiness
+                // level, and it is reported whether or not anything was asked
+                // for.
+                Ok
+                    { PollEvents.none with
+                        Nval = true
+                    }
+            | Some (descriptionId, description) ->
+
+            match description.Target with
+            | OpenFileTarget.SocketEventPort _ -> Error (PollRefusal.UnmeasuredTarget entry.Fd)
+            | OpenFileTarget.Socket _
+            | OpenFileTarget.File _
+            | OpenFileTarget.StandardStream _ ->
+                pollReadinessOfDescription descriptionId system
+                |> PollEvents.ofLevel entry.Requested
+                |> Ok
+
+        let reported =
+            List.foldBack
+                (fun entry acc ->
+                    match acc, reportOne entry with
+                    | Error refusal, _ -> Error refusal
+                    | _, Error refusal -> Error refusal
+                    | Ok rest, Ok events -> Ok (events :: rest)
+                )
+                entries
+                (Ok [])
+
+        match reported with
+        | Error refusal -> Error refusal
+        | Ok reported ->
+
+        let triggered = reported |> List.filter (PollEvents.isEmpty >> not) |> List.length
+
+        if triggered = 0 && milliseconds <> 0 then
+            Error (PollRefusal.WouldPark milliseconds)
+        else
+            Ok (reported, triggered)
 
     /// `sin_port` occupies bytes 2-3 and `sin_addr` bytes 4-7, so eight bytes is
     /// the shortest copy that contains both. The same on both flavours: Darwin's

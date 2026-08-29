@@ -4105,3 +4105,64 @@ itself was checked, which is the reason to read what a survivor actually changed
 writing a test for it.
 
 **What is left after 9l**: `poll` and `WaitForSocketEvents`.
+
+#### Stage 9m: `poll(2)` moves into the library
+
+**Dependencies**: none beyond the vocabulary 9j-9l settled.
+
+The third socket entry point, and the first of the two that carry a park.
+`UnixSystem.poll` takes the caller's entries and its timeout and answers what each
+reports and how many carry anything. `SystemNative_Poll` keeps the shim's two screens,
+`struct PollEvent`'s layout, the int32 address-space bound, and the copy in and out.
+
+**Nothing needed an admission here**, unlike `connect`. The reason is worth stating,
+because the two entry points look alike: `poll`'s copy-in is unconditional — the C fills
+its whole `struct pollfd` array before the syscall, at every length and on both
+flavours — so there is no per-flavour rule the client would have to know before reading.
+`connect` needed two calls precisely because whether the kernel reads at all is measured
+and divergent.
+
+**Three failwiths become named refusals**:
+
+* `UnmodelledFlavour` — Darwin's poll readiness, which is a second model rather than an
+  extra column (`ERR` and `HUP` are not output-only there, an idle stream socket presents
+  nothing, file targets split by kind).
+* `WouldPark of timeoutMilliseconds` — nothing ready and a non-zero timeout. A refusal
+  rather than `SyscallOutcome.WouldBlock` for the reason `accept`'s is: `WakeCondition`
+  has no case carrying a poll's captured entry set and its deadline, so a park here would
+  never end.
+* `UnmeasuredTarget of fd` — an entry naming a socket event port. **Reachable in a way
+  epoll's equivalent is not**: `epoll_ctl` screens the targets it will accept, and
+  `poll(2)` accepts any descriptor. It was a `failwith` inside the level function and is
+  now a refusal from the entry point, which is where it belongs — the level function
+  keeps a `failwith` for it, because `poll` screens it first.
+
+`pollReadinessOfDescription` moves beside `SocketEventPort.epollReadinessOfDescription`,
+the sibling its docstring was already written against. `SocketFuzz` was its only other
+caller, and goes straight to the library.
+
+**One ordering change, and it is between two refusals rather than two answers.** The
+Darwin refusal used to precede the entry decode, so a Darwin-flavoured kernel with an
+unresolvable `pollEvents` pointer refused about the flavour; it now decodes first and
+refuses about the pointer. Both abort the interpreter, so no guest can tell — but the
+coarseness the old message argued for is preserved, because the library refuses ahead of
+the *entries*: a zero-entry Darwin poll still refuses rather than answering the one row
+the flavours agree on.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestPoll.fs`, 15 cases. Three reach
+what a guest cannot — the Darwin refusal (a guest runs one flavour), the port entry (no
+managed caller polls one), the park refusal (a guest reaching it aborts). The rest are
+per-entry rules a guest can reach only in combination: the negative descriptor that is
+neither an error nor `NVAL`, `NVAL` reported unrequested, `HUP` output-only where `OUT`
+is not, `PRI` askable and never reported, a regular file always-ready under every access
+mode, and the count that is neither the entry total nor the condition total.
+
+**Mutation battery**: ten mutants, and the first run left one alive —
+`pollReadinessOfDescription`'s regular-file row, which no test polled, because the
+fixture built sockets and standard streams and never opened a file. That row is measured
+(`pollgaps.c`) and had come across the boundary untested. A case was added and the
+mutant dies. A second mutant did not apply at all, its anchor matching the epoll sibling
+as well as the poll one — which is the same file now holding both, and a reminder to
+read what a `DID-NOT-APPLY` actually matched.
+
+**What is left after 9m**: `WaitForSocketEvents`, the one that really parks.
