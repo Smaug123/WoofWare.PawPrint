@@ -4038,3 +4038,70 @@ alongside the entry point.
 
 **What is left after 9k**: the `connect` entry point (9l), then `poll` and
 `WaitForSocketEvents`.
+
+#### Stage 9l: `connect(2)`'s entry point, and the test 9k owed
+
+**Dependencies**: 9k, which is where the ladder went.
+
+`UnixSystem.admitConnect` and `UnixSystem.connect` now carry every screen the handler
+used to, and `SystemNative_Connect` keeps only the guest-memory work: the shim's two
+null/negative screens, resolving the pointer, `requireBufferRoom`, reading the fields,
+and the errno write.
+
+**Two calls rather than one, and this is the decision worth recording.** The client
+cannot know when to read the sockaddr without the kernel's copy rule, because whether
+the kernel touches the buffer *at all* is a measured per-flavour fact: Darwin's
+`getsockaddr` reads nothing at a length too short to reach `sa_family`, and Linux's
+`move_addr_to_kernel` reads at any positive length. Three shapes were available:
+
+* **The client keeps the rule** and passes `family`/`endpoint` as it does today. Cheapest
+  edit; leaves a kernel rule in the client, and the client's copy would silently drift
+  from the library's.
+* **The library takes the sockaddr bytes** and decodes them itself. Cleanest boundary,
+  and it settles where `struct sockaddr_in`'s layout lives — but the client would have
+  to read the bytes *before* the library said whether they were needed, and reading
+  through a pointer PawPrint cannot resolve is itself a refusal. It would trade a
+  correct answer for a crash on inputs a real kernel never reads.
+* **Two calls: admit, then connect.** The shape `admitWrite`/`write` already has in this
+  library, for the same stated reason — a caller that cannot always produce the bytes is
+  let off before it has to.
+
+The third. `ConnectAdmission.Transfer` says how many bytes the copy takes and, as
+`ConnectFields`, which of `sockaddr_in`'s fields it reaches — in the kernel's own
+vocabulary rather than as two booleans, so the client maps each case to the reads it
+makes and keeps no layout arithmetic of its own for this entry point.
+
+**`connect` refuses to be handed a set of fields the admission did not ask for.** That is
+not defensiveness: this kernel's answer for a field it *could not read* is measured and
+different from its answer for a field the caller did not bother to read, so conflating
+them would be a silent wrong answer rather than a crash. The guard is load-bearing in
+practice, not only in the unit test — mutating the handler so that a `Family` copy also
+reads an endpoint kills `sourcesPure/SocketConnect.cs` and `SocketConnectLinux.cs`
+through this failwith, because those guests connect at a declared length of 4.
+
+`SockaddrFamilyField.reachedBy` is the one arithmetic that both the kernel's copy rule
+and the shim's own field screen need, so it lives in the library and PawPrint's
+`sockaddrFamilyIsInBounds` delegates to it. The rest of `SockaddrOffsets` stays in
+PawPrint, as 8m and 9j both decided: it serves ten PAL handlers that involve no kernel
+at all. That question has now been deferred three stages running, which is itself the
+argument for giving it a stage of its own rather than a paragraph in each.
+
+**One behaviour change, and it is a relaxation.** The old handler resolved the address
+pointer *before* deciding whether the kernel reads it, so a symbolic pointer at a
+declared length of zero aborted the interpreter even though no byte moves. It is now
+admitted, exactly as `getsockname`'s zero-length copy-out already was.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestConnect.fs`, 29 cases, which
+closes the gap 9k opened and named. The admission's screens and their order; the
+copy-extent table on both flavours, which is where they disagree at a length of 1; the
+buffer arms; the field-mismatch refusal; and a floor under the ladder itself
+(completion, EINPROGRESS, EISCONN, ECONNREFUSED) so that a client which is not PawPrint
+no longer has the largest function in this library untested.
+
+**Mutation battery**: fifteen mutants of `admitConnect`, `connect` and `reachedBy`, all
+killed by the library's own suite. One of the first fifteen written was a no-op — both
+arms of the mutated match answered EFAULT — and it read as a survivor until the mutation
+itself was checked, which is the reason to read what a survivor actually changed before
+writing a test for it.
+
+**What is left after 9l**: `poll` and `WaitForSocketEvents`.
