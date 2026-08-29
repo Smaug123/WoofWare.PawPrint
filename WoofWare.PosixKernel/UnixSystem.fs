@@ -4719,12 +4719,12 @@ module UnixSystem =
         else
             Ok (reported, triggered)
 
-    /// `sin_port` occupies bytes 2-3 and `sin_addr` bytes 4-7, so eight bytes is
-    /// the shortest copy that contains both. The same on both flavours: Darwin's
-    /// `sa_len` byte displaces `sa_family` into byte 1 and leaves the transport
-    /// fields where they are.
-    [<Literal>]
-    let private internetEndpointExtent = 8
+    /// The shortest copy that contains both transport fields: `sin_addr` is the
+    /// further of the two, so its end is the extent. The same on both flavours --
+    /// Darwin's `sa_len` byte displaces `sa_family` into byte 1 and leaves the
+    /// transport fields where they are.
+    let private internetEndpointExtent : int =
+        InternetSockaddr.address.Offset + InternetSockaddr.address.Width
 
     /// Everything `connect(2)` decides before the kernel copies the caller's
     /// sockaddr in, which is where a client that cannot always produce those

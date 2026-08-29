@@ -489,44 +489,6 @@ module NativeSystemNative =
             failwith
                 $"%s{operation}: `%s{argName}` is %O{pointer}, which names no storage. The C never screens this parameter, so a real run would store through it and fault; PawPrint does not model that fault. Pass a real out-parameter."
 
-    /// Byte offsets within `struct sockaddr_in` and `struct sockaddr_in6`, past
-    /// the family field.
-    ///
-    /// Flavour-free, and `SockaddrFamilyField` is where the reason is written
-    /// down: the two layouts spend the same two leading bytes differently rather
-    /// than in different amounts. Measured with an `offsetof` probe on macOS
-    /// arm64 and on Linux, not recalled.
-    [<RequireQualifiedAccess>]
-    module private SockaddrOffsets =
-        /// `sin_port` and `sin6_port` alike: two bytes, network byte order.
-        [<Literal>]
-        let Port = 2
-
-        /// `sin_addr`: four bytes, moved verbatim in both directions, since the
-        /// managed caller supplies and expects network order too.
-        [<Literal>]
-        let InternetAddress = 4
-
-        /// `sin6_flowinfo`: four bytes. Nothing in the managed surface reads it,
-        /// but `SystemNative_SetIPv6Address` zeroes it, so it is not merely
-        /// ignored.
-        [<Literal>]
-        let FlowInfo = 4
-
-        /// `sin6_addr`: sixteen bytes.
-        [<Literal>]
-        let InternetV6Address = 8
-
-        /// `sin6_scope_id`: four bytes, and unlike the port it is in the host's
-        /// own byte order — the C assigns it with no `htonl`.
-        [<Literal>]
-        let ScopeId = 24
-
-        /// `NUM_BYTES_IN_IPV6_ADDRESS`, the length every IPv6 address buffer must
-        /// have room for.
-        [<Literal>]
-        let InternetV6AddressLength = 16
-
     /// The storage a buffer pointer names, for a pointer whose caller has already
     /// screened it for null.
     ///
@@ -577,40 +539,6 @@ module NativeSystemNative =
             NativeCall.requiredByteConcreteType operation ctx.BaseClassTypes state
 
         ManagedPointerByteView.addByteOffset state byteConcreteType offset buffer
-
-    /// The platform-layout `struct sockaddr_in` bytes for `endpoint` — the
-    /// blob `getsockname(2)` and `accept(2)` copy out: port and address in
-    /// network order, the family in the platform's own field, and BSD's
-    /// `sa_len` on the flavour that has it.
-    let private internetSockaddrBlob (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
-        let realLength = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
-        let blob = Array.zeroCreate<byte> realLength
-        BinaryPrimitives.WriteUInt16BigEndian (System.Span<byte> (blob, SockaddrOffsets.Port, 2), endpoint.Port)
-
-        BinaryPrimitives.WriteUInt32BigEndian (
-            System.Span<byte> (blob, SockaddrOffsets.InternetAddress, 4),
-            endpoint.Address
-        )
-
-        let field = SimulatedUnixPlatform.sockaddrFamilyField platform
-        let familyOffset = SockaddrFamilyField.offset field
-
-        match SockaddrFamilyField.width field with
-        | 1 ->
-            blob.[familyOffset] <- byte SimulatedUnixPlatform.internetAddressFamily
-            // BSD's `sa_len`, which the kernel fills in and byte 0 is
-            // otherwise left zero by. Measured: a Darwin `getsockname` on a
-            // bound socket reports `10 02 ...`, the leading `0x10` being the
-            // 16-byte length. Written only on the flavour that has the field
-            // — on Linux those two bytes are the family itself.
-            blob.[0] <- byte realLength
-        | _ ->
-            BinaryPrimitives.WriteUInt16LittleEndian (
-                System.Span<byte> (blob, familyOffset, 2),
-                uint16 SimulatedUnixPlatform.internetAddressFamily
-            )
-
-        blob
 
     /// The socket `fd` names, for an entry point that takes one.
     ///
@@ -1482,7 +1410,7 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
+                    (bufferFieldAt ctx operation blobStorage InternetSockaddr.port.Offset state)
                     2
                     state
 
@@ -1551,7 +1479,7 @@ module NativeSystemNative =
             writeBytesThrough
                 ctx
                 operation
-                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.Port state)
+                (bufferFieldAt ctx operation blobStorage InternetSockaddr.port.Offset state)
                 (ImmutableArray.CreateRange bytes)
                 state
             |> complete UnixErrorPal.palSuccess
@@ -1606,7 +1534,7 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
+                    (bufferFieldAt ctx operation blobStorage InternetSockaddr.address.Offset state)
                     4
                     state
 
@@ -1662,7 +1590,7 @@ module NativeSystemNative =
             writeBytesThrough
                 ctx
                 operation
-                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetAddress state)
+                (bufferFieldAt ctx operation blobStorage InternetSockaddr.address.Offset state)
                 (ImmutableArray.CreateRange bytes)
                 state
             |> complete UnixErrorPal.palSuccess
@@ -1699,7 +1627,7 @@ module NativeSystemNative =
                 || scopeIdOut = BufferPointer.RawAddress 0UL
                 || socketAddressLen < 0
                 || socketAddressLen < sizes.InterNetworkV6
-                || addressLen < SockaddrOffsets.InternetV6AddressLength
+                || addressLen < InternetV6Sockaddr.address.Width
                 || not (sockaddrFamilyIsInBounds platform socketAddressLen)
             then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
@@ -1720,8 +1648,8 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
-                    SockaddrOffsets.InternetV6AddressLength
+                    (bufferFieldAt ctx operation blobStorage InternetV6Sockaddr.address.Offset state)
+                    InternetV6Sockaddr.address.Width
                     state
 
             let state =
@@ -1742,7 +1670,7 @@ module NativeSystemNative =
                 readBytesThrough
                     ctx
                     operation
-                    (bufferFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
+                    (bufferFieldAt ctx operation blobStorage InternetV6Sockaddr.scopeId.Offset state)
                     4
                     state
 
@@ -1781,7 +1709,7 @@ module NativeSystemNative =
                 || addressIn = BufferPointer.RawAddress 0UL
                 || socketAddressLen < 0
                 || socketAddressLen < sizes.InterNetworkV6
-                || addressLen < SockaddrOffsets.InternetV6AddressLength
+                || addressLen < InternetV6Sockaddr.address.Width
                 || not (sockaddrFamilyIsInBounds platform socketAddressLen)
             then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
@@ -1807,17 +1735,17 @@ module NativeSystemNative =
             //
             // The getter is not symmetric: there `addressLen` is the *destination*
             // size, so a larger one is simply room to spare.
-            let oversizedAddress = addressLen > SockaddrOffsets.InternetV6AddressLength
+            let oversizedAddress = addressLen > InternetV6Sockaddr.address.Width
 
             let addressBytes =
                 if oversizedAddress then
-                    ImmutableArray.CreateRange (Array.zeroCreate<byte> SockaddrOffsets.InternetV6AddressLength)
+                    ImmutableArray.CreateRange (Array.zeroCreate<byte> InternetV6Sockaddr.address.Width)
                 else
                     readBytesThrough
                         ctx
                         operation
                         (requireStorage operation "address" addressIn)
-                        SockaddrOffsets.InternetV6AddressLength
+                        InternetV6Sockaddr.address.Width
                         state
 
             let flowInfo = Array.zeroCreate<byte> 4
@@ -1832,17 +1760,17 @@ module NativeSystemNative =
             |> writeBytesThrough
                 ctx
                 operation
-                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.InternetV6Address state)
+                (bufferFieldAt ctx operation blobStorage InternetV6Sockaddr.address.Offset state)
                 addressBytes
             |> writeBytesThrough
                 ctx
                 operation
-                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.FlowInfo state)
+                (bufferFieldAt ctx operation blobStorage InternetV6Sockaddr.flowInfo.Offset state)
                 (ImmutableArray.CreateRange flowInfo)
             |> writeBytesThrough
                 ctx
                 operation
-                (bufferFieldAt ctx operation blobStorage SockaddrOffsets.ScopeId state)
+                (bufferFieldAt ctx operation blobStorage InternetV6Sockaddr.scopeId.Offset state)
                 (ImmutableArray.CreateRange scopeIdBytes)
             |> complete UnixErrorPal.palSuccess
         | Some "SystemNative_GetMaximumAddressSize",
@@ -4037,12 +3965,12 @@ module NativeSystemNative =
             // short to read is a blob whose length is already wrong.
             let endpoint =
                 match resolvedBlob with
-                | Some blob when declaredLength >= SockaddrOffsets.InternetAddress + 4 ->
+                | Some blob when SockaddrField.reachedBy InternetSockaddr.address declaredLength ->
                     let portBytes =
                         readBytesThrough
                             ctx
                             operation
-                            (bufferFieldAt ctx operation blob SockaddrOffsets.Port state)
+                            (bufferFieldAt ctx operation blob InternetSockaddr.port.Offset state)
                             2
                             state
 
@@ -4050,7 +3978,7 @@ module NativeSystemNative =
                         readBytesThrough
                             ctx
                             operation
-                            (bufferFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
+                            (bufferFieldAt ctx operation blob InternetSockaddr.address.Offset state)
                             4
                             state
 
@@ -4523,7 +4451,8 @@ module NativeSystemNative =
 
             let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
-            let blob = internetSockaddrBlob state.Kernel.UnixPlatform peer
+            let blob =
+                SimulatedUnixPlatform.encodeInternetSockaddr state.Kernel.UnixPlatform peer
 
             // The caller's declared length bounds what is *written* and not
             // what is *reported*, exactly as for `getsockname(2)`: both come
@@ -4673,13 +4602,18 @@ module NativeSystemNative =
 
             let readEndpoint (blob : ManagedPointerSource) : InternetEndpoint =
                 let portBytes =
-                    readBytesThrough ctx operation (bufferFieldAt ctx operation blob SockaddrOffsets.Port state) 2 state
+                    readBytesThrough
+                        ctx
+                        operation
+                        (bufferFieldAt ctx operation blob InternetSockaddr.port.Offset state)
+                        2
+                        state
 
                 let addressBytes =
                     readBytesThrough
                         ctx
                         operation
-                        (bufferFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
+                        (bufferFieldAt ctx operation blob InternetSockaddr.address.Offset state)
                         4
                         state
 
@@ -4797,7 +4731,8 @@ module NativeSystemNative =
                 failFromSyscall error state
             | Ok (GetSockNameAnswer.Reported (endpoint, reportedLength)) ->
 
-            let blob = internetSockaddrBlob state.Kernel.UnixPlatform endpoint
+            let blob =
+                SimulatedUnixPlatform.encodeInternetSockaddr state.Kernel.UnixPlatform endpoint
 
             // The caller's declared length bounds what is *written*, and does not
             // bound what is *reported* -- see `UnixSystem.getsockname`, which is
