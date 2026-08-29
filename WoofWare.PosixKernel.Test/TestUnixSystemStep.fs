@@ -1953,7 +1953,7 @@ module TestUnixSystemStep =
         UnixSystem.rmdir (statPath "/d/inner/t") system |> failedAs UnixError.ENOTDIR
 
     [<Test>]
-    let ``the three path syscalls through step agree with the primitives`` () : unit =
+    let ``the path syscalls through step agree with the primitives`` () : unit =
         // As for `close`: the dispatcher is sugar, and a client that logs and
         // replays through `step` must compute the same thing as one that calls
         // the primitive.
@@ -1967,6 +1967,12 @@ module TestUnixSystemStep =
                 Syscall.MkDir (statPath "/new", 0o700), UnixSystem.mkdir (statPath "/new") 0o700 system
                 Syscall.Unlink (statPath "/d/inner/t"), UnixSystem.unlink (statPath "/d/inner/t") system
                 Syscall.RmDir (statPath "/d"), UnixSystem.rmdir (statPath "/d") system
+                // A *successful* chdir, so the comparison covers the state it
+                // moves rather than only an errno: this one changes both the
+                // current directory inode and the cached path, and a dispatcher
+                // that returned the untouched system would still match on a row
+                // that failed.
+                Syscall.ChDir (statPath "/d/inner"), UnixSystem.chdir (statPath "/d/inner") system
             ] do
             UnixSystem.step call system |> stepAnswered |> shouldEqual (Ok expected)
 

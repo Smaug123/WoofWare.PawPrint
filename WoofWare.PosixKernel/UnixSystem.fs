@@ -1083,6 +1083,7 @@ type Syscall =
     | MkDir of path : UnixPath * mode : int
     | Unlink of path : UnixPath
     | RmDir of path : UnixPath
+    | ChDir of path : UnixPath
 
 /// What the entry point returns, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
@@ -6729,6 +6730,7 @@ module UnixSystem =
         | Syscall.MkDir (path, mode) -> Ok (mkdir path mode system) |> answered
         | Syscall.Unlink path -> Ok (unlink path system) |> answered
         | Syscall.RmDir path -> Ok (rmdir path system) |> answered
+        | Syscall.ChDir path -> Ok (chdir path system) |> answered
 
     /// Every way this system's tables disagree with each other: the socket table
     /// against the descriptor table, the connection table against the sockets
