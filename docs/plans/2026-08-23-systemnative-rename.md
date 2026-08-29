@@ -510,8 +510,9 @@ relative target is stable, which is why the corpus uses one.
 
 - **Stage 2a** (done): `RenameRules`, `RenameVerdict`, both verdicts,
   `TestRenameRules`, and the probe. No guest can see any of it.
-- **Stage 2b**: `VirtualFileSystem.resolveParent` / `completeResolution` as a
-  *pure* refactor, with a property asserting they compose back to `resolveFull`.
+- **Stage 2b** (done): `VirtualFileSystem.resolveParent` /
+  `completeResolution` as a *pure* refactor. See below for what implementing it
+  changed.
 - **Stage 2c**: `WalkOrder`, the handler, the guests.
 
 **Why 2b exists**, which this plan does not anticipate: Linux's four-phase walk
@@ -522,6 +523,49 @@ which phase failed. Synthesising `dirname` and resolving it as its own path
 looks cheap and is wrong: `src parent unsearchable × dst parent absent` is
 EACCES, so the parent's own search check happens in phase 1, which a `dirname`
 resolution does not perform.
+
+
+## What implementing Stage 2b changed
+
+**The property this plan asks for cannot exist.** It names "a property
+asserting they compose back to `resolveFull`", but `resolveFull` is now
+*defined* as the composition, so any such property is true by construction and
+sees nothing. Making the two halves a second implementation beside the old one,
+so that a property could relate them, would leave two versions of the truth
+alive in shipped code. The oracle therefore comes from outside: the pre-split
+walk is transcribed into `TestResolutionSplit.referenceResolveFull` against
+public API alone, and both a fixed cross-product and a generated corpus assert
+the new composition agrees with it. That file's docstring says not to tidy the
+transcription up, since its whole value is being the old code.
+
+**`completeResolution` is not one lookup.** Under a policy that follows the
+final symlink, the lookup splices a target into the pathname buffer and the walk
+continues to a *different* directory — so the second half re-enters the first
+and finishes again. That is also why `PausedResolution` is opaque: there is no
+"the parent directory" to read off it, because which directory the name is
+looked up in is not settled until the second half has run.
+
+**Where the pause falls is measured, and both sides of it are.** The holding
+directory's search bit is checked *above* the pause and the final name's own
+length *below* it. The first is not an artefact of where the split fell:
+Linux's `link_path_walk` calls `may_lookup` at the top of each iteration, before
+it discovers whether the component it is about to hash is the last one, and
+`rename(unsearchable/f, absent/x)` is EACCES on both kernels rather than the
+ENOENT a below-the-pause check would give. The second is this plan's own
+`<300 bytes>` × `nodir/x` row.
+
+**The paused value carries the rules and the filesystem**, not just a position,
+so a resumption cannot be given different limits, a different privilege, a
+different policy pair or a different filesystem. Those states are unrepresentable
+rather than checked.
+
+**Mutation-tested, 11 mutations and no survivors** — including both directions
+the pause point could move. Three of the eleven do not fail so much as *hang*:
+removing the symlink traversal count from either half, or disabling ELOOP,
+removes the bound that makes the walk terminate at all, and a self-referential
+link then recurses forever. Budget a per-mutation fuel cap that kills the whole
+process group; a plain `subprocess` timeout leaves the test host orphaned and
+spinning.
 
 
 ## The option set for splitting this up
