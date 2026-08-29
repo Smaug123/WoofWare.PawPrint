@@ -4371,8 +4371,15 @@ and the v6 expected bytes are hand-assembled from the descriptors.
   (`sourcesPure/SocketAddressScreens.cs`, `sourcesImpure/SocketAddress{Linux,Darwin}Bytes.cs`),
   and `getsockname`/`accept` have theirs.
 * A mutation battery over the moved descriptors and the encoder, run against both
-  suites. Recorded in advance: swapping the two fields that share offset 4 is a no-op
-  mutant and cannot be killed.
+  suites. Recorded in advance and confirmed: swapping the two fields that share offset 4
+  is a no-op mutant and cannot be killed. Eleven others die, every one in the library's
+  own suite — each field moved, `sin6_addr` narrowed, `reachedBy` off by one, the
+  encoder's two byte orders, its `sa_len`, and `AF_INET6`'s number.
+
+  Two of those mutants can only be killed on a Linux host, and this machine is macOS, so
+  they were run in a container against the real fixture: `AF_INET6` = 30 everywhere kills
+  one row, and the Linux family field claiming Darwin's shape kills four. Both columns of
+  the oracle are therefore load-bearing rather than one being carried by the other.
 * `scripts/check-docstring-attachment.py` against the branch point, which this stage
   needs because it moves definitions between files.
 
