@@ -495,6 +495,22 @@ module SockaddrFamilyField =
         | SockaddrFamilyField.TwoBytesAtOffsetZero -> 2
         | SockaddrFamilyField.OneByteAtOffsetOne -> 1
 
+    /// Whether a declared sockaddr length reaches the family field at all.
+    ///
+    /// Two callers with two justifications. A kernel's copy-in helper reads
+    /// nothing on Darwin at a length this rejects, which is why `connect(2)` can
+    /// answer without touching the caller's buffer at all; and a foreign-function
+    /// layer that screens the field before reading or writing it asks exactly the
+    /// same arithmetic. Both are this one comparison, so it lives here rather
+    /// than being written out twice.
+    ///
+    /// A negative length fails it, and that is not incidental: a layer that casts
+    /// the length to an unsigned type makes the bound enormous rather than
+    /// negative, so this answers for what the *caller declared* before any such
+    /// cast.
+    let reachedBy (field : SockaddrFamilyField) (declaredLength : int) : bool =
+        offset field + width field <= declaredLength
+
 /// Everything a kernel does differently when `open(2)` is asked to *create*.
 ///
 /// One record rather than a scatter of booleans, because the divergence is
