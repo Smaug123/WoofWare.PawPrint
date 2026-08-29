@@ -349,30 +349,6 @@ module NativeSystemNative =
             failwith
                 $"%s{operation}: expected %s{argName} to be a managed pointer, raw verbatim address, or null literal, got %O{other} (this is an interpreter bug)"
 
-    /// Whether this platform's kernel refuses `bufferSize` bytes at this pointer
-    /// before performing the operation at all.
-    ///
-    /// Only a raw address is ever refused: `BufferPointer.Storage` names real
-    /// allocated guest memory, which is a user address by construction.
-    ///
-    /// `false` means this step raises no objection, not that the buffer is
-    /// usable: a symbolic address passes here on both platforms and still has no
-    /// answer at the transfer.
-    let internal faultsBeforeOperation (kernel : EmulatedKernel) (buffer : BufferPointer) (bufferSize : int) : bool =
-        System.Diagnostics.Debug.Assert (
-            bufferSize >= 0,
-            "faultsBeforeOperation: a negative size is the shim's own error and is refused before the kernel sees it"
-        )
-
-        match
-            UserBufferCheck.faultsBeforeOperationFor
-                (UnixMachineState.userBufferCheck kernel.Machine)
-                (BufferPointer.toUserBuffer buffer)
-                (uint64 bufferSize)
-        with
-        | Ok faults -> faults
-        | Error refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
-
     /// Which way bytes move through a caller-supplied buffer.
     [<RequireQualifiedAccess>]
     type private BufferTransfer =
@@ -5511,111 +5487,31 @@ module NativeSystemNative =
             // Past the wrapper, so the call really does consult `port` now.
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            let openFile = FileDescriptorRegistry.tryFindWithId fd state.Kernel.FileDescriptors
-
-            match flavour with
-            | SimulatedUnixFlavour.Linux ->
-                // Measured on 6.18.5, each adjacent pair separated by an input that
-                // provokes exactly one of the two: descriptor, then `maxevents`,
-                // then the buffer, then is-it-an-epoll-instance.
-                match openFile with
-                | None -> failFromSyscall UnixError.EBADF
-                | Some (port, description) ->
-
-                // The kernel's predicate is `maxevents <= 0 || maxevents > EP_MAX_EVENTS`;
-                // the wrapper has already turned every negative value into EFAULT,
-                // so zero is the only non-positive one that gets here.
-                if requestedCount = 0 || requestedCount > LinuxEpollLimits.MaxEvents then
-                    failFromSyscall UnixError.EINVAL
-                else
-
-                // The byte range `access_ok(events, maxevents * sizeof(struct
-                // epoll_event))` screens. This multiplication is safe only *below*
-                // the cap just applied, which is what `EP_MAX_EVENTS` exists for:
-                // it is `INT_MAX / EventSize`, so every count that reaches here has
-                // a product inside `int32`.
-                let bufferExtent = requestedCount * LinuxEpollLimits.EventSize
-
-                // Not a mappedness check. On 64-bit Linux `access_ok` only rejects
-                // ranges reaching into the kernel half, so a merely-unmapped
-                // userspace address passes and the wait then blocks, faulting at
-                // delivery — which is why this must not eagerly validate that the
-                // buffer is real before parking. `faultsBeforeOperation` is exactly
-                // that range test against `UserAddressLimit`.
-                if faultsBeforeOperation state.Kernel buffer bufferExtent then
-                    failFromSyscall UnixError.EFAULT
-                else
-
-                match description.Target with
-                | OpenFileTarget.StandardStream _
-                | OpenFileTarget.File _
-                | OpenFileTarget.Socket _ ->
-                    // A live descriptor onto the wrong kind of object. EINVAL is
-                    // epoll's own answer for it, and it is the last of the four
-                    // screens — behind the buffer, which is why an unmappable
-                    // buffer on a non-port descriptor is EFAULT rather than this.
-                    //
-                    // A socket is measured to be exactly like the other two here
-                    // rather than assumed to be: `epoll_wait` on a socket fd is
-                    // EINVAL, and EFAULT still wins ahead of it for an
-                    // unmappable buffer.
-                    failFromSyscall UnixError.EINVAL
-                | OpenFileTarget.SocketEventPort _ -> deliverOrPark port requestedCount
-            | SimulatedUnixFlavour.Darwin ->
-                // Measured on 25.6.0, and flatter: `kevent` resolves the descriptor
-                // before its `nevents == 0` early return, has no "wrong kind of
-                // object" answer to give, and screens no buffer at all — so the
-                // whole ladder is one question about the descriptor followed by one
-                // about the count.
-                match openFile with
-                | None -> failFromSyscall UnixError.EBADF
-                | Some (port, description) ->
-
-                match description.Target with
-                | OpenFileTarget.StandardStream _
-                | OpenFileTarget.File _
-                | OpenFileTarget.Socket _ ->
-                    // EBADF, where epoll says EINVAL: kqueue folds "not a kqueue"
-                    // into "bad descriptor". Measured on a socket too, and for
-                    // both a zero and a non-zero event count.
-                    failFromSyscall UnixError.EBADF
-                | OpenFileTarget.SocketEventPort portState ->
-
-                if requestedCount = 0 then
-                    // The one input on which the flavours disagree about whether
-                    // the call blocks at all. Measured:
-                    // `kevent(kq, NULL, 0, evs, 0, NULL)` returns 0 immediately,
-                    // where `epoll_wait` with `maxevents == 0` is EINVAL. The
-                    // "we should never see 0 events" assertion that follows is
-                    // compiled out of the shipped release build, so the wrapper
-                    // falls through, writes `*count = 0` and reports success.
-                    //
-                    // `errno` is untouched, the syscall having not failed.
-                    let bytes = Array.zeroCreate<byte> 4
-                    BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, 0)
-
-                    writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
-                    |> IlMachineState.pushToEvalStack'
-                        (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
-                        ctx.Thread
-                    |> NativeHandlerResult.completed
-                    |> Some
-                else
-
-                // No buffer screen, so an unmappable buffer parks here rather than
-                // faulting: `UserBufferCheck.AtCopyTime` is Darwin's answer, and a
-                // wait that never delivers an event never copies anything.
+            match
+                UnixSystem.admitSocketWait
+                    fd
+                    requestedCount
+                    (BufferPointer.toUserBuffer buffer)
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (SocketWaitRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
+            | Ok (SocketWaitAdmission.Failed error) -> failFromSyscall error
+            | Ok SocketWaitAdmission.NoEvents ->
+                // Darwin's zero-event row. The wrapper's "we should never see 0
+                // events" assertion is compiled out of the shipped release build,
+                // so it falls through, writes `*count = 0` and reports success.
                 //
-                // Parking unconditionally is faithful because the table is
-                // empty by construction — the Darwin registration arm
-                // refuses, so nothing can ever become deliverable on this
-                // port. The delivery path above is epoll's, so it must not
-                // run here; this assertion keeps the two facts tied.
-                if not (Map.isEmpty portState.Registrations) then
-                    failwith
-                        $"%s{operation}: a Darwin-flavoured kernel holds %d{Map.count portState.Registrations} socket event registrations, but the Darwin registration arm refuses every change — this is an interpreter bug."
+                // `errno` is untouched, the syscall having not failed.
+                let bytes = Array.zeroCreate<byte> 4
+                BinaryPrimitives.WriteInt32LittleEndian (Span<byte> bytes, 0)
 
-                park port requestedCount state
+                writeBytesThrough ctx operation countCell (ImmutableArray.CreateRange bytes) state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim UnixErrorPal.palSuccess))
+                    ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents)) -> deliverOrPark port maxEvents
         | Some "SystemNative_Poll",
           [ ConcretePointer _
             ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32

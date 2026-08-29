@@ -33,6 +33,7 @@
     <Compile Include="TestAccept.fs" />
     <Compile Include="TestConnect.fs" />
     <Compile Include="TestPoll.fs" />
+    <Compile Include="TestSocketWait.fs" />
   </ItemGroup>
 
   <ItemGroup>
