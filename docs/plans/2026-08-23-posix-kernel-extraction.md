@@ -4681,6 +4681,12 @@ holder listening, and a new row asserts the complement: the *first* listener of 
 pair is admitted on both flavours. Without that second row the first would pass for a
 rule that refused any duplicate binding.
 
+**Mutation battery**: twelve mutants, all killed by the library's own suite — the
+re-screen in three ways (on both flavours, on neither, and with the predicate inverted),
+the implicit bind's address, its lock and its conflict check, the re-listen's queue, the
+backlog clamp, the datagram answer, the kind/phase ordering, and both halves of the
+shared conflict relation. Nothing here needed PawPrint's suite consulted.
+
 **What is left after 14**: `socket`, the two non-blocking `fcntl`s, and the fixture
 relocation. Also noted in passing: `UnmodelledDomain` now appears as a case in four
 refusal DUs with the same shape and meaning (`accept`, `sockaddrCopy`, `listen`, and
