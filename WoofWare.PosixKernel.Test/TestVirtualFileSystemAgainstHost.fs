@@ -2706,6 +2706,18 @@ module TestVirtualFileSystemAgainstHost =
             // Over NAME_MAX in the final position, which is checked in the
             // *final* phase and so loses to anything either parent walk finds.
             String.replicate 300 "z"
+            // Over PATH_MAX, which is checked when the pathname is *copied in* —
+            // the one phase every other operand here passes, and so the one this
+            // matrix could not otherwise see. Paired against a source whose
+            // parent walk fails, it is what tells "each pathname is copied in
+            // before its own parent walk" from "both are copied in first".
+            //
+            // 5000 rather than a length near either boundary: the host resolves
+            // this operand with the temporary root prefixed and the model
+            // resolves it bare, so only a length comfortably over *both*
+            // PATH_MAX values — Darwin's 1024 and Linux's 4096 — means the same
+            // thing on the two sides.
+            String.replicate 5000 "z"
         ]
 
     [<Test>]
@@ -2763,15 +2775,23 @@ module TestVirtualFileSystemAgainstHost =
             |> Set.ofList
 
         // A success, and every errno the phases can produce on this host.
+        //
+        // EACCES only when this process is not root: privilege is what the
+        // narrowed directories in the corpus are refused by, and uid 0 is exempt
+        // on both sides at once — so under root the matrix still agrees
+        // everywhere and simply never reaches that errno.
         let wanted =
             [
-                "a success", Succeeded
-                "ENOENT", Refused (hostErrno UnixError.ENOENT)
-                "ENOTDIR", Refused (hostErrno UnixError.ENOTDIR)
-                "EACCES", Refused (hostErrno UnixError.EACCES)
-                "EISDIR", Refused (hostErrno UnixError.EISDIR)
-                "ENAMETOOLONG", Refused (hostErrno UnixError.ENAMETOOLONG)
-                "ENOTEMPTY", Refused (hostErrno UnixError.ENOTEMPTY)
+                yield "a success", Succeeded
+                yield "ENOENT", Refused (hostErrno UnixError.ENOENT)
+                yield "ENOTDIR", Refused (hostErrno UnixError.ENOTDIR)
+
+                if geteuid () <> 0u then
+                    yield "EACCES", Refused (hostErrno UnixError.EACCES)
+
+                yield "EISDIR", Refused (hostErrno UnixError.EISDIR)
+                yield "ENAMETOOLONG", Refused (hostErrno UnixError.ENAMETOOLONG)
+                yield "ENOTEMPTY", Refused (hostErrno UnixError.ENOTEMPTY)
             ]
 
         let missing =
