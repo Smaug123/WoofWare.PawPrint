@@ -4590,7 +4590,10 @@ the field reads, `SocketArgumentsPal.isTcpProtocolType`, and the errno write.
   converge instead, with `family`/`endpoint` as `None` on the answered path.
 
 * **`privilegedPortCeiling` moves** from `EmulatedKernel` to `SimulatedUnixPlatform`, as
-  a constant rather than a function of the platform: measured 1024 on both.
+  a constant rather than a function of the platform: measured 1024 on both. Review
+  caught that the first attempt *copied* it rather than moving it, leaving two public
+  definitions of 1024 that nothing forced to agree — the failure mode this whole
+  extraction exists to prevent, committed while performing it.
 
 **Two new refusals**, each a `failwith` in the handler today. `UnmodelledMulticast`, and
 `EphemeralPortsExhausted` for a port-0 bind that finds the whole range taken — the
