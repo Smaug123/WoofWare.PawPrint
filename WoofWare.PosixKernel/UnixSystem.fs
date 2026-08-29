@@ -474,6 +474,34 @@ type SockaddrCopyFields =
     /// It reaches `sa_family`, `sin_addr` and `sin_port`. Pass both.
     | FamilyAndEndpoint
 
+
+[<RequireQualifiedAccess>]
+module SockaddrCopyFields =
+    /// Refuse a caller that supplied a different set of fields from the one the
+    /// copy reaches.
+    ///
+    /// Not defensiveness. This kernel's answer for a field it *could not read*
+    /// is measured and different from its answer for a field nobody bothered to
+    /// read, so conflating the two would be a silent wrong answer rather than a
+    /// crash. `operation` is the caller's own name for itself, since the mistake
+    /// is the caller's.
+    let checkSupplied
+        (operation : string)
+        (fields : SockaddrCopyFields)
+        (family : int option)
+        (endpoint : InternetEndpoint option)
+        : unit
+        =
+        let expected =
+            match fields with
+            | SockaddrCopyFields.Nothing -> false, false
+            | SockaddrCopyFields.Family -> true, false
+            | SockaddrCopyFields.FamilyAndEndpoint -> true, true
+
+        if (Option.isSome family, Option.isSome endpoint) <> expected then
+            failwith
+                $"%s{operation}: the copy of this sockaddr reaches %O{fields}, but the caller supplied family=%b{Option.isSome family} endpoint=%b{Option.isSome endpoint}. A field this kernel could not read and a field the caller did not read have different measured answers, so they must not be conflated (this is a bug in the caller)."
+
 /// Whether a syscall taking a `struct sockaddr` reaches the point at which the
 /// kernel copies it in.
 ///
@@ -677,6 +705,58 @@ module SocketEventRegistrationRefusal =
         match refusal with
         | SocketEventRegistrationRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and registration is modelled here for Linux only. kqueue's semantics -- per-filter state, a silently-replacing ADD, file targets succeeding -- are unmeasured beyond the fact that they diverge from epoll's, and the return codes alone are not a model of the state a call leaves behind. Measure them before answering."
+
+/// What a `bind(2)` answered.
+[<RequireQualifiedAccess>]
+type BindAnswer =
+    /// The socket is bound. `endpoint` is where -- which is not necessarily what
+    /// the caller asked for: a request for port 0 asks for any free port, and
+    /// this is the one allocated.
+    | Bound of endpoint : InternetEndpoint
+    /// The call failed with this errno.
+    ///
+    /// The system still comes back, and may have changed: the `SO_REUSEADDR` a
+    /// caller folds into this call is applied before every answer here, the
+    /// address fault included. Measured -- after a bind that answered EFAULT the
+    /// option still reads back set.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer a `bind`.
+[<RequireQualifiedAccess>]
+type BindRefusal =
+    /// The screens every sockaddr-taking call shares had no answer.
+    | Copy of SockaddrCopyRefusal
+    /// The caller asked to bind a broadcast or multicast address.
+    ///
+    /// Refused rather than answered, and refused *late*: a fault this platform
+    /// ranks ahead of the address is one this kernel does know the answer to,
+    /// and reporting it is better than refusing. Only when the address itself is
+    /// what the platform would rule on does the gap bite.
+    ///
+    /// Multicast is not modelled -- there is no group membership and no
+    /// interface to receive on -- and the real rule is not one rule: measured,
+    /// Linux takes such an address on a stream socket, Darwin answers
+    /// `EAFNOSUPPORT` there, and Darwin's answer depends on the socket's kind
+    /// besides.
+    | UnmodelledMulticast of socket : SocketId * address : uint32
+    /// The bind asked for any free port and every port in the ephemeral range is
+    /// taken.
+    ///
+    /// A real kernel reports `EADDRINUSE` here, but that has not been measured
+    /// under this kernel's own allocator and inventing it would be a guess.
+    | EphemeralPortsExhausted of range : uint16 * uint16
+
+[<RequireQualifiedAccess>]
+module BindRefusal =
+    /// What this kernel knows about why it cannot bind. The client supplies its
+    /// own half -- which entry point asked, and which descriptor.
+    let describe (refusal : BindRefusal) : string =
+        match refusal with
+        | BindRefusal.Copy refusal -> SockaddrCopyRefusal.describe refusal
+        | BindRefusal.UnmodelledMulticast (socket, address) ->
+            $"socket %O{socket} asked to bind %s{InternetEndpoint.toString (InternetEndpoint.ofParts address 0us)}, a broadcast or multicast address. This kernel models no multicast -- there is no group membership and no interface to receive on -- and the real rule is not one rule: measured, Linux takes such an address on a stream socket, Darwin answers EAFNOSUPPORT there, and Darwin's answer depends on the socket's kind besides. Model multicast before binding one."
+        | BindRefusal.EphemeralPortsExhausted (low, high) ->
+            $"every port in the ephemeral range %d{low}-%d{high} is taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE, but that has not been measured under this allocator and inventing it would be a guess. Widen the range, or measure the real answer."
 
 /// What kind of object one directory entry names.
 ///
@@ -4972,6 +5052,255 @@ module UnixSystem =
 
         Ok (SockaddrCopyAdmission.Transfer (declaredLength, fields))
 
+    /// `bind(2)`: give `fd` a local address.
+    ///
+    /// `family` and `endpoint` are what the caller read out of its sockaddr, and
+    /// must be exactly what `admitSockaddrCopy` asked for -- the same contract
+    /// `connect` states, and for the same reason: this kernel's answer for a
+    /// field it *could not read* is measured and different from its answer for a
+    /// field nobody read.
+    ///
+    /// `reuseAddress` folds in the `SO_REUSEADDR` that a foreign-function layer
+    /// may set on the way past. It is applied before every answer below, the
+    /// address fault included, because the option is set by a separate call that
+    /// no failure of this one undoes -- measured: after a bind that answered
+    /// EFAULT, the option still reads back set. A caller with no such layer
+    /// passes `false`.
+    ///
+    /// Answers where the socket ended up, which for a request of port 0 is a
+    /// port this kernel chose.
+    let bind<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : int)
+        (reuseAddress : bool)
+        (family : int option)
+        (endpoint : InternetEndpoint option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
+        =
+        // The descriptor is resolved here rather than left to the admission
+        // below, because the `SO_REUSEADDR` write needs the socket and has to
+        // happen before the admission's own answers. The admission resolves it
+        // again; that is a lookup repeated, not a rule.
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | None -> Ok (BindAnswer.Failed UnixError.EBADF, system)
+        | Some target ->
+
+        match target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort _ -> Ok (BindAnswer.Failed UnixError.ENOTSOCK, system)
+        | OpenFileTarget.Socket socketId ->
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        match socket.Domain with
+        | SocketDomain.InterNetworkV6
+        | SocketDomain.Unix -> Error (BindRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain)))
+        | SocketDomain.InterNetwork ->
+
+        let socket =
+            if reuseAddress then
+                { socket with
+                    ReuseAddress = true
+                }
+            else
+                socket
+
+        let withSocket (socket : SocketDescription) (system : UnixSystem<'Task, 'Handler>) =
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets = Map.add socketId socket system.Machine.Sockets
+                    }
+            }
+
+        let system = withSocket socket system
+
+        match admitSockaddrCopy fd destination declaredLength system with
+        | Error refusal -> Error (BindRefusal.Copy refusal)
+        | Ok (SockaddrCopyAdmission.Answered error) -> Ok (BindAnswer.Failed error, system)
+        | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
+
+        SockaddrCopyFields.checkSupplied "UnixSystem.bind" fields family endpoint
+
+        let platform = system.Machine.UnixPlatform
+
+        // Asked again rather than carried out of the admission: the admission
+        // answers the *outright* rejection, and this is the same verdict read
+        // for the fault set, where a length that is merely not a `sockaddr_in`
+        // ranks against the other faults rather than pre-empting them.
+        let lengthFault =
+            SimulatedUnixPlatform.bindAddressLength
+                platform
+                (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+                declaredLength
+            <> BindLengthVerdict.Accepted
+
+        let familyFault =
+            match family with
+            // Unreadable: no family to disagree with, and the length fault fires
+            // instead.
+            | None -> false
+            | Some family when family = SimulatedUnixPlatform.internetAddressFamily -> false
+            | Some 0 ->
+                // AF_UNSPEC is two different rules. Linux accepts the blob only
+                // when the address is all-zero, and answers EAFNOSUPPORT
+                // otherwise; Darwin reads the address and port out of it and
+                // binds them, exactly as for AF_INET. Both measured.
+                match SimulatedUnixPlatform.flavour platform with
+                | SimulatedUnixFlavour.Darwin -> false
+                | SimulatedUnixFlavour.Linux ->
+                    match endpoint with
+                    | Some endpoint -> endpoint.Address <> InternetEndpoint.WildcardAddress
+                    | None -> false
+            | Some _ -> true
+
+        let candidate =
+            endpoint
+            |> Option.map (fun endpoint ->
+                {
+                    Endpoint = endpoint
+                    // bind(2)'s own address is locked: a Linux refusal delivery
+                    // reverts a later connect's source resolution back to
+                    // exactly this.
+                    LockedAddress = Some endpoint.Address
+                }
+            )
+
+        let addressNotLocalFault =
+            match endpoint with
+            | None -> false
+            | Some endpoint ->
+                SimulatedUnixPlatform.bindAddressFaults
+                    platform
+                    system.Machine.LocalAddresses
+                    system.Machine.LocalRoutes
+                    endpoint.Address
+
+        let privilegedPortFault =
+            match endpoint with
+            | None -> false
+            | Some endpoint ->
+                endpoint.Port > 0us
+                && endpoint.Port < SimulatedUnixPlatform.privilegedPortCeiling
+                && system.Process.UserId <> 0u
+
+        let conflictsWith (binding : SocketBinding) : bool =
+            system.Machine.Sockets
+            |> Map.exists (fun otherId (other : SocketDescription) ->
+                if otherId = socketId then
+                    false
+                else
+
+                match other.Binding with
+                | None -> false
+                | Some existing ->
+                    // Separate port namespaces per transport, measured: a UDP
+                    // socket takes a port a listening TCP socket holds.
+                    other.Kind = socket.Kind
+                    && SimulatedUnixPlatform.bindConflict
+                        platform
+                        existing
+                        other.ReuseAddress
+                        other.Phase
+                        binding
+                        socket.ReuseAddress
+            )
+
+        let addressInUseFault =
+            match candidate with
+            // A bind of port 0 asks for a free port rather than a particular
+            // one, so it cannot collide; the allocator's own search is what
+            // avoids one.
+            | Some binding when binding.Endpoint.Port > 0us -> conflictsWith binding
+            | _ -> false
+
+        let faults =
+            [
+                BindFault.Length, lengthFault
+                BindFault.Family, familyFault
+                BindFault.AddressNotLocal, addressNotLocalFault
+                BindFault.PrivilegedPort, privilegedPortFault
+                BindFault.AlreadyBound, socket.Binding.IsSome
+                BindFault.AddressInUse, addressInUseFault
+            ]
+            |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
+            |> Set.ofList
+
+        match SimulatedUnixPlatform.firstBindFault platform faults, endpoint with
+        | Some BindFault.AddressNotLocal, Some endpoint when
+            SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address
+            ->
+            Error (BindRefusal.UnmodelledMulticast (socketId, endpoint.Address))
+        | fault, _ ->
+
+        match fault with
+        | Some fault ->
+            let error =
+                match fault with
+                // `RejectedBeforeCopy` never reaches the fault order: the
+                // admission answers it before anything is read.
+                | BindFault.Length -> UnixError.EINVAL
+                | BindFault.AlreadyBound -> UnixError.EINVAL
+                | BindFault.Family -> UnixError.EAFNOSUPPORT
+                | BindFault.AddressNotLocal -> UnixError.EADDRNOTAVAIL
+                | BindFault.PrivilegedPort -> UnixError.EACCES
+                | BindFault.AddressInUse -> UnixError.EADDRINUSE
+
+            Ok (BindAnswer.Failed error, system)
+        | None ->
+
+        let binding =
+            match candidate with
+            | Some binding -> binding
+            | None ->
+                failwith
+                    $"UnixSystem.bind: no fault was reported for fd %d{fd} and yet the sockaddr was too short to read an address from (declared length %d{declaredLength}). The length fault should have fired (this is a bug in this library)."
+
+        match
+            (if binding.Endpoint.Port > 0us then
+                 Some (binding, system.Machine)
+             else
+                 let acceptable (port : uint16) : bool =
+                     not (
+                         conflictsWith
+                             { binding with
+                                 Endpoint =
+                                     { binding.Endpoint with
+                                         Port = port
+                                     }
+                             }
+                     )
+
+                 UnixMachineState.allocateEphemeralPort acceptable system.Machine
+                 |> Option.map (fun (port, machine) ->
+                     { binding with
+                         Endpoint =
+                             { binding.Endpoint with
+                                 Port = port
+                             }
+                     },
+                     machine
+                 ))
+        with
+        | None -> Error (BindRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
+        | Some (bound, machine) ->
+
+        // From `machine` rather than `system.Machine`: the ephemeral allocator
+        // advanced the cursor, and that advance is part of this bind.
+        let system =
+            { system with
+                Machine = machine
+            }
+            |> withSocket
+                { socket with
+                    Binding = Some bound
+                }
+
+        Ok (BindAnswer.Bound bound.Endpoint, system)
+
     /// `connect(2)`: point `fd` at `endpoint`, or ask what pointing it there
     /// would answer.
     ///
@@ -5000,15 +5329,7 @@ module UnixSystem =
         | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
         | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
 
-        let expected =
-            match fields with
-            | SockaddrCopyFields.Nothing -> false, false
-            | SockaddrCopyFields.Family -> true, false
-            | SockaddrCopyFields.FamilyAndEndpoint -> true, true
-
-        if (Option.isSome family, Option.isSome endpoint) <> expected then
-            failwith
-                $"UnixSystem.connect: the copy of this sockaddr reaches %O{fields}, but the caller supplied family=%b{Option.isSome family} endpoint=%b{Option.isSome endpoint}. A field this kernel could not read and a field the caller did not read have different measured answers, so they must not be conflated (this is a bug in the caller)."
+        SockaddrCopyFields.checkSupplied "UnixSystem.connect" fields family endpoint
 
         // `admitSockaddrCopy` reached the copy, so the descriptor is a live IPv4
         // socket; nothing between there and here could have changed that.

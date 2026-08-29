@@ -3830,54 +3830,6 @@ module NativeSystemNative =
 
             let platform = state.Kernel.UnixPlatform
 
-            match socketOfFd operation fd state with
-            | Error error ->
-                // `toRawErrnoUnder` rather than `toRawErrno`: ENOTSOCK's raw
-                // number is platform-dependent (88 on Linux, 38 on Darwin).
-                state.MapKernel (
-                    EmulatedKernel.withLastSystemError
-                        ctx.Thread
-                        (UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error)
-                )
-                |> complete (UnixErrorPal.toPal error)
-            | Ok (socketId, socket) ->
-
-            // The `setsockopt` runs before `bind(2)` and no failure of it undoes
-            // the option, so the flag is recorded here — above every answer below,
-            // the address fault included. Measured: after a bind that answered
-            // EFAULT, the option still reads back set.
-            let socket =
-                if SocketArgumentsPal.isTcpProtocolType palProtocolType then
-                    { socket with
-                        ReuseAddress = true
-                    }
-                else
-                    socket
-
-            let state =
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Machine =
-                            { kernel.Machine with
-                                Sockets = Map.add socketId socket kernel.Sockets
-                            }
-                    }
-                )
-
-            // `bind(2)`'s buffer, not the wrapper's: the C never dereferences it
-            // itself, so an address naming no storage faults in the *kernel* and
-            // comes back as EFAULT rather than killing the process — but only
-            // when there are bytes to copy. Measured on both: an unmapped pointer
-            // is EFAULT at a declared length of 8 and EINVAL at 0, because the
-            // kernel copies the caller's `len` bytes *before* judging whether
-            // `len` is a legal sockaddr length. A zero-length call therefore
-            // never reads the pointer, and falls through to the length fault.
-            //
-            // This is the opposite of `SystemNative_CreateSocketEventPort`'s
-            // out-parameter, which the wrapper itself dereferences, and which
-            // `requireStorage` refuses for.
-            let resolvedBlob = BufferPointer.dereferenceable addressArgument
-
             // `toRawErrnoUnder` rather than `toRawErrno`: several of these errnos
             // are numbered differently on the two flavours — EADDRNOTAVAIL is 99
             // on Linux and 49 on Darwin — and the emulated kernel's own platform
@@ -3889,89 +3841,88 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
 
-            let lengthVerdict =
-                SimulatedUnixPlatform.bindAddressLength
-                    platform
-                    (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+            let refuse (refusal : BindRefusal) : NativeHandlerResult option =
+                match refusal with
+                | BindRefusal.Copy (SockaddrCopyRefusal.Buffer refusal) ->
+                    failwith (BufferPointer.refusalMessage addressArgument refusal)
+                | BindRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (_, domain)) ->
+                    // The library says why no kernel answer exists; PawPrint says
+                    // how a guest could be holding such a socket, which is a fact
+                    // about CoreLib rather than about any kernel.
+                    let reachedBy =
+                        match domain with
+                        | SocketDomain.InterNetworkV6 ->
+                            "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                        | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
+                        | SocketDomain.InterNetwork ->
+                            failwith
+                                $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
+
+                    failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal} %s{reachedBy}"
+                | BindRefusal.UnmodelledMulticast _
+                | BindRefusal.EphemeralPortsExhausted _ ->
+                    failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal}"
+
+            // `bind(2)`'s buffer, not the wrapper's: the C never dereferences it
+            // itself, so an address naming no storage faults in the *kernel* and
+            // comes back as EFAULT rather than killing the process, which is what
+            // the admission answers. The opposite of
+            // `SystemNative_CreateSocketEventPort`'s out-parameter, which the
+            // wrapper itself dereferences and `requireStorage` refuses for.
+            match
+                UnixSystem.admitSockaddrCopy
+                    fd
+                    (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error refusal -> refuse (BindRefusal.Copy refusal)
+            | Ok admission ->
 
-            // A length past the upper bound is refused before the kernel copies
-            // anything, so it beats both a faulting pointer and the family check.
-            match lengthVerdict with
-            | BindLengthVerdict.RejectedBeforeCopy error -> failFromSyscall error state
-            | _ ->
+            let family, endpoint =
+                match admission with
+                | SockaddrCopyAdmission.Answered _ ->
+                    // The call still goes through `UnixSystem.bind`, which
+                    // re-derives this answer — because the `SO_REUSEADDR` write
+                    // survives every one of these failures and only `bind`
+                    // applies it. No field is read: the kernel never touches the
+                    // buffer on this path.
+                    None, None
+                | SockaddrCopyAdmission.Transfer (length, fields) ->
 
-            // Darwin reads the family before it copies anything, so a length too
-            // short to reach the family is EINVAL there and never touches the
-            // pointer — measured, `(struct sockaddr *) 1` with a length of 1 is
-            // EINVAL on Darwin and EFAULT on Linux, and with 2 it is EFAULT on
-            // both. Linux copies first at every positive length.
-            let copiesFromPointer =
-                declaredLength > 0
-                && (
-                    match SimulatedUnixPlatform.flavour platform with
-                    | SimulatedUnixFlavour.Linux -> true
-                    | SimulatedUnixFlavour.Darwin -> sockaddrFamilyIsInBounds platform declaredLength
-                )
+                let blob =
+                    if length = 0 then
+                        None
+                    else
+                        match BufferPointer.dereferenceable addressArgument with
+                        | Some blob -> Some blob
+                        | None ->
+                            failwith
+                                $"%s{operation}: the kernel copies %d{length} bytes from `socketAddress`, which names no storage, yet the library admitted the copy rather than answering EFAULT. This is an interpreter bug."
 
-            match resolvedBlob with
-            | None when copiesFromPointer ->
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EFAULT))
-                |> complete (UnixErrorPal.toPal UnixError.EFAULT)
-            | _ ->
+                // The copy takes the caller's whole declared length, so a blob
+                // shorter than that is one a real kernel reads past. Whether
+                // that faults depends on which pages happen to be mapped beyond
+                // the object, which PawPrint does not model: measured, a
+                // 128-byte declared length over a 64-byte stack buffer succeeds
+                // on Linux, because the stack below it is mapped. Refusing is
+                // the honest answer to a question whose real one is not a
+                // property of the program.
+                match blob with
+                | Some blob -> requireBufferRoom ctx operation BufferTransfer.OutOf blob length state
+                | None -> ()
 
-            // The other half of the same question, and gated on the same
-            // decision so the two cannot drift: a pointer naming *no* storage is
-            // the EFAULT above, and one naming *too little* is this. `bind(2)`
-            // copies the caller's whole declared length, not merely the fields
-            // this handler goes on to parse out of it, so a blob shorter than
-            // that length is one a real kernel reads past. Whether that faults
-            // depends on which pages happen to be mapped beyond the object,
-            // which PawPrint does not model: measured, a 128-byte declared
-            // length over a 64-byte stack buffer succeeds on Linux, because the
-            // stack below it is mapped. Refusing is the honest answer to a
-            // question whose real one is not a property of the program.
-            //
-            // Gated on `copiesFromPointer` rather than on the length being a
-            // *legal* sockaddr length, because the copy comes first: a declared
-            // length of 8 is far too short to be a `sockaddr_in`, and is still
-            // EFAULT rather than EINVAL when the pointer is unmapped. It also
-            // has to run before the family and address reads below, which are
-            // bounded by the declared length and so would otherwise read off the
-            // end of the managed object.
-            match resolvedBlob with
-            | Some blob when copiesFromPointer ->
-                requireBufferRoom ctx operation BufferTransfer.OutOf blob declaredLength state
-            | _ -> ()
-
-            // Every fault this bind could report, computed together; which one is
-            // *reported* is the platform's own order (`bindFaultOrder`), because
-            // the two disagree about it.
-            let internetFamily = SimulatedUnixPlatform.internetAddressFamily
-
-            // Both of these read through the pointer, and both are `None` when
-            // the declared length does not reach the field — which is the only
-            // way `resolvedBlob` can be `None` here, the positive-length case
-            // having answered EFAULT above.
-            let blobFamily =
-                match resolvedBlob with
-                | Some blob when sockaddrFamilyIsInBounds platform declaredLength ->
-                    Some (readSockaddrFamily ctx operation platform blob state)
-                | _ -> None
-
-            // Reading the address and port needs the declared length to cover
-            // them. It cannot change the answer when it does not: every flavour
-            // reports `Length` ahead of any address-derived fault, so a blob too
-            // short to read is a blob whose length is already wrong.
-            let endpoint =
-                match resolvedBlob with
-                | Some blob when SockaddrField.reachedBy InternetSockaddr.address declaredLength ->
+                match fields, blob with
+                | SockaddrCopyFields.Nothing, _ -> None, None
+                | SockaddrCopyFields.Family, Some blob ->
+                    Some (readSockaddrFamily ctx operation platform blob state), None
+                | SockaddrCopyFields.FamilyAndEndpoint, Some blob ->
                     let portBytes =
                         readBytesThrough
                             ctx
                             operation
                             (bufferFieldAt ctx operation blob InternetSockaddr.port.Offset state)
-                            2
+                            InternetSockaddr.port.Width
                             state
 
                     let addressBytes =
@@ -3979,204 +3930,39 @@ module NativeSystemNative =
                             ctx
                             operation
                             (bufferFieldAt ctx operation blob InternetSockaddr.address.Offset state)
-                            4
+                            InternetSockaddr.address.Width
                             state
 
+                    Some (readSockaddrFamily ctx operation platform blob state),
                     Some (
                         InternetEndpoint.ofParts
                             (BinaryPrimitives.ReadUInt32BigEndian (addressBytes.AsSpan ()))
                             (BinaryPrimitives.ReadUInt16BigEndian (portBytes.AsSpan ()))
                     )
-                | _ -> None
-
-            let familyFault =
-                match blobFamily with
-                // Unreadable: no family to disagree with, and the length fault
-                // fires instead.
-                | None -> false
-                | Some family when family = internetFamily -> false
-                | Some 0 ->
-                    // AF_UNSPEC is two different rules. Linux accepts the blob
-                    // only when the address is all-zero, and answers
-                    // EAFNOSUPPORT otherwise; Darwin reads the address and port
-                    // out of it and binds them, exactly as for AF_INET. Both
-                    // measured.
-                    match SimulatedUnixPlatform.flavour platform with
-                    | SimulatedUnixFlavour.Darwin -> false
-                    | SimulatedUnixFlavour.Linux ->
-                        match endpoint with
-                        | Some endpoint -> endpoint.Address <> InternetEndpoint.WildcardAddress
-                        | None -> false
-                | Some _ -> true
-
-            let lengthFault = lengthVerdict <> BindLengthVerdict.Accepted
-
-            let candidate =
-                endpoint
-                |> Option.map (fun endpoint ->
-                    {
-                        Endpoint = endpoint
-                        // bind(2)'s own address is locked: a Linux refusal
-                        // delivery reverts a later connect's source
-                        // resolution back to exactly this.
-                        LockedAddress = Some endpoint.Address
-                    }
-                )
-
-            let addressNotLocalFault =
-                match endpoint with
-                | None -> false
-                | Some endpoint ->
-                    SimulatedUnixPlatform.bindAddressFaults
-                        platform
-                        state.Kernel.LocalAddresses
-                        state.Kernel.LocalRoutes
-                        endpoint.Address
-
-            let privilegedPortFault =
-                match endpoint with
-                | None -> false
-                | Some endpoint ->
-                    endpoint.Port > 0us
-                    && endpoint.Port < EmulatedKernel.privilegedPortCeiling
-                    && state.Kernel.UserId <> 0u
-
-            let conflictsWith (binding : SocketBinding) : bool =
-                state.Kernel.Sockets
-                |> Map.exists (fun otherId (other : SocketDescription) ->
-                    if otherId = socketId then
-                        false
-                    else
-
-                    match other.Binding with
-                    | None -> false
-                    | Some existing ->
-                        // Separate port namespaces per transport, measured: a UDP
-                        // socket takes a port a listening TCP socket holds.
-                        other.Kind = socket.Kind
-                        && SimulatedUnixPlatform.bindConflict
-                            platform
-                            existing
-                            other.ReuseAddress
-                            other.Phase
-                            binding
-                            socket.ReuseAddress
-                )
-
-            let addressInUseFault =
-                match candidate with
-                // A bind of port 0 asks for a free port rather than a particular
-                // one, so it cannot collide; the allocator's own search is what
-                // avoids one.
-                | Some binding when binding.Endpoint.Port > 0us -> conflictsWith binding
-                | _ -> false
-
-            let faults =
-                [
-                    BindFault.Length, lengthFault
-                    BindFault.Family, familyFault
-                    BindFault.AddressNotLocal, addressNotLocalFault
-                    BindFault.PrivilegedPort, privilegedPortFault
-                    BindFault.AlreadyBound, socket.Binding.IsSome
-                    BindFault.AddressInUse, addressInUseFault
-                ]
-                |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
-                |> Set.ofList
-
-            // Every fault below comes from `bind(2)` itself rather than from one
-            // of the wrapper's own screens, so each leaves the platform errno
-            // behind for a `SetLastError=true` caller to read. Measured: errno is
-            // 99 on Linux and 49 on Darwin after a bind that answered
-            // EADDRNOTAVAIL. The null-blob and negative-length screens above are
-            // the wrapper's and set nothing, which is why they return earlier.
-            // A broadcast or multicast address is refused rather than answered,
-            // and refused *here* rather than above: a fault this platform ranks
-            // ahead of the address is one PawPrint does know the answer to, and
-            // reporting it is better than refusing. Only when the address itself
-            // is what the platform would rule on does the gap bite — which is
-            // why `bindAddressFaults`, and not `isBindableAddress`, is what puts
-            // such an address in the fault set: it has to arrive here even when
-            // the configured local addresses would have made it bindable.
-            match SimulatedUnixPlatform.firstBindFault platform faults, endpoint with
-            | Some BindFault.AddressNotLocal, Some endpoint when
-                SimulatedUnixPlatform.isBroadcastOrMulticast endpoint.Address
-                ->
-                failwith
-                    $"%s{operation}: fd %d{fd} asked to bind %s{InternetEndpoint.toString endpoint}, a broadcast or multicast address. PawPrint does not model multicast — there is no group membership and no interface to receive on — and the real rule is not one rule: measured, Linux takes such an address on a stream socket, Darwin answers EAFNOSUPPORT there, and Darwin's answer depends on the socket's kind besides. Model multicast before letting a guest bind one."
-            | fault, _ ->
-
-            match fault with
-            | Some fault ->
-                let error =
-                    match fault with
-                    // `RejectedBeforeCopy` never reaches the fault order: it is
-                    // answered above, before anything is read.
-                    | BindFault.Length -> UnixError.EINVAL
-                    | BindFault.AlreadyBound -> UnixError.EINVAL
-                    | BindFault.Family -> UnixError.EAFNOSUPPORT
-                    | BindFault.AddressNotLocal -> UnixError.EADDRNOTAVAIL
-                    | BindFault.PrivilegedPort -> UnixError.EACCES
-                    | BindFault.AddressInUse -> UnixError.EADDRINUSE
-
-                failFromSyscall error state
-            | None ->
-
-            let binding =
-                match candidate with
-                | Some binding -> binding
-                | None ->
+                | (SockaddrCopyFields.Family | SockaddrCopyFields.FamilyAndEndpoint), None ->
                     failwith
-                        $"%s{operation}: no fault was reported for fd %d{fd} and yet the blob was too short to read an address from (declared length %d{declaredLength}). The length fault should have fired; this is an interpreter bug."
+                        $"%s{operation}: the library asked for %O{fields} out of a copy of %d{length} bytes, which cannot be zero. This is an interpreter bug."
 
-            let bound, kernel =
-                if binding.Endpoint.Port > 0us then
-                    binding, state.Kernel
-                else
-                    let acceptable (port : uint16) : bool =
-                        not (
-                            conflictsWith
-                                { binding with
-                                    Endpoint =
-                                        { binding.Endpoint with
-                                            Port = port
-                                        }
-                                }
-                        )
+            match
+                UnixSystem.bind
+                    fd
+                    (BufferPointer.toUserBuffer addressArgument)
+                    declaredLength
+                    // `setsockopt(SO_REUSEADDR)` runs inside the shim before
+                    // `bind(2)`, and no failure of the bind undoes it.
+                    (SocketArgumentsPal.isTcpProtocolType palProtocolType)
+                    family
+                    endpoint
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error refusal -> refuse refusal
+            | Ok (answer, unix) ->
 
-                    match UnixMachineState.allocateEphemeralPort acceptable state.Kernel.Machine with
-                    | Some (port, machine) ->
-                        { binding with
-                            Endpoint =
-                                { binding.Endpoint with
-                                    Port = port
-                                }
-                        },
-                        { state.Kernel with
-                            Machine = machine
-                        }
-                    | None ->
-                        let low, high = state.Kernel.EphemeralPortRange
+            let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
-                        failwith
-                            $"%s{operation}: every port in the ephemeral range %d{low}-%d{high} is already taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE here, but that has not been measured under this shim, and inventing it would be a guess. Widen KernelConfig.EphemeralPortRange, or measure the real answer."
-
-            // From `kernel` rather than `state.Kernel`: the ephemeral allocator
-            // advanced the cursor, and that advance is part of this bind.
-            state.MapKernel (fun _ ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            Sockets =
-                                Map.add
-                                    socketId
-                                    { socket with
-                                        Binding = Some bound
-                                    }
-                                    kernel.Sockets
-                        }
-                }
-            )
-            |> complete UnixErrorPal.palSuccess
+            match answer with
+            | BindAnswer.Failed error -> failFromSyscall error state
+            | BindAnswer.Bound _ -> complete UnixErrorPal.palSuccess state
         // `int32_t SystemNative_Listen(intptr_t socket, int32_t backlog)`
         // (pal_networking.c:1892). No screens of its own: it is `listen(2)`.
         | Some "SystemNative_Listen",
