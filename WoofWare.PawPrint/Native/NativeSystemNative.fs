@@ -4538,10 +4538,10 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
 
-            let refuse (refusal : ConnectRefusal) : NativeHandlerResult option =
+            let refuse (refusal : SockaddrCopyRefusal) : NativeHandlerResult option =
                 match refusal with
-                | ConnectRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage addressArgument refusal)
-                | ConnectRefusal.UnmodelledDomain (_, domain) ->
+                | SockaddrCopyRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage addressArgument refusal)
+                | SockaddrCopyRefusal.UnmodelledDomain (_, domain) ->
                     // The library says why no kernel answer exists; PawPrint says
                     // how a guest could be holding such a socket, which is a fact
                     // about CoreLib rather than about any kernel.
@@ -4554,7 +4554,7 @@ module NativeSystemNative =
                             failwith
                                 $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
-                    failwith $"%s{operation}: fd %d{fd}: %s{ConnectRefusal.describe refusal} %s{reachedBy}"
+                    failwith $"%s{operation}: fd %d{fd}: %s{SockaddrCopyRefusal.describe refusal} %s{reachedBy}"
 
             let answer (outcome : ConnectOutcome) (state : IlMachineState) : NativeHandlerResult option =
                 match outcome with
@@ -4567,18 +4567,20 @@ module NativeSystemNative =
             // takes no bytes never touches it, so a pointer PawPrint cannot
             // dereference is only a problem when bytes actually move.
             match
-                UnixSystem.admitConnect
+                UnixSystem.admitSockaddrCopy
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
                     (EmulatedKernel.unix state.Kernel)
             with
             | Error refusal -> refuse refusal
-            | Ok (ConnectAdmission.Answered outcome) ->
+            | Ok (SockaddrCopyAdmission.Answered error) ->
                 // Every admission answer precedes the ladder, so none of them
-                // changed anything: the system is the one we passed in.
-                answer outcome state
-            | Ok (ConnectAdmission.Transfer (length, fields)) ->
+                // changed anything: the system is the one we passed in. They are
+                // all failures, which is why the shared admission carries an
+                // errno rather than an outcome.
+                failFromSyscall error state
+            | Ok (SockaddrCopyAdmission.Transfer (length, fields)) ->
 
             let blob =
                 if length = 0 then
@@ -4623,10 +4625,10 @@ module NativeSystemNative =
 
             let family, destination =
                 match fields, blob with
-                | ConnectFields.Nothing, _ -> None, None
-                | ConnectFields.Family, Some blob -> Some (readFamily blob), None
-                | ConnectFields.FamilyAndEndpoint, Some blob -> Some (readFamily blob), Some (readEndpoint blob)
-                | (ConnectFields.Family | ConnectFields.FamilyAndEndpoint), None ->
+                | SockaddrCopyFields.Nothing, _ -> None, None
+                | SockaddrCopyFields.Family, Some blob -> Some (readFamily blob), None
+                | SockaddrCopyFields.FamilyAndEndpoint, Some blob -> Some (readFamily blob), Some (readEndpoint blob)
+                | (SockaddrCopyFields.Family | SockaddrCopyFields.FamilyAndEndpoint), None ->
                     failwith
                         $"%s{operation}: the library asked for %O{fields} out of a copy of %d{length} bytes, which cannot be zero. This is an interpreter bug."
 

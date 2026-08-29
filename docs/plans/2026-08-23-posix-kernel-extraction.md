@@ -4516,3 +4516,51 @@ probably want to travel together), `socket`, the two non-blocking `fcntl`s, and 
 fixture relocation — 3893 lines across `TestEmulatedKernelSockets`, `TestSocketEventDelivery`
 and `SocketFuzz` that test library behaviour from the client's suite, which is the 9g
 failure mode at scale.
+
+### Stage 12: the sockaddr copy-in admission is `bind`'s as well as `connect`'s
+
+**Dependencies**: 9l, which built the admission; 11, only for the branch order.
+
+Preparation for `bind`'s move, and separated from it so that `bind`'s diff is a move
+rather than a move plus a refactor. No behaviour changes.
+
+Reading `SystemNative_Bind`'s 379 lines against `UnixSystem.admitConnect` shows the same
+screens in the same order: the descriptor to `EBADF`, the target to `ENOTSOCK`, the
+domain to a refusal, `bindAddressLength` to its outright rejection, then the per-flavour
+question of whether the kernel touches the buffer at all, then which fields the copy
+contains. That is not a resemblance to be exploited; it is a measurement already recorded
+in this library, which is why `SimulatedUnixPlatform.bindAddressLength` is named for
+`bind` and called by `connect`.
+
+So the admission is renamed for what it is rather than for its first caller:
+`admitConnect` → `admitSockaddrCopy`, and `ConnectFields`, `ConnectAdmission` and
+`ConnectRefusal` → `SockaddrCopyFields`, `SockaddrCopyAdmission` and
+`SockaddrCopyRefusal`. `UnixSystem.connect` keeps its name and its signature apart from
+the refusal type.
+
+One simplification falls out. `ConnectAdmission.Answered` carried a `ConnectOutcome`,
+which can be `Completed` — but every screen preceding the copy can only *refuse*, and no
+arm ever built a `Completed`. The shared case carries a `UnixError`, so the type no
+longer admits a value the function cannot produce, and `connect` does the one-line lift
+into its own outcome.
+
+**What `bind` will still need separately**: the length *verdict*, which it uses twice —
+once for the outright rejection the admission already answers, and once as a member of
+its fault set. It asks `bindAddressLength` again rather than the admission carrying a
+third component; that is two callers of one pure function rather than a rule stated
+twice.
+
+**Correctness oracle**: the suites unchanged. This is a rename plus one type
+simplification the compiler checks end to end, so the evidence is that 813 library tests,
+3257 PawPrint tests and 1033 guests all pass with no edit beyond the renames — and, in
+`TestConnect.fs`, unwrapping five `Answered (ConnectOutcome.Failed e)` patterns into
+`Answered e`.
+
+**A prose pass, as every one of these needs.** The shared types' docstrings all described
+`connect` — "for a `connect(2)` whose sockaddr the kernel is about to copy in", "there is
+no destination to connect to" — which the rename made false rather than merely narrow.
+They now say what they are shared by, and where the sharing is measured.
+
+**What is left after 12**: `bind`, then `listen` (which needs the bind-conflict relation
+`bind`'s move will have taken across), `socket`, the two non-blocking `fcntl`s, and the
+fixture relocation.
