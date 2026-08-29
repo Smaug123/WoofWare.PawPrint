@@ -960,6 +960,79 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
 
+    /// One pathname argument, as far as `getname()` takes it: the pointer, the
+    /// `PATH_MAX`-bounded scan and the byte-to-`UnixPath` parse, with an
+    /// unreadable pointer reported as EFAULT rather than crashing.
+    ///
+    /// Returns a `PathArgument` rather than an errno, so that a syscall taking
+    /// *two* pathnames can decide where each argument's failure surfaces —
+    /// which for `rename` is a per-flavour question. See `RenameWalkOrder`.
+    let private pathArgument
+        (ctx : NativeCallContext)
+        (operation : string)
+        (parameter : string)
+        (argument : CliType)
+        (state : IlMachineState)
+        : PathArgument
+        =
+        match
+            bufferPointerArgument operation parameter argument
+            |> BufferPointer.dereferenceable
+        with
+        | None -> PathArgument.Failed UnixError.EFAULT
+        | Some pointer ->
+
+        let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+        let bytes =
+            NativeCall.readNullTerminatedBytesWithin
+                operation
+                ctx.BaseClassTypes
+                state
+                pointer
+                (PathLimits.pathMaxBytes limits)
+
+        match parseGuestPathBytes operation limits bytes with
+        | Error error -> PathArgument.Failed error
+        | Ok path -> PathArgument.Parsed path
+
+    /// The shape of a syscall taking *two* pathnames: decode both out of guest
+    /// memory without deciding anything about the failures, hand both to the
+    /// kernel, and turn the answer into the zero or the -1-with-errno the C
+    /// returns.
+    ///
+    /// Unlike `pathSyscall`, the arguments are not screened here: with two
+    /// pathnames, *when* each is copied in is guest-visible and the two kernels
+    /// disagree, so the ordering belongs to the syscall rather than to this
+    /// boundary.
+    let private twoPathSyscall
+        (ctx : NativeCallContext)
+        (operation : string)
+        (call :
+            PathArgument
+                -> PathArgument
+                -> UnixSystem<ThreadId, SignalHandler>
+                -> SyscallAnswer * UnixSystem<ThreadId, SignalHandler>)
+        (state : IlMachineState)
+        : NativeHandlerResult option
+        =
+        let first = pathArgument ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
+
+        let second =
+            pathArgument ctx operation "newPath" ctx.Instruction.Arguments.[1] state
+
+        match call first second (EmulatedKernel.unix state.Kernel) with
+        | SyscallAnswer.Failed error, system ->
+            withErrno ctx error system state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+        | SyscallAnswer.Completed _, system ->
+            withAnswered system state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
+
     /// Shared body of `SystemNative_Stat` and `SystemNative_LStat`, which
     /// differ only in whether a symbolic link in the final position is
     /// followed.
@@ -2514,6 +2587,16 @@ module NativeSystemNative =
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             pathSyscall ctx "SystemNative_RmDir" UnixSystem.rmdir state
+        // `int32_t SystemNative_Rename(const char* oldPath, const char* newPath)`
+        // (pal_io.c): `rename(2)` and nothing else -- not even an EINTR retry,
+        // which `rename` cannot return. CoreLib declares both a UTF-8 `string`
+        // overload and a `ref byte` one; the `ReadOnlySpan<char>` wrapper every
+        // BCL caller reaches goes through the latter, so what arrives here is a
+        // pair of NUL-terminated byte pointers.
+        | Some "SystemNative_Rename",
+          [ ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            twoPathSyscall ctx "SystemNative_Rename" UnixSystem.rename state
         // `DIR* SystemNative_OpenDir(const char* path)` (pal_io.c:532), an
         // EINTR-retrying `opendir(3)` and nothing else. NULL with errno set on
         // failure; the handle is opaque to the guest, which only passes it back

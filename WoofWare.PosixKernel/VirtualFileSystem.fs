@@ -1187,9 +1187,21 @@ type PausedResolution =
 type PathArgument =
     | Parsed of path : UnixPath
     /// The entry point returns its failure sentinel, and the caller stores
-    /// `error` wherever its libc keeps errno. Only ever `ENAMETOOLONG`: a
-    /// pathname's *bytes* have no other way to be wrong, everything else being
-    /// a question about what they resolve to.
+    /// `error` wherever its libc keeps errno.
+    ///
+    /// This is what `getname()` reports, so it is `ENAMETOOLONG` — the only way
+    /// a pathname's *bytes* can be wrong, everything else being a question about
+    /// what they resolve to — or `EFAULT`, when the caller could not read the
+    /// bytes at all. `PathArgument.parse` produces only the former, having been
+    /// handed bytes already; a caller reading them out of a guest's memory
+    /// produces the latter itself.
+    ///
+    /// Which one it is never changes where the failure surfaces. Measured on
+    /// both kernels: with a source that does not exist, an unreadable
+    /// destination pointer and an over-long destination path are reported at the
+    /// same point in `rename(2)` — above the source's resolution on Linux, below
+    /// it on Darwin — so a caller orders "the argument was copied in" as one
+    /// step. See `RenameWalkOrder`.
     | Failed of error : UnixError
 
 /// Why this kernel cannot say what a path argument names.

@@ -148,3 +148,43 @@ destination — which is `do_renameat2`'s shape. Darwin's are consistent with
 resolving the source completely and then the destination. That divergence is
 deliberately not modelled yet: it needs `VirtualFileSystem.resolveFull` split
 into a parent walk and a final lookup, which every other syscall shares.
+
+## `walk-order.py` — the order the two paths are settled in
+
+`rename.py` above measures what a rename owes once both paths have resolved.
+`walk-order.py` measures the order the resolving happens in, which is a
+separate divergence: it is invisible to any row where the two paths earn the
+same errno, so every row it asks is built from a pair that *disagrees*.
+
+| file | envelope |
+| --- | --- |
+| `measured-walk-order-darwin.txt` | macOS 25.6 / APFS, uid 501 |
+| `measured-walk-order-linux.txt` | Linux 6.18 arm64 / ext4, uid 1000 |
+
+What the columns say, and what each is load-bearing for:
+
+* **Both pathnames are copied in before either is walked, on Linux only.** With
+  a source that does not exist, an over-`PATH_MAX` destination is ENAMETOOLONG
+  on Linux and ENOENT on Darwin. The *mid-length* row is what makes this
+  conclusive rather than suggestive: 2000 bytes is over Darwin's `PATH_MAX` of
+  1024 and under Linux's 4096, and Darwin answers ENOENT for it too — so Darwin
+  is not copying the destination in early and finding it short enough, it is
+  not copying it in at all yet. Each platform probed at its own scale.
+* **EFAULT and ENAMETOOLONG surface together**, so one "the argument was copied
+  in" step models both. That is `getname()`, and it is why `PathArgument.Failed`
+  carries either.
+* **Everything about the source's final component loses to the destination's
+  parent, on Linux.** A free name, "/", ".", "..", a trailing separator and a
+  300-byte name all answer the destination's ENOTDIR. The 300-byte row is the
+  one that pins where `resolveParent` stops: the final component's length is
+  measured in the *finals* phase, so a walk that checked it while resolving the
+  parent would answer ENAMETOOLONG here.
+* **The source's parent walk does beat the destination**, on both:
+  `rename("nodir/kid", "f/x")` is ENOENT and `rename("nosearch/kid", "f/x")` is
+  EACCES, where the destination alone would answer ENOTDIR.
+* **Darwin settles exactly two source-side refusals early**: a free final name
+  (ENOENT) and the filesystem root named as the whole path (EISDIR). Reaching
+  the root *by navigation* is not the same thing — "/.", "/..", "/dev/..", ".",
+  ".." and "dir/.." all answer the destination's ENOTDIR — so what is early is
+  `FinalNavigation.Root`, the one case that consumed no component at all. This
+  is `RenameRules.sourceScreen`.

@@ -1,0 +1,42 @@
+# Linux 6.18.5 aarch64, uid 1000
+
+## when is each pathname copied in
+# getname()/copyinstr on the destination, against a source that does not exist
+control: both absent, short        rename(b'nope', b'alsonope') -> rc=-1 errno=ENOENT
+control: over-long source          rename(b'zzzzzzzzzzzz..(5000)', b'alsonope') -> rc=-1 errno=ENAMETOOLONG
+absent source, over-long dest      rename(b'nope', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=ENAMETOOLONG
+absent source, mid-length dest     rename(b'nope', b'zzzzzzzzzzzz..(2000)') -> rc=-1 errno=ENOENT
+existing source, over-long dest    rename(b'f', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=ENAMETOOLONG
+
+## and the same question for EFAULT
+# an unreadable pathname pointer, which getname() reports the same way it reports length
+control: bogus source              rename(<unmapped>, b'alsonope') -> rc=-1 errno=EFAULT
+absent source, bogus dest          rename(b'nope', <unmapped>) -> rc=-1 errno=EFAULT
+over-long source, bogus dest       rename(b'zzzzzzzzzzzz..(5000)', <unmapped>) -> rc=-1 errno=ENAMETOOLONG
+existing source, bogus dest        rename(b'f', <unmapped>) -> rc=-1 errno=EFAULT
+
+## how much of the source is settled first
+# destination is always b'f/x', which answers ENOTDIR on its own
+free name                          rename(b'nope', b'f/x') -> rc=-1 errno=ENOTDIR
+regular file (control)             rename(b'f', b'f/x') -> rc=-1 errno=ENOTDIR
+a directory                        rename(b'dir', b'f/x') -> rc=-1 errno=ENOTDIR
+a directory, trailing sep          rename(b'dir/', b'f/x') -> rc=-1 errno=ENOTDIR
+symlink to a directory             rename(b'ld', b'f/x') -> rc=-1 errno=ENOTDIR
+symlink to a file                  rename(b'lf', b'f/x') -> rc=-1 errno=ENOTDIR
+dangling symlink                   rename(b'dangling', b'f/x') -> rc=-1 errno=ENOTDIR
+300-byte final component           rename(b'zzzzzzzzzzzz..(300)', b'f/x') -> rc=-1 errno=ENOTDIR
+under an unsearchable parent       rename(b'nosearch/kid', b'f/x') -> rc=-1 errno=EACCES
+parent absent                      rename(b'nodir/kid', b'f/x') -> rc=-1 errno=ENOENT
+parent is a regular file           rename(b'f/kid', b'f/x') -> rc=-1 errno=ENOTDIR
+
+## which navigation the source settles first
+# destination is always b'f/x'; only the bare root is early
+the root                           rename(b'/', b'f/x') -> rc=-1 errno=ENOTDIR
+the root as /.                     rename(b'/.', b'f/x') -> rc=-1 errno=ENOTDIR
+the root as /..                    rename(b'/..', b'f/x') -> rc=-1 errno=ENOTDIR
+the root as /dev/..                rename(b'/dev/..', b'f/x') -> rc=-1 errno=ENOTDIR
+. here                             rename(b'.', b'f/x') -> rc=-1 errno=ENOTDIR
+.. here                            rename(b'..', b'f/x') -> rc=-1 errno=ENOTDIR
+dir/.                              rename(b'dir/.', b'f/x') -> rc=-1 errno=ENOTDIR
+dir/..                             rename(b'dir/..', b'f/x') -> rc=-1 errno=ENOTDIR
+dir/sub/..                         rename(b'dir/sub/..', b'f/x') -> rc=-1 errno=ENOTDIR

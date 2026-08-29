@@ -1611,9 +1611,44 @@ module RmDirRules =
         | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
         | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege resolution vfs
 
+/// The order in which `rename(2)` resolves its two paths, which is
+/// guest-visible because the two kernels answer different errnos when both
+/// paths are bad.
+///
+/// Measured with pairs that *disagree* — a pair answering one errno either way
+/// proves nothing. `rename(absent, "regularfile/x")` is ENOTDIR on Linux and
+/// ENOENT on Darwin; `rename("<300 bytes>", "nodir/x")` is ENOENT on Linux and
+/// ENAMETOOLONG on Darwin.
+///
+/// Not derivable from `RenameRules.TrailingSeparator`, and not something the
+/// verdict could express: it decides which resolutions are *performed at all*,
+/// before there are two `Resolution`s to judge.
+[<RequireQualifiedAccess>]
+type RenameWalkOrder =
+    /// Both pathnames copied in, then both parents, then both final lookups:
+    /// the shape of Linux's `do_renameat2`, which calls `getname` twice and
+    /// then `filename_parentat` twice before either final component is looked
+    /// up. Every refusal either path earns after that is the verdict's, judged
+    /// against both.
+    ///
+    /// The source's parent is resolved before the destination's, which
+    /// `rename("nodir/kid", "f/x")` pins: it is ENOENT, where the destination's
+    /// parent alone would answer ENOTDIR.
+    ///
+    /// Everything about the source's *final component* loses to the
+    /// destination's parent — measured across a free name, "/", ".", "..", a
+    /// trailing separator and a 300-byte name, all of which answer the
+    /// destination's ENOTDIR.
+    | ParentsThenFinals
+    /// The source finished before the destination is looked at at all — its
+    /// pathname included, and including the two refusals Darwin's source-side
+    /// `namei` makes for itself under rename semantics. See
+    /// `RenameRules.sourceScreen`.
+    | SourceThenDestination
+
 /// Everything a kernel does differently when `rename(2)` moves a name.
 ///
-/// One field, and the rest of the divergence — the *order* of the refusals and
+/// Two fields, and the rest of the divergence — the *order* of the refusals and
 /// the errno vocabulary — lives in `RenameRules.linuxVerdict` and
 /// `RenameRules.darwinVerdict`, for the reason `UnlinkRules.verdict` gives.
 /// `rename` diverges more than any operation before it: the two flavours
@@ -1641,6 +1676,9 @@ type RenameRules =
         /// `rename("src", "s/")` replaces *real* on Darwin and is ENOTDIR on
         /// Linux.
         TrailingSeparator : TrailingSeparatorPolicy
+        /// Which path is resolved first, and how far, before the other is
+        /// looked at. See `RenameWalkOrder`.
+        WalkOrder : RenameWalkOrder
     }
 
 /// What `rename(2)` should do next, once both of its paths have been resolved.
@@ -1719,6 +1757,42 @@ module private RenameChecks =
 
 [<RequireQualifiedAccess>]
 module RenameRules =
+    /// What the source earns *before* the destination is walked at all, under
+    /// this walk order — `None` when it earns nothing yet and the verdict will
+    /// judge it against both paths.
+    ///
+    /// Only Darwin has anything here, because only Darwin resolves the source
+    /// to completion first, and what it refuses is exactly what a `namei` under
+    /// rename semantics refuses: a final name that is not there, and the
+    /// filesystem root named as the whole path.
+    ///
+    /// Measured against a destination whose parent is a regular file, so the
+    /// destination alone answers ENOTDIR and anything else is a source-side
+    /// refusal that ran first. On Darwin `rename("nope", "f/x")` is ENOENT and
+    /// `rename("/", "f/x")` is EISDIR, while a directory, a symbolic link, a
+    /// dangling link, a trailing separator, ".", "..", "/.", "/.." and
+    /// "/dev/.." all answer ENOTDIR — so it is the *navigation* rather than the
+    /// inode that is early, `FinalNavigation.Root` being the one case that
+    /// consumed no component at all. On Linux every one of those rows, the two
+    /// above included, answers ENOTDIR. See `docs/probes/rename/walk-order.py`.
+    ///
+    /// These two arms are also `RenameRules.darwinVerdict`'s, which is not
+    /// duplication to remove: the verdict must still answer them when it is
+    /// handed two resolutions, and this says *when* Darwin gets to ask. Under
+    /// `SourceThenDestination` the verdict's copies are simply reached with the
+    /// question already settled.
+    let sourceScreen (order : RenameWalkOrder) (source : Resolution) : UnixError option =
+        match order with
+        | RenameWalkOrder.ParentsThenFinals -> None
+        | RenameWalkOrder.SourceThenDestination ->
+
+        match source.Target with
+        | ResolvedTarget.Entry (_, _, None) -> Some UnixError.ENOENT
+        | ResolvedTarget.Entry (_, _, Some _) -> None
+        | ResolvedTarget.Directory (_, FinalNavigation.Root) -> Some UnixError.EISDIR
+        | ResolvedTarget.Directory (_, FinalNavigation.Current)
+        | ResolvedTarget.Directory (_, FinalNavigation.Parent) -> None
+
     /// Linux's `rename(2)`, transcribed from the measured ordering. Each arm
     /// beats the ones below it, and each bullet is a measured row:
     ///
@@ -2413,18 +2487,20 @@ module SimulatedUnixPlatform =
             }
 
     /// Everything this platform's `rename(2)` does differently. See
-    /// `RenameRules`, whose one field this picks; the ordering half of the
-    /// divergence — which is most of it — is in `RenameRules.verdict`, which
+    /// `RenameRules`, whose two fields this picks; the ordering of the refusals
+    /// — which is most of the divergence — is in `RenameRules.verdict`, which
     /// takes the flavour directly.
     let renameRules (platform : SimulatedUnixPlatform) : RenameRules =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
             {
                 TrailingSeparator = TrailingSeparatorPolicy.Ignore
+                WalkOrder = RenameWalkOrder.ParentsThenFinals
             }
         | SimulatedUnixFlavour.Darwin ->
             {
                 TrailingSeparator = TrailingSeparatorPolicy.Demand
+                WalkOrder = RenameWalkOrder.SourceThenDestination
             }
 
     /// Whether this platform's kernel screens a read or write buffer before it

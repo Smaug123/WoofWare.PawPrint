@@ -2511,6 +2511,28 @@ module UnixSystem =
             path
             system.Machine.FileSystem
 
+    /// `resolvePathFull`, stopped at the directory holding the final name.
+    ///
+    /// Only `rename` wants this, and only under Linux's walk order: it resolves
+    /// *both* paths' parents before it looks either final component up, which
+    /// no pair of `resolvePathFull` calls can express. Finish one with
+    /// `VirtualFileSystem.completeResolution`.
+    let resolvePathParent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (policy : SymlinkPolicy)
+        (trailingSeparatorPolicy : TrailingSeparatorPolicy)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PausedResolution, UnixError>
+        =
+        VirtualFileSystem.resolveParent
+            (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
+            (UnixProcessState.callerPrivilege system.Process)
+            system.Process.CurrentDirectoryInode
+            policy
+            trailingSeparatorPolicy
+            path
+            system.Machine.FileSystem
+
     /// The inode a path names, or the errno the lookup owes the caller — what
     /// every non-creating caller wants.
     ///
@@ -6264,6 +6286,167 @@ module UnixSystem =
                         FileSystem = filesystem
                     }
             }
+
+    /// `rename(2)`: move the name `source` names to `destination`, displacing
+    /// whatever `destination` already named.
+    ///
+    /// Takes the *arguments* rather than two paths, unlike `mkdir`, `unlink` and
+    /// `rmdir`, because with two pathnames the point at which each is copied in
+    /// becomes guest-visible and the two kernels disagree about it. A caller
+    /// that had already turned an over-long argument into an errno would have
+    /// made that choice on this function's behalf, and would have made it wrong
+    /// for one of the two flavours. See `RenameWalkOrder`.
+    ///
+    /// Never refused: every outcome is a success or an errno.
+    let rename<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (source : PathArgument)
+        (destination : PathArgument)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        let rules = SimulatedUnixPlatform.renameRules system.Machine.UnixPlatform
+
+        /// `getname()`: what the kernel learned when it copied one pathname in,
+        /// before anything looked at what it says.
+        let copiedIn (argument : PathArgument) : Result<UnixPath, UnixError> =
+            match argument with
+            | PathArgument.Parsed path -> Ok path
+            | PathArgument.Failed error -> Error error
+
+        // `NoFollowFinal` for both paths on both flavours — `rename` moves the
+        // name it was given, never what that name points at. The trailing
+        // separator is the only thing that reaches past a final symlink, and
+        // only on Darwin; see `RenameRules.TrailingSeparator`.
+        let resolveFully (path : UnixPath) : Result<Resolution, UnixError> =
+            resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
+
+        let resolveParent (path : UnixPath) : Result<PausedResolution, UnixError> =
+            resolvePathParent SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
+
+        /// Linux: both pathnames copied in, then both parents, then both final
+        /// lookups. `do_renameat2` calls `getname` twice and then
+        /// `filename_parentat` twice, before either final component is looked
+        /// up.
+        let parentsThenFinals () : Result<Resolution * Resolution, UnixError> =
+            match copiedIn source with
+            | Error error -> Error error
+            | Ok sourcePath ->
+
+            match copiedIn destination with
+            | Error error -> Error error
+            | Ok destinationPath ->
+
+            match resolveParent sourcePath with
+            | Error error -> Error error
+            | Ok sourceParent ->
+
+            match resolveParent destinationPath with
+            | Error error -> Error error
+            | Ok destinationParent ->
+
+            match VirtualFileSystem.completeResolution sourceParent with
+            | Error error -> Error error
+            | Ok sourceResolution ->
+
+            VirtualFileSystem.completeResolution destinationParent
+            |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
+
+        /// Darwin: the source finished before the destination is looked at at
+        /// all — its pathname included, which is what makes an unreadable or
+        /// over-long destination lose to the source's ENOENT here and win on
+        /// Linux.
+        let sourceThenDestination () : Result<Resolution * Resolution, UnixError> =
+            match copiedIn source with
+            | Error error -> Error error
+            | Ok sourcePath ->
+
+            match resolveFully sourcePath with
+            | Error error -> Error error
+            | Ok sourceResolution ->
+
+            // Darwin's source-side `namei` runs under rename semantics, so two
+            // of the refusals the verdict would otherwise make are settled here
+            // — before the destination's pathname has even been copied in.
+            match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
+            | Some error -> Error error
+            | None ->
+
+            match copiedIn destination with
+            | Error error -> Error error
+            | Ok destinationPath ->
+
+            resolveFully destinationPath
+            |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
+
+        // Which failure wins when both paths are bad. Neither order is the
+        // other plus a choice of errno: one `Result` cannot say which phase it
+        // failed in, which is why this dispatches on the order rather than on
+        // the answer.
+        let resolved =
+            match rules.WalkOrder with
+            | RenameWalkOrder.ParentsThenFinals -> parentsThenFinals ()
+            | RenameWalkOrder.SourceThenDestination -> sourceThenDestination ()
+
+        match resolved with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok (sourceResolution, destinationResolution) ->
+
+        match
+            RenameRules.verdict
+                (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
+                (UnixProcessState.callerPrivilege system.Process)
+                sourceResolution
+                destinationResolution
+                system.Machine.FileSystem
+        with
+        | RenameVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        // Both paths name one inode: a success that changes nothing at all, not
+        // a binding and not a timestamp. Deliberately not routed through
+        // `VirtualFileSystem.rename`, which refuses it — the graph primitive
+        // would have to invent a no-op stamp to express it.
+        | RenameVerdict.NoOp -> SyscallAnswer.Completed 0L, system
+        | RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName) ->
+
+        let now = UnixMachineState.fileTimestamp system.Machine
+
+        match
+            VirtualFileSystem.rename
+                sourceDirectory
+                sourceName
+                destinationDirectory
+                destinationName
+                now
+                system.Machine.FileSystem
+        with
+        | Error error ->
+            // `rename` refuses a directory it does not hold, a source name that
+            // directory does not bind, and the four conditions that would leave
+            // a graph no kernel could produce — the two paths naming one inode,
+            // a populated destination directory, a destination inside the
+            // source's own subtree, and an orphaned destination directory. The
+            // verdict owes an errno for every one of those, so reaching here
+            // means the verdict let something through rather than that the
+            // guest did anything unusual.
+            failwith
+                $"UnixSystem.rename: moving \"%s{FileName.toString sourceName}\" from inode %O{sourceDirectory} to \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
+        | Ok (outcome, filesystem) ->
+
+        let moved =
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+            }
+
+        // The destination name may have been the displaced inode's last, and
+        // whether the inode goes with it depends on the descriptor table, which
+        // the filesystem cannot see. When the displaced thing was a directory
+        // this also collects the ancestors its ".." was keeping alive.
+        SyscallAnswer.Completed 0L,
+        match outcome.Displaced with
+        | None -> moved
+        | Some displaced -> forgetIfUnheld displaced moved
 
     /// Answer one syscall.
     ///
