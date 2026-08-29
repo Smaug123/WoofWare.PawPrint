@@ -6351,6 +6351,16 @@ module UnixSystem =
             | Error error -> Error error
             | Ok destinationParent ->
 
+            // Source before destination, but nothing rests on it and no probe
+            // pins it: under this walk's policy pair the final lookup has
+            // exactly one failure, so the order is unobservable. `Ignore` makes
+            // `trailingActsOnFinal` false, which retires both the ENOTDIR and
+            // the EISDIR arms; `NoFollowFinal` with no trailing separator never
+            // traverses a final link, which retires ELOOP and the splice
+            // overflow. `NAME_MAX` is what is left, and it is the same errno on
+            // whichever path is asked first. A mutation swapping these two
+            // survives the suite for that reason rather than for want of a
+            // test.
             match VirtualFileSystem.completeResolution sourceParent with
             | Error error -> Error error
             | Ok sourceResolution ->
