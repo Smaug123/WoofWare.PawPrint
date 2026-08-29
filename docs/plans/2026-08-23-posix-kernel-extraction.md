@@ -4692,3 +4692,46 @@ relocation. Also noted in passing: `UnmodelledDomain` now appears as a case in f
 refusal DUs with the same shape and meaning (`accept`, `sockaddrCopy`, `listen`, and
 `bind` through the first of those). A shared case would be tidier; it is deliberately not
 done here, being churn across three shipped entry points for a naming gain.
+
+### Stage 15: the last three socket state transitions
+
+**Dependencies**: none beyond the vocabulary the stages above settled.
+
+`socket(2)`'s state transition and the two non-blocking `fcntl`s — the last of the five
+this audit found still holding kernel logic on PawPrint's side.
+
+**`socket` is mostly not a move.** Its handler is nearly all PAL: the wrapper's null
+screen, the `*createdSocket` store, `SocketArgumentsPal.socketCreation` and the three
+conversion errnos are the shim's, and stay. What moves is
+`EmulatedKernel.createSocket` — the "mint a socket and a descriptor onto it, agreeing"
+transition — as `UnixSystem.createSocket`, with an adapter left behind for the nine
+fixtures that call it.
+
+**The two `fcntl`s are almost entirely kernel logic**, once the PAL return convention
+(0, or -1-and-errno, or the odd `Error_EFAULT` enum on a null out-pointer) and the
+argument decoding are taken off. `UnixSystem.setNonBlocking` and
+`UnixSystem.isNonBlocking` carry the rest.
+
+Three things about the setter are worth having in the library rather than in a handler:
+
+* **The flag lands on the open file description**, where POSIX keeps the status flags, so
+  a `dup` sees it.
+* **A standard stream refuses to be set** — no modelled stream transfer consults the
+  flag, so storing it would keep blocking semantics silently. *Clearing* it is answered,
+  because `false` is what a stream already reads back: the refusal is about a divergence
+  that clearing does not create.
+* **An event port stores the flag whatever it answers.** Measured, the platforms agree
+  that the bit toggles and disagree on the answer — Linux succeeds where Darwin reports a
+  failure with the bit toggled anyway. That is why `SetNonBlockingAnswer.Failed` still
+  hands back a system.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestNonBlocking.fs`, 11 cases. The
+event-port split is reachable only here — a guest runs one flavour, and the managed
+surface never sets the flag on an event port at all — and so is the `dup` sharing, which
+no guest exercises through this entry point.
+
+**What is left after 15**: the fixture relocation, and nothing else from the audit.
+`TestEmulatedKernelSockets` (1903 lines), `TestSocketEventDelivery` (1088) and
+`SocketFuzz` (902) test behaviour that is now almost entirely library code, from the
+client's suite. That is the 9g failure mode at scale, and it is why every stage since 9j
+has had to write a fresh fixture rather than move one.

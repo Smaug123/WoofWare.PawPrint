@@ -1636,17 +1636,11 @@ module EmulatedKernel =
         UnixSystem.changeSocketEventRegistration portFd targetFd change (unix kernel)
         |> Result.map (fun (answer, system) -> answer, withUnix system kernel)
 
-    /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
-    /// it.
+    /// `UnixSystem.createSocket` — allocate a fresh socket and a descriptor onto
+    /// it — through this kernel rather than through its POSIX half.
     ///
-    /// One operation for both allocations, rather than a socket-table insert
-    /// beside a separate `FileDescriptorRegistry.createSocket`, because the two
-    /// must agree: the identity this mints is the identity the description
-    /// names, and splitting them would let a caller do one without the other.
-    ///
-    /// Says nothing about whether this domain/kind/protocol combination *can*
-    /// exist — `SocketArgumentsPal.socketCreation` answers that, and this is
-    /// reached only once it has said yes.
+    /// Here for the reason the adapters beside it are: nine fixtures call it
+    /// holding an `EmulatedKernel`.
     let createSocket
         (domain : SocketDomain)
         (kind : SocketKind)
@@ -1654,37 +1648,8 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : int * EmulatedKernel
         =
-        let socketId = kernel.NextSocketId
-        let (SocketId raw) = socketId
-
-        let fd, registry =
-            FileDescriptorRegistry.createSocket socketId kernel.FileDescriptors
-
-        fd,
-        { kernel with
-            Machine =
-                { kernel.Machine with
-                    Sockets =
-                        Map.add
-                            socketId
-                            {
-                                Domain = domain
-                                Kind = kind
-                                Protocol = protocol
-                                // `socket(2)` binds nothing and connects nothing.
-                                Binding = None
-                                Phase = SocketPhase.Idle
-                                ReuseAddress = false
-                            }
-                            kernel.Sockets
-                    NextSocketId = SocketId (raw + 1L)
-                }
-            Process =
-                { kernel.Process with
-                    FileDescriptors = registry
-                }
-        }
-
+        let fd, system = UnixSystem.createSocket domain kind protocol (unix kernel)
+        fd, withUnix system kernel
 
     /// The stream the `DIR*` backed by `block` names.
     ///

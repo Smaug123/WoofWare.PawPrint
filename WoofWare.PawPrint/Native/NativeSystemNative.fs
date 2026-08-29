@@ -3557,52 +3557,19 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match FileDescriptorRegistry.tryFindTarget fd state.Kernel.FileDescriptors with
-            | None ->
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF))
-                |> complete (-1)
-            | Some (OpenFileTarget.StandardStream role) when isNonBlocking ->
-                // A real pipe honours O_NONBLOCK — an empty read becomes EAGAIN
-                // — but no modelled stream transfer consults the flag, so
-                // recording it would keep blocking semantics silently. Teach
-                // the stream read/write handlers to consult it, then accept it
-                // here.
-                failwith
-                    $"%s{operation}: fd %d{fd} is the standard stream %O{role}, which PawPrint models as a pipe, and no modelled stream transfer consults O_NONBLOCK; storing it would silently keep blocking semantics. Decide what a non-blocking stream read does before accepting this."
-            | Some (OpenFileTarget.SocketEventPort _) ->
-                // Store first, report second: measured, the platforms agree that
-                // the bit toggles and disagree on the answer — Linux succeeds
-                // where Darwin reports -1/ENOTTY *with the bit toggled anyway*.
-                // See `SimulatedUnixPlatform.eventPortSetStatusFlagsError`.
-                let state =
-                    state.MapKernel (fun kernel ->
-                        { kernel with
-                            Process =
-                                { kernel.Process with
-                                    FileDescriptors =
-                                        FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
-                                }
-                        }
-                    )
+            match UnixSystem.setNonBlocking fd isNonBlocking (EmulatedKernel.unix state.Kernel) with
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{SetNonBlockingRefusal.describe refusal}"
+            | Ok (answer, unix) ->
 
-                match SimulatedUnixPlatform.eventPortSetStatusFlagsError state.Kernel.UnixPlatform with
-                | None -> complete 0 state
-                | Some error ->
-                    state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
-                    |> complete (-1)
-            | Some (OpenFileTarget.StandardStream _)
-            | Some (OpenFileTarget.File _)
-            | Some (OpenFileTarget.Socket _) ->
-                state.MapKernel (fun kernel ->
-                    { kernel with
-                        Process =
-                            { kernel.Process with
-                                FileDescriptors =
-                                    FileDescriptorRegistry.setNonBlocking fd isNonBlocking kernel.FileDescriptors
-                            }
-                    }
-                )
-                |> complete 0
+            // The system comes back on the failing arm too: on one flavour the
+            // event port's bit toggles and the call reports a failure anyway.
+            let state = state.MapKernel (EmulatedKernel.withUnix unix)
+
+            match answer with
+            | SetNonBlockingAnswer.Set -> complete 0 state
+            | SetNonBlockingAnswer.Failed error ->
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno error))
+                |> complete (-1)
         | Some "SystemNative_FcntlGetIsNonBlocking",
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
@@ -3642,12 +3609,14 @@ module NativeSystemNative =
                 BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> bytes, value)
                 writeBytesThrough ctx operation outCell (ImmutableArray.CreateRange bytes) state
 
-            match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
+            match UnixSystem.isNonBlocking fd (EmulatedKernel.unix state.Kernel) with
             | None ->
+                // The C stores 0 through the pointer before returning -1, and the
+                // only failure the modelled targets can produce is EBADF.
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EBADF))
                 |> store 0
                 |> complete (-1)
-            | Some description -> state |> store (if description.NonBlocking then 1 else 0) |> complete 0
+            | Some isNonBlocking -> state |> store (if isNonBlocking then 1 else 0) |> complete 0
         // `int32_t SystemNative_Socket(int32_t addressFamily, int32_t socketType,
         // int32_t protocolType, intptr_t* createdSocket)` (pal_networking.c:2812).
         //
@@ -3751,9 +3720,10 @@ module NativeSystemNative =
                 state |> storeCreatedSocket -1L |> completeWith (UnixErrorPal.toPal error)
             | Ok (domain, kind, protocol) ->
 
-            let fd, kernel = EmulatedKernel.createSocket domain kind protocol state.Kernel
+            let fd, unix =
+                UnixSystem.createSocket domain kind protocol (EmulatedKernel.unix state.Kernel)
 
-            state.MapKernel (fun _ -> kernel)
+            state.MapKernel (EmulatedKernel.withUnix unix)
             |> storeCreatedSocket (int64 fd)
             |> completeWith UnixErrorPal.palSuccess
         // `int32_t SystemNative_Bind(intptr_t socket, int32_t protocolType,

@@ -799,6 +799,42 @@ module ListenRefusal =
         | ListenRefusal.EphemeralPortsExhausted (low, high) ->
             $"this socket has no address, so `listen(2)` binds it, and every port in the ephemeral range %d{low}-%d{high} is taken. Widen the range, or measure what a real kernel says here."
 
+/// What a change to a descriptor's `O_NONBLOCK` answered.
+///
+/// Store and answer are separate because on one flavour they disagree: an event
+/// port's bit toggles and the call still reports a failure.
+[<RequireQualifiedAccess>]
+type SetNonBlockingAnswer =
+    /// The flag is now what the caller asked for, and the call succeeded.
+    | Set
+    /// The call failed with this errno.
+    ///
+    /// The system still comes back, and the flag may have changed with it: see
+    /// `SimulatedUnixPlatform.eventPortSetStatusFlagsError`, where the bit
+    /// toggles and the answer is a failure anyway.
+    | Failed of error : UnixError
+
+/// Why this kernel will not set a descriptor's `O_NONBLOCK`.
+[<RequireQualifiedAccess>]
+type SetNonBlockingRefusal =
+    /// The descriptor is a standard stream and the caller asked to *set* the
+    /// flag.
+    ///
+    /// A real pipe honours `O_NONBLOCK` -- an empty read becomes `EAGAIN` -- and
+    /// no modelled stream transfer consults it, so storing the flag would keep
+    /// blocking semantics silently. Clearing it is fine, and answered: `false`
+    /// is what a stream already reads back.
+    | UnmodelledOnStandardStream of role : FileDescriptorRole
+
+[<RequireQualifiedAccess>]
+module SetNonBlockingRefusal =
+    /// What this kernel knows about why it will not set the flag. The client
+    /// supplies its own half -- which entry point asked, and which descriptor.
+    let describe (refusal : SetNonBlockingRefusal) : string =
+        match refusal with
+        | SetNonBlockingRefusal.UnmodelledOnStandardStream role ->
+            $"the descriptor is the standard stream %O{role}, which this kernel models as a pipe, and no modelled stream transfer consults `O_NONBLOCK`; storing it would silently keep blocking semantics. Decide what a non-blocking stream read does before accepting this."
+
 /// What kind of object one directory entry names.
 ///
 /// Not `InodeContent`, which carries the payload as well — a caller enumerating
@@ -5092,6 +5128,114 @@ module UnixSystem =
                 SockaddrCopyFields.Nothing
 
         Ok (SockaddrCopyAdmission.Transfer (declaredLength, fields))
+
+    /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
+    /// it.
+    ///
+    /// One operation for both allocations, rather than a socket-table insert
+    /// beside a separate `FileDescriptorRegistry.createSocket`, because the two
+    /// must agree: the identity this mints is the identity the description
+    /// names, and splitting them would let a caller do one without the other.
+    ///
+    /// Says nothing about whether this domain/kind/protocol combination *can*
+    /// exist -- `SimulatedUnixPlatform.creatableSockets` answers that, and this
+    /// is reached only once it has said yes.
+    let createSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (domain : SocketDomain)
+        (kind : SocketKind)
+        (protocol : SocketProtocol)
+        (system : UnixSystem<'Task, 'Handler>)
+        : int * UnixSystem<'Task, 'Handler>
+        =
+        let socketId = system.Machine.NextSocketId
+        let (SocketId raw) = socketId
+
+        let fd, registry =
+            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+
+        let socket =
+            {
+                Domain = domain
+                Kind = kind
+                Protocol = protocol
+                Binding = None
+                ReuseAddress = false
+                Phase = SocketPhase.Idle
+            }
+
+        fd,
+        { system with
+            Machine =
+                { system.Machine with
+                    Sockets = Map.add socketId socket system.Machine.Sockets
+                    NextSocketId = SocketId (raw + 1L)
+                }
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    /// `fcntl(F_SETFL)`'s `O_NONBLOCK` half: put the flag on the open file
+    /// description `fd` names.
+    ///
+    /// The flag lands on the *description*, where POSIX keeps the status flags,
+    /// so a `dup` of the descriptor sees it too.
+    ///
+    /// Only for the targets whose every modelled operation honours it: a socket
+    /// (`accept` and `connect` consult it, and each transfer that lands must
+    /// too), a regular file (both kernels give `O_NONBLOCK` no effect there, so
+    /// an operation that never looks is right not to), and a socket event port
+    /// (whose waits block per their own timeout argument, never per this flag).
+    /// The one target whose modelled transfers would *ignore* a stored flag is
+    /// refused rather than silently diverging.
+    let setNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (isNonBlocking : bool)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SetNonBlockingAnswer * UnixSystem<'Task, 'Handler>, SetNonBlockingRefusal>
+        =
+        let stored (system : UnixSystem<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors =
+                            FileDescriptorRegistry.setNonBlocking fd isNonBlocking system.Process.FileDescriptors
+                    }
+            }
+
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | None -> Ok (SetNonBlockingAnswer.Failed UnixError.EBADF, system)
+        | Some (OpenFileTarget.StandardStream role) when isNonBlocking ->
+            Error (SetNonBlockingRefusal.UnmodelledOnStandardStream role)
+        | Some (OpenFileTarget.SocketEventPort _) ->
+            // Store first, report second: measured, the platforms agree that the
+            // bit toggles and disagree on the answer -- Linux succeeds where
+            // Darwin reports a failure *with the bit toggled anyway*.
+            let system = stored system
+
+            match SimulatedUnixPlatform.eventPortSetStatusFlagsError system.Machine.UnixPlatform with
+            | None -> Ok (SetNonBlockingAnswer.Set, system)
+            | Some error -> Ok (SetNonBlockingAnswer.Failed error, system)
+        | Some (OpenFileTarget.StandardStream _)
+        | Some (OpenFileTarget.File _)
+        | Some (OpenFileTarget.Socket _) -> Ok (SetNonBlockingAnswer.Set, stored system)
+
+    /// `fcntl(F_GETFL)`'s `O_NONBLOCK` half: whether the open file description
+    /// `fd` names carries the flag.
+    ///
+    /// `None` for a descriptor that is not live, which a caller reports as
+    /// `EBADF`. Reads for every target kind, where `setNonBlocking` refuses one:
+    /// `false` is the truth for a target the setter will not flag.
+    ///
+    /// Changes nothing: a read of a status flag is a question.
+    let isNonBlocking<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool option
+        =
+        FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors
+        |> Option.map (fun description -> description.NonBlocking)
 
     /// Whether any *other* socket's binding conflicts with `candidate`, taken on
     /// behalf of `socket`.
