@@ -6312,10 +6312,19 @@ module UnixSystem =
         | None ->
             failwith
                 $"UnixSystem.chdir: the walk resolved \"%s{UnixPath.toString path}\" to inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
-        // Reached by a symbolic link to a regular file: `Follow` lands on the
-        // file, and only then is it a type error.
-        | Some (InodeContent.RegularFile _)
-        | Some (InodeContent.Symlink _) -> SyscallAnswer.Failed UnixError.ENOTDIR, system
+        // Reached by a symbolic link to a regular file as well as by a plain
+        // one: `Follow` lands on the file, and only then is it a type error.
+        | Some (InodeContent.RegularFile _) -> SyscallAnswer.Failed UnixError.ENOTDIR, system
+        | Some (InodeContent.Symlink _) ->
+            // Unreachable, and asserted rather than answered: `Follow` traverses
+            // a final symlink, so the walk above cannot hand back a link — a
+            // chain that never terminates is ELOOP and one that ends nowhere is
+            // ENOENT, both refused before here. Answering ENOTDIR instead would
+            // be a plausible-looking reply from a walk that had stopped doing
+            // what this syscall asked of it. Found by mutation: the arm was
+            // dead, so nothing could tell the two apart.
+            failwith
+                $"UnixSystem.chdir: the walk resolved \"%s{UnixPath.toString path}\" to inode %O{target}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
         | Some (InodeContent.Directory directory) ->
 
         // The *search* bit, and not the read bit: measured on both kernels, a
