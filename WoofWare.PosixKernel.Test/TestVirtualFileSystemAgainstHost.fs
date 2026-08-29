@@ -2603,3 +2603,207 @@ module TestVirtualFileSystemAgainstHost =
                 Directory.Delete (root, true)
             with _ ->
                 ()
+
+    // ------------------------------- rename's refusals, through the syscall
+
+    /// What a rename did, at the granularity this comparison is about.
+    ///
+    /// The *successful* rows are `rename rearranges the tree exactly as this
+    /// kernel does` above, which compares whole trees and every directory's
+    /// "..". This one is about the refusals, and about one thing the tree
+    /// comparison structurally cannot see: which errno comes out when both
+    /// paths are bad. That is a property of the order the two paths are
+    /// resolved in, so it lives below `UnixSystem.rename` rather than below
+    /// `VirtualFileSystem.rename`, and no verdict test can reach it — a verdict
+    /// is handed two finished resolutions and never learns which phase failed.
+    type private RenameRefusal =
+        | Refused of errno : int
+        | Succeeded
+
+    /// A system at this host's flavour and privilege, holding `vfs`.
+    let private renameModelSystem (vfs : VirtualFileSystem) : UnixSystem<int, string> =
+        let system : UnixSystem<int, string> = UnixSystem.initial (hostPlatform ())
+
+        let userId =
+            match hostPrivilege () with
+            | CallerPrivilege.Privileged -> 0u
+            | CallerPrivilege.Unprivileged -> 1000u
+
+        { system with
+            Machine =
+                { system.Machine with
+                    FileSystem = vfs
+                }
+            Process =
+                { system.Process with
+                    CurrentDirectoryInode = VirtualFileSystem.root vfs
+                    CurrentDirectory = AbsoluteUnixPath.root
+                }
+                |> UnixProcessState.withUserAndGroupId userId userId
+        }
+
+    let private compareRenameRefusal (source : string) (destination : string) : RenameRefusal * RenameRefusal =
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-rename-refusal-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+
+            let hostSaid =
+                if rename (hostPath root source, hostPath root destination) = 0 then
+                    Succeeded
+                else
+                    Refused (errno ())
+
+            let modelSaid =
+                let bytes (path : string) =
+                    UnixPathText.utf8.GetBytes path
+                    |> ImmutableArray.CreateRange
+                    |> PathArgumentBytes.Bytes
+
+                match UnixSystem.rename (bytes source) (bytes destination) (renameModelSystem (buildModel ())) with
+                | Ok (SyscallAnswer.Completed 0L, _) -> Succeeded
+                | Ok (SyscallAnswer.Failed error, _) -> Refused (hostErrno error)
+                | other -> failwith $"the model answered %A{other}, which no row here expects"
+
+            hostSaid, modelSaid
+        finally
+            removeHostTree root
+
+    /// Sources and destinations chosen so that each *phase* of the two-path
+    /// walk can be the one that fails: the pathname copy-in, either parent
+    /// walk, either final lookup, and the verdict.
+    ///
+    /// Relative, and none of them resolves to the tree's root. That is not
+    /// squeamishness: the model's root *is* the filesystem root, where the host's
+    /// tree root is an ordinary subdirectory of a real one, so "/" and "d/.."
+    /// mean different things in the two worlds and would report a divergence
+    /// this test created rather than one it found. The navigation arms are
+    /// pinned in `TestRenameRules` and `TestUnixSystemStep`, which see the model
+    /// directly; `docs/probes/rename/rename.py`'s `mountroot` section is the
+    /// same problem measured on real filesystems.
+    let private renameRefusalOperands : string list =
+        [
+            // A free name, and the same under a parent that does not exist, is
+            // not a directory, or cannot be searched. Those three are the
+            // parent-walk failures, and they are what separates the phases.
+            "nx"
+            "nxdir/x"
+            "f/x"
+            "ns/file"
+            "cls677/kid"
+            // Ordinary objects of each kind.
+            "f"
+            "d"
+            "d/sub"
+            "ld"
+            "dang"
+            // Trailing separators, over a directory and over a file.
+            "d/"
+            "f/"
+            // Over NAME_MAX in the final position, which is checked in the
+            // *final* phase and so loses to anything either parent walk finds.
+            String.replicate 300 "z"
+            // Over PATH_MAX, which is checked when the pathname is *copied in* —
+            // the one phase every other operand here passes, and so the one this
+            // matrix could not otherwise see.
+            //
+            // Built from *short* components, and that is the whole point: a
+            // single 5000-character name is over PATH_MAX and over NAME_MAX at
+            // once, so it earns ENAMETOOLONG whichever check runs, and a kernel
+            // that had stopped enforcing PATH_MAX entirely would still pass.
+            // Measured by mutation — disabling the copy-in length check survived
+            // a matrix whose only long operand was one long component. With
+            // two-character components the two checks disagree: PATH_MAX gives
+            // ENAMETOOLONG, and a walk that got as far as looking would give
+            // ENOENT at the first component.
+            //
+            // 4501 characters rather than a length near either boundary: the
+            // host resolves this operand with the temporary root prefixed and
+            // the model resolves it bare, so only a length comfortably over
+            // *both* PATH_MAX values — Darwin's 1024 and Linux's 4096 — means
+            // the same thing on the two sides.
+            String.replicate 1500 "ab/" + "x"
+        ]
+
+    [<Test>]
+    let ``rename refuses exactly as this kernel does, whichever path is worse`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // Every ordered pair, because the point is precisely the pairs where
+        // *both* paths are bad: a pair that earns one errno either way cannot
+        // see the walk order, and picking pairs by hand is how three rounds of
+        // review each found an ordering bug the previous one had missed.
+        let mutable compared = 0
+        let mutable agreed = 0
+
+        let mismatches =
+            [
+                for source in renameRefusalOperands do
+                    for destination in renameRefusalOperands do
+                        let hostSaid, modelSaid = compareRenameRefusal source destination
+                        compared <- compared + 1
+
+                        if hostSaid = modelSaid then
+                            agreed <- agreed + 1
+                        else
+                            let describe (outcome : RenameRefusal) =
+                                match outcome with
+                                | Succeeded -> "ok"
+                                | Refused e -> $"errno %d{e}"
+
+                            yield
+                                $"rename(%s{source}, %s{destination}): this kernel said %s{describe hostSaid}, the model said %s{describe modelSaid}"
+            ]
+
+        if not (List.isEmpty mismatches) then
+            failwith (
+                $"%d{List.length mismatches} of %d{compared} rename pairs disagree with this kernel:\n"
+                + String.concat "\n" mismatches
+            )
+
+        // Not assertions about rename; assertions that this comparison is not
+        // vacuous. The loops ran, and the corpus reached a spread of outcomes
+        // rather than answering one errno everywhere — which a pair-based test
+        // can easily do, and which would make "the two agree" worth nothing.
+        compared
+        |> shouldEqual (renameRefusalOperands.Length * renameRefusalOperands.Length)
+
+        agreed |> shouldEqual compared
+
+        let observed =
+            [
+                for source in renameRefusalOperands do
+                    for destination in renameRefusalOperands do
+                        yield fst (compareRenameRefusal source destination)
+            ]
+            |> Set.ofList
+
+        // A success, and every errno the phases can produce on this host.
+        //
+        // EACCES only when this process is not root: privilege is what the
+        // narrowed directories in the corpus are refused by, and uid 0 is exempt
+        // on both sides at once — so under root the matrix still agrees
+        // everywhere and simply never reaches that errno.
+        let wanted =
+            [
+                yield "a success", Succeeded
+                yield "ENOENT", Refused (hostErrno UnixError.ENOENT)
+                yield "ENOTDIR", Refused (hostErrno UnixError.ENOTDIR)
+
+                if geteuid () <> 0u then
+                    yield "EACCES", Refused (hostErrno UnixError.EACCES)
+
+                yield "EISDIR", Refused (hostErrno UnixError.EISDIR)
+                yield "ENAMETOOLONG", Refused (hostErrno UnixError.ENAMETOOLONG)
+                yield "ENOTEMPTY", Refused (hostErrno UnixError.ENOTEMPTY)
+            ]
+
+        let missing =
+            wanted |> List.filter (snd >> observed.Contains >> not) |> List.map fst
+
+        if not (List.isEmpty missing) then
+            failwith $"""this corpus never produced: %s{String.concat ", " missing}"""
