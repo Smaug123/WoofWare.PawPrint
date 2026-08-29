@@ -2708,16 +2708,24 @@ module TestVirtualFileSystemAgainstHost =
             String.replicate 300 "z"
             // Over PATH_MAX, which is checked when the pathname is *copied in* —
             // the one phase every other operand here passes, and so the one this
-            // matrix could not otherwise see. Paired against a source whose
-            // parent walk fails, it is what tells "each pathname is copied in
-            // before its own parent walk" from "both are copied in first".
+            // matrix could not otherwise see.
             //
-            // 5000 rather than a length near either boundary: the host resolves
-            // this operand with the temporary root prefixed and the model
-            // resolves it bare, so only a length comfortably over *both*
-            // PATH_MAX values — Darwin's 1024 and Linux's 4096 — means the same
-            // thing on the two sides.
-            String.replicate 5000 "z"
+            // Built from *short* components, and that is the whole point: a
+            // single 5000-character name is over PATH_MAX and over NAME_MAX at
+            // once, so it earns ENAMETOOLONG whichever check runs, and a kernel
+            // that had stopped enforcing PATH_MAX entirely would still pass.
+            // Measured by mutation — disabling the copy-in length check survived
+            // a matrix whose only long operand was one long component. With
+            // two-character components the two checks disagree: PATH_MAX gives
+            // ENAMETOOLONG, and a walk that got as far as looking would give
+            // ENOENT at the first component.
+            //
+            // 4501 characters rather than a length near either boundary: the
+            // host resolves this operand with the temporary root prefixed and
+            // the model resolves it bare, so only a length comfortably over
+            // *both* PATH_MAX values — Darwin's 1024 and Linux's 4096 — means
+            // the same thing on the two sides.
+            String.replicate 1500 "ab/" + "x"
         ]
 
     [<Test>]
