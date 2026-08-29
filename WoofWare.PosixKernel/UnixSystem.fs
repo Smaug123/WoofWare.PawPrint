@@ -1436,6 +1436,99 @@ module WakeCondition =
         | ParkedSyscall.Flock parked -> WakeCondition.FlockGrantable (parked.Requester, parked.Mode)
         | ParkedSyscall.SocketWait wait -> WakeCondition.SocketEventDeliverable wait.Port
 
+/// A way this system's tables disagree with each other — a state no kernel
+/// could be in, and which the operations here exist to keep unreachable.
+/// `UnixSystem.checkInvariants` returns these.
+///
+/// Separate from `FileDescriptorRegistryDefect` and `VirtualFileSystemDefect`
+/// because every case here is a claim about *two* tables at once, and neither
+/// of those modules can see the other's: each is defined in a file that
+/// compiles before this one.
+[<RequireQualifiedAccess>]
+type UnixSystemDefect =
+    /// A live open file description names a socket the socket table does not
+    /// hold, so resolving that descriptor would fail.
+    | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
+    /// The socket table holds a socket no live description names.
+    ///
+    /// A leak, and deliberately a defect rather than a tolerated state: every
+    /// way to make a socket — `SystemNative_Socket`, or `SystemNative_Accept`
+    /// materialising a queued connection — hands back a descriptor at once,
+    /// so an unreferenced socket means a close forgot to clean up. A
+    /// connection awaiting accept is a `TcpConnection`, not a socket, which
+    /// is what lets this rule stay strict.
+    | UnreferencedSocket of socket : SocketId
+    /// A socket in the table has an identity at or above the next one to
+    /// allocate, so a future `socket(2)` would mint a duplicate.
+    | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
+    /// `CurrentDirectoryInode` names something the filesystem does not hold, or
+    /// holds as something other than a directory — so every relative path a
+    /// guest passes would resolve from a place that is not a directory.
+    ///
+    /// Deliberately *not* "the inode is reachable from the root": a real process
+    /// keeps its current directory alive after the last name for it has gone,
+    /// and PawPrint's held inode is what expresses that.
+    | CurrentDirectoryIsNotADirectory of inode : InodeNumber
+    /// A live open file description names an inode the filesystem does not
+    /// hold, so reading or `fstat`ing that descriptor would fail.
+    ///
+    /// The mirror image of `VirtualFileSystemDefect.UnreachableFromRoot`: that
+    /// one catches an orphan nothing holds, and this one catches an inode freed
+    /// while something still held it. Between them they bracket the reaping
+    /// rule, so a `VirtualFileSystem.forget` that fires too late is caught there
+    /// and one that fires too early is caught here.
+    | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
+    /// An open directory stream names an inode the filesystem no longer holds.
+    ///
+    /// Unreachable by construction — `UnixProcessState.heldInodes` counts a stream's inode
+    /// among the things pinning it, so `UnixSystem.forgetIfUnheld` cannot free one out from under
+    /// a stream — which is exactly why a violation is an interpreter bug rather
+    /// than something a guest did. The next `readdir` would crash the
+    /// interpreter, and this names the cause instead.
+    | DanglingDirectoryStreamInode of stream : DirectoryStreamId * inode : InodeNumber
+    /// An open directory stream names an inode that is not a directory.
+    | DirectoryStreamIsNotADirectory of stream : DirectoryStreamId * inode : InodeNumber
+    /// The stream table holds an id at or above `NextDirectoryStreamId`, so the
+    /// next `opendir` would hand out an id that is already in use.
+    | NextDirectoryStreamIdNotFresh of nextDirectoryStreamId : DirectoryStreamId * existing : DirectoryStreamId
+    /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
+    /// so `getcwd` would report a directory the process is not in.
+    ///
+    /// Only raised while the inode still *has* a path: one held open after its
+    /// last name has gone has none, and a real `getcwd` fails there rather than
+    /// answering.
+    | CurrentDirectoryPathDisagrees of stored : AbsoluteUnixPath * physical : AbsoluteUnixPath
+    /// A socket's phase references a connection the connection table does not
+    /// hold.
+    | DanglingConnection of socket : SocketId * connection : ConnectionId
+    /// A listener's accept queue references a connection the connection table
+    /// does not hold.
+    | DanglingQueuedConnection of listener : SocketId * connection : ConnectionId
+    /// The connection table holds a connection no socket phase and no accept
+    /// queue references — a leak `UnixSystem.close`'s sweep should have caught.
+    | OrphanConnection of connection : ConnectionId
+    /// One connection sits in two accept-queue slots (in one queue or two),
+    /// so accepting it twice would materialise two sockets onto one
+    /// connection.
+    | DuplicateQueuedConnection of connection : ConnectionId
+    /// A socket's phase is one its kind cannot enter: a datagram socket
+    /// listening or holding a stream connection, or a non-datagram socket
+    /// holding a datagram peer.
+    | SocketPhaseKindMismatch of socket : SocketId * kind : SocketKind * phase : SocketPhase
+    /// A connection in the table has an identity at or above the next one to
+    /// allocate, so a future connect would mint a duplicate.
+    | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
+    /// A socket event registration records an ADD ordinal at or above the
+    /// next one to mint, so some future ADD would repeat it — and the
+    /// ordinal's whole job is to order same-signal ties, which a repeat
+    /// leaves unspecified.
+    | SocketEventRegistrationOrdinalNotFresh of next : int64 * port : OpenFileDescriptionId * registeredAt : int64
+    /// Two socket event registrations record the same ADD ordinal. Ordinals
+    /// are minted from one monotonic counter, so a duplicate means two ADDs
+    /// were stamped with one mint — and a same-signal tie between the pair
+    /// would have no measured order.
+    | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
+
 [<RequireQualifiedAccess>]
 module UnixSystem =
 
@@ -1473,7 +1566,7 @@ module UnixSystem =
                 | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
                 // A file or a link records no parent, and a held inode the graph
                 // has already forgotten records nothing at all — which is a
-                // defect (`EmulatedKernelDefect.DanglingOpenInode`) rather than
+                // defect (`UnixSystemDefect.DanglingOpenInode`) rather than
                 // something to climb from.
                 | Some (InodeContent.RegularFile _)
                 | Some (InodeContent.Symlink _)
@@ -6222,3 +6315,237 @@ module UnixSystem =
         | Syscall.MkDir (path, mode) -> Ok (mkdir path mode system) |> answered
         | Syscall.Unlink path -> Ok (unlink path system) |> answered
         | Syscall.RmDir path -> Ok (rmdir path system) |> answered
+
+    /// Every way this system's tables disagree with each other: the socket table
+    /// against the descriptor table, the connection table against the sockets
+    /// that reference it, the descriptor table against the filesystem, and the
+    /// current directory against both.
+    ///
+    /// Each table's own rules are elsewhere and are not repeated here:
+    /// `FileDescriptorRegistry.checkInvariants` for the descriptor table, and
+    /// `VirtualFileSystem.checkInvariants` for the filesystem. The latter takes
+    /// a `pinned` argument, which is what `pinnedInodes` computes, so a caller
+    /// wanting the whole picture pairs this with
+    /// `VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes system) system.Machine.FileSystem`.
+    ///
+    /// A client that holds its own references into these tables owes its own
+    /// rules about them on top of these: PawPrint's `DIR*` blocks are the worked
+    /// example, and `EmulatedKernel.checkInvariants` is where they live.
+    let checkInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystemDefect list
+        =
+        let named =
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.File _ -> None
+                | OpenFileTarget.Socket socketId -> Some (id, socketId)
+            )
+
+        let dangling =
+            named
+            |> List.filter (fun (_, socketId) -> not (Map.containsKey socketId system.Machine.Sockets))
+            |> List.map UnixSystemDefect.DanglingSocket
+
+        let namedIds = named |> List.map snd |> Set.ofList
+
+        let unreferenced =
+            system.Machine.Sockets
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun socketId -> not (Set.contains socketId namedIds))
+            |> List.map UnixSystemDefect.UnreferencedSocket
+
+        // Against the table rather than against the descriptions: the table is
+        // where a socket lives, so it is the table that must stay below the
+        // counter even once a socket can outlive every descriptor of it.
+        let freshness =
+            system.Machine.Sockets
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun socketId -> socketId >= system.Machine.NextSocketId)
+            |> List.map (fun socketId -> UnixSystemDefect.NextSocketIdNotFresh (system.Machine.NextSocketId, socketId))
+
+        let danglingInodes =
+            system.Process.FileDescriptors
+            |> FileDescriptorRegistry.descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.File (inode, _) ->
+                    if (VirtualFileSystem.tryGet inode system.Machine.FileSystem).IsNone then
+                        Some (UnixSystemDefect.DanglingOpenInode (id, inode))
+                    else
+                        None
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Socket _ -> None
+            )
+
+        let danglingStreams =
+            system.Process.DirectoryStreams
+            |> Map.toList
+            |> List.choose (fun (id, stream) ->
+                match VirtualFileSystem.tryGetContent stream.Inode system.Machine.FileSystem with
+                | Some (InodeContent.Directory _) -> None
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.Symlink _) ->
+                    Some (UnixSystemDefect.DirectoryStreamIsNotADirectory (id, stream.Inode))
+                | None -> Some (UnixSystemDefect.DanglingDirectoryStreamInode (id, stream.Inode))
+            )
+
+        let directoryStreamFreshness =
+            system.Process.DirectoryStreams
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun id -> id >= system.Process.NextDirectoryStreamId)
+            |> List.map (fun id ->
+                UnixSystemDefect.NextDirectoryStreamIdNotFresh (system.Process.NextDirectoryStreamId, id)
+            )
+
+        let currentDirectory =
+            match VirtualFileSystem.tryGetContent system.Process.CurrentDirectoryInode system.Machine.FileSystem with
+            | Some (InodeContent.Directory _) ->
+                // Only when some path still reaches it: an inode a process
+                // holds open after its last name has gone has no path, and
+                // `getcwd` on a real system fails rather than lying.
+                match
+                    VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem
+                with
+                | Some physical when physical <> system.Process.CurrentDirectory ->
+                    [
+                        UnixSystemDefect.CurrentDirectoryPathDisagrees (system.Process.CurrentDirectory, physical)
+                    ]
+                | Some _
+                | None -> []
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | None ->
+                [
+                    UnixSystemDefect.CurrentDirectoryIsNotADirectory system.Process.CurrentDirectoryInode
+                ]
+
+        // Every reference any socket makes to a connection, with whether it
+        // came through an accept queue (which has its own defect case and its
+        // own no-duplicates rule).
+        let connectionReferences =
+            system.Machine.Sockets
+            |> Map.toList
+            |> List.collect (fun (socketId, socket) ->
+                match socket.Phase with
+                | SocketPhase.Established connection
+                | SocketPhase.EstablishedPendingReport connection -> [ socketId, connection, false ]
+                | SocketPhase.Listening listenState ->
+                    listenState.Queue |> List.map (fun connection -> socketId, connection, true)
+                | SocketPhase.Idle
+                | SocketPhase.RefusedPendingDelivery
+                | SocketPhase.Dead
+                | SocketPhase.DatagramPeer _ -> []
+            )
+
+        let danglingConnections =
+            connectionReferences
+            |> List.filter (fun (_, connection, _) -> not (Map.containsKey connection system.Machine.Connections))
+            |> List.map (fun (socketId, connection, queued) ->
+                if queued then
+                    UnixSystemDefect.DanglingQueuedConnection (socketId, connection)
+                else
+                    UnixSystemDefect.DanglingConnection (socketId, connection)
+            )
+
+        let referencedConnections =
+            connectionReferences
+            |> List.map (fun (_, connection, _) -> connection)
+            |> Set.ofList
+
+        let orphanConnections =
+            system.Machine.Connections
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun connection -> not (Set.contains connection referencedConnections))
+            |> List.map UnixSystemDefect.OrphanConnection
+
+        let duplicateQueued =
+            connectionReferences
+            |> List.choose (fun (_, connection, queued) -> if queued then Some connection else None)
+            |> List.countBy id
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map (fun (connection, _) -> UnixSystemDefect.DuplicateQueuedConnection connection)
+
+        let phaseKindMismatches =
+            system.Machine.Sockets
+            |> Map.toList
+            |> List.choose (fun (socketId, socket) ->
+                let mismatched =
+                    match socket.Kind, socket.Phase with
+                    | SocketKind.Datagram, SocketPhase.Idle
+                    | SocketKind.Datagram, SocketPhase.DatagramPeer _ -> false
+                    | SocketKind.Datagram, _ -> true
+                    | _, SocketPhase.DatagramPeer _ -> true
+                    | _, _ -> false
+
+                if mismatched then
+                    Some (UnixSystemDefect.SocketPhaseKindMismatch (socketId, socket.Kind, socket.Phase))
+                else
+                    None
+            )
+
+        let connectionFreshness =
+            system.Machine.Connections
+            |> Map.toList
+            |> List.map fst
+            |> List.filter (fun connection -> connection >= system.Machine.NextConnectionId)
+            |> List.map (fun connection ->
+                UnixSystemDefect.NextConnectionIdNotFresh (system.Machine.NextConnectionId, connection)
+            )
+
+        let registrationOrdinals =
+            system.Process.FileDescriptors
+            |> FileDescriptorRegistry.descriptions
+            |> Map.toList
+            |> List.collect (fun (portId, description) ->
+                match description.Target with
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.File _
+                | OpenFileTarget.Socket _ -> []
+                | OpenFileTarget.SocketEventPort portState ->
+                    portState.Registrations
+                    |> Map.toList
+                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
+            )
+
+        let ordinalFreshness =
+            registrationOrdinals
+            |> List.filter (fun (_, registeredAt) -> registeredAt >= system.Machine.NextSocketEventRegistrationOrdinal)
+            |> List.map (fun (portId, registeredAt) ->
+                UnixSystemDefect.SocketEventRegistrationOrdinalNotFresh (
+                    system.Machine.NextSocketEventRegistrationOrdinal,
+                    portId,
+                    registeredAt
+                )
+            )
+
+        let ordinalDuplicates =
+            registrationOrdinals
+            |> List.countBy snd
+            |> List.filter (fun (_, count) -> count > 1)
+            |> List.map (fun (registeredAt, _) -> UnixSystemDefect.DuplicateSocketEventRegistrationOrdinal registeredAt)
+
+        dangling
+        @ unreferenced
+        @ freshness
+        @ danglingInodes
+        @ danglingStreams
+        @ directoryStreamFreshness
+        @ currentDirectory
+        @ danglingConnections
+        @ orphanConnections
+        @ duplicateQueued
+        @ phaseKindMismatches
+        @ connectionFreshness
+        @ ordinalFreshness
+        @ ordinalDuplicates

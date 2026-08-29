@@ -3009,7 +3009,7 @@ module VirtualFileSystem =
     /// Nothing here checks that a pinned inode is *in* the graph. That is the
     /// mirror-image defect — a descriptor naming an inode the filesystem has
     /// forgotten — and it belongs to the layer holding the descriptor table:
-    /// `EmulatedKernelDefect.DanglingOpenInode`.
+    /// `UnixSystemDefect.DanglingOpenInode`.
     ///
     /// Together, the link-count and reachability rules make tree-ness a
     /// theorem rather than a further check: the root has no incoming entry

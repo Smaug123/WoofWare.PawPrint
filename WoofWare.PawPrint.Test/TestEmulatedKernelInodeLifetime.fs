@@ -580,4 +580,7 @@ module TestEmulatedKernelInodeLifetime =
             |> List.exactlyOne
 
         EmulatedKernel.checkInvariants broken
-        |> shouldEqual [ EmulatedKernelDefect.DanglingOpenInode (description, a) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.DanglingOpenInode (description, a))
+            ]

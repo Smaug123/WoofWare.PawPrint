@@ -1094,7 +1094,13 @@ module TestSocketEventDelivery =
             }
 
         EmulatedKernel.checkInvariants (withOrdinals 0L 5L 2L)
-        |> shouldEqual [ EmulatedKernelDefect.SocketEventRegistrationOrdinalNotFresh (2L, portId, 5L) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.SocketEventRegistrationOrdinalNotFresh (2L, portId, 5L))
+            ]
 
         EmulatedKernel.checkInvariants (withOrdinals 0L 0L 2L)
-        |> shouldEqual [ EmulatedKernelDefect.DuplicateSocketEventRegistrationOrdinal 0L ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.DuplicateSocketEventRegistrationOrdinal 0L)
+            ]

@@ -751,60 +751,19 @@ type EmulatedKernel =
     member this.FileSystem : VirtualFileSystem = this.Machine.FileSystem
     member this.FileSystemType : EmulatedFileSystemType = this.Machine.FileSystemType
 
-/// A way the emulated kernel's socket table and its descriptor table could
-/// disagree — a state no kernel could be in, and which `EmulatedKernel` exists
-/// to keep unreachable.
+/// A way this kernel's own tables disagree with the POSIX system underneath
+/// them — a state no kernel could be in, and which `EmulatedKernel` exists to
+/// keep unreachable.
 ///
-/// Separate from `FileDescriptorRegistryDefect` because these are claims about
-/// two tables at once, and `FileDescriptorRegistry` cannot see the socket table:
-/// it is defined in a file that compiles before this one.
+/// The system's own rules are `UnixSystemDefect`, which `System` carries. What
+/// is left here is the two things PawPrint holds that no POSIX kernel does: the
+/// native-heap blocks a guest's `DIR*` values are, and the threads its tasks
+/// belong to.
 [<RequireQualifiedAccess>]
 type EmulatedKernelDefect =
-    /// A live open file description names a socket the socket table does not
-    /// hold, so resolving that descriptor would fail.
-    | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
-    /// The socket table holds a socket no live description names.
-    ///
-    /// A leak, and deliberately a defect rather than a tolerated state: every
-    /// way to make a socket — `SystemNative_Socket`, or `SystemNative_Accept`
-    /// materialising a queued connection — hands back a descriptor at once,
-    /// so an unreferenced socket means a close forgot to clean up. A
-    /// connection awaiting accept is a `TcpConnection`, not a socket, which
-    /// is what lets this rule stay strict.
-    | UnreferencedSocket of socket : SocketId
-    /// A socket in the table has an identity at or above the next one to
-    /// allocate, so a future `socket(2)` would mint a duplicate.
-    | NextSocketIdNotFresh of nextSocketId : SocketId * existing : SocketId
-    /// `CurrentDirectoryInode` names something the filesystem does not hold, or
-    /// holds as something other than a directory — so every relative path a
-    /// guest passes would resolve from a place that is not a directory.
-    ///
-    /// Deliberately *not* "the inode is reachable from the root": a real process
-    /// keeps its current directory alive after the last name for it has gone,
-    /// and PawPrint's held inode is what expresses that.
-    | CurrentDirectoryIsNotADirectory of inode : InodeNumber
-    /// A live open file description names an inode the filesystem does not
-    /// hold, so reading or `fstat`ing that descriptor would fail.
-    ///
-    /// The mirror image of `VirtualFileSystemDefect.UnreachableFromRoot`: that
-    /// one catches an orphan nothing holds, and this one catches an inode freed
-    /// while something still held it. Between them they bracket the reaping
-    /// rule, so a `VirtualFileSystem.forget` that fires too late is caught there
-    /// and one that fires too early is caught here.
-    | DanglingOpenInode of description : OpenFileDescriptionId * inode : InodeNumber
-    /// An open directory stream names an inode the filesystem no longer holds.
-    ///
-    /// Unreachable by construction — `UnixProcessState.heldInodes` counts a stream's inode
-    /// among the things pinning it, so `UnixSystem.forgetIfUnheld` cannot free one out from under
-    /// a stream — which is exactly why a violation is an interpreter bug rather
-    /// than something a guest did. The next `readdir` would crash the
-    /// interpreter, and this names the cause instead.
-    | DanglingDirectoryStreamInode of stream : DirectoryStreamId * inode : InodeNumber
-    /// An open directory stream names an inode that is not a directory.
-    | DirectoryStreamIsNotADirectory of stream : DirectoryStreamId * inode : InodeNumber
-    /// The stream table holds an id at or above `NextDirectoryStreamId`, so the
-    /// next `opendir` would hand out an id that is already in use.
-    | NextDirectoryStreamIdNotFresh of nextDirectoryStreamId : DirectoryStreamId * existing : DirectoryStreamId
+    /// A way the POSIX system this kernel runs is itself unsound: see
+    /// `UnixSystemDefect`.
+    | System of defect : UnixSystemDefect
     /// A guest-held `DIR*` names a stream the stream table does not hold, so the
     /// next `readdir` through it would crash rather than enumerate.
     | DirectoryStreamBlockDangling of block : NativeMemoryBlockId * stream : DirectoryStreamId
@@ -834,43 +793,6 @@ type EmulatedKernelDefect =
     /// stream out from under the others. Two `opendir`s owe the guest
     /// independent cursors, so this is never a state a stream table should hold.
     | DirectoryStreamNamedTwice of stream : DirectoryStreamId * blocks : NativeMemoryBlockId list
-    /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
-    /// so `getcwd` would report a directory the process is not in.
-    ///
-    /// Only raised while the inode still *has* a path: one held open after its
-    /// last name has gone has none, and a real `getcwd` fails there rather than
-    /// answering.
-    | CurrentDirectoryPathDisagrees of stored : AbsoluteUnixPath * physical : AbsoluteUnixPath
-    /// A socket's phase references a connection the connection table does not
-    /// hold.
-    | DanglingConnection of socket : SocketId * connection : ConnectionId
-    /// A listener's accept queue references a connection the connection table
-    /// does not hold.
-    | DanglingQueuedConnection of listener : SocketId * connection : ConnectionId
-    /// The connection table holds a connection no socket phase and no accept
-    /// queue references — a leak `UnixSystem.close`'s sweep should have caught.
-    | OrphanConnection of connection : ConnectionId
-    /// One connection sits in two accept-queue slots (in one queue or two),
-    /// so accepting it twice would materialise two sockets onto one
-    /// connection.
-    | DuplicateQueuedConnection of connection : ConnectionId
-    /// A socket's phase is one its kind cannot enter: a datagram socket
-    /// listening or holding a stream connection, or a non-datagram socket
-    /// holding a datagram peer.
-    | SocketPhaseKindMismatch of socket : SocketId * kind : SocketKind * phase : SocketPhase
-    /// A connection in the table has an identity at or above the next one to
-    /// allocate, so a future connect would mint a duplicate.
-    | NextConnectionIdNotFresh of nextConnectionId : ConnectionId * existing : ConnectionId
-    /// A socket event registration records an ADD ordinal at or above the
-    /// next one to mint, so some future ADD would repeat it — and the
-    /// ordinal's whole job is to order same-signal ties, which a repeat
-    /// leaves unspecified.
-    | SocketEventRegistrationOrdinalNotFresh of next : int64 * port : OpenFileDescriptionId * registeredAt : int64
-    /// Two socket event registrations record the same ADD ordinal. Ordinals
-    /// are minted from one monotonic counter, so a duplicate means two ADDs
-    /// were stamped with one mint — and a same-signal tie between the pair
-    /// would have no measured order.
-    | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
 
 [<RequireQualifiedAccess>]
 module EmulatedKernel =
@@ -1799,9 +1721,10 @@ module EmulatedKernel =
         @ (extra |> List.map EmulatedKernelDefect.TaskWithoutThread)
         @ parkAgreement
 
-    /// Every way this kernel's tables disagree with each other: the socket
-    /// table against the descriptor table, the descriptor table against the
-    /// filesystem, and the current directory against both.
+    /// Every way this kernel's tables disagree with each other, including the
+    /// POSIX system's own rules: `UnixSystem.checkInvariants` answers those, and
+    /// this adds the one thing PawPrint holds that no POSIX kernel does — the
+    /// native-heap blocks a guest's `DIR*` values are.
     ///
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
     /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
@@ -1810,78 +1733,6 @@ module EmulatedKernel =
     /// pairs this with
     /// `VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes (unix kernel))`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
-        let named =
-            FileDescriptorRegistry.descriptions kernel.FileDescriptors
-            |> Map.toList
-            |> List.choose (fun (id, description) ->
-                match description.Target with
-                | OpenFileTarget.StandardStream _
-                | OpenFileTarget.SocketEventPort _
-                | OpenFileTarget.File _ -> None
-                | OpenFileTarget.Socket socketId -> Some (id, socketId)
-            )
-
-        let dangling =
-            named
-            |> List.filter (fun (_, socketId) -> not (Map.containsKey socketId kernel.Sockets))
-            |> List.map EmulatedKernelDefect.DanglingSocket
-
-        let namedIds = named |> List.map snd |> Set.ofList
-
-        let unreferenced =
-            kernel.Sockets
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun socketId -> not (Set.contains socketId namedIds))
-            |> List.map EmulatedKernelDefect.UnreferencedSocket
-
-        // Against the table rather than against the descriptions: the table is
-        // where a socket lives, so it is the table that must stay below the
-        // counter even once a socket can outlive every descriptor of it.
-        let freshness =
-            kernel.Sockets
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun socketId -> socketId >= kernel.NextSocketId)
-            |> List.map (fun socketId -> EmulatedKernelDefect.NextSocketIdNotFresh (kernel.NextSocketId, socketId))
-
-        let danglingInodes =
-            kernel.FileDescriptors
-            |> FileDescriptorRegistry.descriptions
-            |> Map.toList
-            |> List.choose (fun (id, description) ->
-                match description.Target with
-                | OpenFileTarget.File (inode, _) ->
-                    if (VirtualFileSystem.tryGet inode kernel.FileSystem).IsNone then
-                        Some (EmulatedKernelDefect.DanglingOpenInode (id, inode))
-                    else
-                        None
-                | OpenFileTarget.StandardStream _
-                | OpenFileTarget.SocketEventPort _
-                | OpenFileTarget.Socket _ -> None
-            )
-
-        let danglingStreams =
-            kernel.DirectoryStreams
-            |> Map.toList
-            |> List.choose (fun (id, stream) ->
-                match VirtualFileSystem.tryGetContent stream.Inode kernel.FileSystem with
-                | Some (InodeContent.Directory _) -> None
-                | Some (InodeContent.RegularFile _)
-                | Some (InodeContent.Symlink _) ->
-                    Some (EmulatedKernelDefect.DirectoryStreamIsNotADirectory (id, stream.Inode))
-                | None -> Some (EmulatedKernelDefect.DanglingDirectoryStreamInode (id, stream.Inode))
-            )
-
-        let directoryStreamFreshness =
-            kernel.DirectoryStreams
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun id -> id >= kernel.NextDirectoryStreamId)
-            |> List.map (fun id ->
-                EmulatedKernelDefect.NextDirectoryStreamIdNotFresh (kernel.NextDirectoryStreamId, id)
-            )
-
         // Both directions: a `DIR*` naming a stream that is gone would crash the
         // next `readdir`, and a stream no `DIR*` names can never be closed, so it
         // pins its directory through `UnixProcessState.heldInodes` for the rest of the run.
@@ -1917,149 +1768,8 @@ module EmulatedKernel =
 
             dangling @ unreachable @ namedTwice
 
-        let currentDirectory =
-            match VirtualFileSystem.tryGetContent kernel.CurrentDirectoryInode kernel.FileSystem with
-            | Some (InodeContent.Directory _) ->
-                // Only when some path still reaches it: an inode a process
-                // holds open after its last name has gone has no path, and
-                // `getcwd` on a real system fails rather than lying.
-                match VirtualFileSystem.pathOfDirectory kernel.CurrentDirectoryInode kernel.FileSystem with
-                | Some physical when physical <> kernel.CurrentDirectory ->
-                    [
-                        EmulatedKernelDefect.CurrentDirectoryPathDisagrees (kernel.CurrentDirectory, physical)
-                    ]
-                | Some _
-                | None -> []
-            | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.Symlink _)
-            | None ->
-                [
-                    EmulatedKernelDefect.CurrentDirectoryIsNotADirectory kernel.CurrentDirectoryInode
-                ]
-
-        // Every reference any socket makes to a connection, with whether it
-        // came through an accept queue (which has its own defect case and its
-        // own no-duplicates rule).
-        let connectionReferences =
-            kernel.Sockets
-            |> Map.toList
-            |> List.collect (fun (socketId, socket) ->
-                match socket.Phase with
-                | SocketPhase.Established connection
-                | SocketPhase.EstablishedPendingReport connection -> [ socketId, connection, false ]
-                | SocketPhase.Listening listenState ->
-                    listenState.Queue |> List.map (fun connection -> socketId, connection, true)
-                | SocketPhase.Idle
-                | SocketPhase.RefusedPendingDelivery
-                | SocketPhase.Dead
-                | SocketPhase.DatagramPeer _ -> []
-            )
-
-        let danglingConnections =
-            connectionReferences
-            |> List.filter (fun (_, connection, _) -> not (Map.containsKey connection kernel.Connections))
-            |> List.map (fun (socketId, connection, queued) ->
-                if queued then
-                    EmulatedKernelDefect.DanglingQueuedConnection (socketId, connection)
-                else
-                    EmulatedKernelDefect.DanglingConnection (socketId, connection)
-            )
-
-        let referencedConnections =
-            connectionReferences
-            |> List.map (fun (_, connection, _) -> connection)
-            |> Set.ofList
-
-        let orphanConnections =
-            kernel.Connections
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun connection -> not (Set.contains connection referencedConnections))
-            |> List.map EmulatedKernelDefect.OrphanConnection
-
-        let duplicateQueued =
-            connectionReferences
-            |> List.choose (fun (_, connection, queued) -> if queued then Some connection else None)
-            |> List.countBy id
-            |> List.filter (fun (_, count) -> count > 1)
-            |> List.map (fun (connection, _) -> EmulatedKernelDefect.DuplicateQueuedConnection connection)
-
-        let phaseKindMismatches =
-            kernel.Sockets
-            |> Map.toList
-            |> List.choose (fun (socketId, socket) ->
-                let mismatched =
-                    match socket.Kind, socket.Phase with
-                    | SocketKind.Datagram, SocketPhase.Idle
-                    | SocketKind.Datagram, SocketPhase.DatagramPeer _ -> false
-                    | SocketKind.Datagram, _ -> true
-                    | _, SocketPhase.DatagramPeer _ -> true
-                    | _, _ -> false
-
-                if mismatched then
-                    Some (EmulatedKernelDefect.SocketPhaseKindMismatch (socketId, socket.Kind, socket.Phase))
-                else
-                    None
-            )
-
-        let connectionFreshness =
-            kernel.Connections
-            |> Map.toList
-            |> List.map fst
-            |> List.filter (fun connection -> connection >= kernel.NextConnectionId)
-            |> List.map (fun connection ->
-                EmulatedKernelDefect.NextConnectionIdNotFresh (kernel.NextConnectionId, connection)
-            )
-
-        let registrationOrdinals =
-            kernel.FileDescriptors
-            |> FileDescriptorRegistry.descriptions
-            |> Map.toList
-            |> List.collect (fun (portId, description) ->
-                match description.Target with
-                | OpenFileTarget.StandardStream _
-                | OpenFileTarget.File _
-                | OpenFileTarget.Socket _ -> []
-                | OpenFileTarget.SocketEventPort portState ->
-                    portState.Registrations
-                    |> Map.toList
-                    |> List.map (fun (_, registration) -> portId, registration.RegisteredAt)
-            )
-
-        let ordinalFreshness =
-            registrationOrdinals
-            |> List.filter (fun (_, registeredAt) -> registeredAt >= kernel.NextSocketEventRegistrationOrdinal)
-            |> List.map (fun (portId, registeredAt) ->
-                EmulatedKernelDefect.SocketEventRegistrationOrdinalNotFresh (
-                    kernel.NextSocketEventRegistrationOrdinal,
-                    portId,
-                    registeredAt
-                )
-            )
-
-        let ordinalDuplicates =
-            registrationOrdinals
-            |> List.countBy snd
-            |> List.filter (fun (_, count) -> count > 1)
-            |> List.map (fun (registeredAt, _) ->
-                EmulatedKernelDefect.DuplicateSocketEventRegistrationOrdinal registeredAt
-            )
-
-        dangling
-        @ unreferenced
-        @ freshness
-        @ danglingInodes
-        @ danglingStreams
-        @ directoryStreamFreshness
+        (UnixSystem.checkInvariants (unix kernel) |> List.map EmulatedKernelDefect.System)
         @ directoryStreamBlocks
-        @ currentDirectory
-        @ danglingConnections
-        @ orphanConnections
-        @ duplicateQueued
-        @ phaseKindMismatches
-        @ connectionFreshness
-        @ ordinalFreshness
-        @ ordinalDuplicates
 
 /// Host-supplied configuration for the simulated process's kernel, applied by
 /// `Program.prepare` before any guest code runs.
