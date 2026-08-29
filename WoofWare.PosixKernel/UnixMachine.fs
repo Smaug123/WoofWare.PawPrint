@@ -47,7 +47,7 @@ type UnixMachineState =
         /// non-zero and unprivileged, which is all the two real kernels agree on.
         NextEphemeralPort : uint16
         /// Range `NextEphemeralPort` sweeps, inclusive at both ends. Host
-        /// configuration; see `EmulatedKernel.defaultEphemeralPortRange`.
+        /// configuration; see `UnixSystem.defaultEphemeralPortRange`.
         EphemeralPortRange : uint16 * uint16
         /// The value of the `somaxconn` sysctl (`net.core.somaxconn` on
         /// Linux, `kern.ipc.somaxconn` on Darwin): the ceiling `listen(2)`
@@ -56,11 +56,11 @@ type UnixMachineState =
         /// `UnixMachineState.withSoMaxConn` for the measured clamp rules.
         SoMaxConn : int
         /// The IPv4 addresses this machine holds. Host configuration; see
-        /// `EmulatedKernel.defaultLocalAddresses`.
+        /// `UnixSystem.defaultLocalAddresses`.
         LocalAddresses : uint32 list
         /// Prefixes this machine has a local route to, which Linux will bind any
         /// address inside and Darwin ignores. See
-        /// `EmulatedKernel.defaultLocalRoutes`.
+        /// `UnixSystem.defaultLocalRoutes`.
         LocalRoutes : Ipv4Prefix list
         /// The identity the next `SystemNative_Socket` will allocate.
         ///

@@ -20,56 +20,21 @@ module TestUnixSystemStep =
 
     let private epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
 
-    /// A machine with an empty filesystem, on the flavour asked for. Spelled out
-    /// rather than built by a constructor because the library has none: see the
-    /// note in the extraction plan.
-    let private machineOn (platform : SimulatedUnixPlatform) : UnixMachineState =
-        {
-            Sockets = Map.empty
-            Connections = Map.empty
-            NextConnectionId = ConnectionId 0L
-            NextSocketEventRegistrationOrdinal = 0L
-            NextEphemeralPort = 32768us
-            EphemeralPortRange = (32768us, 60999us)
-            SoMaxConn = 4096
-            LocalAddresses = []
-            LocalRoutes = []
-            NextSocketId = SocketId 0L
-            VirtualClockTicks = 0L
-            WallClockEpochMs = 0L
-            NonCryptoRandomState = 1UL
-            CryptoRandomState = 1UL
-            ProcessorCount = 1
-            UserAddressLimit = 0x7FFFFFFFFFFFUL
-            UnixPlatform = platform
-            FileSystem = VirtualFileSystem.empty epoch
-            FileSystemType = EmulatedFileSystemType.Tmpfs
-        }
-
     let private rootInode : InodeNumber = InodeNumber 1L
 
-    let private processOn () : UnixProcessState<int, string> =
-        {
-            FileDescriptors = FileDescriptorRegistry.initial
-            OutputLog = ImmutableArray<OutputLogEntry>.Empty
-            Environment = Map.empty
-            CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/"
-            CurrentDirectoryInode = rootInode
-            ProcessPath = None
-            DirectoryStreams = Map.empty
-            NextDirectoryStreamId = DirectoryStreamId 0L
-            UserId = 1000u
-            GroupId = 1000u
-            Umask = PermissionBits.parseOrFail context 0o022
-            Signals = SignalState.empty
+    /// A simulated process on the flavour asked for, before anything has
+    /// happened to it.
+    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
+        let system : UnixSystem<int, string> = UnixSystem.initial platform
+
+        { system with
+            Machine =
+                { system.Machine with
+                    LocalAddresses = []
+                    LocalRoutes = []
+                }
         }
 
-    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        {
-            Machine = machineOn platform
-            Process = processOn ()
-            Tasks = Map.empty
-        }
 
     let private linux : UnixSystem<int, string> =
         systemOn SimulatedUnixPlatform.linuxX64

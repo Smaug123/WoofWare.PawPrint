@@ -34,7 +34,7 @@ module TestImpureCases =
     ///
     /// `gid` is always different from `uid`, so a handler reading `GroupId`
     /// fails; the registrations below also swap the pair, so it fails in both
-    /// directions. None of them is `EmulatedKernel.defaultUserId`, so a handler
+    /// directions. None of them is `UnixSystem.defaultUserId`, so a handler
     /// answering with a constant fails too.
     let private effectiveUserIdCase (uid : uint32) (gid : uint32) : EndToEndTestCase =
         {

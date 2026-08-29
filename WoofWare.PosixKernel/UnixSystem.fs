@@ -6549,3 +6549,189 @@ module UnixSystem =
         @ connectionFreshness
         @ ordinalFreshness
         @ ordinalDuplicates
+
+    /// Logical-processor count a freshly-minted simulated process reports.
+    /// One, because only single-processor behaviour has been exercised
+    /// end-to-end, and because a fixed default is a prerequisite for
+    /// replayability.
+    /// Hosts that want to exercise the guest's multi-processor code paths
+    /// raise it via `KernelConfig.ProcessorCount`.
+    [<Literal>]
+    let defaultProcessorCount : int = 1
+
+    /// The commonest configuration a guest could be running on: x86-64 with
+    /// four-level paging. A host simulating a machine with a different
+    /// address-space width sets `KernelConfig.UserAddressLimit`.
+    let defaultUserAddressLimit : uint64 = ObservedUserAddressLimit.X64FourLevelPaging
+
+    /// Unix platform identity a freshly-minted simulated process reports.
+    /// Linux/x64 because that is the platform whose CoreLib actually routes
+    /// `Environment.OSVersion` through `SystemNative_GetUnixRelease` (the
+    /// macOS CoreLib uses `Interop.libobjc.GetOperatingSystemVersion`
+    /// instead), and because it is what PawPrint's CI runs on. Hosts choose
+    /// a different identity via `KernelConfig.UnixPlatform`.
+    let defaultUnixPlatform : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
+
+    /// Current working directory a freshly-minted simulated process reports.
+    /// The root, because it is the one directory that exists on every Unix and
+    /// needs no name invented for it — and once PawPrint grows a simulated
+    /// filesystem, the one directory the default cwd is guaranteed to still
+    /// name. (`init` itself starts at `/`, so this is not even an unusual cwd
+    /// for a real process.) It is also the honest answer for a runtime that
+    /// deliberately declines to read the host's: PawPrint has not been told
+    /// where it is, so it claims nothing beyond the root. Hosts that want the
+    /// guest to see a particular directory set `KernelConfig.CurrentDirectory`.
+    let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
+
+    /// Executable path a freshly-minted simulated process reports: none at all.
+    ///
+    /// PawPrint models no `exec(2)`, so there is no file that started this
+    /// process, and the emulated filesystem holds no image of one. `None` is
+    /// therefore the only true answer, and it is a *modelled* Unix state rather
+    /// than an invention: both flavours report exactly this — NULL from
+    /// `minipal_getexepath`, errno `ENOENT` — for a live process whose
+    /// executable no longer resolves, because each of them reaches the path
+    /// through `realpath`. Measured on both, by having a guest unlink its own
+    /// executable before its first read.
+    ///
+    /// Synthesising a plausible path instead was rejected for the same reason
+    /// `Assembly.Location` reports the empty string: nothing would be there, so
+    /// the guest could not act on it. Hosts that want the guest to see a
+    /// particular executable set `KernelConfig.ProcessPath`.
+    let defaultProcessPath : AbsoluteUnixPath option = None
+
+    /// The range `bind(2)` draws from when asked for port 0.
+    ///
+    /// A sysctl on both platforms rather than a property of the kernel image —
+    /// Linux's `ip_local_port_range` reads 32768-60999 and Darwin's
+    /// `net.inet.ip.portrange.first`/`last` read 49152-65535 — so this is
+    /// configuration with one default, and not a per-flavour derivation the way
+    /// `FileSystemType` and `SoMaxConn` are. The default is Linux's, matching
+    /// `defaultUnixPlatform`.
+    let defaultEphemeralPortRange : uint16 * uint16 = 32768us, 60999us
+
+    /// The addresses this machine holds, as `bind(2)` decides whether an address
+    /// is assignable. Loopback only: PawPrint models no interface a guest could
+    /// reach, so anything else would be an address no packet could arrive on.
+    ///
+    /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
+    /// assigns to `lo`, and the flavours read the list differently — see
+    /// `SimulatedUnixPlatform.isBindableAddress`.
+    let defaultLocalAddresses : uint32 list = [ InternetEndpoint.LoopbackAddress ]
+
+    /// The prefixes Linux's local routing table holds, which it will `bind(2)`
+    /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
+    /// and is why `127.9.9.9` binds there and not on Darwin.
+    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
+
+    /// Effective user ID a freshly-minted simulated process runs as.
+    ///
+    /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
+    /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
+    /// the privileged branch of every check it makes about itself — the
+    /// uninteresting one, and not the one most programs are written for. 1000
+    /// is also the first interactive user on the Ubuntu-shaped platform
+    /// `defaultUnixPlatform` already claims to be. A host that wants root says
+    /// so in `KernelConfig.UserId`.
+    let defaultUserId : uint32 = 1000u
+
+    /// Effective group ID a freshly-minted simulated process runs as. Matches
+    /// `defaultUserId`, as a Linux user-private group does.
+    let defaultGroupId : uint32 = 1000u
+
+    /// File-mode creation mask a freshly-minted simulated process reports.
+    /// 0o022 because that is what essentially every Unix login shell and service
+    /// manager sets, and because it is the mask the existing seed defaults were
+    /// written against (`PermissionBits.defaultForRegularFile` is 0o666 with
+    /// these bits cleared). Hosts choose otherwise via `KernelConfig.Umask`.
+    let defaultUmask : PermissionBits =
+        PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
+
+    /// Seed for `UnixMachineState.NonCryptoRandomState`: `floor(2^64 / phi)`,
+    /// the constant the reference splitmix64 uses as its weyl increment.
+    /// Anything non-zero would do — splitmix64 has no weak seeds — and a
+    /// nothing-up-my-sleeve constant is the least arbitrary choice available.
+    ///
+    /// A client whose recorded traces must replay bit-for-bit states its own
+    /// seed rather than inheriting this one, because changing it here would
+    /// change every draw such a trace observes.
+    let defaultNonCryptoRandomState : uint64 = 0x9E3779B97F4A7C15UL
+
+    /// Seed for `UnixMachineState.CryptoRandomState`: the first 64 bits of the
+    /// fractional part of pi. Chosen purely so that the crypto-entropy stream
+    /// starts somewhere other than `defaultNonCryptoRandomState`, which is what
+    /// stops the two streams emitting the same sequence. Same replay caveat as
+    /// that one.
+    let defaultCryptoRandomState : uint64 = 0x243F6A8885A308D3UL
+
+    /// A simulated process on a machine of the given platform, before anything
+    /// has happened to it: no sockets, no connections, an empty filesystem, and
+    /// only the three standard streams open.
+    ///
+    /// The three fields the platform *fixes* are derived from it rather than
+    /// taken as arguments — `SoMaxConn`, `FileSystemType`, and the platform
+    /// itself — because a machine whose flavour and those disagree is one no
+    /// real system could be: `EmulatedFileSystemType.isReportableUnder` says
+    /// outright that a Darwin kernel never reports tmpfs. Building the record
+    /// by hand is what lets that state exist, so the constructor is also the
+    /// rule.
+    ///
+    /// Everything else is a flat default, including two that look derivable and
+    /// are deliberately not: `UserAddressLimit` is a property of the machine's
+    /// paging depth rather than of its kernel, and `EphemeralPortRange` is a
+    /// sysctl either flavour can be set to anything. Both are configuration a
+    /// caller overrides by record-update, which is also how a caller supplies a
+    /// non-empty filesystem, a different address list, or a process identity.
+    let initial<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (platform : SimulatedUnixPlatform)
+        : UnixSystem<'Task, 'Handler>
+        =
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        // Bound once so that `CurrentDirectoryInode` is the root of *this*
+        // filesystem rather than of a second one that merely looks like it.
+        let filesystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+
+        {
+            Machine =
+                {
+                    Sockets = Map.empty
+                    Connections = Map.empty
+                    NextConnectionId = ConnectionId 0L
+                    NextSocketEventRegistrationOrdinal = 0L
+                    NextSocketId = SocketId 0L
+                    NextEphemeralPort = fst defaultEphemeralPortRange
+                    EphemeralPortRange = defaultEphemeralPortRange
+                    SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
+                    LocalAddresses = defaultLocalAddresses
+                    LocalRoutes = defaultLocalRoutes
+                    VirtualClockTicks = 0L
+                    WallClockEpochMs = 0L
+                    NonCryptoRandomState = defaultNonCryptoRandomState
+                    CryptoRandomState = defaultCryptoRandomState
+                    ProcessorCount = defaultProcessorCount
+                    UserAddressLimit = defaultUserAddressLimit
+                    UnixPlatform = platform
+                    FileSystem = filesystem
+                    FileSystemType = EmulatedFileSystemType.defaultFor flavour
+                }
+            Process =
+                {
+                    FileDescriptors = FileDescriptorRegistry.initial
+                    DirectoryStreams = Map.empty
+                    NextDirectoryStreamId = DirectoryStreamId 0L
+                    OutputLog = ImmutableArray<OutputLogEntry>.Empty
+                    Environment = Map.empty
+                    CurrentDirectory = defaultCurrentDirectory
+                    // The default current directory is the root, which every filesystem
+                    // has and no operation can remove, so the pair starts consistent
+                    // whatever else a host goes on to set.
+                    CurrentDirectoryInode = VirtualFileSystem.root filesystem
+                    ProcessPath = defaultProcessPath
+                    UserId = defaultUserId
+                    GroupId = defaultGroupId
+                    Umask = defaultUmask
+                    Signals = SignalState.empty
+                }
+            Tasks = Map.empty
+        }

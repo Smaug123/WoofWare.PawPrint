@@ -4825,3 +4825,79 @@ stop.
 **Correctness oracle**: the checker's own tests move with it. The forging helper the
 socket cases need (`FileDescriptorRegistry.Unchecked.ofParts`) is already library-side,
 which is what makes the moved tests a move rather than a rewrite.
+
+### Stage 17: the constructor stage
+
+**Dependencies**: none.
+
+Not the test tidy-up the note after stage 16 predicted. Reading the ten fixtures
+turned up the gap this plan already recorded when `TestUnixSystemStep` became the
+second client — "the library exposes no constructor for either … a second client
+cannot make a `UnixSystem` at all without transcribing those … It gets its own
+stage." This is that stage, and the duplication was the symptom rather than the
+disease.
+
+**The duplication was hiding a live defect.** All ten fixtures parameterise over
+`platform` and run both flavours, while hardcoding two fields the flavour fixes:
+
+| field | Linux | Darwin | all ten wrote |
+| --- | --- | --- | --- |
+| `SoMaxConn` | 4096 | 128 | 4096 |
+| `FileSystemType` | `Tmpfs` | `Apfs` | `Tmpfs` |
+
+`EmulatedFileSystemType.isReportableUnder Darwin Tmpfs` is `false` — the library
+states outright that a Darwin kernel never reports tmpfs — so every `macOsArm64`
+row in the suite ran against a machine no real Darwin could be. The chokepoint that
+prevents it already existed: `withUnixPlatformAndFileSystemType`, whose docstring
+says the pair "are not independent … fused, it is unrepresentable rather than
+merely checked". Writing the record literal is how all ten went around it.
+
+Latent rather than failing, which is why it survived: `SoMaxConn` is read only by
+`connectSocket`'s accept-queue capacity check, which needs 128 queued connections
+to notice, and nothing reads `FileSystemType` at this tier.
+
+#### Options for the constructor's shape
+
+**(a) — taken.** `initial platform`, deriving the fields the platform fixes.
+Smallest surface that closes the stated-goal gap; an impossible machine is
+unrepresentable at construction rather than merely checkable; does not pre-empt a
+richer `create : UnixSystemConfig -> _` if a second client ever wants one.
+
+**(b)** A `UnixSystemConfig` record with optional fields, mirroring PawPrint's
+`KernelConfig`. Every knob named, resolution in one place — but it either
+duplicates `KernelConfig` or means moving it, and it decides the whole config
+surface now rather than when a client needs it.
+
+**(c)** A no-argument `initial` plus the existing fused setters. Adds one value and
+no new decisions, but `withUnixPlatformAndFileSystemType` does not re-resolve
+`SoMaxConn` (only `KernelConfig.applyTo` does, separately), so it would need
+`SoMaxConn` folding into an already-published setter before it prevented anything.
+
+#### What it deliberately does *not* derive
+
+Two fields look derivable and their own docstrings say why they are not:
+`UserAddressLimit` is "a property of the *machine* … rather than of the kernel …
+which is why the simulated one is configuration rather than a constant derived from
+the platform", and `EphemeralPortRange` is a sysctl either flavour can be set to
+anything. `TestUnixSystemInitial` pins both, so a later helpful derivation is caught
+rather than shipped.
+
+Eleven POSIX defaults move with `initial`, because stating each value twice across
+the boundary is how the two drift. Nine move byte-identical; `defaultUmask`'s
+`parseOrFail` context names its new module, and `defaultEphemeralPortRange`'s prose
+loses a clause this stage falsified — it called the range "configuration with one
+default, in the way `FileSystemType` is", true only while nothing derived
+`FileSystemType` either.
+
+`EmulatedKernel.initial` becomes `UnixSystem.initial` plus the CoreCLR-shaped state
+and three values PawPrint pins rather than inherits — the environment overlay and
+the two PRNG seeds — each stated because a change to a library default must not
+silently change what a recorded trace observes.
+
+**Correctness oracle**: `TestUnixSystemInitial.fs`, 13 cases, with the `SoMaxConn`
+and `FileSystemType` expectations written as literals rather than by calling the
+same derivation the constructor calls — a row that asked `defaultSoMaxConn` what to
+expect would agree with any constructor at all, including one that ignored the
+platform.
+
+**What is left after 17**: stages 18–20, the three fixtures, one PR each.

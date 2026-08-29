@@ -19,51 +19,10 @@ module TestListen =
 
     let private epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
 
-    let private machineOn (platform : SimulatedUnixPlatform) : UnixMachineState =
-        {
-            Sockets = Map.empty
-            Connections = Map.empty
-            NextConnectionId = ConnectionId 0L
-            NextSocketEventRegistrationOrdinal = 0L
-            NextEphemeralPort = 32768us
-            EphemeralPortRange = (32768us, 60999us)
-            SoMaxConn = 4096
-            LocalAddresses = [ InternetEndpoint.LoopbackAddress ]
-            LocalRoutes = [ Ipv4Prefix.create 0x7F000000u 8 ]
-            NextSocketId = SocketId 0L
-            VirtualClockTicks = 0L
-            WallClockEpochMs = 0L
-            NonCryptoRandomState = 1UL
-            CryptoRandomState = 1UL
-            ProcessorCount = 1
-            UserAddressLimit = 0x7FFFFFFFFFFFUL
-            UnixPlatform = platform
-            FileSystem = VirtualFileSystem.empty epoch
-            FileSystemType = EmulatedFileSystemType.Tmpfs
-        }
+    /// A simulated process on the flavour asked for, before anything has
+    /// happened to it.
+    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> = UnixSystem.initial platform
 
-    let private processState : UnixProcessState<int, string> =
-        {
-            FileDescriptors = FileDescriptorRegistry.initial
-            OutputLog = ImmutableArray<OutputLogEntry>.Empty
-            Environment = Map.empty
-            CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/"
-            CurrentDirectoryInode = InodeNumber 1L
-            ProcessPath = None
-            DirectoryStreams = Map.empty
-            NextDirectoryStreamId = DirectoryStreamId 0L
-            UserId = 1000u
-            GroupId = 1000u
-            Umask = PermissionBits.parseOrFail context 0o022
-            Signals = SignalState.empty
-        }
-
-    let private systemOn (platform : SimulatedUnixPlatform) : UnixSystem<int, string> =
-        {
-            Machine = machineOn platform
-            Process = processState
-            Tasks = Map.empty
-        }
 
     let private platforms : SimulatedUnixPlatform list =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]

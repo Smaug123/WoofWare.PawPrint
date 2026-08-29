@@ -737,7 +737,7 @@ module NativeThreading =
             // (`SpinWait.SpinOnceCore`, `LowLevelSpinWaiter.Wait`,
             // `ReaderWriterLockSlim`, `PortableThreadPool.WorkerThread`) is
             // guarded by `!Environment.IsSingleProcessor`, and
-            // `EmulatedKernel.defaultProcessorCount` is 1. So at the default
+            // `UnixSystem.defaultProcessorCount` is 1. So at the default
             // kernel config no BCL path reaches here at all; this arm is
             // exercised by direct `Thread.SpinWait` calls from guest code, and
             // by those BCL paths only once a host raises
