@@ -855,19 +855,7 @@ module EmulatedKernel =
     /// observes, so treat it as part of PawPrint's replay contract.
     let cryptoRandomInitialState : uint64 = 0x243F6A8885A308D3UL
 
-    /// Logical-processor count a freshly-minted simulated process reports.
-    /// One, because only single-processor behaviour has been exercised
-    /// end-to-end, and because a fixed default is a prerequisite for
-    /// replayability.
-    /// Hosts that want to exercise the guest's multi-processor code paths
-    /// raise it via `KernelConfig.ProcessorCount`.
-    [<Literal>]
-    let defaultProcessorCount : int = 1
 
-    /// The commonest configuration a guest could be running on: x86-64 with
-    /// four-level paging. A host simulating a machine with a different
-    /// address-space width sets `KernelConfig.UserAddressLimit`.
-    let defaultUserAddressLimit : uint64 = ObservedUserAddressLimit.X64FourLevelPaging
 
     /// Ceiling `Thread.OptimalMaxSpinWaitsPerSpinIteration` can legally report,
     /// mirroring CoreCLR's own compile-time ceiling
@@ -946,94 +934,27 @@ module EmulatedKernel =
     [<Literal>]
     let defaultInstructionCostTicks : int64 = 1L
 
-    /// Unix platform identity a freshly-minted simulated process reports.
-    /// Linux/x64 because that is the platform whose CoreLib actually routes
-    /// `Environment.OSVersion` through `SystemNative_GetUnixRelease` (the
-    /// macOS CoreLib uses `Interop.libobjc.GetOperatingSystemVersion`
-    /// instead), and because it is what PawPrint's CI runs on. Hosts choose
-    /// a different identity via `KernelConfig.UnixPlatform`.
-    let defaultUnixPlatform : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 
-    /// Current working directory a freshly-minted simulated process reports.
-    /// The root, because it is the one directory that exists on every Unix and
-    /// needs no name invented for it — and once PawPrint grows a simulated
-    /// filesystem, the one directory the default cwd is guaranteed to still
-    /// name. (`init` itself starts at `/`, so this is not even an unusual cwd
-    /// for a real process.) It is also the honest answer for a runtime that
-    /// deliberately declines to read the host's: PawPrint has not been told
-    /// where it is, so it claims nothing beyond the root. Hosts that want the
-    /// guest to see a particular directory set `KernelConfig.CurrentDirectory`.
-    let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
 
-    /// Executable path a freshly-minted simulated process reports: none at all.
+
+
+
+
+
+
+
+
+    /// A freshly-minted simulated process, as PawPrint starts one.
     ///
-    /// PawPrint models no `exec(2)`, so there is no file that started this
-    /// process, and the emulated filesystem holds no image of one. `None` is
-    /// therefore the only true answer, and it is a *modelled* Unix state rather
-    /// than an invention: both flavours report exactly this — NULL from
-    /// `minipal_getexepath`, errno `ENOENT` — for a live process whose
-    /// executable no longer resolves, because each of them reaches the path
-    /// through `realpath`. Measured on both, by having a guest unlink its own
-    /// executable before its first read.
-    ///
-    /// Synthesising a plausible path instead was rejected for the same reason
-    /// `Assembly.Location` reports the empty string: nothing would be there, so
-    /// the guest could not act on it. Hosts that want the guest to see a
-    /// particular executable set `KernelConfig.ProcessPath`.
-    let defaultProcessPath : AbsoluteUnixPath option = None
-
-    /// The range `bind(2)` draws from when asked for port 0.
-    ///
-    /// A sysctl on both platforms rather than a property of the kernel image —
-    /// Linux's `ip_local_port_range` reads 32768-60999 and Darwin's
-    /// `net.inet.ip.portrange.first`/`last` read 49152-65535 — so this is
-    /// configuration with one default, in the way `FileSystemType` is, and not a
-    /// per-flavour derivation. The default is Linux's, matching
-    /// `defaultUnixPlatform`.
-    let defaultEphemeralPortRange : uint16 * uint16 = 32768us, 60999us
-
-
-    /// The addresses this machine holds, as `bind(2)` decides whether an address
-    /// is assignable. Loopback only: PawPrint models no interface a guest could
-    /// reach, so anything else would be an address no packet could arrive on.
-    ///
-    /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
-    /// assigns to `lo`, and the flavours read the list differently — see
-    /// `SimulatedUnixPlatform.isBindableAddress`.
-    let defaultLocalAddresses : uint32 list = [ InternetEndpoint.LoopbackAddress ]
-
-    /// The prefixes Linux's local routing table holds, which it will `bind(2)`
-    /// any address inside. Loopback's `127.0.0.0/8` is the one every Linux has,
-    /// and is why `127.9.9.9` binds there and not on Darwin.
-    let defaultLocalRoutes : Ipv4Prefix list = [ Ipv4Prefix.create 0x7F000000u 8 ]
-
-    /// Effective user ID a freshly-minted simulated process runs as.
-    ///
-    /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
-    /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
-    /// the privileged branch of every check it makes about itself — the
-    /// uninteresting one, and not the one most programs are written for. 1000
-    /// is also the first interactive user on the Ubuntu-shaped platform
-    /// `defaultUnixPlatform` already claims to be. A host that wants root says
-    /// so in `KernelConfig.UserId`.
-    let defaultUserId : uint32 = 1000u
-
-    /// Effective group ID a freshly-minted simulated process runs as. Matches
-    /// `defaultUserId`, as a Linux user-private group does.
-    let defaultGroupId : uint32 = 1000u
-
-    /// File-mode creation mask a freshly-minted simulated process reports.
-    /// 0o022 because that is what essentially every Unix login shell and service
-    /// manager sets, and because it is the mask the existing seed defaults were
-    /// written against (`PermissionBits.defaultForRegularFile` is 0o666 with
-    /// these bits cleared). Hosts choose otherwise via `KernelConfig.Umask`.
-    let defaultUmask : PermissionBits =
-        PermissionBits.parseOrFail "EmulatedKernel.defaultUmask" 0o022
-
+    /// The POSIX half is `UnixSystem.initial`'s; what is added here is the
+    /// CoreCLR-shaped state no POSIX kernel has, and the three values PawPrint
+    /// pins rather than inherits. Those three are stated rather than left to the
+    /// library because each is part of PawPrint's replay contract: a change to
+    /// the library's default must not silently change what a recorded trace
+    /// observes.
     let initial : EmulatedKernel =
-        // Bound once so that `CurrentDirectoryInode` is the root of *this*
-        // filesystem rather than of a second one that merely looks like it.
-        let filesystem = VirtualFileSystem.empty (UnixTimestamp.ofMillisecondsSinceEpoch 0L)
+        let system : UnixSystem<ThreadId, SignalHandler> =
+            UnixSystem.initial UnixSystem.defaultUnixPlatform
 
         {
             InstructionCostTicks = defaultInstructionCostTicks
@@ -1053,49 +974,16 @@ module EmulatedKernel =
             StepCounter = 0L
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
             Machine =
-                {
-                    Sockets = Map.empty
-                    Connections = Map.empty
-                    NextConnectionId = ConnectionId 0L
-                    NextSocketEventRegistrationOrdinal = 0L
-                    NextSocketId = SocketId 0L
-                    NextEphemeralPort = fst defaultEphemeralPortRange
-                    EphemeralPortRange = defaultEphemeralPortRange
-                    // The Linux default, matching `defaultUnixPlatform`;
-                    // `KernelConfig.applyTo` re-resolves it beside the platform.
-                    SoMaxConn = UnixMachineState.defaultSoMaxConn SimulatedUnixFlavour.Linux
-                    LocalAddresses = defaultLocalAddresses
-                    LocalRoutes = defaultLocalRoutes
-                    VirtualClockTicks = 0L
-                    WallClockEpochMs = 0L
+                { system.Machine with
                     NonCryptoRandomState = NonCryptoRandom.initialState
                     CryptoRandomState = cryptoRandomInitialState
-                    ProcessorCount = defaultProcessorCount
-                    UserAddressLimit = defaultUserAddressLimit
-                    UnixPlatform = defaultUnixPlatform
-                    FileSystem = filesystem
-                    FileSystemType =
-                        EmulatedFileSystemType.defaultFor (SimulatedUnixPlatform.flavour defaultUnixPlatform)
                 }
             Process =
-                {
-                    FileDescriptors = FileDescriptorRegistry.initial
-                    DirectoryStreams = Map.empty
-                    NextDirectoryStreamId = DirectoryStreamId 0L
-                    OutputLog = ImmutableArray<OutputLogEntry>.Empty
+                { system.Process with
                     Environment = defaultEnvironment
-                    CurrentDirectory = defaultCurrentDirectory
-                    // The default current directory is the root, which every filesystem
-                    // has and no operation can remove, so the pair starts consistent
-                    // whatever else a host goes on to set.
-                    CurrentDirectoryInode = VirtualFileSystem.root filesystem
-                    ProcessPath = defaultProcessPath
-                    UserId = defaultUserId
-                    GroupId = defaultGroupId
-                    Umask = defaultUmask
-                    Signals = SignalState.empty
                 }
         }
+
 
     /// The directory `directory` names in this kernel's filesystem, as the
     /// moment a process is started resolves it — which is the only moment
@@ -1883,7 +1771,7 @@ type KernelConfig =
         /// the same tree whatever the machine.
         FileSystem : Map<FileName, SeedEntry>
         /// Effective user ID the simulated process runs as, observed as every
-        /// inode's `st_uid`. See `EmulatedKernel.defaultUserId` for why the
+        /// inode's `st_uid`. See `UnixSystem.defaultUserId` for why the
         /// default is 1000 rather than root.
         UserId : uint32
         /// Effective group ID the simulated process runs as, observed as every
@@ -1911,7 +1799,7 @@ type KernelConfig =
         /// that behaves like a remote filesystem.
         FileSystemType : EmulatedFileSystemType option
         /// Range `bind(2)` draws an ephemeral port from, inclusive at both ends.
-        /// See `EmulatedKernel.defaultEphemeralPortRange`; the low end must not
+        /// See `UnixSystem.defaultEphemeralPortRange`; the low end must not
         /// exceed the high end, and neither may be zero, since port 0 is the
         /// request rather than an answer.
         EphemeralPortRange : uint16 * uint16
@@ -1920,12 +1808,12 @@ type KernelConfig =
         /// clamps its backlog to. See `UnixMachineState.withSoMaxConn`.
         SoMaxConn : int option
         /// The IPv4 addresses this machine holds, as prefixes. See
-        /// `EmulatedKernel.defaultLocalAddresses`, and note the flavours read one
+        /// `UnixSystem.defaultLocalAddresses`, and note the flavours read one
         /// list differently.
         LocalAddresses : uint32 list
         /// Prefixes this machine has a local route to. Linux binds any address
         /// inside one; Darwin ignores them. See
-        /// `EmulatedKernel.defaultLocalRoutes`.
+        /// `UnixSystem.defaultLocalRoutes`.
         LocalRoutes : Ipv4Prefix list
     }
 
@@ -1935,24 +1823,24 @@ type KernelConfig =
     static member Default : KernelConfig =
         {
             Environment = Map.empty
-            ProcessorCount = EmulatedKernel.defaultProcessorCount
-            UserAddressLimit = EmulatedKernel.defaultUserAddressLimit
+            ProcessorCount = UnixSystem.defaultProcessorCount
+            UserAddressLimit = UnixSystem.defaultUserAddressLimit
             InstructionCostTicks = EmulatedKernel.defaultInstructionCostTicks
             ClockJitter = ClockJitterStrategy.Disabled
             OptimalMaxSpinWaitsPerSpinIteration = EmulatedKernel.defaultOptimalMaxSpinWaitsPerSpinIteration
             WallClockEpochMs = 0L
-            UnixPlatform = EmulatedKernel.defaultUnixPlatform
-            CurrentDirectory = EmulatedKernel.defaultCurrentDirectory
-            ProcessPath = EmulatedKernel.defaultProcessPath
+            UnixPlatform = UnixSystem.defaultUnixPlatform
+            CurrentDirectory = UnixSystem.defaultCurrentDirectory
+            ProcessPath = UnixSystem.defaultProcessPath
             FileSystem = FileSystemSeed.empty
-            UserId = EmulatedKernel.defaultUserId
-            GroupId = EmulatedKernel.defaultGroupId
-            Umask = EmulatedKernel.defaultUmask
+            UserId = UnixSystem.defaultUserId
+            GroupId = UnixSystem.defaultGroupId
+            Umask = UnixSystem.defaultUmask
             FileSystemType = None
-            EphemeralPortRange = EmulatedKernel.defaultEphemeralPortRange
+            EphemeralPortRange = UnixSystem.defaultEphemeralPortRange
             SoMaxConn = None
-            LocalAddresses = EmulatedKernel.defaultLocalAddresses
-            LocalRoutes = EmulatedKernel.defaultLocalRoutes
+            LocalAddresses = UnixSystem.defaultLocalAddresses
+            LocalRoutes = UnixSystem.defaultLocalRoutes
         }
 
 [<RequireQualifiedAccess>]

@@ -149,7 +149,7 @@ module SocketFuzz =
         | SocketEventRegistrationError.NotRegistered -> "ENOENT"
 
     /// The listener ports the emulated side assigns, in `Listen` op order.
-    /// Fixed and below `EmulatedKernel.defaultEphemeralPortRange` (32768+),
+    /// Fixed and below `UnixSystem.defaultEphemeralPortRange` (32768+),
     /// so a client's implicit bind can never collide with one. The harness
     /// uses real ephemeral ports instead; port numbers are never compared.
     let private listenerPortBase : uint16 = 20000us

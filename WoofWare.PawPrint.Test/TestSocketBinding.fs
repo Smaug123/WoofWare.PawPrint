@@ -201,8 +201,8 @@ module TestSocketBinding =
     /// assigned.
     [<Test>]
     let ``the flavours read one address list differently`` () : unit =
-        let addresses = EmulatedKernel.defaultLocalAddresses
-        let routes = EmulatedKernel.defaultLocalRoutes
+        let addresses = UnixSystem.defaultLocalAddresses
+        let routes = UnixSystem.defaultLocalRoutes
 
         let bindable (platform : SimulatedUnixPlatform) (address : uint32) : bool =
             SimulatedUnixPlatform.isBindableAddress platform addresses routes address
