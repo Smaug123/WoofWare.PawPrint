@@ -2846,6 +2846,15 @@ module SimulatedUnixPlatform =
     /// against the first.
     let internetAddressFamily : int = 2
 
+    /// Ports a process may bind only as root.
+    ///
+    /// Measured as 1024 on both: binding 1023 is `EACCES` for an unprivileged
+    /// caller and 1024 succeeds. A constant rather than a function of the
+    /// platform because the two agree, and not configuration though Linux does
+    /// expose it as `ip_unprivileged_port_start` -- nothing needs to vary it
+    /// yet, and a knob with no consumer is a knob no test covers.
+    let privilegedPortCeiling : uint16 = 1024us
+
     /// `AF_INET6`, in the platform's own numbering, which unlike `AF_INET` the two
     /// families disagree about: 10 on Linux against 30 on Darwin. Measured.
     let internetV6AddressFamily (platform : SimulatedUnixPlatform) : int =

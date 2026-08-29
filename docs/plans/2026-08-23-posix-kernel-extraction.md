@@ -4564,3 +4564,75 @@ They now say what they are shared by, and where the sharing is measured.
 **What is left after 12**: `bind`, then `listen` (which needs the bind-conflict relation
 `bind`'s move will have taken across), `socket`, the two non-blocking `fcntl`s, and the
 fixture relocation.
+
+### Stage 13: `bind(2)` moves into the library
+
+**Dependencies**: 12, which generalised the copy-in admission so that this is a move.
+
+The largest of the socket handlers, 379 lines, and after 12 the move is mechanical: the
+first half of it *is* `admitSockaddrCopy`, and the second half is a fault set, an
+ordering, and an allocation, all of which are kernel facts.
+
+`SystemNative_Bind` keeps the shim's null and negative-length screens, `requireBufferRoom`,
+the field reads, `SocketArgumentsPal.isTcpProtocolType`, and the errno write.
+
+**Two things the move had to reshape.**
+
+* **The `SO_REUSEADDR` write outlives every failure**, so it cannot sit behind the
+  admission: measured, after a bind that answered EFAULT the option still reads back set.
+  `UnixSystem.bind` therefore resolves the descriptor itself, applies the write, and only
+  then calls the admission — which resolves the descriptor again. That is a lookup
+  repeated, not a rule; the same shape `connect` already has, where the entry point
+  re-derives the admission it was given.
+
+  It also means the handler cannot return early on `Answered`: an admission failure still
+  has to go through `UnixSystem.bind` so that the write happens. The handler's two arms
+  converge instead, with `family`/`endpoint` as `None` on the answered path.
+
+* **`privilegedPortCeiling` moves** from `EmulatedKernel` to `SimulatedUnixPlatform`, as
+  a constant rather than a function of the platform: measured 1024 on both. Review
+  caught that the first attempt *copied* it rather than moving it, leaving two public
+  definitions of 1024 that nothing forced to agree — the failure mode this whole
+  extraction exists to prevent, committed while performing it.
+
+**Two new refusals**, each a `failwith` in the handler today. `UnmodelledMulticast`, and
+`EphemeralPortsExhausted` for a port-0 bind that finds the whole range taken — the
+library refuses rather than inventing the `EADDRINUSE` a real kernel gives, which has not
+been measured under this allocator.
+
+`SockaddrCopyFields.checkSupplied` is extracted from `connect`, since `bind` is now a
+second caller of the same contract and a wrong field set is just as silent there.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestBind.fs`, 29 cases. The screens
+`bind` shares with `connect` are `TestConnect`'s; what is only here is what `bind` adds —
+each fault on its own, the `SO_REUSEADDR` write surviving two different failures, the
+ephemeral allocation and its exhaustion, and the fault *ordering*.
+
+**Two mistakes worth recording, both mine and both caught by the fixture.**
+
+* A row asserted that an already-bound socket asking for a multicast address answers
+  EINVAL "because `AlreadyBound` outranks the address on both flavours". It does not:
+  measured, Linux ranks `AddressNotLocal` *ahead* of `AlreadyBound` and Darwin the other
+  way, so the same input is refused on one flavour and answered on the other. The
+  corrected row is better than the one I meant to write — it is now the row that shows
+  the multicast refusal is genuinely gated on the ordering, and so what "refused late"
+  buys: a gap in the model that a higher-ranked fault can hide.
+* Two ordering rows computed their expected errno by calling `firstBindFault`, which is
+  the function under test — a mirror oracle that would have agreed with any order at
+  all. They state the errnos as literals now.
+
+**Mutation battery**: fifteen mutants, fourteen killed by the library's own suite —
+both directions of the `SO_REUSEADDR` write, the port ceiling in three ways, the
+per-transport namespaces, already-bound, the AF_UNSPEC split, the whole Darwin fault
+order, the multicast refusal, the allocated port being reported rather than the requested
+one, the address lock, the exhaustion refusal, and an errno swap.
+
+The fifteenth — removing the `Port > 0us` guard on the address-in-use fault — **survived,
+and could not have done otherwise**. `bindConflict` answers `false` outright when the
+ports differ, and no bound socket ever holds port 0, since every port-0 request
+allocates. So the guard restated a fact rather than enforcing one, and no test could
+falsify it. It is deleted, with the reasoning kept as a comment: a guard nothing can
+falsify is a guard nobody can maintain.
+
+**What is left after 13**: `listen` (which needs the bind-conflict relation this move
+took across), `socket`, the two non-blocking `fcntl`s, and the fixture relocation.

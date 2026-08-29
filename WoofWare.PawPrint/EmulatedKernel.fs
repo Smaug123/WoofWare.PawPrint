@@ -1071,14 +1071,6 @@ module EmulatedKernel =
     let defaultEphemeralPortRange : uint16 * uint16 = 32768us, 60999us
 
 
-    /// Ports a process may bind only as root.
-    ///
-    /// Measured as 1024 on both: binding 1023 is `EACCES` for an unprivileged
-    /// caller and 1024 succeeds. Not configurable, though Linux does expose it as
-    /// `ip_unprivileged_port_start`: nothing needs to vary it yet, and a knob
-    /// with no consumer is a knob no test covers.
-    let privilegedPortCeiling : uint16 = 1024us
-
     /// The addresses this machine holds, as `bind(2)` decides whether an address
     /// is assignable. Loopback only: PawPrint models no interface a guest could
     /// reach, so anything else would be an address no packet could arrive on.
