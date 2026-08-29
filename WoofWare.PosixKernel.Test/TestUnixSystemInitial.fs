@@ -87,6 +87,24 @@ module TestUnixSystemInitial =
 
         darwin.Machine.NextEphemeralPort |> shouldEqual linux.Machine.NextEphemeralPort
 
+    /// The cursor is where `bind(2)` for port 0 begins its sweep, and
+    /// `allocateEphemeralPort` walks *upward* from it, wrapping at the top. A
+    /// cursor parked at the top of the range is therefore not a harmless
+    /// starting point: it hands out the last port first.
+    ///
+    /// Asserted by allocating rather than by reading the field back, because the
+    /// field only matters through what it makes the allocator do.
+    [<TestCaseSource(nameof platforms)>]
+    let ``the first ephemeral port drawn is the bottom of the range`` (platform : SimulatedUnixPlatform) : unit =
+        let system : UnixSystem<int, string> = UnixSystem.initial platform
+
+        match UnixMachineState.allocateEphemeralPort (fun _ -> true) system.Machine with
+        | None -> failwith "a fresh machine could allocate no ephemeral port at all"
+        | Some (port, machine) ->
+            port |> shouldEqual 32768us
+            // ...and the cursor advances by one, so the next draw is not the same port.
+            machine.NextEphemeralPort |> shouldEqual 32769us
+
     // ------------------------------------------------------------------
     // The pairs that must start consistent
     // ------------------------------------------------------------------
