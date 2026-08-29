@@ -960,41 +960,40 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
 
-    /// One pathname argument, as far as `getname()` takes it: the pointer, the
-    /// `PATH_MAX`-bounded scan and the byte-to-`UnixPath` parse, with an
-    /// unreadable pointer reported as EFAULT rather than crashing.
+    /// One pathname argument's *bytes*: the pointer and the `PATH_MAX`-bounded
+    /// scan, and no more than that.
     ///
-    /// Returns a `PathArgument` rather than an errno, so that a syscall taking
-    /// *two* pathnames can decide where each argument's failure surfaces —
-    /// which for `rename` is a per-flavour question. See `RenameWalkOrder`.
-    let private pathArgument
+    /// Deliberately not decoded here. A syscall taking two pathnames copies them
+    /// in at points the kernel chooses and may never reach the second, so the
+    /// decode — which can refuse a pathname outright — belongs where the kernel
+    /// performs it. Reading the bytes early costs nothing, being a pure read of
+    /// guest memory; refusing early would answer about a pathname the syscall
+    /// never looked at.
+    let private pathArgumentBytes
         (ctx : NativeCallContext)
         (operation : string)
         (parameter : string)
         (argument : CliType)
         (state : IlMachineState)
-        : PathArgument
+        : PathArgumentBytes
         =
         match
             bufferPointerArgument operation parameter argument
             |> BufferPointer.dereferenceable
         with
-        | None -> PathArgument.Failed UnixError.EFAULT
+        | None -> PathArgumentBytes.Unreadable
         | Some pointer ->
 
         let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
 
-        let bytes =
-            NativeCall.readNullTerminatedBytesWithin
-                operation
-                ctx.BaseClassTypes
-                state
-                pointer
-                (PathLimits.pathMaxBytes limits)
-
-        match parseGuestPathBytes operation limits bytes with
-        | Error error -> PathArgument.Failed error
-        | Ok path -> PathArgument.Parsed path
+        NativeCall.readNullTerminatedBytesWithin
+            operation
+            ctx.BaseClassTypes
+            state
+            pointer
+            (PathLimits.pathMaxBytes limits)
+        |> ImmutableArray.CreateRange
+        |> PathArgumentBytes.Bytes
 
     /// The shape of a syscall taking *two* pathnames: decode both out of guest
     /// memory without deciding anything about the failures, hand both to the
@@ -1009,25 +1008,56 @@ module NativeSystemNative =
         (ctx : NativeCallContext)
         (operation : string)
         (call :
-            PathArgument
-                -> PathArgument
+            PathArgumentBytes
+                -> PathArgumentBytes
                 -> UnixSystem<ThreadId, SignalHandler>
-                -> SyscallAnswer * UnixSystem<ThreadId, SignalHandler>)
+                -> Result<SyscallAnswer * UnixSystem<ThreadId, SignalHandler>, PathArgumentRefusal>)
         (state : IlMachineState)
         : NativeHandlerResult option
         =
-        let first = pathArgument ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
+        let first =
+            pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
         let second =
-            pathArgument ctx operation "newPath" ctx.Instruction.Arguments.[1] state
+            pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
 
         match call first second (EmulatedKernel.unix state.Kernel) with
-        | SyscallAnswer.Failed error, system ->
+        | Error PathArgumentRefusal.NotUtf8 ->
+            // Reached only for a pathname the syscall actually copied in, which
+            // is the whole reason the decode is the kernel's rather than this
+            // boundary's. Whichever argument is unrepresentable is the one to
+            // name, and the source is asked first because it is copied in first
+            // on both flavours.
+            let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+            let offending =
+                [ "oldPath", first ; "newPath", second ]
+                |> List.tryPick (fun (parameter, argument) ->
+                    match argument with
+                    | PathArgumentBytes.Unreadable -> None
+                    | PathArgumentBytes.Bytes bytes ->
+
+                    match PathArgument.parse limits bytes with
+                    | Error PathArgumentRefusal.NotUtf8 -> Some (parameter, bytes)
+                    | Ok _ -> None
+                )
+
+            match offending with
+            | None ->
+                failwith
+                    $"%s{operation}: the kernel refused a pathname as not valid UTF-8, but neither argument fails to decode -- so the two disagree about what they were handed (this is an interpreter bug)."
+            | Some (parameter, bytes) ->
+
+            let rendered = bytes |> Seq.map (sprintf "%02X") |> String.concat " "
+
+            failwith
+                $"%s{operation}: the guest passed a %s{parameter} that is not valid UTF-8 (bytes: %s{rendered}). This kernel models a filename as a string of characters, so this path has no representation in the emulated filesystem, and decoding it leniently would silently resolve a different file. CoreLib never produces such a path -- it encodes from a string -- so this can only come from a hand-rolled P/Invoke."
+        | Ok (SyscallAnswer.Failed error, system) ->
             withErrno ctx error system state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
-        | SyscallAnswer.Completed _, system ->
+        | Ok (SyscallAnswer.Completed _, system) ->
             withAnswered system state
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
             |> NativeHandlerResult.completed

@@ -6287,6 +6287,18 @@ module UnixSystem =
                     }
             }
 
+    /// How a phase of `rename`'s two-path walk ended, when it did not produce a
+    /// resolution.
+    ///
+    /// Two kinds, because the two are answered differently: an errno is what the
+    /// guest is told, while a refusal is this kernel saying it cannot represent
+    /// what the guest asked about at all — a pathname whose bytes are not valid
+    /// UTF-8 names a file no `FileName` can.
+    [<RequireQualifiedAccess>]
+    type private RenameStop =
+        | Errno of error : UnixError
+        | Refused of refusal : PathArgumentRefusal
+
     /// `rename(2)`: move the name `source` names to `destination`, displacing
     /// whatever `destination` already named.
     ///
@@ -6299,29 +6311,42 @@ module UnixSystem =
     ///
     /// Never refused: every outcome is a success or an errno.
     let rename<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (source : PathArgument)
-        (destination : PathArgument)
+        (source : PathArgumentBytes)
+        (destination : PathArgumentBytes)
         (system : UnixSystem<'Task, 'Handler>)
-        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathArgumentRefusal>
         =
         let rules = SimulatedUnixPlatform.renameRules system.Machine.UnixPlatform
+        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
 
         /// `getname()`: what the kernel learned when it copied one pathname in,
         /// before anything looked at what it says.
-        let copiedIn (argument : PathArgument) : Result<UnixPath, UnixError> =
+        ///
+        /// The *decode* happens here rather than in the caller, and that is the
+        /// point of taking bytes: a caller that decoded both pathnames up front
+        /// would refuse an unrepresentable one the kernel never copies in, which
+        /// on Darwin is any destination whose source failed first.
+        let copiedIn (argument : PathArgumentBytes) : Result<UnixPath, RenameStop> =
             match argument with
-            | PathArgument.Parsed path -> Ok path
-            | PathArgument.Failed error -> Error error
+            | PathArgumentBytes.Unreadable -> Error (RenameStop.Errno UnixError.EFAULT)
+            | PathArgumentBytes.Bytes bytes ->
+
+            match PathArgument.parse limits bytes with
+            | Error refusal -> Error (RenameStop.Refused refusal)
+            | Ok (PathArgument.Failed error) -> Error (RenameStop.Errno error)
+            | Ok (PathArgument.Parsed path) -> Ok path
 
         // `NoFollowFinal` for both paths on both flavours — `rename` moves the
         // name it was given, never what that name points at. The trailing
         // separator is the only thing that reaches past a final symlink, and
         // only on Darwin; see `RenameRules.TrailingSeparator`.
-        let resolveFully (path : UnixPath) : Result<Resolution, UnixError> =
+        let resolveFully (path : UnixPath) : Result<Resolution, RenameStop> =
             resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
+            |> Result.mapError RenameStop.Errno
 
-        let resolveParent (path : UnixPath) : Result<PausedResolution, UnixError> =
+        let resolveParent (path : UnixPath) : Result<PausedResolution, RenameStop> =
             resolvePathParent SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
+            |> Result.mapError RenameStop.Errno
 
         /// Linux: both parents before either final lookup, with each pathname
         /// copied in immediately before *its own* parent is walked.
@@ -6334,7 +6359,7 @@ module UnixSystem =
         /// this wrong and its test green: the discriminating source is one whose
         /// *parent walk* fails, and `rename("nodir/kid", <over-long>)` is ENOENT
         /// where `rename("nope", <over-long>)` is ENAMETOOLONG.
-        let parentsThenFinals () : Result<Resolution * Resolution, UnixError> =
+        let parentsThenFinals () : Result<Resolution * Resolution, RenameStop> =
             match copiedIn source with
             | Error error -> Error error
             | Ok sourcePath ->
@@ -6351,28 +6376,34 @@ module UnixSystem =
             | Error error -> Error error
             | Ok destinationParent ->
 
-            // Source before destination, but nothing rests on it and no probe
-            // pins it: under this walk's policy pair the final lookup has
-            // exactly one failure, so the order is unobservable. `Ignore` makes
-            // `trailingActsOnFinal` false, which retires both the ENOTDIR and
-            // the EISDIR arms; `NoFollowFinal` with no trailing separator never
-            // traverses a final link, which retires ELOOP and the splice
-            // overflow. `NAME_MAX` is what is left, and it is the same errno on
-            // whichever path is asked first. A mutation swapping these two
-            // survives the suite for that reason rather than for want of a
-            // test.
+            // Source before destination, and here the order *is* pinned: the
+            // orphan check below sits between the two, so a 300-byte source name
+            // is ENAMETOOLONG while a 300-byte destination name under the same
+            // orphaned parent is ENOENT. Measured both ways.
             match VirtualFileSystem.completeResolution sourceParent with
-            | Error error -> Error error
+            | Error error -> Error (RenameStop.Errno error)
             | Ok sourceResolution ->
 
+            // A destination parent that has lost its own last name — reachable
+            // only as an `rmdir`'d current directory — is ENOENT here, *before*
+            // the destination's final name is measured. Both verdicts also
+            // refuse it, and on Darwin that is where it is caught, after the
+            // whole destination has resolved: measured, the same call is
+            // ENAMETOOLONG there. So this is the Linux position of a check both
+            // flavours make, not a check only Linux makes.
+            if VirtualFileSystem.pausedParentIsOrphaned destinationParent then
+                Error (RenameStop.Errno UnixError.ENOENT)
+            else
+
             VirtualFileSystem.completeResolution destinationParent
+            |> Result.mapError RenameStop.Errno
             |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
 
         /// Darwin: the source finished before the destination is looked at at
         /// all — its pathname included, which is what makes an unreadable or
         /// over-long destination lose to the source's ENOENT here and win on
         /// Linux.
-        let sourceThenDestination () : Result<Resolution * Resolution, UnixError> =
+        let sourceThenDestination () : Result<Resolution * Resolution, RenameStop> =
             match copiedIn source with
             | Error error -> Error error
             | Ok sourcePath ->
@@ -6385,7 +6416,7 @@ module UnixSystem =
             // of the refusals the verdict would otherwise make are settled here
             // — before the destination's pathname has even been copied in.
             match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
-            | Some error -> Error error
+            | Some error -> Error (RenameStop.Errno error)
             | None ->
 
             match copiedIn destination with
@@ -6405,7 +6436,8 @@ module UnixSystem =
             | RenameWalkOrder.SourceThenDestination -> sourceThenDestination ()
 
         match resolved with
-        | Error error -> SyscallAnswer.Failed error, system
+        | Error (RenameStop.Refused refusal) -> Error refusal
+        | Error (RenameStop.Errno error) -> Ok (SyscallAnswer.Failed error, system)
         | Ok (sourceResolution, destinationResolution) ->
 
         match
@@ -6416,12 +6448,12 @@ module UnixSystem =
                 destinationResolution
                 system.Machine.FileSystem
         with
-        | RenameVerdict.Refuse error -> SyscallAnswer.Failed error, system
+        | RenameVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
         // Both paths name one inode: a success that changes nothing at all, not
         // a binding and not a timestamp. Deliberately not routed through
         // `VirtualFileSystem.rename`, which refuses it — the graph primitive
         // would have to invent a no-op stamp to express it.
-        | RenameVerdict.NoOp -> SyscallAnswer.Completed 0L, system
+        | RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
         | RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName) ->
 
         let now = UnixMachineState.fileTimestamp system.Machine
@@ -6448,11 +6480,34 @@ module UnixSystem =
                 $"UnixSystem.rename: moving \"%s{FileName.toString sourceName}\" from inode %O{sourceDirectory} to \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
         | Ok (outcome, filesystem) ->
 
+        // A rename is the one syscall that can change the *path* of a directory
+        // the process is already in, without changing its inode: moving any
+        // ancestor of the current directory moves the current directory with it.
+        // The inode is what relative paths resolve from, so nothing about
+        // resolution notices — but `getcwd` reports the cached path, and a stale
+        // one names a directory that no longer exists.
+        //
+        // Recomputed rather than patched, because the move may have been of an
+        // ancestor several levels up, and `pathOfDirectory` is what
+        // `EmulatedKernelDefect.CurrentDirectoryPathDisagrees` compares against.
+        // `None` means the current directory has no path at all — it was
+        // displaced by this very rename and something still holds it — and a
+        // real `getcwd` fails there rather than answering, so the stale path is
+        // left exactly as `rmdir` of the current directory leaves it.
+        let currentDirectory =
+            match VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode filesystem with
+            | Some path -> path
+            | None -> system.Process.CurrentDirectory
+
         let moved =
             { system with
                 Machine =
                     { system.Machine with
                         FileSystem = filesystem
+                    }
+                Process =
+                    { system.Process with
+                        CurrentDirectory = currentDirectory
                     }
             }
 
@@ -6460,10 +6515,12 @@ module UnixSystem =
         // whether the inode goes with it depends on the descriptor table, which
         // the filesystem cannot see. When the displaced thing was a directory
         // this also collects the ancestors its ".." was keeping alive.
-        SyscallAnswer.Completed 0L,
-        match outcome.Displaced with
-        | None -> moved
-        | Some displaced -> forgetIfUnheld displaced moved
+        Ok (
+            SyscallAnswer.Completed 0L,
+            match outcome.Displaced with
+            | None -> moved
+            | Some displaced -> forgetIfUnheld displaced moved
+        )
 
     /// Answer one syscall.
     ///

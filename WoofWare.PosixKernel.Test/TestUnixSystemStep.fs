@@ -4410,17 +4410,36 @@ module TestUnixSystemStep =
         }
 
     let private renamed
-        (source : PathArgument)
-        (destination : PathArgument)
+        (source : PathArgumentBytes)
+        (destination : PathArgumentBytes)
         (system : UnixSystem<int, string>)
         : Result<unit, UnixError>
         =
         match UnixSystem.rename source destination system with
-        | SyscallAnswer.Completed 0L, _ -> Ok ()
-        | SyscallAnswer.Failed error, _ -> Error error
+        | Ok (SyscallAnswer.Completed 0L, _) -> Ok ()
+        | Ok (SyscallAnswer.Failed error, _) -> Error error
         | other -> failwith $"unexpected answer %A{other}"
 
-    let private arg (path : string) : PathArgument = PathArgument.Parsed (statPath path)
+    /// A pathname the guest passed, as bytes: what the syscall is actually
+    /// handed, since where each is decoded is the kernel's business.
+    let private arg (path : string) : PathArgumentBytes =
+        UnixPathText.utf8.GetBytes path
+        |> ImmutableArray.CreateRange
+        |> PathArgumentBytes.Bytes
+
+    /// A pathname argument whose copy-in fails, which `getname()` reports the
+    /// same way whether the pointer was unreadable or the path over-long.
+    let private badArg (error : UnixError) : PathArgumentBytes =
+        match error with
+        | UnixError.EFAULT -> PathArgumentBytes.Unreadable
+        | UnixError.ENAMETOOLONG ->
+            // Over PATH_MAX on either flavour, so the *kernel* produces the
+            // errno rather than the test asserting it into existence.
+            String.replicate 5000 "z"
+            |> UnixPathText.utf8.GetBytes
+            |> ImmutableArray.CreateRange
+            |> PathArgumentBytes.Bytes
+        | other -> failwith $"badArg: %O{other} is not a copy-in failure"
 
     /// Every row resolves its destination to "f/x", whose parent is a regular
     /// file — so the destination *alone* answers ENOTDIR, and any other errno is
@@ -4509,28 +4528,27 @@ module TestUnixSystemStep =
         for failure in [ UnixError.ENAMETOOLONG ; UnixError.EFAULT ] do
             let system = withRenameTree linux
 
-            renamed (arg "nodir/kid") (PathArgument.Failed failure) system
+            renamed (arg "nodir/kid") (badArg failure) system
             |> shouldEqual (Error UnixError.ENOENT)
 
-            renamed (arg "nosearch/kid") (PathArgument.Failed failure) system
+            renamed (arg "nosearch/kid") (badArg failure) system
             |> shouldEqual (Error UnixError.EACCES)
 
-            renamed (arg "f/kid") (PathArgument.Failed failure) system
+            renamed (arg "f/kid") (badArg failure) system
             |> shouldEqual (Error UnixError.ENOTDIR)
 
             // ...while a source whose parent walk *succeeds* does reach it, which
             // is what says the copy-in happens at all rather than never.
-            renamed (arg "nope") (PathArgument.Failed failure) system
-            |> shouldEqual (Error failure)
+            renamed (arg "nope") (badArg failure) system |> shouldEqual (Error failure)
 
             // Darwin resolves the source to completion first, so every one of
             // those four answers the source's own error there.
             let darwinTree = withRenameTree darwin
 
-            renamed (arg "nodir/kid") (PathArgument.Failed failure) darwinTree
+            renamed (arg "nodir/kid") (badArg failure) darwinTree
             |> shouldEqual (Error UnixError.ENOENT)
 
-            renamed (arg "nope") (PathArgument.Failed failure) darwinTree
+            renamed (arg "nope") (badArg failure) darwinTree
             |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -4543,25 +4561,22 @@ module TestUnixSystemStep =
 
             // Linux copies both pathnames in before walking either, so the
             // destination's failure beats a source that does not exist.
-            renamed (arg "nope") (PathArgument.Failed failure) system
-            |> shouldEqual (Error failure)
+            renamed (arg "nope") (badArg failure) system |> shouldEqual (Error failure)
 
             // Darwin finishes the source first, pathname and all.
-            renamed (arg "nope") (PathArgument.Failed failure) (withRenameTree darwin)
+            renamed (arg "nope") (badArg failure) (withRenameTree darwin)
             |> shouldEqual (Error UnixError.ENOENT)
 
             // Controls, agreeing on both: a bad *source* pathname always wins,
             // and a good source leaves the destination's failure to surface.
-            renamed (PathArgument.Failed failure) (arg "alsonope") system
+            renamed (badArg failure) (arg "alsonope") system |> shouldEqual (Error failure)
+
+            renamed (badArg failure) (arg "alsonope") (withRenameTree darwin)
             |> shouldEqual (Error failure)
 
-            renamed (PathArgument.Failed failure) (arg "alsonope") (withRenameTree darwin)
-            |> shouldEqual (Error failure)
+            renamed (arg "f") (badArg failure) system |> shouldEqual (Error failure)
 
-            renamed (arg "f") (PathArgument.Failed failure) system
-            |> shouldEqual (Error failure)
-
-            renamed (arg "f") (PathArgument.Failed failure) (withRenameTree darwin)
+            renamed (arg "f") (badArg failure) (withRenameTree darwin)
             |> shouldEqual (Error failure)
 
     [<Test>]
@@ -4592,7 +4607,7 @@ module TestUnixSystemStep =
 
         let moved =
             match UnixSystem.rename (arg "f") (arg "victim") system with
-            | SyscallAnswer.Completed 0L, system -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected a success, got %A{other}"
 
         // The source name is gone and the destination now names what moved.
@@ -4636,7 +4651,7 @@ module TestUnixSystemStep =
             // a *directory* is ENOTDIR, which would make this row measure the
             // type rule instead of the reap.
             match UnixSystem.rename (arg "lf") (arg "f") system with
-            | SyscallAnswer.Completed 0L, system -> system
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected a success, got %A{other}"
 
         // The name is gone, and the inode behind it is not.
@@ -4661,5 +4676,135 @@ module TestUnixSystemStep =
         let before = system.Machine.FileSystem
 
         match UnixSystem.rename (arg "f") (arg "f") system with
-        | SyscallAnswer.Completed 0L, after -> after.Machine.FileSystem |> shouldEqual before
+        | Ok (SyscallAnswer.Completed 0L, after) -> after.Machine.FileSystem |> shouldEqual before
         | other -> failwith $"expected a success, got %A{other}"
+
+    /// The same tree, with the current directory moved to `/dir/sub` — so that a
+    /// rename of `/dir` moves the process's own cwd without touching its inode.
+    let private withCwdInSub (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let system = withRenameTree system
+
+        let sub =
+            match UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/dir/sub") system with
+            | Ok inode -> inode
+            | Error error -> failwith $"could not resolve /dir/sub: %O{error}"
+
+        { system with
+            Process =
+                { system.Process with
+                    CurrentDirectoryInode = sub
+                    CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/dir/sub"
+                }
+        }
+
+    [<Test>]
+    let ``renaming an ancestor of the current directory moves the cwd with it`` () : unit =
+        // The cwd's *inode* does not change, so nothing about the descriptor
+        // side notices — but the path that reaches it does, and `getcwd` reports
+        // the cached path rather than re-walking. A rename that left the cache
+        // alone would have `getcwd` answer a directory that no longer exists.
+        let system = withCwdInSub linux
+
+        let moved =
+            // Absolute, because the cwd is now /dir/sub and a relative "dir"
+            // would resolve from there.
+            match UnixSystem.rename (arg "/dir") (arg "/moved") system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected a success, got %A{other}"
+
+        moved.Process.CurrentDirectory
+        |> shouldEqual (AbsoluteUnixPath.parseOrFail context "/moved/sub")
+
+        // ...and the cached path is the one that actually reaches the inode,
+        // which is the invariant `EmulatedKernelDefect.CurrentDirectoryPathDisagrees`
+        // is about.
+        VirtualFileSystem.pathOfDirectory moved.Process.CurrentDirectoryInode moved.Machine.FileSystem
+        |> shouldEqual (Some moved.Process.CurrentDirectory)
+
+    /// The tree with the current directory `rmdir`'d out from under the process,
+    /// which is the only way to reach an orphaned directory: one that still
+    /// exists, because this process is in it, but that no path reaches.
+    let private withOrphanedCwd (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let system = withRenameTree system
+
+        let inode, created =
+            match UnixSystem.mkdir (statPath "/gone") 0o755 system with
+            | SyscallAnswer.Completed 0L, created ->
+                match UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/gone") created with
+                | Ok inode -> inode, created
+                | Error error -> failwith $"could not resolve /gone: %O{error}"
+            | other -> failwith $"could not create /gone: %A{other}"
+
+        let inCwd =
+            { created with
+                Process =
+                    { created.Process with
+                        CurrentDirectoryInode = inode
+                        CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/gone"
+                    }
+            }
+
+        match UnixSystem.rmdir (statPath "/gone") inCwd with
+        | SyscallAnswer.Completed 0L, removed -> removed
+        | other -> failwith $"could not remove /gone: %A{other}"
+
+    [<Test>]
+    let ``an orphaned destination parent beats the destination's name length on Linux only`` () : unit =
+        let longName = String.replicate 300 "z"
+
+        // Linux reports the orphan before the destination's final name is
+        // measured; Darwin does the reverse. Measured on both — see
+        // docs/probes/rename/walk-order.py, whose two committed columns disagree
+        // on exactly this row.
+        renamed (arg "/f") (arg longName) (withOrphanedCwd linux)
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        renamed (arg "/f") (arg longName) (withOrphanedCwd darwin)
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        // The control both agree on, which says the orphan is reported at all.
+        for system in [ withOrphanedCwd linux ; withOrphanedCwd darwin ] do
+            renamed (arg "/f") (arg "x") system |> shouldEqual (Error UnixError.ENOENT)
+
+        // And the row that puts Linux's orphan check *below* the source's own
+        // final lookup rather than above both: a 300-byte source name is
+        // ENAMETOOLONG on both kernels, so the orphan does not win everything.
+        for system in [ withOrphanedCwd linux ; withOrphanedCwd darwin ] do
+            renamed (arg ("/" + longName)) (arg "x") system
+            |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
+    let ``a pathname the syscall never copies in is never decoded`` () : unit =
+        // Bytes that are not valid UTF-8 name a file this kernel cannot
+        // represent, so decoding them is a refusal rather than an errno. The
+        // decode therefore has to happen where the *kernel* copies the pathname
+        // in: on Darwin the source is resolved to completion first, so a
+        // destination behind a failing source is never looked at, and refusing
+        // it would answer about a pathname `rename(2)` never read.
+        let undecodable =
+            [| 0x66uy ; 0xFFuy ; 0x66uy |]
+            |> ImmutableArray.CreateRange
+            |> PathArgumentBytes.Bytes
+
+        // Darwin: the source's ENOENT is settled before the destination's
+        // pathname is copied in at all.
+        UnixSystem.rename (arg "nope") undecodable (withRenameTree darwin)
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree darwin))
+
+        // Linux: the source's *parent* walk fails before the destination's
+        // pathname is copied in.
+        UnixSystem.rename (arg "nodir/kid") undecodable (withRenameTree linux)
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree linux))
+
+        // ...and when the syscall does reach it, the refusal is reported rather
+        // than swallowed — otherwise the two rows above would pass for a kernel
+        // that never decodes anything.
+        UnixSystem.rename (arg "f") undecodable (withRenameTree linux)
+        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+
+        UnixSystem.rename (arg "f") undecodable (withRenameTree darwin)
+        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+
+        // A bad *source* is refused on both, being copied in first either way.
+        UnixSystem.rename undecodable (arg "x") (withRenameTree linux)
+        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)

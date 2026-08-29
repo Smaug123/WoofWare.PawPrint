@@ -148,6 +148,28 @@ def main():
             ],
         )
 
+        # Every relative path's parent is now an orphan: a directory that still
+        # exists, because this process is in it, but that no path reaches. It is
+        # the only way to reach that state, and it is what
+        # `RenameRules.*Verdict`'s orphaned-destination-parent arm is about.
+        base = os.getcwd()
+        os.mkdir("gone")
+        os.chdir(os.path.join(base, "gone"))
+        os.rmdir(os.path.join(base, "gone"))
+
+        run(
+            "an orphaned destination parent, against the final lookups",
+            "the cwd is an rmdir'd orphan, so a relative destination's parent is one",
+            [
+                ("control: short destination name", os.path.join(base, "f").encode(), b"x"),
+                ("DISCRIMINATOR: 300-byte destination name", os.path.join(base, "f").encode(), b"z" * 300),
+                ("300-byte *source* final name", os.path.join(base, "z" * 300).encode(), b"x"),
+                ("absent absolute source", os.path.join(base, "nope").encode(), b"x"),
+            ],
+        )
+
+        os.chdir(base)
+
 
 print(f"# {os.uname().sysname} {os.uname().release} {os.uname().machine}, uid {os.getuid()}")
 main()

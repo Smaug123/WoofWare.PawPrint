@@ -43,3 +43,10 @@ the root as /dev/..                rename(b'/dev/..', b'f/x') -> rc=-1 errno=ENO
 dir/.                              rename(b'dir/.', b'f/x') -> rc=-1 errno=ENOTDIR
 dir/..                             rename(b'dir/..', b'f/x') -> rc=-1 errno=ENOTDIR
 dir/sub/..                         rename(b'dir/sub/..', b'f/x') -> rc=-1 errno=ENOTDIR
+
+## an orphaned destination parent, against the final lookups
+# the cwd is an rmdir'd orphan, so a relative destination's parent is one
+control: short destination name    rename(b'/private/var..(70)', b'x') -> rc=-1 errno=ENOENT
+DISCRIMINATOR: 300-byte destination name rename(b'/private/var..(70)', b'zzzzzzzzzzzz..(300)') -> rc=-1 errno=ENAMETOOLONG
+300-byte *source* final name       rename(b'/private/var..(369)', b'x') -> rc=-1 errno=ENAMETOOLONG
+absent absolute source             rename(b'/private/var..(73)', b'x') -> rc=-1 errno=ENOENT
