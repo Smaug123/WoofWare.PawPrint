@@ -129,7 +129,7 @@ module TestSocketEventDelivery =
         (nonBlocking : bool)
         (dest : InternetEndpoint)
         (kernel : EmulatedKernel)
-        : EmulatedKernel.ConnectOutcome * EmulatedKernel
+        : ConnectOutcome * EmulatedKernel
         =
         EmulatedKernel.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
 
@@ -471,8 +471,7 @@ module TestSocketEventDelivery =
         // Nothing listens at 5999: the refusal latches and signals.
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
 
-        outcome
-        |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.EINPROGRESS)
+        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EINPROGRESS)
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
@@ -495,8 +494,7 @@ module TestSocketEventDelivery =
         // The delivering connect resets the socket, and the reset signals.
         let outcome, kernel = connect clientId true (loopback 5999us) kernel
 
-        outcome
-        |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
@@ -791,7 +789,7 @@ module TestSocketEventDelivery =
         dataOf delivered |> shouldEqual [ 6UL ]
 
         let outcome, kernel = connect clientId false (loopback 5000us) kernel
-        outcome |> shouldEqual EmulatedKernel.ConnectOutcome.Completed
+        outcome |> shouldEqual ConnectOutcome.Completed
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 
@@ -819,8 +817,7 @@ module TestSocketEventDelivery =
 
         let outcome, kernel = connect clientId false (loopback 5999us) kernel
 
-        outcome
-        |> shouldEqual (EmulatedKernel.ConnectOutcome.Failed UnixError.ECONNREFUSED)
+        outcome |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
 

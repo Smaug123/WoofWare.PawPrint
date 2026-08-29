@@ -4724,11 +4724,10 @@ module NativeSystemNative =
                         $"%s{operation}: fd %d{fd} was live for socketOfFd just above and nothing in this handler closes it, so this is an interpreter bug."
 
             match EmulatedKernel.connectSocket socketId nonBlocking declaredLength family destination state.Kernel with
-            | EmulatedKernel.ConnectOutcome.Completed, kernel ->
+            | ConnectOutcome.Completed, kernel ->
                 // A successful connect leaves errno alone.
                 state.MapKernel (fun _ -> kernel) |> complete UnixErrorPal.palSuccess
-            | EmulatedKernel.ConnectOutcome.Failed error, kernel ->
-                state.MapKernel (fun _ -> kernel) |> failFromSyscall error
+            | ConnectOutcome.Failed error, kernel -> state.MapKernel (fun _ -> kernel) |> failFromSyscall error
 
         // `int32_t SystemNative_GetSockName(intptr_t socket, uint8_t* socketAddress,
         // int32_t* socketAddressLen)` (pal_networking.c:1871).

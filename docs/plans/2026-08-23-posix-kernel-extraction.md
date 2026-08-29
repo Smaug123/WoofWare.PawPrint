@@ -3969,3 +3969,72 @@ kills either:
   there with exit code 44 against the real macOS runtime's 0.
 
 **What is left after 9j**: `connect`, `poll` and `WaitForSocketEvents`.
+
+#### Stage 9k: `connect(2)`'s ladder moves, and nothing else does
+
+**Dependencies**: 9j, for the adapter convention it settled.
+
+The second socket entry point, split in two. This is the first half: 748 lines of
+`connect(2)` ladder move from `EmulatedKernel.fs` to `WoofWare.PosixKernel`, and
+**nothing about what any caller sees changes**. The second half (9l) adds the
+`UnixSystem.connect` entry point and shrinks the handler.
+
+**Why split at all**, when 9j moved `accept` in one PR: because the two moves are shaped
+differently. `accept`'s ladder was *inline in the handler*, so extracting it and writing
+the entry point were the same edit. `connect`'s ladder is already a separate function,
+so the move and the entry point are two independent edits — and doing them together
+would put a 750-line relocation and a redesign in one diff, where a reviewer cannot tell
+which lines are which.
+
+**What the move is held to.** `scripts/check-move-is-rename-only.sh` cannot answer here:
+it compares whole files across a git rename, and this is a function moving between two
+files that both still exist. So the branch carries its own one-off verifier, which takes
+the block out of `EmulatedKernel.fs` at the base ref, applies the substitutions below,
+and compares against `UnixSystem.fs` word for word (whitespace-normalised, because
+fantomas re-wraps and re-wrapping is not content). It reports content-preserving for
+both moved functions.
+
+The substitutions are the whole of the change:
+
+* the eight forwarding members `EmulatedKernel` has and `UnixSystem` does not
+  (`kernel.Sockets` → `system.Machine.Sockets`, and seven more);
+* `EmulatedKernel` → `UnixSystem<'Task, 'Handler>` in five type annotations, and the
+  identifier `kernel` → `system` **in code only** — `kernel` is also an ordinary English
+  word throughout this function's prose ("a real kernel", "this kernel's"), and renaming
+  it there would be a meaning change smuggled into a move;
+* three prose repairs, which are the part a move cannot avoid: every message prefixed
+  `SystemNative_Connect:` now names `UnixSystem.connectSocket`, because a message must
+  name the function it comes from and the shim's name would misdirect; and two
+  references to types the library does not have (`EmulatedKernelDefect.SocketPhaseKindMismatch`,
+  `KernelConfig.EphemeralPortRange`) would otherwise be dangling.
+
+`ConnectOutcome`'s own docstring said "PAL SUCCESS" and "the wrapper maps it to a PAL
+return" — PAL vocabulary in the library, and exactly the prose blind spot the residue
+check cannot see. Reworded to say what the type means without naming a client's
+encoding. `signalSocketDataReady` moved too: `connectSocket` was its only caller, and
+it is nothing but library primitives.
+
+**The narrative "PawPrint" mentions are deliberately left alone**, per the standing rule
+for this extraction: they mark text not yet hand-reviewed for release, and a move is not
+a review.
+
+**What did not move.** `EmulatedKernel.connectSocket` survives as a six-line adapter,
+for the reason `acceptConnection`'s exists: six fixtures call it holding an
+`EmulatedKernel`. `ConnectOutcome` could not be adapted the same way — an F# type
+abbreviation does not re-export union cases for qualified access — so the ~25
+`EmulatedKernel.ConnectOutcome.X` references in fixtures became `ConnectOutcome.X`.
+
+**Correctness oracle**: the move verifier, plus every existing test unchanged.
+`TestEmulatedKernelSockets` alone carries about thirty `connect` rows, `SocketFuzz`
+drives it, and the guest tier runs `SocketConnect{,Linux,Darwin}.cs`. All pass with no
+edit beyond the qualified-name rename.
+
+**The gap this leaves, stated rather than hidden**: `connectSocket` is now a library
+rule with **no library-side test at all** — the 9g failure mode, where `reportedUnder`
+could only be killed by the client's suite. It is deliberate for one PR: the exhaustive
+rows live in a 1500-line PawPrint fixture that covers far more than `connect`, and
+moving that is its own stage. 9l adds `WoofWare.PosixKernel.Test/TestConnect.fs`
+alongside the entry point.
+
+**What is left after 9k**: the `connect` entry point (9l), then `poll` and
+`WaitForSocketEvents`.
