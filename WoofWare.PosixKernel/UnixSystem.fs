@@ -758,6 +758,47 @@ module BindRefusal =
         | BindRefusal.EphemeralPortsExhausted (low, high) ->
             $"every port in the ephemeral range %d{low}-%d{high} is taken, so this bind of port 0 has no answer. A real kernel reports EADDRINUSE, but that has not been measured under this allocator and inventing it would be a guess. Widen the range, or measure the real answer."
 
+/// What a `listen(2)` answered.
+[<RequireQualifiedAccess>]
+type ListenAnswer =
+    /// The socket is listening. `endpoint` is where it is bound, which for a
+    /// socket that had no address is the one this call gave it.
+    | Listening of endpoint : InternetEndpoint
+    /// The call failed with this errno, and nothing changed.
+    | Failed of error : UnixError
+
+/// Why this kernel will not answer a `listen`.
+[<RequireQualifiedAccess>]
+type ListenRefusal =
+    /// The descriptor is a socket in a domain whose addresses this kernel does
+    /// not model, so the implicit bind below has no address to give it.
+    | UnmodelledDomain of socket : SocketId * domain : SocketDomain
+    /// The descriptor is a socket of a kind whose `listen(2)` answer is
+    /// unmeasured: `SOCK_SEQPACKET` does accept connections and `SOCK_RAW`
+    /// plausibly answers `EOPNOTSUPP`, but neither has been measured.
+    | UnmeasuredKind of socket : SocketId * kind : SocketKind
+    /// The descriptor is a stream socket in a phase whose `listen(2)` answer is
+    /// unmeasured -- plausibly `EISCONN` for a connected one.
+    | UnmeasuredPhase of socket : SocketId * phase : SocketPhase
+    /// The socket had no address, so this call binds it, and every port in the
+    /// ephemeral range is taken.
+    | EphemeralPortsExhausted of range : uint16 * uint16
+
+[<RequireQualifiedAccess>]
+module ListenRefusal =
+    /// What this kernel knows about why it will not listen. The client supplies
+    /// its own half -- which entry point asked, and which descriptor.
+    let describe (refusal : ListenRefusal) : string =
+        match refusal with
+        | ListenRefusal.UnmodelledDomain (socket, domain) ->
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. A `listen` on an unbound socket binds it, and this kernel models a local address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint."
+        | ListenRefusal.UnmeasuredKind (socket, kind) ->
+            $"the descriptor is socket %O{socket}, which is a %O{kind} socket, and what `listen(2)` answers for one is unmeasured. Measure it rather than guessing: SOCK_SEQPACKET does accept connections, so a guess of EOPNOTSUPP there would be a wrong answer rather than an approximate one."
+        | ListenRefusal.UnmeasuredPhase (socket, phase) ->
+            $"the descriptor is socket %O{socket}, a stream socket in %A{phase}, and what `listen(2)` answers for one is unmeasured -- plausibly EISCONN for a connected socket. Measure it rather than guessing."
+        | ListenRefusal.EphemeralPortsExhausted (low, high) ->
+            $"this socket has no address, so `listen(2)` binds it, and every port in the ephemeral range %d{low}-%d{high} is taken. Widen the range, or measure what a real kernel says here."
+
 /// What kind of object one directory entry names.
 ///
 /// Not `InodeContent`, which carries the payload as well — a caller enumerating
@@ -5052,6 +5093,41 @@ module UnixSystem =
 
         Ok (SockaddrCopyAdmission.Transfer (declaredLength, fields))
 
+    /// Whether any *other* socket's binding conflicts with `candidate`, taken on
+    /// behalf of `socket`.
+    ///
+    /// The relation `bind(2)` decides admission with, and `listen(2)` asks
+    /// again -- on the flavour whose `listen` re-runs it, and for the implicit
+    /// bind an unbound `listen` performs. One definition because it is one
+    /// kernel rule; the callers differ only in *when* they ask.
+    let private bindingConflicts<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        (candidate : SocketBinding)
+        (system : UnixSystem<'Task, 'Handler>)
+        : bool
+        =
+        system.Machine.Sockets
+        |> Map.exists (fun otherId (other : SocketDescription) ->
+            if otherId = socketId then
+                false
+            else
+
+            match other.Binding with
+            | None -> false
+            | Some existing ->
+                // Separate port namespaces per transport, measured: a UDP socket
+                // takes a port a listening TCP socket holds.
+                other.Kind = socket.Kind
+                && SimulatedUnixPlatform.bindConflict
+                    system.Machine.UnixPlatform
+                    existing
+                    other.ReuseAddress
+                    other.Phase
+                    candidate
+                    socket.ReuseAddress
+        )
+
     /// `bind(2)`: give `fd` a local address.
     ///
     /// `family` and `endpoint` are what the caller read out of its sockaddr, and
@@ -5188,26 +5264,7 @@ module UnixSystem =
                 && system.Process.UserId <> 0u
 
         let conflictsWith (binding : SocketBinding) : bool =
-            system.Machine.Sockets
-            |> Map.exists (fun otherId (other : SocketDescription) ->
-                if otherId = socketId then
-                    false
-                else
-
-                match other.Binding with
-                | None -> false
-                | Some existing ->
-                    // Separate port namespaces per transport, measured: a UDP
-                    // socket takes a port a listening TCP socket holds.
-                    other.Kind = socket.Kind
-                    && SimulatedUnixPlatform.bindConflict
-                        platform
-                        existing
-                        other.ReuseAddress
-                        other.Phase
-                        binding
-                        socket.ReuseAddress
-            )
+            bindingConflicts socketId socket binding system
 
         // A request for port 0 needs no special case here, and had one until a
         // mutation showed nothing could falsify it: `bindConflict` answers
@@ -5303,6 +5360,128 @@ module UnixSystem =
                 }
 
         Ok (BindAnswer.Bound bound.Endpoint, system)
+
+    /// `listen(2)`: make `fd` a passive socket, and give it an address if it has
+    /// none.
+    ///
+    /// `backlog` is recorded verbatim rather than clamped: every value is
+    /// accepted -- measured, 0, -1 and `INT_MAX` all succeed on both -- and the
+    /// accept-queue capacity a later `connect` enforces is derived from it per
+    /// flavour, so storing the input keeps one flavour's arithmetic out of the
+    /// stored value.
+    ///
+    /// A re-listen keeps the queue and updates the backlog, which is Linux's
+    /// documented behaviour (`sk_max_ack_backlog` is simply re-assigned).
+    let listen<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (backlog : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ListenAnswer * UnixSystem<'Task, 'Handler>, ListenRefusal>
+        =
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | None -> Ok (ListenAnswer.Failed UnixError.EBADF, system)
+        | Some target ->
+
+        match target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort _ -> Ok (ListenAnswer.Failed UnixError.ENOTSOCK, system)
+        | OpenFileTarget.Socket socketId ->
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        match socket.Domain with
+        | SocketDomain.InterNetworkV6
+        | SocketDomain.Unix -> Error (ListenRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.InterNetwork ->
+
+        match socket.Kind with
+        | SocketKind.Datagram -> Ok (ListenAnswer.Failed UnixError.EOPNOTSUPP, system)
+        | SocketKind.Raw
+        | SocketKind.SeqPacket -> Error (ListenRefusal.UnmeasuredKind (socketId, socket.Kind))
+        | SocketKind.Stream ->
+
+        // Split out rather than matched in place: the original handler could put
+        // its refusal in a `failwith`, which types as anything; a refusal that is
+        // a value has to be produced before the rest of the function continues.
+        let unmeasuredPhase =
+            match socket.Phase with
+            | SocketPhase.Idle
+            | SocketPhase.Listening _ -> None
+            | phase -> Some phase
+
+        match unmeasuredPhase with
+        | Some phase -> Error (ListenRefusal.UnmeasuredPhase (socketId, phase))
+        | None ->
+
+        // On Linux two sockets carrying SO_REUSEADDR may share an endpoint until
+        // one of them listens, and the second `listen(2)` is then EADDRINUSE.
+        // Darwin asks nothing of a socket that already has a port; see
+        // `listenRescreensBinding` for why that is not a strictness difference
+        // to round in the safe direction.
+        match socket.Binding with
+        | Some binding when
+            SimulatedUnixPlatform.listenRescreensBinding system.Machine.UnixPlatform
+            && bindingConflicts socketId socket binding system
+            ->
+            Ok (ListenAnswer.Failed UnixError.EADDRINUSE, system)
+        | _ ->
+
+        match
+            (match socket.Binding with
+             | Some binding -> Some (binding, system.Machine)
+             | None ->
+                 // `listen(2)` on an unbound socket binds it to the wildcard and
+                 // an ephemeral port. Measured on both -- and note it does *not*
+                 // go through `bind(2)`, so no `SO_REUSEADDR` is set, which is a
+                 // distinction a later bind can see.
+                 let candidate (port : uint16) : SocketBinding =
+                     {
+                         Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                         // This implicit bind runs no `bind(2)`, so nothing is
+                         // locked.
+                         LockedAddress = None
+                     }
+
+                 let acceptable (port : uint16) : bool =
+                     not (bindingConflicts socketId socket (candidate port) system)
+
+                 UnixMachineState.allocateEphemeralPort acceptable system.Machine
+                 |> Option.map (fun (port, machine) -> candidate port, machine))
+        with
+        | None -> Error (ListenRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
+        | Some (bound, machine) ->
+
+        let listenPhase =
+            match socket.Phase with
+            | SocketPhase.Listening listenState ->
+                SocketPhase.Listening
+                    { listenState with
+                        Backlog = backlog
+                    }
+            | _ ->
+                SocketPhase.Listening
+                    {
+                        Backlog = backlog
+                        Queue = []
+                    }
+
+        let system =
+            { system with
+                Machine =
+                    { machine with
+                        Sockets =
+                            Map.add
+                                socketId
+                                { socket with
+                                    Binding = Some bound
+                                    Phase = listenPhase
+                                }
+                                machine.Sockets
+                    }
+            }
+
+        Ok (ListenAnswer.Listening bound.Endpoint, system)
 
     /// `connect(2)`: point `fd` at `endpoint`, or ask what pointing it there
     /// would answer.

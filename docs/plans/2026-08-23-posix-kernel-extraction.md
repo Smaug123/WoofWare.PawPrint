@@ -4636,3 +4636,59 @@ falsify is a guard nobody can maintain.
 
 **What is left after 13**: `listen` (which needs the bind-conflict relation this move
 took across), `socket`, the two non-blocking `fcntl`s, and the fixture relocation.
+
+### Stage 14: `listen(2)` moves, and `socketOfFd` falls out
+
+**Dependencies**: 13, whose move brought the bind-conflict relation across.
+
+The shortest of the five, and the cleanest: `SystemNative_Listen` had, in its own words,
+"no screens of its own: it is `listen(2)`". So the whole handler is now the errno write,
+and `UnixSystem.listen` is the rest.
+
+**The relation `bind` and `listen` share** — "does another socket's binding conflict with
+mine" — was a closure inside each of them. It is one function now,
+`UnixSystem.bindingConflicts`, because it is one kernel rule; the two callers differ only
+in *when* they ask. `listen` asks it twice: once on the flavour whose `listen(2)` re-runs
+the admission, and once per candidate port for the implicit bind an unbound `listen`
+performs.
+
+**Three `failwith`s become refusals** — the unmodelled domain, the unmeasured kinds, and
+the unmeasured phases — plus `EphemeralPortsExhausted` for the implicit bind.
+
+One shape had to change on the way. The handler screened the phase with a `unit`-typed
+match whose other arm was a `failwith`, which types as anything and so could sit in the
+middle of the fall-through. A refusal that is a *value* cannot: it has to be produced
+before the rest of the function continues, so the phase check is now an
+`option`-returning match followed by a match on that.
+
+**`socketOfFd` is deleted.** It was the shared descriptor ladder for `bind`, `listen`,
+`accept` and `connect`; all four have moved, and its last reference went with this stage.
+Checked against the whole solution rather than one file, which is the lesson stage 9n's
+`faultsBeforeOperation` taught: that one *looked* dead in `NativeSystemNative.fs` and had
+three callers in a fixture.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestListen.fs`, 27 cases. Every row is
+`listen(2)`, since nothing here belongs to a caller. Two are reachable only at this tier:
+the binding re-screen, which Linux performs and Darwin does not, and the implicit bind's
+exhaustion.
+
+**A premise I got wrong, again in a fixture rather than in the code.** The re-screen row
+first set up two reuse-carrying sockets both merely *bound*, and expected the second
+`listen` to be EADDRINUSE on Linux. It is not: Linux's relaxation holds while nothing
+listens, so a pair that has only bound does not conflict at all — it is the second
+`listen`, with the first already listening, that finds one. The corrected row sets the
+holder listening, and a new row asserts the complement: the *first* listener of such a
+pair is admitted on both flavours. Without that second row the first would pass for a
+rule that refused any duplicate binding.
+
+**Mutation battery**: twelve mutants, all killed by the library's own suite — the
+re-screen in three ways (on both flavours, on neither, and with the predicate inverted),
+the implicit bind's address, its lock and its conflict check, the re-listen's queue, the
+backlog clamp, the datagram answer, the kind/phase ordering, and both halves of the
+shared conflict relation. Nothing here needed PawPrint's suite consulted.
+
+**What is left after 14**: `socket`, the two non-blocking `fcntl`s, and the fixture
+relocation. Also noted in passing: `UnmodelledDomain` now appears as a case in four
+refusal DUs with the same shape and meaning (`accept`, `sockaddrCopy`, `listen`, and
+`bind` through the first of those). A shared case would be tidier; it is deliberately not
+done here, being churn across three shipped entry points for a naming gain.
