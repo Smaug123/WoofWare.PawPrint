@@ -4466,6 +4466,9 @@ module NativeSystemNative =
             let declaredLength =
                 BinaryPrimitives.ReadInt32LittleEndian ((readBytesThrough ctx operation lengthCell 4 state).AsSpan ())
 
+            // The shim's own screen, before the cast to `socklen_t` that would
+            // otherwise make the bound SIZE_MAX. No kernel is ever asked, which
+            // is why the library refuses one instead.
             if declaredLength < 0 then
                 complete (UnixErrorPal.toPal UnixError.EFAULT) state
             else
@@ -4477,10 +4480,12 @@ module NativeSystemNative =
             // failure, before returning the PAL error — so a stray pointer is
             // the SIGSEGV `requireStorage` explains, whichever answer it would
             // have accompanied. The address buffer is different: the kernel
-            // writes it only on *success*, of which there is none below, so it
-            // is never resolved and a stray address answers as measured.
+            // writes it only on *success*, so it is resolved below and only
+            // when there is something to write.
             let acceptedCell = requireStorage operation "acceptedSocket" acceptedArgument
 
+            // `toRawErrnoUnder` rather than `toRawErrno`: EOPNOTSUPP is 95 on
+            // Linux against 102 on Darwin, and ENOTSOCK 88 against 38.
             let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
                 let raw =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
@@ -4492,100 +4497,89 @@ module NativeSystemNative =
                 |> fun state -> state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
 
-            match socketOfFd operation fd state with
-            | Error error -> failFromSyscall error state
-            | Ok (socketId, socket) ->
+            match
+                UnixSystem.accept
+                    fd
+                    (BufferPointer.toUserBuffer addressArgument)
+                    declaredLength
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error (AcceptRefusal.UnmodelledDomain (_, domain) as refusal) ->
+                // The library says why no kernel answer exists; PawPrint says how
+                // a guest could be holding such a socket, which is a fact about
+                // CoreLib rather than about any kernel.
+                let reachedBy =
+                    match domain with
+                    | SocketDomain.InterNetworkV6 ->
+                        "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                    | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
+                    | SocketDomain.InterNetwork ->
+                        failwith
+                            $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
-            match socket.Kind with
-            | SocketKind.Datagram ->
-                // The kind check beats the listening check: measured on both,
-                // a datagram socket — which is also "not listening" — answers
-                // EOPNOTSUPP, blocking or not.
-                failFromSyscall UnixError.EOPNOTSUPP state
-            | SocketKind.Raw
-            | SocketKind.SeqPacket ->
+                failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} %s{reachedBy}"
+            | Error (AcceptRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage addressArgument refusal)
+            | Error (AcceptRefusal.UnmeasuredCopyOutFault _ as refusal) ->
+                // The library never saw the pointer, only how PawPrint
+                // classified it, so naming the argument is PawPrint's half.
                 failwith
-                    $"%s{operation}: fd %d{fd} is a %O{socket.Kind} socket. What `accept(2)` answers for one is unmeasured — SOCK_SEQPACKET does accept connections, SOCK_RAW plausibly EOPNOTSUPP — so measure it rather than guessing."
-            | SocketKind.Stream ->
+                    $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal} `socketAddress` is %O{addressArgument}; pass a real buffer."
+            | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{AcceptRefusal.describe refusal}"
+            | Ok (AcceptAnswer.Failed error, _) ->
+                // No system is carried back: the library documents that a failing
+                // accept changes nothing, so writing one would be a no-op that
+                // hid a future change to that contract.
+                failFromSyscall error state
+            | Ok (AcceptAnswer.Accepted (acceptedFd, peer, reportedLength), unix) ->
 
-            match socket.Phase with
-            | SocketPhase.Idle
-            | SocketPhase.EstablishedPendingReport _
-            | SocketPhase.Established _
-            | SocketPhase.RefusedPendingDelivery
-            | SocketPhase.Dead ->
-                // ...and the listening check beats blocking behaviour:
-                // measured on both, a *blocking* non-listening socket answers
-                // EINVAL immediately rather than parking. Measured for idle
-                // sockets, bound or not; the other non-listening phases share
-                // the answer because it is the same kernel test (Linux's
-                // TCP_LISTEN check, Darwin's SO_ACCEPTCONN check).
-                failFromSyscall UnixError.EINVAL state
-            | SocketPhase.DatagramPeer _ ->
-                failwith
-                    $"%s{operation}: fd %d{fd} is a stream socket holding SocketPhase.DatagramPeer. EmulatedKernelDefect.SocketPhaseKindMismatch exists to make this unreachable, so this is an interpreter bug."
-            | SocketPhase.Listening listenState ->
+            // `#if !defined(__linux__)`: "On macOS and FreeBSD new socket
+            // inherits flags from accepting fd. Our socket code expects new
+            // socket to be in blocking mode by default"
+            // (pal_networking.c:1733). Applied on every flavour rather than
+            // under a platform test, because on Linux the kernel never set the
+            // flag and clearing it is a no-op. The shim closes the accepted
+            // socket if the `fcntl` fails; nothing here can fail.
+            let unix =
+                { unix with
+                    Process =
+                        { unix.Process with
+                            FileDescriptors =
+                                FileDescriptorRegistry.setNonBlocking acceptedFd false unix.Process.FileDescriptors
+                        }
+                }
 
-            // `O_NONBLOCK` is a fact about the open file description `fd` came
-            // through, not about the socket, so an accept through a `dup` of a
-            // non-blocking listener answers EAGAIN too.
-            let nonBlocking =
-                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-                | Some description -> description.NonBlocking
-                | None ->
-                    failwith
-                        $"%s{operation}: fd %d{fd} was live for socketOfFd just above and nothing in this handler closes it, so this is an interpreter bug."
+            let state = state.MapKernel (EmulatedKernel.withUnix unix)
 
-            match listenState.Queue with
-            | [] ->
-                if nonBlocking then
-                    failFromSyscall UnixError.EAGAIN state
-                else
-                    failwith
-                        $"%s{operation}: fd %d{fd} is a *blocking* listening socket with an empty accept queue, which a real kernel parks until a connection arrives — and PawPrint has no wake to end that park (the accept-side delivery belongs to the readiness work). Complete a connect before this accept, or make the listener non-blocking."
-            | _ :: _ ->
-
-            // Success writes the peer address through `socketAddress`, so its
-            // storage must exist; what a real kernel does when the copy-out
-            // faults *after* the connection is dequeued is unmeasured, so a
-            // stray pointer is refused rather than answered. A declared
-            // length of zero copies nothing and never touches the pointer,
-            // exactly as `getsockname(2)` was measured to.
-            let addressStorage =
-                match BufferPointer.dereferenceable addressArgument with
-                | Some storage -> Some storage
-                | None when declaredLength = 0 -> None
-                | None ->
-                    failwith
-                        $"%s{operation}: the accept queue is nonempty, so this call succeeds and writes the peer address — but `socketAddress` is %O{addressArgument}, which names no storage, and whether a real kernel loses the connection when that copy-out faults is unmeasured. Pass a real buffer."
-
-            let acceptedFd, tcpConnection, kernel =
-                EmulatedKernel.acceptConnection socketId state.Kernel
-
-            let state = state.MapKernel (fun _ -> kernel)
-
-            let platform = state.Kernel.UnixPlatform
-            let realLength = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
-            let blob = internetSockaddrBlob platform tcpConnection.ClientAddress
+            let blob = internetSockaddrBlob state.Kernel.UnixPlatform peer
 
             // The caller's declared length bounds what is *written* and not
             // what is *reported*, exactly as for `getsockname(2)`: both come
             // out of the kernel's one sockaddr copy-out helper.
-            let written = min declaredLength realLength
+            let written = min declaredLength reportedLength
 
             let state =
                 if written = 0 then
+                    // A call that writes nothing never resolves the destination,
+                    // which is why a declared length of zero succeeds through a
+                    // pointer naming no storage.
                     state
                 else
+                    let storage =
+                        match BufferPointer.dereferenceable addressArgument with
+                        | Some storage -> storage
+                        | None ->
+                            failwith
+                                $"%s{operation}: `socketAddress` is %O{addressArgument}, which names no storage, yet the library accepted a connection rather than refusing the copy-out. This is an interpreter bug."
+
                     writeBytesThrough
                         ctx
                         operation
-                        (Option.get addressStorage)
+                        storage
                         (ImmutableArray.CreateRange (Array.sub blob 0 written))
                         state
 
             let reported = Array.zeroCreate<byte> 4
-            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, realLength)
+            BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> reported, reportedLength)
 
             let acceptedBytes = Array.zeroCreate<byte> 8
             BinaryPrimitives.WriteInt64LittleEndian (System.Span<byte> acceptedBytes, int64 acceptedFd)

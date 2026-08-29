@@ -30,6 +30,7 @@
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestLinuxEpollLimits.fs" />
     <Compile Include="TestCreatableSockets.fs" />
+    <Compile Include="TestAccept.fs" />
   </ItemGroup>
 
   <ItemGroup>

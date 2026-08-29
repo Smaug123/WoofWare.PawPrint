@@ -2660,85 +2660,16 @@ module EmulatedKernel =
 
             ConnectOutcome.Completed, kernel
 
-    /// Dequeue the oldest completed connection from `socketId`'s accept queue
-    /// and materialise the server-side socket onto it: a fresh socket, bound
-    /// at the connection's server address, on a fresh (blocking) descriptor.
-    /// Answers the new fd and the connection, whose `ClientAddress` is what
-    /// `accept(2)` reports as the peer.
+    /// `UnixSystem.acceptConnection` — dequeue the oldest completed connection
+    /// from `socketId`'s accept queue and materialise the server-side socket
+    /// onto it — through this kernel rather than through its POSIX half.
     ///
-    /// Partial: the caller has already answered EAGAIN (or refused to park)
-    /// for an empty queue, and EINVAL/EOPNOTSUPP for a socket that is not a
-    /// listening stream socket, so reaching this in any other state is an
-    /// interpreter bug.
+    /// Here rather than at the call sites because there are ten of them, all in
+    /// fixtures that hold an `EmulatedKernel`: writing `unix` in and `withUnix`
+    /// back out at each would be this function, copied.
     let acceptConnection (socketId : SocketId) (kernel : EmulatedKernel) : int * TcpConnection * EmulatedKernel =
-        let listener = UnixMachineState.socket socketId kernel.Machine
-
-        match listener.Phase with
-        | SocketPhase.Listening ({
-                                     Queue = connectionId :: rest
-                                 } as listenState) ->
-            let tcpConnection = UnixMachineState.connection connectionId kernel.Machine
-            let acceptedId = kernel.NextSocketId
-            let (SocketId rawAcceptedId) = acceptedId
-
-            let fd, registry =
-                FileDescriptorRegistry.createSocket acceptedId kernel.FileDescriptors
-
-            let accepted =
-                {
-                    Domain = listener.Domain
-                    Kind = SocketKind.Stream
-                    Protocol = listener.Protocol
-                    Binding =
-                        Some
-                            {
-                                Endpoint = tcpConnection.ServerAddress
-                                // Nothing reads this on an accepted socket:
-                                // its phase is Established for life, so no
-                                // refusal delivery can ever revert it.
-                                LockedAddress = None
-                            }
-                    // Both kernels copy the listener's socket options onto
-                    // the accepted socket (inet_csk_clone_lock; sonewconn),
-                    // and this flag's one modelled effect is bind-conflict
-                    // admission. No current guest observes the inheritance.
-                    ReuseAddress = listener.ReuseAddress
-                    Phase = SocketPhase.Established connectionId
-                }
-
-            let kernel =
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            Sockets =
-                                kernel.Sockets
-                                |> Map.add acceptedId accepted
-                                |> Map.add
-                                    socketId
-                                    { listener with
-                                        Phase =
-                                            SocketPhase.Listening
-                                                { listenState with
-                                                    Queue = rest
-                                                }
-                                    }
-                            NextSocketId = SocketId (rawAcceptedId + 1L)
-                        }
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors = registry
-                        }
-                }
-
-            fd, tcpConnection, kernel
-        | SocketPhase.Listening {
-                                    Queue = []
-                                } ->
-            failwith
-                "EmulatedKernel.acceptConnection: the accept queue is empty; the caller answers EAGAIN (or refuses to park) before reaching this. This is an interpreter bug."
-        | phase ->
-            failwith
-                $"EmulatedKernel.acceptConnection: socket %O{socketId} is in %A{phase}, not listening; the caller screens this. This is an interpreter bug."
+        let fd, connection, system = UnixSystem.acceptConnection socketId (unix kernel)
+        fd, connection, withUnix system kernel
 
     /// Check that the kernel knows exactly the tasks that `liveThreads` are.
     ///

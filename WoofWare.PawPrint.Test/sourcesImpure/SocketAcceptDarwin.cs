@@ -44,6 +44,15 @@ class SocketAcceptDarwin
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlSetIsNonBlocking")]
     static extern int SetIsNonBlocking(IntPtr fd, int isNonBlocking);
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_FcntlGetIsNonBlocking")]
+    static extern unsafe int GetIsNonBlocking(IntPtr fd, int* isNonBlocking);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_Connect")]
+    static extern unsafe int Connect(IntPtr socket, byte* socketAddress, int socketAddressLen);
+
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetSockName")]
+    static extern unsafe int GetSockName(IntPtr socket, byte* socketAddress, int* socketAddressLen);
+
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_CreateSocketEventPort")]
     static extern unsafe int CreateSocketEventPort(IntPtr* port);
 
@@ -158,6 +167,47 @@ class SocketAcceptDarwin
         len = V4Size;
         if (AcceptReportingErrno(s, outAddr, &len, &acc) != PAL_EBADF) return 30;
         if (Marshal.GetLastSystemError() != EBADF) return 31;
+
+        // --- The accepted socket is blocking, through a non-blocking listener ---
+        //
+        // Darwin's `accept(2)` inherits the listening description's O_NONBLOCK
+        // and Linux's does not; `SystemNative_Accept` clears it under
+        // `#if !defined(__linux__)` -- "Our socket code expects new socket to be
+        // in blocking mode by default" -- so this row reads 0 on both. It is
+        // here rather than in the differential `SocketAccept.cs` because only a
+        // guest running the *Darwin* flavour exercises the clearing: on Linux
+        // the kernel never set the flag, so the shim's `fcntl` is a no-op and a
+        // Linux-flavour guest passes whether it happens or not.
+        IntPtr v = Make(SOCK_STREAM, PT_TCP);
+        if (v == (IntPtr)(-1)) return 32;
+        if (!Address(blob)) return 33;
+        if (Bind(v, PT_TCP, blob, V4Size) != PAL_SUCCESS) return 34;
+        if (Listen(v, 8) != PAL_SUCCESS) return 35;
+
+        // The bound port, which `Address` left as 0 for the kernel to choose.
+        len = V4Size;
+        if (GetSockName(v, blob, &len) != PAL_SUCCESS) return 36;
+
+        IntPtr client = Make(SOCK_STREAM, PT_TCP);
+        if (client == (IntPtr)(-1)) return 37;
+        if (Connect(client, blob, V4Size) != PAL_SUCCESS) return 38;
+
+        if (SetIsNonBlocking(v, 1) != 0) return 39;
+
+        int listenerFlag;
+        if (GetIsNonBlocking(v, &listenerFlag) != 0) return 40;
+        if (listenerFlag != 1) return 41;
+
+        len = V4Size;
+        if (AcceptReportingErrno(v, outAddr, &len, &acc) != PAL_SUCCESS) return 42;
+
+        int acceptedFlag;
+        if (GetIsNonBlocking(acc, &acceptedFlag) != 0) return 43;
+        if (acceptedFlag != 0) return 44;
+
+        if (Close(acc) != 0) return 45;
+        if (Close(client) != 0) return 46;
+        if (Close(v) != 0) return 47;
 
         return 0;
     }
