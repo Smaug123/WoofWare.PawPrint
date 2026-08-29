@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.admitConnect` and `UnixSystem.connect`, driven directly on a
+/// `UnixSystem.admitSockaddrCopy` and `UnixSystem.connect`, driven directly on a
 /// constructed system.
 ///
 /// Two jobs. The first is the admission itself, which is new: which screens
@@ -146,11 +146,11 @@ module TestConnect =
         (destination : UserBuffer)
         (declaredLength : int)
         (system : UnixSystem<int, string>)
-        : ConnectAdmission
+        : SockaddrCopyAdmission
         =
-        match UnixSystem.admitConnect fd destination declaredLength system with
+        match UnixSystem.admitSockaddrCopy fd destination declaredLength system with
         | Ok admission -> admission
-        | Error refusal -> failwith $"expected an admission, got a refusal: %s{ConnectRefusal.describe refusal}"
+        | Error refusal -> failwith $"expected an admission, got a refusal: %s{SockaddrCopyRefusal.describe refusal}"
 
     /// The full call, for a caller that has already read whatever the admission
     /// asked for out of a well-formed IPv4 sockaddr.
@@ -165,15 +165,15 @@ module TestConnect =
 
         let family, endpoint =
             match admitOrFail fd UserBuffer.Mapped declaredLength system with
-            | ConnectAdmission.Answered _ -> None, None
-            | ConnectAdmission.Transfer (_, ConnectFields.Nothing) -> None, None
-            | ConnectAdmission.Transfer (_, ConnectFields.Family) -> Some (inetFamily platform), None
-            | ConnectAdmission.Transfer (_, ConnectFields.FamilyAndEndpoint) ->
+            | SockaddrCopyAdmission.Answered _ -> None, None
+            | SockaddrCopyAdmission.Transfer (_, SockaddrCopyFields.Nothing) -> None, None
+            | SockaddrCopyAdmission.Transfer (_, SockaddrCopyFields.Family) -> Some (inetFamily platform), None
+            | SockaddrCopyAdmission.Transfer (_, SockaddrCopyFields.FamilyAndEndpoint) ->
                 Some (inetFamily platform), Some destination
 
         match UnixSystem.connect fd UserBuffer.Mapped declaredLength family endpoint system with
         | Ok result -> result
-        | Error refusal -> failwith $"expected an answer, got a refusal: %s{ConnectRefusal.describe refusal}"
+        | Error refusal -> failwith $"expected an answer, got a refusal: %s{SockaddrCopyRefusal.describe refusal}"
 
     // ------------------------------------------------------------------
     // The admission's screens
@@ -182,7 +182,7 @@ module TestConnect =
     [<TestCaseSource(nameof platforms)>]
     let ``a descriptor that is not open is EBADF`` (platform : SimulatedUnixPlatform) : unit =
         admitOrFail 99 UserBuffer.Mapped 16 (systemOn platform)
-        |> shouldEqual (ConnectAdmission.Answered (ConnectOutcome.Failed UnixError.EBADF))
+        |> shouldEqual (SockaddrCopyAdmission.Answered UnixError.EBADF)
 
     [<TestCaseSource(nameof platforms)>]
     let ``a descriptor that is not a socket is ENOTSOCK`` (platform : SimulatedUnixPlatform) : unit =
@@ -203,7 +203,7 @@ module TestConnect =
 
         for fd in [ 0 ; fileFd ; portFd ] do
             admitOrFail fd UserBuffer.Mapped 16 system
-            |> shouldEqual (ConnectAdmission.Answered (ConnectOutcome.Failed UnixError.ENOTSOCK))
+            |> shouldEqual (SockaddrCopyAdmission.Answered UnixError.ENOTSOCK)
 
     /// The domain screen precedes the length verdict: an unmodelled-domain socket
     /// is refused even at a length that would have been rejected outright,
@@ -218,8 +218,8 @@ module TestConnect =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixSystem.admitConnect fd UserBuffer.Mapped 4096 system
-            |> shouldEqual (Error (ConnectRefusal.UnmodelledDomain (SocketId 0L, domain)))
+            UnixSystem.admitSockaddrCopy fd UserBuffer.Mapped 4096 system
+            |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, domain)))
 
     /// Measured: Linux takes 16 through 128 and answers EINVAL above, Darwin
     /// insists on exactly 16, answers EINVAL up to 255, and ENAMETOOLONG beyond.
@@ -237,7 +237,7 @@ module TestConnect =
             let fd, system = client platform
 
             admitOrFail fd UserBuffer.Mapped declaredLength system
-            |> shouldEqual (ConnectAdmission.Answered (ConnectOutcome.Failed expected))
+            |> shouldEqual (SockaddrCopyAdmission.Answered expected)
 
     /// Under the length the *other* flavour rejects, each admits the copy — which
     /// is what stops the row above from passing for the wrong reason.
@@ -247,7 +247,7 @@ module TestConnect =
             let fd, system = client platform
 
             admitOrFail fd UserBuffer.Mapped declaredLength system
-            |> shouldEqual (ConnectAdmission.Transfer (declaredLength, ConnectFields.FamilyAndEndpoint))
+            |> shouldEqual (SockaddrCopyAdmission.Transfer (declaredLength, SockaddrCopyFields.FamilyAndEndpoint))
 
     // ------------------------------------------------------------------
     // Which fields the copy reaches
@@ -262,22 +262,30 @@ module TestConnect =
         let rows =
             [
                 // (platform, declaredLength, expected admission)
-                SimulatedUnixPlatform.linuxX64, 0, ConnectAdmission.Transfer (0, ConnectFields.Nothing)
-                SimulatedUnixPlatform.linuxX64, 1, ConnectAdmission.Transfer (1, ConnectFields.Nothing)
-                SimulatedUnixPlatform.linuxX64, 2, ConnectAdmission.Transfer (2, ConnectFields.Family)
-                SimulatedUnixPlatform.linuxX64, 7, ConnectAdmission.Transfer (7, ConnectFields.Family)
-                SimulatedUnixPlatform.linuxX64, 8, ConnectAdmission.Transfer (8, ConnectFields.FamilyAndEndpoint)
-                SimulatedUnixPlatform.linuxX64, 16, ConnectAdmission.Transfer (16, ConnectFields.FamilyAndEndpoint)
+                SimulatedUnixPlatform.linuxX64, 0, SockaddrCopyAdmission.Transfer (0, SockaddrCopyFields.Nothing)
+                SimulatedUnixPlatform.linuxX64, 1, SockaddrCopyAdmission.Transfer (1, SockaddrCopyFields.Nothing)
+                SimulatedUnixPlatform.linuxX64, 2, SockaddrCopyAdmission.Transfer (2, SockaddrCopyFields.Family)
+                SimulatedUnixPlatform.linuxX64, 7, SockaddrCopyAdmission.Transfer (7, SockaddrCopyFields.Family)
+                SimulatedUnixPlatform.linuxX64,
+                8,
+                SockaddrCopyAdmission.Transfer (8, SockaddrCopyFields.FamilyAndEndpoint)
+                SimulatedUnixPlatform.linuxX64,
+                16,
+                SockaddrCopyAdmission.Transfer (16, SockaddrCopyFields.FamilyAndEndpoint)
 
                 // Darwin's family is one byte at offset 1, so a length of 2
                 // reaches it and a length of 1 does not — and at 1 the kernel
                 // reads nothing at all.
-                SimulatedUnixPlatform.macOsArm64, 0, ConnectAdmission.Transfer (0, ConnectFields.Nothing)
-                SimulatedUnixPlatform.macOsArm64, 1, ConnectAdmission.Transfer (0, ConnectFields.Nothing)
-                SimulatedUnixPlatform.macOsArm64, 2, ConnectAdmission.Transfer (2, ConnectFields.Family)
-                SimulatedUnixPlatform.macOsArm64, 7, ConnectAdmission.Transfer (7, ConnectFields.Family)
-                SimulatedUnixPlatform.macOsArm64, 8, ConnectAdmission.Transfer (8, ConnectFields.FamilyAndEndpoint)
-                SimulatedUnixPlatform.macOsArm64, 16, ConnectAdmission.Transfer (16, ConnectFields.FamilyAndEndpoint)
+                SimulatedUnixPlatform.macOsArm64, 0, SockaddrCopyAdmission.Transfer (0, SockaddrCopyFields.Nothing)
+                SimulatedUnixPlatform.macOsArm64, 1, SockaddrCopyAdmission.Transfer (0, SockaddrCopyFields.Nothing)
+                SimulatedUnixPlatform.macOsArm64, 2, SockaddrCopyAdmission.Transfer (2, SockaddrCopyFields.Family)
+                SimulatedUnixPlatform.macOsArm64, 7, SockaddrCopyAdmission.Transfer (7, SockaddrCopyFields.Family)
+                SimulatedUnixPlatform.macOsArm64,
+                8,
+                SockaddrCopyAdmission.Transfer (8, SockaddrCopyFields.FamilyAndEndpoint)
+                SimulatedUnixPlatform.macOsArm64,
+                16,
+                SockaddrCopyAdmission.Transfer (16, SockaddrCopyFields.FamilyAndEndpoint)
             ]
 
         for platform, declaredLength, expected in rows do
@@ -309,7 +317,7 @@ module TestConnect =
                 let fd, system = client platform
 
                 admitOrFail fd destination declaredLength system
-                |> shouldEqual (ConnectAdmission.Transfer (0, ConnectFields.Nothing))
+                |> shouldEqual (SockaddrCopyAdmission.Transfer (0, SockaddrCopyFields.Nothing))
 
     /// An unmapped buffer is an ordinary EFAULT once the copy happens: unlike
     /// `accept`'s copy-*out*, nothing has been consumed by the time it faults.
@@ -318,7 +326,7 @@ module TestConnect =
         let fd, system = client platform
 
         admitOrFail fd (UserBuffer.Unmapped 4096UL) 16 system
-        |> shouldEqual (ConnectAdmission.Answered (ConnectOutcome.Failed UnixError.EFAULT))
+        |> shouldEqual (SockaddrCopyAdmission.Answered UnixError.EFAULT)
 
     /// The two classifications a client cannot represent are refusals, not
     /// EFAULT: the memory really is there and a real kernel really would copy it.
@@ -333,8 +341,8 @@ module TestConnect =
         for destination, expected in rows do
             let fd, system = client platform
 
-            UnixSystem.admitConnect fd destination 16 system
-            |> shouldEqual (Error (ConnectRefusal.Buffer expected))
+            UnixSystem.admitSockaddrCopy fd destination 16 system
+            |> shouldEqual (Error (SockaddrCopyRefusal.Buffer expected))
 
     /// The length verdict precedes the buffer: a length the copy helper rejects
     /// outright answers its own errno rather than EFAULT, whatever the pointer.
@@ -348,14 +356,14 @@ module TestConnect =
             let fd, system = client platform
 
             admitOrFail fd (UserBuffer.Unmapped 4096UL) declaredLength system
-            |> shouldEqual (ConnectAdmission.Answered (ConnectOutcome.Failed expected))
+            |> shouldEqual (SockaddrCopyAdmission.Answered expected)
 
     [<TestCaseSource(nameof platforms)>]
     let ``a negative declared length is a caller bug`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = client platform
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixSystem.admitConnect fd UserBuffer.Mapped -1 system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixSystem.admitSockaddrCopy fd UserBuffer.Mapped -1 system |> ignore<_>)
 
         e.Message |> shouldContainText "is negative, which no kernel is ever asked"
 

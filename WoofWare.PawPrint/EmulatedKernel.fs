@@ -1071,14 +1071,6 @@ module EmulatedKernel =
     let defaultEphemeralPortRange : uint16 * uint16 = 32768us, 60999us
 
 
-    /// Ports a process may bind only as root.
-    ///
-    /// Measured as 1024 on both: binding 1023 is `EACCES` for an unprivileged
-    /// caller and 1024 succeeds. Not configurable, though Linux does expose it as
-    /// `ip_unprivileged_port_start`: nothing needs to vary it yet, and a knob
-    /// with no consumer is a knob no test covers.
-    let privilegedPortCeiling : uint16 = 1024us
-
     /// The addresses this machine holds, as `bind(2)` decides whether an address
     /// is assignable. Loopback only: PawPrint models no interface a guest could
     /// reach, so anything else would be an address no packet could arrive on.
@@ -1628,105 +1620,27 @@ module EmulatedKernel =
 
 
 
-    /// `SystemNative_TryChangeSocketEventRegistration` past the wrapper's
-    /// screens: apply `change` to the port's interest table, and bring the
-    /// ready list with it — an ADD or MOD whose target is ready under the
-    /// *new* interest makes the registration pending at that moment (measured
-    /// rows E, I and K: the entry enters at ADD/MOD time, and a MOD of an
-    /// entry already pending leaves its place alone, row L).
+    /// `UnixSystem.changeSocketEventRegistration` — `epoll_ctl(2)` past a
+    /// caller's own screens — through this kernel rather than through its POSIX
+    /// half.
+    ///
+    /// Here for the reason `connectSocket`'s and `acceptConnection`'s adapters
+    /// are: eleven fixtures call it holding an `EmulatedKernel`.
     let changeSocketEventRegistration
         (portFd : int)
         (targetFd : int)
         (change : SocketEventRegistrationChange)
         (kernel : EmulatedKernel)
-        : Result<EmulatedKernel, SocketEventRegistrationError>
+        : Result<SocketEventRegistrationAnswer * EmulatedKernel, SocketEventRegistrationRefusal>
         =
-        let ordinal = kernel.NextSocketEventRegistrationOrdinal
+        UnixSystem.changeSocketEventRegistration portFd targetFd change (unix kernel)
+        |> Result.map (fun (answer, system) -> answer, withUnix system kernel)
 
-        match
-            FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd ordinal change kernel.FileDescriptors
-        with
-        | Error error -> Error error
-        | Ok registry ->
-
-        let kernel =
-            { kernel with
-                Machine =
-                    { kernel.Machine with
-                        NextSocketEventRegistrationOrdinal =
-                            match change with
-                            | SocketEventRegistrationChange.Add _ -> ordinal + 1L
-                            | SocketEventRegistrationChange.Modify _
-                            | SocketEventRegistrationChange.Remove -> ordinal
-                    }
-                Process =
-                    { kernel.Process with
-                        FileDescriptors = registry
-                    }
-            }
-
-        match change with
-        | SocketEventRegistrationChange.Remove -> Ok kernel
-        | SocketEventRegistrationChange.Add (interest, _)
-        | SocketEventRegistrationChange.Modify (interest, _) ->
-
-        // Both fds resolved a moment ago inside the registry change, so these
-        // lookups cannot miss.
-        let portId =
-            match FileDescriptorRegistry.tryFindId portFd kernel.FileDescriptors with
-            | Some id -> id
-            | None ->
-                failwith
-                    $"EmulatedKernel.changeSocketEventRegistration: port fd %d{portFd} was live moments ago (this is an interpreter bug)."
-
-        let key, targetId =
-            match FileDescriptorRegistry.tryFindId targetFd kernel.FileDescriptors with
-            | Some id -> (targetFd, id), id
-            | None ->
-                failwith
-                    $"EmulatedKernel.changeSocketEventRegistration: target fd %d{targetFd} was live moments ago (this is an interpreter bug)."
-
-        let alreadyPending =
-            match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
-            | Some description ->
-                match description.Target with
-                | OpenFileTarget.SocketEventPort portState -> List.contains key portState.Ready
-                | _ ->
-                    failwith
-                        $"EmulatedKernel.changeSocketEventRegistration: %O{portId} committed a registration change moments ago yet is not a socket event port (this is an interpreter bug)."
-            | None ->
-                failwith
-                    $"EmulatedKernel.changeSocketEventRegistration: %O{portId} was live moments ago (this is an interpreter bug)."
-
-        let readyNow =
-            SocketEventPort.epollReadinessOfDescription targetId (unix kernel)
-            |> ReadinessLevel.reportedUnder interest
-            |> ReadinessLevel.isEmpty
-            |> not
-
-        if readyNow && not alreadyPending then
-            Ok
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors =
-                                FileDescriptorRegistry.appendSocketEventReady portId key kernel.FileDescriptors
-                        }
-                }
-        else
-            Ok kernel
-
-    /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
-    /// it.
+    /// `UnixSystem.createSocket` — allocate a fresh socket and a descriptor onto
+    /// it — through this kernel rather than through its POSIX half.
     ///
-    /// One operation for both allocations, rather than a socket-table insert
-    /// beside a separate `FileDescriptorRegistry.createSocket`, because the two
-    /// must agree: the identity this mints is the identity the description
-    /// names, and splitting them would let a caller do one without the other.
-    ///
-    /// Says nothing about whether this domain/kind/protocol combination *can*
-    /// exist — `SocketArgumentsPal.socketCreation` answers that, and this is
-    /// reached only once it has said yes.
+    /// Here for the reason the adapters beside it are: nine fixtures call it
+    /// holding an `EmulatedKernel`.
     let createSocket
         (domain : SocketDomain)
         (kind : SocketKind)
@@ -1734,37 +1648,8 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : int * EmulatedKernel
         =
-        let socketId = kernel.NextSocketId
-        let (SocketId raw) = socketId
-
-        let fd, registry =
-            FileDescriptorRegistry.createSocket socketId kernel.FileDescriptors
-
-        fd,
-        { kernel with
-            Machine =
-                { kernel.Machine with
-                    Sockets =
-                        Map.add
-                            socketId
-                            {
-                                Domain = domain
-                                Kind = kind
-                                Protocol = protocol
-                                // `socket(2)` binds nothing and connects nothing.
-                                Binding = None
-                                Phase = SocketPhase.Idle
-                                ReuseAddress = false
-                            }
-                            kernel.Sockets
-                    NextSocketId = SocketId (raw + 1L)
-                }
-            Process =
-                { kernel.Process with
-                    FileDescriptors = registry
-                }
-        }
-
+        let fd, system = UnixSystem.createSocket domain kind protocol (unix kernel)
+        fd, withUnix system kernel
 
     /// The stream the `DIR*` backed by `block` names.
     ///

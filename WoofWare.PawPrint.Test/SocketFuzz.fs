@@ -384,12 +384,13 @@ module SocketFuzz =
                     change
                     state.Kernel
             with
-            | Ok kernel ->
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 "ok",
                 { state with
                     Kernel = kernel
                 }
-            | Error e -> registrationErrName e, state
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> registrationErrName reason, state
+            | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Mod (port, target, mask) ->
             let change =
                 SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "SocketFuzz" mask, uint64 target)
@@ -401,12 +402,13 @@ module SocketFuzz =
                     change
                     state.Kernel
             with
-            | Ok kernel ->
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 "ok",
                 { state with
                     Kernel = kernel
                 }
-            | Error e -> registrationErrName e, state
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> registrationErrName reason, state
+            | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Del (port, target) ->
             match
                 EmulatedKernel.changeSocketEventRegistration
@@ -415,12 +417,13 @@ module SocketFuzz =
                     SocketEventRegistrationChange.Remove
                     state.Kernel
             with
-            | Ok kernel ->
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 "ok",
                 { state with
                     Kernel = kernel
                 }
-            | Error e -> registrationErrName e, state
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> registrationErrName reason, state
+            | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Wait (port, maxEvents) ->
             let portId =
                 match FileDescriptorRegistry.tryFindId (slotFd port state) state.Kernel.FileDescriptors with

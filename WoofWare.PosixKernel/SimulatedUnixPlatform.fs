@@ -1,5 +1,7 @@
 namespace WoofWare.PosixKernel
 
+open System.Buffers.Binary
+
 /// <summary>
 /// Which Unix we are simulating.
 /// </summary>
@@ -462,6 +464,121 @@ type SocketAddressSizes =
 /// `sin6_scope_id` at 24, all measured on both — since the two layouts spend the
 /// same two leading bytes differently rather than in different amounts.
 ///
+/// One field of one of the `sockaddr` structs, as a byte range within it.
+///
+/// Offset and width travel together because a caller that has one always wants
+/// the other: every use is either "read these bytes" or "does the caller's
+/// declared length reach them".
+///
+/// **Carries no byte order**, deliberately. The fields' orders are kernel ABI --
+/// `sin_port` and `sin_addr` are network order, `sin6_scope_id` is the host's --
+/// but whether a given *caller* swaps is that caller's own contract, and the two
+/// do not agree: `SystemNative_GetPort` byte-swaps where
+/// `SystemNative_GetIPv4Address` copies the address word verbatim, both sides of
+/// that call holding it in network order. An order carried here would invite an
+/// order-normalising accessor, and the first caller to reach for one would
+/// silently acquire a swap its own contract does not have.
+type SockaddrField =
+    {
+        /// Byte offset of the field from the start of the struct.
+        Offset : int
+        /// The field's width in bytes.
+        Width : int
+    }
+
+[<RequireQualifiedAccess>]
+module SockaddrField =
+    /// Whether a declared sockaddr length reaches all of this field.
+    ///
+    /// A negative length fails it, and that is not incidental: a layer that casts
+    /// the length to an unsigned type makes the bound enormous rather than
+    /// negative, so this answers for what the *caller declared* before any such
+    /// cast.
+    ///
+    /// A malformed descriptor is refused rather than answered for. `SockaddrField`
+    /// is a public record, so unlike the closed `SockaddrFamilyField` it can be
+    /// built with nonsense; a negative offset or width describes no field of any
+    /// struct.
+    let reachedBy (field : SockaddrField) (declaredLength : int) : bool =
+        if field.Offset < 0 || field.Width < 0 then
+            failwith
+                $"SockaddrField.reachedBy: a field at offset %d{field.Offset} of width %d{field.Width} describes no part of any struct (this is a bug in the caller)."
+
+        // Rearranged to subtract rather than add, so that a field whose end is
+        // past `Int32.MaxValue` is not reached instead of wrapping onto a low
+        // bound that every length satisfies. The same rearrangement, for the same
+        // reason, as `UserBufferCheck.faultsBeforeOperation`. The guard above is
+        // what keeps this subtraction from underflowing.
+        declaredLength >= field.Offset && declaredLength - field.Offset >= field.Width
+
+/// `struct sockaddr_in`'s fields beyond the family, which
+/// `SockaddrFamilyField` describes because it is the one that moves between
+/// platforms.
+///
+/// Measured on Linux 6.18.5 and Darwin 25.6.0 with
+/// `docs/plans/2026-08-23-posix-kernel-extraction/sockaddr-layout.c`: both put
+/// `sin_port` at 2 and `sin_addr` at 4, and both make the struct 16 bytes. These
+/// are therefore plain values rather than functions of the platform -- the same
+/// distinction `internetAddressFamily` draws against `internetV6AddressFamily`.
+[<RequireQualifiedAccess>]
+module InternetSockaddr =
+    /// `sin_port`, in network byte order.
+    let port : SockaddrField =
+        {
+            Offset = 2
+            Width = 2
+        }
+
+    /// `sin_addr`, four bytes in network byte order. A caller that holds an
+    /// address in that order too moves it verbatim in both directions.
+    let address : SockaddrField =
+        {
+            Offset = 4
+            Width = 4
+        }
+
+/// `struct sockaddr_in6`'s fields beyond the family, measured alongside the
+/// above and likewise identical on both platforms.
+///
+/// A separate module from `InternetSockaddr` rather than a shared set of
+/// constants, though `sin6_port` and `sin_port` coincide: they are two fields of
+/// two structs, and a use site should say which struct it means. Note what this
+/// does *not* buy -- `sin6_flowinfo` and `sin_addr` both sit at offset 4, so
+/// confusing them is still a mutation nothing can catch.
+[<RequireQualifiedAccess>]
+module InternetV6Sockaddr =
+    /// `sin6_port`, in network byte order. The same offset and width as
+    /// `sin_port`, and stated separately because it is a different field.
+    let port : SockaddrField =
+        {
+            Offset = 2
+            Width = 2
+        }
+
+    /// `sin6_flowinfo`. Nothing in the managed surface reads it, but
+    /// `SystemNative_SetIPv6Address` zeroes it, so it is not merely ignored.
+    let flowInfo : SockaddrField =
+        {
+            Offset = 4
+            Width = 4
+        }
+
+    /// `sin6_addr`. Its width is `sizeof(struct in6_addr)`, which is the length
+    /// every IPv6 address buffer must have room for.
+    let address : SockaddrField =
+        {
+            Offset = 8
+            Width = 16
+        }
+
+    /// `sin6_scope_id`, four bytes in the *host's* own byte order -- unlike the
+    /// port beside it, which is network order.
+    let scopeId : SockaddrField =
+        {
+            Offset = 24
+            Width = 4
+        }
+
 /// A pair of numbers rather than an `int * int` so that no caller can pair an
 /// offset with the wrong width: the two vary together and never independently.
 [<RequireQualifiedAccess>]
@@ -509,7 +626,12 @@ module SockaddrFamilyField =
     /// negative, so this answers for what the *caller declared* before any such
     /// cast.
     let reachedBy (field : SockaddrFamilyField) (declaredLength : int) : bool =
-        offset field + width field <= declaredLength
+        SockaddrField.reachedBy
+            {
+                Offset = offset field
+                Width = width field
+            }
+            declaredLength
 
 /// Everything a kernel does differently when `open(2)` is asked to *create*.
 ///
@@ -2724,12 +2846,66 @@ module SimulatedUnixPlatform =
     /// against the first.
     let internetAddressFamily : int = 2
 
+    /// Ports a process may bind only as root.
+    ///
+    /// Measured as 1024 on both: binding 1023 is `EACCES` for an unprivileged
+    /// caller and 1024 succeeds. A constant rather than a function of the
+    /// platform because the two agree, and not configuration though Linux does
+    /// expose it as `ip_unprivileged_port_start` -- nothing needs to vary it
+    /// yet, and a knob with no consumer is a knob no test covers.
+    let privilegedPortCeiling : uint16 = 1024us
+
     /// `AF_INET6`, in the platform's own numbering, which unlike `AF_INET` the two
     /// families disagree about: 10 on Linux against 30 on Darwin. Measured.
     let internetV6AddressFamily (platform : SimulatedUnixPlatform) : int =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> 10
         | SimulatedUnixFlavour.Darwin -> 30
+
+    /// `struct sockaddr_in` for `endpoint`, as this platform's kernel copies one
+    /// out: the family, the port and the address, and on the flavours that have
+    /// the field, the `sa_len` byte in front of them.
+    ///
+    /// The copy-*out* direction specifically. Measured: a Darwin `getsockname`
+    /// on a bound socket reports `10 02 ...`, the leading `0x10` being the
+    /// 16-byte length, so the kernel fills `sa_len` in even though nothing in a
+    /// runtime's shim writes it. `SockaddrFamilyField.OneByteAtOffsetOne`
+    /// describes the same byte travelling the other way, where it is a caller's
+    /// own store; the two do not disagree.
+    ///
+    /// Answers the struct's full length for the platform, so a caller bounded by
+    /// a shorter declared length truncates what it writes rather than asking for
+    /// a shorter blob.
+    let encodeInternetSockaddr (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
+        let realLength = (socketAddressSizes platform).InterNetwork
+        let blob = Array.zeroCreate<byte> realLength
+
+        BinaryPrimitives.WriteUInt16BigEndian (
+            System.Span<byte> (blob, InternetSockaddr.port.Offset, InternetSockaddr.port.Width),
+            endpoint.Port
+        )
+
+        BinaryPrimitives.WriteUInt32BigEndian (
+            System.Span<byte> (blob, InternetSockaddr.address.Offset, InternetSockaddr.address.Width),
+            endpoint.Address
+        )
+
+        let field = sockaddrFamilyField platform
+        let familyOffset = SockaddrFamilyField.offset field
+
+        match SockaddrFamilyField.width field with
+        | 1 ->
+            blob.[familyOffset] <- byte internetAddressFamily
+            // Written only on the flavour that has the field -- on Linux those
+            // two bytes are the family itself.
+            blob.[0] <- byte realLength
+        | _ ->
+            BinaryPrimitives.WriteUInt16LittleEndian (
+                System.Span<byte> (blob, familyOffset, 2),
+                uint16 internetAddressFamily
+            )
+
+        blob
 
     /// The socket shapes both flavours create for an unprivileged process.
     let private portableCreatableSockets : (SocketDomain * SocketKind * SocketProtocol) list =

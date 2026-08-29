@@ -4232,3 +4232,512 @@ giving it a stage rather than a paragraph. The layout serves ten PAL handlers th
 involve no kernel at all, so the question is not "move it" but "which of the two things
 called `sockaddr_in` is which" — the kernel's struct, and the byte array CoreLib passes
 around, which agree numerically today and need not.
+
+### Stage 10: `struct sockaddr_in`'s layout moves to the library
+
+**Dependencies**: stage 9, whose 8m, 9j and 9l deferrals this discharges.
+
+#### The premise the deferrals assumed, and what measurement says
+
+Stages 8m, 9j and 9l each left `SockaddrOffsets` in `WoofWare.PawPrint` with the same
+argument: it serves ten PAL handlers that involve no kernel at all, so it looks like PAL
+vocabulary. The natural next step reads as "map PawPrint's layout onto the kernel's".
+
+There is no such mapping to write, because there is only one layout.
+
+`docs/plans/2026-08-23-posix-kernel-extraction/sockaddr-layout.c`, run 2026-08-29 on
+Linux 6.18.5 (container) and Darwin 25.6.0 (host):
+
+| fact | Linux 6.18.5 | Darwin 25.6.0 |
+| --- | --- | --- |
+| `sa_family` | offset 0, width 2 | offset 1, width 1 |
+| `sin_port` | 2 | 2 |
+| `sin_addr` | 4 | 4 |
+| `sin6_flowinfo` | 4 | 4 |
+| `sin6_addr` (16 bytes) | 8 | 8 |
+| `sin6_scope_id` | 24 | 24 |
+| `sizeof` in / in6 / storage | 16 / 28 / 128 | 16 / 28 / 128 |
+
+The only divergent field is `sa_family`, and the library **already** owns it
+(`SockaddrFamilyField`), along with every size (`socketAddressSizes`). Everything
+PawPrint still holds is flavour-invariant.
+
+The other half is a fact about upstream's source rather than a measurement:
+`SystemNative_SetIPv4Address` does
+`struct sockaddr_in* inetSockAddr = (struct sockaddr_in*)sockAddr`, casting the caller's
+byte array directly to the kernel's struct. The managed `SocketAddress` buffer *is* a
+`sockaddr_in`. So `SockaddrOffsets` is a private transcription of the kernel's struct
+sitting on the wrong side of the boundary, and nothing checks that the transcription is
+right.
+
+**One byte is not like the others, and the claim has to be stated carefully.** It would
+be wrong to say the PAL exists so that managed code never needs the layout: managed code
+knows one thing about it. `pal_networking.c` mentions `sa_len` zero times; the length
+byte a guest sees at index 0 is written by `SocketAddress`'s own constructor, storing
+`(byte) _size` unconditionally on every platform and relying on Linux's two-byte family
+write to clobber it. `SockaddrFamilyField.OneByteAtOffsetOne`'s docstring already records
+this. That is still an assumption about the *kernel's* layout rather than a second one,
+so the "one layout" claim survives — but the two directions must be cross-referenced
+once they share a file, because the encoder models the kernel filling `sa_len` on
+copy-*out* while the docstring describes managed code writing it on the way *in*, and a
+reader meeting both without a pointer between them will think one is wrong.
+
+#### What is the kernel's and what is the PAL's
+
+* **Kernel, and so the library's**: the field offsets and widths — including
+  `InternetV6AddressLength`, which is `sizeof(struct in6_addr)` and therefore the
+  `sin6_addr` descriptor's *width* rather than a constant of its own; the fields' byte
+  orders; the `sa_len` byte a BSD kernel fills in on copy-out; and
+  `internetSockaddrBlob`, which is wholly "encode an endpoint as this platform's
+  `struct sockaddr_in`".
+* **The PAL's, and so PawPrint's**: `IsInBounds`, the
+  `socketAddressLen < sizeof(struct sockaddr_in)` screens, the
+  EFAULT/EINVAL/EAFNOSUPPORT choices, and every handler's decision about *whether to
+  swap bytes*.
+
+That last item is a distinction worth keeping sharp. The fields' byte orders are kernel
+ABI, but the swap decisions are the PAL's contract with its own out-parameters:
+`SystemNative_GetPort` byte-swaps and `SystemNative_GetIPv4Address` does not — it copies
+the address word verbatim, because both sides of that call hold it in network order.
+**So the descriptors carry offset and width only, and byte order stays as prose on
+each.** Making it data would invite an order-normalising accessor, and the first handler
+to use one would silently acquire an `ntohl` that upstream does not have.
+
+#### How the library states the layout
+
+* **Option A: move the constants verbatim.** Cheapest. Hands callers arithmetic rather
+  than answers, and a bare numeric table under an innocent name is precisely what
+  `check-pal-residue.py` cannot see. It is *not* PAL residue — it came out of the C
+  headers — but nothing in the code would tell a future reader that.
+* **Option B: a field descriptor per struct**, in the shape `SockaddrFamilyField`
+  already has. Callers ask where `sin_port` is rather than what 2 is, and
+  `SockaddrField.reachedBy` subsumes both the family predicate 9l added and bind's
+  hand-written `declaredLength >= SockaddrOffsets.InternetAddress + 4`.
+* **Option C: codec functions only** — no offsets exposed at all. Strongest boundary;
+  cannot serve the ten PAL handlers, which manipulate single fields of a partly-filled
+  buffer (`SetPort` on a blob whose address is not set yet).
+
+**Chosen: B, with C's encoder written in terms of it.** B serves the field handlers; the
+copy-out path (`getsockname`, `accept`) is a whole-struct operation and gets the
+encoder. Both live in `SimulatedUnixPlatform.fs`, beside the layout facts the library
+already owns: `InternetEndpoint.fs` compiles before it, and the encoder needs both.
+
+`sin_port` and `sin6_port` become **two descriptors with the same value** rather than the
+one shared constant they are today. They are two fields of two structs that happen to
+coincide, and the oracle below checks each against its own struct. The same goes for
+`sin6_flowinfo` and `sin_addr`, which both sit at 4: a mutation swapping those two
+remains a no-op, and the gain is that the use site now names which struct it means.
+
+Offsets go in as **constants rather than `platform -> int` functions**, matching how
+`internetAddressFamily` (a constant) sits beside `internetV6AddressFamily` (a function).
+That distinction is already how this library records which facts were measured to agree.
+
+#### The oracle
+
+`IPEndPoint.Serialize()` returns the host PAL's own `sockaddr`, built by the same
+managed and PAL writes a guest would perform. Measured 2026-08-29 on both:
+
+```
+Darwin 25.6.0
+  v4 1.2.3.4:0x1234   size=16  10 02 12 34 01 02 03 04 00 …
+  v6 ::1%7:0x1234     size=28  1c 1e 12 34 00000000 …0001 07 00 00 00
+Linux 6.18.5 (container)
+  v4 1.2.3.4:0x1234   size=16  02 00 12 34 01 02 03 04 00 …
+  v6 ::1%7:0x1234     size=28  0a 00 12 34 00000000 …0001 07 00 00 00
+```
+
+Both rows were run rather than inferred. Every fact this stage moves is
+flavour-invariant, so **both** hosts check all of them: the port at 2 in network order,
+the address at 4, the sizes. What splits by column is only what the library already owns
+— the family field (`10 02` against `02 00`) and AF_INET6's number (`1e` = 30 against
+`0a` = 10), the latter being a genuinely new check.
+
+The sizes are *not* new: `sourcesPure/SocketAddressScreens.cs` already asserts 16, 28 and
+128 differentially against the real host runtime. What is new is a check in the
+**library's own** suite, and a direct host-equality one rather than a guest's assertion.
+
+Two things the test's prose must say, or a future failure is hard to read. `Serialize`
+witnesses the *inbound* producer while `internetSockaddrBlob` models the kernel's
+*copy-out*; they agree byte for byte, and the evidence for the copy-out `sa_len` remains
+the measured comment that travels with the encoder. And the v6 row exercises
+**descriptors only** — the library has no IPv6 endpoint type, so the encoder is v4-only
+and the v6 expected bytes are hand-assembled from the descriptors.
+
+#### Correctness oracle
+
+* The host-equality test above, in `WoofWare.PosixKernel.Test`, which needs no PawPrint
+  reference and so does not disturb `TestNoPawPrintReference`.
+* The existing suites unchanged: the ten PAL handlers have guest coverage
+  (`sourcesPure/SocketAddressScreens.cs`, `sourcesImpure/SocketAddress{Linux,Darwin}Bytes.cs`),
+  and `getsockname`/`accept` have theirs.
+* A mutation battery over the moved descriptors and the encoder, run against both
+  suites. Recorded in advance and confirmed: swapping the two fields that share offset 4
+  is a no-op mutant and cannot be killed. Eleven others die, every one in the library's
+  own suite — each field moved, `sin6_addr` narrowed, `reachedBy` off by one, the
+  encoder's two byte orders, its `sa_len`, and `AF_INET6`'s number.
+
+  Two of those mutants can only be killed on a Linux host, and this machine is macOS, so
+  they were run in a container against the real fixture: `AF_INET6` = 30 everywhere kills
+  one row, and the Linux family field claiming Darwin's shape kills four. Both columns of
+  the oracle are therefore load-bearing rather than one being carried by the other.
+* `scripts/check-docstring-attachment.py` against the branch point, which this stage
+  needs because it moves definitions between files.
+
+#### What review found
+
+Three things, and two of them are about the fixture rather than the move.
+
+* **The skip could not run.** `hostFlavour` and the two serialized blobs were
+  module-level bindings, so on a host with no preset F# forces them — and throws —
+  before NUnit reaches the guard. Functions now, with the guard as a `SetUp` every test
+  passes through. A guard that cannot run is worse than none, because it reads as
+  handled.
+* **The guard asked the wrong question.** It picked a preset by flavour alone, which
+  assumes the preset's *machine* is this one; both presets are little-endian, and one row
+  reads byte 0 of a Linux `sockaddr` as the family's low half, which on a big-endian
+  Linux would be its high half. It now wants a little-endian Linux or macOS host. Only
+  that one row actually breaks on big-endian — the others compare host-order writes
+  against host-order reads and would agree — but a fixture comparing a preset against a
+  machine should say which machines the preset describes.
+* **`reachedBy` could wrap.** `Offset + Width <= declaredLength` was safe while its only
+  inputs came from a closed DU, and is not now that `SockaddrField` is a public record:
+  `{ Offset = Int32.MaxValue; Width = 1 }` wrapped onto a bound every length satisfies.
+  It refuses a negative offset or width, and the comparison subtracts rather than adds —
+  the same rearrangement, for the same reason, as
+  `UserBufferCheck.faultsBeforeOperation`. This is the "publishing inherits private
+  preconditions" shape: nothing about the arithmetic changed, only who can reach it.
+
+  `TestSockaddrField.fs` covers the rewritten predicate, and its own battery of five
+  mutants all die — including "the addition comes back", which the overflow row kills, so
+  the rearrangement is load-bearing rather than decoration.
+
+#### In scope, and easy to under-plan: the prose
+
+`SockaddrOffsets`' docstrings are PAL-flavoured throughout — `FlowInfo` cites
+`SystemNative_SetIPv6Address`, `InternetAddress` cites "the managed caller",
+`InternetV6AddressLength` is named for upstream's `NUM_BYTES_IN_IPV6_ADDRESS`. Moved
+verbatim, that is exactly the residue the check cannot see and that three consecutive
+stages nearly shipped. This stage is a prose pass as much as a move.
+
+#### What this does not overturn
+
+8m argued that the blob "does not cross" the boundary, and 9j and 9l repeated it. That
+reasoning was about the *entry points' signatures*, and it stands:
+`UnixSystem.getsockname` and `UnixSystem.accept` still answer an `InternetEndpoint`, not
+bytes. Only the pure encoding function relocates. This discharges the deferral without
+reopening the question those stages actually settled.
+
+#### Not proposed
+
+Now that `connect` has an admission, the library *could* take the raw sockaddr bytes and
+decode them itself; the ordering objection from 9l is gone. `ConnectFields` stays anyway:
+it works, it is tested, and rewriting it buys only symmetry with a decoder the PAL
+handlers still cannot use.
+
+### Stage 11: `epoll_ctl(2)`'s ladder moves into the library
+
+**Dependencies**: none beyond the vocabulary stage 9 settled.
+
+Stage 9's closing note said "the four socket entry points", and that undercounted. Five
+socket syscalls still held their kernel ladder in `WoofWare.PawPrint` after stage 10:
+`bind` (379 handler lines), `listen` (152), `epoll_ctl` (141 plus an 82-line
+`EmulatedKernel.changeSocketEventRegistration`), `socket` (102 plus 39), and the two
+non-blocking `fcntl`s (86 and 58). This is the first of them, chosen because it is the
+one whose ladder was measured to be entirely library-eligible: its body touches
+`FileDescriptorRegistry`, `ReadinessLevel`, `SocketEventPort.epollReadinessOfDescription`
+and the change DU, and **nothing** PawPrint-only.
+
+#### What moved, and what stayed
+
+* **The ladder itself**, verbatim apart from the aggregate rename, as
+  `UnixSystem.changeSocketEventRegistration`.
+* **The Darwin refusal.** kqueue's registration model is structurally different rather
+  than differently numbered — per `(ident, filter)` state, a silently-replacing `ADD`, a
+  regular file registering where epoll answers `EPERM`, a `DEL` of a dead target
+  answering `ENOENT` where epoll answers `EBADF` — each measured only far enough to know
+  that it diverges. That is a statement about what this kernel models, so it is the
+  library's `SocketEventRegistrationRefusal.UnmodelledFlavour` rather than a `failwith`
+  in a handler.
+* **The errno mapping.** `SocketEventRegistrationError`'s six cases each already named
+  their errno *in the docstring* — `EBADF`, `EPERM`, `EINVAL`, `EEXIST`, `ENOENT` — while
+  the only code that mapped them was a hand-written `match` in PawPrint's handler.
+  `SocketEventRegistrationError.toErrno` makes the library's own prose executable, and
+  every client now answers the same numbers. Note it is not injective: two refusals share
+  `EBADF`, so the case survives for a client that wants to know which.
+
+Staying in PawPrint: the shim's `SupportedEvents` screen and equal-mask short-circuit
+(already `SocketEventsPal`), the `data` decode from a `CliType`, and the derivation of
+the op from the caller's *claims* about the current and new masks — that last is
+`TryChangeSocketEventRegistrationInner`'s own arithmetic, not the kernel's.
+
+#### The answer shape
+
+`Result<SocketEventRegistrationAnswer * UnixSystem, SocketEventRegistrationRefusal>`,
+where the answer is `Changed` or `Failed of reason`. The alternative was to keep the
+existing `Result<UnixSystem, SocketEventRegistrationError>` and add the refusal as a
+second `Result`, which nests; folding the kernel's own refusal into the answer keeps one
+`Result` for "this library has nothing to say" and matches `accept` and `connect`.
+
+#### Correctness oracle
+
+`WoofWare.PosixKernel.Test/TestSocketEventRegistration.fs`, 8 cases covering what this
+function adds over the registry's own ladder — which already has its rows. The flavour
+refusal ahead of even the descriptor lookups; the ordinal that only an `Add` consumes and
+that a refused change leaves alone; and the pending rule, including that a `Modify` of an
+already-pending entry does not re-append it and that a target with nothing to report does
+not become pending. That last row needs a target whose level is *empty under the
+interest*, which an idle socket never is — `HUP` is reported unrequested — so it uses
+standard output under a read-only interest.
+
+Eleven fixture call sites in `TestSocketEventDelivery` and three in `SocketFuzz` move to
+the new shape. The mechanical rewrite mis-attributed one block: a positional scan for
+"the next result-handling after each call" ran past a call whose handler was
+assertion-shaped rather than the common `| Ok kernel -> kernel`, and rewrote a `close`'s
+handler instead. The compiler caught it, and the lesson is the ordinary one — a
+positional scan needs to check what it landed on, not merely that it found something.
+
+**Mutation battery**: ten mutants over the ladder and the errno mapping.
+
+Seven of the ladder die in the library's own suite: the flavour arm, both directions of
+the ordinal rule, the already-pending guard, the not-ready guard, and dropping the
+interest from the readiness test. One (a `Remove` falling into the registration branch)
+was written as invalid F# and never ran; it is recorded as not-run rather than as a
+result.
+
+The three over `toErrno` **survived both default suites on the first run**, which is the
+9g failure mode and this time self-inflicted: the stage moved prose into code and gave
+the code no test, leaving it reachable only from the guest tier. Three rows were added —
+the six mappings as literals, the two `EBADF` refusals staying distinguishable, and the
+count of distinct errnos — and all three mutants then die. The mapping being *stated* in
+six docstrings is exactly why it was easy to skip: it looked tested.
+
+**What is left after 11**: `bind` and `listen` (which share the bind-conflict relation and
+probably want to travel together), `socket`, the two non-blocking `fcntl`s, and the
+fixture relocation — 3893 lines across `TestEmulatedKernelSockets`, `TestSocketEventDelivery`
+and `SocketFuzz` that test library behaviour from the client's suite, which is the 9g
+failure mode at scale.
+
+### Stage 12: the sockaddr copy-in admission is `bind`'s as well as `connect`'s
+
+**Dependencies**: 9l, which built the admission; 11, only for the branch order.
+
+Preparation for `bind`'s move, and separated from it so that `bind`'s diff is a move
+rather than a move plus a refactor. No behaviour changes.
+
+Reading `SystemNative_Bind`'s 379 lines against `UnixSystem.admitConnect` shows the same
+screens in the same order: the descriptor to `EBADF`, the target to `ENOTSOCK`, the
+domain to a refusal, `bindAddressLength` to its outright rejection, then the per-flavour
+question of whether the kernel touches the buffer at all, then which fields the copy
+contains. That is not a resemblance to be exploited; it is a measurement already recorded
+in this library, which is why `SimulatedUnixPlatform.bindAddressLength` is named for
+`bind` and called by `connect`.
+
+So the admission is renamed for what it is rather than for its first caller:
+`admitConnect` → `admitSockaddrCopy`, and `ConnectFields`, `ConnectAdmission` and
+`ConnectRefusal` → `SockaddrCopyFields`, `SockaddrCopyAdmission` and
+`SockaddrCopyRefusal`. `UnixSystem.connect` keeps its name and its signature apart from
+the refusal type.
+
+One simplification falls out. `ConnectAdmission.Answered` carried a `ConnectOutcome`,
+which can be `Completed` — but every screen preceding the copy can only *refuse*, and no
+arm ever built a `Completed`. The shared case carries a `UnixError`, so the type no
+longer admits a value the function cannot produce, and `connect` does the one-line lift
+into its own outcome.
+
+**What `bind` will still need separately**: the length *verdict*, which it uses twice —
+once for the outright rejection the admission already answers, and once as a member of
+its fault set. It asks `bindAddressLength` again rather than the admission carrying a
+third component; that is two callers of one pure function rather than a rule stated
+twice.
+
+**Correctness oracle**: the suites unchanged. This is a rename plus one type
+simplification the compiler checks end to end, so the evidence is that 813 library tests,
+3257 PawPrint tests and 1033 guests all pass with no edit beyond the renames — and, in
+`TestConnect.fs`, unwrapping five `Answered (ConnectOutcome.Failed e)` patterns into
+`Answered e`.
+
+**A prose pass, as every one of these needs.** The shared types' docstrings all described
+`connect` — "for a `connect(2)` whose sockaddr the kernel is about to copy in", "there is
+no destination to connect to" — which the rename made false rather than merely narrow.
+They now say what they are shared by, and where the sharing is measured.
+
+**What is left after 12**: `bind`, then `listen` (which needs the bind-conflict relation
+`bind`'s move will have taken across), `socket`, the two non-blocking `fcntl`s, and the
+fixture relocation.
+
+### Stage 13: `bind(2)` moves into the library
+
+**Dependencies**: 12, which generalised the copy-in admission so that this is a move.
+
+The largest of the socket handlers, 379 lines, and after 12 the move is mechanical: the
+first half of it *is* `admitSockaddrCopy`, and the second half is a fault set, an
+ordering, and an allocation, all of which are kernel facts.
+
+`SystemNative_Bind` keeps the shim's null and negative-length screens, `requireBufferRoom`,
+the field reads, `SocketArgumentsPal.isTcpProtocolType`, and the errno write.
+
+**Two things the move had to reshape.**
+
+* **The `SO_REUSEADDR` write outlives every failure**, so it cannot sit behind the
+  admission: measured, after a bind that answered EFAULT the option still reads back set.
+  `UnixSystem.bind` therefore resolves the descriptor itself, applies the write, and only
+  then calls the admission — which resolves the descriptor again. That is a lookup
+  repeated, not a rule; the same shape `connect` already has, where the entry point
+  re-derives the admission it was given.
+
+  It also means the handler cannot return early on `Answered`: an admission failure still
+  has to go through `UnixSystem.bind` so that the write happens. The handler's two arms
+  converge instead, with `family`/`endpoint` as `None` on the answered path.
+
+* **`privilegedPortCeiling` moves** from `EmulatedKernel` to `SimulatedUnixPlatform`, as
+  a constant rather than a function of the platform: measured 1024 on both. Review
+  caught that the first attempt *copied* it rather than moving it, leaving two public
+  definitions of 1024 that nothing forced to agree — the failure mode this whole
+  extraction exists to prevent, committed while performing it.
+
+**Two new refusals**, each a `failwith` in the handler today. `UnmodelledMulticast`, and
+`EphemeralPortsExhausted` for a port-0 bind that finds the whole range taken — the
+library refuses rather than inventing the `EADDRINUSE` a real kernel gives, which has not
+been measured under this allocator.
+
+`SockaddrCopyFields.checkSupplied` is extracted from `connect`, since `bind` is now a
+second caller of the same contract and a wrong field set is just as silent there.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestBind.fs`, 29 cases. The screens
+`bind` shares with `connect` are `TestConnect`'s; what is only here is what `bind` adds —
+each fault on its own, the `SO_REUSEADDR` write surviving two different failures, the
+ephemeral allocation and its exhaustion, and the fault *ordering*.
+
+**Two mistakes worth recording, both mine and both caught by the fixture.**
+
+* A row asserted that an already-bound socket asking for a multicast address answers
+  EINVAL "because `AlreadyBound` outranks the address on both flavours". It does not:
+  measured, Linux ranks `AddressNotLocal` *ahead* of `AlreadyBound` and Darwin the other
+  way, so the same input is refused on one flavour and answered on the other. The
+  corrected row is better than the one I meant to write — it is now the row that shows
+  the multicast refusal is genuinely gated on the ordering, and so what "refused late"
+  buys: a gap in the model that a higher-ranked fault can hide.
+* Two ordering rows computed their expected errno by calling `firstBindFault`, which is
+  the function under test — a mirror oracle that would have agreed with any order at
+  all. They state the errnos as literals now.
+
+**Mutation battery**: fifteen mutants, fourteen killed by the library's own suite —
+both directions of the `SO_REUSEADDR` write, the port ceiling in three ways, the
+per-transport namespaces, already-bound, the AF_UNSPEC split, the whole Darwin fault
+order, the multicast refusal, the allocated port being reported rather than the requested
+one, the address lock, the exhaustion refusal, and an errno swap.
+
+The fifteenth — removing the `Port > 0us` guard on the address-in-use fault — **survived,
+and could not have done otherwise**. `bindConflict` answers `false` outright when the
+ports differ, and no bound socket ever holds port 0, since every port-0 request
+allocates. So the guard restated a fact rather than enforcing one, and no test could
+falsify it. It is deleted, with the reasoning kept as a comment: a guard nothing can
+falsify is a guard nobody can maintain.
+
+**What is left after 13**: `listen` (which needs the bind-conflict relation this move
+took across), `socket`, the two non-blocking `fcntl`s, and the fixture relocation.
+
+### Stage 14: `listen(2)` moves, and `socketOfFd` falls out
+
+**Dependencies**: 13, whose move brought the bind-conflict relation across.
+
+The shortest of the five, and the cleanest: `SystemNative_Listen` had, in its own words,
+"no screens of its own: it is `listen(2)`". So the whole handler is now the errno write,
+and `UnixSystem.listen` is the rest.
+
+**The relation `bind` and `listen` share** — "does another socket's binding conflict with
+mine" — was a closure inside each of them. It is one function now,
+`UnixSystem.bindingConflicts`, because it is one kernel rule; the two callers differ only
+in *when* they ask. `listen` asks it twice: once on the flavour whose `listen(2)` re-runs
+the admission, and once per candidate port for the implicit bind an unbound `listen`
+performs.
+
+**Three `failwith`s become refusals** — the unmodelled domain, the unmeasured kinds, and
+the unmeasured phases — plus `EphemeralPortsExhausted` for the implicit bind.
+
+One shape had to change on the way. The handler screened the phase with a `unit`-typed
+match whose other arm was a `failwith`, which types as anything and so could sit in the
+middle of the fall-through. A refusal that is a *value* cannot: it has to be produced
+before the rest of the function continues, so the phase check is now an
+`option`-returning match followed by a match on that.
+
+**`socketOfFd` is deleted.** It was the shared descriptor ladder for `bind`, `listen`,
+`accept` and `connect`; all four have moved, and its last reference went with this stage.
+Checked against the whole solution rather than one file, which is the lesson stage 9n's
+`faultsBeforeOperation` taught: that one *looked* dead in `NativeSystemNative.fs` and had
+three callers in a fixture.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestListen.fs`, 27 cases. Every row is
+`listen(2)`, since nothing here belongs to a caller. Two are reachable only at this tier:
+the binding re-screen, which Linux performs and Darwin does not, and the implicit bind's
+exhaustion.
+
+**A premise I got wrong, again in a fixture rather than in the code.** The re-screen row
+first set up two reuse-carrying sockets both merely *bound*, and expected the second
+`listen` to be EADDRINUSE on Linux. It is not: Linux's relaxation holds while nothing
+listens, so a pair that has only bound does not conflict at all — it is the second
+`listen`, with the first already listening, that finds one. The corrected row sets the
+holder listening, and a new row asserts the complement: the *first* listener of such a
+pair is admitted on both flavours. Without that second row the first would pass for a
+rule that refused any duplicate binding.
+
+**Mutation battery**: twelve mutants, all killed by the library's own suite — the
+re-screen in three ways (on both flavours, on neither, and with the predicate inverted),
+the implicit bind's address, its lock and its conflict check, the re-listen's queue, the
+backlog clamp, the datagram answer, the kind/phase ordering, and both halves of the
+shared conflict relation. Nothing here needed PawPrint's suite consulted.
+
+**What is left after 14**: `socket`, the two non-blocking `fcntl`s, and the fixture
+relocation. Also noted in passing: `UnmodelledDomain` now appears as a case in four
+refusal DUs with the same shape and meaning (`accept`, `sockaddrCopy`, `listen`, and
+`bind` through the first of those). A shared case would be tidier; it is deliberately not
+done here, being churn across three shipped entry points for a naming gain.
+
+### Stage 15: the last three socket state transitions
+
+**Dependencies**: none beyond the vocabulary the stages above settled.
+
+`socket(2)`'s state transition and the two non-blocking `fcntl`s — the last of the five
+this audit found still holding kernel logic on PawPrint's side.
+
+**`socket` is mostly not a move.** Its handler is nearly all PAL: the wrapper's null
+screen, the `*createdSocket` store, `SocketArgumentsPal.socketCreation` and the three
+conversion errnos are the shim's, and stay. What moves is
+`EmulatedKernel.createSocket` — the "mint a socket and a descriptor onto it, agreeing"
+transition — as `UnixSystem.createSocket`, with an adapter left behind for the nine
+fixtures that call it.
+
+**The two `fcntl`s are almost entirely kernel logic**, once the PAL return convention
+(0, or -1-and-errno, or the odd `Error_EFAULT` enum on a null out-pointer) and the
+argument decoding are taken off. `UnixSystem.setNonBlocking` and
+`UnixSystem.isNonBlocking` carry the rest.
+
+Three things about the setter are worth having in the library rather than in a handler:
+
+* **The flag lands on the open file description**, where POSIX keeps the status flags, so
+  a `dup` sees it.
+* **A standard stream refuses to be set** — no modelled stream transfer consults the
+  flag, so storing it would keep blocking semantics silently. *Clearing* it is answered,
+  because `false` is what a stream already reads back: the refusal is about a divergence
+  that clearing does not create.
+* **An event port stores the flag whatever it answers.** Measured, the platforms agree
+  that the bit toggles and disagree on the answer — Linux succeeds where Darwin reports a
+  failure with the bit toggled anyway. That is why `SetNonBlockingAnswer.Failed` still
+  hands back a system.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestNonBlocking.fs`, 11 cases. The
+event-port split is reachable only here — a guest runs one flavour, and the managed
+surface never sets the flag on an event port at all — and so is the `dup` sharing, which
+no guest exercises through this entry point.
+
+**Mutation battery**: ten mutants, all killed by the library's own suite — a fresh
+socket's binding, reuse flag and identity counter; the standard-stream refusal in both
+directions, including the one that would refuse a *clear*; the event port storing when it
+fails and answering when it should not; the dead descriptor on both the setter and the
+getter; and the getter reading the flag at all.
+
+**What is left after 15**: the fixture relocation, and nothing else from the audit.
+`TestEmulatedKernelSockets` (1903 lines), `TestSocketEventDelivery` (1088) and
+`SocketFuzz` (902) test behaviour that is now almost entirely library code, from the
+client's suite. That is the 9g failure mode at scale, and it is why every stage since 9j
+has had to write a fresh fixture rather than move one.
