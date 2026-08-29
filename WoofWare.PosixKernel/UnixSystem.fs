@@ -6281,9 +6281,6 @@ module UnixSystem =
                     }
             }
 
-    /// `rmdir(2)`: remove the empty directory `path` names.
-    ///
-    /// Never refused: every outcome is a success or an errno.
     /// `chdir(2)`: make `path` the directory relative paths resolve from.
     ///
     /// Never refused: every outcome is a success or an errno.
@@ -6369,6 +6366,9 @@ module UnixSystem =
         // exactly here. Without this it would be stranded for the run.
         SyscallAnswer.Completed 0L, forgetIfUnheld previous moved
 
+    /// `rmdir(2)`: remove the empty directory `path` names.
+    ///
+    /// Never refused: every outcome is a success or an errno.
     let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
