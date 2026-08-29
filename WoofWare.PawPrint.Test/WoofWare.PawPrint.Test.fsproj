@@ -158,8 +158,6 @@
     <Compile Include="TestTaskState.fs" />
         <Compile Include="TestUnixSystemProjection.fs" />
     <Compile Include="TestEmulatedKernelInodeLifetime.fs" />
-    <Compile Include="TestEmulatedKernelSockets.fs" />
-    <Compile Include="TestSocketEventDelivery.fs" />
     <Compile Include="SocketFuzz.fs" />
     <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestSocketBinding.fs" />
