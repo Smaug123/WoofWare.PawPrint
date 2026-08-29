@@ -167,6 +167,64 @@ module TestSocketEventRegistration =
         | other -> failwith $"expected an event port, got %A{other}"
 
     // ------------------------------------------------------------------
+    // The errnos
+    // ------------------------------------------------------------------
+
+    /// `epoll_ctl(2)`'s six answers, measured on Linux 6.18.5 and stated here as
+    /// literals rather than read back off `toErrno`, which is the function under
+    /// test. Each case's own docstring says the same thing in prose; this is
+    /// what makes the two disagreeing a failure rather than a discrepancy
+    /// nobody runs.
+    [<Test>]
+    let ``each refusal carries the errno epoll_ctl answers`` () : unit =
+        let rows =
+            [
+                SocketEventRegistrationError.BadPortFd, UnixError.EBADF
+                SocketEventRegistrationError.BadTargetFd, UnixError.EBADF
+                SocketEventRegistrationError.TargetNotPollable, UnixError.EPERM
+                SocketEventRegistrationError.NotAnEventPort, UnixError.EINVAL
+                SocketEventRegistrationError.AlreadyRegistered, UnixError.EEXIST
+                SocketEventRegistrationError.NotRegistered, UnixError.ENOENT
+            ]
+
+        for reason, expected in rows do
+            SocketEventRegistrationError.toErrno reason |> shouldEqual expected
+
+    /// Not injective, and the row exists so that a future reader does not
+    /// "simplify" the two `EBADF` cases into one: they are distinguished by
+    /// *which* descriptor was bad, which the errno cannot carry and a client
+    /// diagnosing a guest wants.
+    [<Test>]
+    let ``the two EBADF refusals stay distinguishable`` () : unit =
+        SocketEventRegistrationError.BadPortFd
+        |> shouldNotEqual SocketEventRegistrationError.BadTargetFd
+
+        SocketEventRegistrationError.toErrno SocketEventRegistrationError.BadPortFd
+        |> shouldEqual (SocketEventRegistrationError.toErrno SocketEventRegistrationError.BadTargetFd)
+
+    /// Every case maps somewhere, and no two *distinct* errnos collide beyond
+    /// the pair above: five refusals, four numbers.
+    [<Test>]
+    let ``the six refusals use exactly five errnos`` () : unit =
+        let all =
+            [
+                SocketEventRegistrationError.BadPortFd
+                SocketEventRegistrationError.BadTargetFd
+                SocketEventRegistrationError.TargetNotPollable
+                SocketEventRegistrationError.NotAnEventPort
+                SocketEventRegistrationError.AlreadyRegistered
+                SocketEventRegistrationError.NotRegistered
+            ]
+
+        all |> List.length |> shouldEqual 6
+
+        all
+        |> List.map SocketEventRegistrationError.toErrno
+        |> List.distinct
+        |> List.length
+        |> shouldEqual 5
+
+    // ------------------------------------------------------------------
     // The flavour
     // ------------------------------------------------------------------
 
