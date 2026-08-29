@@ -457,15 +457,15 @@ type ConnectOutcome =
     | Failed of UnixError
 
 /// Which of `struct sockaddr_in`'s fields a caller's declared length reaches,
-/// for a `connect(2)` whose sockaddr the kernel is about to copy in.
+/// for a syscall whose sockaddr the kernel is about to copy in.
 ///
 /// The kernel copies the caller's whole declared length whatever this says; what
-/// it names is which fields that copy actually *contains*, and so which of
-/// `connect`'s two field arguments the caller can supply. A shorter length is
-/// not an error -- `connect(2)` has measured answers for a sockaddr whose family
-/// it never saw -- so this is an instruction to the caller rather than a verdict.
+/// it names is which fields that copy actually *contains*, and so which of them
+/// the caller can supply. A shorter length is not an error -- `bind(2)` and
+/// `connect(2)` both have measured answers for a sockaddr whose family they
+/// never saw -- so this is an instruction to the caller rather than a verdict.
 [<RequireQualifiedAccess>]
-type ConnectFields =
+type SockaddrCopyFields =
     /// The copy reaches no field this kernel reads. Pass no family and no
     /// endpoint.
     | Nothing
@@ -474,36 +474,44 @@ type ConnectFields =
     /// It reaches `sa_family`, `sin_addr` and `sin_port`. Pass both.
     | FamilyAndEndpoint
 
-/// Whether a `connect` reaches the point at which the kernel copies the caller's
-/// sockaddr in.
+/// Whether a syscall taking a `struct sockaddr` reaches the point at which the
+/// kernel copies it in.
 ///
 /// The question exists for the reason `WriteAdmission`'s does: a caller may not
-/// be able to produce the bytes without failing, so every answer a `connect`
-/// gives *without* reading the sockaddr is available first. It matters more here
-/// than for a write, because whether the copy happens at all is a measured
-/// per-flavour rule rather than a length test -- Darwin's `getsockaddr` reads
-/// nothing at a length too short to reach `sa_family`, and Linux's
-/// `move_addr_to_kernel` reads at any positive length.
+/// be able to produce the bytes without failing, so every answer available
+/// *without* reading the sockaddr comes first. It matters more here than for a
+/// write, because whether the copy happens at all is a measured per-flavour rule
+/// rather than a length test -- Darwin's `getsockaddr` reads nothing at a length
+/// too short to reach `sa_family`, and Linux's `move_addr_to_kernel` reads at
+/// any positive length.
+///
+/// Shared by `bind(2)` and `connect(2)`, whose screens up to this point are the
+/// same ones in the same order -- which is measurement rather than convenience:
+/// `SimulatedUnixPlatform.bindAddressLength` is named for the first and used by
+/// the second because the two were measured to agree exactly.
 [<RequireQualifiedAccess>]
-type ConnectAdmission =
+type SockaddrCopyAdmission =
     /// Answered without the sockaddr being read at all -- a bad descriptor, a
     /// non-socket, a length the copy helper rejects outright, or a faulting
     /// address.
-    | Answered of outcome : ConnectOutcome
+    ///
+    /// Always a failure: every screen that precedes the copy is one that can
+    /// only refuse, which is why this carries an errno rather than an outcome.
+    | Answered of error : UnixError
     /// The copy is reached: it takes exactly `length` bytes from the caller's
     /// buffer, of which `fields` says which are worth decoding.
-    | Transfer of length : int * fields : ConnectFields
+    | Transfer of length : int * fields : SockaddrCopyFields
 
-/// Why this kernel will not answer a `connect`.
+/// Why this kernel will not answer a syscall that copies a `struct sockaddr` in.
 ///
 /// Distinct from an errno: an errno is an answer, and these are the inputs for
 /// which this library has measured what real kernels do and found no single
 /// answer to give.
 [<RequireQualifiedAccess>]
-type ConnectRefusal =
+type SockaddrCopyRefusal =
     /// The descriptor is a socket in a domain whose addresses this kernel does
-    /// not model, so there is no destination to connect to even if the call
-    /// would otherwise succeed.
+    /// not model, so there is no address to read out of the caller's sockaddr
+    /// even if the call would otherwise succeed.
     | UnmodelledDomain of socket : SocketId * domain : SocketDomain
     /// The kernel copies the sockaddr in, and the buffer has no answer at that
     /// step.
@@ -515,14 +523,14 @@ type ConnectRefusal =
     | Buffer of BufferRefusal
 
 [<RequireQualifiedAccess>]
-module ConnectRefusal =
+module SockaddrCopyRefusal =
     /// What this kernel knows about why it cannot answer. The client supplies
     /// its own half -- which entry point, which argument, and how a caller could
     /// have come by such a socket or such a buffer.
-    let describe (refusal : ConnectRefusal) : string =
+    let describe (refusal : SockaddrCopyRefusal) : string =
         match refusal with
-        | ConnectRefusal.Buffer refusal -> BufferRefusal.describe refusal
-        | ConnectRefusal.UnmodelledDomain (socket, domain) ->
+        | SockaddrCopyRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | SockaddrCopyRefusal.UnmodelledDomain (socket, domain) ->
             $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a transport address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
 
 /// One entry of a `poll(2)` call, as its caller supplied it: `struct pollfd`'s
@@ -4876,7 +4884,7 @@ module UnixSystem =
 
     /// Everything `connect(2)` decides before the kernel copies the caller's
     /// sockaddr in, which is where a client that cannot always produce those
-    /// bytes needs to be let off. See `ConnectAdmission`.
+    /// bytes needs to be let off. See `SockaddrCopyAdmission`.
     ///
     /// `declaredLength` must not be negative: a caller that casts it to
     /// `socklen_t` makes the copy enormous rather than negative, so a kernel is
@@ -4884,38 +4892,38 @@ module UnixSystem =
     /// question this library has no answer for.
     ///
     /// Changes nothing: everything a connect does before the copy is a question.
-    let admitConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    let admitSockaddrCopy<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ConnectAdmission, ConnectRefusal>
+        : Result<SockaddrCopyAdmission, SockaddrCopyRefusal>
         =
         if declaredLength < 0 then
             failwith
-                $"UnixSystem.admitConnect: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a caller that casts it to `socklen_t` makes the copy SIZE_MAX bytes rather than passing it on. Screen this in the client (this is a bug in the caller)."
+                $"UnixSystem.admitSockaddrCopy: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a caller that casts it to `socklen_t` makes the copy SIZE_MAX bytes rather than passing it on. Screen this in the client (this is a bug in the caller)."
 
-        let answered (outcome : ConnectOutcome) : Result<ConnectAdmission, ConnectRefusal> =
-            Ok (ConnectAdmission.Answered outcome)
+        let answered (error : UnixError) : Result<SockaddrCopyAdmission, SockaddrCopyRefusal> =
+            Ok (SockaddrCopyAdmission.Answered error)
 
         // The descriptor is classified first, before the length and before the
         // buffer: measured on both flavours, a closed descriptor answers EBADF
         // and a non-socket ENOTSOCK at every length and through every buffer.
         match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
-        | None -> answered (ConnectOutcome.Failed UnixError.EBADF)
+        | None -> answered (UnixError.EBADF)
         | Some description ->
 
         match description.Target with
         | OpenFileTarget.File _
         | OpenFileTarget.StandardStream _
-        | OpenFileTarget.SocketEventPort _ -> answered (ConnectOutcome.Failed UnixError.ENOTSOCK)
+        | OpenFileTarget.SocketEventPort _ -> answered (UnixError.ENOTSOCK)
         | OpenFileTarget.Socket socketId ->
 
         let socket = UnixMachineState.socket socketId system.Machine
 
         match socket.Domain with
         | SocketDomain.InterNetworkV6
-        | SocketDomain.Unix -> Error (ConnectRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.Unix -> Error (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.InterNetwork ->
 
         let platform = system.Machine.UnixPlatform
@@ -4926,7 +4934,7 @@ module UnixSystem =
         // `connectSocket` documents why `bind(2)`'s verdict function is the
         // right one: the measured lengths agree exactly.
         match SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength with
-        | BindLengthVerdict.RejectedBeforeCopy error -> answered (ConnectOutcome.Failed error)
+        | BindLengthVerdict.RejectedBeforeCopy error -> answered (error)
         | BindLengthVerdict.Accepted
         | BindLengthVerdict.Invalid ->
 
@@ -4945,37 +4953,37 @@ module UnixSystem =
                | SimulatedUnixFlavour.Darwin -> reachesFamily
 
         if not copies then
-            Ok (ConnectAdmission.Transfer (0, ConnectFields.Nothing))
+            Ok (SockaddrCopyAdmission.Transfer (0, SockaddrCopyFields.Nothing))
         else
 
         match destination with
-        | UserBuffer.Unmapped _ -> answered (ConnectOutcome.Failed UnixError.EFAULT)
-        | UserBuffer.Opaque -> Error (ConnectRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
-        | UserBuffer.Addressless -> Error (ConnectRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Unmapped _ -> answered (UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error (SockaddrCopyRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (SockaddrCopyRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
         | UserBuffer.Mapped ->
 
         let fields =
             if declaredLength >= internetEndpointExtent then
-                ConnectFields.FamilyAndEndpoint
+                SockaddrCopyFields.FamilyAndEndpoint
             elif reachesFamily then
-                ConnectFields.Family
+                SockaddrCopyFields.Family
             else
-                ConnectFields.Nothing
+                SockaddrCopyFields.Nothing
 
-        Ok (ConnectAdmission.Transfer (declaredLength, fields))
+        Ok (SockaddrCopyAdmission.Transfer (declaredLength, fields))
 
     /// `connect(2)`: point `fd` at `endpoint`, or ask what pointing it there
     /// would answer.
     ///
     /// `family` is the *platform's* family number as it was found in the
     /// caller's sockaddr, and `endpoint` the address and port found there. Both
-    /// must be exactly what `admitConnect` asked for: a `ConnectFields` of
+    /// must be exactly what `admitSockaddrCopy` asked for: a `SockaddrCopyFields` of
     /// `Nothing` means neither, `Family` the family alone, `FamilyAndEndpoint`
     /// both. Supplying less than that is refused rather than answered, because
     /// this kernel's answer for an *unreadable* field is measured and different
     /// from its answer for a field nobody bothered to read.
     ///
-    /// The screens `admitConnect` performs are performed again here, so a caller
+    /// The screens `admitSockaddrCopy` performs are performed again here, so a caller
     /// that already has the fields need not have asked; they are pure, and they
     /// agree.
     let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
@@ -4985,24 +4993,24 @@ module UnixSystem =
         (family : int option)
         (endpoint : InternetEndpoint option)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, SockaddrCopyRefusal>
         =
-        match admitConnect fd destination declaredLength system with
+        match admitSockaddrCopy fd destination declaredLength system with
         | Error refusal -> Error refusal
-        | Ok (ConnectAdmission.Answered outcome) -> Ok (outcome, system)
-        | Ok (ConnectAdmission.Transfer (_, fields)) ->
+        | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
+        | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
 
         let expected =
             match fields with
-            | ConnectFields.Nothing -> false, false
-            | ConnectFields.Family -> true, false
-            | ConnectFields.FamilyAndEndpoint -> true, true
+            | SockaddrCopyFields.Nothing -> false, false
+            | SockaddrCopyFields.Family -> true, false
+            | SockaddrCopyFields.FamilyAndEndpoint -> true, true
 
         if (Option.isSome family, Option.isSome endpoint) <> expected then
             failwith
                 $"UnixSystem.connect: the copy of this sockaddr reaches %O{fields}, but the caller supplied family=%b{Option.isSome family} endpoint=%b{Option.isSome endpoint}. A field this kernel could not read and a field the caller did not read have different measured answers, so they must not be conflated (this is a bug in the caller)."
 
-        // `admitConnect` reached the copy, so the descriptor is a live IPv4
+        // `admitSockaddrCopy` reached the copy, so the descriptor is a live IPv4
         // socket; nothing between there and here could have changed that.
         let socketId =
             match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
