@@ -4730,6 +4730,12 @@ event-port split is reachable only here — a guest runs one flavour, and the ma
 surface never sets the flag on an event port at all — and so is the `dup` sharing, which
 no guest exercises through this entry point.
 
+**Mutation battery**: ten mutants, all killed by the library's own suite — a fresh
+socket's binding, reuse flag and identity counter; the standard-stream refusal in both
+directions, including the one that would refuse a *clear*; the event port storing when it
+fails and answering when it should not; the dead descriptor on both the setter and the
+getter; and the getter reading the flag at all.
+
 **What is left after 15**: the fixture relocation, and nothing else from the audit.
 `TestEmulatedKernelSockets` (1903 lines), `TestSocketEventDelivery` (1088) and
 `SocketFuzz` (902) test behaviour that is now almost entirely library code, from the
