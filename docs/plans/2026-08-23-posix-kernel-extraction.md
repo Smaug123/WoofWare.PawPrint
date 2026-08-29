@@ -4232,3 +4232,204 @@ giving it a stage rather than a paragraph. The layout serves ten PAL handlers th
 involve no kernel at all, so the question is not "move it" but "which of the two things
 called `sockaddr_in` is which" — the kernel's struct, and the byte array CoreLib passes
 around, which agree numerically today and need not.
+
+### Stage 10: `struct sockaddr_in`'s layout moves to the library
+
+**Dependencies**: stage 9, whose 8m, 9j and 9l deferrals this discharges.
+
+#### The premise the deferrals assumed, and what measurement says
+
+Stages 8m, 9j and 9l each left `SockaddrOffsets` in `WoofWare.PawPrint` with the same
+argument: it serves ten PAL handlers that involve no kernel at all, so it looks like PAL
+vocabulary. The natural next step reads as "map PawPrint's layout onto the kernel's".
+
+There is no such mapping to write, because there is only one layout.
+
+`docs/plans/2026-08-23-posix-kernel-extraction/sockaddr-layout.c`, run 2026-08-29 on
+Linux 6.18.5 (container) and Darwin 25.6.0 (host):
+
+| fact | Linux 6.18.5 | Darwin 25.6.0 |
+| --- | --- | --- |
+| `sa_family` | offset 0, width 2 | offset 1, width 1 |
+| `sin_port` | 2 | 2 |
+| `sin_addr` | 4 | 4 |
+| `sin6_flowinfo` | 4 | 4 |
+| `sin6_addr` (16 bytes) | 8 | 8 |
+| `sin6_scope_id` | 24 | 24 |
+| `sizeof` in / in6 / storage | 16 / 28 / 128 | 16 / 28 / 128 |
+
+The only divergent field is `sa_family`, and the library **already** owns it
+(`SockaddrFamilyField`), along with every size (`socketAddressSizes`). Everything
+PawPrint still holds is flavour-invariant.
+
+The other half is a fact about upstream's source rather than a measurement:
+`SystemNative_SetIPv4Address` does
+`struct sockaddr_in* inetSockAddr = (struct sockaddr_in*)sockAddr`, casting the caller's
+byte array directly to the kernel's struct. The managed `SocketAddress` buffer *is* a
+`sockaddr_in`. So `SockaddrOffsets` is a private transcription of the kernel's struct
+sitting on the wrong side of the boundary, and nothing checks that the transcription is
+right.
+
+**One byte is not like the others, and the claim has to be stated carefully.** It would
+be wrong to say the PAL exists so that managed code never needs the layout: managed code
+knows one thing about it. `pal_networking.c` mentions `sa_len` zero times; the length
+byte a guest sees at index 0 is written by `SocketAddress`'s own constructor, storing
+`(byte) _size` unconditionally on every platform and relying on Linux's two-byte family
+write to clobber it. `SockaddrFamilyField.OneByteAtOffsetOne`'s docstring already records
+this. That is still an assumption about the *kernel's* layout rather than a second one,
+so the "one layout" claim survives — but the two directions must be cross-referenced
+once they share a file, because the encoder models the kernel filling `sa_len` on
+copy-*out* while the docstring describes managed code writing it on the way *in*, and a
+reader meeting both without a pointer between them will think one is wrong.
+
+#### What is the kernel's and what is the PAL's
+
+* **Kernel, and so the library's**: the field offsets and widths — including
+  `InternetV6AddressLength`, which is `sizeof(struct in6_addr)` and therefore the
+  `sin6_addr` descriptor's *width* rather than a constant of its own; the fields' byte
+  orders; the `sa_len` byte a BSD kernel fills in on copy-out; and
+  `internetSockaddrBlob`, which is wholly "encode an endpoint as this platform's
+  `struct sockaddr_in`".
+* **The PAL's, and so PawPrint's**: `IsInBounds`, the
+  `socketAddressLen < sizeof(struct sockaddr_in)` screens, the
+  EFAULT/EINVAL/EAFNOSUPPORT choices, and every handler's decision about *whether to
+  swap bytes*.
+
+That last item is a distinction worth keeping sharp. The fields' byte orders are kernel
+ABI, but the swap decisions are the PAL's contract with its own out-parameters:
+`SystemNative_GetPort` byte-swaps and `SystemNative_GetIPv4Address` does not — it copies
+the address word verbatim, because both sides of that call hold it in network order.
+**So the descriptors carry offset and width only, and byte order stays as prose on
+each.** Making it data would invite an order-normalising accessor, and the first handler
+to use one would silently acquire an `ntohl` that upstream does not have.
+
+#### How the library states the layout
+
+* **Option A: move the constants verbatim.** Cheapest. Hands callers arithmetic rather
+  than answers, and a bare numeric table under an innocent name is precisely what
+  `check-pal-residue.py` cannot see. It is *not* PAL residue — it came out of the C
+  headers — but nothing in the code would tell a future reader that.
+* **Option B: a field descriptor per struct**, in the shape `SockaddrFamilyField`
+  already has. Callers ask where `sin_port` is rather than what 2 is, and
+  `SockaddrField.reachedBy` subsumes both the family predicate 9l added and bind's
+  hand-written `declaredLength >= SockaddrOffsets.InternetAddress + 4`.
+* **Option C: codec functions only** — no offsets exposed at all. Strongest boundary;
+  cannot serve the ten PAL handlers, which manipulate single fields of a partly-filled
+  buffer (`SetPort` on a blob whose address is not set yet).
+
+**Chosen: B, with C's encoder written in terms of it.** B serves the field handlers; the
+copy-out path (`getsockname`, `accept`) is a whole-struct operation and gets the
+encoder. Both live in `SimulatedUnixPlatform.fs`, beside the layout facts the library
+already owns: `InternetEndpoint.fs` compiles before it, and the encoder needs both.
+
+`sin_port` and `sin6_port` become **two descriptors with the same value** rather than the
+one shared constant they are today. They are two fields of two structs that happen to
+coincide, and the oracle below checks each against its own struct. The same goes for
+`sin6_flowinfo` and `sin_addr`, which both sit at 4: a mutation swapping those two
+remains a no-op, and the gain is that the use site now names which struct it means.
+
+Offsets go in as **constants rather than `platform -> int` functions**, matching how
+`internetAddressFamily` (a constant) sits beside `internetV6AddressFamily` (a function).
+That distinction is already how this library records which facts were measured to agree.
+
+#### The oracle
+
+`IPEndPoint.Serialize()` returns the host PAL's own `sockaddr`, built by the same
+managed and PAL writes a guest would perform. Measured 2026-08-29 on both:
+
+```
+Darwin 25.6.0
+  v4 1.2.3.4:0x1234   size=16  10 02 12 34 01 02 03 04 00 …
+  v6 ::1%7:0x1234     size=28  1c 1e 12 34 00000000 …0001 07 00 00 00
+Linux 6.18.5 (container)
+  v4 1.2.3.4:0x1234   size=16  02 00 12 34 01 02 03 04 00 …
+  v6 ::1%7:0x1234     size=28  0a 00 12 34 00000000 …0001 07 00 00 00
+```
+
+Both rows were run rather than inferred. Every fact this stage moves is
+flavour-invariant, so **both** hosts check all of them: the port at 2 in network order,
+the address at 4, the sizes. What splits by column is only what the library already owns
+— the family field (`10 02` against `02 00`) and AF_INET6's number (`1e` = 30 against
+`0a` = 10), the latter being a genuinely new check.
+
+The sizes are *not* new: `sourcesPure/SocketAddressScreens.cs` already asserts 16, 28 and
+128 differentially against the real host runtime. What is new is a check in the
+**library's own** suite, and a direct host-equality one rather than a guest's assertion.
+
+Two things the test's prose must say, or a future failure is hard to read. `Serialize`
+witnesses the *inbound* producer while `internetSockaddrBlob` models the kernel's
+*copy-out*; they agree byte for byte, and the evidence for the copy-out `sa_len` remains
+the measured comment that travels with the encoder. And the v6 row exercises
+**descriptors only** — the library has no IPv6 endpoint type, so the encoder is v4-only
+and the v6 expected bytes are hand-assembled from the descriptors.
+
+#### Correctness oracle
+
+* The host-equality test above, in `WoofWare.PosixKernel.Test`, which needs no PawPrint
+  reference and so does not disturb `TestNoPawPrintReference`.
+* The existing suites unchanged: the ten PAL handlers have guest coverage
+  (`sourcesPure/SocketAddressScreens.cs`, `sourcesImpure/SocketAddress{Linux,Darwin}Bytes.cs`),
+  and `getsockname`/`accept` have theirs.
+* A mutation battery over the moved descriptors and the encoder, run against both
+  suites. Recorded in advance and confirmed: swapping the two fields that share offset 4
+  is a no-op mutant and cannot be killed. Eleven others die, every one in the library's
+  own suite — each field moved, `sin6_addr` narrowed, `reachedBy` off by one, the
+  encoder's two byte orders, its `sa_len`, and `AF_INET6`'s number.
+
+  Two of those mutants can only be killed on a Linux host, and this machine is macOS, so
+  they were run in a container against the real fixture: `AF_INET6` = 30 everywhere kills
+  one row, and the Linux family field claiming Darwin's shape kills four. Both columns of
+  the oracle are therefore load-bearing rather than one being carried by the other.
+* `scripts/check-docstring-attachment.py` against the branch point, which this stage
+  needs because it moves definitions between files.
+
+#### What review found
+
+Three things, and two of them are about the fixture rather than the move.
+
+* **The skip could not run.** `hostFlavour` and the two serialized blobs were
+  module-level bindings, so on a host with no preset F# forces them — and throws —
+  before NUnit reaches the guard. Functions now, with the guard as a `SetUp` every test
+  passes through. A guard that cannot run is worse than none, because it reads as
+  handled.
+* **The guard asked the wrong question.** It picked a preset by flavour alone, which
+  assumes the preset's *machine* is this one; both presets are little-endian, and one row
+  reads byte 0 of a Linux `sockaddr` as the family's low half, which on a big-endian
+  Linux would be its high half. It now wants a little-endian Linux or macOS host. Only
+  that one row actually breaks on big-endian — the others compare host-order writes
+  against host-order reads and would agree — but a fixture comparing a preset against a
+  machine should say which machines the preset describes.
+* **`reachedBy` could wrap.** `Offset + Width <= declaredLength` was safe while its only
+  inputs came from a closed DU, and is not now that `SockaddrField` is a public record:
+  `{ Offset = Int32.MaxValue; Width = 1 }` wrapped onto a bound every length satisfies.
+  It refuses a negative offset or width, and the comparison subtracts rather than adds —
+  the same rearrangement, for the same reason, as
+  `UserBufferCheck.faultsBeforeOperation`. This is the "publishing inherits private
+  preconditions" shape: nothing about the arithmetic changed, only who can reach it.
+
+  `TestSockaddrField.fs` covers the rewritten predicate, and its own battery of five
+  mutants all die — including "the addition comes back", which the overflow row kills, so
+  the rearrangement is load-bearing rather than decoration.
+
+#### In scope, and easy to under-plan: the prose
+
+`SockaddrOffsets`' docstrings are PAL-flavoured throughout — `FlowInfo` cites
+`SystemNative_SetIPv6Address`, `InternetAddress` cites "the managed caller",
+`InternetV6AddressLength` is named for upstream's `NUM_BYTES_IN_IPV6_ADDRESS`. Moved
+verbatim, that is exactly the residue the check cannot see and that three consecutive
+stages nearly shipped. This stage is a prose pass as much as a move.
+
+#### What this does not overturn
+
+8m argued that the blob "does not cross" the boundary, and 9j and 9l repeated it. That
+reasoning was about the *entry points' signatures*, and it stands:
+`UnixSystem.getsockname` and `UnixSystem.accept` still answer an `InternetEndpoint`, not
+bytes. Only the pure encoding function relocates. This discharges the deferral without
+reopening the question those stages actually settled.
+
+#### Not proposed
+
+Now that `connect` has an admission, the library *could* take the raw sockaddr bytes and
+decode them itself; the ordering objection from 9l is gone. `ConnectFields` stays anyway:
+it works, it is tested, and rewriting it buys only symmetry with a decoder the PAL
+handlers still cannot use.
