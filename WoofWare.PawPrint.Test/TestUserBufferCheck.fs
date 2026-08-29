@@ -285,6 +285,24 @@ module TestUserBufferCheck =
     let private storage : BufferPointer =
         BufferPointer.Storage (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 1), [])
 
+    /// PawPrint's classification put to the platform's up-front address screen:
+    /// what a handler's buffer argument meets on its way to the kernel.
+    ///
+    /// Composed here rather than in the production code, which now hands the
+    /// classification straight to the library — `UnixSystem.admitSocketWait`
+    /// owns the one such screen that remains, and performs it itself. The two
+    /// halves are still worth testing together, because the claims below are
+    /// about how a `BufferPointer` *maps* onto what the screen sees.
+    let private faultsBeforeOperation (kernel : EmulatedKernel) (buffer : BufferPointer) (bufferSize : int) : bool =
+        match
+            UserBufferCheck.faultsBeforeOperationFor
+                (UnixMachineState.userBufferCheck kernel.Machine)
+                (BufferPointer.toUserBuffer buffer)
+                (uint64 bufferSize)
+        with
+        | Ok faults -> faults
+        | Error refusal -> failwith (BufferPointer.refusalMessage buffer refusal)
+
     /// The difference of two pointers into separate storages, which PawPrint
     /// keeps synthetic because it has no number for it.
     let private crossStorageDifference : CliType =
@@ -316,12 +334,12 @@ module TestUserBufferCheck =
         let unstatable = classify crossStorageDifference
 
         Assert.Throws<exn> (fun () ->
-            NativeSystemNative.faultsBeforeOperation (kernelFor SimulatedUnixPlatform.linuxX64) unstatable 0
+            faultsBeforeOperation (kernelFor SimulatedUnixPlatform.linuxX64) unstatable 0
             |> ignore<bool>
         )
         |> ignore<exn>
 
-        NativeSystemNative.faultsBeforeOperation (kernelFor SimulatedUnixPlatform.macOsArm64) unstatable 0
+        faultsBeforeOperation (kernelFor SimulatedUnixPlatform.macOsArm64) unstatable 0
         |> shouldEqual false
 
         // Transferring through it refuses on every platform, though.
@@ -346,8 +364,7 @@ module TestUserBufferCheck =
     let ``storage is never refused before the operation`` () : unit =
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             for size in [ 0 ; 1 ; 5 ; Int32.MaxValue ] do
-                NativeSystemNative.faultsBeforeOperation (kernelFor platform) storage size
-                |> shouldEqual false
+                faultsBeforeOperation (kernelFor platform) storage size |> shouldEqual false
 
     /// ...whereas a raw address is screened, and only under the platform whose
     /// kernel screens at all.
@@ -355,18 +372,15 @@ module TestUserBufferCheck =
     let ``a raw address is refused only where the platform screens`` () : unit =
         let wild = BufferPointer.RawAddress UInt64.MaxValue
 
-        NativeSystemNative.faultsBeforeOperation (kernelFor SimulatedUnixPlatform.linuxX64) wild 5
+        faultsBeforeOperation (kernelFor SimulatedUnixPlatform.linuxX64) wild 5
         |> shouldEqual true
 
-        NativeSystemNative.faultsBeforeOperation (kernelFor SimulatedUnixPlatform.linuxX64) wild 0
+        faultsBeforeOperation (kernelFor SimulatedUnixPlatform.linuxX64) wild 0
         |> shouldEqual true
 
-        NativeSystemNative.faultsBeforeOperation (kernelFor SimulatedUnixPlatform.macOsArm64) wild 5
+        faultsBeforeOperation (kernelFor SimulatedUnixPlatform.macOsArm64) wild 5
         |> shouldEqual false
 
         // Null is a raw address, and an entirely ordinary one.
-        NativeSystemNative.faultsBeforeOperation
-            (kernelFor SimulatedUnixPlatform.linuxX64)
-            (BufferPointer.RawAddress 0UL)
-            5
+        faultsBeforeOperation (kernelFor SimulatedUnixPlatform.linuxX64) (BufferPointer.RawAddress 0UL) 5
         |> shouldEqual false

@@ -4166,3 +4166,69 @@ as well as the poll one — which is the same file now holding both, and a remin
 read what a `DID-NOT-APPLY` actually matched.
 
 **What is left after 9m**: `WaitForSocketEvents`, the one that really parks.
+
+#### Stage 9n: `WaitForSocketEvents`' screens move — stage 9 done
+
+**Dependencies**: none beyond the admission vocabulary 9l settled.
+
+The last of the four socket entry points. `UnixSystem.admitSocketWait` carries
+`epoll_wait(2)`'s four screens and `kevent(2)`'s two, in the order each kernel applies
+them. `SystemNative_WaitForSocketEvents` keeps the park machinery, and that division is
+the interesting part of this slice.
+
+**What stays in PawPrint, and why it is not a compromise.** The park is not a kernel
+concept this library is missing; it is *how a client suspends its own execution*. The
+re-entrant native frame, the scheduler status, the captured `ParkedSocketWait` consulted
+in place of arguments the guest may have scribbled on, the wake driven by `Program`'s
+readiness sweep — none of that is something a POSIX simulator can own, because a
+simulator has no threads to suspend. The library's contribution is the vocabulary
+(`ParkedSocketWait`, `WakeCondition.SocketEventDeliverable`, `SocketEventPort.drain`),
+which stages 9c–9f had already moved. So this stage is the *screens*, and the screens are
+all that was left.
+
+Two more things did not move, deliberately:
+
+* The sentinel written through `*count` on failure — 0 under epoll, -1 under kqueue — is
+  `WaitForSocketEventsInner`'s, not either kernel's. A client that keeps no such cell
+  writes nothing.
+* The buffer's *classification*. The extent screen is the kernel's (`access_ok` over
+  `maxevents * EventSize`), so the library performs it — but it takes a `UserBuffer`,
+  because whether a pointer names storage at all is PawPrint's question.
+
+**An admission rather than an answer**, for the reason `connect` has one: the call may
+not return, and what it does instead is the client's business. Three outcomes — an
+errno, Darwin's answer-zero-events-immediately row, and "reach the port with this
+maxevents", which the handler turns into its existing drain-or-park.
+
+**A helper fell out.** `NativeSystemNative.faultsBeforeOperation` lost its only
+production caller, the library now performing that composition itself. Its three tests
+did not lose their subject: they pin how a `BufferPointer` *maps* onto what the screen
+sees, which is still a real claim about `toUserBuffer`. So the composition moved into
+the fixture that tests it, rather than the tests being deleted along with the helper —
+and, equally, rather than a production helper being kept alive by its tests.
+
+**Correctness oracle**: `WoofWare.PosixKernel.Test/TestSocketWait.fs`, 15 cases. This is
+the entry point that needed them most: **five of its eight measured rows differ between
+the flavours**, and a guest runs one, so half the table had never had a test that could
+reach it. The orderings are the point — descriptor before count before buffer before
+object kind under epoll, descriptor before count under kqueue — and each adjacent pair
+is separated by an input that provokes exactly one of the two, which is how they were
+measured in the first place.
+
+**Mutation battery**: eleven mutants, all killed by the library's own suite. Both
+wrong-kind answers, both zero-count answers, the `EP_MAX_EVENTS` cap off by one, the
+buffer screen skipped, its extent reduced to one element, all three epoll orderings
+reversed one at a time, kqueue given a buffer screen it does not have, and the
+addressless refusal turned into an answer.
+
+**Stage 9 is done.** Every syscall the four socket entry points implement now lives in
+`WoofWare.PosixKernel`, the PAL allowlist is empty, and the packaging is in place. What
+PawPrint keeps at these four entry points is exactly guest memory and its own scheduler.
+
+**What the extraction has not done**, and is worth writing down now rather than
+rediscovering: `struct sockaddr_in`'s byte layout is still PawPrint's, deferred with an
+argument in 8m, 9j and 9l. Three deferrals with the same reasoning is the case for
+giving it a stage rather than a paragraph. The layout serves ten PAL handlers that
+involve no kernel at all, so the question is not "move it" but "which of the two things
+called `sockaddr_in` is which" — the kernel's struct, and the byte array CoreLib passes
+around, which agree numerically today and need not.
