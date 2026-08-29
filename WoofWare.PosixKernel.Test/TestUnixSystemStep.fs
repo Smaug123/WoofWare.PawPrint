@@ -4808,3 +4808,46 @@ module TestUnixSystemStep =
         // A bad *source* is refused on both, being copied in first either way.
         UnixSystem.rename undecodable (arg "x") (withRenameTree linux)
         |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+
+    [<Test>]
+    let ``a call the source phase finishes never asks for a destination`` () : unit =
+        // The structural version of the row above, and the one that matters for
+        // the boundary: *reading* a pathname out of a process's memory can
+        // refuse, so a caller must be told whether the kernel wants the second
+        // one at all. `RenameProgress.Answered` is that answer, and a caller
+        // holding it has nothing to read.
+        let ended (source : PathArgumentBytes) (system : UnixSystem<int, string>) : UnixError =
+            match UnixSystem.renameSourcePhase source system with
+            | Ok (RenameProgress.Answered (SyscallAnswer.Failed error, _)) -> error
+            | other -> failwith $"expected the source phase to end the call, got %A{other}"
+
+        // Darwin ends on a source that does not exist...
+        ended (arg "nope") (withRenameTree darwin) |> shouldEqual UnixError.ENOENT
+        ended (arg "/") (withRenameTree darwin) |> shouldEqual UnixError.EISDIR
+
+        // ...and Linux only on one whose *parent* walk fails, its final
+        // component being still unlooked-at at this point.
+        ended (arg "nodir/kid") (withRenameTree linux) |> shouldEqual UnixError.ENOENT
+
+        ended (arg "nosearch/kid") (withRenameTree linux)
+        |> shouldEqual UnixError.EACCES
+
+        // Both end on a source pathname that could not be copied in at all.
+        for system in [ withRenameTree linux ; withRenameTree darwin ] do
+            ended (badArg UnixError.EFAULT) system |> shouldEqual UnixError.EFAULT
+
+            ended (badArg UnixError.ENAMETOOLONG) system
+            |> shouldEqual UnixError.ENAMETOOLONG
+
+        // And the calls that *do* need one say so, or the rows above would pass
+        // for a kernel that never asks for a destination.
+        for system in [ withRenameTree linux ; withRenameTree darwin ] do
+            match UnixSystem.renameSourcePhase (arg "f") system with
+            | Ok (RenameProgress.NeedsDestination _) -> ()
+            | other -> failwith $"expected the kernel to want a destination, got %A{other}"
+
+        // Linux gets that far even for a source whose final name is free, since
+        // it has not looked it up yet — where Darwin has, and stopped.
+        match UnixSystem.renameSourcePhase (arg "nope") (withRenameTree linux) with
+        | Ok (RenameProgress.NeedsDestination _) -> ()
+        | other -> failwith $"expected Linux to want a destination for a free source name, got %A{other}"
