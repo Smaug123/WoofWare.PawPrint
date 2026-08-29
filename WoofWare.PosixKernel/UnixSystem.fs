@@ -456,6 +456,75 @@ type ConnectOutcome =
     | Completed
     | Failed of UnixError
 
+/// Which of `struct sockaddr_in`'s fields a caller's declared length reaches,
+/// for a `connect(2)` whose sockaddr the kernel is about to copy in.
+///
+/// The kernel copies the caller's whole declared length whatever this says; what
+/// it names is which fields that copy actually *contains*, and so which of
+/// `connect`'s two field arguments the caller can supply. A shorter length is
+/// not an error -- `connect(2)` has measured answers for a sockaddr whose family
+/// it never saw -- so this is an instruction to the caller rather than a verdict.
+[<RequireQualifiedAccess>]
+type ConnectFields =
+    /// The copy reaches no field this kernel reads. Pass no family and no
+    /// endpoint.
+    | Nothing
+    /// It reaches `sa_family` and no further. Pass the family alone.
+    | Family
+    /// It reaches `sa_family`, `sin_addr` and `sin_port`. Pass both.
+    | FamilyAndEndpoint
+
+/// Whether a `connect` reaches the point at which the kernel copies the caller's
+/// sockaddr in.
+///
+/// The question exists for the reason `WriteAdmission`'s does: a caller may not
+/// be able to produce the bytes without failing, so every answer a `connect`
+/// gives *without* reading the sockaddr is available first. It matters more here
+/// than for a write, because whether the copy happens at all is a measured
+/// per-flavour rule rather than a length test -- Darwin's `getsockaddr` reads
+/// nothing at a length too short to reach `sa_family`, and Linux's
+/// `move_addr_to_kernel` reads at any positive length.
+[<RequireQualifiedAccess>]
+type ConnectAdmission =
+    /// Answered without the sockaddr being read at all -- a bad descriptor, a
+    /// non-socket, a length the copy helper rejects outright, or a faulting
+    /// address.
+    | Answered of outcome : ConnectOutcome
+    /// The copy is reached: it takes exactly `length` bytes from the caller's
+    /// buffer, of which `fields` says which are worth decoding.
+    | Transfer of length : int * fields : ConnectFields
+
+/// Why this kernel will not answer a `connect`.
+///
+/// Distinct from an errno: an errno is an answer, and these are the inputs for
+/// which this library has measured what real kernels do and found no single
+/// answer to give.
+[<RequireQualifiedAccess>]
+type ConnectRefusal =
+    /// The descriptor is a socket in a domain whose addresses this kernel does
+    /// not model, so there is no destination to connect to even if the call
+    /// would otherwise succeed.
+    | UnmodelledDomain of socket : SocketId * domain : SocketDomain
+    /// The kernel copies the sockaddr in, and the buffer has no answer at that
+    /// step.
+    ///
+    /// A `BufferRefusal` rather than a case of its own, unlike `accept`'s
+    /// copy-*out* fault: nothing has been consumed by the time this copy
+    /// happens, so an unmapped buffer is an ordinary EFAULT and only the two
+    /// classifications a client cannot represent are left over.
+    | Buffer of BufferRefusal
+
+[<RequireQualifiedAccess>]
+module ConnectRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half -- which entry point, which argument, and how a caller could
+    /// have come by such a socket or such a buffer.
+    let describe (refusal : ConnectRefusal) : string =
+        match refusal with
+        | ConnectRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | ConnectRefusal.UnmodelledDomain (socket, domain) ->
+            $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a transport address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
+
 /// What kind of object one directory entry names.
 ///
 /// Not `InodeContent`, which carries the payload as well — a caller enumerating
@@ -4291,6 +4360,162 @@ module UnixSystem =
                 }
 
             ConnectOutcome.Completed, system
+
+    /// `sin_port` occupies bytes 2-3 and `sin_addr` bytes 4-7, so eight bytes is
+    /// the shortest copy that contains both. The same on both flavours: Darwin's
+    /// `sa_len` byte displaces `sa_family` into byte 1 and leaves the transport
+    /// fields where they are.
+    [<Literal>]
+    let private internetEndpointExtent = 8
+
+    /// Everything `connect(2)` decides before the kernel copies the caller's
+    /// sockaddr in, which is where a client that cannot always produce those
+    /// bytes needs to be let off. See `ConnectAdmission`.
+    ///
+    /// `declaredLength` must not be negative: a caller that casts it to
+    /// `socklen_t` makes the copy enormous rather than negative, so a kernel is
+    /// never asked one, and a caller that has not screened it is asking a
+    /// question this library has no answer for.
+    ///
+    /// Changes nothing: everything a connect does before the copy is a question.
+    let admitConnect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ConnectAdmission, ConnectRefusal>
+        =
+        if declaredLength < 0 then
+            failwith
+                $"UnixSystem.admitConnect: declared length %d{declaredLength} is negative, which no kernel is ever asked -- a caller that casts it to `socklen_t` makes the copy SIZE_MAX bytes rather than passing it on. Screen this in the client (this is a bug in the caller)."
+
+        let answered (outcome : ConnectOutcome) : Result<ConnectAdmission, ConnectRefusal> =
+            Ok (ConnectAdmission.Answered outcome)
+
+        // The descriptor is classified first, before the length and before the
+        // buffer: measured on both flavours, a closed descriptor answers EBADF
+        // and a non-socket ENOTSOCK at every length and through every buffer.
+        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        | None -> answered (ConnectOutcome.Failed UnixError.EBADF)
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.File _
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort _ -> answered (ConnectOutcome.Failed UnixError.ENOTSOCK)
+        | OpenFileTarget.Socket socketId ->
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        match socket.Domain with
+        | SocketDomain.InterNetworkV6
+        | SocketDomain.Unix -> Error (ConnectRefusal.UnmodelledDomain (socketId, socket.Domain))
+        | SocketDomain.InterNetwork ->
+
+        let platform = system.Machine.UnixPlatform
+        let exactSize = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+
+        // The oversized-length rejection happens in the copy helper before any
+        // byte moves, so it precedes every buffer answer below.
+        // `connectSocket` documents why `bind(2)`'s verdict function is the
+        // right one: the measured lengths agree exactly.
+        match SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength with
+        | BindLengthVerdict.RejectedBeforeCopy error -> answered (ConnectOutcome.Failed error)
+        | BindLengthVerdict.Accepted
+        | BindLengthVerdict.Invalid ->
+
+        let familyField = SimulatedUnixPlatform.sockaddrFamilyField platform
+        let reachesFamily = SockaddrFamilyField.reachedBy familyField declaredLength
+
+        // Whether the kernel touches the caller's buffer at all. Linux's
+        // `move_addr_to_kernel` copies at any positive length; Darwin's
+        // `getsockaddr` reads nothing at a length that does not reach
+        // `sa_family`, which is why a stray pointer is answerable there and not
+        // here.
+        let copies =
+            declaredLength > 0
+            && match SimulatedUnixPlatform.flavour platform with
+               | SimulatedUnixFlavour.Linux -> true
+               | SimulatedUnixFlavour.Darwin -> reachesFamily
+
+        if not copies then
+            Ok (ConnectAdmission.Transfer (0, ConnectFields.Nothing))
+        else
+
+        match destination with
+        | UserBuffer.Unmapped _ -> answered (ConnectOutcome.Failed UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error (ConnectRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (ConnectRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped ->
+
+        let fields =
+            if declaredLength >= internetEndpointExtent then
+                ConnectFields.FamilyAndEndpoint
+            elif reachesFamily then
+                ConnectFields.Family
+            else
+                ConnectFields.Nothing
+
+        Ok (ConnectAdmission.Transfer (declaredLength, fields))
+
+    /// `connect(2)`: point `fd` at `endpoint`, or ask what pointing it there
+    /// would answer.
+    ///
+    /// `family` is the *platform's* family number as it was found in the
+    /// caller's sockaddr, and `endpoint` the address and port found there. Both
+    /// must be exactly what `admitConnect` asked for: a `ConnectFields` of
+    /// `Nothing` means neither, `Family` the family alone, `FamilyAndEndpoint`
+    /// both. Supplying less than that is refused rather than answered, because
+    /// this kernel's answer for an *unreadable* field is measured and different
+    /// from its answer for a field nobody bothered to read.
+    ///
+    /// The screens `admitConnect` performs are performed again here, so a caller
+    /// that already has the fields need not have asked; they are pure, and they
+    /// agree.
+    let connect<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (destination : UserBuffer)
+        (declaredLength : int)
+        (family : int option)
+        (endpoint : InternetEndpoint option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+        =
+        match admitConnect fd destination declaredLength system with
+        | Error refusal -> Error refusal
+        | Ok (ConnectAdmission.Answered outcome) -> Ok (outcome, system)
+        | Ok (ConnectAdmission.Transfer (_, fields)) ->
+
+        let expected =
+            match fields with
+            | ConnectFields.Nothing -> false, false
+            | ConnectFields.Family -> true, false
+            | ConnectFields.FamilyAndEndpoint -> true, true
+
+        if (Option.isSome family, Option.isSome endpoint) <> expected then
+            failwith
+                $"UnixSystem.connect: the copy of this sockaddr reaches %O{fields}, but the caller supplied family=%b{Option.isSome family} endpoint=%b{Option.isSome endpoint}. A field this kernel could not read and a field the caller did not read have different measured answers, so they must not be conflated (this is a bug in the caller)."
+
+        // `admitConnect` reached the copy, so the descriptor is a live IPv4
+        // socket; nothing between there and here could have changed that.
+        let socketId =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | Some (OpenFileTarget.Socket socketId) -> socketId
+            | other ->
+                failwith
+                    $"UnixSystem.connect: fd %d{fd} names %A{other}, yet the admission above reached the sockaddr copy, which only a socket does (this is an interpreter bug)."
+
+        // `O_NONBLOCK` is a fact about the open file description `fd` came
+        // through, not about the socket, so a connect through a `dup` of a
+        // non-blocking socket pends too.
+        let nonBlocking =
+            match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | Some description -> description.NonBlocking
+            | None ->
+                failwith
+                    $"UnixSystem.connect: fd %d{fd} resolved to a socket a line above and nothing here closes it (this is an interpreter bug)."
+
+        Ok (connectSocket socketId nonBlocking declaredLength family endpoint system)
 
     /// Dequeue the oldest completed connection from `socketId`'s accept queue
     /// and materialise the server-side socket onto it: a fresh socket, bound at

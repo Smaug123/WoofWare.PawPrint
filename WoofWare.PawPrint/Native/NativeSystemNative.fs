@@ -690,10 +690,7 @@ module NativeSystemNative =
     /// with a length of -1 answers EFAULT on both platforms, including for a
     /// family whose own switch arm would have answered EAFNOSUPPORT.
     let private sockaddrFamilyIsInBounds (platform : SimulatedUnixPlatform) (socketAddressLen : int) : bool =
-        let field = SimulatedUnixPlatform.sockaddrFamilyField platform
-
-        SockaddrFamilyField.offset field + SockaddrFamilyField.width field
-        <= socketAddressLen
+        SockaddrFamilyField.reachedBy (SimulatedUnixPlatform.sockaddrFamilyField platform) socketAddressLen
 
     /// `sockAddr->sa_family`, in the platform's own `AF_*` numbering.
     ///
@@ -4595,8 +4592,8 @@ module NativeSystemNative =
         //     while ((err = connect(fd, ..., (socklen_t)socketAddressLen)) < 0 && errno == EINTR);
         //
         // so both screens precede even the fd decode, and everything else is
-        // `connect(2)`'s own ladder — `EmulatedKernel.connectSocket`, which
-        // holds the measured per-flavour table.
+        // `connect(2)`'s own ladder — `UnixSystem.connect`, which holds the
+        // measured per-flavour table.
         | Some "SystemNative_Connect",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _
@@ -4636,98 +4633,107 @@ module NativeSystemNative =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
 
-            match socketOfFd operation fd state with
-            | Error error -> failFromSyscall error state
-            | Ok (socketId, _) ->
+            let refuse (refusal : ConnectRefusal) : NativeHandlerResult option =
+                match refusal with
+                | ConnectRefusal.Buffer refusal -> failwith (BufferPointer.refusalMessage addressArgument refusal)
+                | ConnectRefusal.UnmodelledDomain (_, domain) ->
+                    // The library says why no kernel answer exists; PawPrint says
+                    // how a guest could be holding such a socket, which is a fact
+                    // about CoreLib rather than about any kernel.
+                    let reachedBy =
+                        match domain with
+                        | SocketDomain.InterNetworkV6 ->
+                            "No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
+                        | SocketDomain.Unix -> "That belongs with the filesystem work (issue #956), not here."
+                        | SocketDomain.InterNetwork ->
+                            failwith
+                                $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
 
-            // The oversized-length rejection happens in the kernel's copy
-            // helper before any byte moves — `EmulatedKernel.connectSocket`
-            // documents why bind's verdict function is the right one — so it
-            // must also precede the guest-memory faults below.
-            let exactSize = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+                    failwith $"%s{operation}: fd %d{fd}: %s{ConnectRefusal.describe refusal} %s{reachedBy}"
 
-            match SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength with
-            | BindLengthVerdict.RejectedBeforeCopy error -> failFromSyscall error state
-            | BindLengthVerdict.Accepted
-            | BindLengthVerdict.Invalid ->
-
-            // `connect(2)`'s buffer, like `bind(2)`'s: the C never
-            // dereferences it itself, so an address naming no storage faults
-            // in the *kernel* and comes back as EFAULT — but only when bytes
-            // actually move, and Darwin reads no byte at a length too short
-            // to reach the family. The copy takes the caller's whole declared
-            // length, so a blob shorter than that is one a real kernel reads
-            // past, which `requireBufferRoom` refuses as it does for bind.
-            let resolvedBlob = BufferPointer.dereferenceable addressArgument
-
-            let copiesFromPointer =
-                declaredLength > 0
-                && (
-                    match SimulatedUnixPlatform.flavour platform with
-                    | SimulatedUnixFlavour.Linux -> true
-                    | SimulatedUnixFlavour.Darwin -> sockaddrFamilyIsInBounds platform declaredLength
-                )
-
-            match resolvedBlob with
-            | None when copiesFromPointer ->
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EFAULT))
-                |> complete (UnixErrorPal.toPal UnixError.EFAULT)
-            | _ ->
-
-            match resolvedBlob with
-            | Some blob when copiesFromPointer ->
-                requireBufferRoom ctx operation BufferTransfer.OutOf blob declaredLength state
-            | _ -> ()
-
-            // Both reads are bounded by the declared length: this handler
-            // reads a field only when the length reaches it, and
-            // `connectSocket` answers for the unreadable ones.
-            let family =
-                match resolvedBlob with
-                | Some blob when sockaddrFamilyIsInBounds platform declaredLength ->
-                    Some (readSockaddrFamily ctx operation platform blob state)
-                | _ -> None
-
-            let destination =
-                match resolvedBlob with
-                | Some blob when declaredLength >= SockaddrOffsets.InternetAddress + 4 ->
-                    let portBytes =
-                        readBytesThrough
-                            ctx
-                            operation
-                            (bufferFieldAt ctx operation blob SockaddrOffsets.Port state)
-                            2
-                            state
-
-                    let addressBytes =
-                        readBytesThrough
-                            ctx
-                            operation
-                            (bufferFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
-                            4
-                            state
-
-                    Some (
-                        InternetEndpoint.ofParts
-                            (BinaryPrimitives.ReadUInt32BigEndian (addressBytes.AsSpan ()))
-                            (BinaryPrimitives.ReadUInt16BigEndian (portBytes.AsSpan ()))
-                    )
-                | _ -> None
-
-            // `O_NONBLOCK` is a fact about the open file description, so a
-            // connect through a `dup` of a non-blocking socket pends too.
-            let nonBlocking =
-                match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-                | Some description -> description.NonBlocking
-                | None ->
-                    failwith
-                        $"%s{operation}: fd %d{fd} was live for socketOfFd just above and nothing in this handler closes it, so this is an interpreter bug."
-
-            match EmulatedKernel.connectSocket socketId nonBlocking declaredLength family destination state.Kernel with
-            | ConnectOutcome.Completed, kernel ->
+            let answer (outcome : ConnectOutcome) (state : IlMachineState) : NativeHandlerResult option =
+                match outcome with
                 // A successful connect leaves errno alone.
-                state.MapKernel (fun _ -> kernel) |> complete UnixErrorPal.palSuccess
-            | ConnectOutcome.Failed error, kernel -> state.MapKernel (fun _ -> kernel) |> failFromSyscall error
+                | ConnectOutcome.Completed -> complete UnixErrorPal.palSuccess state
+                | ConnectOutcome.Failed error -> failFromSyscall error state
+
+            // Which fields of the caller's sockaddr the kernel's copy will
+            // reach, asked before the pointer is resolved: a call whose copy
+            // takes no bytes never touches it, so a pointer PawPrint cannot
+            // dereference is only a problem when bytes actually move.
+            match
+                UnixSystem.admitConnect
+                    fd
+                    (BufferPointer.toUserBuffer addressArgument)
+                    declaredLength
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error refusal -> refuse refusal
+            | Ok (ConnectAdmission.Answered outcome) ->
+                // Every admission answer precedes the ladder, so none of them
+                // changed anything: the system is the one we passed in.
+                answer outcome state
+            | Ok (ConnectAdmission.Transfer (length, fields)) ->
+
+            let blob =
+                if length = 0 then
+                    None
+                else
+                    match BufferPointer.dereferenceable addressArgument with
+                    | Some blob -> Some blob
+                    | None ->
+                        failwith
+                            $"%s{operation}: the kernel copies %d{length} bytes from `socketAddress`, which names no storage, yet the library admitted the copy rather than answering EFAULT. This is an interpreter bug."
+
+            // The copy takes the caller's whole declared length, so a blob
+            // shorter than that is one a real kernel reads past, which
+            // `requireBufferRoom` refuses as it does for bind.
+            match blob with
+            | Some blob -> requireBufferRoom ctx operation BufferTransfer.OutOf blob length state
+            | None -> ()
+
+            let readFamily (blob : ManagedPointerSource) : int =
+                readSockaddrFamily ctx operation platform blob state
+
+            let readEndpoint (blob : ManagedPointerSource) : InternetEndpoint =
+                let portBytes =
+                    readBytesThrough ctx operation (bufferFieldAt ctx operation blob SockaddrOffsets.Port state) 2 state
+
+                let addressBytes =
+                    readBytesThrough
+                        ctx
+                        operation
+                        (bufferFieldAt ctx operation blob SockaddrOffsets.InternetAddress state)
+                        4
+                        state
+
+                InternetEndpoint.ofParts
+                    (BinaryPrimitives.ReadUInt32BigEndian (addressBytes.AsSpan ()))
+                    (BinaryPrimitives.ReadUInt16BigEndian (portBytes.AsSpan ()))
+
+            let family, destination =
+                match fields, blob with
+                | ConnectFields.Nothing, _ -> None, None
+                | ConnectFields.Family, Some blob -> Some (readFamily blob), None
+                | ConnectFields.FamilyAndEndpoint, Some blob -> Some (readFamily blob), Some (readEndpoint blob)
+                | (ConnectFields.Family | ConnectFields.FamilyAndEndpoint), None ->
+                    failwith
+                        $"%s{operation}: the library asked for %O{fields} out of a copy of %d{length} bytes, which cannot be zero. This is an interpreter bug."
+
+            match
+                UnixSystem.connect
+                    fd
+                    (BufferPointer.toUserBuffer addressArgument)
+                    declaredLength
+                    family
+                    destination
+                    (EmulatedKernel.unix state.Kernel)
+            with
+            | Error refusal -> refuse refusal
+            | Ok (outcome, unix) ->
+                // The system comes back on the failing arms too: several of
+                // connect's failures latch a phase change first.
+                answer outcome (state.MapKernel (EmulatedKernel.withUnix unix))
 
         // `int32_t SystemNative_GetSockName(intptr_t socket, uint8_t* socketAddress,
         // int32_t* socketAddressLen)` (pal_networking.c:1871).
