@@ -4618,5 +4618,18 @@ ephemeral allocation and its exhaustion, and the fault *ordering*.
   the function under test — a mirror oracle that would have agreed with any order at
   all. They state the errnos as literals now.
 
+**Mutation battery**: fifteen mutants, fourteen killed by the library's own suite —
+both directions of the `SO_REUSEADDR` write, the port ceiling in three ways, the
+per-transport namespaces, already-bound, the AF_UNSPEC split, the whole Darwin fault
+order, the multicast refusal, the allocated port being reported rather than the requested
+one, the address lock, the exhaustion refusal, and an errno swap.
+
+The fifteenth — removing the `Port > 0us` guard on the address-in-use fault — **survived,
+and could not have done otherwise**. `bindConflict` answers `false` outright when the
+ports differ, and no bound socket ever holds port 0, since every port-0 request
+allocates. So the guard restated a fact rather than enforcing one, and no test could
+falsify it. It is deleted, with the reasoning kept as a comment: a guard nothing can
+falsify is a guard nobody can maintain.
+
 **What is left after 13**: `listen` (which needs the bind-conflict relation this move
 took across), `socket`, the two non-blocking `fcntl`s, and the fixture relocation.

@@ -5209,13 +5209,16 @@ module UnixSystem =
                         socket.ReuseAddress
             )
 
+        // A request for port 0 needs no special case here, and had one until a
+        // mutation showed nothing could falsify it: `bindConflict` answers
+        // `false` outright when the ports differ, and no bound socket holds port
+        // 0 -- every port-0 request allocates a real one. So a port-0 candidate
+        // conflicts with nothing, and the allocator's own search below is what
+        // keeps it that way.
         let addressInUseFault =
             match candidate with
-            // A bind of port 0 asks for a free port rather than a particular
-            // one, so it cannot collide; the allocator's own search is what
-            // avoids one.
-            | Some binding when binding.Endpoint.Port > 0us -> conflictsWith binding
-            | _ -> false
+            | Some binding -> conflictsWith binding
+            | None -> false
 
         let faults =
             [
