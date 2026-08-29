@@ -266,8 +266,8 @@ module SocketFuzz =
 
             let token =
                 match outcome with
-                | EmulatedKernel.ConnectOutcome.Completed -> "ok"
-                | EmulatedKernel.ConnectOutcome.Failed e -> errName e
+                | ConnectOutcome.Completed -> "ok"
+                | ConnectOutcome.Failed e -> errName e
 
             token,
             { state with
@@ -289,8 +289,8 @@ module SocketFuzz =
 
             let token =
                 match outcome with
-                | EmulatedKernel.ConnectOutcome.Completed -> "ok"
-                | EmulatedKernel.ConnectOutcome.Failed e -> errName e
+                | ConnectOutcome.Completed -> "ok"
+                | ConnectOutcome.Failed e -> errName e
 
             token,
             { state with
