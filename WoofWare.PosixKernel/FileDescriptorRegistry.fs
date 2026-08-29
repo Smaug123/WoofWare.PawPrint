@@ -783,6 +783,25 @@ type SocketEventRegistrationError =
     | NotRegistered
 
 [<RequireQualifiedAccess>]
+module SocketEventRegistrationError =
+    /// The errno `epoll_ctl(2)` answers for this refusal.
+    ///
+    /// The mapping each case's docstring above states, as code rather than as
+    /// prose: it is the kernel's, so every client answers the same numbers, and
+    /// a client is left only with how it reports them.
+    ///
+    /// Note that two distinct refusals share `EBADF`, so this is not injective
+    /// and a client wanting to know *which* keeps the case.
+    let toErrno (error : SocketEventRegistrationError) : UnixError =
+        match error with
+        | SocketEventRegistrationError.BadPortFd
+        | SocketEventRegistrationError.BadTargetFd -> UnixError.EBADF
+        | SocketEventRegistrationError.TargetNotPollable -> UnixError.EPERM
+        | SocketEventRegistrationError.NotAnEventPort -> UnixError.EINVAL
+        | SocketEventRegistrationError.AlreadyRegistered -> UnixError.EEXIST
+        | SocketEventRegistrationError.NotRegistered -> UnixError.ENOENT
+
+[<RequireQualifiedAccess>]
 type FlockError =
     /// The supplied fd is not a live entry in the table; `EBADF`.
     | BadFd

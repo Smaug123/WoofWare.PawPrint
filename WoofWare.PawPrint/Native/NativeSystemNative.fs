@@ -5090,22 +5090,6 @@ module NativeSystemNative =
             let portFd = fdArgument operation instruction.Arguments.[0]
             let targetFd = fdArgument operation instruction.Arguments.[1]
 
-            match SimulatedUnixPlatform.flavour state.Kernel.UnixPlatform with
-            | SimulatedUnixFlavour.Darwin ->
-                // The wrapper's screens above are portable and already
-                // answered; this is the kernel boundary, where kqueue's model
-                // is *structurally* different — registration is per
-                // (ident, filter), a re-ADD silently replaces where epoll
-                // answers EEXIST, a regular file registers where epoll answers
-                // EPERM, and a DEL of a dead target answers ENOENT where epoll
-                // answers EBADF (each measured only far enough to know it
-                // diverges). `SystemNative_FLock` refuses Darwin for the same
-                // reason: the return codes alone are not a model of the state
-                // the call leaves behind.
-                failwith
-                    $"%s{operation}: the simulated platform is Darwin, whose kqueue registration semantics (per-filter state, silent-replace ADD, file targets succeeding) are unmeasured beyond the fact that they diverge from epoll's. Measure them before answering; PawPrint models the Linux flavour only."
-            | SimulatedUnixFlavour.Linux ->
-
             // `uintptr_t data`, held verbatim for delivery in
             // `SocketEvent.Data` when an event fires; CoreLib passes
             // `SocketAsyncContext.GlobalContextIndex`, a small integer, and a
@@ -5151,7 +5135,19 @@ module NativeSystemNative =
                         SocketEventRegistrationChange.Modify (interest, placeholder)
 
             match EmulatedKernel.changeSocketEventRegistration portFd targetFd change state.Kernel with
-            | Ok kernel ->
+            | Error refusal ->
+                // The library says why no kernel answer exists; PawPrint says
+                // which entry point asked. `SystemNative_FLock` refuses the same
+                // flavour for the same shape of reason.
+                failwith $"%s{operation}: %s{SocketEventRegistrationRefusal.describe refusal}"
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) ->
+                // The syscall failed, so it set errno on the way past. All five
+                // numbers are portable, but only Linux reaches here anyway.
+                let unixError = SocketEventRegistrationError.toErrno reason
+
+                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno unixError))
+                |> complete (UnixErrorPal.toPal unixError)
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 match change, data with
                 | SocketEventRegistrationChange.Add _, Error message
                 | SocketEventRegistrationChange.Modify _, Error message ->
@@ -5169,20 +5165,6 @@ module NativeSystemNative =
                 // parked on the port, `Program`'s readiness sweep wakes it
                 // before the next scheduling decision.
                 state.MapKernel (fun _ -> kernel) |> complete UnixErrorPal.palSuccess
-            | Error error ->
-                let unixError =
-                    match error with
-                    | SocketEventRegistrationError.BadPortFd
-                    | SocketEventRegistrationError.BadTargetFd -> UnixError.EBADF
-                    | SocketEventRegistrationError.TargetNotPollable -> UnixError.EPERM
-                    | SocketEventRegistrationError.NotAnEventPort -> UnixError.EINVAL
-                    | SocketEventRegistrationError.AlreadyRegistered -> UnixError.EEXIST
-                    | SocketEventRegistrationError.NotRegistered -> UnixError.ENOENT
-
-                // The syscall failed, so it set errno on the way past. All five
-                // numbers are portable, but only Linux reaches here anyway.
-                state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno unixError))
-                |> complete (UnixErrorPal.toPal unixError)
         | Some "SystemNative_WaitForSocketEvents",
           [ ConcreteIntPtr state.ConcreteTypes
             ConcretePointer _

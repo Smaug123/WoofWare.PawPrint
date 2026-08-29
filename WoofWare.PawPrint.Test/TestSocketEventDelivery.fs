@@ -121,8 +121,9 @@ module TestSocketEventDelivery =
                 (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" allInterest, data))
                 kernel
         with
-        | Ok kernel -> kernel
-        | Error error -> failwith $"registration failed: %O{error}"
+        | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+        | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
+        | Error refusal -> failwith $"registration failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
     let private connect
         (client : SocketId)
@@ -409,8 +410,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 7UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"modify failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
@@ -437,8 +439,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 2UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"modify failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
@@ -531,8 +534,9 @@ module TestSocketEventDelivery =
                     SocketEventRegistrationChange.Remove
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"remove failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"remove failed: %O{reason}"
+            | Error refusal -> failwith $"remove failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         readyOf portId kernel |> shouldEqual []
         hasDeliverableSocketEvents portId kernel |> shouldEqual false
@@ -585,8 +589,10 @@ module TestSocketEventDelivery =
                 (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" allInterest, 8UL))
                 kernel
         with
-        | Ok _ -> failwith "expected EEXIST"
-        | Error error -> error |> shouldEqual SocketEventRegistrationError.AlreadyRegistered
+        | Ok (SocketEventRegistrationAnswer.Changed, _) -> failwith "expected EEXIST"
+        | Ok (SocketEventRegistrationAnswer.Failed reason, _) ->
+            reason |> shouldEqual SocketEventRegistrationError.AlreadyRegistered
+        | Error refusal -> failwith (SocketEventRegistrationRefusal.describe refusal)
 
         before |> shouldEqual kernel.NextSocketEventRegistrationOrdinal
 
@@ -664,8 +670,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" 0x18, 5UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"registration failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
+            | Error refusal -> failwith $"registration failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         readyOf portId kernel |> shouldEqual []
 
@@ -695,8 +702,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 5UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"modify failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 5UL ; 9UL ]
@@ -855,8 +863,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "test" 0x2, 1UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"registration failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"registration failed: %O{reason}"
+            | Error refusal -> failwith $"registration failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         let kernel = register portFd l2Fd 2UL kernel
 
@@ -874,8 +883,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 1UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"modify failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 2UL ; 1UL ]
@@ -901,8 +911,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" 0x2, 6UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"modify failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         readyOf portId kernel |> List.length |> shouldEqual 1
         hasDeliverableSocketEvents portId kernel |> shouldEqual false
@@ -944,8 +955,9 @@ module TestSocketEventDelivery =
                     (SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "test" allInterest, 1UL))
                     kernel
             with
-            | Ok kernel -> kernel
-            | Error error -> failwith $"modify failed: %O{error}"
+            | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
+            | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"modify failed: %O{reason}"
+            | Error refusal -> failwith $"modify failed: %s{SocketEventRegistrationRefusal.describe refusal}"
 
         let _, kernel = connect c1 false (loopback 5000us) kernel
 

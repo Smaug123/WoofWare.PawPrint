@@ -1628,93 +1628,21 @@ module EmulatedKernel =
 
 
 
-    /// `SystemNative_TryChangeSocketEventRegistration` past the wrapper's
-    /// screens: apply `change` to the port's interest table, and bring the
-    /// ready list with it — an ADD or MOD whose target is ready under the
-    /// *new* interest makes the registration pending at that moment (measured
-    /// rows E, I and K: the entry enters at ADD/MOD time, and a MOD of an
-    /// entry already pending leaves its place alone, row L).
+    /// `UnixSystem.changeSocketEventRegistration` — `epoll_ctl(2)` past a
+    /// caller's own screens — through this kernel rather than through its POSIX
+    /// half.
+    ///
+    /// Here for the reason `connectSocket`'s and `acceptConnection`'s adapters
+    /// are: eleven fixtures call it holding an `EmulatedKernel`.
     let changeSocketEventRegistration
         (portFd : int)
         (targetFd : int)
         (change : SocketEventRegistrationChange)
         (kernel : EmulatedKernel)
-        : Result<EmulatedKernel, SocketEventRegistrationError>
+        : Result<SocketEventRegistrationAnswer * EmulatedKernel, SocketEventRegistrationRefusal>
         =
-        let ordinal = kernel.NextSocketEventRegistrationOrdinal
-
-        match
-            FileDescriptorRegistry.changeSocketEventRegistration portFd targetFd ordinal change kernel.FileDescriptors
-        with
-        | Error error -> Error error
-        | Ok registry ->
-
-        let kernel =
-            { kernel with
-                Machine =
-                    { kernel.Machine with
-                        NextSocketEventRegistrationOrdinal =
-                            match change with
-                            | SocketEventRegistrationChange.Add _ -> ordinal + 1L
-                            | SocketEventRegistrationChange.Modify _
-                            | SocketEventRegistrationChange.Remove -> ordinal
-                    }
-                Process =
-                    { kernel.Process with
-                        FileDescriptors = registry
-                    }
-            }
-
-        match change with
-        | SocketEventRegistrationChange.Remove -> Ok kernel
-        | SocketEventRegistrationChange.Add (interest, _)
-        | SocketEventRegistrationChange.Modify (interest, _) ->
-
-        // Both fds resolved a moment ago inside the registry change, so these
-        // lookups cannot miss.
-        let portId =
-            match FileDescriptorRegistry.tryFindId portFd kernel.FileDescriptors with
-            | Some id -> id
-            | None ->
-                failwith
-                    $"EmulatedKernel.changeSocketEventRegistration: port fd %d{portFd} was live moments ago (this is an interpreter bug)."
-
-        let key, targetId =
-            match FileDescriptorRegistry.tryFindId targetFd kernel.FileDescriptors with
-            | Some id -> (targetFd, id), id
-            | None ->
-                failwith
-                    $"EmulatedKernel.changeSocketEventRegistration: target fd %d{targetFd} was live moments ago (this is an interpreter bug)."
-
-        let alreadyPending =
-            match Map.tryFind portId (FileDescriptorRegistry.descriptions kernel.FileDescriptors) with
-            | Some description ->
-                match description.Target with
-                | OpenFileTarget.SocketEventPort portState -> List.contains key portState.Ready
-                | _ ->
-                    failwith
-                        $"EmulatedKernel.changeSocketEventRegistration: %O{portId} committed a registration change moments ago yet is not a socket event port (this is an interpreter bug)."
-            | None ->
-                failwith
-                    $"EmulatedKernel.changeSocketEventRegistration: %O{portId} was live moments ago (this is an interpreter bug)."
-
-        let readyNow =
-            SocketEventPort.epollReadinessOfDescription targetId (unix kernel)
-            |> ReadinessLevel.reportedUnder interest
-            |> ReadinessLevel.isEmpty
-            |> not
-
-        if readyNow && not alreadyPending then
-            Ok
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            FileDescriptors =
-                                FileDescriptorRegistry.appendSocketEventReady portId key kernel.FileDescriptors
-                        }
-                }
-        else
-            Ok kernel
+        UnixSystem.changeSocketEventRegistration portFd targetFd change (unix kernel)
+        |> Result.map (fun (answer, system) -> answer, withUnix system kernel)
 
     /// Mirrors `socket(2)`: allocate a fresh socket, and a fresh descriptor onto
     /// it.
