@@ -4496,6 +4496,21 @@ assertion-shaped rather than the common `| Ok kernel -> kernel`, and rewrote a `
 handler instead. The compiler caught it, and the lesson is the ordinary one — a
 positional scan needs to check what it landed on, not merely that it found something.
 
+**Mutation battery**: ten mutants over the ladder and the errno mapping.
+
+Seven of the ladder die in the library's own suite: the flavour arm, both directions of
+the ordinal rule, the already-pending guard, the not-ready guard, and dropping the
+interest from the readiness test. One (a `Remove` falling into the registration branch)
+was written as invalid F# and never ran; it is recorded as not-run rather than as a
+result.
+
+The three over `toErrno` **survived both default suites on the first run**, which is the
+9g failure mode and this time self-inflicted: the stage moved prose into code and gave
+the code no test, leaving it reachable only from the guest tier. Three rows were added —
+the six mappings as literals, the two `EBADF` refusals staying distinguishable, and the
+count of distinct errnos — and all three mutants then die. The mapping being *stated* in
+six docstrings is exactly why it was easy to skip: it looked tested.
+
 **What is left after 11**: `bind` and `listen` (which share the bind-conflict relation and
 probably want to travel together), `socket`, the two non-blocking `fcntl`s, and the
 fixture relocation — 3893 lines across `TestEmulatedKernelSockets`, `TestSocketEventDelivery`
