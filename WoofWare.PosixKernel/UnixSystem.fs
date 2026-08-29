@@ -629,6 +629,47 @@ module SocketWaitRefusal =
         match refusal with
         | SocketWaitRefusal.Buffer refusal -> BufferRefusal.describe refusal
 
+/// What an epoll-style registration change answered.
+[<RequireQualifiedAccess>]
+type SocketEventRegistrationAnswer =
+    /// Applied. The system this rides with carries the new interest table, and
+    /// the ready list if the change made the target pending.
+    | Changed
+    /// `epoll_ctl(2)` refused it. `SocketEventRegistrationError.toErrno` is the
+    /// number; the case itself says which of the two `EBADF`s this is, and a
+    /// client that does not care can drop it.
+    ///
+    /// Nothing changed: the system comes back as it was.
+    | Failed of reason : SocketEventRegistrationError
+
+/// Why this kernel will not answer an epoll-style registration change.
+///
+/// Distinct from a `Failed` answer: that is `epoll_ctl(2)` refusing, and this is
+/// this library having nothing to say.
+[<RequireQualifiedAccess>]
+type SocketEventRegistrationRefusal =
+    /// This kernel models registration for one flavour only, and it is not this
+    /// one.
+    ///
+    /// kqueue's model is *structurally* different rather than differently
+    /// numbered: registration is per `(ident, filter)`, a re-`ADD` silently
+    /// replaces where epoll answers `EEXIST`, a regular file registers where
+    /// epoll answers `EPERM`, and a `DEL` of a dead target answers `ENOENT`
+    /// where epoll answers `EBADF`. Each of those is measured only far enough to
+    /// know that it diverges, which is not far enough to model the state a call
+    /// leaves behind.
+    | UnmodelledFlavour of flavour : SimulatedUnixFlavour
+
+[<RequireQualifiedAccess>]
+module SocketEventRegistrationRefusal =
+    /// What this kernel knows about why it will not register anything. The
+    /// client supplies its own half -- which of its entry points was asked, and
+    /// on whose behalf.
+    let describe (refusal : SocketEventRegistrationRefusal) : string =
+        match refusal with
+        | SocketEventRegistrationRefusal.UnmodelledFlavour flavour ->
+            $"this kernel is %O{flavour}-flavoured, and registration is modelled here for Linux only. kqueue's semantics -- per-filter state, a silently-replacing ADD, file targets succeeding -- are unmeasured beyond the fact that they diverge from epoll's, and the return codes alone are not a model of the state a call leaves behind. Measure them before answering."
+
 /// What kind of object one directory entry names.
 ///
 /// Not `InodeContent`, which carries the payload as well — a caller enumerating
@@ -4587,6 +4628,113 @@ module UnixSystem =
                     $"UnixSystem.admitSocketWait: a Darwin-flavoured kernel holds %d{Map.count portState.Registrations} socket event registrations, but the Darwin registration arm refuses every change (this is a bug in the caller's state construction)."
 
             Ok (SocketWaitAdmission.DeliverOrWait (port, maxEvents))
+
+    /// `epoll_ctl(2)` past a caller's own screens: apply `change` to the port's
+    /// interest table, and bring the ready list with it.
+    ///
+    /// An ADD or MOD whose target is ready under the *new* interest makes the
+    /// registration pending at that moment (measured rows E, I and K: the entry
+    /// enters at ADD/MOD time), and a MOD of an entry already pending leaves its
+    /// place alone (row L).
+    ///
+    /// `change` is derived from what a caller *claimed* about the current and
+    /// new interest rather than from this table -- that derivation belongs to
+    /// whoever holds the caller's arguments, and a wrong claim is answered here
+    /// with `AlreadyRegistered` or `NotRegistered` exactly as a real
+    /// `epoll_ctl` answers it.
+    let changeSocketEventRegistration<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (portFd : int)
+        (targetFd : int)
+        (change : SocketEventRegistrationChange)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SocketEventRegistrationAnswer * UnixSystem<'Task, 'Handler>, SocketEventRegistrationRefusal>
+        =
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+        | SimulatedUnixFlavour.Darwin ->
+            Error (SocketEventRegistrationRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
+        | SimulatedUnixFlavour.Linux ->
+
+        let ordinal = system.Machine.NextSocketEventRegistrationOrdinal
+
+        match
+            FileDescriptorRegistry.changeSocketEventRegistration
+                portFd
+                targetFd
+                ordinal
+                change
+                system.Process.FileDescriptors
+        with
+        | Error error -> Ok (SocketEventRegistrationAnswer.Failed error, system)
+        | Ok registry ->
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        NextSocketEventRegistrationOrdinal =
+                            match change with
+                            | SocketEventRegistrationChange.Add _ -> ordinal + 1L
+                            | SocketEventRegistrationChange.Modify _
+                            | SocketEventRegistrationChange.Remove -> ordinal
+                    }
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        match change with
+        | SocketEventRegistrationChange.Remove -> Ok (SocketEventRegistrationAnswer.Changed, system)
+        | SocketEventRegistrationChange.Add (interest, _)
+        | SocketEventRegistrationChange.Modify (interest, _) ->
+
+        // Both fds resolved a moment ago inside the registry change, so these
+        // lookups cannot miss.
+        let portId =
+            match FileDescriptorRegistry.tryFindId portFd system.Process.FileDescriptors with
+            | Some id -> id
+            | None ->
+                failwith
+                    $"UnixSystem.changeSocketEventRegistration: port fd %d{portFd} was live moments ago (this is a bug in this library)."
+
+        let key, targetId =
+            match FileDescriptorRegistry.tryFindId targetFd system.Process.FileDescriptors with
+            | Some id -> (targetFd, id), id
+            | None ->
+                failwith
+                    $"UnixSystem.changeSocketEventRegistration: target fd %d{targetFd} was live moments ago (this is a bug in this library)."
+
+        let alreadyPending =
+            match Map.tryFind portId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
+            | Some description ->
+                match description.Target with
+                | OpenFileTarget.SocketEventPort portState -> List.contains key portState.Ready
+                | _ ->
+                    failwith
+                        $"UnixSystem.changeSocketEventRegistration: %O{portId} committed a registration change moments ago yet is not a socket event port (this is a bug in this library)."
+            | None ->
+                failwith
+                    $"UnixSystem.changeSocketEventRegistration: %O{portId} was live moments ago (this is a bug in this library)."
+
+        let readyNow =
+            SocketEventPort.epollReadinessOfDescription targetId system
+            |> ReadinessLevel.reportedUnder interest
+            |> ReadinessLevel.isEmpty
+            |> not
+
+        if readyNow && not alreadyPending then
+            let system =
+                { system with
+                    Process =
+                        { system.Process with
+                            FileDescriptors =
+                                FileDescriptorRegistry.appendSocketEventReady portId key system.Process.FileDescriptors
+                        }
+                }
+
+            Ok (SocketEventRegistrationAnswer.Changed, system)
+        else
+            Ok (SocketEventRegistrationAnswer.Changed, system)
 
     /// The readiness of the descriptor `targetId` names, for a `poll(2)` caller.
     ///

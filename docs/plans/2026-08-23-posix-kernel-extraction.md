@@ -4433,3 +4433,86 @@ Now that `connect` has an admission, the library *could* take the raw sockaddr b
 decode them itself; the ordering objection from 9l is gone. `ConnectFields` stays anyway:
 it works, it is tested, and rewriting it buys only symmetry with a decoder the PAL
 handlers still cannot use.
+
+### Stage 11: `epoll_ctl(2)`'s ladder moves into the library
+
+**Dependencies**: none beyond the vocabulary stage 9 settled.
+
+Stage 9's closing note said "the four socket entry points", and that undercounted. Five
+socket syscalls still held their kernel ladder in `WoofWare.PawPrint` after stage 10:
+`bind` (379 handler lines), `listen` (152), `epoll_ctl` (141 plus an 82-line
+`EmulatedKernel.changeSocketEventRegistration`), `socket` (102 plus 39), and the two
+non-blocking `fcntl`s (86 and 58). This is the first of them, chosen because it is the
+one whose ladder was measured to be entirely library-eligible: its body touches
+`FileDescriptorRegistry`, `ReadinessLevel`, `SocketEventPort.epollReadinessOfDescription`
+and the change DU, and **nothing** PawPrint-only.
+
+#### What moved, and what stayed
+
+* **The ladder itself**, verbatim apart from the aggregate rename, as
+  `UnixSystem.changeSocketEventRegistration`.
+* **The Darwin refusal.** kqueue's registration model is structurally different rather
+  than differently numbered — per `(ident, filter)` state, a silently-replacing `ADD`, a
+  regular file registering where epoll answers `EPERM`, a `DEL` of a dead target
+  answering `ENOENT` where epoll answers `EBADF` — each measured only far enough to know
+  that it diverges. That is a statement about what this kernel models, so it is the
+  library's `SocketEventRegistrationRefusal.UnmodelledFlavour` rather than a `failwith`
+  in a handler.
+* **The errno mapping.** `SocketEventRegistrationError`'s six cases each already named
+  their errno *in the docstring* — `EBADF`, `EPERM`, `EINVAL`, `EEXIST`, `ENOENT` — while
+  the only code that mapped them was a hand-written `match` in PawPrint's handler.
+  `SocketEventRegistrationError.toErrno` makes the library's own prose executable, and
+  every client now answers the same numbers. Note it is not injective: two refusals share
+  `EBADF`, so the case survives for a client that wants to know which.
+
+Staying in PawPrint: the shim's `SupportedEvents` screen and equal-mask short-circuit
+(already `SocketEventsPal`), the `data` decode from a `CliType`, and the derivation of
+the op from the caller's *claims* about the current and new masks — that last is
+`TryChangeSocketEventRegistrationInner`'s own arithmetic, not the kernel's.
+
+#### The answer shape
+
+`Result<SocketEventRegistrationAnswer * UnixSystem, SocketEventRegistrationRefusal>`,
+where the answer is `Changed` or `Failed of reason`. The alternative was to keep the
+existing `Result<UnixSystem, SocketEventRegistrationError>` and add the refusal as a
+second `Result`, which nests; folding the kernel's own refusal into the answer keeps one
+`Result` for "this library has nothing to say" and matches `accept` and `connect`.
+
+#### Correctness oracle
+
+`WoofWare.PosixKernel.Test/TestSocketEventRegistration.fs`, 8 cases covering what this
+function adds over the registry's own ladder — which already has its rows. The flavour
+refusal ahead of even the descriptor lookups; the ordinal that only an `Add` consumes and
+that a refused change leaves alone; and the pending rule, including that a `Modify` of an
+already-pending entry does not re-append it and that a target with nothing to report does
+not become pending. That last row needs a target whose level is *empty under the
+interest*, which an idle socket never is — `HUP` is reported unrequested — so it uses
+standard output under a read-only interest.
+
+Eleven fixture call sites in `TestSocketEventDelivery` and three in `SocketFuzz` move to
+the new shape. The mechanical rewrite mis-attributed one block: a positional scan for
+"the next result-handling after each call" ran past a call whose handler was
+assertion-shaped rather than the common `| Ok kernel -> kernel`, and rewrote a `close`'s
+handler instead. The compiler caught it, and the lesson is the ordinary one — a
+positional scan needs to check what it landed on, not merely that it found something.
+
+**Mutation battery**: ten mutants over the ladder and the errno mapping.
+
+Seven of the ladder die in the library's own suite: the flavour arm, both directions of
+the ordinal rule, the already-pending guard, the not-ready guard, and dropping the
+interest from the readiness test. One (a `Remove` falling into the registration branch)
+was written as invalid F# and never ran; it is recorded as not-run rather than as a
+result.
+
+The three over `toErrno` **survived both default suites on the first run**, which is the
+9g failure mode and this time self-inflicted: the stage moved prose into code and gave
+the code no test, leaving it reachable only from the guest tier. Three rows were added —
+the six mappings as literals, the two `EBADF` refusals staying distinguishable, and the
+count of distinct errnos — and all three mutants then die. The mapping being *stated* in
+six docstrings is exactly why it was easy to skip: it looked tested.
+
+**What is left after 11**: `bind` and `listen` (which share the bind-conflict relation and
+probably want to travel together), `socket`, the two non-blocking `fcntl`s, and the
+fixture relocation — 3893 lines across `TestEmulatedKernelSockets`, `TestSocketEventDelivery`
+and `SocketFuzz` that test library behaviour from the client's suite, which is the 9g
+failure mode at scale.
