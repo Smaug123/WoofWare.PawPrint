@@ -4352,3 +4352,581 @@ module TestUnixSystemStep =
             )
 
         exn.Message |> shouldContainText "negative"
+
+    // ------------------------------------------------------------- rename
+
+    /// The tree `docs/probes/rename/walk-order.py` builds, so that the rows
+    /// below are transcriptions of the two measured columns rather than
+    /// readings of the implementation.
+    let private withRenameTree (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let orFail (what : string) (result : Result<InodeNumber * VirtualFileSystem, UnixError>) =
+            match result with
+            | Ok pair -> pair
+            | Error error -> failwith $"could not seed %s{what}: %O{error}"
+
+        let n (s : string) = FileName.parseOrFail context s
+        let mode (m : int) = PermissionBits.parseOrFail context m
+
+        let _, vfs =
+            VirtualFileSystem.createFile
+                rootInode
+                (n "f")
+                (mode 0o644)
+                epoch
+                ImmutableArray.Empty
+                system.Machine.FileSystem
+            |> orFail "/f"
+
+        let dir, vfs =
+            VirtualFileSystem.createDirectory rootInode (n "dir") (mode 0o755) epoch vfs
+            |> orFail "/dir"
+
+        let _, vfs =
+            VirtualFileSystem.createDirectory dir (n "sub") (mode 0o755) epoch vfs
+            |> orFail "/dir/sub"
+
+        // 0o600: readable and *not* searchable, which is what makes a lookup
+        // through it EACCES while the directory itself still stats fine.
+        let nosearch, vfs =
+            VirtualFileSystem.createDirectory rootInode (n "nosearch") (mode 0o600) epoch vfs
+            |> orFail "/nosearch"
+
+        let _, vfs =
+            VirtualFileSystem.createFile nosearch (n "kid") (mode 0o644) epoch ImmutableArray.Empty vfs
+            |> orFail "/nosearch/kid"
+
+        let link (name : string) (target : string) (vfs : VirtualFileSystem) =
+            VirtualFileSystem.createSymlink rootInode (n name) epoch (SymlinkTarget.parseOrFail context target) vfs
+            |> orFail $"/%s{name}"
+            |> snd
+
+        let vfs = vfs |> link "ld" "dir" |> link "lf" "f" |> link "dangling" "nx"
+
+        { system with
+            Machine =
+                { system.Machine with
+                    FileSystem = vfs
+                }
+        }
+
+    let private renamed
+        (source : PathArgumentBytes)
+        (destination : PathArgumentBytes)
+        (system : UnixSystem<int, string>)
+        : Result<unit, UnixError>
+        =
+        match UnixSystem.rename source destination system with
+        | Ok (SyscallAnswer.Completed 0L, _) -> Ok ()
+        | Ok (SyscallAnswer.Failed error, _) -> Error error
+        | other -> failwith $"unexpected answer %A{other}"
+
+    /// A pathname the guest passed, as bytes: what the syscall is actually
+    /// handed, since where each is decoded is the kernel's business.
+    let private arg (path : string) : PathArgumentBytes =
+        UnixPathText.utf8.GetBytes path
+        |> ImmutableArray.CreateRange
+        |> PathArgumentBytes.Bytes
+
+    /// A pathname argument whose copy-in fails, which `getname()` reports the
+    /// same way whether the pointer was unreadable or the path over-long.
+    let private badArg (error : UnixError) : PathArgumentBytes =
+        match error with
+        | UnixError.EFAULT -> PathArgumentBytes.Unreadable
+        | UnixError.ENAMETOOLONG ->
+            // Over PATH_MAX on either flavour, so the *kernel* produces the
+            // errno rather than the test asserting it into existence.
+            String.replicate 5000 "z"
+            |> UnixPathText.utf8.GetBytes
+            |> ImmutableArray.CreateRange
+            |> PathArgumentBytes.Bytes
+        | other -> failwith $"badArg: %O{other} is not a copy-in failure"
+
+    /// Every row resolves its destination to "f/x", whose parent is a regular
+    /// file — so the destination *alone* answers ENOTDIR, and any other errno is
+    /// a source-side refusal that ran first. That is what makes these rows able
+    /// to see the walk order at all: a pair earning one errno either way proves
+    /// nothing. See [[ordered-guards-need-a-disagreeing-input]].
+    let private againstFileParent (source : string) (system : UnixSystem<int, string>) : Result<unit, UnixError> =
+        renamed (arg source) (arg "f/x") (withRenameTree system)
+
+    [<Test>]
+    let ``Linux settles neither path's final component before the other's parent`` () : unit =
+        // Measured: on Linux every one of these answers the *destination's*
+        // ENOTDIR, because `do_renameat2` walks both parents before it looks
+        // either final component up.
+        for source in
+            [
+                "nope" // a free name
+                "f" // control: an ordinary existing file
+                "dir"
+                "dir/"
+                "ld" // a symbolic link to a directory
+                "lf"
+                "dangling"
+                String.replicate 300 "z" // over NAME_MAX, in the *final* position
+                "/"
+                "/."
+                "/.."
+                "."
+                ".."
+                "dir/."
+                "dir/.."
+                "dir/sub/.."
+            ] do
+            againstFileParent source linux |> shouldEqual (Error UnixError.ENOTDIR)
+
+    [<Test>]
+    let ``Linux does settle the source's parent first`` () : unit =
+        // The other side of the row above: a source whose *parent* walk fails
+        // beats the destination, because the two parents are walked in order.
+        againstFileParent "nodir/kid" linux |> shouldEqual (Error UnixError.ENOENT)
+        againstFileParent "nosearch/kid" linux |> shouldEqual (Error UnixError.EACCES)
+
+    [<Test>]
+    let ``Darwin settles the whole source before the destination is walked`` () : unit =
+        // The same sixteen sources as the Linux row, and four of them come out
+        // differently. Written as one table rather than four assertions so that
+        // the twelve agreeing rows stay visible as the controls they are.
+        for source, expected in
+            [
+                "nope", UnixError.ENOENT // the source's absence is settled first
+                "f", UnixError.ENOTDIR
+                "dir", UnixError.ENOTDIR
+                "dir/", UnixError.ENOTDIR
+                "ld", UnixError.ENOTDIR
+                "lf", UnixError.ENOTDIR
+                "dangling", UnixError.ENOTDIR
+                String.replicate 300 "z", UnixError.ENAMETOOLONG
+                "/", UnixError.EISDIR
+                // Reaching the root by navigation is *not* the same as being
+                // the root: these consumed a component, so they are late.
+                "/.", UnixError.ENOTDIR
+                "/..", UnixError.ENOTDIR
+                ".", UnixError.ENOTDIR
+                "..", UnixError.ENOTDIR
+                "dir/.", UnixError.ENOTDIR
+                "dir/..", UnixError.ENOTDIR
+                "dir/sub/..", UnixError.ENOTDIR
+            ] do
+            againstFileParent source darwin |> shouldEqual (Error expected)
+
+        // And the parent-walk rows, which agree with Linux.
+        againstFileParent "nodir/kid" darwin |> shouldEqual (Error UnixError.ENOENT)
+        againstFileParent "nosearch/kid" darwin |> shouldEqual (Error UnixError.EACCES)
+
+    [<Test>]
+    let ``each pathname is copied in immediately before its own parent walk, on Linux`` () : unit =
+        // A source whose *parent walk* fails is the only kind that can see this:
+        // with a free final name the source's parent resolves either way, so the
+        // destination's pathname is reached either way and both orderings answer
+        // ENAMETOOLONG. Measured: `rename("nodir/kid", <over PATH_MAX>)` is
+        // ENOENT where `rename("nope", <over PATH_MAX>)` is ENAMETOOLONG.
+        //
+        // This row exists because a mutation moving the destination's copy-in
+        // below the source's parent walk survived the whole fixture without it.
+        // See [[ordered-guards-need-a-disagreeing-input]].
+        for failure in [ UnixError.ENAMETOOLONG ; UnixError.EFAULT ] do
+            let system = withRenameTree linux
+
+            renamed (arg "nodir/kid") (badArg failure) system
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            renamed (arg "nosearch/kid") (badArg failure) system
+            |> shouldEqual (Error UnixError.EACCES)
+
+            renamed (arg "f/kid") (badArg failure) system
+            |> shouldEqual (Error UnixError.ENOTDIR)
+
+            // ...while a source whose parent walk *succeeds* does reach it, which
+            // is what says the copy-in happens at all rather than never.
+            renamed (arg "nope") (badArg failure) system |> shouldEqual (Error failure)
+
+            // Darwin resolves the source to completion first, so every one of
+            // those four answers the source's own error there.
+            let darwinTree = withRenameTree darwin
+
+            renamed (arg "nodir/kid") (badArg failure) darwinTree
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            renamed (arg "nope") (badArg failure) darwinTree
+            |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
+    let ``the destination's pathname is copied in before the source's final lookup, on Linux only`` () : unit =
+        // `PathArgument.Failed` is what `getname()` reports, and the two errnos
+        // it can carry surface at the same point — so both are asserted, and a
+        // handler that screened only one would be caught.
+        for failure in [ UnixError.ENAMETOOLONG ; UnixError.EFAULT ] do
+            let system = withRenameTree linux
+
+            // Linux copies both pathnames in before walking either, so the
+            // destination's failure beats a source that does not exist.
+            renamed (arg "nope") (badArg failure) system |> shouldEqual (Error failure)
+
+            // Darwin finishes the source first, pathname and all.
+            renamed (arg "nope") (badArg failure) (withRenameTree darwin)
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            // Controls, agreeing on both: a bad *source* pathname always wins,
+            // and a good source leaves the destination's failure to surface.
+            renamed (badArg failure) (arg "alsonope") system |> shouldEqual (Error failure)
+
+            renamed (badArg failure) (arg "alsonope") (withRenameTree darwin)
+            |> shouldEqual (Error failure)
+
+            renamed (arg "f") (badArg failure) system |> shouldEqual (Error failure)
+
+            renamed (arg "f") (badArg failure) (withRenameTree darwin)
+            |> shouldEqual (Error failure)
+
+    [<Test>]
+    let ``rename displaces the destination and frees it when nothing holds it`` () : unit =
+        let system = withRenameTree linux
+        let n (s : string) = FileName.parseOrFail context s
+
+        let displaced, vfs =
+            match
+                VirtualFileSystem.createFile
+                    rootInode
+                    (n "victim")
+                    (PermissionBits.parseOrFail context 0o644)
+                    epoch
+                    ImmutableArray.Empty
+                    system.Machine.FileSystem
+            with
+            | Ok pair -> pair
+            | Error error -> failwith $"could not seed /victim: %O{error}"
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = vfs
+                    }
+            }
+
+        let moved =
+            match UnixSystem.rename (arg "f") (arg "victim") system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected a success, got %A{other}"
+
+        // The source name is gone and the destination now names what moved.
+        UnixSystem.stat SymlinkPolicy.NoFollowFinal (statPath "/f") moved
+        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+
+        match UnixSystem.stat SymlinkPolicy.NoFollowFinal (statPath "/victim") moved with
+        | FileStatusAnswer.Reported _ -> ()
+        | other -> failwith $"expected /victim to exist, got %A{other}"
+
+        // The inode the destination *used* to name lost its last link, and
+        // nothing held it — which is the part the entry point adds over
+        // `VirtualFileSystem.rename`, whose contract is to free nothing.
+        UnixSystem.statOf displaced moved |> shouldEqual None
+
+    [<Test>]
+    let ``rename over a file a descriptor holds leaves that inode alive`` () : unit =
+        // The reason the displaced inode cannot simply be freed: a real rename
+        // over an open file leaves it readable through the descriptor until the
+        // last one closes.
+        let system = withRenameTree linux
+
+        let held =
+            match UnixSystem.resolvePath SymlinkPolicy.NoFollowFinal (statPath "/f") system with
+            | Ok inode -> inode
+            | Error error -> failwith $"could not resolve /f: %O{error}"
+
+        let fd, descriptors =
+            FileDescriptorRegistry.openFile held FileAccessMode.ReadOnly system.Process.FileDescriptors
+
+        let system =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = descriptors
+                    }
+            }
+
+        let moved =
+            // A symbolic link rather than `dir`: displacing a regular file with
+            // a *directory* is ENOTDIR, which would make this row measure the
+            // type rule instead of the reap.
+            match UnixSystem.rename (arg "lf") (arg "f") system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected a success, got %A{other}"
+
+        // The name is gone, and the inode behind it is not.
+        UnixSystem.statOf held moved |> shouldNotEqual None
+
+        // ...and closing the descriptor is what finally frees it, which is the
+        // half a test that only checked survival would leave unpinned.
+        let closed =
+            match UnixSystem.close fd moved with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected the close to succeed, got %A{other}"
+
+        UnixSystem.statOf held closed |> shouldEqual None
+
+    [<Test>]
+    let ``renaming a name onto itself changes nothing at all`` () : unit =
+        // Not routed through the graph primitive, which refuses it: a no-op
+        // moves no binding *and* stamps no timestamp, so a rename that went
+        // through the primitive would have to invent a stamp.
+        let system = withRenameTree linux
+
+        let before = system.Machine.FileSystem
+
+        match UnixSystem.rename (arg "f") (arg "f") system with
+        | Ok (SyscallAnswer.Completed 0L, after) -> after.Machine.FileSystem |> shouldEqual before
+        | other -> failwith $"expected a success, got %A{other}"
+
+    /// The same tree, with the current directory moved to `/dir/sub` — so that a
+    /// rename of `/dir` moves the process's own cwd without touching its inode.
+    let private withCwdInSub (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let system = withRenameTree system
+
+        let sub =
+            match UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/dir/sub") system with
+            | Ok inode -> inode
+            | Error error -> failwith $"could not resolve /dir/sub: %O{error}"
+
+        { system with
+            Process =
+                { system.Process with
+                    CurrentDirectoryInode = sub
+                    CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/dir/sub"
+                }
+        }
+
+    [<Test>]
+    let ``renaming an ancestor of the current directory moves the cwd with it`` () : unit =
+        // The cwd's *inode* does not change, so nothing about the descriptor
+        // side notices — but the path that reaches it does, and `getcwd` reports
+        // the cached path rather than re-walking. A rename that left the cache
+        // alone would have `getcwd` answer a directory that no longer exists.
+        let system = withCwdInSub linux
+
+        let moved =
+            // Absolute, because the cwd is now /dir/sub and a relative "dir"
+            // would resolve from there.
+            match UnixSystem.rename (arg "/dir") (arg "/moved") system with
+            | Ok (SyscallAnswer.Completed 0L, system) -> system
+            | other -> failwith $"expected a success, got %A{other}"
+
+        moved.Process.CurrentDirectory
+        |> shouldEqual (AbsoluteUnixPath.parseOrFail context "/moved/sub")
+
+        // ...and the cached path is the one that actually reaches the inode,
+        // which is the invariant `EmulatedKernelDefect.CurrentDirectoryPathDisagrees`
+        // is about.
+        VirtualFileSystem.pathOfDirectory moved.Process.CurrentDirectoryInode moved.Machine.FileSystem
+        |> shouldEqual (Some moved.Process.CurrentDirectory)
+
+    /// The tree with the current directory `rmdir`'d out from under the process,
+    /// which is the only way to reach an orphaned directory: one that still
+    /// exists, because this process is in it, but that no path reaches.
+    let private withOrphanedCwd (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let system = withRenameTree system
+
+        let inode, created =
+            match UnixSystem.mkdir (statPath "/gone") 0o755 system with
+            | SyscallAnswer.Completed 0L, created ->
+                match UnixSystem.resolvePath SymlinkPolicy.Follow (statPath "/gone") created with
+                | Ok inode -> inode, created
+                | Error error -> failwith $"could not resolve /gone: %O{error}"
+            | other -> failwith $"could not create /gone: %A{other}"
+
+        let inCwd =
+            { created with
+                Process =
+                    { created.Process with
+                        CurrentDirectoryInode = inode
+                        CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/gone"
+                    }
+            }
+
+        match UnixSystem.rmdir (statPath "/gone") inCwd with
+        | SyscallAnswer.Completed 0L, removed -> removed
+        | other -> failwith $"could not remove /gone: %A{other}"
+
+    [<Test>]
+    let ``an orphaned destination parent beats the destination's name length on Linux only`` () : unit =
+        let longName = String.replicate 300 "z"
+
+        // Linux reports the orphan before the destination's final name is
+        // measured; Darwin does the reverse. Measured on both — see
+        // docs/probes/rename/walk-order.py, whose two committed columns disagree
+        // on exactly this row.
+        renamed (arg "/f") (arg longName) (withOrphanedCwd linux)
+        |> shouldEqual (Error UnixError.ENOENT)
+
+        renamed (arg "/f") (arg longName) (withOrphanedCwd darwin)
+        |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+        // The control both agree on, which says the orphan is reported at all.
+        for system in [ withOrphanedCwd linux ; withOrphanedCwd darwin ] do
+            renamed (arg "/f") (arg "x") system |> shouldEqual (Error UnixError.ENOENT)
+
+        // And the row that puts Linux's orphan check *below* the source's own
+        // final lookup rather than above both: a 300-byte source name is
+        // ENAMETOOLONG on both kernels, so the orphan does not win everything.
+        for system in [ withOrphanedCwd linux ; withOrphanedCwd darwin ] do
+            renamed (arg ("/" + longName)) (arg "x") system
+            |> shouldEqual (Error UnixError.ENAMETOOLONG)
+
+    [<Test>]
+    let ``a pathname the syscall never copies in is never decoded`` () : unit =
+        // Bytes that are not valid UTF-8 name a file this kernel cannot
+        // represent, so decoding them is a refusal rather than an errno. The
+        // decode therefore has to happen where the *kernel* copies the pathname
+        // in: on Darwin the source is resolved to completion first, so a
+        // destination behind a failing source is never looked at, and refusing
+        // it would answer about a pathname `rename(2)` never read.
+        let undecodable =
+            [| 0x66uy ; 0xFFuy ; 0x66uy |]
+            |> ImmutableArray.CreateRange
+            |> PathArgumentBytes.Bytes
+
+        // Darwin: the source's ENOENT is settled before the destination's
+        // pathname is copied in at all.
+        UnixSystem.rename (arg "nope") undecodable (withRenameTree darwin)
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree darwin))
+
+        // Linux: the source's *parent* walk fails before the destination's
+        // pathname is copied in.
+        UnixSystem.rename (arg "nodir/kid") undecodable (withRenameTree linux)
+        |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree linux))
+
+        // ...and when the syscall does reach it, the refusal is reported rather
+        // than swallowed — otherwise the two rows above would pass for a kernel
+        // that never decodes anything.
+        UnixSystem.rename (arg "f") undecodable (withRenameTree linux)
+        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+
+        UnixSystem.rename (arg "f") undecodable (withRenameTree darwin)
+        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+
+        // A bad *source* is refused on both, being copied in first either way.
+        UnixSystem.rename undecodable (arg "x") (withRenameTree linux)
+        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+
+    [<Test>]
+    let ``a call the source phase finishes never asks for a destination`` () : unit =
+        // The structural version of the row above, and the one that matters for
+        // the boundary: *reading* a pathname out of a process's memory can
+        // refuse, so a caller must be told whether the kernel wants the second
+        // one at all. `RenameProgress.Answered` is that answer, and a caller
+        // holding it has nothing to read.
+        let ended (source : PathArgumentBytes) (system : UnixSystem<int, string>) : UnixError =
+            match UnixSystem.renameSourcePhase source system with
+            | Ok (RenameProgress.Answered (SyscallAnswer.Failed error, _)) -> error
+            | other -> failwith $"expected the source phase to end the call, got %A{other}"
+
+        // Darwin ends on a source that does not exist...
+        ended (arg "nope") (withRenameTree darwin) |> shouldEqual UnixError.ENOENT
+        ended (arg "/") (withRenameTree darwin) |> shouldEqual UnixError.EISDIR
+
+        // ...and Linux only on one whose *parent* walk fails, its final
+        // component being still unlooked-at at this point.
+        ended (arg "nodir/kid") (withRenameTree linux) |> shouldEqual UnixError.ENOENT
+
+        ended (arg "nosearch/kid") (withRenameTree linux)
+        |> shouldEqual UnixError.EACCES
+
+        // Both end on a source pathname that could not be copied in at all.
+        for system in [ withRenameTree linux ; withRenameTree darwin ] do
+            ended (badArg UnixError.EFAULT) system |> shouldEqual UnixError.EFAULT
+
+            ended (badArg UnixError.ENAMETOOLONG) system
+            |> shouldEqual UnixError.ENAMETOOLONG
+
+        // And the calls that *do* need one say so, or the rows above would pass
+        // for a kernel that never asks for a destination.
+        for system in [ withRenameTree linux ; withRenameTree darwin ] do
+            match UnixSystem.renameSourcePhase (arg "f") system with
+            | Ok (RenameProgress.NeedsDestination _) -> ()
+            | other -> failwith $"expected the kernel to want a destination, got %A{other}"
+
+        // Linux gets that far even for a source whose final name is free, since
+        // it has not looked it up yet — where Darwin has, and stopped.
+        match UnixSystem.renameSourcePhase (arg "nope") (withRenameTree linux) with
+        | Ok (RenameProgress.NeedsDestination _) -> ()
+        | other -> failwith $"expected Linux to want a destination for a free source name, got %A{other}"
+
+    // The `## walk` and `## orphan` sections of `docs/probes/rename/rename.py`,
+    // transcribed. These are the ordering-sensitive rows — the ones no single
+    // path can produce and no verdict, handed two finished resolutions, can be
+    // asked about — and they are the rows three rounds of review each found a
+    // bug in. Kept as a table against the committed columns so the next change
+    // to the phase order is checked against all of them at once.
+
+    [<Test>]
+    let ``the committed walk-order rows`` () : unit =
+        let long = String.replicate 300 "z"
+
+        // source, destination, Linux, Darwin
+        let rows =
+            [
+                "source absent X destination's parent is a regular file",
+                "nope",
+                "f/x",
+                UnixError.ENOTDIR,
+                UnixError.ENOENT
+                "source name 300 bytes X destination's parent absent",
+                long,
+                "nodir/x",
+                UnixError.ENOENT,
+                UnixError.ENAMETOOLONG
+                "source absent X destination name 300 bytes", "nope", long, UnixError.ENOENT, UnixError.ENOENT
+                "source's parent unsearchable X destination's parent absent",
+                "nosearch/kid",
+                "nodir/x",
+                UnixError.EACCES,
+                UnixError.EACCES
+                "source's parent unsearchable X destination's parent is a file",
+                "nosearch/kid",
+                "f/x",
+                UnixError.EACCES,
+                UnixError.EACCES
+                "source's parent is a regular file X destination is a directory",
+                "f/kid",
+                "dir",
+                UnixError.ENOTDIR,
+                UnixError.ENOTDIR
+            ]
+
+        for label, source, destination, onLinux, onDarwin in rows do
+            let observed flavour system =
+                match renamed (arg source) (arg destination) system with
+                | Error error -> error
+                | Ok () -> failwith $"%s{label}: expected %s{flavour} to refuse, but the rename succeeded"
+
+            observed "Linux" (withRenameTree linux) |> shouldEqual onLinux
+            observed "Darwin" (withRenameTree darwin) |> shouldEqual onDarwin
+
+    [<Test>]
+    let ``the committed orphaned-destination rows`` () : unit =
+        let long = String.replicate 300 "z"
+
+        // Every destination here is relative, so its parent is the orphaned
+        // current directory; the source is absolute except where it is the point.
+        let rows =
+            [
+                "ordinary file source (control)", "/f", "x", UnixError.ENOENT, UnixError.ENOENT
+                "AND source absent", "/nope", "x", UnixError.ENOENT, UnixError.ENOENT
+                // The row that places the source screen above the orphan check:
+                // one errno on Linux that no other source there produces.
+                "AND the source is a navigation", "/dir/.", "x", UnixError.EBUSY, UnixError.ENOENT
+                "directory source", "/dir", "x", UnixError.ENOENT, UnixError.ENOENT
+                "AND destination name 300 bytes", "/f", long, UnixError.ENOENT, UnixError.ENAMETOOLONG
+                "AND a trailing separator on a file source", "/f/", "x", UnixError.ENOENT, UnixError.ENOTDIR
+                "AND a trailing separator on the destination", "/f", "x/", UnixError.ENOENT, UnixError.ENOENT
+            ]
+
+        for label, source, destination, onLinux, onDarwin in rows do
+            let observed flavour system =
+                match renamed (arg source) (arg destination) system with
+                | Error error -> error
+                | Ok () -> failwith $"%s{label}: expected %s{flavour} to refuse, but the rename succeeded"
+
+            observed "Linux" (withOrphanedCwd linux) |> shouldEqual onLinux
+            observed "Darwin" (withOrphanedCwd darwin) |> shouldEqual onDarwin
