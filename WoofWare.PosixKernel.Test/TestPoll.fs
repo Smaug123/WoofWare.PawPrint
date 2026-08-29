@@ -177,6 +177,41 @@ module TestPoll =
             1
         )
 
+    /// Measured (`pollgaps.c`): a regular file answers `IN|OUT` at every offset
+    /// and under `O_RDONLY` as much as `O_RDWR`, and a directory answers the
+    /// same. Files have no `->poll` handler, so the VFS default reports them
+    /// always-ready -- which is why nothing here varies with the file's
+    /// contents or the description's position.
+    [<Test>]
+    let ``a regular file polls IN and OUT`` () : unit =
+        for accessMode in
+            [
+                FileAccessMode.ReadOnly
+                FileAccessMode.WriteOnly
+                FileAccessMode.ReadWrite
+            ] do
+            let fd, registry =
+                FileDescriptorRegistry.openFile (InodeNumber 1L) accessMode linux.Process.FileDescriptors
+
+            let system =
+                { linux with
+                    Process =
+                        { linux.Process with
+                            FileDescriptors = registry
+                        }
+                }
+
+            pollOrFail [ entry fd all ] 0 system
+            |> shouldEqual (
+                [
+                    { PollEvents.none with
+                        In = true
+                        Out = true
+                    }
+                ],
+                1
+            )
+
     /// Measured on both kernels: a negative descriptor is ignored, reports
     /// nothing, and does not count towards the return value. It is not an error
     /// and not NVAL, which is the distinction this row exists to pin.
