@@ -15,6 +15,7 @@
     <Compile Include="TestUnixSystemInitial.fs" />
     <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestSocketTable.fs" />
+    <Compile Include="TestSocketEventDelivery.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
