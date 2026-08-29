@@ -540,43 +540,6 @@ module NativeSystemNative =
 
         ManagedPointerByteView.addByteOffset state byteConcreteType offset buffer
 
-    /// The socket `fd` names, for an entry point that takes one.
-    ///
-    /// `EBADF` for a descriptor that is not live, and `ENOTSOCK` for one that
-    /// is live but names no socket — measured per syscall rather than
-    /// generalised across them: `accept(2)`, `bind(2)`, `listen(2)` and
-    /// `getsockname(2)` on a regular file, an event port and both pipe ends all
-    /// answer `ENOTSOCK` on both kernels. The first three are this helper's
-    /// callers; `getsockname` asks `UnixSystem.getsockname` the same question
-    /// and gets the same two errnos, which is why its row is still cited here.
-    /// The two address families PawPrint can create but not operate on are
-    /// refused rather than answered, each for a reason of its own.
-    let private socketOfFd
-        (operation : string)
-        (fd : int)
-        (state : IlMachineState)
-        : Result<SocketId * SocketDescription, UnixError>
-        =
-        match FileDescriptorRegistry.tryFind fd state.Kernel.FileDescriptors with
-        | None -> Error UnixError.EBADF
-        | Some description ->
-
-        match description.Target with
-        | OpenFileTarget.Socket socketId ->
-            let socket = UnixMachineState.socket socketId state.Kernel.Machine
-
-            match socket.Domain with
-            | SocketDomain.InterNetwork -> Ok (socketId, socket)
-            | SocketDomain.InterNetworkV6 ->
-                failwith
-                    $"%s{operation}: fd %d{fd} is an IPv6 socket, whose local address PawPrint does not model. No *managed* guest can hold one — `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented — so this is a hand-rolled P/Invoke. Implement SetSockOpt first: the cross-family bind-conflict rules measured so far are facts about IPV6_V6ONLY=0, and Linux inverts several of them at 1."
-            | SocketDomain.Unix ->
-                failwith
-                    $"%s{operation}: fd %d{fd} is a Unix-domain socket, which binds a *path* in the emulated filesystem rather than a transport endpoint. That belongs with the filesystem work, not here."
-        | OpenFileTarget.StandardStream _
-        | OpenFileTarget.SocketEventPort _
-        | OpenFileTarget.File _ -> Error UnixError.ENOTSOCK
-
     /// `IsInBounds(sockAddr, socketAddressLen, &sockAddr->sa_family,
     /// sizeof_member(sockaddr, sa_family))` (pal_networking.c:692), which every
     /// entry point below applies before it reads or writes a blob's family.
@@ -3964,17 +3927,13 @@ module NativeSystemNative =
             | BindAnswer.Failed error -> failFromSyscall error state
             | BindAnswer.Bound _ -> complete UnixErrorPal.palSuccess state
         // `int32_t SystemNative_Listen(intptr_t socket, int32_t backlog)`
-        // (pal_networking.c:1892). No screens of its own: it is `listen(2)`.
+        // (pal_networking.c:1892). No screens of its own: it is `listen(2)`,
+        // which is why this handler is nothing but the errno write.
         | Some "SystemNative_Listen",
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (PalErrorReturn state.ConcreteTypes) ->
             let operation = "SystemNative_Listen"
             let fd = fdArgument operation instruction.Arguments.[0]
-
-            // Every value is accepted — measured, 0, -1 and INT_MAX all
-            // succeed on both — and the number is recorded verbatim: the
-            // accept-queue capacity `SystemNative_Connect` enforces is derived
-            // from it per flavour.
             let backlog = NativeCall.int32Argument operation instruction.Arguments.[1]
 
             let complete (palError : int) (state : IlMachineState) : NativeHandlerResult option =
@@ -3983,137 +3942,41 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            // Both of these are `listen(2)`'s own answers, so each leaves the
-            // platform errno for a `SetLastError=true` caller: measured 9 for a
-            // closed descriptor on both, and 95 on Linux against 102 on Darwin
-            // for a datagram socket.
-            let failFromSyscall (error : UnixError) (state : IlMachineState) : NativeHandlerResult option =
+            match UnixSystem.listen fd backlog (EmulatedKernel.unix state.Kernel) with
+            | Error refusal ->
+                // The library says why no kernel answer exists; PawPrint says how
+                // a guest could be holding such a socket, which is a fact about
+                // CoreLib rather than about any kernel.
+                let reachedBy =
+                    match refusal with
+                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.InterNetworkV6) ->
+                        " No *managed* guest can hold one -- `SocketPal.CreateSocket` sets IPV6_V6ONLY on every non-raw AF_INET6 socket and `SystemNative_SetSockOpt` is unimplemented -- so this is a hand-rolled P/Invoke."
+                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.Unix) ->
+                        " That belongs with the filesystem work (issue #956), not here."
+                    | ListenRefusal.UnmodelledDomain (_, SocketDomain.InterNetwork) ->
+                        failwith
+                            $"%s{operation}: the library refused an IPv4 socket's domain, which it models. This is an interpreter bug."
+                    | ListenRefusal.UnmeasuredKind _
+                    | ListenRefusal.UnmeasuredPhase _
+                    | ListenRefusal.EphemeralPortsExhausted _ -> ""
+
+                failwith $"%s{operation}: fd %d{fd}: %s{ListenRefusal.describe refusal}%s{reachedBy}"
+            | Ok (answer, unix) ->
+
+            let state = state.MapKernel (EmulatedKernel.withUnix unix)
+
+            match answer with
+            | ListenAnswer.Listening _ -> complete UnixErrorPal.palSuccess state
+            | ListenAnswer.Failed error ->
+                // `listen(2)`'s own answers, so each leaves the platform errno
+                // for a `SetLastError=true` caller: measured 9 for a closed
+                // descriptor on both, and 95 on Linux against 102 on Darwin for
+                // a datagram socket.
                 let raw =
                     UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform) error
 
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread raw)
                 |> complete (UnixErrorPal.toPal error)
-
-            match socketOfFd operation fd state with
-            | Error error -> failFromSyscall error state
-            | Ok (socketId, socket) ->
-
-            match socket.Kind with
-            | SocketKind.Datagram -> failFromSyscall UnixError.EOPNOTSUPP state
-            | SocketKind.Raw
-            | SocketKind.SeqPacket ->
-                failwith
-                    $"%s{operation}: fd %d{fd} is a %O{socket.Kind} socket. Whether `listen(2)` accepts one is unmeasured — SOCK_SEQPACKET connections on both, SOCK_RAW plausibly EOPNOTSUPP — so measure it rather than guessing."
-            | SocketKind.Stream ->
-
-            match socket.Phase with
-            | SocketPhase.Idle
-            | SocketPhase.Listening _ -> ()
-            | phase ->
-                failwith
-                    $"%s{operation}: fd %d{fd} is a stream socket in %A{phase}, and what `listen(2)` answers for one is unmeasured — plausibly EISCONN for a connected socket — so measure it rather than guessing."
-
-            // The relation `bind(2)` uses — "does another socket's binding
-            // conflict with mine" — asked again. Which callers below may ask it
-            // is the subtle part: the *implicit* bind always may, but an
-            // already-bound socket only on a flavour whose `listen(2)` re-runs
-            // the admission rule.
-            let conflictsWith (binding : SocketBinding) : bool =
-                state.Kernel.Sockets
-                |> Map.exists (fun otherId (other : SocketDescription) ->
-                    if otherId = socketId then
-                        false
-                    else
-
-                    match other.Binding with
-                    | None -> false
-                    | Some existing ->
-                        other.Kind = socket.Kind
-                        && SimulatedUnixPlatform.bindConflict
-                            state.Kernel.UnixPlatform
-                            existing
-                            other.ReuseAddress
-                            other.Phase
-                            binding
-                            socket.ReuseAddress
-                )
-
-            // On Linux two sockets carrying SO_REUSEADDR may share an endpoint
-            // until one of them listens, and the second `listen(2)` is then
-            // EADDRINUSE. Darwin asks nothing of a socket that already has a
-            // port; see `listenRescreensBinding` for why that is not a
-            // strictness difference PawPrint could round in the safe direction.
-            match socket.Binding with
-            | Some binding when
-                SimulatedUnixPlatform.listenRescreensBinding state.Kernel.UnixPlatform
-                && conflictsWith binding
-                ->
-                failFromSyscall UnixError.EADDRINUSE state
-            | _ ->
-
-            let bound, kernel =
-                match socket.Binding with
-                | Some binding -> binding, state.Kernel
-                | None ->
-                    // `listen(2)` on an unbound socket binds it to the wildcard
-                    // and an ephemeral port. Measured on both — and note it does
-                    // *not* go through `SystemNative_Bind`, so no SO_REUSEADDR is
-                    // set, which is a distinction a later bind can see.
-                    let candidate (port : uint16) : SocketBinding =
-                        {
-                            Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
-                            // listen(2)'s implicit bind runs no bind(2), so
-                            // nothing is locked.
-                            LockedAddress = None
-                        }
-
-                    let acceptable (port : uint16) : bool = not (conflictsWith (candidate port))
-
-                    match UnixMachineState.allocateEphemeralPort acceptable state.Kernel.Machine with
-                    | Some (port, machine) ->
-                        candidate port,
-                        { state.Kernel with
-                            Machine = machine
-                        }
-                    | None ->
-                        let low, high = state.Kernel.EphemeralPortRange
-
-                        failwith
-                            $"%s{operation}: every port in the ephemeral range %d{low}-%d{high} is taken, so this implicit bind has no answer. Widen KernelConfig.EphemeralPortRange, or measure what a real kernel says here."
-
-            // A re-listen keeps the queue and updates the backlog, which is
-            // Linux's documented behaviour (sk_max_ack_backlog is simply
-            // re-assigned); the first listen starts an empty queue.
-            let listenPhase =
-                match socket.Phase with
-                | SocketPhase.Listening listenState ->
-                    SocketPhase.Listening
-                        { listenState with
-                            Backlog = backlog
-                        }
-                | _ ->
-                    SocketPhase.Listening
-                        {
-                            Backlog = backlog
-                            Queue = []
-                        }
-
-            state.MapKernel (fun _ ->
-                { kernel with
-                    Machine =
-                        { kernel.Machine with
-                            Sockets =
-                                Map.add
-                                    socketId
-                                    { socket with
-                                        Binding = Some bound
-                                        Phase = listenPhase
-                                    }
-                                    kernel.Sockets
-                        }
-                }
-            )
-            |> complete UnixErrorPal.palSuccess
         // `int32_t SystemNative_Accept(intptr_t socket, uint8_t* socketAddress,
         // int32_t* socketAddressLen, intptr_t* acceptedSocket)`
         // (pal_networking.c:1705).
