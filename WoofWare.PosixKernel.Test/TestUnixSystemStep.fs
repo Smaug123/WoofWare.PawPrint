@@ -4930,3 +4930,155 @@ module TestUnixSystemStep =
 
             observed "Linux" (withOrphanedCwd linux) |> shouldEqual onLinux
             observed "Darwin" (withOrphanedCwd darwin) |> shouldEqual onDarwin
+
+    // -------------------------------------------------------------- chdir
+
+    /// The tree `docs/probes/chdir/chdir.py` builds, so the rows below are
+    /// transcriptions of the two measured columns.
+    let private withChDirTree (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        let orFail (what : string) (result : Result<InodeNumber * VirtualFileSystem, UnixError>) =
+            match result with
+            | Ok pair -> pair
+            | Error error -> failwith $"could not seed %s{what}: %O{error}"
+
+        let n (s : string) = FileName.parseOrFail context s
+        let mode (m : int) = PermissionBits.parseOrFail context m
+
+        let d, vfs =
+            VirtualFileSystem.createDirectory rootInode (n "d") (mode 0o755) epoch system.Machine.FileSystem
+            |> orFail "/d"
+
+        let _, vfs =
+            VirtualFileSystem.createDirectory d (n "sub") (mode 0o755) epoch vfs
+            |> orFail "/d/sub"
+
+        let _, vfs =
+            VirtualFileSystem.createFile rootInode (n "f") (mode 0o644) epoch ImmutableArray.Empty vfs
+            |> orFail "/f"
+
+        // Search but not read, and read but not search: the pair that says which
+        // bit chdir actually wants.
+        let _, vfs =
+            VirtualFileSystem.createDirectory rootInode (n "xonly") (mode 0o100) epoch vfs
+            |> orFail "/xonly"
+
+        let _, vfs =
+            VirtualFileSystem.createDirectory rootInode (n "ronly") (mode 0o400) epoch vfs
+            |> orFail "/ronly"
+
+        let link (name : string) (target : string) (vfs : VirtualFileSystem) =
+            VirtualFileSystem.createSymlink rootInode (n name) epoch (SymlinkTarget.parseOrFail context target) vfs
+            |> orFail $"/%s{name}"
+            |> snd
+
+        let vfs = vfs |> link "ld" "d" |> link "lf" "f" |> link "dang" "nx"
+
+        { system with
+            Machine =
+                { system.Machine with
+                    FileSystem = vfs
+                }
+        }
+
+    let private changedTo (path : string) (system : UnixSystem<int, string>) : Result<string, UnixError> =
+        match UnixSystem.chdir (statPath path) system with
+        | SyscallAnswer.Completed 0L, moved -> Ok (AbsoluteUnixPath.toString moved.Process.CurrentDirectory)
+        | SyscallAnswer.Failed error, _ -> Error error
+        | other -> failwith $"unexpected answer %A{other}"
+
+    [<Test>]
+    let ``chdir answers what both kernels answer`` () : unit =
+        // The measured table, run under *both* flavours from one list: it is
+        // unanimous, so a row that came out differently on one of them would be
+        // a regression in precisely the fact the probe establishes.
+        let rows =
+            [
+                "a directory", "d", Ok "/d"
+                "a directory, trailing separator", "d/", Ok "/d"
+                "nested", "d/sub", Ok "/d/sub"
+                "a regular file", "f", Error UnixError.ENOTDIR
+                "a regular file, trailing separator", "f/", Error UnixError.ENOTDIR
+                // Follows the link, and records where it landed rather than what
+                // the guest named.
+                "a symlink to a directory", "ld", Ok "/d"
+                "a symlink to a directory, trailing sep", "ld/", Ok "/d"
+                "a symlink to a file", "lf", Error UnixError.ENOTDIR
+                "a dangling symlink", "dang", Error UnixError.ENOENT
+                "absent", "nx", Error UnixError.ENOENT
+                "the empty path", "", Error UnixError.ENOENT
+                "search bit only", "xonly", Ok "/xonly"
+                "read bit only", "ronly", Error UnixError.EACCES
+                "a 300-byte name", String.replicate 300 "z", Error UnixError.ENAMETOOLONG
+                ".", ".", Ok "/"
+                "..", "..", Ok "/"
+            ]
+
+        for flavour, system in [ "Linux", linux ; "Darwin", darwin ] do
+            for label, path, expected in rows do
+                let observed = changedTo path (withChDirTree system)
+
+                if observed <> expected then
+                    failwith $"chdir(\"%s{path}\") (%s{label}) on %s{flavour}: expected %A{expected}, got %A{observed}"
+
+    [<Test>]
+    let ``chdir wants the search bit, and privilege is exempt from it`` () : unit =
+        // The row above says a 0o400 directory is EACCES. This says why: it is a
+        // permission check rather than anything else about that directory, so
+        // uid 0 walks straight in.
+        let asRoot =
+            { withChDirTree linux with
+                Process = UnixProcessState.withUserAndGroupId 0u 0u (withChDirTree linux).Process
+            }
+
+        changedTo "ronly" asRoot |> shouldEqual (Ok "/ronly")
+
+    [<Test>]
+    let ``leaving a removed directory is what finally frees it`` () : unit =
+        // The current directory is pinned, so `rmdir` of it cannot free it and
+        // `chdir` away is the operation that drops the last reference. Without
+        // that the inode is stranded for the run.
+        let system = withChDirTree linux
+
+        let moved =
+            match UnixSystem.chdir (statPath "/d/sub") system with
+            | SyscallAnswer.Completed 0L, moved -> moved
+            | other -> failwith $"expected a success, got %A{other}"
+
+        let held = moved.Process.CurrentDirectoryInode
+
+        let removed =
+            match UnixSystem.rmdir (statPath "/d/sub") moved with
+            | SyscallAnswer.Completed 0L, removed -> removed
+            | other -> failwith $"expected the rmdir to succeed, got %A{other}"
+
+        // Still there: the process is in it.
+        UnixSystem.statOf held removed |> shouldNotEqual None
+
+        let left =
+            match UnixSystem.chdir (statPath "/") removed with
+            | SyscallAnswer.Completed 0L, left -> left
+            | other -> failwith $"expected a success, got %A{other}"
+
+        UnixSystem.statOf held left |> shouldEqual None
+        UnixSystem.checkInvariants left |> shouldEqual []
+
+    [<Test>]
+    let ``chdir into a removed current directory succeeds and moves no path`` () : unit =
+        // Measured: `chdir(".")` there is a success on both kernels, though
+        // `getcwd` in that state fails. PawPrint's `getcwd` answers the stale
+        // cached path instead, which is a divergence this slice deliberately
+        // leaves alone -- see the plan. This row pins today's behaviour so that
+        // the change which fixes it has something to break.
+        let system = withChDirTree linux
+
+        let inSub =
+            match UnixSystem.chdir (statPath "/d/sub") system with
+            | SyscallAnswer.Completed 0L, moved -> moved
+            | other -> failwith $"expected a success, got %A{other}"
+
+        let orphaned =
+            match UnixSystem.rmdir (statPath "/d/sub") inSub with
+            | SyscallAnswer.Completed 0L, removed -> removed
+            | other -> failwith $"expected the rmdir to succeed, got %A{other}"
+
+        changedTo "." orphaned |> shouldEqual (Ok "/d/sub")

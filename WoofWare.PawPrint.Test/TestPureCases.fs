@@ -186,6 +186,14 @@ module TestPureCases =
                     name "lg", SeedEntry.Symlink (target "g")
                     name "dang", SeedEntry.Symlink (target "nx")
                 ]
+            "ChDirSeeded.cs",
+            Map.ofList
+                [
+                    name "f", file "top"
+                    name "d", SeedEntry.directory (Map.ofList [ name "g", file "inside" ])
+                    // Entering this must leave the process in `d`, not in `ld`.
+                    name "ld", SeedEntry.Symlink (target "d")
+                ]
             "RmDirSeeded.cs",
             Map.ofList
                 [

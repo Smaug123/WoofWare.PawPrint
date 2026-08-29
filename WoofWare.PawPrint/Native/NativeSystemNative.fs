@@ -2586,6 +2586,14 @@ module NativeSystemNative =
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             pathSyscall ctx "SystemNative_Unlink" UnixSystem.unlink state
+        // `int32_t SystemNative_ChDir(const char* path)` (pal_io.c): `chdir(2)`
+        // and nothing else. CoreLib declares it as `int ChDir(string)` under
+        // UTF-8 marshalling, so what arrives is the same NUL-terminated byte
+        // pointer `SystemNative_MkDir` takes.
+        | Some "SystemNative_ChDir",
+          [ ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            pathSyscall ctx "SystemNative_ChDir" UnixSystem.chdir state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
         // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
         // exactly as `SystemNative_Unlink` does.

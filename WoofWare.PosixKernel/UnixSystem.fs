@@ -6284,6 +6284,82 @@ module UnixSystem =
     /// `rmdir(2)`: remove the empty directory `path` names.
     ///
     /// Never refused: every outcome is a success or an errno.
+    /// `chdir(2)`: make `path` the directory relative paths resolve from.
+    ///
+    /// Never refused: every outcome is a success or an errno.
+    ///
+    /// The one filesystem syscall here with no flavour divergence, so it takes
+    /// no rules record. Measured on both kernels across object type, final
+    /// symlink following, trailing separator, which permission bit, name length,
+    /// navigation, and the current directory removed underneath the process —
+    /// every row identical. See `docs/probes/chdir/`.
+    let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        // `Follow`, which carries `TrailingSeparatorPolicy.Demand`. That one
+        // call is most of this syscall's error surface: ENOENT for a name that
+        // is not there and for a dangling link, ENOTDIR for a regular file and
+        // for "f/", ENAMETOOLONG for an over-long component, ELOOP for a cycle —
+        // and it follows "ld" to what it names, which is why `getcwd` afterwards
+        // reports the target rather than the link.
+        match resolvePath SymlinkPolicy.Follow path system with
+        | Error error -> SyscallAnswer.Failed error, system
+        | Ok target ->
+
+        match VirtualFileSystem.tryGetContent target system.Machine.FileSystem with
+        | None ->
+            failwith
+                $"UnixSystem.chdir: the walk resolved \"%s{UnixPath.toString path}\" to inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+        // Reached by a symbolic link to a regular file: `Follow` lands on the
+        // file, and only then is it a type error.
+        | Some (InodeContent.RegularFile _)
+        | Some (InodeContent.Symlink _) -> SyscallAnswer.Failed UnixError.ENOTDIR, system
+        | Some (InodeContent.Directory directory) ->
+
+        // The *search* bit, and not the read bit: measured on both kernels, a
+        // 0o100 directory can be entered and a 0o400 one is EACCES. That is the
+        // opposite way round from `opendir`, which wants read — the second place
+        // the two have come apart.
+        //
+        // The walk above checks search on every directory it *traverses*; this
+        // is the target's own bit, which nothing has asked about yet.
+        if PermissionBits.deniedTo (UnixProcessState.callerPrivilege system.Process) 0o100 directory.Permissions then
+            SyscallAnswer.Failed UnixError.EACCES, system
+        else
+
+        let previous = system.Process.CurrentDirectoryInode
+
+        // The *physical* path, not the one the guest passed: measured,
+        // `chdir("ld")` with `ld -> d` leaves `getcwd` reporting d's path.
+        //
+        // `None` means the directory landed on has no path at all, which
+        // `chdir(".")` in an `rmdir`'d current directory reaches — measured, that
+        // call succeeds. The previous value is kept there, exactly as `rename`
+        // keeps it: a real `getcwd` fails rather than answering in that state, so
+        // a stale path is no worse than what the process already had. See the
+        // plan's out-of-scope note.
+        let recorded =
+            match VirtualFileSystem.pathOfDirectory target system.Machine.FileSystem with
+            | Some physical -> physical
+            | None -> system.Process.CurrentDirectory
+
+        let moved =
+            { system with
+                Process =
+                    { system.Process with
+                        CurrentDirectoryInode = target
+                        CurrentDirectory = recorded
+                    }
+            }
+
+        // The current directory is pinned — `UnixProcessState.heldInodes`
+        // includes it — so leaving one is a reference-dropping operation, and the
+        // directory a guest `rmdir`d before stepping out of it becomes free
+        // exactly here. Without this it would be stranded for the run.
+        SyscallAnswer.Completed 0L, forgetIfUnheld previous moved
+
     let rmdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)

@@ -232,6 +232,14 @@
           pkgs.xmlstarlet
           pkgs.claude-code
           pkgs.codex
+          # `docs/probes/**/*.py` are run by hand from this shell, and
+          # `TestVirtualFileSystemAgainstHost` spawns it: a working directory is
+          # process-global, so the host half of the `chdir` comparison cannot run
+          # in the test host, and Python is the only thing to hand that reports
+          # errno numerically. Declared here rather than relied on from the
+          # ambient system, so that CI -- which runs `nix develop --command
+          # dotnet test` -- runs that comparison instead of skipping it.
+          pkgs.python3
         ];
       };
     });

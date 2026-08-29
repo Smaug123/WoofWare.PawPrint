@@ -2,6 +2,7 @@ namespace WoofWare.PosixKernel.Test
 
 open System
 open System.Collections.Immutable
+open System.Diagnostics
 open System.IO
 open System.Runtime.InteropServices
 open FsUnitTyped
@@ -2653,9 +2654,9 @@ module TestVirtualFileSystemAgainstHost =
 
             let hostSaid =
                 if rename (hostPath root source, hostPath root destination) = 0 then
-                    Succeeded
+                    RenameRefusal.Succeeded
                 else
-                    Refused (errno ())
+                    RenameRefusal.Refused (errno ())
 
             let modelSaid =
                 let bytes (path : string) =
@@ -2664,8 +2665,8 @@ module TestVirtualFileSystemAgainstHost =
                     |> PathArgumentBytes.Bytes
 
                 match UnixSystem.rename (bytes source) (bytes destination) (renameModelSystem (buildModel ())) with
-                | Ok (SyscallAnswer.Completed 0L, _) -> Succeeded
-                | Ok (SyscallAnswer.Failed error, _) -> Refused (hostErrno error)
+                | Ok (SyscallAnswer.Completed 0L, _) -> RenameRefusal.Succeeded
+                | Ok (SyscallAnswer.Failed error, _) -> RenameRefusal.Refused (hostErrno error)
                 | other -> failwith $"the model answered %A{other}, which no row here expects"
 
             hostSaid, modelSaid
@@ -2752,8 +2753,8 @@ module TestVirtualFileSystemAgainstHost =
                         else
                             let describe (outcome : RenameRefusal) =
                                 match outcome with
-                                | Succeeded -> "ok"
-                                | Refused e -> $"errno %d{e}"
+                                | RenameRefusal.Succeeded -> "ok"
+                                | RenameRefusal.Refused e -> $"errno %d{e}"
 
                             yield
                                 $"rename(%s{source}, %s{destination}): this kernel said %s{describe hostSaid}, the model said %s{describe modelSaid}"
@@ -2790,16 +2791,16 @@ module TestVirtualFileSystemAgainstHost =
         // everywhere and simply never reaches that errno.
         let wanted =
             [
-                yield "a success", Succeeded
-                yield "ENOENT", Refused (hostErrno UnixError.ENOENT)
-                yield "ENOTDIR", Refused (hostErrno UnixError.ENOTDIR)
+                yield "a success", RenameRefusal.Succeeded
+                yield "ENOENT", RenameRefusal.Refused (hostErrno UnixError.ENOENT)
+                yield "ENOTDIR", RenameRefusal.Refused (hostErrno UnixError.ENOTDIR)
 
                 if geteuid () <> 0u then
-                    yield "EACCES", Refused (hostErrno UnixError.EACCES)
+                    yield "EACCES", RenameRefusal.Refused (hostErrno UnixError.EACCES)
 
-                yield "EISDIR", Refused (hostErrno UnixError.EISDIR)
-                yield "ENAMETOOLONG", Refused (hostErrno UnixError.ENAMETOOLONG)
-                yield "ENOTEMPTY", Refused (hostErrno UnixError.ENOTEMPTY)
+                yield "EISDIR", RenameRefusal.Refused (hostErrno UnixError.EISDIR)
+                yield "ENAMETOOLONG", RenameRefusal.Refused (hostErrno UnixError.ENAMETOOLONG)
+                yield "ENOTEMPTY", RenameRefusal.Refused (hostErrno UnixError.ENOTEMPTY)
             ]
 
         let missing =
@@ -2807,3 +2808,207 @@ module TestVirtualFileSystemAgainstHost =
 
         if not (List.isEmpty missing) then
             failwith $"""this corpus never produced: %s{String.concat ", " missing}"""
+
+
+    // ----------------------------------------------------------- chdir(2)
+
+    /// What a `chdir` did: the errno, or the physical directory it landed in.
+    ///
+    /// The path is part of the outcome and not an afterthought: `chdir` follows
+    /// a final symlink, so `chdir("ld")` with `ld -> d` succeeds *and* leaves the
+    /// process in d. A comparison that stopped at "it succeeded" would pass for a
+    /// kernel that recorded the link's own path.
+    type private ChDirOutcome =
+        | Entered of physical : string
+        | Refused of errno : int
+
+    /// The host half runs in a **child process**, and must.
+    ///
+    /// A working directory is process-global, and this assembly runs fixtures in
+    /// parallel, so a `chdir` in the test host would be observable by any test
+    /// running beside it. Doing it and restoring afterwards narrows that window
+    /// rather than closing it, and what it leaves behind is a rare
+    /// load-dependent failure in an unrelated fixture.
+    ///
+    /// Python because `os.chdir` is `chdir(2)` and `OSError.errno` is the number
+    /// this comparison needs — a shell's `cd` reports a message instead. One
+    /// invocation for the whole corpus rather than one per path, and the paths
+    /// arrive on stdin NUL-separated so that none of them can be mistaken for an
+    /// argument. `python3` is in the flake devshell, which is how CI runs this
+    /// rather than skipping it.
+    let private hostChDirOutcomes (root : string) (paths : string list) : ChDirOutcome list option =
+        // The child refuses to leave the tree, in both directions: an operand
+        // that is not under `root`, and a directory it somehow lands in that is
+        // not either. An unprivileged process cannot `chroot`, so containment
+        // here is a checked invariant rather than a sandbox — but it is checked
+        // on every row, and a violation kills the child rather than being
+        // reported as a measurement. That matters because the operands are
+        // joined by the caller: a bug there is precisely what would send this
+        // walking around the real filesystem, and the first version of this test
+        // did exactly that with "/".
+        let script =
+            String.concat
+                "\n"
+                [
+                    "import os, sys"
+                    "root = os.path.realpath(sys.argv[1])"
+                    "def inside(p):"
+                    "    return p == root or p.startswith(root + '/')"
+                    "for path in sys.stdin.read().split(chr(0)):"
+                    "    os.chdir(root)"
+                    "    if path != '' and not inside(os.path.realpath(path)):"
+                    "        sys.exit('operand escapes the tree: %r' % path)"
+                    "    try:"
+                    "        os.chdir(path)"
+                    "    except OSError as e:"
+                    "        sys.stdout.write('err %d\\n' % e.errno)"
+                    "        continue"
+                    "    where = os.getcwd()"
+                    "    if not inside(where):"
+                    "        sys.exit('chdir(%r) left the tree, at %r' % (path, where))"
+                    "    sys.stdout.write('ok %s\\n' % where)"
+                ]
+
+        let startInfo : ProcessStartInfo = ProcessStartInfo "python3"
+        startInfo.ArgumentList.Add "-c"
+        startInfo.ArgumentList.Add script
+        startInfo.ArgumentList.Add root
+        startInfo.RedirectStandardInput <- true
+        startInfo.RedirectStandardOutput <- true
+        startInfo.RedirectStandardError <- true
+        startInfo.UseShellExecute <- false
+
+        let child =
+            try
+                Some (Process.Start startInfo)
+            with _ ->
+                None
+
+        match child with
+        | None -> None
+        | Some child ->
+
+        use child = child
+        // `hostPath`, not the bare operand: a leading "/" in this corpus means
+        // the tree's root, and passing it through unjoined would name the real
+        // filesystem root instead. That is not hypothetical — it is what the
+        // first version of this did, and the child's own guard above is the
+        // second line of defence for the same mistake.
+        child.StandardInput.Write (paths |> List.map (hostPath root) |> String.concat (string (char 0)))
+        child.StandardInput.Close ()
+        let output = child.StandardOutput.ReadToEnd ()
+        let errors = child.StandardError.ReadToEnd ()
+        child.WaitForExit ()
+
+        if child.ExitCode <> 0 then
+            failwith $"the chdir helper exited %d{child.ExitCode}: %s{errors}"
+
+        let lines =
+            output.Split '\n' |> Array.filter (fun line -> line <> "") |> List.ofArray
+
+        if List.length lines <> List.length paths then
+            failwith
+                $"the chdir helper answered %d{List.length lines} rows for %d{List.length paths} paths, so the two are out of step"
+
+        lines
+        |> List.map (fun line ->
+            let verdict = line.Substring (0, line.IndexOf ' ')
+            let rest = line.Substring (line.IndexOf ' ' + 1)
+
+            match verdict with
+            | "err" -> ChDirOutcome.Refused (int rest)
+            | "ok" ->
+                // Reported relative to the tree, since the model's root is the
+                // tree root where the host's is a directory inside a real
+                // filesystem.
+                let relative = rest.Substring root.Length
+
+                ChDirOutcome.Entered (if relative = "" then "/" else relative)
+            | _ -> failwith $"the chdir helper produced a line this test cannot read: %s{line}"
+        )
+        |> Some
+
+    let private modelChDirOutcome (vfs : VirtualFileSystem) (relative : string) : ChDirOutcome =
+        let system : UnixSystem<int, string> = UnixSystem.initial (hostPlatform ())
+
+        let userId =
+            match hostPrivilege () with
+            | CallerPrivilege.Privileged -> 0u
+            | CallerPrivilege.Unprivileged -> 1000u
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = vfs
+                    }
+                Process =
+                    { system.Process with
+                        CurrentDirectoryInode = VirtualFileSystem.root vfs
+                        CurrentDirectory = AbsoluteUnixPath.root
+                    }
+                    |> UnixProcessState.withUserAndGroupId userId userId
+            }
+
+        match UnixSystem.chdir (UnixPath.parseOrFail "test" relative) system with
+        | SyscallAnswer.Completed 0L, moved ->
+            ChDirOutcome.Entered (AbsoluteUnixPath.toString moved.Process.CurrentDirectory)
+        | SyscallAnswer.Failed error, _ -> ChDirOutcome.Refused (hostErrno error)
+        | other -> failwith $"the model answered %A{other}, which no row here expects"
+
+    [<Test>]
+    let ``chdir enters exactly what this kernel enters`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-chdir-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+
+            match hostChDirOutcomes root probePaths with
+            | None ->
+                Assert.Ignore
+                    "python3 is not on PATH, so the host half of this comparison cannot run out of process. It is in the flake devshell; run under `nix develop`."
+            | Some hostSaid ->
+
+            let vfs = buildModel ()
+
+            let mismatches =
+                List.zip probePaths hostSaid
+                |> List.choose (fun (path, expected) ->
+                    let actual = modelChDirOutcome vfs path
+
+                    if actual = expected then
+                        None
+                    else
+                        Some $"chdir(%s{path}): this kernel said %A{expected}, the model said %A{actual}"
+                )
+
+            if not (List.isEmpty mismatches) then
+                failwith (
+                    $"%d{List.length mismatches} of %d{List.length probePaths} chdir paths disagree with this kernel:\n"
+                    + String.concat "\n" mismatches
+                )
+
+            // Not an assertion about chdir; assertions that this comparison is
+            // not vacuous. A corpus that refused everything would agree
+            // trivially, and the `physical` half would go unchecked without the
+            // symlink row the field exists for.
+            hostSaid
+            |> List.exists (fun outcome ->
+                match outcome with
+                | ChDirOutcome.Entered _ -> true
+                | ChDirOutcome.Refused _ -> false
+            )
+            |> shouldEqual true
+
+            List.zip probePaths hostSaid
+            |> List.find (fun (path, _) -> path = "ld")
+            |> snd
+            |> shouldEqual (ChDirOutcome.Entered "/d")
+        finally
+            removeHostTree root

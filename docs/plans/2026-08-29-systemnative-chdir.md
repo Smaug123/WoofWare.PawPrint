@@ -135,6 +135,21 @@ or -1 with errno. `SystemNative_ChDir` is a one-line dispatch arm beside
   invocation for the whole corpus rather than one per path, so this costs a
   single process start.
 
+  **Containment is a checked invariant, not a sandbox.** `chroot(2)` wants
+  root and these tests run unprivileged, so it is not available; the Linux-only
+  substitutes (`unshare -r` with `pivot_root`, or `bwrap`) would protect CI and
+  do nothing on macOS, which is where the mistakes get made. So instead the
+  operands are joined with the fixture's own `hostPath`, which makes an escape
+  impossible to express, and the child refuses in both directions anyway — an
+  operand whose `realpath` is not under the tree, and a directory it somehow
+  lands in that is not either — exiting rather than reporting a measurement.
+  That is not hypothetical: the first version of this test passed the bare
+  operand, so `"/"` named the *real* filesystem root, and the guard is what
+  turns that from a silent misreading into a dead child. `chdir` mutates
+  nothing, so the exposure was a wrong answer rather than damage — but the
+  destructive comparisons in this fixture share the shape and are safe only
+  because they go through the same helper.
+
   **`python3` must be added to the flake devshell's `packages`.** It is used
   today only inside flake checks, so it is on `PATH` in a developer's shell by
   accident of the system and not at all by declaration. CI runs
