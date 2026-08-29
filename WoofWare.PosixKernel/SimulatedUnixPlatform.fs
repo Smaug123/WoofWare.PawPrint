@@ -1625,15 +1625,18 @@ module RmDirRules =
 /// before there are two `Resolution`s to judge.
 [<RequireQualifiedAccess>]
 type RenameWalkOrder =
-    /// Both pathnames copied in, then both parents, then both final lookups:
-    /// the shape of Linux's `do_renameat2`, which calls `getname` twice and
-    /// then `filename_parentat` twice before either final component is looked
-    /// up. Every refusal either path earns after that is the verdict's, judged
+    /// Both parents before either final lookup, with each pathname copied in
+    /// immediately before its own parent is walked: the shape of Linux's
+    /// `do_renameat2`, whose `filename_parentat(dfd, getname(name), ...)`
+    /// propagates `getname`'s error out of the parent walk it was handed to.
+    /// Every refusal either path earns after that is the verdict's, judged
     /// against both.
     ///
-    /// The source's parent is resolved before the destination's, which
-    /// `rename("nodir/kid", "f/x")` pins: it is ENOENT, where the destination's
-    /// parent alone would answer ENOTDIR.
+    /// The source's parent is resolved before the destination's pathname is
+    /// even copied in: `rename("nodir/kid", <over PATH_MAX>)` is ENOENT while
+    /// `rename("nope", <over PATH_MAX>)` is ENAMETOOLONG. A free source name
+    /// cannot see that, being no parent-walk failure at all — only a source
+    /// whose parent walk fails discriminates.
     ///
     /// Everything about the source's *final component* loses to the
     /// destination's parent — measured across a free name, "/", ".", "..", a

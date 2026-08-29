@@ -79,15 +79,22 @@ def main():
         mid = b"z" * 2000
         long_component = b"z" * 300
 
+        # A *free final name* cannot tell the two orderings apart: it is not a
+        # parent-walk failure, so the source's parent resolves either way and
+        # the destination's pathname is reached either way. The discriminating
+        # sources are the ones whose parent walk itself fails.
         run(
             "when is each pathname copied in",
-            "getname()/copyinstr on the destination, against a source that does not exist",
+            "getname()/copyinstr on the destination, against sources that fail at different phases",
             [
                 ("control: both absent, short", b"nope", b"alsonope"),
                 ("control: over-long source", over, b"alsonope"),
-                ("absent source, over-long dest", b"nope", over),
-                ("absent source, mid-length dest", b"nope", mid),
+                ("free source name, over-long dest", b"nope", over),
+                ("free source name, mid-length dest", b"nope", mid),
                 ("existing source, over-long dest", b"f", over),
+                ("DISCRIMINATOR: source parent absent", b"nodir/kid", over),
+                ("DISCRIMINATOR: source parent unsearchable", b"nosearch/kid", over),
+                ("DISCRIMINATOR: source parent is a file", b"f/kid", over),
             ],
         )
 

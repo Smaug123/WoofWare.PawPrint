@@ -1,12 +1,15 @@
 # Linux 6.18.5 aarch64, uid 1000
 
 ## when is each pathname copied in
-# getname()/copyinstr on the destination, against a source that does not exist
+# getname()/copyinstr on the destination, against sources that fail at different phases
 control: both absent, short        rename(b'nope', b'alsonope') -> rc=-1 errno=ENOENT
 control: over-long source          rename(b'zzzzzzzzzzzz..(5000)', b'alsonope') -> rc=-1 errno=ENAMETOOLONG
-absent source, over-long dest      rename(b'nope', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=ENAMETOOLONG
-absent source, mid-length dest     rename(b'nope', b'zzzzzzzzzzzz..(2000)') -> rc=-1 errno=ENOENT
+free source name, over-long dest   rename(b'nope', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=ENAMETOOLONG
+free source name, mid-length dest  rename(b'nope', b'zzzzzzzzzzzz..(2000)') -> rc=-1 errno=ENOENT
 existing source, over-long dest    rename(b'f', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=ENAMETOOLONG
+DISCRIMINATOR: source parent absent rename(b'nodir/kid', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=ENOENT
+DISCRIMINATOR: source parent unsearchable rename(b'nosearch/kid', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=EACCES
+DISCRIMINATOR: source parent is a file rename(b'f/kid', b'zzzzzzzzzzzz..(5000)') -> rc=-1 errno=ENOTDIR
 
 ## and the same question for EFAULT
 # an unreadable pathname pointer, which getname() reports the same way it reports length

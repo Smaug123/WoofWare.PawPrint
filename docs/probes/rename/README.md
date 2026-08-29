@@ -163,13 +163,23 @@ same errno, so every row it asks is built from a pair that *disagrees*.
 
 What the columns say, and what each is load-bearing for:
 
-* **Both pathnames are copied in before either is walked, on Linux only.** With
-  a source that does not exist, an over-`PATH_MAX` destination is ENAMETOOLONG
-  on Linux and ENOENT on Darwin. The *mid-length* row is what makes this
-  conclusive rather than suggestive: 2000 bytes is over Darwin's `PATH_MAX` of
-  1024 and under Linux's 4096, and Darwin answers ENOENT for it too — so Darwin
-  is not copying the destination in early and finding it short enough, it is
-  not copying it in at all yet. Each platform probed at its own scale.
+* **Each pathname is copied in immediately before its own parent walk, on
+  Linux.** Not both up front, which is what this probe first appeared to say and
+  what the implementation was first written to do. With a source whose final
+  name is merely *free*, an over-`PATH_MAX` destination is ENAMETOOLONG on Linux
+  and ENOENT on Darwin — but a free final name is no parent-walk failure, so it
+  cannot tell the two orderings apart. The discriminating sources are the ones
+  whose *parent walk* fails, and there Linux answers the source's error:
+  `rename("nodir/kid", <5000 bytes>)` is ENOENT, `rename("nosearch/kid", ...)` is
+  EACCES, `rename("f/kid", ...)` is ENOTDIR. That is
+  `filename_parentat(dfd, getname(name), ...)` propagating `getname`'s error out
+  of the walk it was handed to. A mutation moving the copy-in past the source's
+  parent walk survived the whole fixture until these rows existed.
+* The *mid-length* row is what makes the Darwin column conclusive rather than
+  suggestive: 2000 bytes is over Darwin's `PATH_MAX` of 1024 and under Linux's
+  4096, and Darwin answers ENOENT for it too — so Darwin is not copying the
+  destination in early and finding it short enough, it is not copying it in at
+  all yet. Each platform probed at its own scale.
 * **EFAULT and ENAMETOOLONG surface together**, so one "the argument was copied
   in" step models both. That is `getname()`, and it is why `PathArgument.Failed`
   carries either.

@@ -6323,22 +6323,29 @@ module UnixSystem =
         let resolveParent (path : UnixPath) : Result<PausedResolution, UnixError> =
             resolvePathParent SymlinkPolicy.NoFollowFinal rules.TrailingSeparator path system
 
-        /// Linux: both pathnames copied in, then both parents, then both final
-        /// lookups. `do_renameat2` calls `getname` twice and then
-        /// `filename_parentat` twice, before either final component is looked
-        /// up.
+        /// Linux: both parents before either final lookup, with each pathname
+        /// copied in immediately before *its own* parent is walked.
+        ///
+        /// The interleaving is measured, not assumed. It is what
+        /// `do_renameat2`'s `filename_parentat(dfd, getname(name), ...)` gives —
+        /// `getname`'s error propagates out of the parent walk it was passed to,
+        /// so the two `getname`s do not both run first. A free source name
+        /// cannot see the difference, which is what made the first version of
+        /// this wrong and its test green: the discriminating source is one whose
+        /// *parent walk* fails, and `rename("nodir/kid", <over-long>)` is ENOENT
+        /// where `rename("nope", <over-long>)` is ENAMETOOLONG.
         let parentsThenFinals () : Result<Resolution * Resolution, UnixError> =
             match copiedIn source with
             | Error error -> Error error
             | Ok sourcePath ->
 
-            match copiedIn destination with
-            | Error error -> Error error
-            | Ok destinationPath ->
-
             match resolveParent sourcePath with
             | Error error -> Error error
             | Ok sourceParent ->
+
+            match copiedIn destination with
+            | Error error -> Error error
+            | Ok destinationPath ->
 
             match resolveParent destinationPath with
             | Error error -> Error error

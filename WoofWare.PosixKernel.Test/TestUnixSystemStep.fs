@@ -4496,7 +4496,45 @@ module TestUnixSystemStep =
         againstFileParent "nosearch/kid" darwin |> shouldEqual (Error UnixError.EACCES)
 
     [<Test>]
-    let ``the destination's pathname is copied in before the source is walked, on Linux only`` () : unit =
+    let ``each pathname is copied in immediately before its own parent walk, on Linux`` () : unit =
+        // A source whose *parent walk* fails is the only kind that can see this:
+        // with a free final name the source's parent resolves either way, so the
+        // destination's pathname is reached either way and both orderings answer
+        // ENAMETOOLONG. Measured: `rename("nodir/kid", <over PATH_MAX>)` is
+        // ENOENT where `rename("nope", <over PATH_MAX>)` is ENAMETOOLONG.
+        //
+        // This row exists because a mutation moving the destination's copy-in
+        // below the source's parent walk survived the whole fixture without it.
+        // See [[ordered-guards-need-a-disagreeing-input]].
+        for failure in [ UnixError.ENAMETOOLONG ; UnixError.EFAULT ] do
+            let system = withRenameTree linux
+
+            renamed (arg "nodir/kid") (PathArgument.Failed failure) system
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            renamed (arg "nosearch/kid") (PathArgument.Failed failure) system
+            |> shouldEqual (Error UnixError.EACCES)
+
+            renamed (arg "f/kid") (PathArgument.Failed failure) system
+            |> shouldEqual (Error UnixError.ENOTDIR)
+
+            // ...while a source whose parent walk *succeeds* does reach it, which
+            // is what says the copy-in happens at all rather than never.
+            renamed (arg "nope") (PathArgument.Failed failure) system
+            |> shouldEqual (Error failure)
+
+            // Darwin resolves the source to completion first, so every one of
+            // those four answers the source's own error there.
+            let darwinTree = withRenameTree darwin
+
+            renamed (arg "nodir/kid") (PathArgument.Failed failure) darwinTree
+            |> shouldEqual (Error UnixError.ENOENT)
+
+            renamed (arg "nope") (PathArgument.Failed failure) darwinTree
+            |> shouldEqual (Error UnixError.ENOENT)
+
+    [<Test>]
+    let ``the destination's pathname is copied in before the source's final lookup, on Linux only`` () : unit =
         // `PathArgument.Failed` is what `getname()` reports, and the two errnos
         // it can carry surface at the same point — so both are asserted, and a
         // handler that screened only one would be caught.
