@@ -1529,6 +1529,51 @@ type UnixSystemDefect =
     /// would have no measured order.
     | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
 
+/// How far `rename(2)` had got with its source when it stopped to copy its
+/// *destination* pathname in — which is not the same point on the two flavours.
+///
+/// See `RenameWalkOrder`, whose two cases these mirror.
+[<RequireQualifiedAccess>]
+type RenameSourceProgress =
+    /// The source's parent is walked and its final component not yet looked up:
+    /// Linux, which walks both parents before either final lookup.
+    | ParentWalked of parent : PausedResolution
+    /// The source is finished, `RenameRules.sourceScreen` included: Darwin,
+    /// which resolves the source to completion before touching the destination.
+    | Resolved of resolution : Resolution
+
+/// A `rename(2)` that has run as far as the point where the kernel copies its
+/// destination pathname in, and stopped there.
+///
+/// It stops rather than taking both pathnames up front because *reading* a
+/// pathname out of a process's address space can fail — and on both flavours
+/// there are calls that finish without ever reading the destination, where
+/// failing to read it would answer about a pathname `rename(2)` never touched.
+/// The caller supplies the bytes when handed one of these, and not before.
+///
+/// Opaque: the only thing to do with one is give it to
+/// `UnixSystem.renameWithDestination`.
+[<NoEquality ; NoComparison>]
+type PausedRename<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    private
+        {
+            System : UnixSystem<'Task, 'Handler>
+            Rules : RenameRules
+            SourceProgress : RenameSourceProgress
+        }
+
+/// What `UnixSystem.renameSourcePhase` found: either the call is over without
+/// the destination having been read at all, or the kernel has reached the point
+/// where it copies that pathname in.
+[<RequireQualifiedAccess>]
+[<NoEquality ; NoComparison>]
+type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
+    /// Finished. The destination pathname was never read, and must not be.
+    | Answered of answer : SyscallAnswer * system : UnixSystem<'Task, 'Handler>
+    /// The kernel is at the destination's copy-in. Hand its bytes to
+    /// `UnixSystem.renameWithDestination`.
+    | NeedsDestination of paused : PausedRename<'Task, 'Handler>
+
 [<RequireQualifiedAccess>]
 module UnixSystem =
 
@@ -2503,6 +2548,28 @@ module UnixSystem =
         // handed, so a caller that branched here would be computing a value the
         // walk discards.
         VirtualFileSystem.resolveFull
+            (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
+            (UnixProcessState.callerPrivilege system.Process)
+            system.Process.CurrentDirectoryInode
+            policy
+            trailingSeparatorPolicy
+            path
+            system.Machine.FileSystem
+
+    /// `resolvePathFull`, stopped at the directory holding the final name.
+    ///
+    /// Only `rename` wants this, and only under Linux's walk order: it resolves
+    /// *both* paths' parents before it looks either final component up, which
+    /// no pair of `resolvePathFull` calls can express. Finish one with
+    /// `VirtualFileSystem.completeResolution`.
+    let resolvePathParent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (policy : SymlinkPolicy)
+        (trailingSeparatorPolicy : TrailingSeparatorPolicy)
+        (path : UnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<PausedResolution, UnixError>
+        =
+        VirtualFileSystem.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             (UnixProcessState.callerPrivilege system.Process)
             system.Process.CurrentDirectoryInode
@@ -6264,6 +6331,268 @@ module UnixSystem =
                         FileSystem = filesystem
                     }
             }
+
+    /// How a phase of `rename`'s two-path walk ended, when it did not produce a
+    /// resolution.
+    ///
+    /// Two kinds, because the two are answered differently: an errno is what the
+    /// guest is told, while a refusal is this kernel saying it cannot represent
+    /// what the guest asked about at all — a pathname whose bytes are not valid
+    /// UTF-8 names a file no `FileName` can.
+    [<RequireQualifiedAccess>]
+    type private RenameStop =
+        | Errno of error : UnixError
+        | Refused of refusal : PathArgumentRefusal
+
+    /// `getname()`: what the kernel learns when it copies one pathname in,
+    /// before anything looks at what it says.
+    ///
+    /// The decode happens here rather than in the caller, and that is the point
+    /// of taking bytes: a caller that decoded a pathname the syscall never
+    /// copies in would refuse one `rename(2)` never read.
+    let private copiedIn (limits : PathLimits) (argument : PathArgumentBytes) : Result<UnixPath, RenameStop> =
+        match argument with
+        | PathArgumentBytes.Unreadable -> Error (RenameStop.Errno UnixError.EFAULT)
+        | PathArgumentBytes.Bytes bytes ->
+
+        match PathArgument.parse limits bytes with
+        | Error refusal -> Error (RenameStop.Refused refusal)
+        | Ok (PathArgument.Failed error) -> Error (RenameStop.Errno error)
+        | Ok (PathArgument.Parsed path) -> Ok path
+
+    let private renameStopped
+        (system : UnixSystem<'Task, 'Handler>)
+        (stop : RenameStop)
+        : Result<RenameProgress<'Task, 'Handler>, PathArgumentRefusal>
+        =
+        match stop with
+        | RenameStop.Refused refusal -> Error refusal
+        | RenameStop.Errno error -> Ok (RenameProgress.Answered (SyscallAnswer.Failed error, system))
+
+    /// Everything `rename(2)` does before it copies its *destination* pathname
+    /// in: on Linux the source's pathname and parent walk, on Darwin the whole
+    /// source including `RenameRules.sourceScreen`.
+    ///
+    /// Stops there rather than taking both pathnames because reading one can
+    /// fail, and a call that ends in this phase never reads the destination at
+    /// all. See `PausedRename`.
+    let renameSourcePhase<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (source : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<RenameProgress<'Task, 'Handler>, PathArgumentRefusal>
+        =
+        let rules = SimulatedUnixPlatform.renameRules system.Machine.UnixPlatform
+        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
+
+        let paused (progress : RenameSourceProgress) =
+            Ok (
+                RenameProgress.NeedsDestination
+                    {
+                        System = system
+                        Rules = rules
+                        SourceProgress = progress
+                    }
+            )
+
+        match copiedIn limits source with
+        | Error stop -> renameStopped system stop
+        | Ok sourcePath ->
+
+        // `NoFollowFinal` for both paths on both flavours — `rename` moves the
+        // name it was given, never what that name points at. The trailing
+        // separator is the only thing that reaches past a final symlink, and
+        // only on Darwin; see `RenameRules.TrailingSeparator`.
+        match rules.WalkOrder with
+        | RenameWalkOrder.ParentsThenFinals ->
+            match resolvePathParent SymlinkPolicy.NoFollowFinal rules.TrailingSeparator sourcePath system with
+            | Error error -> renameStopped system (RenameStop.Errno error)
+            | Ok parent -> paused (RenameSourceProgress.ParentWalked parent)
+        | RenameWalkOrder.SourceThenDestination ->
+
+        match resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator sourcePath system with
+        | Error error -> renameStopped system (RenameStop.Errno error)
+        | Ok sourceResolution ->
+
+        // Darwin's source-side `namei` runs under rename semantics, so two of
+        // the refusals the verdict would otherwise make are settled here —
+        // before the destination's pathname has been read at all.
+        match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
+        | Some error -> renameStopped system (RenameStop.Errno error)
+        | None -> paused (RenameSourceProgress.Resolved sourceResolution)
+
+    /// The rest of `rename(2)`, given the destination pathname the kernel has
+    /// just reached the point of copying in.
+    ///
+    /// Never refused as a *syscall*: every outcome is a success or an errno. The
+    /// `Result` is for the one thing that is not either — a pathname whose bytes
+    /// name a file this kernel cannot represent.
+    let renameWithDestination<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (destination : PathArgumentBytes)
+        (paused : PausedRename<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathArgumentRefusal>
+        =
+        match box paused with
+        | null ->
+            failwith
+                "UnixSystem.renameWithDestination: this paused rename is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from UnixSystem.renameSourcePhase instead."
+        | _ ->
+
+        let system = paused.System
+        let rules = paused.Rules
+        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
+
+        let resolved : Result<Resolution * Resolution, RenameStop> =
+            match copiedIn limits destination with
+            | Error stop -> Error stop
+            | Ok destinationPath ->
+
+            match paused.SourceProgress with
+            | RenameSourceProgress.Resolved sourceResolution ->
+                // Darwin: the source is already finished, so the destination is
+                // resolved to completion and the verdict judges the pair.
+                resolvePathFull SymlinkPolicy.NoFollowFinal rules.TrailingSeparator destinationPath system
+                |> Result.mapError RenameStop.Errno
+                |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
+            | RenameSourceProgress.ParentWalked sourceParent ->
+
+            // Linux: the destination's parent, then both final lookups.
+            match resolvePathParent SymlinkPolicy.NoFollowFinal rules.TrailingSeparator destinationPath system with
+            | Error error -> Error (RenameStop.Errno error)
+            | Ok destinationParent ->
+
+            // Source before destination, and here the order *is* pinned: the
+            // orphan check below sits between the two, so a 300-byte source name
+            // is ENAMETOOLONG while a 300-byte destination name under the same
+            // orphaned parent is ENOENT. Measured both ways.
+            match VirtualFileSystem.completeResolution sourceParent with
+            | Error error -> Error (RenameStop.Errno error)
+            | Ok sourceResolution ->
+
+            // Linux's source screen runs here: after both parents and the
+            // source's own final lookup, and before the destination's. It beats
+            // the orphan check below — `rename("d/.", "x")` from an orphaned
+            // current directory is EBUSY where every other source there is
+            // ENOENT — and it beats the destination's NAME_MAX, which is what
+            // makes `rename("nope", <300-byte name>)` ENOENT.
+            match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
+            | Some error -> Error (RenameStop.Errno error)
+            | None ->
+
+            // A destination parent that has lost its own last name — reachable
+            // only as an `rmdir`'d current directory — is ENOENT here, *before*
+            // the destination's final name is measured. Both verdicts also
+            // refuse it, and on Darwin that is where it is caught, after the
+            // whole destination has resolved: measured, the same call is
+            // ENAMETOOLONG there. So this is the Linux position of a check both
+            // flavours make, not a check only Linux makes.
+            if VirtualFileSystem.pausedParentIsOrphaned destinationParent then
+                Error (RenameStop.Errno UnixError.ENOENT)
+            else
+
+            VirtualFileSystem.completeResolution destinationParent
+            |> Result.mapError RenameStop.Errno
+            |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
+
+        match resolved with
+        | Error (RenameStop.Refused refusal) -> Error refusal
+        | Error (RenameStop.Errno error) -> Ok (SyscallAnswer.Failed error, system)
+        | Ok (sourceResolution, destinationResolution) ->
+
+        match
+            RenameRules.verdict
+                (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
+                (UnixProcessState.callerPrivilege system.Process)
+                sourceResolution
+                destinationResolution
+                system.Machine.FileSystem
+        with
+        | RenameVerdict.Refuse error -> Ok (SyscallAnswer.Failed error, system)
+        // Both paths name one inode: a success that changes nothing at all, not
+        // a binding and not a timestamp. Deliberately not routed through
+        // `VirtualFileSystem.rename`, which refuses it — the graph primitive
+        // would have to invent a no-op stamp to express it.
+        | RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
+        | RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName) ->
+
+        let now = UnixMachineState.fileTimestamp system.Machine
+
+        match
+            VirtualFileSystem.rename
+                sourceDirectory
+                sourceName
+                destinationDirectory
+                destinationName
+                now
+                system.Machine.FileSystem
+        with
+        | Error error ->
+            // `rename` refuses a directory it does not hold, a source name that
+            // directory does not bind, and the four conditions that would leave
+            // a graph no kernel could produce — the two paths naming one inode,
+            // a populated destination directory, a destination inside the
+            // source's own subtree, and an orphaned destination directory. The
+            // verdict owes an errno for every one of those, so reaching here
+            // means the verdict let something through rather than that the
+            // guest did anything unusual.
+            failwith
+                $"UnixSystem.rename: moving \"%s{FileName.toString sourceName}\" from inode %O{sourceDirectory} to \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
+        | Ok (outcome, filesystem) ->
+
+        // A rename is the one syscall that can change the *path* of a directory
+        // the process is already in, without changing its inode: moving any
+        // ancestor of the current directory moves the current directory with it.
+        // The inode is what relative paths resolve from, so nothing about
+        // resolution notices — but `getcwd` reports the cached path, and a stale
+        // one names a directory that no longer exists.
+        //
+        // Recomputed rather than patched, because the move may have been of an
+        // ancestor several levels up, and `pathOfDirectory` is what
+        // `EmulatedKernelDefect.CurrentDirectoryPathDisagrees` compares against.
+        // `None` means the current directory has no path at all — it was
+        // displaced by this very rename and something still holds it — and a
+        // real `getcwd` fails there rather than answering, so the stale path is
+        // left exactly as `rmdir` of the current directory leaves it.
+        let currentDirectory =
+            match VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode filesystem with
+            | Some path -> path
+            | None -> system.Process.CurrentDirectory
+
+        let moved =
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+                Process =
+                    { system.Process with
+                        CurrentDirectory = currentDirectory
+                    }
+            }
+
+        // The destination name may have been the displaced inode's last, and
+        // whether the inode goes with it depends on the descriptor table, which
+        // the filesystem cannot see. When the displaced thing was a directory
+        // this also collects the ancestors its ".." was keeping alive.
+        Ok (
+            SyscallAnswer.Completed 0L,
+            match outcome.Displaced with
+            | None -> moved
+            | Some displaced -> forgetIfUnheld displaced moved
+        )
+
+    /// `rename(2)` in one call, for a caller holding both pathnames already —
+    /// every caller but the one reading them out of a guest's memory, where
+    /// reading the destination too early is itself observable.
+    let rename<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (source : PathArgumentBytes)
+        (destination : PathArgumentBytes)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, PathArgumentRefusal>
+        =
+        match renameSourcePhase source system with
+        | Error refusal -> Error refusal
+        | Ok (RenameProgress.Answered (answer, system)) -> Ok (answer, system)
+        | Ok (RenameProgress.NeedsDestination paused) -> renameWithDestination destination paused
 
     /// Answer one syscall.
     ///

@@ -960,6 +960,85 @@ module NativeSystemNative =
             |> NativeHandlerResult.completed
             |> Some
 
+    /// One pathname argument's *bytes*: the pointer and the `PATH_MAX`-bounded
+    /// scan, and no more than that.
+    ///
+    /// Deliberately not decoded here. A syscall taking two pathnames copies them
+    /// in at points the kernel chooses and may never reach the second, so the
+    /// decode — which can refuse a pathname outright — belongs where the kernel
+    /// performs it. Reading the bytes early costs nothing, being a pure read of
+    /// guest memory; refusing early would answer about a pathname the syscall
+    /// never looked at.
+    let private pathArgumentBytes
+        (ctx : NativeCallContext)
+        (operation : string)
+        (parameter : string)
+        (argument : CliType)
+        (state : IlMachineState)
+        : PathArgumentBytes
+        =
+        match
+            bufferPointerArgument operation parameter argument
+            |> BufferPointer.dereferenceable
+        with
+        | None -> PathArgumentBytes.Unreadable
+        | Some pointer ->
+
+        let limits = SimulatedUnixPlatform.pathLimits state.Kernel.UnixPlatform
+
+        NativeCall.readNullTerminatedBytesWithin
+            operation
+            ctx.BaseClassTypes
+            state
+            pointer
+            (PathLimits.pathMaxBytes limits)
+        |> ImmutableArray.CreateRange
+        |> PathArgumentBytes.Bytes
+
+    /// `SystemNative_Rename`: the only syscall here that takes two pathnames,
+    /// and so the only one where *when* each is read out of guest memory is
+    /// observable.
+    ///
+    /// The second pathname is not read until the kernel says it has reached the
+    /// point of copying it in. That is not tidiness: reading one can refuse
+    /// outright — a symbolic or unstatable pointer is a refusal at transfer, and
+    /// bytes that are not valid UTF-8 name a file this kernel cannot represent —
+    /// and both flavours have calls that finish without ever reading the
+    /// destination. Reading it early turns those into a crash where the guest is
+    /// owed the source's errno.
+    let private renameSyscall (ctx : NativeCallContext) (state : IlMachineState) : NativeHandlerResult option =
+        let operation = "SystemNative_Rename"
+
+        let answer (outcome : Result<SyscallAnswer * UnixSystem<ThreadId, SignalHandler>, PathArgumentRefusal>) =
+            match outcome with
+            | Error PathArgumentRefusal.NotUtf8 ->
+                // Reached only for a pathname the syscall actually copied in,
+                // which is the whole reason the decode is the kernel's rather
+                // than this boundary's.
+                failwith
+                    $"%s{operation}: the guest passed a path that is not valid UTF-8. This kernel models a filename as a string of characters, so this path has no representation in the emulated filesystem, and decoding it leniently would silently resolve a different file. CoreLib never produces such a path -- it encodes from a string -- so this can only come from a hand-rolled P/Invoke."
+            | Ok (SyscallAnswer.Failed error, system) ->
+                withErrno ctx error system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+            | Ok (SyscallAnswer.Completed _, system) ->
+                withAnswered system state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+        let source =
+            pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
+
+        match UnixSystem.renameSourcePhase source (EmulatedKernel.unix state.Kernel) with
+        | Error refusal -> answer (Error refusal)
+        | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
+        | Ok (RenameProgress.NeedsDestination paused) ->
+            pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
+            |> fun destination -> UnixSystem.renameWithDestination destination paused
+            |> answer
+
     /// Shared body of `SystemNative_Stat` and `SystemNative_LStat`, which
     /// differ only in whether a symbolic link in the final position is
     /// followed.
@@ -2514,6 +2593,16 @@ module NativeSystemNative =
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             pathSyscall ctx "SystemNative_RmDir" UnixSystem.rmdir state
+        // `int32_t SystemNative_Rename(const char* oldPath, const char* newPath)`
+        // (pal_io.c): `rename(2)` and nothing else -- not even an EINTR retry,
+        // which `rename` cannot return. CoreLib declares both a UTF-8 `string`
+        // overload and a `ref byte` one; the `ReadOnlySpan<char>` wrapper every
+        // BCL caller reaches goes through the latter, so what arrives here is a
+        // pair of NUL-terminated byte pointers.
+        | Some "SystemNative_Rename",
+          [ ConcretePointer _ ; ConcretePointer _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            renameSyscall ctx state
         // `DIR* SystemNative_OpenDir(const char* path)` (pal_io.c:532), an
         // EINTR-retrying `opendir(3)` and nothing else. NULL with errno set on
         // failure; the handle is opaque to the guest, which only passes it back

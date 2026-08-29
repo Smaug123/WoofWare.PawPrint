@@ -1187,10 +1187,39 @@ type PausedResolution =
 type PathArgument =
     | Parsed of path : UnixPath
     /// The entry point returns its failure sentinel, and the caller stores
-    /// `error` wherever its libc keeps errno. Only ever `ENAMETOOLONG`: a
-    /// pathname's *bytes* have no other way to be wrong, everything else being
-    /// a question about what they resolve to.
+    /// `error` wherever its libc keeps errno.
+    ///
+    /// This is what `getname()` reports, so it is `ENAMETOOLONG` — the only way
+    /// a pathname's *bytes* can be wrong, everything else being a question about
+    /// what they resolve to — or `EFAULT`, when the caller could not read the
+    /// bytes at all. `PathArgument.parse` produces only the former, having been
+    /// handed bytes already; a caller reading them out of a guest's memory
+    /// produces the latter itself.
+    ///
+    /// Which one it is never changes where the failure surfaces. Measured on
+    /// both kernels: with a source that does not exist, an unreadable
+    /// destination pointer and an over-long destination path are reported at the
+    /// same point in `rename(2)` — above the source's resolution on Linux, below
+    /// it on Darwin — so a caller orders "the argument was copied in" as one
+    /// step. See `RenameWalkOrder`.
     | Failed of error : UnixError
+
+/// The bytes of a pathname argument as the caller found them, before anything
+/// has decided what they say.
+///
+/// Distinct from `PathArgument`, which is what the bytes turned out to *mean*.
+/// The two are separate because a syscall taking more than one pathname copies
+/// them in at measured points and may never reach the second: `rename` on
+/// Darwin resolves its source completely first, so a caller that decoded both up
+/// front would refuse a pathname the kernel never looked at.
+[<RequireQualifiedAccess>]
+type PathArgumentBytes =
+    /// The caller could not read the pathname at all, which is EFAULT wherever
+    /// the kernel gets round to copying it in.
+    | Unreadable
+    /// The pathname's bytes **without a NUL terminator**, as `PathArgument.parse`
+    /// takes them.
+    | Bytes of bytes : ImmutableArray<byte>
 
 /// Why this kernel cannot say what a path argument names.
 ///
@@ -2863,6 +2892,28 @@ module VirtualFileSystem =
                 symlinks
         // A path cannot continue through a regular file.
         | InodeContent.RegularFile _ -> Error UnixError.ENOTDIR
+
+    /// Whether the directory this paused resolution would look its final name up
+    /// in has lost its own last name — so no path reaches it, though whatever
+    /// holds it keeps it alive. False for a path that has no final name to look
+    /// up, matching the verdicts, which ask this only of an `Entry`.
+    ///
+    /// Answered here rather than by handing out the directory, because "the
+    /// directory the final name is looked up in" is settled only while the walk
+    /// is paused: completing it can follow a final symlink and move it. The one
+    /// caller is `rename`, which must ask *between* its two final lookups —
+    /// measured, Linux reports an orphaned destination parent before it measures
+    /// the destination's final name, and after it measures the source's.
+    let pausedParentIsOrphaned (paused : PausedResolution) : bool =
+        match box paused with
+        | null ->
+            failwith
+                "VirtualFileSystem.pausedParentIsOrphaned: this paused resolution is null, which it can only be if it came from `Unchecked.defaultof` or C# `default`; obtain one from VirtualFileSystem.resolveParent instead."
+        | _ ->
+
+        match paused.Final with
+        | None -> false
+        | Some _ -> isOrphanedDirectory paused.Directory paused.FileSystem
 
     /// Look the final name up, finishing the resolution `resolveParent` paused.
     ///
