@@ -1,15 +1,18 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// The rules behind `SystemNative_Bind`, at the level the guests cannot reach:
-/// the fault ordering as an object, the conflict relation across the whole
-/// measured matrix, and the port allocator's own guarantees.
+/// The rules `UnixSystem.bind` consults, as objects in their own right: the
+/// fault ordering, the conflict relation across the whole measured matrix, and
+/// the port allocator's own guarantees.
+///
+/// `TestBind` is the sibling that drives the entry point. This is the level
+/// below it, where a rule can be stated over its whole domain rather than over
+/// the calls that happen to reach it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSocketBinding =
@@ -18,6 +21,12 @@ module TestSocketBinding =
 
     let private platforms =
         [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ]
+
+    /// The machine a simulated process boots with. Nothing the port allocator
+    /// does is flavour-dependent, so the flavour here is arbitrary; every row
+    /// that *is* flavour-dependent names its platform.
+    let private initialSystem : UnixSystem<int, string> =
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
 
     let private endpoint (address : uint32) (port : uint16) : InternetEndpoint = InternetEndpoint.ofParts address port
 
@@ -297,7 +306,7 @@ module TestSocketBinding =
             let high = low + uint16 (rng.Next 50)
 
             let machine =
-                UnixMachineState.withEphemeralPortRange (low, high) EmulatedKernel.initial.Machine
+                UnixMachineState.withEphemeralPortRange (low, high) initialSystem.Machine
 
             // An arbitrary subset of the range is already taken.
             let taken = [ low..high ] |> List.filter (fun _ -> rng.Next 3 = 0) |> Set.ofList
@@ -328,7 +337,7 @@ module TestSocketBinding =
     [<Test>]
     let ``successive allocations advance`` () : unit =
         let machine =
-            UnixMachineState.withEphemeralPortRange (40000us, 40004us) EmulatedKernel.initial.Machine
+            UnixMachineState.withEphemeralPortRange (40000us, 40004us) initialSystem.Machine
 
         let rec take (n : int) (machine : UnixMachineState) (acc : uint16 list) : uint16 list =
             if n = 0 then
@@ -346,7 +355,7 @@ module TestSocketBinding =
     [<Test>]
     let ``allocation wraps at the top of the range`` () : unit =
         let machine =
-            UnixMachineState.withEphemeralPortRange (40000us, 40001us) EmulatedKernel.initial.Machine
+            UnixMachineState.withEphemeralPortRange (40000us, 40001us) initialSystem.Machine
 
         let _, machine =
             (UnixMachineState.allocateEphemeralPort (fun _ -> true) machine).Value
@@ -360,7 +369,7 @@ module TestSocketBinding =
     [<Test>]
     let ``an exhausted range is refused rather than looping`` () : unit =
         let machine =
-            UnixMachineState.withEphemeralPortRange (40000us, 40010us) EmulatedKernel.initial.Machine
+            UnixMachineState.withEphemeralPortRange (40000us, 40010us) initialSystem.Machine
 
         UnixMachineState.allocateEphemeralPort (fun _ -> false) machine
         |> shouldEqual None
@@ -370,10 +379,8 @@ module TestSocketBinding =
         let shouldFail (low : uint16) (high : uint16) (substring : string) : unit =
             let exn =
                 Assert.Throws<System.Exception> (fun () ->
-                    EmulatedKernel.mapMachine
-                        (UnixMachineState.withEphemeralPortRange (low, high))
-                        EmulatedKernel.initial
-                    |> ignore<EmulatedKernel>
+                    UnixMachineState.withEphemeralPortRange (low, high) initialSystem.Machine
+                    |> ignore<UnixMachineState>
                 )
 
             exn.Message |> shouldContainText substring
