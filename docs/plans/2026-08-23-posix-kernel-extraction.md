@@ -4958,4 +4958,101 @@ fails the row, which is what says it is load-bearing.
 The `PAWPRINT_SOCKET_FUZZ*` variable names are unchanged. They are the documented
 interface, and renaming them would break every invocation anyone has recorded.
 
-**The audit is closed.** Nothing from it remains.
+**The audit is closed** — and the audit turns out not to have been exhaustive;
+the next section re-measures what it named.
+
+### The audit named three fixtures; there are nine
+
+Stage 20's PR body said `WoofWare.PawPrint.Test` "no longer holds any fixture whose
+subject is library behaviour". That is false, and it is false because it repeated the
+stage-15 audit's framing instead of re-measuring. The audit named the three biggest
+fixtures; it never claimed to be exhaustive, and nothing checked.
+
+Measured by sweeping every fixture in `WoofWare.PawPrint.Test` that
+opens `WoofWare.PosixKernel` and listing the `WoofWare.PawPrint` names each actually
+uses, seven fixtures totalling ~2,480 lines are library-subject:
+
+| fixture | lines | subject | the PawPrint names it uses |
+| --- | --- | --- | --- |
+| `TestEmulatedKernelInodeLifetime` | 586 | when an inode stops existing | `mapUnix`/`unix`, and the `DIR*` block map |
+| `TestFileSystemType` | 398 | `fstatfs`'s table, and mount/flavour coherence | `initial`, `mapMachine` |
+| `TestSocketBinding` | 382 | the rules behind `bind`, and the port allocator | `initial`, `mapMachine` |
+| `TestMonotonicTimestamp` | 361 | `UnixMachineState.monotonicTimestampNanos` | `initial`, `mapMachine`, `KernelConfig` |
+| `TestSystemTimeAsTicks` | 281 | `UnixMachineState.systemTimeAsTicks` | `initial`, `mapMachine` |
+| `TestEmulatedKernelCurrentDirectory` | 272 | the cwd-as-inode pair | `withFileSystemAndCurrentDirectory`, `KernelConfig` |
+| `TestUserBufferCheckAgainstHost` | 197 | `UnixMachineState.userBufferCheck`, against the host | `initial`, `mapMachine` |
+
+...on top of the two splits this document already records as open,
+`TestAbsoluteUnixPath` (4 cases forge an `EmulatedKernel`) and `TestFileSystemSeed`
+(8 call `RealRuntime.validateSeedForOracle`).
+
+The same sweep separates out the fixtures that open the library and are nonetheless
+correctly PawPrint's, so a later reader does not re-open them:
+`TestEffectiveProcessorCount` (CoreCLR's `GetCurrentProcessCpuCount`),
+`TestRetireStep`, `TestProcessPath`, `TestEnvironmentEntryInvariant`,
+`TestDirectoryStreamId` (a `DIR*` is a native block address),
+`TestUnixSystemProjection`, and the three `*Pal` fixtures.
+
+The plan's third "Still open" bullet — where the `emulated-posix-kernel` skill should
+live — is stale: its paths already name `WoofWare.PosixKernel` and its files.
+
+#### How these were sliced
+
+Two ways to stage this were considered.
+
+**One PR for all seven.** They are mechanically similar and a single derivation script
+could carry all of them, which is the argument: a reviewer reads one substitution list
+instead of seven. Rejected because only three of the seven are *pure* moves. The other
+four each leave something behind — a `KernelConfig` row, the `DIR*` rows, or a
+production helper that has to move first — and a split is exactly the case where the
+rename oracle detects no rename and the correspondence has to be stated by hand. Seven
+correspondences in one PR is the shape nobody checks.
+
+**One PR per fixture, as stages 18–20 did.** Rejected in the other direction: three of
+these are a third the size of stage 20's, and two pairs of them share prose that
+cross-references its partner, so moving one of a pair falsifies the other's docstring
+in a separate commit from the one that fixes it.
+
+So: grouped by what makes each move non-mechanical, and never splitting a pair whose
+docstrings name each other.
+
+* **21**: `TestSocketBinding`. A pure move, alone, because it lands beside `TestBind`
+  and the ambiguity that creates has to be resolved in the same commit.
+* **22**: the clock pair, `TestMonotonicTimestamp` and `TestSystemTimeAsTicks`. Each
+  names the other; the first is also a split, since its `KernelConfig.applyTo` rows
+  are about PawPrint's config plumbing.
+* **23**: the two host-measurement fixtures, `TestFileSystemType` and
+  `TestUserBufferCheckAgainstHost`. Both pure moves; both compare a library rule
+  against a measurement of the machine the suite runs on.
+* **24**: `EmulatedKernel.withFileSystemAndCurrentDirectory` becomes the library's,
+  and `TestEmulatedKernelCurrentDirectory` follows it. A production move and a test
+  move in one stage, because the production move has no other motivation.
+* **25**: `TestEmulatedKernelInodeLifetime`, split — the directory-stream rows stay.
+* **26**: `TestAbsoluteUnixPath`, split.
+* **27**: `TestFileSystemSeed`, split.
+
+### Stage 21: the bind rules' fixture moves to the library
+
+**Dependencies**: 13 (`bind` itself), 17 (`UnixSystem.initial`).
+
+`TestSocketBinding` states `SimulatedUnixPlatform`'s bind rules directly —
+`bindFaultOrder`, `firstBindFault`, `bindConflict`, `isBindableAddress`,
+`bindAddressFaults`, `listenRescreensBinding` — and `UnixMachineState`'s ephemeral
+port allocator. Every one of those is the library's, and has been since stage 13.
+
+The move is mechanical: the fixture's only `WoofWare.PawPrint` uses are
+`EmulatedKernel.initial.Machine` (four) and one `EmulatedKernel.mapMachine`. The
+latter was never doing anything — it is a record update wrapped around the function
+under test, and the exception the row asserts is `withEphemeralPortRange`'s own — so
+it becomes a direct application, and the file names no PawPrint type at all.
+
+`TestBind` is already in the library, testing the same syscall. They are not
+duplicates: `TestBind` drives the entry point, and this states the rules underneath it
+over their whole domain. The header now says so, because a reader who finds two bind
+fixtures in one project needs to know which is which without reading both.
+
+**Correctness oracle**: `verify21.py` re-derives the moved file from `origin/main` by
+applying exactly the substitutions above, and compares whitespace-normalised (fantomas
+reflows when `EmulatedKernel.initial.Machine` shortens to `initialSystem.Machine`).
+The suite counts move exactly: library 1002 → 1016, PawPrint 3181 → 3167, fourteen
+tests.
