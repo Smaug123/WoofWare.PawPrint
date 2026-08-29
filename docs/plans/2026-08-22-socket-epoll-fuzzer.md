@@ -111,7 +111,7 @@ batches, skip and unstable rates) rather than printing it.
 ## How to run
 
 ```
-PAWPRINT_SOCKET_FUZZ=1 nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj \
+PAWPRINT_SOCKET_FUZZ=1 nix develop -c dotnet test WoofWare.PosixKernel.Test/WoofWare.PosixKernel.Test.fsproj \
   --filter "Name~SocketFuzzLive" --verbosity normal
 ```
 
@@ -122,3 +122,9 @@ the seed and the offending sequence, which is a one-line repro),
 checking in to `socketFuzzCorpus/`.
 
 The corpus replay test (`SocketFuzzCorpus`) runs everywhere, container or not.
+
+The fuzzer lives in `WoofWare.PosixKernel.Test` as of the extraction's stage 20:
+its emulated side is `UnixSystem`, and comparing that against a real Linux kernel
+is a claim about the library rather than about its client. The `PAWPRINT_`
+variable names are unchanged -- they are the documented interface, and renaming
+them would break every invocation anyone has recorded.

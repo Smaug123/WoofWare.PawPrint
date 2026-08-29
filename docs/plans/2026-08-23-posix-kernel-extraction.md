@@ -4901,3 +4901,61 @@ expect would agree with any constructor at all, including one that ignored the
 platform.
 
 **What is left after 17**: stages 18–20, the three fixtures, one PR each.
+
+### Stages 18-20: the three fixtures
+
+**Dependencies**: 16 (the checker) and 17 (the constructor). Neither fixture could
+move before both: `TestEmulatedKernelSockets` asserts against `checkInvariants` in
+twenty-two places, and none of the three could build a starting system without
+transcribing thirty-one fields.
+
+Each is a move, and each was verified as one rather than read: a script re-derives
+the file from `origin/main` by applying exactly the substitutions the move is
+allowed to make, and diffs the result. Reflow aside, all three reproduce.
+
+| stage | fixture | lines | tests |
+| --- | --- | --- | --- |
+| 18 | `TestEmulatedKernelSockets` -> `TestSocketTable` | 1925 | 46 |
+| 19 | `TestSocketEventDelivery` | 1106 | 28 |
+| 20 | `SocketFuzz` + `TestSocketFuzz` + 5 resources | 1232 | 2 |
+
+The substitutions are the same four kinds every time: the thin adapters, each of
+which was `withUnix (f (unix kernel)) kernel`; the projection pair, which is the
+identity once the value *is* the system; the forwarding members `EmulatedKernel`
+has and `UnixSystem` does not; and `KernelSyscall.close`, whose whole content was
+project-call-write-back.
+
+**Every one of the three shed the PAL on the way across.** 18 and 19 replaced
+`SocketEventsPal.toInterest` calls with `SocketEventInterest` literals. 20 could
+not, because its masks are runtime values from the generated op — but that turned
+out to be the interesting case:
+
+**The fuzzer's op language was never the PAL's.** `harness.c` carries its own
+`interest_to_epoll` mapping the same five bits onto epoll's, so the mask is a
+*fuzzer* alphabet that both sides translate from. Routing the F# half through
+`SocketEventsPal` left the two halves of one translation looking unrelated. Stage
+20 gives the F# side `interestOfMask`, `interest_to_epoll`'s mirror, sitting in
+the same file as the transcript format they share.
+
+**The fuzzer belongs to the library, not to PawPrint.** Its emulated side is
+`UnixSystem`; comparing that against a real Linux kernel is a claim about the
+simulator rather than about its client.
+
+#### The hazard `check-move-is-rename-only.sh` names and cannot see
+
+`TestSocketFuzz` reads its corpus and its C harness as embedded resources, whose
+logical names are `<assembly>.<directory>.<file>` — so they change with the
+project. The corpus guards itself (an empty replay is refused as vacuous), but
+`harness.c` is read only inside `runHarness`, which only the container-gated live
+test reaches. A wrong name there would have gone unnoticed until someone had a
+container.
+
+Stage 20 adds the missing guard, and makes it guard the right thing: the name is
+one binding used by both `runHarness` and the new row, because a second copy of
+the literal would only have guarded itself. Mutating it to the old assembly name
+fails the row, which is what says it is load-bearing.
+
+The `PAWPRINT_SOCKET_FUZZ*` variable names are unchanged. They are the documented
+interface, and renaming them would break every invocation anyone has recorded.
+
+**The audit is closed.** Nothing from it remains.

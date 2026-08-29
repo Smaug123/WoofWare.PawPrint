@@ -16,6 +16,8 @@
     <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestSocketTable.fs" />
     <Compile Include="TestSocketEventDelivery.fs" />
+    <Compile Include="SocketFuzz.fs" />
+    <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
@@ -53,6 +55,15 @@
          kernel this library simulates; `WoofWare.PawPrint.Test` links the same
          files, so the two suites cannot drift onto different measurements. -->
     <EmbeddedResource Include="socketMatrix\*.tsv" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The socket/epoll differential fuzzer's C interpreter, and the corpus of
+         transcripts it has measured against a real Linux kernel. Logical
+         resource names follow the assembly, so `TestSocketFuzz` reads these as
+         `WoofWare.PosixKernel.Test.socketFuzz*`. -->
+    <EmbeddedResource Include="socketFuzz\harness.c" />
+    <EmbeddedResource Include="socketFuzzCorpus\*.txt" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System
 open System.Diagnostics
@@ -10,7 +10,8 @@ open NUnit.Framework
 /// The socket/epoll differential fuzzer
 /// (docs/plans/2026-08-22-socket-epoll-fuzzer.md): generated op sequences run
 /// against real Linux epoll (the `harness.c` interpreter, in the `gcc:14`
-/// container) and against `EmulatedKernel`, and the transcripts must agree.
+/// container) and against this library's `UnixSystem`, and the transcripts
+/// must agree.
 ///
 /// The live test needs the container and so is gated on
 /// `PAWPRINT_SOCKET_FUZZ=1`; the corpus test replays previously-measured real
@@ -18,7 +19,12 @@ open NUnit.Framework
 [<TestFixture>]
 module TestSocketFuzz =
 
-    let private corpusPrefix = "WoofWare.PawPrint.Test.socketFuzzCorpus."
+    let private corpusPrefix = "WoofWare.PosixKernel.Test.socketFuzzCorpus."
+
+    /// One binding, named once: the resolution test below has to guard the
+    /// name `runHarness` actually uses, and a second copy of the literal
+    /// would guard only itself.
+    let private harnessResource = "WoofWare.PosixKernel.Test.socketFuzz.harness.c"
 
     let private readResource (name : string) : string =
         let assembly = Assembly.GetExecutingAssembly ()
@@ -51,6 +57,24 @@ module TestSocketFuzz =
             )
         )
 
+    /// Both embedded resource families resolve under this assembly's name.
+    ///
+    /// A logical resource name is `<assembly>.<directory>.<file>`, so it changes
+    /// when the project does. The corpus guards itself -- an empty replay is
+    /// refused as vacuous below -- but `harness.c` is read only inside
+    /// `runHarness`, which only the container-gated live test reaches, so a wrong
+    /// name there would go unnoticed until someone had a container. This is that
+    /// half.
+    [<Test>]
+    let ``the harness and the corpus resolve as embedded resources`` () : unit =
+        let harness = readResource harnessResource
+
+        // Named for the function this fuzzer's F# side mirrors, so the row fails
+        // if the resource resolves to something that is not the harness.
+        harness.Contains "interest_to_epoll" |> shouldEqual true
+
+        corpusRows () |> shouldNotEqual []
+
     [<Test>]
     let ``SocketFuzzCorpus: every measured real-kernel transcript replays against the emulated kernel`` () : unit =
         let rows = corpusRows ()
@@ -74,10 +98,7 @@ module TestSocketFuzz =
     let private runHarness (workDir : string) (sequences : string list) : Result<string, string> list =
         Directory.CreateDirectory workDir |> ignore
 
-        File.WriteAllText (
-            Path.Combine (workDir, "harness.c"),
-            readResource "WoofWare.PawPrint.Test.socketFuzz.harness.c"
-        )
+        File.WriteAllText (Path.Combine (workDir, "harness.c"), readResource harnessResource)
 
         File.WriteAllLines (Path.Combine (workDir, "seqs.txt"), sequences)
 
