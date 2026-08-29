@@ -56,10 +56,16 @@ module SocketFuzz =
     /// Screens the mask rather than ignoring stray bits: a mask outside 0..0x1F
     /// is a generator bug, and a fuzzer that quietly accepted one would compare
     /// two sides that had been asked different questions.
+    ///
+    /// Carries the `INTERPRETER-DRIVER BUG` marker every other generator-bug
+    /// failure in this file carries, because that is what `executeEmulated`
+    /// classifies on: without it the sequence would come back as
+    /// `EmulatedRun.Refused`, which the live fuzzer *skips*, and a generator
+    /// regression would be counted rather than reported.
     let private interestOfMask (mask : int) : SocketEventInterest =
         if mask &&& ~~~0x1F <> 0 then
             failwith
-                $"SocketFuzz: interest mask 0x%x{mask} has bits outside the five the op language defines (0x1F); the generator should never have produced it."
+                $"INTERPRETER-DRIVER BUG: interest mask 0x%x{mask} has bits outside the five the op language defines (0x1F); the generator should never have produced it."
 
         {
             SocketEventInterest.In = mask &&& 0x01 <> 0

@@ -75,6 +75,29 @@ module TestSocketFuzz =
 
         corpusRows () |> shouldNotEqual []
 
+    /// A sequence the generator should never have produced is a `Defect`, not a
+    /// `Refused`.
+    ///
+    /// The distinction is what the live fuzzer does with it: a `Refused`
+    /// sequence is outside the modelled envelope and gets skipped and counted,
+    /// while a `Defect` fails the run. `executeEmulated` tells them apart by
+    /// looking for a marker in the `failwith` text, so a generator-bug failure
+    /// that forgets the marker is silently downgraded to a skip -- and the fuzzer
+    /// goes on reporting agreement it never checked.
+    ///
+    /// An interest mask outside the five bits the op language defines is the
+    /// cheapest such shape to construct: `parse` does not screen it, so it
+    /// reaches the conversion exactly as a generator regression would.
+    [<Test>]
+    let ``an op outside the language is a defect rather than a skip`` () : unit =
+        match SocketFuzz.executeEmulated (SocketFuzz.parse "port:0 sock:1 add:0:1:32") with
+        | EmulatedRun.Defect (_, message) -> message |> shouldContainText "0x20"
+        | EmulatedRun.Refused (_, message) ->
+            Assert.Fail
+                $"an out-of-range interest mask was classified as a skippable refusal, so the live fuzzer would have counted it rather than failed: %s{message}"
+        | EmulatedRun.Transcript transcript ->
+            Assert.Fail $"an out-of-range interest mask was accepted outright: %s{transcript}"
+
     [<Test>]
     let ``SocketFuzzCorpus: every measured real-kernel transcript replays against the emulated kernel`` () : unit =
         let rows = corpusRows ()
