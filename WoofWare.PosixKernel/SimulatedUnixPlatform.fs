@@ -1760,41 +1760,51 @@ module private RenameChecks =
 
 [<RequireQualifiedAccess>]
 module RenameRules =
-    /// What the source earns *before* the destination is walked at all, under
-    /// this walk order — `None` when it earns nothing yet and the verdict will
-    /// judge it against both paths.
+    /// The refusals the source earns *before* the destination's final name is
+    /// looked up — `None` when it earns none yet and the verdict will judge it
+    /// against both paths.
     ///
-    /// Only Darwin has anything here, because only Darwin resolves the source
-    /// to completion first, and what it refuses is exactly what a `namei` under
-    /// rename semantics refuses: a final name that is not there, and the
-    /// filesystem root named as the whole path.
+    /// Both flavours have one; they differ in content and in *where* it runs,
+    /// which is what `RenameWalkOrder` decides. Darwin's is part of resolving
+    /// the source, and runs before the destination's pathname has been read at
+    /// all. Linux's runs after both parents and the source's own final lookup,
+    /// and before the destination's — so it beats the destination's `NAME_MAX`
+    /// and the orphaned-destination-parent arm, and loses to everything either
+    /// parent walk can refuse.
     ///
-    /// Measured against a destination whose parent is a regular file, so the
-    /// destination alone answers ENOTDIR and anything else is a source-side
-    /// refusal that ran first. On Darwin `rename("nope", "f/x")` is ENOENT and
-    /// `rename("/", "f/x")` is EISDIR, while a directory, a symbolic link, a
-    /// dangling link, a trailing separator, ".", "..", "/.", "/.." and
-    /// "/dev/.." all answer ENOTDIR — so it is the *navigation* rather than the
-    /// inode that is early, `FinalNavigation.Root` being the one case that
-    /// consumed no component at all. On Linux every one of those rows, the two
-    /// above included, answers ENOTDIR. See `docs/probes/rename/walk-order.py`.
+    /// The arms, and the rows that pin each (see `docs/probes/rename/`):
     ///
-    /// These two arms are also `RenameRules.darwinVerdict`'s, which is not
-    /// duplication to remove: the verdict must still answer them when it is
-    /// handed two resolutions, and this says *when* Darwin gets to ask. Under
-    /// `SourceThenDestination` the verdict's copies are simply reached with the
-    /// question already settled.
+    ///  * A source whose final name is free is ENOENT on both. Linux:
+    ///    `rename("nope", <300-byte name>)` is ENOENT, not the destination's
+    ///    ENAMETOOLONG. Darwin: `rename("nope", "f/x")` is ENOENT, not the
+    ///    destination's ENOTDIR.
+    ///  * A source that consumed no final name is EBUSY on Linux, whichever
+    ///    navigation reached it — measured against an orphaned destination
+    ///    parent, where `rename("d/.", "x")` is EBUSY and every other source
+    ///    there is ENOENT. Darwin spends EISDIR on the bare root alone: "/." ,
+    ///    "/.." and "/dev/.." all wait for the verdict, so it is the navigation
+    ///    that is early rather than the inode.
+    ///
+    /// These arms are the verdicts' too, which is not duplication to remove: a
+    /// verdict handed two resolutions must still answer them, and this says when
+    /// its flavour gets to ask. Reached with the question already settled, the
+    /// verdict's copies simply never fire.
     let sourceScreen (order : RenameWalkOrder) (source : Resolution) : UnixError option =
+        match source.Target with
+        | ResolvedTarget.Entry (_, _, Some _) -> None
+        | ResolvedTarget.Entry (_, _, None) -> Some UnixError.ENOENT
+        | ResolvedTarget.Directory (_, reachedBy) ->
+
         match order with
-        | RenameWalkOrder.ParentsThenFinals -> None
+        // Linux spends one errno on all six navigation positions, source and
+        // destination alike; see `linuxVerdict`.
+        | RenameWalkOrder.ParentsThenFinals -> Some UnixError.EBUSY
         | RenameWalkOrder.SourceThenDestination ->
 
-        match source.Target with
-        | ResolvedTarget.Entry (_, _, None) -> Some UnixError.ENOENT
-        | ResolvedTarget.Entry (_, _, Some _) -> None
-        | ResolvedTarget.Directory (_, FinalNavigation.Root) -> Some UnixError.EISDIR
-        | ResolvedTarget.Directory (_, FinalNavigation.Current)
-        | ResolvedTarget.Directory (_, FinalNavigation.Parent) -> None
+        match reachedBy with
+        | FinalNavigation.Root -> Some UnixError.EISDIR
+        | FinalNavigation.Current
+        | FinalNavigation.Parent -> None
 
     /// Linux's `rename(2)`, transcribed from the measured ordering. Each arm
     /// beats the ones below it, and each bullet is a measured row:

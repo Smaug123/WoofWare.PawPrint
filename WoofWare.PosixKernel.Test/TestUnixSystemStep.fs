@@ -4851,3 +4851,82 @@ module TestUnixSystemStep =
         match UnixSystem.renameSourcePhase (arg "nope") (withRenameTree linux) with
         | Ok (RenameProgress.NeedsDestination _) -> ()
         | other -> failwith $"expected Linux to want a destination for a free source name, got %A{other}"
+
+    // The `## walk` and `## orphan` sections of `docs/probes/rename/rename.py`,
+    // transcribed. These are the ordering-sensitive rows — the ones no single
+    // path can produce and no verdict, handed two finished resolutions, can be
+    // asked about — and they are the rows three rounds of review each found a
+    // bug in. Kept as a table against the committed columns so the next change
+    // to the phase order is checked against all of them at once.
+
+    [<Test>]
+    let ``the committed walk-order rows`` () : unit =
+        let long = String.replicate 300 "z"
+
+        // source, destination, Linux, Darwin
+        let rows =
+            [
+                "source absent X destination's parent is a regular file",
+                "nope",
+                "f/x",
+                UnixError.ENOTDIR,
+                UnixError.ENOENT
+                "source name 300 bytes X destination's parent absent",
+                long,
+                "nodir/x",
+                UnixError.ENOENT,
+                UnixError.ENAMETOOLONG
+                "source absent X destination name 300 bytes", "nope", long, UnixError.ENOENT, UnixError.ENOENT
+                "source's parent unsearchable X destination's parent absent",
+                "nosearch/kid",
+                "nodir/x",
+                UnixError.EACCES,
+                UnixError.EACCES
+                "source's parent unsearchable X destination's parent is a file",
+                "nosearch/kid",
+                "f/x",
+                UnixError.EACCES,
+                UnixError.EACCES
+                "source's parent is a regular file X destination is a directory",
+                "f/kid",
+                "dir",
+                UnixError.ENOTDIR,
+                UnixError.ENOTDIR
+            ]
+
+        for label, source, destination, onLinux, onDarwin in rows do
+            let observed flavour system =
+                match renamed (arg source) (arg destination) system with
+                | Error error -> error
+                | Ok () -> failwith $"%s{label}: expected %s{flavour} to refuse, but the rename succeeded"
+
+            observed "Linux" (withRenameTree linux) |> shouldEqual onLinux
+            observed "Darwin" (withRenameTree darwin) |> shouldEqual onDarwin
+
+    [<Test>]
+    let ``the committed orphaned-destination rows`` () : unit =
+        let long = String.replicate 300 "z"
+
+        // Every destination here is relative, so its parent is the orphaned
+        // current directory; the source is absolute except where it is the point.
+        let rows =
+            [
+                "ordinary file source (control)", "/f", "x", UnixError.ENOENT, UnixError.ENOENT
+                "AND source absent", "/nope", "x", UnixError.ENOENT, UnixError.ENOENT
+                // The row that places the source screen above the orphan check:
+                // one errno on Linux that no other source there produces.
+                "AND the source is a navigation", "/dir/.", "x", UnixError.EBUSY, UnixError.ENOENT
+                "directory source", "/dir", "x", UnixError.ENOENT, UnixError.ENOENT
+                "AND destination name 300 bytes", "/f", long, UnixError.ENOENT, UnixError.ENAMETOOLONG
+                "AND a trailing separator on a file source", "/f/", "x", UnixError.ENOENT, UnixError.ENOTDIR
+                "AND a trailing separator on the destination", "/f", "x/", UnixError.ENOENT, UnixError.ENOENT
+            ]
+
+        for label, source, destination, onLinux, onDarwin in rows do
+            let observed flavour system =
+                match renamed (arg source) (arg destination) system with
+                | Error error -> error
+                | Ok () -> failwith $"%s{label}: expected %s{flavour} to refuse, but the rename succeeded"
+
+            observed "Linux" (withOrphanedCwd linux) |> shouldEqual onLinux
+            observed "Darwin" (withOrphanedCwd darwin) |> shouldEqual onDarwin

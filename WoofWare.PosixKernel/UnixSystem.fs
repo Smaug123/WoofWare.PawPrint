@@ -6468,6 +6468,16 @@ module UnixSystem =
             | Error error -> Error (RenameStop.Errno error)
             | Ok sourceResolution ->
 
+            // Linux's source screen runs here: after both parents and the
+            // source's own final lookup, and before the destination's. It beats
+            // the orphan check below — `rename("d/.", "x")` from an orphaned
+            // current directory is EBUSY where every other source there is
+            // ENOENT — and it beats the destination's NAME_MAX, which is what
+            // makes `rename("nope", <300-byte name>)` ENOENT.
+            match RenameRules.sourceScreen rules.WalkOrder sourceResolution with
+            | Some error -> Error (RenameStop.Errno error)
+            | None ->
+
             // A destination parent that has lost its own last name — reachable
             // only as an `rmdir`'d current directory — is ENOENT here, *before*
             // the destination's final name is measured. Both verdicts also
