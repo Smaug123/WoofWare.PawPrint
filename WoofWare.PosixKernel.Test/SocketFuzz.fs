@@ -1,8 +1,7 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System
 open System.Text
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// One operation of the socket/epoll differential fuzzer's op language
@@ -45,6 +44,43 @@ type EmulatedRun =
 
 [<RequireQualifiedAccess>]
 module SocketFuzz =
+
+    /// The op language's interest mask, as a `SocketEventInterest`.
+    ///
+    /// The mirror of `harness.c`'s `interest_to_epoll`, which maps the same five
+    /// bits onto `EPOLLIN|EPOLLOUT|EPOLLRDHUP|EPOLLHUP|EPOLLERR`. Only three of
+    /// them can be *asked* for -- the last two are what epoll reports unasked --
+    /// so the top two bits reach an interest record that cannot hold them, which
+    /// is exactly the collapse the fuzzer wants to exercise.
+    ///
+    /// Screens the mask rather than ignoring stray bits: a mask outside 0..0x1F
+    /// is a generator bug, and a fuzzer that quietly accepted one would compare
+    /// two sides that had been asked different questions.
+    ///
+    /// Carries the `INTERPRETER-DRIVER BUG` marker every other generator-bug
+    /// failure in this file carries, because that is what `executeEmulated`
+    /// classifies on: without it the sequence would come back as
+    /// `EmulatedRun.Refused`, which the live fuzzer *skips*, and a generator
+    /// regression would be counted rather than reported.
+    let private interestOfMask (mask : int) : SocketEventInterest =
+        if mask &&& ~~~0x1F <> 0 then
+            failwith
+                $"INTERPRETER-DRIVER BUG: interest mask 0x%x{mask} has bits outside the five the op language defines (0x1F); the generator should never have produced it."
+
+        {
+            SocketEventInterest.In = mask &&& 0x01 <> 0
+            Out = mask &&& 0x02 <> 0
+            RdHup = mask &&& 0x04 <> 0
+        }
+
+
+    /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
+    /// guest; an errno comes back, because that is an answer.
+    let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
+        match UnixSystem.close fd system with
+        | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
+        | Ok (SyscallAnswer.Failed error, _) -> Error error
+        | Ok (SyscallAnswer.Completed _, system) -> Ok system
 
     let serializeOp (op : FuzzOp) : string =
         match op with
@@ -159,7 +195,7 @@ module SocketFuzz =
 
     type private ExecState =
         {
-            Kernel : EmulatedKernel
+            Kernel : UnixSystem<int, string>
             /// Slot to fd. Absent = never assigned, or closed.
             SlotFd : Map<int, int>
             NextListenerPort : uint16
@@ -173,7 +209,7 @@ module SocketFuzz =
                 $"INTERPRETER-DRIVER BUG: op names slot %d{slot}, which holds no fd — the generator is supposed to be constructive."
 
     let private socketIdOfSlot (slot : int) (state : ExecState) : SocketId =
-        match FileDescriptorRegistry.tryFind (slotFd slot state) state.Kernel.FileDescriptors with
+        match FileDescriptorRegistry.tryFind (slotFd slot state) state.Kernel.Process.FileDescriptors with
         | Some description ->
             match description.Target with
             | OpenFileTarget.Socket socketId -> socketId
@@ -195,7 +231,7 @@ module SocketFuzz =
         match op with
         | FuzzOp.NewSocket slot ->
             let fd, kernel =
-                EmulatedKernel.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp state.Kernel
+                UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp state.Kernel
 
             "ok",
             assignSlot
@@ -207,7 +243,7 @@ module SocketFuzz =
         | FuzzOp.Listen slot ->
             // The trivially-conflict-free composite bind+listen, constructed
             // directly: bind/listen semantics live in the native handler, not
-            // in EmulatedKernel, and are deliberately outside the fuzzed
+            // in UnixSystem<int, string>, and are deliberately outside the fuzzed
             // vocabulary (see the plan doc's altitude option).
             let socketId = socketIdOfSlot slot state
             let sock = UnixMachineState.socket socketId state.Kernel.Machine
@@ -241,7 +277,7 @@ module SocketFuzz =
                                                     Queue = []
                                                 }
                                     }
-                                    state.Kernel.Sockets
+                                    state.Kernel.Machine.Sockets
                         }
                 }
 
@@ -262,7 +298,7 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                EmulatedKernel.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel
+                UnixSystem.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel
 
             let token =
                 match outcome with
@@ -279,7 +315,7 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                EmulatedKernel.connectSocket
+                UnixSystem.connectSocket
                     socketId
                     true
                     16
@@ -306,7 +342,7 @@ module SocketFuzz =
                 "EAGAIN", state
             | _ ->
 
-            let fd, _, kernel = EmulatedKernel.acceptConnection socketId state.Kernel
+            let fd, _, kernel = UnixSystem.acceptConnection socketId state.Kernel
 
             "ok",
             assignSlot
@@ -318,7 +354,7 @@ module SocketFuzz =
         | FuzzOp.Close slot ->
             let fd = slotFd slot state
 
-            match KernelSyscall.close fd state.Kernel with
+            match closeFd fd state.Kernel with
             | Ok kernel ->
                 "ok",
                 { state with
@@ -340,7 +376,7 @@ module SocketFuzz =
                 // shrink towards.
                 failwith $"close of fd %d{fd} answered %O{error}, which is not EBADF"
         | FuzzOp.Dup (slot, newSlot) ->
-            match FileDescriptorRegistry.dup (slotFd slot state) state.Kernel.FileDescriptors with
+            match FileDescriptorRegistry.dup (slotFd slot state) state.Kernel.Process.FileDescriptors with
             | Ok (fd, registry) ->
                 "ok",
                 assignSlot
@@ -358,7 +394,7 @@ module SocketFuzz =
             | Error FileDescriptorDupError.BadFd -> "EBADF", state
         | FuzzOp.NewPort slot ->
             let fd, registry =
-                FileDescriptorRegistry.createSocketEventPort state.Kernel.FileDescriptors
+                FileDescriptorRegistry.createSocketEventPort state.Kernel.Process.FileDescriptors
 
             "ok",
             assignSlot
@@ -374,15 +410,10 @@ module SocketFuzz =
                         }
                 }
         | FuzzOp.Add (port, target, mask) ->
-            let change =
-                SocketEventRegistrationChange.Add (SocketEventsPal.toInterest "SocketFuzz" mask, uint64 target)
+            let change = SocketEventRegistrationChange.Add (interestOfMask mask, uint64 target)
 
             match
-                EmulatedKernel.changeSocketEventRegistration
-                    (slotFd port state)
-                    (slotFd target state)
-                    change
-                    state.Kernel
+                UnixSystem.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 "ok",
@@ -393,14 +424,10 @@ module SocketFuzz =
             | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Mod (port, target, mask) ->
             let change =
-                SocketEventRegistrationChange.Modify (SocketEventsPal.toInterest "SocketFuzz" mask, uint64 target)
+                SocketEventRegistrationChange.Modify (interestOfMask mask, uint64 target)
 
             match
-                EmulatedKernel.changeSocketEventRegistration
-                    (slotFd port state)
-                    (slotFd target state)
-                    change
-                    state.Kernel
+                UnixSystem.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 "ok",
@@ -411,7 +438,7 @@ module SocketFuzz =
             | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Del (port, target) ->
             match
-                EmulatedKernel.changeSocketEventRegistration
+                UnixSystem.changeSocketEventRegistration
                     (slotFd port state)
                     (slotFd target state)
                     SocketEventRegistrationChange.Remove
@@ -426,7 +453,7 @@ module SocketFuzz =
             | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Wait (port, maxEvents) ->
             let portId =
-                match FileDescriptorRegistry.tryFindId (slotFd port state) state.Kernel.FileDescriptors with
+                match FileDescriptorRegistry.tryFindId (slotFd port state) state.Kernel.Process.FileDescriptors with
                 | Some id -> id
                 | None -> failwith $"INTERPRETER-DRIVER BUG: wait's port slot %d{port} is not live."
 
@@ -434,7 +461,7 @@ module SocketFuzz =
             // woken handler performs read the same annotated walk, so they
             // cannot disagree; asked here because a generated sequence drives
             // the port through phases no hand-written row reaches.
-            let system = EmulatedKernel.unix state.Kernel
+            let system = state.Kernel
             let predicted = SocketEventPort.hasDeliverableEvent portId system
             let delivered, system = SocketEventPort.drain portId maxEvents system
 
@@ -442,7 +469,7 @@ module SocketFuzz =
                 failwith
                     $"INTERPRETER-DRIVER BUG: SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events."
 
-            let kernel = EmulatedKernel.withUnix system state.Kernel
+            let kernel = system
 
             let batch =
                 delivered
@@ -460,22 +487,22 @@ module SocketFuzz =
             // level against the kernel's rather than against a hand-written
             // row. `poll(2)` mutates nothing, so the state passes through.
             let reported =
-                match FileDescriptorRegistry.tryFindId (slotFd slot state) state.Kernel.FileDescriptors with
+                match FileDescriptorRegistry.tryFindId (slotFd slot state) state.Kernel.Process.FileDescriptors with
                 | Some descriptionId ->
-                    UnixSystem.pollReadinessOfDescription descriptionId (EmulatedKernel.unix state.Kernel)
+                    UnixSystem.pollReadinessOfDescription descriptionId state.Kernel
                     |> PollEvents.ofLevel (PollEvents.ofBits (int16 events))
                 | None -> failwith $"INTERPRETER-DRIVER BUG: poll's slot %d{slot} is not live."
 
             $"<%s{pollMaskString reported}>", state
 
-    /// Run one sequence against a fresh `EmulatedKernel.initial` (Linux
+    /// Run one sequence against a fresh `UnixSystem.initial SimulatedUnixPlatform.linuxX64` (Linux
     /// flavour, matching the harness's kernel). Both invariant checkers run
     /// after every op — a generated sequence that corrupts the state is a
     /// finding even when every transcript token agrees.
     let executeEmulated (ops : FuzzOp list) : EmulatedRun =
         let mutable state =
             {
-                Kernel = EmulatedKernel.initial
+                Kernel = UnixSystem.initial SimulatedUnixPlatform.linuxX64
                 SlotFd = Map.empty
                 NextListenerPort = listenerPortBase
             }
@@ -500,8 +527,8 @@ module SocketFuzz =
                         result <- Some (EmulatedRun.Refused (index, message))
                 | Ok (token, next) ->
                     let defects =
-                        (EmulatedKernel.checkInvariants next.Kernel |> List.map (sprintf "%A"))
-                        @ (FileDescriptorRegistry.checkInvariants next.Kernel.FileDescriptors
+                        (UnixSystem.checkInvariants next.Kernel |> List.map (sprintf "%A"))
+                        @ (FileDescriptorRegistry.checkInvariants next.Kernel.Process.FileDescriptors
                            |> List.map (sprintf "%A"))
 
                     match defects with

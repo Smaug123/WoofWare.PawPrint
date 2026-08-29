@@ -158,8 +158,6 @@
     <Compile Include="TestTaskState.fs" />
         <Compile Include="TestUnixSystemProjection.fs" />
     <Compile Include="TestEmulatedKernelInodeLifetime.fs" />
-    <Compile Include="SocketFuzz.fs" />
-    <Compile Include="TestSocketFuzz.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestFlockBlocking.fs" />
     <Compile Include="TestFlockPark.fs" />
@@ -283,8 +281,6 @@
          `Link` keeps the manifest resource name this project already uses. -->
     <EmbeddedResource Include="..\WoofWare.PosixKernel.Test\socketMatrix\*.tsv"
                       Link="socketMatrix\%(Filename)%(Extension)" />
-    <EmbeddedResource Include="socketFuzz\harness.c" />
-    <EmbeddedResource Include="socketFuzzCorpus\*.txt" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
     <EmbeddedResource Include="sources\*.cs" />
