@@ -27,6 +27,7 @@
     <Compile Include="TestRmDirRules.fs" />
     <Compile Include="TestUnlinkRules.fs" />
     <Compile Include="TestRenameRules.fs" />
+    <Compile Include="TestResolutionSplit.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
     <Compile Include="TestLinuxEpollLimits.fs" />
     <Compile Include="TestCreatableSockets.fs" />
