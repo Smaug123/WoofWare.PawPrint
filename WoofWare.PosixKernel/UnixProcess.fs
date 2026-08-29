@@ -144,8 +144,9 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// the name buffer have no home in `File (inode, offset)`.
         ///
         /// An absent key is not a default and must never be read as one. Every id
-        /// `DirectoryStreamBlocks` names is present here — `checkInvariants`
-        /// enforces that as `DirectoryStreamBlockDangling` — so an absent one is
+        /// `DirectoryStreamBlocks` names is present here — a `DIR*` is a client's
+        /// concept, so it is the client's `checkInvariants` that enforces it (in
+        /// PawPrint, as `EmulatedKernelDefect.DirectoryStreamBlockDangling`) — so an absent one is
         /// an interpreter bug rather than anything a guest did, and
         /// `directoryStream` says so loudly rather than inventing an errno, the
         /// way `UnixMachineState.connection` does for a `ConnectionId`.

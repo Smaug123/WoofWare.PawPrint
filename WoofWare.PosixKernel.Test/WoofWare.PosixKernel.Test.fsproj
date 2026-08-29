@@ -12,6 +12,7 @@
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="TestUnixProcessState.fs" />
         <Compile Include="TestUnixSystemStep.fs" />
+    <Compile Include="TestUnixSystemInvariants.fs" />
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />

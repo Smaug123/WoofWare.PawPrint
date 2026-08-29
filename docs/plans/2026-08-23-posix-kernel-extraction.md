@@ -4741,3 +4741,87 @@ getter; and the getter reading the flag at all.
 `SocketFuzz` (902) test behaviour that is now almost entirely library code, from the
 client's suite. That is the 9g failure mode at scale, and it is why every stage since 9j
 has had to write a fresh fixture rather than move one.
+
+### The fixture relocation is not one move
+
+Stage 15 left one audit item: `TestEmulatedKernelSockets` (1903 lines),
+`TestSocketEventDelivery` (1100) and `SocketFuzz` (905) test behaviour that is now
+almost entirely library code, from the client's suite. Reading them, that item
+decomposes, and one of its parts is a *production* move rather than a test move.
+
+Measured on `5ee5301a`, the only `WoofWare.PawPrint` names the three fixtures use are:
+
+| name | where it lives | uses |
+| --- | --- | --- |
+| `EmulatedKernel` (the record and its adapters) | `WoofWare.PawPrint/EmulatedKernel.fs` | 128 |
+| `EmulatedKernel.checkInvariants` / `EmulatedKernelDefect` | ditto | 41 |
+| `SocketEventsPal`, and one mention of `SocketPal` | `WoofWare.PawPrint/Native/` | 16 |
+| `KernelSyscall` | `WoofWare.PawPrint.Test/KernelSyscall.fs` | 6 |
+
+Everything else they name — `SocketEventPort`, `ReadinessLevel`,
+`OpenFileDescriptionId`, `UnixMachineState`, `PollEvents`, `UnixTaskTable`,
+`ParkedSocketWait` — is already the library's. So the relocation is four slices, not
+one:
+
+* **16**: the cross-table invariant checker moves into the library. This is the
+  blocker: `TestEmulatedKernelSockets` asserts against `checkInvariants` in 30 places,
+  and it cannot move while the checker is PawPrint's.
+* **17**: the nine library fixtures' 45-line hand-rolled starting system becomes one
+  shared definition. Test-only, and it stops each relocation adding a tenth copy.
+* **18–20**: the three fixtures themselves, one per PR.
+
+### Stage 16: the cross-table invariant checker moves into the library
+
+**Dependencies**: none.
+
+`EmulatedKernel.checkInvariants` is ~290 lines answering "every way this kernel's
+tables disagree with each other". Of its `EmulatedKernelDefect` cases, **17 name only
+library types** — `SocketId`, `ConnectionId`, `OpenFileDescriptionId`, `InodeNumber`,
+`DirectoryStreamId`, `AbsoluteUnixPath`, `SocketKind`, `SocketPhase` — and exactly two
+blocks name a PawPrint concept: the `DIR*` block map (`NativeMemoryBlockId`, a native
+heap block id, three cases) and `checkTaskInvariants` (`ThreadId`/`ThreadStatus`, four
+cases, and a separate function already).
+
+That the docstring says "`EmulatedKernelDefect` is PawPrint's vocabulary" is true of
+`checkTaskInvariants`, where the thread set is PawPrint's, and false of the other
+seventeen.
+
+It has **no production caller at all** — `TestTaskState.fs` says so in as many words
+("`checkTaskInvariants` is a test-time oracle; nothing in the driver loop runs it"),
+and the grep agrees. So the blast radius is entirely test-side, which is what makes
+this cheap to get wrong and cheap to reverse.
+
+#### Options for the two vocabularies
+
+**(a) The library gets `UnixSystemDefect`; `EmulatedKernelDefect` shrinks to its seven
+and gains `| System of UnixSystemDefect`.** One call, one list, one emptiness check;
+the wrapper case names the boundary honestly. ~30 assertion sites in
+`WoofWare.PawPrint.Test` gain `EmulatedKernelDefect.System (...)`, and most of those
+sites are moving to the library in 18–20 anyway, where they lose the wrapper again.
+
+**(b) `EmulatedKernel.checkInvariants` returns the two lists as a pair.** Keeps the
+vocabularies separate with no wrapper case, but turns the common `shouldEqual []` into
+`shouldEqual ([], [])` and lets a caller check one half and forget the other. That
+silent-half failure is exactly what `KernelSyscall.fs`'s docstring says one shared
+definition exists to prevent.
+
+**(c) PawPrint does not compose at all**; callers pair
+`UnixSystem.checkInvariants (EmulatedKernel.unix kernel)` with
+`EmulatedKernel.checkInvariants kernel`, as the existing docstring already tells them
+to pair with `VirtualFileSystem.checkInvariants`. Precedent exists, but it turns one
+call into two at ~60 sites and a forgotten half is silent.
+
+**(d) One DU stays in PawPrint; the library returns its own and PawPrint maps 17 cases
+one-for-one.** Every existing call site is untouched, at the cost of two parallel
+17-case DUs and a 17-arm identity mapping the compiler can check for exhaustiveness but
+not for meaning. There is no encoding difference here to justify a conversion — unlike
+the `*Pal` modules, where there genuinely is one.
+
+**Decided: (a).** The seventeen cases are not PawPrint's vocabulary in any sense; they
+name library types about library tables. (d) would keep them looking like PawPrint's
+while the library computed them, which is the thing this whole extraction is trying to
+stop.
+
+**Correctness oracle**: the checker's own tests move with it. The forging helper the
+socket cases need (`FileDescriptorRegistry.Unchecked.ofParts`) is already library-side,
+which is what makes the moved tests a move rather than a rewrite.

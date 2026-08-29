@@ -258,7 +258,10 @@ module TestEmulatedKernelSockets =
     let ``checkInvariants rejects a description naming no socket`` () : unit =
         forge [ 0, OpenFileDescriptionId 7L, OpenFileTarget.Socket (SocketId 5L) ] [] 6L
         |> EmulatedKernel.checkInvariants
-        |> shouldEqual [ EmulatedKernelDefect.DanglingSocket (OpenFileDescriptionId 7L, SocketId 5L) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.DanglingSocket (OpenFileDescriptionId 7L, SocketId 5L))
+            ]
 
     /// A socket no description names. Today that means a close forgot to clean
     /// up; `SystemNative_Accept` is what will make it legal.
@@ -266,7 +269,10 @@ module TestEmulatedKernelSockets =
     let ``checkInvariants rejects a socket no description names`` () : unit =
         forge [] [ 5L, someSocket ] 6L
         |> EmulatedKernel.checkInvariants
-        |> shouldEqual [ EmulatedKernelDefect.UnreferencedSocket (SocketId 5L) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.UnreferencedSocket (SocketId 5L))
+            ]
 
     /// A socket identity at or above the cursor would be minted again by the next
     /// `socket(2)`, giving two sockets one identity — and hence, through
@@ -276,7 +282,10 @@ module TestEmulatedKernelSockets =
     let ``checkInvariants rejects a NextSocketId at or below a live socket`` (next : int64) : unit =
         forge [ 0, OpenFileDescriptionId 7L, OpenFileTarget.Socket (SocketId 5L) ] [ 5L, someSocket ] next
         |> EmulatedKernel.checkInvariants
-        |> shouldEqual [ EmulatedKernelDefect.NextSocketIdNotFresh (SocketId next, SocketId 5L) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.NextSocketIdNotFresh (SocketId next, SocketId 5L))
+            ]
 
     [<Test>]
     let ``checkInvariants accepts a NextSocketId above every live socket`` () : unit =
@@ -1289,7 +1298,10 @@ module TestEmulatedKernelSockets =
                 1L
 
         EmulatedKernel.checkInvariants kernel
-        |> shouldEqual [ EmulatedKernelDefect.DanglingConnection (SocketId 0L, ConnectionId 5L) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.DanglingConnection (SocketId 0L, ConnectionId 5L))
+            ]
 
     [<Test>]
     let ``checkInvariants rejects a queue naming a dead connection`` () : unit =
@@ -1310,7 +1322,10 @@ module TestEmulatedKernelSockets =
                 1L
 
         EmulatedKernel.checkInvariants kernel
-        |> shouldEqual [ EmulatedKernelDefect.DanglingQueuedConnection (SocketId 0L, ConnectionId 5L) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.DanglingQueuedConnection (SocketId 0L, ConnectionId 5L))
+            ]
 
     [<Test>]
     let ``checkInvariants rejects an orphan connection and a stale counter`` () : unit =
@@ -1337,8 +1352,10 @@ module TestEmulatedKernelSockets =
         EmulatedKernel.checkInvariants kernel
         |> shouldEqual
             [
-                EmulatedKernelDefect.OrphanConnection (ConnectionId 2L)
-                EmulatedKernelDefect.NextConnectionIdNotFresh (ConnectionId 1L, ConnectionId 2L)
+                EmulatedKernelDefect.System (UnixSystemDefect.OrphanConnection (ConnectionId 2L))
+                EmulatedKernelDefect.System (
+                    UnixSystemDefect.NextConnectionIdNotFresh (ConnectionId 1L, ConnectionId 2L)
+                )
             ]
 
     [<Test>]
@@ -1358,10 +1375,12 @@ module TestEmulatedKernelSockets =
         EmulatedKernel.checkInvariants kernel
         |> shouldEqual
             [
-                EmulatedKernelDefect.SocketPhaseKindMismatch (
-                    SocketId 0L,
-                    SocketKind.Datagram,
-                    SocketPhase.RefusedPendingDelivery
+                EmulatedKernelDefect.System (
+                    UnixSystemDefect.SocketPhaseKindMismatch (
+                        SocketId 0L,
+                        SocketKind.Datagram,
+                        SocketPhase.RefusedPendingDelivery
+                    )
                 )
             ]
 
@@ -1401,7 +1420,10 @@ module TestEmulatedKernelSockets =
             }
 
         EmulatedKernel.checkInvariants kernel
-        |> shouldEqual [ EmulatedKernelDefect.DuplicateQueuedConnection (ConnectionId 0L) ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.DuplicateQueuedConnection (ConnectionId 0L))
+            ]
 
     /// A wildcard-bound listener receives a loopback-destined connect — the
     /// shape `listen(2)`'s implicit bind creates, which no guest reaches yet

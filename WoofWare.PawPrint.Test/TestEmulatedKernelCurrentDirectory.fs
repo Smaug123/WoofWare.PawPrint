@@ -118,7 +118,9 @@ module TestEmulatedKernelCurrentDirectory =
         |> EmulatedKernel.checkInvariants
         |> shouldEqual
             [
-                EmulatedKernelDefect.CurrentDirectoryPathDisagrees (absolute "/outer", absolute "/outer/inner")
+                EmulatedKernelDefect.System (
+                    UnixSystemDefect.CurrentDirectoryPathDisagrees (absolute "/outer", absolute "/outer/inner")
+                )
             ]
 
     // ------------------------------------------------------ order-independence
@@ -231,7 +233,10 @@ module TestEmulatedKernelCurrentDirectory =
                 }
         }
         |> EmulatedKernel.checkInvariants
-        |> shouldEqual [ EmulatedKernelDefect.CurrentDirectoryIsNotADirectory file ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.CurrentDirectoryIsNotADirectory file)
+            ]
 
     [<Test>]
     let ``checkInvariants rejects a held inode the filesystem does not contain`` () : unit =
@@ -245,7 +250,10 @@ module TestEmulatedKernelCurrentDirectory =
                 }
         }
         |> EmulatedKernel.checkInvariants
-        |> shouldEqual [ EmulatedKernelDefect.CurrentDirectoryIsNotADirectory absent ]
+        |> shouldEqual
+            [
+                EmulatedKernelDefect.System (UnixSystemDefect.CurrentDirectoryIsNotADirectory absent)
+            ]
 
     // ------------------------------------------------------------ through the config
 

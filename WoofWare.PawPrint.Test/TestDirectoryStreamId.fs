@@ -202,7 +202,7 @@ module TestDirectoryStreamId =
         EmulatedKernel.checkInvariants kernel
         |> shouldEqual
             [
-                EmulatedKernelDefect.NextDirectoryStreamIdNotFresh (DirectoryStreamId 0L, id)
+                EmulatedKernelDefect.System (UnixSystemDefect.NextDirectoryStreamIdNotFresh (DirectoryStreamId 0L, id))
             ]
 
     [<Test>]

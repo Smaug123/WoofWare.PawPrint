@@ -18,7 +18,7 @@ type UnixMachineState =
         /// a descriptor's: an `OpenFileTarget.Socket` holds only the
         /// `SocketId`, and this is what it names. Every entry does have
         /// exactly one description naming it, and
-        /// `EmulatedKernel.checkInvariants` enforces that — a connection
+        /// `UnixSystem.checkInvariants` enforces that — a connection
         /// awaiting `accept(2)` is a `TcpConnection` in `Connections`, not a
         /// socket, precisely so this rule can stay strict.
         Sockets : Map<SocketId, SocketDescription>
@@ -455,7 +455,7 @@ module UnixMachineState =
         | Some socket -> socket
         | None ->
             failwith
-                $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and EmulatedKernelDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
+                $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
 
     /// The connection `connectionId` names.
     ///
@@ -467,7 +467,7 @@ module UnixMachineState =
         | Some connection -> connection
         | None ->
             failwith
-                $"UnixMachineState.connection: %O{connectionId} names no connection in this kernel's connection table. EmulatedKernelDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so this is an interpreter bug."
+                $"UnixMachineState.connection: %O{connectionId} names no connection in this kernel's connection table. UnixSystemDefect.DanglingConnection and DanglingQueuedConnection exist to make this unreachable, so this is an interpreter bug."
 
     /// The readiness a socket presents right now, before any waiter's interest
     /// mask is applied. Every row is measured on Linux 6.18.5 — `masks.c`
