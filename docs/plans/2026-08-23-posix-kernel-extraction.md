@@ -4383,6 +4383,34 @@ and the v6 expected bytes are hand-assembled from the descriptors.
 * `scripts/check-docstring-attachment.py` against the branch point, which this stage
   needs because it moves definitions between files.
 
+#### What review found
+
+Three things, and two of them are about the fixture rather than the move.
+
+* **The skip could not run.** `hostFlavour` and the two serialized blobs were
+  module-level bindings, so on a host with no preset F# forces them — and throws —
+  before NUnit reaches the guard. Functions now, with the guard as a `SetUp` every test
+  passes through. A guard that cannot run is worse than none, because it reads as
+  handled.
+* **The guard asked the wrong question.** It picked a preset by flavour alone, which
+  assumes the preset's *machine* is this one; both presets are little-endian, and one row
+  reads byte 0 of a Linux `sockaddr` as the family's low half, which on a big-endian
+  Linux would be its high half. It now wants a little-endian Linux or macOS host. Only
+  that one row actually breaks on big-endian — the others compare host-order writes
+  against host-order reads and would agree — but a fixture comparing a preset against a
+  machine should say which machines the preset describes.
+* **`reachedBy` could wrap.** `Offset + Width <= declaredLength` was safe while its only
+  inputs came from a closed DU, and is not now that `SockaddrField` is a public record:
+  `{ Offset = Int32.MaxValue; Width = 1 }` wrapped onto a bound every length satisfies.
+  It refuses a negative offset or width, and the comparison subtracts rather than adds —
+  the same rearrangement, for the same reason, as
+  `UserBufferCheck.faultsBeforeOperation`. This is the "publishing inherits private
+  preconditions" shape: nothing about the arithmetic changed, only who can reach it.
+
+  `TestSockaddrField.fs` covers the rewritten predicate, and its own battery of five
+  mutants all die — including "the addition comes back", which the overflow row kills, so
+  the rearrangement is load-bearing rather than decoration.
+
 #### In scope, and easy to under-plan: the prose
 
 `SockaddrOffsets`' docstrings are PAL-flavoured throughout — `FlowInfo` cites
