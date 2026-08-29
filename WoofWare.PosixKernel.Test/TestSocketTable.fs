@@ -1,11 +1,10 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// The socket table and the descriptor table have to agree, and neither module
@@ -13,7 +12,7 @@ open WoofWare.PosixKernel
 /// that holds the sockets. These are the claims about the pair.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
-module TestEmulatedKernelSockets =
+module TestSocketTable =
 
     // The soundness walk's coverage counters are sums over the whole run, so
     // their spread relative to the mean shrinks as the case count grows. Over 40
@@ -32,6 +31,17 @@ module TestEmulatedKernelSockets =
     /// resampled with replacement.
     let private genWalkSeed : Gen<int> = Gen.choose (0, System.Int32.MaxValue)
 
+    let private initialSystem : UnixSystem<int, string> =
+        UnixSystem.initial SimulatedUnixPlatform.linuxX64
+
+    /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
+    /// guest; an errno comes back, because that is an answer.
+    let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
+        match UnixSystem.close fd system with
+        | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
+        | Ok (SyscallAnswer.Failed error, _) -> Error error
+        | Ok (SyscallAnswer.Completed _, system) -> Ok system
+
     /// `SocketEventPort.drain` against a kernel, with the claim its two readers
     /// exist to satisfy checked on every call: the predicate a parked waiter is
     /// polled against and the drain its woken handler performs read the same
@@ -40,28 +50,27 @@ module TestEmulatedKernelSockets =
     let private deliverSocketEvents
         (portId : OpenFileDescriptionId)
         (maxCount : int)
-        (kernel : EmulatedKernel)
-        : (uint64 * ReadinessLevel) list * EmulatedKernel
+        (kernel : UnixSystem<int, string>)
+        : (uint64 * ReadinessLevel) list * UnixSystem<int, string>
         =
-        let system = EmulatedKernel.unix kernel
-        let predicted = SocketEventPort.hasDeliverableEvent portId system
-        let delivered, system = SocketEventPort.drain portId maxCount system
+        let predicted = SocketEventPort.hasDeliverableEvent portId kernel
+        let delivered, system = SocketEventPort.drain portId maxCount kernel
 
         if List.isEmpty delivered = predicted then
             failwith
                 $"SocketEventPort.hasDeliverableEvent answered %b{predicted} of port %O{portId}, but draining it reported %d{List.length delivered} events. The two read the same annotated walk, so they cannot disagree."
 
-        delivered, EmulatedKernel.withUnix system kernel
+        delivered, system
 
-    let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : EmulatedKernel) : bool =
-        SocketEventPort.hasDeliverableEvent portId (EmulatedKernel.unix kernel)
+    let private hasDeliverableSocketEvents (portId : OpenFileDescriptionId) (kernel : UnixSystem<int, string>) : bool =
+        SocketEventPort.hasDeliverableEvent portId kernel
 
     let private epollReadinessOfDescription
         (targetId : OpenFileDescriptionId)
-        (kernel : EmulatedKernel)
+        (kernel : UnixSystem<int, string>)
         : ReadinessLevel
         =
-        SocketEventPort.epollReadinessOfDescription targetId (EmulatedKernel.unix kernel)
+        SocketEventPort.epollReadinessOfDescription targetId kernel
 
     /// A kernel whose socket table and descriptor table are built by hand, so
     /// that `checkInvariants` has something unsound to reject. Every operation
@@ -71,7 +80,7 @@ module TestEmulatedKernelSockets =
         (descriptions : (int * OpenFileDescriptionId * OpenFileTarget) list)
         (sockets : (int64 * SocketDescription) list)
         (nextSocketId : int64)
-        : EmulatedKernel
+        : UnixSystem<int, string>
         =
         let registry =
             FileDescriptorRegistry.Unchecked.ofParts
@@ -89,14 +98,14 @@ module TestEmulatedKernelSockets =
                  |> Map.ofList)
                 (OpenFileDescriptionId (int64 descriptions.Length + 100L))
 
-        { EmulatedKernel.initial with
+        { initialSystem with
             Machine =
-                { EmulatedKernel.initial.Machine with
+                { initialSystem.Machine with
                     Sockets = sockets |> List.map (fun (id, socket) -> SocketId id, socket) |> Map.ofList
                     NextSocketId = SocketId nextSocketId
                 }
             Process =
-                { EmulatedKernel.initial.Process with
+                { initialSystem.Process with
                     FileDescriptors = registry
                 }
         }
@@ -117,13 +126,9 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``a fresh socket carries its triple into the socket table`` () : unit =
         let fd, kernel =
-            EmulatedKernel.createSocket
-                SocketDomain.InterNetworkV6
-                SocketKind.Datagram
-                SocketProtocol.Udp
-                EmulatedKernel.initial
+            UnixSystem.createSocket SocketDomain.InterNetworkV6 SocketKind.Datagram SocketProtocol.Udp initialSystem
 
-        match FileDescriptorRegistry.tryFind fd kernel.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
         | None -> failwith "the socket descriptor is not live"
         | Some description ->
 
@@ -135,25 +140,21 @@ module TestEmulatedKernelSockets =
             socket.Protocol |> shouldEqual SocketProtocol.Udp
         | other -> failwith $"expected a socket target, got %O{other}"
 
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// Two sockets are two identities and two table entries — the fact
     /// `OpenFileObject.Socket` turns into two `flock` slots.
     [<Test>]
     let ``two sockets get distinct identities`` () : unit =
         let _, kernel =
-            EmulatedKernel.createSocket
-                SocketDomain.InterNetwork
-                SocketKind.Stream
-                SocketProtocol.Tcp
-                EmulatedKernel.initial
+            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let _, kernel =
-            EmulatedKernel.createSocket SocketDomain.Unix SocketKind.Datagram SocketProtocol.Unspecified kernel
+            UnixSystem.createSocket SocketDomain.Unix SocketKind.Datagram SocketProtocol.Unspecified kernel
 
-        kernel.Sockets |> Map.count |> shouldEqual 2
-        kernel.NextSocketId |> shouldEqual (SocketId 2L)
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        kernel.Machine.Sockets |> Map.count |> shouldEqual 2
+        kernel.Machine.NextSocketId |> shouldEqual (SocketId 2L)
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// Closing the last descriptor onto a socket destroys the socket too. Before
     /// the socket table existed this was automatic — the socket *was* the
@@ -161,23 +162,19 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``closing the last descriptor destroys the socket`` () : unit =
         let fd, kernel =
-            EmulatedKernel.createSocket
-                SocketDomain.InterNetwork
-                SocketKind.Stream
-                SocketProtocol.Tcp
-                EmulatedKernel.initial
+            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
-        kernel.Sockets |> Map.count |> shouldEqual 1
+        kernel.Machine.Sockets |> Map.count |> shouldEqual 1
 
-        match KernelSyscall.close fd kernel with
+        match closeFd fd kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok kernel ->
 
-        kernel.Sockets |> shouldEqual Map.empty
+        kernel.Machine.Sockets |> shouldEqual Map.empty
         // Not rewound: identities are never reused, so the next socket does not
         // take the dead one's name.
-        kernel.NextSocketId |> shouldEqual (SocketId 1L)
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        kernel.Machine.NextSocketId |> shouldEqual (SocketId 1L)
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// ...and closing one of two descriptors onto a socket destroys neither the
     /// description nor the socket. This is the half that a `close` keying off
@@ -187,14 +184,10 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``closing a dup leaves the socket alive`` () : unit =
         let fd, kernel =
-            EmulatedKernel.createSocket
-                SocketDomain.InterNetwork
-                SocketKind.Stream
-                SocketProtocol.Tcp
-                EmulatedKernel.initial
+            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let duped, kernel =
-            match FileDescriptorRegistry.dup fd kernel.FileDescriptors with
+            match FileDescriptorRegistry.dup fd kernel.Process.FileDescriptors with
             | Ok (duped, registry) ->
                 duped,
                 { kernel with
@@ -205,15 +198,15 @@ module TestEmulatedKernelSockets =
                 }
             | Error e -> failwith $"expected dup to succeed, got %O{e}"
 
-        match KernelSyscall.close duped kernel with
+        match closeFd duped kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok kernel ->
 
-        kernel.Sockets |> Map.count |> shouldEqual 1
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        kernel.Machine.Sockets |> Map.count |> shouldEqual 1
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
         // And the surviving descriptor still resolves to it.
-        match FileDescriptorRegistry.tryFind fd kernel.FileDescriptors with
+        match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
         | Some description ->
             match description.Target with
             | OpenFileTarget.Socket socketId ->
@@ -227,14 +220,10 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``closing a non-socket descriptor leaves the socket table alone`` () : unit =
         let _, kernel =
-            EmulatedKernel.createSocket
-                SocketDomain.InterNetwork
-                SocketKind.Stream
-                SocketProtocol.Tcp
-                EmulatedKernel.initial
+            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let port, registry =
-            FileDescriptorRegistry.createSocketEventPort kernel.FileDescriptors
+            FileDescriptorRegistry.createSocketEventPort kernel.Process.FileDescriptors
 
         let kernel =
             { kernel with
@@ -244,12 +233,12 @@ module TestEmulatedKernelSockets =
                     }
             }
 
-        match KernelSyscall.close port kernel with
+        match closeFd port kernel with
         | Error e -> failwith $"expected close to succeed, got %O{e}"
         | Ok kernel ->
 
-        kernel.Sockets |> Map.count |> shouldEqual 1
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        kernel.Machine.Sockets |> Map.count |> shouldEqual 1
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// A description naming a socket the table does not hold. `UnixMachineState.socket`
     /// is total against this, so without the check it would surface as an
@@ -257,22 +246,16 @@ module TestEmulatedKernelSockets =
     [<Test>]
     let ``checkInvariants rejects a description naming no socket`` () : unit =
         forge [ 0, OpenFileDescriptionId 7L, OpenFileTarget.Socket (SocketId 5L) ] [] 6L
-        |> EmulatedKernel.checkInvariants
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.DanglingSocket (OpenFileDescriptionId 7L, SocketId 5L))
-            ]
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.DanglingSocket (OpenFileDescriptionId 7L, SocketId 5L) ]
 
     /// A socket no description names. Today that means a close forgot to clean
     /// up; `SystemNative_Accept` is what will make it legal.
     [<Test>]
     let ``checkInvariants rejects a socket no description names`` () : unit =
         forge [] [ 5L, someSocket ] 6L
-        |> EmulatedKernel.checkInvariants
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.UnreferencedSocket (SocketId 5L))
-            ]
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.UnreferencedSocket (SocketId 5L) ]
 
     /// A socket identity at or above the cursor would be minted again by the next
     /// `socket(2)`, giving two sockets one identity — and hence, through
@@ -281,16 +264,13 @@ module TestEmulatedKernelSockets =
     [<TestCase(0L)>]
     let ``checkInvariants rejects a NextSocketId at or below a live socket`` (next : int64) : unit =
         forge [ 0, OpenFileDescriptionId 7L, OpenFileTarget.Socket (SocketId 5L) ] [ 5L, someSocket ] next
-        |> EmulatedKernel.checkInvariants
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.NextSocketIdNotFresh (SocketId next, SocketId 5L))
-            ]
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.NextSocketIdNotFresh (SocketId next, SocketId 5L) ]
 
     [<Test>]
     let ``checkInvariants accepts a NextSocketId above every live socket`` () : unit =
         forge [ 0, OpenFileDescriptionId 7L, OpenFileTarget.Socket (SocketId 5L) ] [ 5L, someSocket ] 6L
-        |> EmulatedKernel.checkInvariants
+        |> UnixSystem.checkInvariants
         |> shouldEqual []
 
     /// `UnixMachineState.socket` is total against the invariant rather than
@@ -299,7 +279,7 @@ module TestEmulatedKernelSockets =
     let ``resolving an unknown socket identity fails loudly`` () : unit =
         let e =
             Assert.Throws<System.Exception> (fun () ->
-                UnixMachineState.socket (SocketId 99L) EmulatedKernel.initial.Machine |> ignore
+                UnixMachineState.socket (SocketId 99L) initialSystem.Machine |> ignore
             )
 
         e.Message |> shouldContainText "names no socket in this kernel's socket table"
@@ -362,20 +342,30 @@ module TestEmulatedKernelSockets =
             let rng = System.Random (seed)
             let steps = rng.Next (1, 30)
 
+            let filesystem =
+                FileSystemSeed.toVirtualFileSystem (UnixTimestamp.createOrFail "test" 1_700_000_000L 0) lifetimeSeed
+
             let mutable kernel =
-                EmulatedKernel.initial
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory
-                    SimulatedUnixPlatform.linuxX64
-                    (UnixTimestamp.createOrFail "test" 1_700_000_000L 0)
-                    lifetimeSeed
-                    AbsoluteUnixPath.root
+                { initialSystem with
+                    Machine =
+                        { initialSystem.Machine with
+                            FileSystem = filesystem
+                        }
+                    Process =
+                        { initialSystem.Process with
+                            CurrentDirectory = AbsoluteUnixPath.root
+                            CurrentDirectoryInode = VirtualFileSystem.root filesystem
+                        }
+                }
 
             for _ in 1..steps do
                 let live =
-                    FileDescriptorRegistry.fds kernel.FileDescriptors |> Map.toList |> List.map fst
+                    FileDescriptorRegistry.fds kernel.Process.FileDescriptors
+                    |> Map.toList
+                    |> List.map fst
 
                 let namesSocket (fd : int) : bool =
-                    match FileDescriptorRegistry.tryFind fd kernel.FileDescriptors with
+                    match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
                     | Some description ->
                         match description.Target with
                         | OpenFileTarget.Socket _ -> true
@@ -390,7 +380,7 @@ module TestEmulatedKernelSockets =
                     let chosen = live.[rng.Next live.Length]
                     let wasSocket = namesSocket chosen
 
-                    match KernelSyscall.close chosen kernel with
+                    match closeFd chosen kernel with
                     | Ok kernel' ->
                         kernel <- kernel'
 
@@ -399,7 +389,7 @@ module TestEmulatedKernelSockets =
                     | Error e -> failwith $"unexpected close error: %O{e}"
                 | 2
                 | 3 ->
-                    match FileDescriptorRegistry.dup live.[rng.Next live.Length] kernel.FileDescriptors with
+                    match FileDescriptorRegistry.dup live.[rng.Next live.Length] kernel.Process.FileDescriptors with
                     | Ok (_, registry) ->
                         kernel <-
                             { kernel with
@@ -418,17 +408,17 @@ module TestEmulatedKernelSockets =
                     // filesystem does not contain is a state `open(2)` cannot
                     // produce, and `DanglingOpenInode` says so.
                     let candidates =
-                        VirtualFileSystem.inodes kernel.FileSystem
+                        VirtualFileSystem.inodes kernel.Machine.FileSystem
                         |> Map.toList
                         |> List.map fst
-                        |> List.filter (fun inode -> inode <> VirtualFileSystem.root kernel.FileSystem)
+                        |> List.filter (fun inode -> inode <> VirtualFileSystem.root kernel.Machine.FileSystem)
 
                     if not (List.isEmpty candidates) then
                         let _, registry =
                             FileDescriptorRegistry.openFile
                                 candidates.[rng.Next candidates.Length]
                                 FileAccessMode.ReadOnly
-                                kernel.FileDescriptors
+                                kernel.Process.FileDescriptors
 
                         kernel <-
                             { kernel with
@@ -454,7 +444,7 @@ module TestEmulatedKernelSockets =
                     // orphan a whole subtree at once — and asserting soundness
                     // in it would be asserting a rule nobody has decided.
                     let removable =
-                        let filesystem = kernel.FileSystem
+                        let filesystem = kernel.Machine.FileSystem
 
                         let isRemovable (target : InodeNumber) : bool =
                             match VirtualFileSystem.tryGetContent target filesystem with
@@ -485,7 +475,7 @@ module TestEmulatedKernelSockets =
                                 holder
                                 chosen
                                 (UnixMachineState.fileTimestamp kernel.Machine)
-                                kernel.FileSystem
+                                kernel.Machine.FileSystem
                         with
                         | Error e -> failwith $"unexpected unbind error: %O{e}"
                         | Ok (inode, filesystem) ->
@@ -498,17 +488,17 @@ module TestEmulatedKernelSockets =
                                             FileSystem = filesystem
                                         }
                                 }
-                                |> EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld inode)
+                                |> UnixSystem.forgetIfUnheld inode
 
                             observedUnlinks <- observedUnlinks + 1
 
-                            if (VirtualFileSystem.inodes kernel.FileSystem |> Map.count) < before then
+                            if (VirtualFileSystem.inodes kernel.Machine.FileSystem |> Map.count) < before then
                                 observedReaps <- observedReaps + 1
 
                             // The inode survived the loss of its last name, and
                             // it is a directory — so something is holding an
                             // orphan whose ".." must not dangle.
-                            match VirtualFileSystem.tryGetContent inode kernel.FileSystem with
+                            match VirtualFileSystem.tryGetContent inode kernel.Machine.FileSystem with
                             | Some (InodeContent.Directory _) ->
                                 observedHeldOrphanDirectories <- observedHeldOrphanDirectories + 1
                             | Some (InodeContent.RegularFile _)
@@ -516,7 +506,7 @@ module TestEmulatedKernelSockets =
                             | None -> ()
                 | 6 ->
                     let _, registry =
-                        FileDescriptorRegistry.createSocketEventPort kernel.FileDescriptors
+                        FileDescriptorRegistry.createSocketEventPort kernel.Process.FileDescriptors
 
                     kernel <-
                         { kernel with
@@ -542,17 +532,17 @@ module TestEmulatedKernelSockets =
                             SocketKind.Datagram
 
                     let _, kernel' =
-                        EmulatedKernel.createSocket domain kind SocketProtocol.Unspecified kernel
+                        UnixSystem.createSocket domain kind SocketProtocol.Unspecified kernel
 
                     kernel <- kernel'
                     observedSockets <- observedSockets + 1
 
-                EmulatedKernel.checkInvariants kernel |> shouldEqual []
-                FileDescriptorRegistry.checkInvariants kernel.FileDescriptors |> shouldEqual []
+                UnixSystem.checkInvariants kernel |> shouldEqual []
 
-                VirtualFileSystem.checkInvariants
-                    (UnixSystem.pinnedInodes (EmulatedKernel.unix kernel))
-                    kernel.FileSystem
+                FileDescriptorRegistry.checkInvariants kernel.Process.FileDescriptors
+                |> shouldEqual []
+
+                VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes kernel) kernel.Machine.FileSystem
                 |> shouldEqual []
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWalkSeed) property)
@@ -706,7 +696,13 @@ module TestEmulatedKernelSockets =
             }
 
         level
-        |> ReadinessLevel.reportedUnder (SocketEventsPal.toInterest "test" 0)
+        |> ReadinessLevel.reportedUnder (
+            {
+                SocketEventInterest.In = false
+                Out = false
+                RdHup = false
+            }
+        )
         |> shouldEqual
             { ReadinessLevel.none with
                 Hup = true
@@ -714,7 +710,13 @@ module TestEmulatedKernelSockets =
             }
 
         level
-        |> ReadinessLevel.reportedUnder (SocketEventsPal.toInterest "test" 0x01)
+        |> ReadinessLevel.reportedUnder (
+            {
+                SocketEventInterest.In = true
+                Out = false
+                RdHup = false
+            }
+        )
         |> shouldEqual
             { ReadinessLevel.none with
                 In = true
@@ -728,14 +730,14 @@ module TestEmulatedKernelSockets =
     /// `initial`'s standard streams.
     [<Test>]
     let ``the standard streams present their pipe-end levels`` () : unit =
-        epollReadinessOfDescription (OpenFileDescriptionId 0L) EmulatedKernel.initial
+        epollReadinessOfDescription (OpenFileDescriptionId 0L) initialSystem
         |> shouldEqual
             { ReadinessLevel.none with
                 Hup = true
             }
 
         for id in 1L .. 2L do
-            epollReadinessOfDescription (OpenFileDescriptionId id) EmulatedKernel.initial
+            epollReadinessOfDescription (OpenFileDescriptionId id) initialSystem
             |> shouldEqual
                 { ReadinessLevel.none with
                     Out = true
@@ -748,8 +750,7 @@ module TestEmulatedKernelSockets =
     let ``a dangling readiness target crashes rather than answering`` () : unit =
         let exc =
             Assert.Throws<System.Exception> (fun () ->
-                epollReadinessOfDescription (OpenFileDescriptionId 99L) EmulatedKernel.initial
-                |> ignore
+                epollReadinessOfDescription (OpenFileDescriptionId 99L) initialSystem |> ignore
             )
 
         exc.Message |> shouldContainText "names no live open file description"
@@ -765,7 +766,7 @@ module TestEmulatedKernelSockets =
     /// A listening stream socket at loopback:`port` with the given backlog and
     /// `clients` idle stream sockets, each with a descriptor: fds 3, 4, 5, ...
     /// onto sockets 0 (the listener), 1, 2, ...
-    let private listenerAndClients (backlog : int) (port : uint16) (clients : int) : EmulatedKernel =
+    let private listenerAndClients (backlog : int) (port : uint16) (clients : int) : UnixSystem<int, string> =
         forge
             [
                 for i in 0..clients ->
@@ -796,10 +797,10 @@ module TestEmulatedKernelSockets =
         (client : SocketId)
         (nonBlocking : bool)
         (dest : InternetEndpoint)
-        (kernel : EmulatedKernel)
-        : ConnectOutcome * EmulatedKernel
+        (kernel : UnixSystem<int, string>)
+        : ConnectOutcome * UnixSystem<int, string>
         =
-        EmulatedKernel.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
+        UnixSystem.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
 
     /// The write-back a guest cannot inspect: the queue's content, the
     /// connection's two addresses, and the client's implicit binding. A
@@ -830,14 +831,14 @@ module TestEmulatedKernelSockets =
         | None -> failwith "expected the connect to bind the client implicitly"
         | Some binding ->
             binding.Endpoint.Address |> shouldEqual InternetEndpoint.LoopbackAddress
-            let low, high = kernel.EphemeralPortRange
+            let low, high = kernel.Machine.EphemeralPortRange
 
             (binding.Endpoint.Port >= low && binding.Endpoint.Port <= high)
             |> shouldEqual true
 
             tcpConnection.ClientAddress |> shouldEqual binding.Endpoint
 
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     [<Test>]
     let ``two connects queue oldest first`` () : unit =
@@ -968,7 +969,7 @@ module TestEmulatedKernelSockets =
                                                 LockedAddress = None
                                             }
                                 }
-                                kernel.Sockets
+                                kernel.Machine.Sockets
                     }
             }
 
@@ -1023,7 +1024,12 @@ module TestEmulatedKernelSockets =
     let ``connect onto a registered listener makes the registration pending and deliverable`` () : unit =
         let registration =
             {
-                Interest = SocketEventsPal.toInterest "test" 0x3
+                Interest =
+                    {
+                        SocketEventInterest.In = true
+                        Out = true
+                        RdHup = false
+                    }
                 Data = 0xBEEFUL
                 RegisteredAt = 0L
             }
@@ -1103,7 +1109,7 @@ module TestEmulatedKernelSockets =
                 Machine =
                     { kernel.Machine with
                         Sockets =
-                            kernel.Sockets
+                            kernel.Machine.Sockets
                             |> Map.add
                                 (SocketId 0L)
                                 { UnixMachineState.socket (SocketId 0L) kernel.Machine with
@@ -1120,12 +1126,12 @@ module TestEmulatedKernelSockets =
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
-        let fd, tcpConnection, kernel = EmulatedKernel.acceptConnection (SocketId 0L) kernel
+        let fd, tcpConnection, kernel = UnixSystem.acceptConnection (SocketId 0L) kernel
         let firstClient = UnixMachineState.connection (connectionOf 1L) kernel.Machine
         tcpConnection |> shouldEqual firstClient
 
         let acceptedId =
-            match FileDescriptorRegistry.tryFind fd kernel.FileDescriptors with
+            match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
             | Some description ->
                 match description.Target with
                 | OpenFileTarget.Socket socketId -> socketId
@@ -1150,12 +1156,12 @@ module TestEmulatedKernelSockets =
         | SocketPhase.Listening listenState -> listenState.Queue |> shouldEqual [ connectionOf 2L ]
         | other -> failwith $"expected Listening, got %A{other}"
 
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
-        let _, _, kernel = EmulatedKernel.acceptConnection (SocketId 0L) kernel
+        let _, _, kernel = UnixSystem.acceptConnection (SocketId 0L) kernel
 
         let e =
-            Assert.Throws<System.Exception> (fun () -> EmulatedKernel.acceptConnection (SocketId 0L) kernel |> ignore)
+            Assert.Throws<System.Exception> (fun () -> UnixSystem.acceptConnection (SocketId 0L) kernel |> ignore)
 
         e.Message |> shouldContainText "the accept queue is empty"
 
@@ -1165,7 +1171,7 @@ module TestEmulatedKernelSockets =
     let ``closing the last reference sweeps the connection`` () : unit =
         let kernel = listenerAndClients 8 5000us 1
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
-        let acceptedFd, _, kernel = EmulatedKernel.acceptConnection (SocketId 0L) kernel
+        let acceptedFd, _, kernel = UnixSystem.acceptConnection (SocketId 0L) kernel
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
@@ -1175,21 +1181,21 @@ module TestEmulatedKernelSockets =
         // The client dies; the accepted socket still references the
         // connection, so it survives.
         let kernel =
-            match KernelSyscall.close 4 kernel with
+            match closeFd 4 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
-        Map.containsKey connectionId kernel.Connections |> shouldEqual true
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        Map.containsKey connectionId kernel.Machine.Connections |> shouldEqual true
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
         // The accepted socket dies too; nothing references the connection.
         let kernel =
-            match KernelSyscall.close acceptedFd kernel with
+            match closeFd acceptedFd kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
-        Map.containsKey connectionId kernel.Connections |> shouldEqual false
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        Map.containsKey connectionId kernel.Machine.Connections |> shouldEqual false
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// A queued connection outlives its client (measured: accept still returns
     /// it), and dies with the listener once nothing else references it.
@@ -1204,22 +1210,22 @@ module TestEmulatedKernelSockets =
             | other -> failwith $"expected Established, got %A{other}"
 
         let kernel =
-            match KernelSyscall.close 4 kernel with
+            match closeFd 4 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
         // Still queued, so still alive — this is what lets a later accept
         // return it.
-        Map.containsKey connectionId kernel.Connections |> shouldEqual true
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        Map.containsKey connectionId kernel.Machine.Connections |> shouldEqual true
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
         let kernel =
-            match KernelSyscall.close 3 kernel with
+            match closeFd 3 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
-        Map.containsKey connectionId kernel.Connections |> shouldEqual false
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        Map.containsKey connectionId kernel.Machine.Connections |> shouldEqual false
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// A datagram connect stores the peer it was given — a value with no other
     /// observer until a transfer syscall reads the filter — and the Linux
@@ -1253,7 +1259,7 @@ module TestEmulatedKernelSockets =
         // AF_UNSPEC dissolves on Linux, and — measured, unlike TCP's reset —
         // drops the implicit binding entirely, port included.
         let outcome, kernel =
-            EmulatedKernel.connectSocket (SocketId 0L) false 16 (Some 0) None kernel
+            UnixSystem.connectSocket (SocketId 0L) false 16 (Some 0) None kernel
 
         outcome |> shouldEqual ConnectOutcome.Completed
         let socket = UnixMachineState.socket (SocketId 0L) kernel.Machine
@@ -1278,7 +1284,7 @@ module TestEmulatedKernelSockets =
             }
 
         let outcome, _ =
-            EmulatedKernel.connectSocket (SocketId 0L) false 16 (Some 0) None darwin
+            UnixSystem.connectSocket (SocketId 0L) false 16 (Some 0) None darwin
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EAFNOSUPPORT)
 
@@ -1297,11 +1303,8 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.checkInvariants kernel
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.DanglingConnection (SocketId 0L, ConnectionId 5L))
-            ]
+        UnixSystem.checkInvariants kernel
+        |> shouldEqual [ UnixSystemDefect.DanglingConnection (SocketId 0L, ConnectionId 5L) ]
 
     [<Test>]
     let ``checkInvariants rejects a queue naming a dead connection`` () : unit =
@@ -1321,11 +1324,8 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.checkInvariants kernel
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.DanglingQueuedConnection (SocketId 0L, ConnectionId 5L))
-            ]
+        UnixSystem.checkInvariants kernel
+        |> shouldEqual [ UnixSystemDefect.DanglingQueuedConnection (SocketId 0L, ConnectionId 5L) ]
 
     [<Test>]
     let ``checkInvariants rejects an orphan connection and a stale counter`` () : unit =
@@ -1349,13 +1349,11 @@ module TestEmulatedKernelSockets =
                     }
             }
 
-        EmulatedKernel.checkInvariants kernel
+        UnixSystem.checkInvariants kernel
         |> shouldEqual
             [
-                EmulatedKernelDefect.System (UnixSystemDefect.OrphanConnection (ConnectionId 2L))
-                EmulatedKernelDefect.System (
-                    UnixSystemDefect.NextConnectionIdNotFresh (ConnectionId 1L, ConnectionId 2L)
-                )
+                UnixSystemDefect.OrphanConnection (ConnectionId 2L)
+                UnixSystemDefect.NextConnectionIdNotFresh (ConnectionId 1L, ConnectionId 2L)
             ]
 
     [<Test>]
@@ -1372,15 +1370,13 @@ module TestEmulatedKernelSockets =
                 ]
                 1L
 
-        EmulatedKernel.checkInvariants kernel
+        UnixSystem.checkInvariants kernel
         |> shouldEqual
             [
-                EmulatedKernelDefect.System (
-                    UnixSystemDefect.SocketPhaseKindMismatch (
-                        SocketId 0L,
-                        SocketKind.Datagram,
-                        SocketPhase.RefusedPendingDelivery
-                    )
+                UnixSystemDefect.SocketPhaseKindMismatch (
+                    SocketId 0L,
+                    SocketKind.Datagram,
+                    SocketPhase.RefusedPendingDelivery
                 )
             ]
 
@@ -1419,11 +1415,8 @@ module TestEmulatedKernelSockets =
                     }
             }
 
-        EmulatedKernel.checkInvariants kernel
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.DuplicateQueuedConnection (ConnectionId 0L))
-            ]
+        UnixSystem.checkInvariants kernel
+        |> shouldEqual [ UnixSystemDefect.DuplicateQueuedConnection (ConnectionId 0L) ]
 
     /// A wildcard-bound listener receives a loopback-destined connect — the
     /// shape `listen(2)`'s implicit bind creates, which no guest reaches yet
@@ -1448,7 +1441,7 @@ module TestEmulatedKernelSockets =
                                                 LockedAddress = None
                                             }
                                 }
-                                kernel.Sockets
+                                kernel.Machine.Sockets
                     }
             }
 
@@ -1553,7 +1546,7 @@ module TestEmulatedKernelSockets =
                                                 LockedAddress = None
                                             }
                                 }
-                                kernel.Sockets
+                                kernel.Machine.Sockets
                     }
             }
 
@@ -1595,7 +1588,7 @@ module TestEmulatedKernelSockets =
 
         let outcome, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
         outcome |> shouldEqual ConnectOutcome.Completed
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
     /// The refusal's effect on the local binding, across all three bind
     /// provenances (implicit; bind(2) to loopback; bind(2) to the wildcard) —
@@ -1635,14 +1628,14 @@ module TestEmulatedKernelSockets =
                                     if darwin then
                                         SimulatedUnixPlatform.macOsArm64
                                     else
-                                        kernel.UnixPlatform
+                                        kernel.Machine.UnixPlatform
                                 Sockets =
                                     Map.add
                                         (SocketId 0L)
                                         { someSocket with
                                             Binding = preBinding
                                         }
-                                        kernel.Sockets
+                                        kernel.Machine.Sockets
                             }
                     }
 
@@ -1769,7 +1762,7 @@ module TestEmulatedKernelSockets =
                 Machine =
                     { kernel.Machine with
                         Sockets =
-                            kernel.Sockets
+                            kernel.Machine.Sockets
                             |> Map.add
                                 (SocketId 0L)
                                 { UnixMachineState.socket (SocketId 0L) kernel.Machine with
@@ -1803,7 +1796,7 @@ module TestEmulatedKernelSockets =
         // connecting to the listener.
         let kernel = listenerAndClients 8 5000us 2
 
-        let boundAt (socketId : int64) (kernel : EmulatedKernel) =
+        let boundAt (socketId : int64) (kernel : UnixSystem<int, string>) =
             { kernel with
                 Machine =
                     { kernel.Machine with
@@ -1818,7 +1811,7 @@ module TestEmulatedKernelSockets =
                                                 LockedAddress = Some InternetEndpoint.LoopbackAddress
                                             }
                                 }
-                                kernel.Sockets
+                                kernel.Machine.Sockets
                     }
             }
 
@@ -1859,7 +1852,7 @@ module TestEmulatedKernelSockets =
 
         // The client dies; its connection stays queued, so the tuple lives.
         let kernel =
-            match KernelSyscall.close 4 kernel with
+            match closeFd 4 kernel with
             | Ok kernel -> kernel
             | Error e -> failwith $"expected close to succeed, got %O{e}"
 
@@ -1902,7 +1895,7 @@ module TestEmulatedKernelSockets =
                                                 LockedAddress = Some InternetEndpoint.LoopbackAddress
                                             }
                                 }
-                                kernel.Sockets
+                                kernel.Machine.Sockets
                         Connections =
                             Map.ofList
                                 [
