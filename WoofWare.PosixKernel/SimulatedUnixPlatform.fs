@@ -494,8 +494,22 @@ module SockaddrField =
     /// the length to an unsigned type makes the bound enormous rather than
     /// negative, so this answers for what the *caller declared* before any such
     /// cast.
+    ///
+    /// A malformed descriptor is refused rather than answered for. `SockaddrField`
+    /// is a public record, so unlike the closed `SockaddrFamilyField` it can be
+    /// built with nonsense; a negative offset or width describes no field of any
+    /// struct.
     let reachedBy (field : SockaddrField) (declaredLength : int) : bool =
-        field.Offset + field.Width <= declaredLength
+        if field.Offset < 0 || field.Width < 0 then
+            failwith
+                $"SockaddrField.reachedBy: a field at offset %d{field.Offset} of width %d{field.Width} describes no part of any struct (this is a bug in the caller)."
+
+        // Rearranged to subtract rather than add, so that a field whose end is
+        // past `Int32.MaxValue` is not reached instead of wrapping onto a low
+        // bound that every length satisfies. The same rearrangement, for the same
+        // reason, as `UserBufferCheck.faultsBeforeOperation`. The guard above is
+        // what keeps this subtraction from underflowing.
+        declaredLength >= field.Offset && declaredLength - field.Offset >= field.Width
 
 /// `struct sockaddr_in`'s fields beyond the family, which
 /// `SockaddrFamilyField` describes because it is the one that moves between
