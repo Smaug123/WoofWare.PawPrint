@@ -30,6 +30,7 @@
     <Compile Include="TestInodeLifetime.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixPath.fs" />
+    <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestSignal.fs" />
     <Compile Include="TestSignalState.fs" />
