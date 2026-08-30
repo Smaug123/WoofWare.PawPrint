@@ -184,6 +184,44 @@ So at the depth guests actually run at, the derivation is **0.06%** of the call
 it serves; even a 256-deep current directory would be under a tenth of it. No
 cache, and the field stays gone.
 
+### The sweep that mattered was width, not depth
+
+Depth was the parameter I thought to sweep, and it was the wrong one. Codex's
+review found the other: `pathOfDirectory` recovers each component's name by
+searching its *parent's* entries, so the cost scaled with how many **siblings**
+a directory has. That copied the parent's whole entry map per level.
+
+Measured over one directory holding 100,000 entries, three ways of doing the
+same reverse lookup:
+
+| lookup | per call | allocated |
+| --- | --- | --- |
+| `Map.toList \|> List.tryPick` (what was there) | 2.3 ms | 6 400 024 B |
+| `Map.tryFindKey` | 4.2 ms | 6 800 175 B |
+| `Map.tryPick` | 0.39 ms | 24 B |
+
+`Map.tryFindKey` reads like the obvious answer and is *worse than the original
+on both counts* — which is why this is a measurement and not an argument.
+`Map.tryPick` walks the tree instead of copying it, and is what the code now
+does. End to end on `pathOfDirectory`:
+
+| siblings | before | after |
+| --- | --- | --- |
+| 0 | 0.9 µs / 968 B | 0.8 µs / 904 B |
+| 100 | 4.7 µs / 8 088 B | 1.9 µs / 1 624 B |
+| 10 000 | 147 µs / 642 529 B | 35 µs / 2 488 B |
+| 100 000 | 1 179 µs / 6 403 128 B | 556 µs / 3 064 B |
+
+Allocation is now flat in width. The remaining time still is not: a reverse
+lookup in a forward map is inherently O(width), and removing that would mean
+storing each directory's own name beside its parent link — a second copy of a
+fact the graph already holds, which is the thing this slice exists to delete.
+The measurement above says that trade is not worth making: it buys nothing at
+the widths a guest has, and `getcwd` costs 1.25 ms of interpretation regardless.
+
+This is a strict improvement for `pathOfDirectory`'s other callers too — the
+test oracle and kernel construction were paying the same copy.
+
 ## What was done
 
 Option 2, in the order the plan set out.
