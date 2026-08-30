@@ -353,7 +353,6 @@ module TestSocketTable =
                         }
                     Process =
                         { initialSystem.Process with
-                            CurrentDirectory = AbsoluteUnixPath.root
                             CurrentDirectoryInode = VirtualFileSystem.root filesystem
                         }
                 }

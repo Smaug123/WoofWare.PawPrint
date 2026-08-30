@@ -68,37 +68,29 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// reports `ERROR_ENVVAR_NOT_FOUND`, which is exactly what the PAL
         /// returns on that path.
         Environment : Map<string, string>
-        /// The simulated process's current working directory, as observed
-        /// through `SystemNative_GetCwd` — and hence through
-        /// `Environment.CurrentDirectory` and every relative
-        /// `Path.GetFullPath` on a Unix CoreLib.
+        /// The directory the simulated process is standing in: the inode it
+        /// holds its current directory *open on*, which is what a real process
+        /// holds rather than a name it re-walks.
         ///
-        /// Like `UnixPlatform`, CoreLib does *not* latch this during static
-        /// initialisation (`Interop.Sys.GetCwd()` is called afresh on every
-        /// read), but hosts should still set it via `KernelConfig` rather than
-        /// by record-copy after startup: PawPrint models no `chdir(2)`, so
-        /// within a run the cwd is immutable and a guest must not be able to
-        /// observe it changing under it.
-        ///
-        /// The **physical** path: every symlink resolved away, which is what
-        /// `getcwd(3)` reports and so not necessarily the spelling
-        /// `KernelConfig.CurrentDirectory` used. Derived from
-        /// `CurrentDirectoryInode` when the kernel is built, so the two cannot
-        /// describe a process no Unix could produce.
-        CurrentDirectory : AbsoluteUnixPath
-        /// The directory relative paths resolve against: the inode the
-        /// simulated process holds its current directory *open on*, which is
-        /// what a real process holds rather than a name it re-walks.
+        /// This is the whole of the process's current directory. The *path* —
+        /// what `SystemNative_GetCwd`, and hence `Environment.CurrentDirectory`
+        /// and every relative `Path.GetFullPath`, reports — is derived from this
+        /// inode and the filesystem by `UnixSystem.currentDirectoryPath`, and is
+        /// not stored: a path is a fact about the directory graph, which a
+        /// `rename` of any ancestor rewrites, and a second copy could only go
+        /// stale. That derivation is also what makes the path the **physical**
+        /// one, every symlink resolved away, which is what `getcwd(3)` reports
+        /// and so not necessarily the spelling `KernelConfig.CurrentDirectory`
+        /// used.
         ///
         /// Derived when the kernel is built, by the one setter that takes the
         /// current directory and the filesystem together — so this is not a
-        /// second, independent knob a host may set. It is nonetheless the
-        /// *identity* half of the pair, and the two answer
-        /// different questions once a guest can delete a directory: this one
-        /// says where a relative path starts, and `CurrentDirectory` says what
-        /// the process would be told if it asked. A real kernel splits them the
-        /// same way, which is why `getcwd` can fail while relative lookups
-        /// still work.
+        /// knob a host may set on its own.
+        ///
+        /// Once a guest can delete a directory, the inode outliving its own path
+        /// is an ordinary state rather than a broken one: relative lookups keep
+        /// working from here while `getcwd` has nothing to answer. A real kernel
+        /// splits the two the same way.
         ///
         /// Holding the inode is also what makes the resolution of a relative
         /// path *not* a lookup: no component of the current directory's own

@@ -3214,7 +3214,6 @@ module TestUnixSystemStep =
         { system with
             Process =
                 { system.Process with
-                    CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/d/inner"
                     CurrentDirectoryInode = inner
                 }
         }
@@ -4699,16 +4698,16 @@ module TestUnixSystemStep =
             Process =
                 { system.Process with
                     CurrentDirectoryInode = sub
-                    CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/dir/sub"
                 }
         }
 
     [<Test>]
     let ``renaming an ancestor of the current directory moves the cwd with it`` () : unit =
         // The cwd's *inode* does not change, so nothing about the descriptor
-        // side notices — but the path that reaches it does, and `getcwd` reports
-        // the cached path rather than re-walking. A rename that left the cache
-        // alone would have `getcwd` answer a directory that no longer exists.
+        // side notices — but the path that reaches it does, and that is what
+        // `getcwd` answers. The rename rewrites the graph the path is derived
+        // from, so the new path falls out of the move rather than having to be
+        // recomputed alongside it.
         let system = withCwdInSub linux
 
         let moved =
@@ -4718,14 +4717,8 @@ module TestUnixSystemStep =
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"expected a success, got %A{other}"
 
-        moved.Process.CurrentDirectory
-        |> shouldEqual (AbsoluteUnixPath.parseOrFail context "/moved/sub")
-
-        // ...and the cached path is the one that actually reaches the inode,
-        // which is the invariant `EmulatedKernelDefect.CurrentDirectoryPathDisagrees`
-        // is about.
-        VirtualFileSystem.pathOfDirectory moved.Process.CurrentDirectoryInode moved.Machine.FileSystem
-        |> shouldEqual (Some moved.Process.CurrentDirectory)
+        UnixSystem.currentDirectoryPath moved
+        |> shouldEqual (Some (AbsoluteUnixPath.parseOrFail context "/moved/sub"))
 
     /// The tree with the current directory `rmdir`'d out from under the process,
     /// which is the only way to reach an orphaned directory: one that still
@@ -4746,7 +4739,6 @@ module TestUnixSystemStep =
                 Process =
                     { created.Process with
                         CurrentDirectoryInode = inode
-                        CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/gone"
                     }
             }
 
@@ -4986,9 +4978,16 @@ module TestUnixSystemStep =
                 }
         }
 
-    let private changedTo (path : string) (system : UnixSystem<int, string>) : Result<string, UnixError> =
+    /// What the probe's rows record: whether the `chdir` succeeded, and what
+    /// `getcwd` says afterwards. `Ok None` is a `chdir` that succeeded into a
+    /// directory no path reaches, which the probe writes as
+    /// `ok, ... getcwd failed ENOENT`.
+    let private changedTo (path : string) (system : UnixSystem<int, string>) : Result<string option, UnixError> =
         match UnixSystem.chdir (statPath path) system with
-        | SyscallAnswer.Completed 0L, moved -> Ok (AbsoluteUnixPath.toString moved.Process.CurrentDirectory)
+        | SyscallAnswer.Completed 0L, moved ->
+            UnixSystem.currentDirectoryPath moved
+            |> Option.map AbsoluteUnixPath.toString
+            |> Ok
         | SyscallAnswer.Failed error, _ -> Error error
         | other -> failwith $"unexpected answer %A{other}"
 
@@ -4999,24 +4998,24 @@ module TestUnixSystemStep =
         // a regression in precisely the fact the probe establishes.
         let rows =
             [
-                "a directory", "d", Ok "/d"
-                "a directory, trailing separator", "d/", Ok "/d"
-                "nested", "d/sub", Ok "/d/sub"
+                "a directory", "d", Ok (Some "/d")
+                "a directory, trailing separator", "d/", Ok (Some "/d")
+                "nested", "d/sub", Ok (Some "/d/sub")
                 "a regular file", "f", Error UnixError.ENOTDIR
                 "a regular file, trailing separator", "f/", Error UnixError.ENOTDIR
                 // Follows the link, and records where it landed rather than what
                 // the guest named.
-                "a symlink to a directory", "ld", Ok "/d"
-                "a symlink to a directory, trailing sep", "ld/", Ok "/d"
+                "a symlink to a directory", "ld", Ok (Some "/d")
+                "a symlink to a directory, trailing sep", "ld/", Ok (Some "/d")
                 "a symlink to a file", "lf", Error UnixError.ENOTDIR
                 "a dangling symlink", "dang", Error UnixError.ENOENT
                 "absent", "nx", Error UnixError.ENOENT
                 "the empty path", "", Error UnixError.ENOENT
-                "search bit only", "xonly", Ok "/xonly"
+                "search bit only", "xonly", Ok (Some "/xonly")
                 "read bit only", "ronly", Error UnixError.EACCES
                 "a 300-byte name", String.replicate 300 "z", Error UnixError.ENAMETOOLONG
-                ".", ".", Ok "/"
-                "..", "..", Ok "/"
+                ".", ".", Ok (Some "/")
+                "..", "..", Ok (Some "/")
             ]
 
         for flavour, system in [ "Linux", linux ; "Darwin", darwin ] do
@@ -5036,7 +5035,7 @@ module TestUnixSystemStep =
                 Process = UnixProcessState.withUserAndGroupId 0u 0u (withChDirTree linux).Process
             }
 
-        changedTo "ronly" asRoot |> shouldEqual (Ok "/ronly")
+        changedTo "ronly" asRoot |> shouldEqual (Ok (Some "/ronly"))
 
     [<Test>]
     let ``leaving a removed directory is what finally frees it`` () : unit =
@@ -5069,15 +5068,18 @@ module TestUnixSystemStep =
         UnixSystem.checkInvariants left |> shouldEqual []
 
     [<Test>]
-    let ``chdir into a removed current directory succeeds and moves no path`` () : unit =
-        // Measured: `chdir(".")` there is a success on both kernels, though
-        // `getcwd` in that state fails -- and PawPrint's `getcwd` fails too, on
-        // `isOrphanedDirectory`, which `RmDirOrphanLinuxSeeded.cs` pins
-        // end-to-end. What this row is about is the *field*: with no path to
-        // record, `chdir` leaves the previous one in place, so
-        // `Process.CurrentDirectory` says "/d/sub" for a directory that no path
-        // reaches. That is invisible to a guest, and it is what
-        // docs/plans/2026-08-30-detached-current-directory.md removes.
+    let ``chdir in and out of a removed current directory`` () : unit =
+        // Both rows measured on both kernels; see docs/probes/chdir.
+        //
+        // `chdir(".")` in a removed directory succeeds and leaves `getcwd`
+        // with nothing to say, before the call and equally after it -- so being
+        // detached is a fact about where the process stands rather than an error
+        // the `chdir` reports.
+        //
+        // `chdir("..")` out of it is the recovery: the parent still has a path,
+        // so the process has one again. That is the row that says the path must
+        // be derived rather than latched onto the process -- a kernel that had
+        // recorded "detached" would have to remember to clear it here.
         let system = withChDirTree linux
 
         let inSub =
@@ -5090,4 +5092,7 @@ module TestUnixSystemStep =
             | SyscallAnswer.Completed 0L, removed -> removed
             | other -> failwith $"expected the rmdir to succeed, got %A{other}"
 
-        changedTo "." orphaned |> shouldEqual (Ok "/d/sub")
+        UnixSystem.currentDirectoryPath orphaned |> shouldEqual None
+
+        changedTo "." orphaned |> shouldEqual (Ok None)
+        changedTo ".." orphaned |> shouldEqual (Ok (Some "/d"))

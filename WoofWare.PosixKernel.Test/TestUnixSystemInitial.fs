@@ -123,10 +123,10 @@ module TestUnixSystemInitial =
     // The pairs that must start consistent
     // ------------------------------------------------------------------
 
-    /// The current directory and the inode it names have to agree from the
-    /// start: `checkInvariants` rejects a process whose stored path is not the
-    /// one that reaches its held inode, and a constructor that built the
-    /// filesystem twice would produce exactly that.
+    /// The directory a fresh process stands in is the root of *this* system's
+    /// own filesystem, and the path derived from it is "/". A constructor that
+    /// built the filesystem twice would hold an inode from the other one, which
+    /// no path here reaches.
     [<TestCaseSource(nameof platforms)>]
     let ``the current directory is the root of this system's own filesystem``
         (platform : SimulatedUnixPlatform)
@@ -137,7 +137,8 @@ module TestUnixSystemInitial =
         system.Process.CurrentDirectoryInode
         |> shouldEqual (VirtualFileSystem.root system.Machine.FileSystem)
 
-        system.Process.CurrentDirectory |> shouldEqual AbsoluteUnixPath.root
+        UnixSystem.currentDirectoryPath system
+        |> shouldEqual (Some AbsoluteUnixPath.root)
 
     /// Every rule at once, which is the cheapest statement that a fresh system
     /// is a system at all.
