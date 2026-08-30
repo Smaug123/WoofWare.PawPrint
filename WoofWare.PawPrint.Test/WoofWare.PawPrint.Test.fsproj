@@ -85,7 +85,7 @@
     <Compile Include="TestIlDecoding.fs" />
     <Compile Include="TestStackMemoryPool.fs" />
     <Compile Include="TestNativeMemoryPool.fs" />
-    <Compile Include="TestFileSystemSeed.fs" />
+    <Compile Include="TestSeedForOracle.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
     <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
