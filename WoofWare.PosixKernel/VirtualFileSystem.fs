@@ -437,7 +437,6 @@ module VirtualFileSystem =
     /// field nobody remembered to write.
     let deviceId : int64 = 0x1000001L
 
-
     /// A filesystem containing nothing but an empty root directory, created at
     /// `now`.
     ///
