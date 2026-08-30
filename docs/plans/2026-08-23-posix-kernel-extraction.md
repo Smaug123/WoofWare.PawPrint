@@ -5039,7 +5039,8 @@ docstrings name each other.
 * **26**: `TestEmulatedKernelInodeLifetime`, split — one row stays, and the fixture dissolves.
 * **27**: `TestAbsoluteUnixPath` — sixteen of seventeen rows cross; the one that drives
   the PawPrint wrapper joins `TestEmulatedKernelCurrentDirectory`.
-* **28**: `TestFileSystemSeed`, split.
+* **28**: `TestFileSystemSeed` — eleven of thirteen rows cross; the two about
+  `validateSeedForOracle` become `TestSeedForOracle`.
 
 ### Stage 21: the bind rules' fixture moves to the library
 
@@ -5607,3 +5608,66 @@ fails `parseOrFail names the offending knob` and nothing else, so the retargeted
 load-bearing rather than decorative.
 
 Library 1100 → 1116, PawPrint 3102 → 3086.
+
+### Stage 28: the seed fixture becomes the library's, and the oracle's rule gets its own
+
+**Dependencies**: none.
+
+`FileSystemSeed` is the library's, and eleven of `TestFileSystemSeed`'s thirteen rows say
+what realising a seed produces: the tree it describes, the parents, the creation instant,
+the modes, and — by generator — that every declared path resolves to what was declared and
+that realising is deterministic down to the inode numbers. Two more, about
+`SimulatedUnixPlatform`'s release strings and what `stat` can ask of a flavour, are the
+library's for the same reason.
+
+The two that stay are `RealRuntime.validateSeedForOracle`'s: which seeds a *differential*
+case may declare. A seed is the library's idea of a filesystem and the interpreted guest
+gets exactly the one it describes, but the real runtime does not — the oracle materialises
+the seed as a real directory on the host. A seed naming something a real directory cannot
+hold, or carrying a mode a host `chmod` may silently drop, would leave the two runtimes
+answering questions about different filesystems while the comparison still ran and still
+looked like evidence.
+
+#### Where the two go
+
+**A shrunken `TestFileSystemSeed` on the PawPrint side.** Rejected for the reason stage 22
+and stage 24 rejected it: the fixture would be named for a type that had entirely left.
+
+**`TestRealRuntimeOracle`**, whose docstring is "tests for the differential oracle itself".
+Broad enough on its face, but that docstring is a tight argument about `RunMain`'s
+process-termination semantics, transcribed from the pinned runtime's `assembly.cpp`.
+Widening it to cover seed shape would dilute a good piece of prose. Rejected.
+
+**A new `TestSeedForOracle`.** Taken. Two rows with one subject is a fixture — the same
+judgement stage 22 made creating `TestKernelConfig`, which began with one. Its docstring
+states the division: `TestFileSystemSeed` says what a seed *is*, and these say which of
+those a comparison may use.
+
+#### A sentence that had never been true
+
+The mode row's docstring opens *"Split out from the shape-validation test above"*. That
+test is below it, and has been since `e36fa1c4` wrote the sentence — checked against the
+file at that commit rather than assumed. This stage has to choose an order for the two
+rows anyway, so putting the shape row first makes the sentence true at no cost. Not a
+sweep: the prose is untouched.
+
+**Correctness oracle**: the two suites' full test-name inventories are identical again —
+8086 rows before and after, nothing vanished, nothing new, eleven crossing.
+
+Mutation, one per side of the split: disabling the special-bit refusal in
+`RealRuntime.validateSeedForOracle` fails `the oracle refuses mode bits a host chmod may
+drop` in its new fixture, so the row still binds to the rule; realising every seed at the
+epoch instead of the moment given fails `every seeded inode is created at the moment the
+seed was realised` and nothing else.
+
+`TestNoPawPrintReference` still passes, which is the standing check that none of this drags
+a dependency across.
+
+Library 1116 → 1127, PawPrint 3086 → 3075.
+
+### The planned relocations are done
+
+Stages 21 to 28 have moved every fixture the audit named. What remains is recorded above
+and is not fixture relocation: the two ad-hoc `hostPlatform ()` copies that `HostPlatform`
+should replace (stage 23, and #1253 has since added a third call site), and the library's
+missing `closedir` (stage 26).
