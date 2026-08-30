@@ -24,6 +24,7 @@
         <Compile Include="PermissionBits.fs" />
         <Compile Include="UnixTimestamp.fs" />
         <Compile Include="SymlinkTarget.fs" />
+        <Compile Include="PathLimits.fs" />
         <Compile Include="Inode.fs" />
         <Compile Include="VirtualFileSystem.fs" />
         <Compile Include="FileSystemSeed.fs" />
