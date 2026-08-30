@@ -184,28 +184,41 @@ So at the depth guests actually run at, the derivation is **0.06%** of the call
 it serves; even a 256-deep current directory would be under a tenth of it. No
 cache, and the field stays gone.
 
-## Work, if Option 2 is chosen
+## What was done
 
-1. **First, on #1253**: correct the two false comments (the plan's out-of-scope
-   note and the test's). They describe behaviour PawPrint does not have.
-2. Add the equivalence property to `WoofWare.PosixKernel.Test`: over generated
-   trees and operation sequences, `pathOfDirectory d = None` iff
-   `isOrphanedDirectory d`, for every directory. This is worth having whichever
-   option wins, because `isOrphanedDirectory` has four other callers in
-   `SimulatedUnixPlatform` resting on the same reasoning.
-3. Extend `docs/probes/chdir/chdir.py` with the recovery rows measured above and
-   re-measure both flavours; transcribe them into `TestUnixSystemStep.fs`.
-4. Remove the field; make `getcwd` derive; delete `CurrentDirectoryPathDisagrees`
-   and its test; update `changedTo` and the host-comparison helper, which read
-   `Process.CurrentDirectory` directly.
-5. Benchmark `getcwd` on a deep tree, and record the number.
-6. Mutation battery, at least: make `chdir` derive from the *guest's* path rather
-   than the landed inode (the `ld -> d` row must die); invert the `None` answer
-   in `getcwd` (the two `RmDirOrphan*Seeded` guests must die); make
-   `pathOfDirectory` return the root on a detached directory (the recovery row
-   and the orphan guests must die).
+Option 2, in the order the plan set out.
+
+1. Corrected the two false comments (the chdir plan's out-of-scope note and the
+   test's).
+2. Added `a directory has no path exactly when it is orphaned` to
+   `TestVirtualFileSystem.fs` — the equivalence Option 2 rests on for being
+   behaviour-preserving, over a corpus with orphans and a rename that moves
+   directories between parents. Coverage guard measured over eight runs (64, 64,
+   65, 65, 67, 67, 71, 75 orphans seen); mutation-checked by removing
+   `isOrphanedDirectory`'s root special case.
+3. Extended `docs/probes/chdir/chdir.py` with the recovery rows and re-measured
+   both flavours. They agree: `chdir("..")` out of a removed directory recovers
+   `getcwd`, and `chdir(".")` in one leaves it failing ENOENT both before and
+   after.
+4. Removed `UnixProcessState.CurrentDirectory`. `getcwd` derives via the new
+   `UnixSystem.currentDirectoryPath`; `rename`'s recompute and `chdir`'s
+   `recorded` are gone; `UnixSystemDefect.CurrentDirectoryPathDisagrees` is
+   deleted along with the test that constructed the now-unrepresentable state
+   (`CurrentDirectoryIsNotADirectory`, which survives, keeps its two tests).
+   `EmulatedKernel.currentDirectoryPath` replaces the forwarding member.
+5. Benchmarked — see above. No cache.
+6. Mutation battery, five mutations, all killed, each by the test that names its
+   subject:
+
+| mutation | killed by |
+| --- | --- |
+| detached falls back to the root | `a removed current directory is ENOENT at every capacity that reaches it` (and, checked separately, both `RmDirOrphan*Seeded` guests) |
+| the derivation reads the root, not where the process stands | `a kernel-copying getcwd answers ERANGE before it looks at the destination` |
+| the zero-capacity guard never fires | `getcwd answers a zero capacity EINVAL, and that beats a removed directory` |
+| chdir does not move the process | `chdir in and out of a removed current directory` |
+| the shortest-path flavour needs no room for the root | `below capacity 2 even a user-space getcwd answers an unwritable destination` |
 
 ## Out of scope
 
 * `fchdir(2)`: still no CoreLib caller.
-* Caching the derived path. Only if step 5 says so.
+* Caching the derived path. The benchmark says no.
