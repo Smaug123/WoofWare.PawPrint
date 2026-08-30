@@ -149,6 +149,24 @@ module TestEmulatedKernelCurrentDirectory =
     // -------------------------------------------------- what a host is told
 
     [<Test>]
+    let ``The kernel rejects a forged current directory at configuration time`` () : unit =
+        // The boundary that matters: without this, a defaulted value would sail
+        // into kernel state and fail as a null reference inside the first
+        // SystemNative_GetCwd instead of naming the knob.
+        let text =
+            message (fun () ->
+                EmulatedKernel.initial
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    SimulatedUnixPlatform.linuxX64
+                    (UnixTimestamp.ofSeconds 0L)
+                    FileSystemSeed.empty
+                    Unchecked.defaultof<AbsoluteUnixPath>
+                |> ignore<EmulatedKernel>
+            )
+
+        text |> shouldContainText "EmulatedKernel.CurrentDirectory"
+
+    [<Test>]
     let ``a current directory the seed does not contain names both knobs`` () : unit =
         let text = message (fun () -> seededAt "/outer/nope" |> ignore<EmulatedKernel>)
 

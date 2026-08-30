@@ -5037,7 +5037,8 @@ docstrings name each other.
   resolution and invariant rows to the library, the message rows staying with the wrapper
   that formats them, and the `KernelConfig` orphan joining `TestKernelConfig`.
 * **26**: `TestEmulatedKernelInodeLifetime`, split — one row stays, and the fixture dissolves.
-* **27**: `TestAbsoluteUnixPath`, split.
+* **27**: `TestAbsoluteUnixPath` — sixteen of seventeen rows cross; the one that drives
+  the PawPrint wrapper joins `TestEmulatedKernelCurrentDirectory`.
 * **28**: `TestFileSystemSeed`, split.
 
 ### Stage 21: the bind rules' fixture moves to the library
@@ -5555,3 +5556,54 @@ against the new home and still holds, including the `sourcesImpure/UnlinkReapSee
 names, which is still PawPrint's and still the only other check on any of this.
 
 Library 1082 → 1100, PawPrint 3120 → 3102.
+
+### Stage 27: the absolute-path fixture becomes the library's
+
+**Dependencies**: none beyond 25, whose wrapper the one staying row drives.
+
+`AbsoluteUnixPath` is `WoofWare.PosixKernel`'s own type, and sixteen of
+`TestAbsoluteUnixPath`'s seventeen rows are about parsing, rendering and rejecting one.
+They move as a file; the fixture keeps its name because the library has none.
+
+The seventeenth, `The kernel rejects a forged current directory at configuration time`,
+drives `EmulatedKernel.withFileSystemAndCurrentDirectory` and asserts the message names
+`EmulatedKernel.CurrentDirectory`. That is the wrapper's job, so it joins
+`TestEmulatedKernelCurrentDirectory`, whose subject stage 25b narrowed to exactly that.
+It adopts that fixture's own `message` helper rather than bringing an `open System` with
+it for `Assert.Throws<Exception>`.
+
+#### The audit had this stage three rows too large
+
+It said "split — 4 cases forge an `EmulatedKernel`". One does. The same error appears in
+stage 28's line ("8 cases call `RealRuntime.validateSeedForOracle`" — two rows do, calling
+it eight times) and in the stage-23 text that stage 24 corrected. All three counted *call
+sites* and reported them as *rows*, which is why the audit has consistently overstated how
+much stays behind.
+
+#### The label two rows pass
+
+`assertValid rejects the forged default value` and `parseOrFail names the offending knob`
+pass a string naming the caller's boundary, and assert the failure echoes it. That string
+was `KernelConfig.CurrentDirectory`.
+
+Keeping it would have introduced a PawPrint type name into library code — which is a
+different thing from the PawPrint names already in library *prose*, left deliberately as
+markers for text not yet reviewed. `AbsoluteUnixPath.assertValid`'s own docstring
+describes its callers generically rather than naming any, so the library's convention here
+is already to avoid them.
+
+Rather than invent a label, the rows now name a real library caller of the function they
+test: `UnixSystem.withFileSystemAndCurrentDirectory`, which stage 25 gave that exact
+`assertValid` call. The rows are truer than before — the string is now one this repository
+can check exists.
+
+**Correctness oracle**: the two suites' full test-name inventories are *identical* — 8086
+rows before and after, nothing vanished, nothing new, sixteen crossing. This is the first
+stage where no row needed renaming.
+
+`scripts/check-move-is-rename-only.sh` prints residue that is exactly the label retarget
+plus the cut. Mutation: dropping `context` from `AbsoluteUnixPath.parseOrFail`'s message
+fails `parseOrFail names the offending knob` and nothing else, so the retargeted label is
+load-bearing rather than decorative.
+
+Library 1100 → 1116, PawPrint 3102 → 3086.

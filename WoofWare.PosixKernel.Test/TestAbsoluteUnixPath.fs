@@ -1,4 +1,4 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System
 open System.Text
@@ -6,7 +6,6 @@ open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 [<TestFixture>]
@@ -243,38 +242,20 @@ module TestAbsoluteUnixPath =
 
         let exn =
             Assert.Throws<Exception> (fun () ->
-                AbsoluteUnixPath.assertValid "KernelConfig.CurrentDirectory" forged
+                AbsoluteUnixPath.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" forged
                 |> ignore<AbsoluteUnixPath>
             )
 
-        exn.Message |> shouldContainText "KernelConfig.CurrentDirectory"
+        exn.Message |> shouldContainText "UnixSystem.withFileSystemAndCurrentDirectory"
         exn.Message |> shouldContainText "Unchecked.defaultof"
-
-    [<Test>]
-    let ``The kernel rejects a forged current directory at configuration time`` () : unit =
-        // The boundary that matters: without this, a defaulted value would sail
-        // into kernel state and fail as a null reference inside the first
-        // SystemNative_GetCwd instead of naming the knob.
-        let exn =
-            Assert.Throws<Exception> (fun () ->
-                EmulatedKernel.initial
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory
-                    SimulatedUnixPlatform.linuxX64
-                    (UnixTimestamp.ofSeconds 0L)
-                    FileSystemSeed.empty
-                    Unchecked.defaultof<AbsoluteUnixPath>
-                |> ignore<EmulatedKernel>
-            )
-
-        exn.Message |> shouldContainText "EmulatedKernel.CurrentDirectory"
 
     [<Test>]
     let ``parseOrFail names the offending knob`` () : unit =
         let exn =
             Assert.Throws<Exception> (fun () ->
-                AbsoluteUnixPath.parseOrFail "KernelConfig.CurrentDirectory" "relative"
+                AbsoluteUnixPath.parseOrFail "UnixSystem.withFileSystemAndCurrentDirectory" "relative"
                 |> ignore<AbsoluteUnixPath>
             )
 
-        exn.Message |> shouldContainText "KernelConfig.CurrentDirectory"
+        exn.Message |> shouldContainText "UnixSystem.withFileSystemAndCurrentDirectory"
         exn.Message |> shouldContainText "relative"
