@@ -1,9 +1,8 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// When an inode stops existing.
@@ -18,7 +17,7 @@ open WoofWare.PosixKernel
 /// assertion are the only checks on it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
-module TestEmulatedKernelInodeLifetime =
+module TestInodeLifetime =
 
     let private name (s : string) : FileName = FileName.parseOrFail "test" s
 
@@ -55,38 +54,39 @@ module TestEmulatedKernelInodeLifetime =
                 )
             ]
 
-    let private kernel () : EmulatedKernel =
-        EmulatedKernel.initial
-        |> EmulatedKernel.withFileSystemAndCurrentDirectory
-            SimulatedUnixPlatform.linuxX64
-            createdAt
-            seed
-            (absolute "/outer/inner")
+    /// A system on the tree above, standing at `dir`.
+    let private standingAt (dir : string) : UnixSystem<int, string> =
+        match
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> UnixSystem.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt seed (absolute dir)
+        with
+        | Ok system -> system
+        | Error fault -> failwith $"the fixture's own seed did not boot at %s{dir}: %O{fault}."
+
+    let private kernel () : UnixSystem<int, string> = standingAt "/outer/inner"
 
     /// The same tree, but standing at the root — so that `/outer/inner` can be
     /// orphaned with a descriptor as its only holder, which is the shape the
     /// cascade rows need.
-    let private kernelAtRoot () : EmulatedKernel =
-        EmulatedKernel.initial
-        |> EmulatedKernel.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt seed (absolute "/")
+    let private kernelAtRoot () : UnixSystem<int, string> = standingAt "/"
 
-    let private inodeOf (kernel : EmulatedKernel) (path : string) : InodeNumber =
+    let private inodeOf (kernel : UnixSystem<int, string>) (path : string) : InodeNumber =
         match
             VirtualFileSystem.resolveExisting
-                (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
+                (SimulatedUnixPlatform.pathLimits kernel.Machine.UnixPlatform)
                 CallerPrivilege.Privileged
-                (VirtualFileSystem.root kernel.FileSystem)
+                (VirtualFileSystem.root kernel.Machine.FileSystem)
                 SymlinkPolicy.Follow
                 (UnixPath.parseOrFail "test" path)
-                kernel.FileSystem
+                kernel.Machine.FileSystem
         with
         | Ok inode -> inode
         | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}"
 
     /// Open `inode` read-only, answering the descriptor and the kernel holding it.
-    let private opened (inode : InodeNumber) (kernel : EmulatedKernel) : int * EmulatedKernel =
+    let private opened (inode : InodeNumber) (kernel : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         let fd, registry =
-            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly kernel.FileDescriptors
+            FileDescriptorRegistry.openFile inode FileAccessMode.ReadOnly kernel.Process.FileDescriptors
 
         fd,
         { kernel with
@@ -99,14 +99,19 @@ module TestEmulatedKernelInodeLifetime =
     /// Remove `name` from the directory `path` names, answering the inode that
     /// name bound and the kernel with the name gone — the state `unlink` leaves
     /// before anything decides whether to free the inode.
-    let private unbound (path : string) (entry : string) (kernel : EmulatedKernel) : InodeNumber * EmulatedKernel =
+    let private unbound
+        (path : string)
+        (entry : string)
+        (kernel : UnixSystem<int, string>)
+        : InodeNumber * UnixSystem<int, string>
+        =
         match
             VirtualFileSystem.unbind
                 UnbindTargetEffect.LostALink
                 (inodeOf kernel path)
                 (name entry)
                 later
-                kernel.FileSystem
+                kernel.Machine.FileSystem
         with
         | Error error -> failwith $"could not unbind %s{entry} from %s{path}: %O{error}"
         | Ok (inode, filesystem) ->
@@ -118,13 +123,14 @@ module TestEmulatedKernelInodeLifetime =
                     }
             }
 
-    let private closed (fd : int) (kernel : EmulatedKernel) : EmulatedKernel =
-        match KernelSyscall.close fd kernel with
-        | Ok kernel -> kernel
-        | Error error -> failwith $"could not close fd %d{fd}: %O{error}"
+    let private closed (fd : int) (kernel : UnixSystem<int, string>) : UnixSystem<int, string> =
+        match UnixSystem.close fd kernel with
+        | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
+        | Ok (SyscallAnswer.Failed error, _) -> failwith $"could not close fd %d{fd}: %O{error}"
+        | Ok (SyscallAnswer.Completed _, system) -> system
 
-    let private contains (inode : InodeNumber) (kernel : EmulatedKernel) : bool =
-        (VirtualFileSystem.tryGet inode kernel.FileSystem).IsSome
+    let private contains (inode : InodeNumber) (kernel : UnixSystem<int, string>) : bool =
+        (VirtualFileSystem.tryGet inode kernel.Machine.FileSystem).IsSome
 
     // -------------------------------------------------------------- heldInodes
 
@@ -139,12 +145,12 @@ module TestEmulatedKernelInodeLifetime =
         // would answer the empty set here — and then reap the directory the
         // process is standing in, the moment `rmdir` can orphan one.
         UnixProcessState.heldInodes kernel.Process
-        |> shouldEqual (Set.singleton kernel.CurrentDirectoryInode)
+        |> shouldEqual (Set.singleton kernel.Process.CurrentDirectoryInode)
 
         let _, withA = opened a kernel
 
         UnixProcessState.heldInodes withA.Process
-        |> shouldEqual (Set.ofList [ kernel.CurrentDirectoryInode ; a ])
+        |> shouldEqual (Set.ofList [ kernel.Process.CurrentDirectoryInode ; a ])
 
         // ...and not merely "some file is open": `b` is not held.
         UnixProcessState.heldInodes withA.Process |> Set.contains b |> shouldEqual false
@@ -158,7 +164,7 @@ module TestEmulatedKernelInodeLifetime =
 
         UnixProcessState.heldInodes kernel.Process |> Set.count |> shouldEqual 1
 
-        FileDescriptorRegistry.descriptions kernel.FileDescriptors
+        FileDescriptorRegistry.descriptions kernel.Process.FileDescriptors
         |> Map.isEmpty
         |> shouldEqual false
 
@@ -170,13 +176,13 @@ module TestEmulatedKernelInodeLifetime =
         // parent's "..", all the way up. So the ancestors of anything held must
         // not be freed, and `checkInvariants` must excuse them.
         let kernel = kernel ()
-        let root = VirtualFileSystem.root kernel.FileSystem
+        let root = VirtualFileSystem.root kernel.Machine.FileSystem
         let outer = inodeOf kernel "/outer"
         let inner = inodeOf kernel "/outer/inner"
 
         UnixProcessState.heldInodes kernel.Process |> shouldEqual (Set.singleton inner)
 
-        UnixSystem.pinnedInodes (EmulatedKernel.unix kernel)
+        UnixSystem.pinnedInodes kernel
         |> shouldEqual (Set.ofList [ inner ; outer ; root ])
 
     [<Test>]
@@ -189,11 +195,11 @@ module TestEmulatedKernelInodeLifetime =
         let a = inodeOf kernel "/outer/inner/a"
         let _, withA = opened a kernel
 
-        let root = VirtualFileSystem.root kernel.FileSystem
+        let root = VirtualFileSystem.root kernel.Machine.FileSystem
         let outer = inodeOf kernel "/outer"
         let inner = inodeOf kernel "/outer/inner"
 
-        UnixSystem.pinnedInodes (EmulatedKernel.unix withA)
+        UnixSystem.pinnedInodes withA
         |> shouldEqual (Set.ofList [ a ; inner ; outer ; root ])
 
     // --------------------------------------------------------- forgetIfUnheld
@@ -205,23 +211,21 @@ module TestEmulatedKernelInodeLifetime =
 
         contains a unbound |> shouldEqual true
 
-        let reaped = EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld a) unbound
+        let reaped = UnixSystem.forgetIfUnheld a unbound
 
         contains a reaped |> shouldEqual false
 
-        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes (EmulatedKernel.unix reaped)) reaped.FileSystem
+        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes reaped) reaped.Machine.FileSystem
         |> shouldEqual []
 
-        EmulatedKernel.checkInvariants reaped |> shouldEqual []
+        UnixSystem.checkInvariants reaped |> shouldEqual []
 
     [<Test>]
     let ``forgetIfUnheld leaves an inode that still has a name`` () : unit =
         let kernel = kernel ()
         let a = inodeOf kernel "/outer/inner/a"
 
-        EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld a) kernel
-        |> contains a
-        |> shouldEqual true
+        UnixSystem.forgetIfUnheld a kernel |> contains a |> shouldEqual true
 
     [<Test>]
     let ``forgetIfUnheld leaves an inode a descriptor holds`` () : unit =
@@ -229,15 +233,15 @@ module TestEmulatedKernelInodeLifetime =
         let a, unbound = unbound "/outer/inner" "a" kernel
         let _, held = opened a unbound
 
-        let attempted = EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld a) held
+        let attempted = UnixSystem.forgetIfUnheld a held
 
         contains a attempted |> shouldEqual true
 
         // Legitimately unreachable, and only because of the pin.
-        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes (EmulatedKernel.unix attempted)) attempted.FileSystem
+        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes attempted) attempted.Machine.FileSystem
         |> shouldEqual []
 
-        VirtualFileSystem.checkInvariants Set.empty attempted.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty attempted.Machine.FileSystem
         |> shouldEqual [ VirtualFileSystemDefect.UnreachableFromRoot a ]
 
     [<Test>]
@@ -247,17 +251,15 @@ module TestEmulatedKernelInodeLifetime =
         // the filesystem out from under every path. `open("/")` and then
         // `close` is an ordinary thing for a guest to do, so this is reachable.
         let kernel = kernel ()
-        let root = VirtualFileSystem.root kernel.FileSystem
+        let root = VirtualFileSystem.root kernel.Machine.FileSystem
 
-        EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld root) kernel
-        |> contains root
-        |> shouldEqual true
+        UnixSystem.forgetIfUnheld root kernel |> contains root |> shouldEqual true
 
         let fd, withRoot = opened root kernel
         let afterClose = closed fd withRoot
 
         contains root afterClose |> shouldEqual true
-        EmulatedKernel.checkInvariants afterClose |> shouldEqual []
+        UnixSystem.checkInvariants afterClose |> shouldEqual []
 
     [<Test>]
     let ``forgetIfUnheld leaves an inode that is already gone`` () : unit =
@@ -265,9 +267,9 @@ module TestEmulatedKernelInodeLifetime =
         // already reaped it — which is exactly the position `close` is in.
         let kernel = kernel ()
         let a, unbound = unbound "/outer/inner" "a" kernel
-        let once = EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld a) unbound
+        let once = UnixSystem.forgetIfUnheld a unbound
 
-        EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld a) once |> shouldEqual once
+        UnixSystem.forgetIfUnheld a once |> shouldEqual once
 
     // ------------------------------------------------------------------ close
 
@@ -284,11 +286,9 @@ module TestEmulatedKernelInodeLifetime =
         let afterClose = closed fd unbound
 
         contains a afterClose |> shouldEqual false
-        EmulatedKernel.checkInvariants afterClose |> shouldEqual []
+        UnixSystem.checkInvariants afterClose |> shouldEqual []
 
-        VirtualFileSystem.checkInvariants
-            (UnixSystem.pinnedInodes (EmulatedKernel.unix afterClose))
-            afterClose.FileSystem
+        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes afterClose) afterClose.Machine.FileSystem
         |> shouldEqual []
 
     [<Test>]
@@ -303,7 +303,7 @@ module TestEmulatedKernelInodeLifetime =
         let fd, held = opened a kernel
 
         let duplicate, held =
-            match FileDescriptorRegistry.dup fd held.FileDescriptors with
+            match FileDescriptorRegistry.dup fd held.Process.FileDescriptors with
             | Ok (duplicate, registry) ->
                 duplicate,
                 { held with
@@ -318,7 +318,7 @@ module TestEmulatedKernelInodeLifetime =
 
         let afterFirst = closed fd unbound
         contains a afterFirst |> shouldEqual true
-        EmulatedKernel.checkInvariants afterFirst |> shouldEqual []
+        UnixSystem.checkInvariants afterFirst |> shouldEqual []
 
         let afterSecond = closed duplicate afterFirst
         contains a afterSecond |> shouldEqual false
@@ -335,7 +335,7 @@ module TestEmulatedKernelInodeLifetime =
 
     /// Empty `/outer/inner` out, then unbind it from `/outer`, answering the
     /// three inodes and the kernel holding the orphan through `fd`.
-    let private orphanedInner () : int * InodeNumber * InodeNumber * EmulatedKernel =
+    let private orphanedInner () : int * InodeNumber * InodeNumber * UnixSystem<int, string> =
         let kernel = kernelAtRoot ()
         let inner = inodeOf kernel "/outer/inner"
         let outer = inodeOf kernel "/outer"
@@ -346,12 +346,12 @@ module TestEmulatedKernelInodeLifetime =
             |> List.fold
                 (fun kernel entry ->
                     let inode, kernel = unbound "/outer/inner" entry kernel
-                    EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld inode) kernel
+                    UnixSystem.forgetIfUnheld inode kernel
                 )
                 kernel
 
         let _, kernel = unbound "/outer" "inner" kernel
-        fd, inner, outer, EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld inner) kernel
+        fd, inner, outer, UnixSystem.forgetIfUnheld inner kernel
 
     [<Test>]
     let ``an orphan held by a descriptor keeps its ancestors alive`` () : unit =
@@ -369,7 +369,7 @@ module TestEmulatedKernelInodeLifetime =
         // both flavours: after `rmdir(b)` and `rmdir(a)`, `stat("..")` from
         // inside the orphan still answers `a`'s inode.
         let _, kernel = unbound "/" "outer" kernel
-        let kernel = EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld outer) kernel
+        let kernel = UnixSystem.forgetIfUnheld outer kernel
 
         contains outer kernel |> shouldEqual true
 
@@ -377,17 +377,15 @@ module TestEmulatedKernelInodeLifetime =
         |> Set.contains outer
         |> shouldEqual false
 
-        UnixSystem.pinnedInodes (EmulatedKernel.unix kernel)
-        |> Set.contains outer
-        |> shouldEqual true
+        UnixSystem.pinnedInodes kernel |> Set.contains outer |> shouldEqual true
 
-        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes (EmulatedKernel.unix kernel)) kernel.FileSystem
+        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes kernel) kernel.Machine.FileSystem
         |> shouldEqual []
 
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+        UnixSystem.checkInvariants kernel |> shouldEqual []
 
         // Both are legitimately unreachable, and only because of the pin.
-        VirtualFileSystem.checkInvariants Set.empty kernel.FileSystem
+        VirtualFileSystem.checkInvariants Set.empty kernel.Machine.FileSystem
         |> List.sort
         |> shouldEqual (
             [
@@ -404,12 +402,10 @@ module TestEmulatedKernelInodeLifetime =
         contains inner afterClose |> shouldEqual false
         contains outer afterClose |> shouldEqual false
 
-        VirtualFileSystem.checkInvariants
-            (UnixSystem.pinnedInodes (EmulatedKernel.unix afterClose))
-            afterClose.FileSystem
+        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes afterClose) afterClose.Machine.FileSystem
         |> shouldEqual []
 
-        EmulatedKernel.checkInvariants afterClose |> shouldEqual []
+        UnixSystem.checkInvariants afterClose |> shouldEqual []
 
     [<Test>]
     let ``the cascade stops at a parent something still names`` () : unit =
@@ -423,20 +419,20 @@ module TestEmulatedKernelInodeLifetime =
             |> List.fold
                 (fun kernel entry ->
                     let inode, kernel = unbound "/outer/inner" entry kernel
-                    EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld inode) kernel
+                    UnixSystem.forgetIfUnheld inode kernel
                 )
                 kernel
 
         let inner, kernel = unbound "/outer" "inner" kernel
-        let reaped = EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld inner) kernel
+        let reaped = UnixSystem.forgetIfUnheld inner kernel
 
         contains inner reaped |> shouldEqual false
         contains outer reaped |> shouldEqual true
 
-        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes (EmulatedKernel.unix reaped)) reaped.FileSystem
+        VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes reaped) reaped.Machine.FileSystem
         |> shouldEqual []
 
-        EmulatedKernel.checkInvariants reaped |> shouldEqual []
+        UnixSystem.checkInvariants reaped |> shouldEqual []
 
     [<Test>]
     let ``the cascade stops at the root`` () : unit =
@@ -444,44 +440,41 @@ module TestEmulatedKernelInodeLifetime =
         // construction — so a cascade that only checked "is anything naming
         // this" would free the filesystem out from under every path.
         let fd, _, outer, kernel = orphanedInner ()
-        let root = VirtualFileSystem.root kernel.FileSystem
+        let root = VirtualFileSystem.root kernel.Machine.FileSystem
 
         let _, kernel = unbound "/" "outer" kernel
 
-        let afterClose =
-            closed fd (EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld outer) kernel)
+        let afterClose = closed fd (UnixSystem.forgetIfUnheld outer kernel)
 
         contains root afterClose |> shouldEqual true
-        VirtualFileSystem.root afterClose.FileSystem |> shouldEqual root
-        EmulatedKernel.checkInvariants afterClose |> shouldEqual []
+        VirtualFileSystem.root afterClose.Machine.FileSystem |> shouldEqual root
+        UnixSystem.checkInvariants afterClose |> shouldEqual []
 
     // ------------------------------------------------------------- invariants
 
     // ------------------------------------------------- open directory streams
 
-    /// A stream over `/outer/inner`, whose descriptor is the one `opendir`
-    /// would have opened, answering the block standing in for the `DIR*`.
-    let private streaming (kernel : EmulatedKernel) : NativeMemoryBlockId * InodeNumber * EmulatedKernel =
+    /// A stream over `/outer/inner`, and the inode it is over.
+    let private streaming
+        (kernel : UnixSystem<int, string>)
+        : DirectoryStreamId * InodeNumber * UnixSystem<int, string>
+        =
         let inner = inodeOf kernel "/outer/inner"
 
-        // The library mints the stream and takes the descriptor; the client
-        // allocates the block standing in for the `DIR*` and binds it.
-        let id, system =
-            match UnixSystem.opendir (UnixPath.parseOrFail "test" "/outer/inner") (EmulatedKernel.unix kernel) with
-            | OpenDirAnswer.Opened id, system -> id, system
-            | other -> failwith $"could not open the directory: %O{other}"
+        match UnixSystem.opendir (UnixPath.parseOrFail "test" "/outer/inner") kernel with
+        | OpenDirAnswer.Opened id, system -> id, inner, system
+        | other -> failwith $"could not open the directory: %O{other}"
 
-        let kernel = EmulatedKernel.withUnix system kernel
-
-        let block, pool =
-            NativeMemoryPool.allocate MemoryBlockInitialization.ZeroInitialized 1024 kernel.NativeMemoryPool
-
-        block,
-        inner,
+    /// `closedir`'s bookkeeping half. Written out because the library has no
+    /// `closedir` to call: `opendir` mints a stream and nothing here removes
+    /// one, so every client is currently doing this for itself.
+    let private forgetStream (id : DirectoryStreamId) (kernel : UnixSystem<int, string>) : UnixSystem<int, string> =
         { kernel with
-            NativeMemoryPool = pool
+            Process =
+                { kernel.Process with
+                    DirectoryStreams = Map.remove id kernel.Process.DirectoryStreams
+                }
         }
-        |> EmulatedKernel.withDirectoryStreamBlock block id
 
     [<Test>]
     let ``an open stream holds its directory even with its descriptor gone`` () : unit =
@@ -491,10 +484,9 @@ module TestEmulatedKernelInodeLifetime =
         // a guessable fd number away here. Without it the next `readdir` would
         // reach a reaped inode and take the interpreter down.
         let kernel = kernelAtRoot ()
-        let block, inner, kernel = streaming kernel
+        let id, inner, kernel = streaming kernel
 
-        let stream = EmulatedKernel.directoryStream block kernel
-        let kernel = closed stream.Fd kernel
+        let kernel = closed kernel.Process.DirectoryStreams.[id].Fd kernel
 
         UnixProcessState.heldInodes kernel.Process
         |> Set.contains inner
@@ -502,53 +494,38 @@ module TestEmulatedKernelInodeLifetime =
 
         // ...and it really was the stream that held it: forget the stream and
         // the inode is unheld.
-        UnixProcessState.heldInodes (EmulatedKernel.withoutDirectoryStream block kernel).Process
+        UnixProcessState.heldInodes (forgetStream id kernel).Process
         |> Set.contains inner
         |> shouldEqual false
 
     [<Test>]
     let ``a stream keeps an rmdir'd directory alive, and closing it reaps`` () : unit =
         let kernel = kernelAtRoot ()
-        let block, inner, kernel = streaming kernel
+        let id, inner, kernel = streaming kernel
 
         // `rmdir /outer/inner`, which succeeds against a real kernel because the
         // stream is not a name.
         let removed, kernel = unbound "/outer" "inner" kernel
         removed |> shouldEqual inner
 
-        let kernel = EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld removed) kernel
+        let kernel = UnixSystem.forgetIfUnheld removed kernel
         contains inner kernel |> shouldEqual true
 
-        VirtualFileSystem.isOrphanedDirectory inner kernel.FileSystem
+        VirtualFileSystem.isOrphanedDirectory inner kernel.Machine.FileSystem
         |> shouldEqual true
 
         // And the orphan answers end-of-stream at once, dots included: probed on
         // both kernels, `opendir` then `rmdir` then `readdir` gives NULL.
-        VirtualFileSystem.nextDirectoryEntry inner DirectoryCursor.Start kernel.FileSystem
+        VirtualFileSystem.nextDirectoryEntry inner DirectoryCursor.Start kernel.Machine.FileSystem
         |> shouldEqual None
 
         // `closedir`: forget the stream, then close the descriptor under it.
         // That order is what makes the reap happen — `heldInodes` counts the
         // stream among the things holding the inode.
-        let stream = EmulatedKernel.directoryStream block kernel
-
-        let kernel = EmulatedKernel.withoutDirectoryStream block kernel |> closed stream.Fd
+        let fd = kernel.Process.DirectoryStreams.[id].Fd
+        let kernel = forgetStream id kernel |> closed fd
 
         contains inner kernel |> shouldEqual false
-
-    [<Test>]
-    let ``directoryStream refuses a block that names no stream`` () : unit =
-        // A `DIR*` this kernel never handed out, or one already closed. Both are
-        // undefined behaviour on a real libc rather than an error it reports, so
-        // there is no errno to invent.
-        let kernel = kernelAtRoot ()
-        let block, _, kernel = streaming kernel
-        let closedStream = EmulatedKernel.withoutDirectoryStream block kernel
-
-        let exn =
-            Assert.Throws (fun () -> EmulatedKernel.directoryStream block closedStream |> ignore<DirectoryStream>)
-
-        exn.Message |> shouldContainText "names no open directory stream"
 
     [<Test>]
     let ``checkInvariants rejects a descriptor naming an inode the filesystem has forgotten`` () : unit =
@@ -565,12 +542,12 @@ module TestEmulatedKernelInodeLifetime =
             { held with
                 Machine =
                     { held.Machine with
-                        FileSystem = VirtualFileSystem.forget a held.FileSystem
+                        FileSystem = VirtualFileSystem.forget a held.Machine.FileSystem
                     }
             }
 
         let description =
-            FileDescriptorRegistry.descriptions broken.FileDescriptors
+            FileDescriptorRegistry.descriptions broken.Process.FileDescriptors
             |> Map.toList
             |> List.choose (fun (id, description) ->
                 match description.Target with
@@ -579,8 +556,5 @@ module TestEmulatedKernelInodeLifetime =
             )
             |> List.exactlyOne
 
-        EmulatedKernel.checkInvariants broken
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.DanglingOpenInode (description, a))
-            ]
+        UnixSystem.checkInvariants broken
+        |> shouldEqual [ UnixSystemDefect.DanglingOpenInode (description, a) ]

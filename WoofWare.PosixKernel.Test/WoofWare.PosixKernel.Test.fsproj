@@ -27,6 +27,7 @@
     <Compile Include="TestUserBufferCheckAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestWithFileSystemAndCurrentDirectory.fs" />
+    <Compile Include="TestInodeLifetime.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
