@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="HostPlatform.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
@@ -23,6 +24,7 @@
     <Compile Include="TestNoPawPrintReference.fs" />
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
+    <Compile Include="TestUserBufferCheckAgainstHost.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />

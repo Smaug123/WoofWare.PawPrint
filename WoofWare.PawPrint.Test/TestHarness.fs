@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint.Test
 
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
+open WoofWare.PosixKernel.Test
 
 /// Result of executing (some steps of) the program under PawPrint.
 type RunResult =

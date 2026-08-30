@@ -5021,15 +5021,20 @@ docstrings name each other.
 * **22**: the clock pair, `TestMonotonicTimestamp` and `TestSystemTimeAsTicks`. Each
   names the other; the first is also a split, since its `KernelConfig.applyTo` rows
   are about PawPrint's config plumbing.
-* **23**: the two host-measurement fixtures, `TestFileSystemType` and
-  `TestUserBufferCheckAgainstHost`. Both pure moves; both compare a library rule
-  against a measurement of the machine the suite runs on.
-* **24**: `EmulatedKernel.withFileSystemAndCurrentDirectory` becomes the library's,
+* **23**: `TestUserBufferCheckAgainstHost`, which compares a library rule against a
+  measurement of the machine the suite runs on. A pure move, and it takes
+  `HostPlatform` — the shared answer to "which kernel is this test host" — with it.
+* **24**: `TestFileSystemType`, split. It was paired with 23 above on the strength of
+  measuring the same host, but its last row — `this host's own filesystem is one
+  CoreCLR will lock` — is not about the library at all. It is an environmental
+  premise for a guest, so it stays, and belongs with the other such premises in
+  `TestOraclePolicy` rather than in a fixture whose remaining rows have all left.
+* **25**: `EmulatedKernel.withFileSystemAndCurrentDirectory` becomes the library's,
   and `TestEmulatedKernelCurrentDirectory` follows it. A production move and a test
   move in one stage, because the production move has no other motivation.
-* **25**: `TestEmulatedKernelInodeLifetime`, split — the directory-stream rows stay.
-* **26**: `TestAbsoluteUnixPath`, split.
-* **27**: `TestFileSystemSeed`, split.
+* **26**: `TestEmulatedKernelInodeLifetime`, split — the directory-stream rows stay.
+* **27**: `TestAbsoluteUnixPath`, split.
+* **28**: `TestFileSystemSeed`, split.
 
 ### Stage 21: the bind rules' fixture moves to the library
 
@@ -5084,7 +5089,7 @@ IL instruction, so it is PawPrint's in a way the clock derivations are not.
 
 Leaving it behind in a fixture named `TestMonotonicTimestamp` would have made that
 fixture's name a lie, so it goes to a new `TestKernelConfig`, whose subject is the
-config layer itself rather than what any one field means. Stage 24 produces a second
+config layer itself rather than what any one field means. Stage 25 produces a second
 orphan of exactly this kind (`KernelConfig applies the current directory whatever
 else it sets`), which joins it there.
 
@@ -5100,3 +5105,70 @@ applying exactly the stated substitutions, and separately asserts that the
 instruction-cost row appears verbatim inside `TestKernelConfig`. Suite counts move
 exactly: library 1016 → 1045, PawPrint 3167 → 3140 — 27 tests across the boundary,
 one row staying on the PawPrint side, and two new cases in the library.
+
+### Stage 23: the user-buffer host comparison moves, and takes `HostPlatform` with it
+
+**Dependencies**: 17 (`UnixSystem.initial`).
+
+`TestUserBufferCheckAgainstHost` measures how the *host* kernel screens a read buffer
+— by bisecting for the address at which `read(2)` starts returning `EFAULT` — and
+compares `UnixMachineState.userBufferCheck` against it. Both halves are the library's.
+
+Its only `WoofWare.PawPrint` uses were `EmulatedKernel.initial` and two `mapMachine`s
+around the setters under test, which collapse the way stages 21 and 22 collapsed
+theirs. One docstring reference is corrected rather than carried: the field it names
+as `EmulatedKernel.UserAddressLimit` has been `UnixMachineState`'s since stage 2.
+
+#### `HostPlatform` moves with it
+
+The fixture needs "which kernel is this test host, in the vocabulary the model uses",
+which was `WoofWare.PawPrint.Test/HostPlatform.fs`. Three ways to give the library
+test project that were considered.
+
+**Duplicate a private `hostPlatform ()` into each moved fixture.** This is what
+`WoofWare.PosixKernel.Test` already does *twice* — `TestVirtualFileSystemAgainstHost`
+and `TestSockaddrLayoutAgainstHost` each carry their own — so it matches local
+convention and needs no cross-project machinery. Rejected because those two copies are
+three lines each, whereas this fixture also wants `onUnixHost`'s skip-or-run wrapper;
+duplicating both into two fixtures is fifteen lines copied twice, and the copies would
+be the definition of what a test measures against.
+
+**Move it and leave PawPrint.Test its own copy.** Rejected outright: two divergent
+answers to "what kernel is this" is precisely the drift the suites must not have.
+
+**Move it, and have PawPrint.Test link the file.** Taken. `WoofWare.PawPrint.Test`
+already links `socketMatrix\*.tsv` out of `WoofWare.PosixKernel.Test` for exactly this
+reason, stated in that item's own comment: the two suites must not drift onto
+different measurements. The same argument covers the flavour they measure *as*.
+
+Five PawPrint-side fixtures consume it, of which three stay (`TestHarness`,
+`TestOraclePolicy`, `TestPlatformSocketSupport` — the "is a differential comparison
+meaningful here" use, which is PawPrint's). They gain an `open WoofWare.PosixKernel.Test`;
+that is the whole blast radius. The type is compiled into both assemblies under that
+namespace, which is harmless because neither references the other.
+
+The two ad-hoc copies already in the library test project are *not* retargeted. They
+`failwith` on an unmodelled host rather than skipping, deliberately — their fixtures
+skip earlier, and the `failwith` is what says so. Unifying them would change a failure
+mode in fixtures this stage otherwise does not touch.
+
+**Correctness oracle**: `HostPlatform.fs` is a pure rename, and
+`scripts/check-move-is-rename-only.sh` says so directly (`ok`). The fixture is checked
+by `verify23.py`, which re-derives it from `origin/main` under exactly the stated
+substitutions. Suite counts: library 1045 → 1048, PawPrint 3140 → 3137.
+
+#### `TestFileSystemType` does not come along
+
+The audit above called it a pure move, and it is not one. Eight of its rows are about
+`UnixMachineState`'s `fstatfs` table and the coherence between a mount and the flavour
+that mounted it, which are the library's. The ninth, `this host's own filesystem is
+one CoreCLR will lock`, is about neither the library nor its model: it is an
+environmental premise for `sourcesPure/FlockContentionSeeded.cs`, which names
+CoreCLR's `SafeFileHandle.CanLockTheFile` — if the suite ran with `/tmp` on a
+filesystem CoreCLR will not lock, that guest's assertions would pass vacuously.
+
+That row cannot travel, because the guest it protects is PawPrint's; it also cannot
+stay in a fixture the rest of which has left. Its natural home is `TestOraclePolicy`,
+which already carries sibling premises of exactly this kind. That is a relocation
+rather than a move, so it gets its own stage rather than being smuggled into this
+one.
