@@ -38,24 +38,24 @@ type FileNameError =
 /// Construct via <c>FileName.parse</c>.
 /// </remarks>
 [<Struct>]
-type FileName =
+type DirectoryEntryName =
     private
-    | FileName of name : string
+    | DirectoryEntryName of name : string
 
     /// Round-trippable string representation.
     override this.ToString () : string =
         match this with
-        | FileName name -> name
+        | DirectoryEntryName name -> name
 
 [<RequireQualifiedAccess>]
-module FileName =
+module DirectoryEntryName =
     /// Round-trippable string representation.
-    let toString (name : FileName) : string =
+    let toString (name : DirectoryEntryName) : string =
         match name with
-        | FileName name -> name
+        | DirectoryEntryName name -> name
 
     /// <summary>Parse a single directory-entry name, or explain why the candidate is not one.</summary>
-    let parse (candidate : string) : Result<FileName, FileNameError> =
+    let parse (candidate : string) : Result<DirectoryEntryName, FileNameError> =
         if System.String.IsNullOrEmpty candidate then
             Error FileNameError.Empty
         else
@@ -73,7 +73,7 @@ module FileName =
         if candidate = "." || candidate = ".." then
             Error (FileNameError.Reserved candidate)
         else
-            Ok (FileName candidate)
+            Ok (DirectoryEntryName candidate)
 
     /// Human-readable rendering of a rejection.
     let describe (error : FileNameError) : string =
@@ -86,28 +86,27 @@ module FileName =
             $"\"%s{name}\" is a path component, not an entry name; PawPrint derives it from the directory graph rather than storing it"
 
     /// <summary>Parse a single directory-entry name, or throw.</summary>
-    /// <remarks>This is <c>FileName.parse</c> except it throws.</remarks>
-    let parseOrFail (context : string) (candidate : string) : FileName =
+    /// <remarks>This is <c>FileName.parse</c> except it throws instead of describing the error as a Result.</remarks>
+    let parseOrFail (context : string) (candidate : string) : DirectoryEntryName =
         match parse candidate with
         | Ok name -> name
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
 
-    /// Re-check the invariant of a value that may not have come from `parse`,
-    /// failing loudly and naming `context` if it does not hold.
+    /// <summary>
+    /// Re-check the invariant of a value that may not have come from <c>parse</c>,
+    /// throwing (with a message containing <c>context</c>) if it does not hold.
+    /// </summary>
     ///
-    /// Only for boundaries that accept a `FileName` from outside the library;
-    /// interior consumers must not call it, because re-validating a proof
-    /// everywhere is precisely what the type exists to avoid. Today's callers are
-    /// the chokepoints through which a name enters or leaves the inode graph, so
-    /// that a value which never went through `parse` is stopped before it becomes
-    /// an entry no path could ever name.
-    // The only value this can reject is `Unchecked.defaultof` / C# `default`,
-    // whose payload is null: `private` on the union case stops every other route.
-    // Without this, such a name reaches a directory's entry map and
-    // `checkInvariants` calls the resulting graph sound.
-    let assertValid (context : string) (name : FileName) : FileName =
+    /// <remarks>
+    /// The <c>parse</c> constructor already ensures the invariant holds, so there's
+    /// no need to call this if you know the input came from <c>parse</c>.
+    /// </remarks>
+    let assertValid (context : string) (name : DirectoryEntryName) : DirectoryEntryName =
+        // The only value this can reject is `Unchecked.defaultof` / C# `default`,
+        // whose payload is null: `private` on the union case, and the restrictions
+        // enforced by `parse`, stops every other route.
         match name with
-        | FileName raw ->
+        | DirectoryEntryName raw ->
 
         match parse raw with
         | Ok _ -> name
@@ -117,7 +116,7 @@ module FileName =
 
     /// <summary>The name as the NUL-free byte string a Unix kernel would hand back from <c>readdir</c>.</summary>
     /// <remarks>Has no NUL terminator; callers that need a C string append the NUL themselves.</remarks>
-    let toUtf8 (name : FileName) : ImmutableArray<byte> =
+    let toUtf8 (name : DirectoryEntryName) : ImmutableArray<byte> =
         toString name |> UnixPathText.utf8.GetBytes |> ImmutableArray.CreateRange
 
 /// <summary>
@@ -127,8 +126,10 @@ module FileName =
 type PathComponent =
     /// <summary>".".</summary>
     /// <remarks>
-    /// This is not a no-op, because it adds the constraint that the preceding segment must be a directory.
-    /// That is, "a/." and "a" resolve differently when "a" is a regular file.
+    /// This is not a no-op as a component, because it adds the constraint that
+    /// the preceding segment must be a directory.
+    /// That is, "a/." is illegal to resolve when "a" is a regular file, but
+    /// not when it's a directory.
     /// </remarks>
     | Current
     /// <summary>"..".</summary>
@@ -139,7 +140,7 @@ type PathComponent =
     /// </remarks>
     | Parent
     /// <summary>An ordinary entry name, to be looked up in the directory reached so far.</summary>
-    | Name of name : FileName
+    | Name of name : DirectoryEntryName
 
 /// <summary>
 /// Why a .NET string is not usable as a guest-supplied Unix path.
@@ -155,7 +156,8 @@ type UnixPathError =
     /// <summary>The candidate was null.</summary>
     /// <remarks>
     /// Distinct from the <i>empty</i> path, whose parse is permitted.
-    /// The empty string is a legal C string that the kernel only rejects at resolution time (with <c>ENOENT</c>).
+    /// The empty string is a legal C string and a guest can legally supply it to a syscall;
+    /// the kernel only rejects it at resolution time (with <c>ENOENT</c>).
     /// </remarks>
     | Null
     /// <summary>
@@ -204,8 +206,8 @@ type UnixPath =
 /// </summary>
 /// <remarks>
 /// This is the shape a Unix kernel's own resolution state has, namely a
-/// pathname buffer plus a pointer into it (XNU's `cn_pnbuf` and `ni_next`,
-/// Linux's `nameidata`).
+/// pathname buffer plus a pointer into it (XNU's <c>cn_pnbuf</c> and <c>ni_next</c>,
+/// Linux's <c>nameidata</c>).
 /// </remarks>
 [<Struct>]
 type PathCursor =
@@ -269,7 +271,10 @@ module PathCursor =
         afterSeparators cursor = (bufferOf cursor).Length
 
     /// <summary>The next component, and the cursor positioned after it.</summary>
-    /// <returns><c>None</c> when the path is exhausted; otherwise, the component that was at the cursor, and a new cursor which is advanced once.</returns>
+    /// <returns>
+    /// <c>None</c> when the path is exhausted;
+    /// otherwise, the component that was at the cursor, and a new cursor which is advanced to the next component.
+    /// </returns>
     /// <remarks>Throws if the input cursor is into the null string.</remarks>
     let next (cursor : PathCursor) : (PathComponent * PathCursor) option =
         let buffer = bufferOf cursor
@@ -296,11 +301,11 @@ module PathCursor =
                 // at a non-separator), holds no separator (the scan stopped at
                 // one), carries no text defect (`UnixPath.parse` scanned the
                 // whole buffer), and is neither "." nor ".." (matched above).
-                match FileName.parse segment with
+                match DirectoryEntryName.parse segment with
                 | Ok name -> PathComponent.Name name
                 | Error error ->
                     failwith
-                        $"PathCursor.next: segment \"%s{segment}\" of \"%s{buffer}\" was rejected as an entry name (%s{FileName.describe error}), but every value that can reach this has already been through UnixPath.parse, which excludes every reason a segment could be rejected"
+                        $"PathCursor.next: segment \"%s{segment}\" of \"%s{buffer}\" was rejected as an entry name (%s{DirectoryEntryName.describe error}), but every value that can reach this has already been through UnixPath.parse, which excludes every reason a segment could be rejected"
 
         // Transcribed from XNU's `lookup`, which advances past the separator run
         // following a component "while the next character is a separator or the
@@ -327,24 +332,25 @@ module PathCursor =
             }
         )
 
-    /// <summary>How many bytes of pathname the walk still has in front of it, <i>not</i>
+    /// <summary>How many bytes of the path there still are in front of the walk, <i>not</i>
     /// counting the NUL a kernel keeps at the end of its buffer.
     /// </summary>
     /// <remarks>
     /// XNU's <c>ni_pathlen</c> is this plus one.
     ///
-    /// We don't expose a count of remaining <i>characters</i>, because a kernel's
-    /// pathname buffer is bytes and its limits are byte counts.
+    /// We don't expose a count of remaining <i>characters</i>, because this method is designed
+    /// for use when computing kernel responses;
+    /// a kernel's pathname buffer is bytes and its limits are byte counts.
     /// </remarks>
     let remainingBytes (cursor : PathCursor) : int =
         UnixPathText.utf8.GetByteCount (remainder cursor)
 
     /// <summary>
-    /// Expand a symbolic link: the target, followed by whatever the walk had
-    /// left to resolve.
+    /// Expand the path assuming the cursor's current position marks a symlink to the given <c>target</c>,
+    /// by appending to that target whatever the cursor had left to resolve.
     /// </summary>
     /// <remarks>
-    /// Call <c>SymlinkTarget.toUnixPath</c> to construct the input.
+    /// Call <c>SymlinkTarget.toUnixPath</c> to construct the input target.
     ///
     /// The cursor must be one that's advanced at least once (we throw if it wasn't).
     /// Expanding a link replaces the component just consumed, so a cursor that has
@@ -368,7 +374,7 @@ module PathCursor =
 
 [<RequireQualifiedAccess>]
 module UnixPath =
-    /// <summary>Render back to the string a guest would have passed.</summary>
+    /// <summary>Render this path back as the (.NET representation of the) string a guest would have passed.</summary>
     /// <remarks>
     /// Exact: this returns the very text <c>parse</c> accepted, separator runs and all, so
     /// <c>toString (parse s) = s</c> for every <c>s</c> that parses.
@@ -376,7 +382,8 @@ module UnixPath =
     let toString (path : UnixPath) : string = path.Raw
 
     /// <summary>True when the path began with a separator.</summary>
-    /// <remarks>That is, path resolution for this path starts at the
+    /// <remarks>
+    /// That is, path resolution for this path starts at the
     /// filesystem root rather than at a caller-supplied directory.
     /// </remarks>
     let isRooted (path : UnixPath) : bool =
@@ -385,15 +392,16 @@ module UnixPath =
     /// <summary>
     /// The path's components in order.
     /// </summary>
-    /// <returns>No zero-length segments, but "." and
-    /// ".." are preserved as <c>PathComponent.Current</c> and <c>PathComponent.Parent</c>.
+    /// <returns>
+    /// No zero-length segments, but "." and ".." are preserved
+    /// as <c>PathComponent.Current</c> and <c>PathComponent.Parent</c>.
     /// </returns>
     ///
     /// <remarks>
-    /// A projection of the stored text, recomputed on demand. Cheap, total,
-    /// and it keeps the original text authoritative. A resolution walk should use
-    /// <c>PathCursor</c> instead, which is the same traversal without discarding
-    /// where in the buffer it is (so you can also work out how symlinks affect resolution).
+    /// A projection of the stored text, recomputed on demand.
+    /// A resolution walk should use <c>PathCursor</c> instead,
+    /// which is the same traversal without discarding where in the buffer it is
+    /// (so you can also work out how symlinks affect resolution).
     /// </remarks>
     let components (path : UnixPath) : PathComponent list =
         let rec go (cursor : PathCursor) (acc : PathComponent list) : PathComponent list =
@@ -410,12 +418,12 @@ module UnixPath =
     /// <remarks>
     /// POSIX makes such a path equivalent to the same path with "/." appended,
     /// which forces the final component to resolve to a directory.
-    /// So this cannot be normalised away without changing which paths succeed.
+    /// So this cannot be normalised away without changing which paths succeed resolution.
     /// </remarks>
     ///
     /// <returns>
     /// False for the root "/" (whose sole separator is the one that roots it,
-    /// not a trailing one), for "//", and for the empty path.
+    /// not a trailing one), for "//" (or "/////" etc), and for the empty path.
     /// </returns>
     let hasTrailingSeparator (path : UnixPath) : bool =
         path.Raw.Length > 0
@@ -450,7 +458,8 @@ module UnixPath =
     ///
     /// <remarks>
     /// Stores the candidate verbatim.
-    /// (Even the simplest normalisation, collapsing consecutive separator characters, is observable on Darwin.)
+    /// (Even the simplest normalisation, collapsing consecutive separator characters, is observable on Darwin,
+    /// so we can't even do that during parse.)
     ///
     /// POSIX leaves a path beginning with exactly two separators
     /// implementation-defined (it may denote a distinct namespace).
@@ -477,7 +486,8 @@ module UnixPath =
         | UnixPathError.Text defect -> $"path %s{UnixPathText.describe defect}"
 
     /// <summary><c>UnixPath.parse</c>, but throwing on error.</summary>
-    /// <remarks>Don't use this for paths arriving from a guest, because
+    /// <remarks>
+    /// Don't use this for paths arriving from a guest, because
     /// a guest can legally pass a path which contains NULs; the kernel must
     /// then reply to the guest with an error, rather than crashing.
     /// </remarks>

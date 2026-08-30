@@ -18,7 +18,7 @@ module TestVirtualFileSystem =
     /// the whole check; see the comment at its `Check.One`.
     let private timesConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 2000
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
@@ -1191,7 +1191,13 @@ module TestVirtualFileSystem =
 
         let forgedName =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.createFile (rootOf vfs) Unchecked.defaultof<FileName> filePerms buildTime noBytes vfs
+                VirtualFileSystem.createFile
+                    (rootOf vfs)
+                    Unchecked.defaultof<DirectoryEntryName>
+                    filePerms
+                    buildTime
+                    noBytes
+                    vfs
                 |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
             )
 
@@ -1249,7 +1255,7 @@ module TestVirtualFileSystem =
                 )
             ] do
             Assert.Throws<Exception> (fun () ->
-                builder Unchecked.defaultof<FileName>
+                builder Unchecked.defaultof<DirectoryEntryName>
                 |> ignore<Result<VirtualFileSystem, UnixError>>
             )
             |> ignore<Exception>
@@ -2395,7 +2401,7 @@ module TestVirtualFileSystem =
                 VirtualFileSystem.unbind
                     UnbindTargetEffect.LostALink
                     (rootOf vfs)
-                    Unchecked.defaultof<FileName>
+                    Unchecked.defaultof<DirectoryEntryName>
                     unbindTime
                     vfs
                 |> ignore<Result<InodeNumber * VirtualFileSystem, UnixError>>
@@ -2879,7 +2885,7 @@ module TestVirtualFileSystem =
         | Some (InodeContent.Directory content) -> content.Parent
         | other -> failwith $"expected inode %O{inode} to be a directory, got %A{other}"
 
-    let private entryMap (inode : InodeNumber) (vfs : VirtualFileSystem) : Map<FileName, InodeNumber> =
+    let private entryMap (inode : InodeNumber) (vfs : VirtualFileSystem) : Map<DirectoryEntryName, InodeNumber> =
         match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Directory content) -> content.Entries
         | other -> failwith $"expected inode %O{inode} to be a directory, got %A{other}"
@@ -2887,7 +2893,7 @@ module TestVirtualFileSystem =
     let private entriesOf (inode : InodeNumber) (vfs : VirtualFileSystem) : (string * InodeNumber) list =
         entryMap inode vfs
         |> Map.toList
-        |> List.map (fun (n, i) -> FileName.toString n, i)
+        |> List.map (fun (n, i) -> DirectoryEntryName.toString n, i)
 
     let private childOf (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : InodeNumber =
         Map.find (name n) (entryMap parent vfs)
@@ -3203,9 +3209,9 @@ module TestVirtualFileSystem =
     type private RenameCase =
         {
             SourceDirectory : InodeNumber
-            SourceName : FileName
+            SourceName : DirectoryEntryName
             DestinationDirectory : InodeNumber
-            DestinationName : FileName
+            DestinationName : DirectoryEntryName
         }
 
     /// `pinned` is the deliberately-orphaned directory, if `orphanGen` made one.
@@ -4285,7 +4291,7 @@ module TestSeekTarget =
 [<Parallelizable(ParallelScope.All)>]
 module TestCreatingOpenRules =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
@@ -4547,7 +4553,7 @@ module TestCreatingOpenRules =
 [<Parallelizable(ParallelScope.All)>]
 module TestMkDirRules =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
@@ -4645,7 +4651,7 @@ module TestMkDirRules =
     /// only that something was.
     let private bound (verdict : MkDirVerdict) : string =
         match verdict with
-        | MkDirVerdict.Create (_, name, _) -> FileName.toString name
+        | MkDirVerdict.Create (_, name, _) -> DirectoryEntryName.toString name
         | MkDirVerdict.Refuse error -> failwith $"expected a creation, got %O{error}"
 
     [<Test>]
@@ -4886,7 +4892,7 @@ module TestMkDirRules =
 [<Parallelizable(ParallelScope.All)>]
 module TestWalkSearchPermission =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 

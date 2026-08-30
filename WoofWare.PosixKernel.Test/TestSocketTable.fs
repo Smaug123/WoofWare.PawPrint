@@ -294,8 +294,9 @@ module TestSocketTable =
     /// open after its last name has gone keeps its whole ancestor chain alive,
     /// and freeing it must collect that chain. A flat seed can never produce
     /// the state, so the `DanglingParent` clause would go untouched.
-    let private lifetimeSeed : Map<FileName, SeedEntry> =
-        let name (n : string) = FileName.parseOrFail "test seed" n
+    let private lifetimeSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (n : string) =
+            DirectoryEntryName.parseOrFail "test seed" n
 
         let files =
             [ "a" ; "b" ; "c" ; "d" ; "e" ]

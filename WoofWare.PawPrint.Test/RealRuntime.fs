@@ -294,7 +294,7 @@ module RealRuntime =
     ///
     /// `reserved` are the names the oracle must itself write at the top level
     /// (the guest image and its runtimeconfig).
-    let validateSeedForOracle (reserved : string list) (seed : Map<FileName, SeedEntry>) : unit =
+    let validateSeedForOracle (reserved : string list) (seed : Map<DirectoryEntryName, SeedEntry>) : unit =
         // A stock macOS filesystem folds case *and* Unicode normalisation, so
         // two names PawPrint keeps apart can become one file there. Reproducing
         // that folding faithfully is beyond what this can do: APFS applies full
@@ -373,9 +373,11 @@ module RealRuntime =
                 failwith
                     $"The filesystem seed gives %s{what} the mode %o{PermissionBits.toInt permissions}, whose set-user-ID/set-group-ID/sticky bits (%o{special}) this oracle refuses. A host `chmod` may silently drop them — Linux drops S_ISGID for a caller outside the file's group — so the two runtimes would disagree about the harness rather than about themselves. Move the case to sourcesImpure, which materialises nothing."
 
-        let rec go (prefix : string) (depth : int) (entries : Map<FileName, SeedEntry>) : unit =
+        let rec go (prefix : string) (depth : int) (entries : Map<DirectoryEntryName, SeedEntry>) : unit =
             let names =
-                entries |> Map.toList |> List.map (fun (name, _) -> FileName.toString name)
+                entries
+                |> Map.toList
+                |> List.map (fun (name, _) -> DirectoryEntryName.toString name)
 
             for name in names do
                 requireFoldable $"The filesystem seed's entry %s{prefix}/%s{name}" name
@@ -399,7 +401,7 @@ module RealRuntime =
                 hostNames |> List.tryFind (fun existing -> fold existing = fold candidate)
 
             for KeyValue (name, entry) in entries do
-                let name = FileName.toString name
+                let name = DirectoryEntryName.toString name
 
                 if depth = 0 then
                     match reserved |> List.tryFind (fun r -> fold r = fold name) with
@@ -435,7 +437,7 @@ module RealRuntime =
                         // host would fold it onto a sibling — or onto the guest
                         // image — that PawPrint does not match exactly, one
                         // side has a target and the other does not.
-                        let only = FileName.toString only
+                        let only = DirectoryEntryName.toString only
 
                         // `foldsOntoHost` below folds this, so it is subject to
                         // the same alphabet: a target of "ss" beside a sibling
@@ -512,7 +514,7 @@ module RealRuntime =
     /// it cannot honour is a bug worth a failure, but a *test case* that simply
     /// cannot run here wants to be skipped. One predicate, so the two answers
     /// cannot drift apart.
-    let rec canMaterialise (seed : Map<FileName, SeedEntry>) : bool =
+    let rec canMaterialise (seed : Map<DirectoryEntryName, SeedEntry>) : bool =
         if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
             true
         else
@@ -559,9 +561,9 @@ module RealRuntime =
     /// One description, two interpreters: the differential claim is only worth
     /// anything if both sides are configured from the *same value*, rather than
     /// from a host tree and a seed that someone kept in step by hand.
-    let rec private materialiseSeed (directory : string) (entries : Map<FileName, SeedEntry>) : unit =
+    let rec private materialiseSeed (directory : string) (entries : Map<DirectoryEntryName, SeedEntry>) : unit =
         for KeyValue (name, entry) in entries do
-            let path = Path.Combine (directory, FileName.toString name)
+            let path = Path.Combine (directory, DirectoryEntryName.toString name)
 
             match entry with
             | SeedEntry.File (contents, permissions) ->
@@ -607,7 +609,7 @@ module RealRuntime =
     /// paths only. A seed that collides with either name is refused outright.
     let executeWithTimeoutAndSeed
         (timeout : TimeSpan)
-        (seed : Map<FileName, SeedEntry>)
+        (seed : Map<DirectoryEntryName, SeedEntry>)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
@@ -663,7 +665,7 @@ module RealRuntime =
 
     /// As `executeWithTimeoutAndSeed`, with the standard guest time limit.
     let executeWithSeed
-        (seed : Map<FileName, SeedEntry>)
+        (seed : Map<DirectoryEntryName, SeedEntry>)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult

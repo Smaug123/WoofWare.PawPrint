@@ -566,7 +566,7 @@ module InodeTimes =
 /// the structure they describe. `readdir` synthesises them.
 type DirectoryContent =
     {
-        Entries : Map<FileName, InodeNumber>
+        Entries : Map<DirectoryEntryName, InodeNumber>
         /// The directory that holds this one, which is what ".." resolves to.
         /// The root is its own parent, exactly as on a real Unix.
         ///
@@ -668,9 +668,9 @@ type VirtualFileSystemDefect =
     /// Some directory holds an entry pointing at the root. The root is the one
     /// directory with *no* incoming entry link; giving it one would make the
     /// graph cyclic while leaving every individual link count plausible.
-    | RootHasIncomingLink of parents : (InodeNumber * FileName) list
+    | RootHasIncomingLink of parents : (InodeNumber * DirectoryEntryName) list
     /// A directory entry points at an inode the graph does not contain.
-    | DanglingEntry of directory : InodeNumber * name : FileName * target : InodeNumber
+    | DanglingEntry of directory : InodeNumber * name : DirectoryEntryName * target : InodeNumber
     /// A directory's `Parent` names an inode the graph does not contain.
     | DanglingParent of directory : InodeNumber * recordedParent : InodeNumber
     /// A directory's `Parent` names something that is not a directory.
@@ -681,7 +681,7 @@ type VirtualFileSystemDefect =
     /// A directory is held by more than one entry. Unix forbids hard links to
     /// directories precisely because they would make the graph a non-tree, and
     /// `Parent` could then name only one of them.
-    | DirectoryMultiplyLinked of directory : InodeNumber * parents : (InodeNumber * FileName) list
+    | DirectoryMultiplyLinked of directory : InodeNumber * parents : (InodeNumber * DirectoryEntryName) list
     /// An inode no path from the root can reach, and which the caller did not
     /// declare pinned.
     ///
@@ -796,7 +796,7 @@ type ResolvedTarget =
     /// here, because it is exactly the state `open(O_CREAT)`, `mkdir` and
     /// `symlink` need, and callers that require the file to exist report
     /// ENOENT themselves.
-    | Entry of directory : InodeNumber * name : FileName * existing : InodeNumber option
+    | Entry of directory : InodeNumber * name : DirectoryEntryName * existing : InodeNumber option
     /// The path resolved straight to a directory with no final name to look
     /// up, because its last component — after any symlink expansion — was "/",
     /// "." or "..".
@@ -1080,10 +1080,10 @@ module PathLimits =
     /// the unit separately would let a caller measure a name with the wrong one
     /// — and on a Mac the wrong one (`String.Length`) is right often enough to
     /// look correct.
-    let nameWithinLimit (limits : PathLimits) (name : FileName) : bool =
+    let nameWithinLimit (limits : PathLimits) (name : DirectoryEntryName) : bool =
         match limits.NameMax with
-        | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (FileName.toString name) <= bytes
-        | NameLengthLimit.Utf16CodeUnits units -> (FileName.toString name).Length <= units
+        | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (DirectoryEntryName.toString name) <= bytes
+        | NameLengthLimit.Utf16CodeUnits units -> (DirectoryEntryName.toString name).Length <= units
 
     /// Whether this kernel will still resolve the path that results from
     /// expanding `target` here — or, on a kernel that does not re-check,
@@ -1174,7 +1174,7 @@ type PausedResolution =
             /// which is what a splice of a final symlink is measured against.
             /// `None` when the path ran out of names before any could be looked
             /// up, which is the "/", "." and ".." case.
-            Final : (FileName * PathCursor) option
+            Final : (DirectoryEntryName * PathCursor) option
             Trailing : bool
             FinalSymlinkFollowed : bool
             LastNavigation : FinalNavigation
@@ -1374,14 +1374,14 @@ type DirectoryStreamName =
     /// still right after a walk crossed a symlink to get here.
     | DotDot
     /// A name the directory actually binds.
-    | Entry of name : FileName
+    | Entry of name : DirectoryEntryName
 
     /// The bytes `readdir(3)` would put in `d_name`.
     override this.ToString () : string =
         match this with
         | DirectoryStreamName.Dot -> "."
         | DirectoryStreamName.DotDot -> ".."
-        | DirectoryStreamName.Entry name -> FileName.toString name
+        | DirectoryStreamName.Entry name -> DirectoryEntryName.toString name
 
 /// How far through a directory an open stream has read.
 ///
@@ -1410,7 +1410,8 @@ type DirectoryCursor =
     /// binds, or `..` if it binds none.
     | Start
     /// The last name handed back, which the next entry must strictly exceed.
-    | After of name : FileName
+    | After of name : DirectoryEntryName
+
     /// The names are exhausted and `..` has been handed back; `.` is next.
     | ReturnedDotDot
     /// `.` has been handed back, which is the end of the stream.
@@ -1778,7 +1779,7 @@ module VirtualFileSystem =
     /// from the root — instead of the ENOENT the operation promises.
     let private ensureBindable
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (vfs : VirtualFileSystem)
         : Result<unit, UnixError>
         =
@@ -1788,7 +1789,9 @@ module VirtualFileSystem =
         | Some (InodeContent.Symlink _) -> Error UnixError.ENOTDIR
         | Some (InodeContent.Directory content) ->
             if
-                Map.containsKey (FileName.assertValid "VirtualFileSystem: directory entry name" name) content.Entries
+                Map.containsKey
+                    (DirectoryEntryName.assertValid "VirtualFileSystem: directory entry name" name)
+                    content.Entries
             then
                 Error UnixError.EEXIST
             else
@@ -1798,7 +1801,7 @@ module VirtualFileSystem =
     /// and not already hold `name`.
     let private bind
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (inode : InodeNumber)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
@@ -1807,7 +1810,8 @@ module VirtualFileSystem =
         // Every builder binds through here, so this is the one place a name
         // enters the graph — and the one place a forged `default(FileName)` can
         // be stopped before it becomes an entry no path could ever name.
-        let name = FileName.assertValid "VirtualFileSystem: directory entry name" name
+        let name =
+            DirectoryEntryName.assertValid "VirtualFileSystem: directory entry name" name
 
         match Map.tryFind directory vfs.Inodes with
         | None -> Error UnixError.ENOENT
@@ -1847,7 +1851,7 @@ module VirtualFileSystem =
     /// taken, ENOTDIR if `directory` is not a directory, ENOENT if it is absent.
     let createDirectory
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (permissions : PermissionBits)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
@@ -1874,7 +1878,7 @@ module VirtualFileSystem =
     /// `O_CREAT | O_EXCL`.
     let createFile
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (permissions : PermissionBits)
         (now : UnixTimestamp)
         (contents : ImmutableArray<byte>)
@@ -1909,7 +1913,7 @@ module VirtualFileSystem =
     /// `InodePermissions.PlatformSymlinkDefault`.
     let createSymlink
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (now : UnixTimestamp)
         (target : SymlinkTarget)
         (vfs : VirtualFileSystem)
@@ -1930,7 +1934,7 @@ module VirtualFileSystem =
     /// containers.
     let hardLink
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (target : InodeNumber)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
@@ -1991,7 +1995,7 @@ module VirtualFileSystem =
     let unbind
         (effect : UnbindTargetEffect)
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<InodeNumber * VirtualFileSystem, UnixError>
@@ -1999,7 +2003,8 @@ module VirtualFileSystem =
         // As in `bind`, so that a forged `default(FileName)` is stopped at the
         // one chokepoint through which a directory ever loses an entry rather
         // than silently matching nothing.
-        let name = FileName.assertValid "VirtualFileSystem: directory entry name" name
+        let name =
+            DirectoryEntryName.assertValid "VirtualFileSystem: directory entry name" name
 
         match Map.tryFind directory vfs.Inodes with
         | None -> Error UnixError.ENOENT
@@ -2051,7 +2056,7 @@ module VirtualFileSystem =
                         inodes
             | None ->
                 failwith
-                    $"VirtualFileSystem.unbind: directory inode %O{directory} bound \"%s{FileName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem.unbind: directory inode %O{directory} bound \"%s{DirectoryEntryName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         Ok (
             target,
@@ -2199,9 +2204,9 @@ module VirtualFileSystem =
     ///    nothing can afterwards put an entry into one.
     let rename
         (sourceDirectory : InodeNumber)
-        (sourceName : FileName)
+        (sourceName : DirectoryEntryName)
         (destinationDirectory : InodeNumber)
-        (destinationName : FileName)
+        (destinationName : DirectoryEntryName)
         (now : UnixTimestamp)
         (vfs : VirtualFileSystem)
         : Result<RenameOutcome * VirtualFileSystem, UnixError>
@@ -2209,10 +2214,10 @@ module VirtualFileSystem =
         // As in `bind` and `unbind`, so that a forged `default(FileName)` is
         // stopped before it becomes an entry no path could name.
         let sourceName =
-            FileName.assertValid "VirtualFileSystem: directory entry name" sourceName
+            DirectoryEntryName.assertValid "VirtualFileSystem: directory entry name" sourceName
 
         let destinationName =
-            FileName.assertValid "VirtualFileSystem: directory entry name" destinationName
+            DirectoryEntryName.assertValid "VirtualFileSystem: directory entry name" destinationName
 
         match tryGetDirectory sourceDirectory vfs, tryGet sourceDirectory vfs with
         | None, Some _ -> Error UnixError.ENOTDIR
@@ -2230,13 +2235,13 @@ module VirtualFileSystem =
 
         if isOrphanedDirectory destinationDirectory vfs then
             failwith
-                $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} has lost its last name, so binding \"%s{FileName.toString destinationName}\" into it would make inode %O{moved} unreachable from the root while it still has a name -- which nothing could then reap. The verdict owes ENOENT, exactly as it does for the creating operations."
+                $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} has lost its last name, so binding \"%s{DirectoryEntryName.toString destinationName}\" into it would make inode %O{moved} unreachable from the root while it still has a name -- which nothing could then reap. The verdict owes ENOENT, exactly as it does for the creating operations."
 
         let displaced = Map.tryFind destinationName destinationContent.Entries
 
         if displaced = Some moved then
             failwith
-                $"VirtualFileSystem.rename: \"%s{FileName.toString sourceName}\" in inode %O{sourceDirectory} and \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} both name inode %O{moved}. That is rename(2)'s no-op, which changes nothing at all; the verdict must answer it rather than calling this."
+                $"VirtualFileSystem.rename: \"%s{DirectoryEntryName.toString sourceName}\" in inode %O{sourceDirectory} and \"%s{DirectoryEntryName.toString destinationName}\" in inode %O{destinationDirectory} both name inode %O{moved}. That is rename(2)'s no-op, which changes nothing at all; the verdict must answer it rather than calling this."
 
         // Before the populated-destination check below, and the order is
         // load-bearing rather than arbitrary: the two overlap on
@@ -2253,7 +2258,7 @@ module VirtualFileSystem =
         match displaced |> Option.bind (fun inode -> tryGetDirectory inode vfs) with
         | Some content when not (Map.isEmpty content.Entries) ->
             failwith
-                $"VirtualFileSystem.rename: the destination \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} names directory inode %O{displaced.Value}, which holds %i{Map.count content.Entries} entries. Displacing it would strand them unreachable from the root; the verdict owes ENOTEMPTY."
+                $"VirtualFileSystem.rename: the destination \"%s{DirectoryEntryName.toString destinationName}\" in inode %O{destinationDirectory} names directory inode %O{displaced.Value}, which holds %i{Map.count content.Entries} entries. Displacing it would strand them unreachable from the root; the verdict owes ENOTEMPTY."
         | Some _
         | None ->
 
@@ -2322,7 +2327,7 @@ module VirtualFileSystem =
                 | Some node -> node
                 | None ->
                     failwith
-                        $"VirtualFileSystem.rename: directory inode %O{sourceDirectory} bound \"%s{FileName.toString sourceName}\" to inode %O{moved}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                        $"VirtualFileSystem.rename: directory inode %O{sourceDirectory} bound \"%s{DirectoryEntryName.toString sourceName}\" to inode %O{moved}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
             let content =
                 match existing.Content with
@@ -2366,7 +2371,7 @@ module VirtualFileSystem =
                         inodes
                 | None ->
                     failwith
-                        $"VirtualFileSystem.rename: directory inode %O{destinationDirectory} bound \"%s{FileName.toString destinationName}\" to inode %O{displaced}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                        $"VirtualFileSystem.rename: directory inode %O{destinationDirectory} bound \"%s{DirectoryEntryName.toString destinationName}\" to inode %O{displaced}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         Ok (
             {
@@ -2429,7 +2434,7 @@ module VirtualFileSystem =
         /// `lower`, or the least of all when there is no lower bound. A scan
         /// rather than a seek: `Map` offers no "least key above" query, and the
         /// cost (quadratic across a whole enumeration) is stated on the caller.
-        let leastAbove (lower : FileName option) : (FileName * InodeNumber) option =
+        let leastAbove (lower : DirectoryEntryName option) : (DirectoryEntryName * InodeNumber) option =
             content.Entries
             |> Map.toSeq
             |> Seq.filter (fun (name, _) ->
@@ -2442,7 +2447,7 @@ module VirtualFileSystem =
         /// The next entry when the stream is still among the names: the least
         /// name above `lower`, or — once they are exhausted — `..`, which is
         /// where this model puts the dots.
-        let fromEntries (lower : FileName option) =
+        let fromEntries (lower : DirectoryEntryName option) =
             match leastAbove lower with
             | Some (name, inode) -> Some (DirectoryStreamName.Entry name, inode, DirectoryCursor.After name)
             | None -> Some (DirectoryStreamName.DotDot, content.Parent, DirectoryCursor.ReturnedDotDot)
@@ -2726,7 +2731,7 @@ module VirtualFileSystem =
         (symlinks : int)
         : Result<PausedResolution, UnixError>
         =
-        let paused (final : (FileName * PathCursor) option) : PausedResolution =
+        let paused (final : (DirectoryEntryName * PathCursor) option) : PausedResolution =
             {
                 Limits = limits
                 Privilege = privilege
@@ -2848,7 +2853,7 @@ module VirtualFileSystem =
             | Some content -> content
             | None ->
                 failwith
-                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{FileName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{DirectoryEntryName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         match content with
         | InodeContent.Symlink linkTarget ->
@@ -2954,7 +2959,7 @@ module VirtualFileSystem =
             | Some content -> content
             | None ->
                 failwith
-                    $"VirtualFileSystem: about to look \"%s{FileName.toString name}\" up in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem: about to look \"%s{DirectoryEntryName.toString name}\" up in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
 
         // Before the length check, before the lookup, and before any symlink
         // this component names is traversed -- which is the whole content of
@@ -2995,7 +3000,7 @@ module VirtualFileSystem =
             | Some content -> content
             | None ->
                 failwith
-                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{FileName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{DirectoryEntryName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         // A trailing separator forces the final symlink to be followed even
         // under NoFollowFinal: POSIX resolves "p/" as "p/.", and both
@@ -3208,7 +3213,7 @@ module VirtualFileSystem =
 
     /// Every (directory, name, target) binding in the graph, including those in
     /// directories nothing can reach.
-    let private allBindings (vfs : VirtualFileSystem) : (InodeNumber * FileName * InodeNumber) list =
+    let private allBindings (vfs : VirtualFileSystem) : (InodeNumber * DirectoryEntryName * InodeNumber) list =
         vfs.Inodes
         |> Map.toList
         |> List.collect (fun (inode, entry) ->
@@ -3230,7 +3235,7 @@ module VirtualFileSystem =
     /// that this stays total on a defective graph (it is used as a test oracle,
     /// and defective graphs are exactly what those tests construct).
     let pathOfDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : AbsoluteUnixPath option =
-        let rec climb (current : InodeNumber) (acc : FileName list) (visited : Set<InodeNumber>) =
+        let rec climb (current : InodeNumber) (acc : DirectoryEntryName list) (visited : Set<InodeNumber>) =
             if current = vfs.Root then
                 Some acc
             elif Set.contains current visited then
@@ -3271,7 +3276,7 @@ module VirtualFileSystem =
         |> Option.map (fun names ->
             let rendered =
                 names
-                |> List.map FileName.toString
+                |> List.map DirectoryEntryName.toString
                 |> List.fold (fun acc name -> acc + string UnixPathText.separator + name) ""
 
             if rendered = "" then
@@ -3327,7 +3332,7 @@ module VirtualFileSystem =
 
         /// Which directories hold each inode, so that the link-count rules and
         /// "the recorded parent is the real one" can all be decided.
-        let holders : Map<InodeNumber, (InodeNumber * FileName) list> =
+        let holders : Map<InodeNumber, (InodeNumber * DirectoryEntryName) list> =
             bindings
             |> List.fold
                 (fun acc (directory, name, target) ->

@@ -19,7 +19,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestWithFileSystemAndCurrentDirectory =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private absolute (s : string) : AbsoluteUnixPath = AbsoluteUnixPath.parseOrFail "test" s
 
@@ -33,7 +33,7 @@ module TestWithFileSystemAndCurrentDirectory =
     /// `outer/inner/`, plus `outer/file` and a link `outer/lnk -> inner`, so a
     /// row can ask to start in a directory, in a file, through a symlink, and
     /// in something absent.
-    let private seed : Map<FileName, SeedEntry> =
+    let private seed : Map<DirectoryEntryName, SeedEntry> =
         Map.ofList
             [
                 name "outer",
@@ -67,7 +67,7 @@ module TestWithFileSystemAndCurrentDirectory =
 
     let private startAt
         (platform : SimulatedUnixPlatform)
-        (entries : Map<FileName, SeedEntry>)
+        (entries : Map<DirectoryEntryName, SeedEntry>)
         (dir : string)
         : Result<UnixSystem<int, string>, CurrentDirectoryFault>
         =

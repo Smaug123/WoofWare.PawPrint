@@ -22,7 +22,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestRmDirRules =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
@@ -155,7 +155,7 @@ module TestRmDirRules =
     /// it: on Darwin the name removed is `d`, not `ld`.
     let private removed (verdict : RmDirVerdict) : string =
         match verdict with
-        | RmDirVerdict.Remove (_, name) -> FileName.toString name
+        | RmDirVerdict.Remove (_, name) -> DirectoryEntryName.toString name
         | RmDirVerdict.Refuse error -> failwith $"expected a removal, got %O{error}"
 
     let private refuses (platform : SimulatedUnixPlatform) (error : UnixError) (candidates : string list) : unit =

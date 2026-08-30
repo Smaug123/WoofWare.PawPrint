@@ -59,7 +59,7 @@ module TestUnixSystemInvariants =
             match
                 VirtualFileSystem.createFile
                     (InodeNumber 1L)
-                    (FileName.parseOrFail context "f")
+                    (DirectoryEntryName.parseOrFail context "f")
                     (PermissionBits.parseOrFail context 0o644)
                     epoch
                     ImmutableArray<byte>.Empty
@@ -321,12 +321,12 @@ module TestUnixSystemInvariants =
         let seed =
             Map.ofList
                 [
-                    FileName.parseOrFail context "outer",
+                    DirectoryEntryName.parseOrFail context "outer",
                     SeedEntry.directory (
                         Map.ofList
                             [
-                                FileName.parseOrFail context "inner", SeedEntry.directory FileSystemSeed.empty
-                                FileName.parseOrFail context "file", SeedEntry.file ImmutableArray<byte>.Empty
+                                DirectoryEntryName.parseOrFail context "inner", SeedEntry.directory FileSystemSeed.empty
+                                DirectoryEntryName.parseOrFail context "file", SeedEntry.file ImmutableArray<byte>.Empty
                             ]
                     )
                 ]

@@ -20,14 +20,14 @@ module TestDirectoryStreamId =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 200
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private absolute (s : string) : AbsoluteUnixPath = AbsoluteUnixPath.parseOrFail "test" s
 
     let private createdAt : UnixTimestamp =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 0
 
-    let private seed : Map<FileName, SeedEntry> =
+    let private seed : Map<DirectoryEntryName, SeedEntry> =
         Map.ofList [ name "dir", SeedEntry.directory Map.empty ]
 
     let private kernel () : EmulatedKernel =

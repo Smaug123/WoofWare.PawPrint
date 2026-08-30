@@ -29,7 +29,7 @@ type AbsoluteUnixPathError =
     /// </remarks>
     | ContainsNul of index : int
     /// <summary>
-    /// The candidate contained an unpaired UTF-16 surrogate at this index, so
+    /// The candidate contained an unpaired UTF-16 surrogate at this UTF-16 index, so
     /// it has no UTF-8 encoding at all.
     /// </summary>
     /// <remarks>
@@ -37,13 +37,15 @@ type AbsoluteUnixPathError =
     /// UTF-8-encodable subset.
     /// </remarks>
     | UnpairedSurrogate of index : int
-    /// <summary>Two consecutive separators, i.e. there is a zero-length segment beginning at this index.</summary>
+    /// <summary>
+    /// Two consecutive separators, i.e. there is a zero-length segment beginning at this character index.
+    /// </summary>
     /// <remarks>The kernel collapses these, so <c>getcwd</c> never reports one.</remarks>
     | EmptySegment of index : int
     /// <summary>There was a separator at the end of a path, and the path was not literally the root.</summary>
     /// <remarks><c>getcwd</c> returns "/" for the root and an unterminated path for everything else.</remarks>
     | TrailingSeparator
-    /// <summary>The path contained a "." or ".." segment beginning at this index.</summary>
+    /// <summary>The path contained a "." or ".." segment beginning at this character index.</summary>
     /// <remarks><c>getcwd</c> returns a fully-resolved path, so neither can appear in its output.</remarks>
     | UnresolvedSegment of segment : string * index : int
 
@@ -131,7 +133,7 @@ module AbsoluteUnixPath =
     /// </summary>
     ///
     /// <remarks>
-    /// This rejects invalid input rather than performing any normalisation.
+    /// This rejects invalid input (such as components which are just "..") rather than performing any normalisation.
     /// (Paths cannot be normalised correctly without knowing whether there are symlinks.)
     /// </remarks>
     let parse (candidate : string) : Result<AbsoluteUnixPath, AbsoluteUnixPathError> =
@@ -167,17 +169,19 @@ module AbsoluteUnixPath =
         | AbsoluteUnixPathError.UnresolvedSegment (segment, index) ->
             $"path contains an unresolved \"%s{segment}\" segment at index %d{index}; getcwd returns fully-resolved paths"
 
-    /// Re-check the invariant of a value that may not have come from `parse`,
-    /// failing loudly and naming `context` if it does not hold.
+    /// <summary>
+    /// Re-check the invariant of a value that may not have come from <c>parse</c>,
+    /// throwing (naming <c>context</c> in the error) if it does not hold.
+    /// </summary>
     ///
-    /// Only for boundaries that accept an `AbsoluteUnixPath` from outside the
-    /// library; interior consumers must not call it, because re-validating a proof
-    /// everywhere is precisely what the type exists to avoid.
-    // The only value this can reject is `Unchecked.defaultof` / C# `default`,
-    // whose payload is null: `private` on the union case stops every other route.
-    // Catching it here turns a null-reference failure deep inside the first
-    // `SystemNative_GetCwd` into a configuration-time error naming the knob.
+    /// <remarks>
+    /// The <c>parse</c> constructor already ensures the invariant holds, so there's
+    /// no need to call this if you know the input came from <c>parse</c>.
+    /// </remarks>
     let assertValid (context : string) (path : AbsoluteUnixPath) : AbsoluteUnixPath =
+        // The only value this can actually reject is `Unchecked.defaultof` / C# `default`,
+        // whose payload is null; the `private` on the union case, plus the restrictions
+        // enforced by the `parse` method, stops every other route.
         match path with
         | AbsoluteUnixPath raw ->
 
@@ -188,7 +192,9 @@ module AbsoluteUnixPath =
                 $"%s{context}: %s{describe error}. An AbsoluteUnixPath that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with AbsoluteUnixPath.parse instead."
 
     /// <summary>Parse a string as an absolute path, or throw if it's not valid.</summary>
-    /// <remarks>This is <c>AbsoluteUnixPath.parse</c>, except it throws instead of returning an error description.</remarks>
+    /// <remarks>
+    /// This is <c>AbsoluteUnixPath.parse</c>, except it throws instead of returning an error description.
+    /// </remarks>
     let parseOrFail (context : string) (candidate : string) : AbsoluteUnixPath =
         match parse candidate with
         | Ok path -> path

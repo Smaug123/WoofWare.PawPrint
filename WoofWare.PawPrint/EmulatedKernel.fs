@@ -1017,7 +1017,7 @@ module EmulatedKernel =
     let withFileSystemAndCurrentDirectory
         (platform : SimulatedUnixPlatform)
         (createdAt : UnixTimestamp)
-        (seed : Map<FileName, SeedEntry>)
+        (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (kernel : EmulatedKernel)
         : EmulatedKernel
@@ -1715,7 +1715,7 @@ type KernelConfig =
         /// This, and not any host directory, is the replay input: PawPrint
         /// never reads the real filesystem, so two runs of the same seed see
         /// the same tree whatever the machine.
-        FileSystem : Map<FileName, SeedEntry>
+        FileSystem : Map<DirectoryEntryName, SeedEntry>
         /// Effective user ID the simulated process runs as, observed as every
         /// inode's `st_uid`. See `UnixSystem.defaultUserId` for why the
         /// default is 1000 rather than root.

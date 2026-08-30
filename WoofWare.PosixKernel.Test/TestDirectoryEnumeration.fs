@@ -13,7 +13,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestDirectoryEnumeration =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private buildTime : UnixTimestamp =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 123_456_789
@@ -154,7 +154,7 @@ module TestDirectoryEnumeration =
             match VirtualFileSystem.nextDirectoryEntry directory cursor vfs with
             | None -> List.rev acc, vfs
             | Some (DirectoryStreamName.Entry n, _, next) ->
-                go next (unbind directory (FileName.toString n) vfs) (FileName.toString n :: acc)
+                go next (unbind directory (DirectoryEntryName.toString n) vfs) (DirectoryEntryName.toString n :: acc)
             | Some (_, _, next) -> go next vfs acc
 
         let seen, after = go DirectoryCursor.Start vfs []
@@ -237,7 +237,7 @@ module TestDirectoryEnumeration =
                 drain directory DirectoryCursor.Start vfs
                 |> List.choose (fun e ->
                     match e with
-                    | DirectoryStreamName.Entry n -> Some (FileName.toString n)
+                    | DirectoryStreamName.Entry n -> Some (DirectoryEntryName.toString n)
                     | DirectoryStreamName.Dot
                     | DirectoryStreamName.DotDot -> None
                 )
@@ -259,7 +259,7 @@ module TestDirectoryEnumeration =
                 drain directory DirectoryCursor.Start vfs
                 |> List.choose (fun e ->
                     match e with
-                    | DirectoryStreamName.Entry n -> Some (FileName.toString n)
+                    | DirectoryStreamName.Entry n -> Some (DirectoryEntryName.toString n)
                     | DirectoryStreamName.Dot
                     | DirectoryStreamName.DotDot -> None
                 )
@@ -278,7 +278,8 @@ module TestDirectoryEnumeration =
             let rec go (cursor : DirectoryCursor) (vfs : VirtualFileSystem) =
                 match VirtualFileSystem.nextDirectoryEntry directory cursor vfs with
                 | None -> vfs
-                | Some (DirectoryStreamName.Entry n, _, next) -> go next (unbind directory (FileName.toString n) vfs)
+                | Some (DirectoryStreamName.Entry n, _, next) ->
+                    go next (unbind directory (DirectoryEntryName.toString n) vfs)
                 | Some (_, _, next) -> go next vfs
 
             match VirtualFileSystem.tryGetContent directory (go DirectoryCursor.Start vfs) with

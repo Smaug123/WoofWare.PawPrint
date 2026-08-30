@@ -27,7 +27,7 @@ module TestPathCursor =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
@@ -86,7 +86,7 @@ module TestPathCursor =
         match component_ with
         | PathComponent.Current -> "."
         | PathComponent.Parent -> ".."
-        | PathComponent.Name name -> FileName.toString name
+        | PathComponent.Name name -> DirectoryEntryName.toString name
 
     // ------------------------------------------------------------- equivalence
 
