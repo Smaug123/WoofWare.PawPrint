@@ -27,11 +27,11 @@ type RawErrnoNumbering =
 /// </remarks>
 [<RequireQualifiedAccess>]
 type RawErrnoPortability =
-    /// This error has the same raw number on every Unix PawPrint models, so the
+    /// This error has the same raw number on every Unix we model, so the
     /// emulated kernel can report it without first deciding which platform it is
     /// impersonating.
     | Portable of value : int
-    /// This error's raw number is not consistent among PawPrint's modelled Unixes,
+    /// This error's raw number is not consistent among the modelled Unixes,
     /// so it can't be interpreted as an int without knowing what platform is being
     /// simulated.
     ///
@@ -39,309 +39,301 @@ type RawErrnoPortability =
     /// raw 62 is `ELOOP` on Darwin but `ETIME` on Linux.
     | PlatformDependent of linux : int * darwin : int
 
-/// The errors PawPrint's emulated `SystemNative_*` shims can report, as a closed
-/// vocabulary rather than bare integers.
+/// <summary>
+/// The conventional errors a syscall can report.
+/// </summary>
+/// <remarks>
+/// The guest will experience these errors as integers, which on a real host would come from <c>&lt;errno.h&gt;</c>.
+/// However, those ints are not portable across the simulated platforms, so we also provide this separate
+/// semantic layer.
+/// Call <c>UnixError.toRawErrnoUnder</c> to get an integer out directly for a given platform, or
+/// <c>UnixError.rawNumbering</c> to get a representation which can be interpreted on any platform.
 ///
-/// Each case carries one number here: the raw `<errno.h>` value, which is what
-/// a real kernel's `errno` would hold. Portability of that number is not a
-/// membership criterion — it is recorded per case, in `RawErrnoPortability`.
-///
-/// A client that needs its own encoding of these — .NET's `Interop.Error`, say
-/// — holds that table itself, keyed by this type. This library states only what
-/// a kernel states.
-///
-/// The *vocabulary* was nevertheless chosen against one client, and one visible
-/// consequence is recorded rather than hidden: `ENOTBLK` (raw 15) is absent
-/// despite being portable, because .NET's PAL enum has no name for it, so
-/// nothing there could switch on it. A second client wanting `ENOTBLK` adds the
-/// case; nothing about the design refuses it.
+/// This vocabulary was chosen empirically during development of a .NET runtime emulation.
+/// It may therefore lack some errors you expect to be there, because I didn't encounter them.
+/// Let me know if you find something you need (e.g. <c>ENOTBLK</c> is a known example).
+/// </remarks>
 [<RequireQualifiedAccess>]
 type UnixError =
-    /// `EPERM` — Operation not permitted.
+    /// Operation not permitted.
     | EPERM
-    /// `ENOENT` — No such file or directory.
+    /// No such file or directory.
     | ENOENT
-    /// `ESRCH` — No such process.
+    /// No such process.
     | ESRCH
-    /// `EINTR` — Interrupted function.
+    /// Interrupted function.
     | EINTR
-    /// `EIO` — I/O error.
+    /// I/O error.
     | EIO
-    /// `ENXIO` — No such device or address.
+    /// No such device or address.
     | ENXIO
-    /// `E2BIG` — Argument list too long.
+    /// Argument list too long.
     | E2BIG
-    /// `ENOEXEC` — Executable file format error.
+    /// Executable file format error.
     | ENOEXEC
-    /// `EBADF` — Bad file descriptor.
-    /// Returned by `dup`, `close`, `read`, `write`, etc. when the supplied
-    /// fd is not currently open.
+    /// <summary>Bad file descriptor.</summary>
+    /// <example>
+    /// Returned by <c>dup</c>, <c>close</c>, <c>read</c>, <c>write</c>, etc. when the supplied
+    /// file descriptor is not currently open.
+    /// </example>
     | EBADF
-    /// `ECHILD` — No child processes.
+    /// No child processes.
     | ECHILD
-    /// `ENOMEM` — Not enough space.
+    /// Not enough space.
     | ENOMEM
-    /// `EACCES` — Permission denied.
+    /// Permission denied.
     | EACCES
-    /// `EFAULT` — Bad address.
-    /// Returned by `read(2)` / `write(2)` and friends when the buffer
-    /// pointer is outside the process's accessible address space — most
-    /// notably when the caller passes `NULL` (or any other
-    /// non-dereferenceable bit pattern) with a non-zero `bufferSize`. The
-    /// kernel performs no I/O for such a call. PawPrint maps a null /
-    /// non-managed buffer here rather than crashing the interpreter, so
-    /// guests that issue a direct P/Invoke (skipping the BCL's null-guard in
-    /// `Stream.Write`) see the same error as on the real runtime.
+    /// <summary>
+    /// Bad address.
+    /// </summary>
+    /// <example>
+    /// Returned by <c>read(2)</c> / <c>write(2)</c> and friends when the buffer
+    /// pointer is outside the process's accessible address space - most
+    /// notably when the caller passes <c>NULL</c> (or any other
+    /// non-dereferenceable bit pattern) with a non-zero <c>bufferSize</c>.
+    /// The kernel performs no I/O for such a call.
+    /// </example>
     | EFAULT
-    /// `EBUSY` — Device or resource busy.
+    /// Device or resource busy.
     | EBUSY
-    /// `EEXIST` — File exists.
+    /// File exists.
     | EEXIST
-    /// `EXDEV` — Cross-device link.
+    /// Cross-device link.
     | EXDEV
-    /// `ENODEV` — No such device.
+    /// No such device.
     | ENODEV
-    /// `ENOTDIR` — Not a directory or a symbolic link to a directory.
+    /// Not a directory or a symbolic link to a directory.
     | ENOTDIR
-    /// `EISDIR` — Is a directory.
+    /// Is a directory.
     | EISDIR
-    /// `EINVAL` — Invalid argument.
-    /// Returned by `sigaction(2)` when the caller asks to install a handler
-    /// for an uncatchable signal (`SIGKILL` or `SIGSTOP`). PawPrint surfaces
-    /// this through `SystemNative_EnablePosixSignalHandling`, which the BCL's
-    /// `PosixSignalRegistration.Create` reads via `Marshal.GetLastSystemError`
-    /// to throw a meaningful error to the guest.
+    /// <summary>
+    /// Invalid argument.
+    /// </summary>
     | EINVAL
-    /// `ENFILE` — Too many files open in system.
+    /// Too many files open in system.
     | ENFILE
-    /// `EMFILE` — File descriptor value too large.
+    /// File descriptor value too large.
     | EMFILE
-    /// `ENOTTY` — Inappropriate I/O control operation.
-    /// Returned by `isatty(3)` when the supplied fd is open but does not
-    /// refer to a terminal. PawPrint surfaces this through
-    /// `SystemNative_IsATty`, which always reports "not a terminal" for live
-    /// fds because the simulated process is headless.
+    /// <summary>Inappropriate I/O control operation.</summary>
+    /// <example>
+    /// Returned by <c>isatty(3)</c> when the supplied file descriptor is open but does not
+    /// refer to a terminal.
+    /// </example>
     | ENOTTY
-    /// `ETXTBSY` — Text file busy.
+    /// Text file busy.
     | ETXTBSY
-    /// `EFBIG` — File too large.
+    /// File too large.
     | EFBIG
-    /// `ENOSPC` — No space left on device.
+    /// No space left on device.
     | ENOSPC
-    /// `ESPIPE` — Invalid seek.
+    /// Invalid seek.
     | ESPIPE
-    /// `EROFS` — Read-only file system.
+    /// Read-only file system.
     | EROFS
-    /// `EMLINK` — Too many links.
+    /// Too many links.
     | EMLINK
-    /// `EPIPE` — Broken pipe.
+    /// Broken pipe.
     | EPIPE
-    /// `EDOM` — Mathematics argument out of domain of function.
+    /// Mathematics argument out of domain of function.
     | EDOM
-    /// `ERANGE` — Result too large.
-    /// Used by PawPrint's `SystemNative_Write` shim when the caller supplies a
-    /// negative `bufferSize`, matching `Common_Write` in `pal_io_common.h`,
-    /// which sets `errno = ERANGE` and returns -1 before the real `write(2)` is
-    /// invoked.
-    ///
-    /// **Not the answer for the reading half.** `Common_Read`, immediately
-    /// above it in the same header, guards the same mistake with
-    /// `errno = EINVAL` — so `SystemNative_Read` reports EINVAL where
-    /// `SystemNative_Write` reports ERANGE. The asymmetry is upstream's.
+    /// <summary>
+    /// Result too large.
+    /// </summary>
     | ERANGE
-    /// `ELOOP` — Too many levels of symbolic links.
-    ///
-    /// Reported by `VirtualFileSystem.resolve` when a path resolution traverses
-    /// more symlinks than any Unix PawPrint models would allow. The raw number
-    /// is not portable: Linux numbers it 40 and Darwin 62, and each of those
-    /// numbers names a different error on the other platform. Its PAL value is
-    /// unaffected by that, and is what CoreLib switches on, so this is fully
-    /// usable everywhere except `toRawErrno` — which fails loudly rather than
-    /// picking a platform. See `RawErrnoPortability`.
+    /// <summary>
+    /// Too many levels of symbolic links.
+    /// </summary>
+    /// <example>
+    /// Reported by <c>VirtualFileSystem.resolve</c> when a path resolution traverses
+    /// more symlinks than any of our modelled Unixes would allow.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 40; Darwin numbers it 62.
+    /// </remarks>
     | ELOOP
-    /// `ENAMETOOLONG` — Filename too long.
-    ///
-    /// Reported for a pathname argument longer than the platform's `PATH_MAX`,
-    /// and for any single component longer than its `NAME_MAX`. Both limits, and
-    /// the *unit* the second is measured in, come from `PathLimits`: measured,
-    /// APFS permits 255 UTF-16 code units where ext4 permits 255 bytes, so the
-    /// same name can be legal on one and too long on the other.
-    ///
-    /// Platform-dependent like `ELOOP`, and for the same reason: raw 36 is
-    /// `ENAMETOOLONG` on Linux but `EINPROGRESS` on Darwin, and raw 63 is
-    /// `ENAMETOOLONG` on Darwin but `ENOSR` on Linux (both checked against the
-    /// two `<errno.h>`s), so either choice would rename a different error on the
-    /// other platform.
+    /// <summary>
+    /// Filename too long.
+    /// </summary>
+    /// <example>
+    /// Reported for a pathname argument longer than the platform's <c>PATH_MAX</c>,
+    /// and for any single component longer than its <c>NAME_MAX</c>. Both those limits,
+    /// and the unit components are measured in, come from <c>PathLimits</c> and are
+    /// filesystem-dependent.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 36; Darwin numbers it 63.
+    /// </remarks>
     | ENAMETOOLONG
-    /// `ENOTEMPTY` — Directory not empty.
+    /// <summary>
+    /// Directory not empty.
+    /// </summary>
     ///
-    /// Reported by `rmdir(2)` for a directory that still holds an entry, and —
-    /// on both flavours — for a path whose final component was "..", which
-    /// names a directory that necessarily contains the one the path came
-    /// through. See `RmDirRules`.
+    /// <example>
+    /// Reported by <c>rmdir(2)</c> for a directory that still holds an entry,
+    /// or for a path whose final component was ".." (see <c>RmDirRules</c>).
+    /// </example>
     ///
-    /// Platform-dependent like `ELOOP`: raw 39 is `ENOTEMPTY` on Linux but
-    /// `EDESTADDRREQ` on Darwin, and raw 66 is `ENOTEMPTY` on Darwin but
-    /// `EREMOTE` on Linux (measured on both).
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 39; Darwin numbers it 66.
+    /// </remarks>
     | ENOTEMPTY
-    /// `EAGAIN` — Resource temporarily unavailable. `EWOULDBLOCK` is the *same*
-    /// value, on both platforms and in the PAL enum
-    /// (`Interop.Errors.cs:111` defines `EWOULDBLOCK = EAGAIN`), so there is one
-    /// case here rather than two.
+    /// <summary>
+    /// Resource temporarily unavailable.
+    /// </summary>
+    /// <remarks>
+    /// <c>EWOULDBLOCK</c> is the same value, on all platforms we model, so we
+    /// don't supply a separate case for that.
     ///
-    /// Reported by `SystemNative_FLock` when a non-blocking lock request
-    /// conflicts with a lock another open file description already holds. This
-    /// is the one errno the BCL's `FileStream` treats as meaningful — every
-    /// other failure to lock is swallowed, since the lock is advisory
-    /// (`SafeFileHandle.Unix.cs:359`) — so it is what makes `FileShare` do
-    /// anything at all on Unix.
-    ///
-    /// Platform-dependent: Linux numbers this 11 and Darwin 35, which are
-    /// exactly the two numbers Darwin and Linux respectively give `EDEADLK`.
-    /// Measured on both platforms rather than read off a header.
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 11; Darwin numbers it 35.
+    /// </remarks>
     | EAGAIN
-    /// `EOVERFLOW` — Value too large to be stored in data type.
-    ///
-    /// Reported by `SystemNative_LSeek` under the Darwin flavour when the
-    /// computed file offset does not fit in a signed 64-bit `off_t`. Linux
-    /// answers `EINVAL` for the same input, which is the entire divergence
-    /// between the two once the *filesystem* is held constant — measured on a
-    /// tmpfs-backed file, since ext4's much lower `s_maxbytes` otherwise makes
-    /// Linux look as though it rejects large offsets outright.
-    ///
-    /// Platform-dependent like `ELOOP`: raw 75 is `EOVERFLOW` on Linux but
-    /// `EPROGMISMATCH` on Darwin, and raw 84 is `EOVERFLOW` on Darwin but
-    /// `EILSEQ` on Linux (both read off the two `strerror` tables).
+    /// <summary>
+    /// Value too large to be stored in data type.
+    /// </summary>
+    /// <example>
+    /// <c>lseek</c> returns this on Darwin when the computed file offset does not
+    /// fit in a signed 64-bit <c>off_t</c>. Linux returns <c>EINVAL</c> for the same
+    /// input.
+    /// (An offset which lands below zero is <c>EINVAL</c> on both.)
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 75; Darwin numbers it 84.
+    /// </remarks>
     | EOVERFLOW
-    /// `EAFNOSUPPORT` — Address family not supported.
-    ///
-    /// Reported by `SystemNative_Socket` when the requested address family is
-    /// not one the native shim knows how to translate. That screen is the C's
-    /// own, ahead of any syscall, so this is the shim's answer rather than a
-    /// kernel's.
-    ///
-    /// Platform-dependent: Linux numbers this 97 and Darwin 47, and neither
-    /// number is free on the other platform — raw 97 is `ENOLINK` on Darwin and
-    /// raw 47 is `EL3RST` on Linux. Measured from both `strerror` tables.
+    /// <summary>
+    /// Address family not supported.
+    /// </summary>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 97; Darwin numbers it 47.
+    /// </remarks>
     | EAFNOSUPPORT
-    /// `EPROTOTYPE` — Protocol wrong type for socket.
-    ///
-    /// Reported by `SystemNative_Socket` when the requested socket type is not
-    /// one the native shim knows how to translate. Note that the C reports the
-    /// *socket type* screen with this rather than with `ESOCKTNOSUPPORT`, which
-    /// is what a kernel would say; that mismatch is upstream's, not PawPrint's.
-    ///
-    /// Platform-dependent: Linux numbers this 91 and Darwin 41. Raw 91 is
-    /// `ENOMSG` on Darwin, and raw 41 has no name at all on Linux — `strerror`
-    /// reports "Unknown error 41" — so neither number is safe to reuse.
+    /// <summary>
+    /// Protocol wrong type for socket.
+    /// </summary>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 91; Darwin numbers it 41.
+    /// </remarks>
     | EPROTOTYPE
-    /// `EPROTONOSUPPORT` — Protocol not supported.
-    ///
-    /// Reported by `SystemNative_Socket` when the requested protocol is not one
-    /// the native shim knows how to translate *for the requested address
-    /// family*: the C's protocol conversion is a per-family table, so the same
-    /// protocol can convert under `AF_INET` and be refused under `AF_UNIX`.
-    ///
-    /// Platform-dependent: Linux numbers this 93 and Darwin 43, and neither
-    /// number is free on the other platform — raw 93 is `ENOATTR` on Darwin and
-    /// raw 43 is `EIDRM` on Linux.
+    /// <summary>
+    /// Protocol not supported.
+    /// </summary>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 93; Darwin numbers it 43.
+    /// </remarks>
     | EPROTONOSUPPORT
-    /// `EADDRINUSE` — Address already in use.
-    ///
-    /// Reported by `bind(2)` when another socket already holds a conflicting
-    /// local address. Which pairs conflict is not a property of the address
-    /// alone: it depends on both sockets' `SO_REUSEADDR`, on whether either is
-    /// listening, and on the flavour, which relax the rule in opposite
-    /// directions. See `SimulatedUnixPlatform.bindConflict`.
-    ///
-    /// Platform-dependent, and neither number is free on the other platform.
-    /// Measured from both `strerror` tables: Linux numbers this 98, where Darwin
-    /// reads 98 as "No STREAM resources"; Darwin numbers it 48, where Linux reads
-    /// 48 as "Link number out of range".
+    /// <summary>
+    /// Address already in use.
+    /// </summary>
+    /// <example>
+    /// Reported by <c>bind(2)</c> when another socket already holds a conflicting
+    /// local address. (Whether two sockets "conflict" depends on both sockets' <c>SO_REUSEADDR</c>,
+    /// on whether they're listening, and on the Unix flavour.)
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 98; Darwin numbers it 48.
+    /// </remarks>
     | EADDRINUSE
-    /// `EADDRNOTAVAIL` — Cannot assign requested address.
+    /// <summary>
+    /// Cannot assign requested address.
+    /// </summary>
+    /// <example>
+    /// Reported by <c>bind(2)</c> for an address this machine does not hold.
     ///
-    /// Reported by `bind(2)` for an address no local interface holds. What
-    /// counts as local is a per-flavour rule over the configured prefixes: Linux
-    /// accepts anything inside a local prefix (so the whole of `127.0.0.0/8`),
-    /// Darwin only an address a prefix *is*.
+    /// What counts as "held" differs per Unix flavour, as follows:
+    /// the guest is configured with two lists of addresses, <c>LocalAddresses</c> (which configures interfaces),
+    /// and <c>LocalRoutes</c> (the routing table).
+    /// Darwin reads only <c>LocalAddresses</c> when binding, while Linux will additionally
+    /// bind any address inside a prefix in <c>LocalRoutes</c>.
     ///
-    /// Platform-dependent, and neither number is free on the other platform.
-    /// Measured: Linux numbers this 99, where Darwin reads 99 as "Not a STREAM";
-    /// Darwin numbers it 49, where Linux reads 49 as "Protocol driver not
-    /// attached".
+    /// So with the defaults - holding <c>127.0.0.1</c>, routing <c>127.0.0.0/8</c> -
+    /// <c>127.0.0.9</c> binds on Linux but is <c>EADDRNOTAVAIL</c> on Darwin.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 99; Darwin numbers it 49.
+    /// </remarks>
     | EADDRNOTAVAIL
-    /// `EOPNOTSUPP` — Operation not supported on socket.
-    ///
-    /// Reported by `listen(2)` on a socket whose type does not accept
-    /// connections — a datagram socket, measured on both.
-    ///
-    /// The PAL folds this together with `ENOTSUP` (`Error_EOPNOTSUPP =
-    /// Error_ENOTSUP`), so CoreLib's managed `Interop.Error` carries this name
-    /// only as an alias and both conditions present the same value to a guest
-    /// switching on it. The *raw* errnos are not folded, and that is measured:
-    /// `listen(2)` on a datagram socket sets 95 on Linux and **102** on Darwin,
-    /// while `flock` on a socket sets Darwin's `ENOTSUP`, 45. This case carries
-    /// `EOPNOTSUPP`'s numbering; a caller meaning `ENOTSUP` needs its own case
-    /// rather than this one, or a Darwin guest reading `errno` sees 102 where the
-    /// kernel set 45.
-    ///
-    /// Neither number is free on the other platform: Darwin reads 95 as
-    /// "EMULTIHOP (Reserved)" and Linux reads 102 as "Network dropped connection
-    /// on reset".
+    /// <summary>
+    /// Operation not supported on socket.
+    /// </summary>
+    /// <example>
+    /// Reported by <c>listen(2)</c> on a socket whose type does not accept
+    /// connections, such as a datagram socket.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// </remarks>
     | EOPNOTSUPP
-    /// `ENOTSOCK` — Socket operation on non-socket.
-    ///
-    /// Reported by the socket syscalls for a descriptor that is not a socket.
-    /// Measured per entry point rather than generalised: `accept(2)`,
-    /// `bind(2)`, `listen(2)` and `getsockname(2)` on a regular file, a socket
-    /// event port and both ends of a pipe all answer this, on both kernels.
-    ///
-    /// Platform-dependent, and neither number is free on the other platform:
-    /// Linux numbers this 88, which Darwin reads as `EBADMACHO`; Darwin numbers
-    /// it 38, which Linux reads as `ENOSYS`.
+    /// <summary>
+    /// Socket operation on non-socket.
+    /// </summary>
+    /// <example>
+    /// For example, <c>accept(2)</c>, <c>bind(2)</c>, <c>listen(2)</c>, and <c>getsockname(2)</c>
+    /// when their input isn't a socket but instead is any of
+    /// a regular file, a socket event port, or either end of a pipe.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 88; Darwin numbers it 38.
+    /// </remarks>
     | ENOTSOCK
-    /// `EISCONN` — Socket is connected.
+    /// <summary>
+    /// Socket is connected.
+    /// </summary>
+    /// <example>
+    /// Reported by <c>connect(2)</c> when a connect is issued on:
     ///
-    /// Reported by `connect(2)` on a socket that already is: measured on both
-    /// kernels after a blocking loopback connect. Also Linux's answer for a
-    /// connect issued on a *listening* socket, and Darwin's for a retry after
-    /// an async establishment.
-    ///
-    /// Platform-dependent, and neither number is free on the other platform:
-    /// Linux numbers this 106, which Darwin reads as unnamed; Darwin numbers
-    /// it 56, which Linux reads as `EBADRQC`.
+    /// <list type="bullet">
+    /// <item>a socket that is already connected</item>
+    /// <item>a socket that is listening (on Linux)</item>
+    /// <item>a socket which has already completed an asynchronous connect (on Darwin).</item>
+    /// </list>
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 106; Darwin numbers it 56.
+    /// </remarks>
     | EISCONN
-    /// `EINPROGRESS` — Operation now in progress.
-    ///
-    /// `connect(2)`'s answer on a non-blocking socket — measured on both
-    /// kernels, *even on loopback*, and whether the destination is listening
-    /// or refuses. The PAL's managed callers switch on it to pend
-    /// (`SocketPal.TryStartConnect`), so answering the final outcome instead
-    /// would change guest control flow.
-    ///
-    /// Platform-dependent: Linux numbers this 115, which Darwin has no name
-    /// for; Darwin numbers it 36, which Linux reads as `ENAMETOOLONG`.
+    /// <summary>
+    /// Operation now in progress.
+    /// </summary>
+    /// <example>
+    /// Reported by <c>connect(2)</c> when a connect is issued on a non-blocking socket.
+    /// (This is true regardless of whether the destination is listening and refuses, and is true on loopback too, on
+    /// all platforms.)
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 115; Darwin numbers it 36.
+    /// </remarks>
     | EINPROGRESS
-    /// `ECONNREFUSED` — Connection refused.
-    ///
-    /// `connect(2)`'s answer for a local destination with no listening socket
-    /// behind it, delivered inline by a blocking connect and by the first
-    /// retry after a non-blocking one. Measured on both kernels for a closed
-    /// port; on Linux a bound-but-not-listening port answers the same (the
-    /// SYN gets RST either way), where Darwin drops the SYN instead.
-    ///
-    /// Platform-dependent, and neither number is free on the other platform:
-    /// Linux numbers this 111, which Darwin reads as unnamed; Darwin numbers
-    /// it 61, which Linux reads as `ENODATA`.
+    /// <summary>
+    /// Connection refused.
+    /// </summary>
+    /// <example>
+    /// Reported by <c>connect(2)</c> for a local destination with no listening socket
+    /// behind it - for a blocking connect, delivered inline, or for a non-blocking connect,
+    /// delivered by the first retry after the connect.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 111; Darwin numbers it 61.
+    /// </remarks>
     | ECONNREFUSED
 
 [<RequireQualifiedAccess>]
 module UnixError =
-    /// Every case of `UnixError`. The property tests fold over this to check the
-    /// table against the pinned upstream sources, so it must stay exhaustive;
-    /// `rawNumbering` below is a total match, so the compiler catches a case added
-    /// here and forgotten there, and `allCasesAreListed` catches the reverse.
+    /// Every case of `UnixError`, exposed for property testing.
+    /// TODO: write a Myriad source generator for this, it's ridiculous
     let all : UnixError list =
         [
             UnixError.EPERM
@@ -398,12 +390,12 @@ module UnixError =
     let private platformDependent (linux : int) (darwin : int) : RawErrnoPortability =
         RawErrnoPortability.PlatformDependent (linux, darwin)
 
-    /// The single table. Every conversion below is derived from it, so they
-    /// cannot drift apart.
-    ///
-    /// Transcribed from the kernel ABI headers, and checked against the host's
-    /// own `<errno.h>` by `TestUnixError`.
+    /// <summary>
+    /// Obtain the integer for a <c>UnixError</c>.
+    /// </summary>
     let rawNumbering (error : UnixError) : RawErrnoPortability =
+        // Transcribed from the kernel ABI headers, and checked against the host's
+        // own errno.h by `TestUnixError`.
         match error with
         | UnixError.EPERM -> portable 1
         | UnixError.ENOENT -> portable 2
@@ -437,45 +429,47 @@ module UnixError =
         | UnixError.EPIPE -> portable 32
         | UnixError.EDOM -> portable 33
         | UnixError.ERANGE -> portable 34
-        // Raw 40 is EMSGSIZE on Darwin, and raw 62 is ETIME on Linux, so either
-        // number would silently name a different error on the other platform.
+        // Raw 40 is EMSGSIZE on Darwin, and raw 62 is ETIME on Linux.
         | UnixError.ELOOP -> platformDependent 40 62
         // Likewise: raw 36 is EINPROGRESS on Darwin, and raw 63 is ENOSR on
         // Linux.
         | UnixError.ENAMETOOLONG -> platformDependent 36 63
-        // Measured on both: raw 39 is ENOTEMPTY on Linux and EDESTADDRREQ on
+        // Raw 39 is ENOTEMPTY on Linux and EDESTADDRREQ on
         // Darwin; raw 66 is ENOTEMPTY on Darwin and EREMOTE on Linux.
         | UnixError.ENOTEMPTY -> platformDependent 39 66
         // The V7 transposition itself: raw 11 is EAGAIN on Linux but EDEADLK on
         // Darwin, and raw 35 is EAGAIN on Darwin but EDEADLK on Linux.
         | UnixError.EAGAIN -> platformDependent 11 35
-        // Measured on both: raw 75 is EOVERFLOW on Linux and EPROGMISMATCH on
+        // Raw 75 is EOVERFLOW on Linux and EPROGMISMATCH on
         // Darwin; raw 84 is EOVERFLOW on Darwin and EILSEQ on Linux.
         | UnixError.EOVERFLOW -> platformDependent 75 84
-        // Measured on both: raw 97 is EAFNOSUPPORT on Linux and ENOLINK on
+        // Raw 97 is EAFNOSUPPORT on Linux and ENOLINK on
         // Darwin; raw 47 is EAFNOSUPPORT on Darwin and EL3RST on Linux.
         | UnixError.EAFNOSUPPORT -> platformDependent 97 47
-        // Likewise: raw 91 is EPROTOTYPE on Linux and ENOMSG on Darwin, while
+        // Raw 91 is EPROTOTYPE on Linux and ENOMSG on Darwin, while
         // raw 41 is EPROTOTYPE on Darwin and unnamed on Linux.
         | UnixError.EPROTOTYPE -> platformDependent 91 41
-        // Likewise: raw 93 is EPROTONOSUPPORT on Linux and ENOATTR on Darwin,
+        // Raw 93 is EPROTONOSUPPORT on Linux and ENOATTR on Darwin,
         // while raw 43 is EPROTONOSUPPORT on Darwin and EIDRM on Linux.
         | UnixError.EPROTONOSUPPORT -> platformDependent 93 43
         | UnixError.EADDRINUSE -> platformDependent 98 48
         | UnixError.EADDRNOTAVAIL -> platformDependent 99 49
         | UnixError.EOPNOTSUPP -> platformDependent 95 102
-        // Measured on both: raw 88 is ENOTSOCK on Linux and EBADMACHO on
+        // Raw 88 is ENOTSOCK on Linux and EBADMACHO on
         // Darwin, while raw 38 is ENOTSOCK on Darwin and ENOSYS on Linux.
         | UnixError.ENOTSOCK -> platformDependent 88 38
         | UnixError.EISCONN -> platformDependent 106 56
         | UnixError.EINPROGRESS -> platformDependent 115 36
         | UnixError.ECONNREFUSED -> platformDependent 111 61
 
-    /// The raw `<errno.h>` number to store in `EmulatedKernel.LastSystemError`.
-    ///
-    /// Partial: a `PlatformDependent` case (e.g. `ELOOP`) has no
-    /// platform-independent number, so this fails for it rather than letting a
-    /// Linux number reach a guest that was told it is running on Darwin.
+    /// <summary>
+    /// The raw <c>&lt;errno.h&gt;</c> integer for this error, if that number would be the same across all
+    /// supported platforms.
+    /// </summary>
+    /// <remarks>
+    /// You probably don't want to use this, because it throws if the input error is platform-dependent.
+    /// <c>toRawErrnoUnder</c> is the safe version.
+    /// </remarks>
     let toRawErrno (error : UnixError) : int =
         match rawNumbering error with
         | RawErrnoPortability.Portable value -> value
@@ -483,9 +477,9 @@ module UnixError =
             failwith
                 $"UnixError.toRawErrno: %O{error} has no platform-independent errno number (Linux reports %d{linux}, Darwin reports %d{darwin}), and PawPrint has not chosen which numbering its emulated kernel reports. Reporting either would make a guest that read Marshal.GetLastPInvokeError() observe a number its configured SimulatedUnixPlatform contradicts. Decide the numbering (see issue #956) before routing this error to a guest."
 
-    /// The raw `<errno.h>` number under the chosen numbering. Unlike
-    /// `toRawErrno`, this is total on the platform-dependent errors too,
-    /// because the caller has said which Unix it impersonates.
+    /// <summary>
+    /// The raw <c>&lt;errno.h&gt;</c> integer for this error on the chosen platform.
+    /// </summary>
     let toRawErrnoUnder (reporting : RawErrnoNumbering) (error : UnixError) : int =
         match rawNumbering error with
         | RawErrnoPortability.Portable value -> value
@@ -494,40 +488,38 @@ module UnixError =
             | RawErrnoNumbering.Linux -> linux
             | RawErrnoNumbering.Darwin -> darwin
 
-    /// Is `raw` a number whose meaning PawPrint can state without first
-    /// deciding which Unix it is impersonating?
+    /// <summary>
+    /// Whether the integer is the number of a modelled errno which is portable across all WoofWare.PosixKernel's
+    /// modelled Unixes.
+    /// </summary>
+    /// <example>
+    /// The number 5 is <c>EIO</c> on all modelled platforms, so is portable.
     ///
-    /// Every value in 1-34 is defined on both Linux and Darwin, and they agree
-    /// on all of them except 11 (`EAGAIN` on Linux, `EDEADLK` on Darwin, and
-    /// vice versa at 35). From 35 up the two numbered independently, so nothing
-    /// there is answerable.
-    ///
-    /// Conservative at the top end: a number above *both* platforms' highest
-    /// errno is in fact unambiguously nonstandard, but saying so would mean
-    /// embedding both platforms' maxima, so such a value fails loudly instead.
-    ///
-    /// The bottom end does not fail: POSIX requires errno values to be
-    /// positive, so no platform defines a negative one and both fall through to
-    /// `ENONSTANDARD`, with no per-platform table needed. See
-    /// `isUnambiguouslyNonStandardRawErrno`.
+    /// The number 11 is <c>EAGAIN</c> on Linux but <c>EDEADLK</c> on Darwin, so is not portable.
+    /// </example>
+    /// <remarks>
+    /// This only indicates errnos which we <i>know</i> to be portable.
+    /// There may coincidentally be portable errnos which <c>isPortableRawErrno</c> says are not portable.
+    /// </remarks>
     let isPortableRawErrno (raw : int) : bool = raw >= 1 && raw <= 34 && raw <> 11
 
-    /// Raw values every Unix agrees are meaningless, and hence agrees convert to
-    /// `ENONSTANDARD`. POSIX errnos are positive, so a negative number names an
-    /// error on no platform we model and needs no platform choice to reject.
+    /// <summary>
+    /// A fast-path to detect whether the integer is known not to be a valid errno on any modelled Unix.
+    /// </summary>
+    /// <example>
+    /// POSIX specifies that errnos are positive, so any negative int is unambiguously a nonstandard raw errno.
+    /// </example>
     let isUnambiguouslyNonStandardRawErrno (raw : int) : bool = raw < 0
 
-    /// The error a raw `<errno.h>` number denotes, or `None` when this library
-    /// cannot say. `None` means *undecidable*, not merely unmapped, and a caller
-    /// must not read it as "no such error": use `ofRawErrnoUnder` if the
-    /// platform is known.
+    /// <summary>
+    /// Convert a portable raw integer errno to a structured error.
+    /// </summary>
+    /// <remarks>
+    /// This returns <c>None</c> for non-portable errnos, as well as for errnos WoofWare.PosixKernel
+    /// simply doesn't recognise.
     ///
-    /// A `PlatformDependent` case is *not* matched, even though the table
-    /// records both its candidate numbers: matching raw 40 to `ELOOP` would be
-    /// right on Linux and wrong on Darwin, where 40 is `EMSGSIZE`, and matching
-    /// 62 would be wrong the other way round. Answering "which error is this
-    /// number" needs a platform choice this function has not been given, so both
-    /// numbers stay unmapped.
+    /// Use <c>ofRawErrnoUnder</c> to convert an errno if you already know the platform you're simulating.
+    /// </remarks>
     let ofRawErrno (raw : int) : UnixError option =
         all
         |> List.tryFind (fun error ->
@@ -536,8 +528,12 @@ module UnixError =
             | RawErrnoPortability.PlatformDependent _ -> false
         )
 
-    /// The error a raw number denotes under a chosen numbering. Unlike
-    /// `ofRawErrno`, this *can* match a platform-dependent entry — when the
-    /// caller has supplied the fact that made it ambiguous.
+    /// <summary>
+    /// Convert a raw integer errno to a structured error on the specified platform.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <c>ofRawErrno</c>, this returns values for platform-dependent entries too.
+    /// It can still return <c>None</c> for errnos that are valid but which WoofWare.PosixKernel doesn't yet model.
+    /// </remarks>
     let ofRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : UnixError option =
         all |> List.tryFind (fun error -> toRawErrnoUnder reporting error = raw)
