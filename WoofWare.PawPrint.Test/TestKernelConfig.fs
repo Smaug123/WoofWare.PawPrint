@@ -1,9 +1,11 @@
 namespace WoofWare.PawPrint.Test
 
 open System
+open System.Collections.Immutable
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
+open WoofWare.PosixKernel
 
 /// `KernelConfig` is everything a host may set about the simulated process
 /// before a run, and `applyTo` is the only production path that writes those
@@ -14,6 +16,45 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestKernelConfig =
+
+    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+
+    let private absolute (s : string) : AbsoluteUnixPath = AbsoluteUnixPath.parseOrFail "test" s
+
+    let private noBytes : ImmutableArray<byte> = ImmutableArray<byte>.Empty
+
+    /// `outer/inner/` beside `outer/file`: enough for a row to set a current
+    /// directory that the seed really contains.
+    let private seed : Map<FileName, SeedEntry> =
+        Map.ofList
+            [
+                name "outer",
+                SeedEntry.directory (
+                    Map.ofList
+                        [
+                            name "inner", SeedEntry.directory Map.empty
+                            name "file", SeedEntry.file noBytes
+                        ]
+                )
+            ]
+
+    /// The inode a path names, resolved independently of the kernel — so a row
+    /// asserting "the kernel held *this* inode" is checked against the graph
+    /// rather than against the kernel's own answer.
+    let private inodeOf (kernel : EmulatedKernel) (path : string) : InodeNumber =
+        let vfs = kernel.FileSystem
+
+        match
+            VirtualFileSystem.resolveExisting
+                (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
+                CallerPrivilege.Privileged
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.Follow
+                (UnixPath.parseOrFail "test" path)
+                vfs
+        with
+        | Ok inode -> inode
+        | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}"
 
     [<Test>]
     let ``the instruction cost is configurable and validated`` () : unit =
@@ -46,3 +87,17 @@ module TestKernelConfig =
                 |> ignore<EmulatedKernel>
 
             Assert.Throws<Exception> (TestDelegate apply) |> ignore<Exception>
+
+    [<Test>]
+    let ``KernelConfig applies the current directory whatever else it sets`` () : unit =
+        let config =
+            { KernelConfig.Default with
+                FileSystem = seed
+                UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                CurrentDirectory = absolute "/outer/inner"
+            }
+
+        let kernel = KernelConfig.applyTo config EmulatedKernel.initial
+
+        kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
+        EmulatedKernel.checkInvariants kernel |> shouldEqual []

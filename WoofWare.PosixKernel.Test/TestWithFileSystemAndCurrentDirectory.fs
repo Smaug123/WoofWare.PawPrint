@@ -5,18 +5,19 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// Which of `UnixSystem.withFileSystemAndCurrentDirectory`'s outcomes are
-/// answered to the caller and which crash.
+/// `UnixSystem.withFileSystemAndCurrentDirectory`: which directory a process
+/// ends up standing in, which outcomes are answered to the caller rather than
+/// crashed on, and what a system must not be holding when it is called.
 ///
-/// The split is the point of `CurrentDirectoryFault`: a host that named a
-/// directory its own seed does not contain has made a mistake it can fix, and
-/// gets told which; a walk that answers an inode the filesystem does not hold
-/// has found a bug in this library, which no caller could act on. So the three
-/// cases below must each be *reachable* through the public API — a fault case
-/// nothing can produce is a case a caller must handle and never will.
+/// The answered/crashed split is the point of `CurrentDirectoryFault`: a host
+/// that named a directory its own seed does not contain has made a mistake it
+/// can fix, and gets told which; a walk that answers an inode the filesystem
+/// does not hold has found a bug in this library, which no caller could act
+/// on. So each fault case must be *reachable* through the public API — a case
+/// nothing can produce is one a caller must handle and never will.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
-module TestCurrentDirectoryFault =
+module TestWithFileSystemAndCurrentDirectory =
 
     let private name (s : string) : FileName = FileName.parseOrFail "test" s
 
@@ -27,8 +28,11 @@ module TestCurrentDirectoryFault =
     let private createdAt : UnixTimestamp =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 0
 
-    /// `outer/inner/` beside `outer/file`, so a row can ask to start in a
-    /// directory, in a file, and in something absent.
+    let private target (s : string) : SymlinkTarget = SymlinkTarget.parseOrFail "test" s
+
+    /// `outer/inner/`, plus `outer/file` and a link `outer/lnk -> inner`, so a
+    /// row can ask to start in a directory, in a file, through a symlink, and
+    /// in something absent.
     let private seed : Map<FileName, SeedEntry> =
         Map.ofList
             [
@@ -38,9 +42,28 @@ module TestCurrentDirectoryFault =
                         [
                             name "inner", SeedEntry.directory FileSystemSeed.empty
                             name "file", SeedEntry.file noBytes
+                            name "lnk", SeedEntry.Symlink (target "inner")
                         ]
                 )
             ]
+
+    /// The inode a path names, resolved independently of the system under test
+    /// — so a row asserting "it stood in *this* inode" is checked against the
+    /// graph rather than against the function's own answer.
+    let private inodeOf (system : UnixSystem<int, string>) (path : string) : InodeNumber =
+        let vfs = system.Machine.FileSystem
+
+        match
+            VirtualFileSystem.resolveExisting
+                (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
+                CallerPrivilege.Privileged
+                (VirtualFileSystem.root vfs)
+                SymlinkPolicy.Follow
+                (UnixPath.parseOrFail "test" path)
+                vfs
+        with
+        | Ok inode -> inode
+        | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}"
 
     let private startAt
         (platform : SimulatedUnixPlatform)
@@ -51,6 +74,12 @@ module TestCurrentDirectoryFault =
         UnixSystem.initial<int, string> platform
         |> UnixSystem.withFileSystemAndCurrentDirectory platform createdAt entries (absolute dir)
 
+    /// A system booted on `seed`, standing at `dir`.
+    let private booted (dir : string) : UnixSystem<int, string> =
+        match startAt SimulatedUnixPlatform.linuxX64 seed dir with
+        | Ok system -> system
+        | Error fault -> failwith $"the fixture's own seed did not boot at %s{dir}: %O{fault}."
+
     [<Test>]
     let ``a directory the seed contains is accepted`` () : unit =
         // The control. Without it every row below would pass against a function
@@ -60,6 +89,74 @@ module TestCurrentDirectoryFault =
             UnixSystem.currentDirectoryPath system
             |> shouldEqual (Some (absolute "/outer/inner"))
         | Error fault -> failwith $"expected /outer/inner to be accepted, but it answered %O{fault}."
+
+    [<Test>]
+    let ``the inode stood in is the one the configured path names`` () : unit =
+        let system = booted "/outer/inner"
+
+        system.Process.CurrentDirectoryInode
+        |> shouldEqual (inodeOf system "/outer/inner")
+
+        // ...and not merely *some* inode: the two directories in the seed are
+        // distinct, so a resolver that stopped at the first component would
+        // pass every other assertion here.
+        system.Process.CurrentDirectoryInode |> shouldNotEqual (inodeOf system "/outer")
+        UnixSystem.checkInvariants system |> shouldBeEmpty
+
+    [<Test>]
+    let ``a symlinked current directory is canonicalised`` () : unit =
+        // A process launched into `outer/lnk` is launched into the directory
+        // that link names, and afterwards nothing can tell it went through a
+        // link: `getcwd(3)` reports the *physical* path. Measured on both
+        // kernels -- `chdir(".../outer/lnk")` with `lnk -> inner` is followed by
+        // `getcwd() == ".../outer/inner"`.
+        let system = booted "/outer/lnk"
+
+        system.Process.CurrentDirectoryInode
+        |> shouldEqual (inodeOf system "/outer/inner")
+
+        UnixSystem.currentDirectoryPath system
+        |> shouldEqual (Some (absolute "/outer/inner"))
+
+        UnixSystem.checkInvariants system |> shouldBeEmpty
+
+    [<Test>]
+    let ``replacing the filesystem re-resolves the current directory`` () : unit =
+        // Inode numbers are meaningless across graphs, so carrying the old one
+        // over would leave the process standing in whatever happened to land on
+        // that number in the new seed -- or in nothing at all.
+        let deeper =
+            Map.ofList
+                [
+                    name "pad", SeedEntry.directory (Map.ofList [ name "a", SeedEntry.directory FileSystemSeed.empty ])
+                    name "outer",
+                    SeedEntry.directory (Map.ofList [ name "inner", SeedEntry.directory FileSystemSeed.empty ])
+                ]
+
+        let system = booted "/outer/inner"
+
+        let replaced =
+            match
+                system
+                |> UnixSystem.withFileSystemAndCurrentDirectory
+                    SimulatedUnixPlatform.linuxX64
+                    createdAt
+                    deeper
+                    (absolute "/outer/inner")
+            with
+            | Ok replaced -> replaced
+            | Error fault -> failwith $"the deeper seed did not boot: %O{fault}."
+
+        replaced.Process.CurrentDirectoryInode
+        |> shouldEqual (inodeOf replaced "/outer/inner")
+
+        UnixSystem.checkInvariants replaced |> shouldBeEmpty
+
+        // The seeds mint inodes in a different order, so the two graphs really
+        // do disagree about which number `/outer/inner` is -- which is what
+        // makes "it was re-resolved" distinguishable from "it was carried over".
+        replaced.Process.CurrentDirectoryInode
+        |> shouldNotEqual system.Process.CurrentDirectoryInode
 
     [<Test>]
     let ``a directory the seed does not contain answers DoesNotResolve`` () : unit =
@@ -103,6 +200,26 @@ module TestCurrentDirectoryFault =
         UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
         |> UnixSystem.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt entries (absolute path)
         |> shouldEqual (Error (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Linux))
+
+        // And the accepting direction, which a guard that simply refused
+        // whenever the two disagreed would pass the row above without.
+        match
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> UnixSystem.withFileSystemAndCurrentDirectory
+                SimulatedUnixPlatform.macOsArm64
+                createdAt
+                entries
+                (absolute path)
+        with
+        | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."
+        | Ok system ->
+
+        UnixSystem.currentDirectoryPath system |> shouldEqual (Some (absolute path))
+
+        // The argument is consulted and *not* written: the system still carries
+        // the flavour it was booted on. Nothing else here would notice a
+        // function that helpfully stored the platform it was handed.
+        system.Machine.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
 
     [<Test>]
     let ``every fault case is reachable`` () : unit =
@@ -162,12 +279,6 @@ module TestCurrentDirectoryFault =
         startAt SimulatedUnixPlatform.linuxX64 entries "/l"
         |> shouldEqual (Error (CurrentDirectoryFault.DoesNotResolve UnixError.ENOENT))
 
-    /// A system booted on `seed`, standing at the root.
-    let private booted () : UnixSystem<int, string> =
-        match startAt SimulatedUnixPlatform.linuxX64 seed "/" with
-        | Ok system -> system
-        | Error fault -> failwith $"the fixture's own seed did not boot: %O{fault}."
-
     let private plainOpen : OpenFlags =
         {
             Access = FileAccessMode.ReadOnly
@@ -200,7 +311,7 @@ module TestCurrentDirectoryFault =
         // afterwards name a graph that no longer exists -- measured before the
         // guard existed, `checkInvariants` reported `DanglingOpenInode`.
         let _, withHandle =
-            UnixSystem.openPath plainOpen (UnixPath.ofAbsolute (absolute "/outer/file")) 0 (booted ())
+            UnixSystem.openPath plainOpen (UnixPath.ofAbsolute (absolute "/outer/file")) 0 (booted "/")
 
         // The handle really is filesystem-backed, so the guard below has
         // something to see. Without this the row would pass against a system
@@ -220,7 +331,7 @@ module TestCurrentDirectoryFault =
         // descriptor `opendir` took out from under the stream, and the stream
         // still names the directory afterwards.
         let answer, withStream =
-            UnixSystem.opendir (UnixPath.ofAbsolute (absolute "/outer")) (booted ())
+            UnixSystem.opendir (UnixPath.ofAbsolute (absolute "/outer")) (booted "/")
 
         match answer with
         | OpenDirAnswer.Failed error -> failwith $"opendir on /outer failed: %O{error}."
@@ -264,7 +375,7 @@ module TestCurrentDirectoryFault =
         // and silently retarget, because the new graph reissues the root's
         // number -- `checkInvariants` cannot see that.
         let answer, withStream =
-            UnixSystem.opendir (UnixPath.ofAbsolute (absolute "/")) (booted ())
+            UnixSystem.opendir (UnixPath.ofAbsolute (absolute "/")) (booted "/")
 
         match answer with
         | OpenDirAnswer.Failed error -> failwith $"opendir on / failed: %O{error}."
@@ -287,4 +398,4 @@ module TestCurrentDirectoryFault =
         // the filesystem. Without this row the two above would pass against a
         // guard that refused every system, including the one PawPrint actually
         // configures.
-        booted () |> replaceFileSystem |> UnixSystem.checkInvariants |> shouldBeEmpty
+        booted "/" |> replaceFileSystem |> UnixSystem.checkInvariants |> shouldBeEmpty

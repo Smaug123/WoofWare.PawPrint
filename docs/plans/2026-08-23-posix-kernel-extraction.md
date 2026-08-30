@@ -5033,7 +5033,9 @@ docstrings name each other.
   A production move, alone: it turned out to need an API decision about who states
   the remedy for a bad current directory, which does not belong in a commit that also
   rewrites a fixture.
-* **25b**: `TestEmulatedKernelCurrentDirectory` follows it, splitting three ways.
+* **25b**: `TestEmulatedKernelCurrentDirectory` follows it, splitting three ways: the
+  resolution and invariant rows to the library, the message rows staying with the wrapper
+  that formats them, and the `KernelConfig` orphan joining `TestKernelConfig`.
 * **26**: `TestEmulatedKernelInodeLifetime`, split — the directory-stream rows stay.
 * **27**: `TestAbsoluteUnixPath`, split.
 * **28**: `TestFileSystemSeed`, split.
@@ -5415,3 +5417,65 @@ three ways rather than two — the resolution behaviour to the library, the two 
 assert PawPrint's *message* text staying with the wrapper that now formats it, and the
 `KernelConfig` orphan joining `TestKernelConfig`. That is a fixture rewrite rather than a
 move, and it does not belong in the same commit as an API change.
+
+### Stage 25b: the current-directory fixture splits three ways
+
+**Dependencies**: 25 (`UnixSystem.withFileSystemAndCurrentDirectory`).
+
+Stage 25 deferred this because the rows do not split in two. Of eleven:
+
+* **five cross to the library** — the resolution rows (`the held inode is the one the
+  configured path names`, `a symlinked current directory is canonicalised`, `replacing the
+  filesystem re-resolves the current directory`) and the two `checkInvariants` rows;
+* **four stay**, because they assert the *messages*, which are the wrapper's own job now
+  that the library answers a `CurrentDirectoryFault` saying nothing about `KernelConfig`;
+* **one is rehomed within PawPrint**: `KernelConfig applies the current directory whatever
+  else it sets` joins `TestKernelConfig`, the second orphan of the kind stage 22 created
+  that fixture for. It is pasted verbatim rather than retyped.
+
+#### Where the crossing rows land
+
+The two `checkInvariants` rows go to `TestUnixSystemInvariants`, whose docstring already
+said the rules tested from `WoofWare.PawPrint.Test` "move in their own stages" — this is
+that stage for `CurrentDirectoryIsNotADirectory`. Its counts were **measured, and were
+already stale**: it claimed five rules covered and twelve elsewhere, which summed to the
+seventeen `UnixSystemDefect` cases that existed when it was written. #1255 deleted
+`CurrentDirectoryPathDisagrees` without updating it, so sixteen cases had been five plus
+eleven; after this stage they are six plus ten.
+
+The three resolution rows go to the fixture stage 25 created, which is **renamed**
+`TestCurrentDirectoryFault` → `TestWithFileSystemAndCurrentDirectory`. That name was
+already drifting: the fixture held the accepted control, the platform-argument row and
+three boot-time-guard rows, none of which is about the fault type. Naming it for the
+function it tests makes room for these three rather than inventing a second fixture on one
+function.
+
+Three of the five crossing rows are renamed to their new home's vocabulary — a *kernel*
+holding an inode becomes a *system* standing in one, and `checkInvariants rejects …`
+becomes `… is a defect`, which is how every other row in that fixture reads.
+
+#### One claim was split rather than moved
+
+`the platform argument decides, not the one the kernel carries` stays, because it is about
+the *wrapper* passing its argument down rather than reading `kernel.UnixPlatform`. But its
+accepting direction was the only coverage of that direction anywhere, so the library row
+gains it: boot Linux, pass Darwin, expect the wide name accepted **and**
+`Machine.UnixPlatform` unchanged. Nothing else there would notice a function that
+helpfully stored the platform it was handed.
+
+**Correctness oracle**: the two suites' full test-name inventories, before and against
+after. Every name is accounted for — 5382 distinct names on both sides, five crossing the
+boundary, three of those renamed, none lost. Counted per suite with multiplicities rather
+than as a set, since a set would let a vanished row hide behind a same-named row in
+another fixture.
+
+Mutation: each of the two moved invariant rows kills its own input and only its own
+(a regular-file current directory, and an absent one), so they are not redundant; making
+the setter stop following symlinks kills the moved canonicalisation row.
+
+`check-docstring-attachment.py` earned its keep here. Pasting the `KernelConfig` row into
+`TestKernelConfig` brought a helper and its docstring with it, and the original's users had
+all left — F# does not warn on an unused private binding, the build was clean, and the
+checker reported the duplicated prose. The dead helper is deleted.
+
+Library 1077 → 1082, PawPrint 3125 → 3120.
