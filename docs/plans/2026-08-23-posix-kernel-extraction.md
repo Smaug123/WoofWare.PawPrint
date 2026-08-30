@@ -5029,9 +5029,11 @@ docstrings name each other.
   is one CoreCLR will lock` — is not about the library at all. It is an environmental
   premise for a guest, so it stays, and belongs with the other such premises in
   `TestOraclePolicy` rather than in a fixture whose remaining rows have all left.
-* **25**: `EmulatedKernel.withFileSystemAndCurrentDirectory` becomes the library's,
-  and `TestEmulatedKernelCurrentDirectory` follows it. A production move and a test
-  move in one stage, because the production move has no other motivation.
+* **25**: `EmulatedKernel.withFileSystemAndCurrentDirectory` becomes the library's.
+  A production move, alone: it turned out to need an API decision about who states
+  the remedy for a bad current directory, which does not belong in a commit that also
+  rewrites a fixture.
+* **25b**: `TestEmulatedKernelCurrentDirectory` follows it, splitting three ways.
 * **26**: `TestEmulatedKernelInodeLifetime`, split — the directory-stream rows stay.
 * **27**: `TestAbsoluteUnixPath`, split.
 * **28**: `TestFileSystemSeed`, split.
@@ -5236,3 +5238,180 @@ so the measurement runs where it landed.
 
 Suite counts: library 1053 → 1065, PawPrint 3137 → 3125. Twelve rows across the
 boundary and one relocated within PawPrint, which is why the two do not sum.
+
+### Stage 25: the current-directory setter becomes the library's, and grows a fault type
+
+**Dependencies**: 17 (`UnixSystem.initial`).
+
+`EmulatedKernel.withFileSystemAndCurrentDirectory` realises a seed as the guest's
+filesystem and resolves the directory the simulated process starts in. Every one of
+its dependencies was already the library's — `FileSystemSeed.toVirtualFileSystem`,
+`VirtualFileSystem.resolveExisting`, `pathOfDirectory`, `SimulatedUnixPlatform.pathLimits`
+— so nothing but the setter itself was holding it in PawPrint.
+
+It is also the linchpin of what remains. Ten of `TestEmulatedKernelCurrentDirectory`'s
+eleven rows reach it through one `seededAt` helper, and `TestEmulatedKernelInodeLifetime`
+and `TestAbsoluteUnixPath` call it too, so stages 26 and 27 are blocked on it as well.
+That is why it is worth settling the API rather than working around it.
+
+It spans `Machine` (the filesystem) and `Process` (the current directory), so the
+smallest library state it is about is `UnixSystem`. `EmulatedKernel.mapUnix` already
+exists for exactly that shape — *"apply an operation that spans this kernel's whole
+POSIX half"* — and `TestUnixSystemProjection` asserts the projection is total in both
+directions, so the calling convention needed no invention.
+
+#### What a failure says, and who says it
+
+Every one of the five failures named PawPrint's config knobs: `EmulatedKernel.CurrentDirectory`
+as the subject, `KernelConfig.FileSystem` and `KernelConfig.CurrentDirectory` as the
+remedy. A library function cannot name `KernelConfig`, and one test row is named for
+that property (`a current directory the seed does not contain names both knobs`).
+Three ways to keep the remedy:
+
+**Caller-supplied knob names**, threaded in as strings. This is the codebase's existing
+idiom — `AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory"`,
+`VirtualFileSystem.assertInvariants "FileSystemSeed.toVirtualFileSystem"` — and leaves
+every message and its test untouched. Not taken.
+
+**Generic messages naming the function's own parameters.** Simplest signature, and
+rejected: a PawPrint host would lose the sentence telling it which two fields to fix,
+which is the reason those messages exist.
+
+**The library states the fault; the caller states the remedy.** Taken. The library
+returns `Result<_, CurrentDirectoryFault>`, and PawPrint's wrapper turns each case into
+today's message — verified byte-identical to `origin/main`'s, modulo two interpolation
+renames. A second client gets a value to match on rather than prose to regex, and the
+library stops formatting advice about a config type it cannot see.
+
+#### The fault type has three cases, not five
+
+The obvious translation gives one case per `failwith`. Two of those five are not host
+mistakes at all: "the walk answered an inode the filesystem does not contain" and "…a
+directory it holds no path to" can only happen if `FileSystemSeed.toVirtualFileSystem`
+produced a broken graph — and it asserts its own invariants before returning one. Their
+old advice said so: *"Run VirtualFileSystem.checkInvariants"*, which is instruction to a
+developer, not to a host.
+
+So they crash in the library instead, alongside a third of the same kind that was
+previously *lumped in with a host mistake*: a `Some (Symlink _)` from a walk run under
+`SymlinkPolicy.Follow`, which never finishes on one. `chdir` says exactly this of the
+same walk, so the treatment is now consistent between them.
+
+That leaves three cases, each a mistake a host can fix, and each reachable through the
+public API. `every fault case is reachable` asserts that by name against the union's own
+case list rather than by count, so a fourth case added later fails there until something
+produces it — mutation-verified by adding an unreachable case, which it names.
+
+#### One case was named for the wrong limit
+
+Review found that the `ENAMETOOLONG` arm claimed more than the walk knows. That errno has
+two sources: a component past this flavour's `NAME_MAX`, and — on a flavour that
+re-checks, which is Darwin alone — a symbolic link whose expansion carries the whole path
+past `PATH_MAX`. Reporting the second as `NameTooLong` tells a host to shorten a
+`CurrentDirectory` that has no overlong component, when what needs shortening is a
+symlink target in its `FileSystem`. `origin/main` had the same defect in the message; the
+type name would have entrenched it.
+
+The library cannot separate them without `VirtualFileSystem.resolveExisting` reporting
+which limit it hit, which every other caller of that walk would pay for — and a real
+kernel conflates them too. So the case says only what is known: `TooLong of
+SimulatedUnixFlavour`, documented with both sources, and PawPrint's message names both
+remedies.
+
+**Correctness oracle**: the PawPrint suite is a refactor except for one added row —
+including `TestAbsoluteUnixPath`'s row pinning the `assertValid` context string, so the
+wrapper still names its own knob before the library sees the value. Four of the five
+messages are textually `origin/main`'s; the fifth is the one above.
+
+`TestCurrentDirectoryFault` covers the three faults, the accepted control, and the
+flavour-vs-argument distinction. Mutating the function to read
+`system.Machine.UnixPlatform` instead of its argument fails exactly the row that names
+that claim, and adding an unreachable case fails the reachability row by name.
+
+The splice row is *not* the one that catches the review finding: the classification was
+structurally identical before and after, so only the wording was wrong. The row that
+catches it is PawPrint-side, asserting the message names `KernelConfig.FileSystem`, and
+restoring the old wording kills it. Its seed is four hundred two-byte components rather
+than one long one — the first attempt used a single 1100-byte target, which is an
+overlong *component* and takes the `NAME_MAX` path without touching the splice at all.
+The Linux half of the same row answers `DoesNotResolve`, which is what says the Darwin
+half measures the re-check rather than a length.
+
+#### A docstring was cut in half, and the oracle for that could not see it
+
+Review also found that removing `currentDirectoryOf` left the first two paragraphs of
+its docstring behind, fused onto `mapProcess` — so a note about resolving a directory and
+about what `getcwd` owes was published as the contract of a function that takes no
+directory. The paragraphs are now where they belong, on the library function.
+
+`check-docstring-attachment.py` reported clean throughout, and that is not a bug in it so
+much as an unlisted limit. Measured both ways: stranding the *whole* block fires MERGED
+as designed, and stranding a prefix of it fires nothing, because blocks are keyed by
+their whole text and a surviving prefix matches nothing at the base revision — it reads
+as one block deleted and another added, neither of which is reportable. Removing a
+definition is therefore the one edit where the remaining `///` lines have to be read by
+hand, and the script's header now says so alongside its other stated limits.
+
+#### Rebased onto the derived-path change
+
+\#1255 landed while this was in review and deleted `UnixProcessState.CurrentDirectory`:
+the process now holds only the inode, and `getcwd` derives the path from it. That is the
+same judgement this stage made about `NoPathReachesIt`, arrived at independently — a
+stored path and a stored inode are two copies of one fact, and the graph moves under the
+copy.
+
+So the setter is simpler than it was written: it records the inode alone, and its
+`pathOfDirectory` call is now purely an assertion. \#1255 had already made that call an
+assertion with a crash on failure, for the reason this stage crashes on it — *"the
+alternative is a guest whose `getcwd` quietly reports ENOENT from its first
+instruction"* — so the two agree and the arm is unchanged in substance.
+
+#### Publishing it created a precondition it never had
+
+Review's third finding, and the one that only exists because this is now a package's API.
+In PawPrint the setter was called once, from `KernelConfig.applyTo`, on a kernel nothing
+had opened anything on. As library API any client can call it at any moment — and it
+replaces `Machine.FileSystem` while leaving `FileDescriptors` and `DirectoryStreams`
+holding inode numbers of the graph that just went away. Measured before the guard
+existed: open `/outer/file`, replace the filesystem, and `checkInvariants` reports
+`DanglingOpenInode`. Worse than dangling is the case it *cannot* report — a stale handle
+whose inode number the new graph has reissued to something unrelated.
+
+So the operation states its precondition and crashes: this is boot-time, and the process
+must hold no inode of the outgoing filesystem beyond its current directory, which is
+precisely what is being replaced.
+
+The guard counts **holders**, and two earlier drafts of it were wrong in instructive
+ways.
+
+The first wrote two guards, one for descriptions and one for streams, and left the
+stream arm unreachable: `opendir` takes a descriptor too, so the description guard always
+fired first. That is the same dead-arm defect this stage had just removed from the fault
+type, reappearing thirty lines away.
+
+The second asked `UnixProcessState.heldInodes` and subtracted `CurrentDirectoryInode`.
+That reads well and is wrong, because `heldInodes` answers a **set of inode numbers** and
+the exemption is about a **holder**. Standing at `/` and calling `opendir("/")` gives a
+descriptor and a stream naming the very inode the current directory names, so subtracting
+that value erased them and the guard saw an empty set. They would then have ridden into
+the replacement filesystem and silently retargeted onto whatever the new graph gave the
+root's number — which `checkInvariants` cannot see. `heldInodes` is not at fault: a set is
+exactly right for the reaper's reachability question, and wrong for this one.
+
+So both holder kinds are read here. The current directory is exempt because this
+operation replaces it, not because its inode number is.
+
+Four rows, each mutation-verified: subtracting the inode value again fails the
+handle-onto-the-current-directory row; reading descriptions only fails the
+descriptor-less-stream row; dropping the exemption altogether fails five rows including
+the boot path PawPrint itself uses. The fourth row exists because the others would pass
+against a guard that refused *every* system — a freshly booted process already holds
+stdin, stdout and stderr, and those are not on the filesystem.
+
+Library 1066 → 1077, PawPrint 3124 → 3125, re-measured at `f2a77fa0`.
+
+**Deferred to stage 25b**: `TestEmulatedKernelCurrentDirectory` itself. Its rows split
+three ways rather than two — the resolution behaviour to the library, the two rows that
+assert PawPrint's *message* text staying with the wrapper that now formats it, and the
+`KernelConfig` orphan joining `TestKernelConfig`. That is a fixture rewrite rather than a
+move, and it does not belong in the same commit as an API change.

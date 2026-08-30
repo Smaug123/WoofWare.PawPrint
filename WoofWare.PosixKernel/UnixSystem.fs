@@ -1568,6 +1568,47 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
     /// `UnixSystem.renameWithDestination`.
     | NeedsDestination of paused : PausedRename<'Task, 'Handler>
 
+/// Why the directory a host named cannot be the one a simulated process starts
+/// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
+/// deciding what to say about it: the remedy is always "fix the knob you set
+/// this from", and only the caller knows what that knob is called.
+///
+/// Every case is a host mistake rather than a guest one, which is why none of
+/// them is a `UnixError`: there is no errno for "you seeded a filesystem that
+/// does not contain the directory you asked to start in", and answering ENOENT
+/// would blame a guest path that does not exist yet.
+///
+/// Three cases, and deliberately not five. The walk can also answer an inode
+/// the filesystem does not contain, or a directory it holds no path to — but
+/// not for a filesystem `toVirtualFileSystem` has just built and asserted the
+/// invariants of, so those are bugs in this library and crash here rather than
+/// being handed to a caller who could do nothing about them.
+[<RequireQualifiedAccess>]
+type CurrentDirectoryFault =
+    /// The path does not resolve in the seeded filesystem at all. Carries what
+    /// the walk answered.
+    | DoesNotResolve of UnixError
+    /// The walk refused the path as too long. Distinguished from
+    /// `DoesNotResolve` because the directory may well be present: it is a
+    /// *length* that is unusable, and the remedy is to shorten something rather
+    /// than to go looking for a missing directory.
+    ///
+    /// Which length is deliberately not said, because the walk does not say:
+    /// `ENAMETOOLONG` is one errno covering a component past this flavour's
+    /// `NAME_MAX` and — on a flavour that re-checks, which is Darwin — a
+    /// symbolic link whose expansion would carry the whole path past
+    /// `PATH_MAX`. A real kernel conflates them too. Splitting the case would
+    /// need `VirtualFileSystem.resolveExisting` to report which limit it hit,
+    /// which every other caller of that walk would pay for.
+    ///
+    /// Carries the flavour so that a fault which outlives the call still says
+    /// whose limits were in force -- 255 CJK characters name a directory a
+    /// Darwin process can start in and a Linux one cannot, and only Darwin
+    /// re-checks a splice at all.
+    | TooLong of SimulatedUnixFlavour
+    /// The path resolves, to something that is not a directory.
+    | NotADirectory
+
 [<RequireQualifiedAccess>]
 module UnixSystem =
 
@@ -7124,3 +7165,163 @@ module UnixSystem =
                 }
             Tasks = Map.empty
         }
+
+    /// Realise `seed` as this system's filesystem and start the simulated
+    /// process in `directory`, together.
+    ///
+    /// One operation rather than two because neither answer is well-formed
+    /// without the other: a current directory is an inode of *this* filesystem,
+    /// and a filesystem replaces every inode number the previous one handed
+    /// out. The same reason `withUnixPlatformAndFileSystemType` is one setter.
+    ///
+    /// Takes the moment and the platform explicitly rather than reading
+    /// `system.Machine.WallClockEpochMs` and `system.Machine.UnixPlatform`, so
+    /// that the result does not depend on whether the caller happened to set
+    /// the clock or the flavour before or after the filesystem — an ordering
+    /// dependence between two `with` functions is exactly the kind of thing
+    /// that works until someone reorders the calls.
+    ///
+    /// The platform is here because its `NAME_MAX` decides whether the *path
+    /// the caller wrote* is one a process on that flavour could name at all:
+    /// 255 CJK characters is a legal directory name on Darwin and too long on
+    /// Linux. It is a check on that path and not on the graph — the seed itself
+    /// is realised without consulting any limit, so a filesystem may perfectly
+    /// well contain a directory whose name the current directory could not
+    /// spell.
+    ///
+    /// A **boot-time** operation: it crashes if the process still holds any
+    /// handle onto the filesystem being replaced — an open descriptor or a
+    /// directory stream — because the new filesystem hands out its own inode
+    /// numbers, and such a handle would afterwards name a graph that no longer
+    /// exists or, undetectably, whatever the new one gave the same number. The
+    /// current directory is not such a handle: replacing it is the point.
+    ///
+    /// The walk is privileged and symlink-following, deliberately: this is a
+    /// host saying where its guest was launched, not a guest looking anything
+    /// up, and a process is launched into a directory its parent had already
+    /// reached. It is also the only moment the name is resolved, because after
+    /// it the process holds the *directory* rather than the name.
+    ///
+    /// So this records the inode alone. The path `getcwd` owes is derived from
+    /// it, which is what makes that path the physical one with every symlink
+    /// resolved away — measured on both kernels, `chdir("outer/lnk")` with
+    /// `lnk -> inner` is followed by `getcwd() == ".../outer/inner"`.
+    let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (platform : SimulatedUnixPlatform)
+        (createdAt : UnixTimestamp)
+        (seed : Map<FileName, SeedEntry>)
+        (directory : AbsoluteUnixPath)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<UnixSystem<'Task, 'Handler>, CurrentDirectoryFault>
+        =
+        // Asserted here as well as by any caller that names its own knob: this
+        // is a package boundary, so the preconditions cannot be left to the one
+        // client that happens to check them today.
+        let platform =
+            SimulatedUnixPlatform.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" platform
+
+        let directory =
+            AbsoluteUnixPath.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" directory
+
+        // A precondition on the *system*, not on the arguments, and the reason
+        // this is a boot-time operation: a new filesystem hands out its own
+        // inode numbers, so a handle onto the old graph would afterwards dangle
+        // or -- worse -- silently name an unrelated object given the same
+        // number. `checkInvariants` reports the first as `DanglingOpenInode`
+        // and cannot see the second at all, so this refuses rather than
+        // producing a system whose corruption is only sometimes detectable.
+        //
+        // Counted as *holders*, never as a set of inode numbers with the
+        // current directory subtracted out. The current directory is exempt
+        // because this operation replaces it, not because its inode number is;
+        // a descriptor or stream onto that same inode -- `opendir(".")` -- is a
+        // holder like any other, and subtracting the value would erase it from
+        // the reckoning along with the field that is genuinely exempt.
+        //
+        // Both holder kinds are read here rather than through
+        // `UnixProcessState.heldInodes`, which answers a set for the reaper's
+        // reachability question and so cannot distinguish them.
+        let strandedDescriptions =
+            system.Process.FileDescriptors
+            |> FileDescriptorRegistry.descriptions
+            |> Map.toList
+            |> List.choose (fun (id, description) ->
+                match description.Target with
+                | OpenFileTarget.File (inode, _) -> Some $"description %O{id} onto %O{inode}"
+                | OpenFileTarget.StandardStream _
+                | OpenFileTarget.SocketEventPort _
+                | OpenFileTarget.Socket _ -> None
+            )
+
+        // Counted separately from the descriptions, and not because a stream
+        // usually lacks one: `opendir` takes a descriptor too. It is for the
+        // stream whose descriptor a guest closed out from under it, which
+        // `UnixProcessState.heldInodes` documents and which a descriptions-only
+        // guard would let through.
+        let strandedStreams =
+            system.Process.DirectoryStreams
+            |> Map.toList
+            |> List.map (fun (id, stream) -> $"directory stream %O{id} onto %O{stream.Inode}")
+
+        match strandedDescriptions @ strandedStreams with
+        | [] -> ()
+        | stranded ->
+            let listed = String.concat "; " stranded
+
+            failwith
+                $"UnixSystem.withFileSystemAndCurrentDirectory: the process still holds %d{List.length stranded} handle(s) onto the current filesystem (%s{listed}). Replacing the filesystem would leave them naming a graph that no longer exists, or silently naming whatever the new one gives the same inode number. This is a boot-time operation; close them first, or build the system with the filesystem it is to run on."
+
+        let filesystem = FileSystemSeed.toVirtualFileSystem createdAt seed
+        let limits = SimulatedUnixPlatform.pathLimits platform
+        let root = VirtualFileSystem.root filesystem
+
+        let located =
+            match
+                VirtualFileSystem.resolveExisting
+                    limits
+                    CallerPrivilege.Privileged
+                    root
+                    SymlinkPolicy.Follow
+                    (UnixPath.ofAbsolute directory)
+                    filesystem
+            with
+            | Ok inode ->
+                match VirtualFileSystem.tryGetContent inode filesystem with
+                | Some (InodeContent.Directory _) ->
+                    // The walk started at the root, so a directory it
+                    // reached has a path back by construction, and
+                    // `toVirtualFileSystem` asserts its own invariants besides.
+                    // Checked anyway: the alternative to crashing here is a
+                    // guest whose `getcwd` reports ENOENT from its first
+                    // instruction.
+                    match VirtualFileSystem.pathOfDirectory inode filesystem with
+                    | Some _ -> Ok inode
+                    | None ->
+                        failwith
+                            $"UnixSystem.withFileSystemAndCurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolved to inode %O{inode}, but no path from the root reaches it. This is a bug in this library."
+                | Some (InodeContent.RegularFile _) -> Error CurrentDirectoryFault.NotADirectory
+                | Some (InodeContent.Symlink _) ->
+                    // `SymlinkPolicy.Follow` never finishes on one; `chdir` says
+                    // the same of the same walk.
+                    failwith
+                        $"UnixSystem.withFileSystemAndCurrentDirectory: the walk resolved \"%s{AbsoluteUnixPath.toString directory}\" to inode %O{inode}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
+                | None ->
+                    failwith
+                        $"UnixSystem.withFileSystemAndCurrentDirectory: resolving \"%s{AbsoluteUnixPath.toString directory}\" gave inode %O{inode}, which the filesystem does not contain. This is a bug in this library; run VirtualFileSystem.checkInvariants."
+            | Error UnixError.ENAMETOOLONG ->
+                Error (CurrentDirectoryFault.TooLong (SimulatedUnixPlatform.flavour platform))
+            | Error error -> Error (CurrentDirectoryFault.DoesNotResolve error)
+
+        located
+        |> Result.map (fun inode ->
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = filesystem
+                    }
+                Process =
+                    { system.Process with
+                        CurrentDirectoryInode = inode
+                    }
+            }
+        )
