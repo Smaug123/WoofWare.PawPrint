@@ -17,7 +17,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestKernelConfig =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private absolute (s : string) : AbsoluteUnixPath = AbsoluteUnixPath.parseOrFail "test" s
 
@@ -25,7 +25,7 @@ module TestKernelConfig =
 
     /// `outer/inner/` beside `outer/file`: enough for a row to set a current
     /// directory that the seed really contains.
-    let private seed : Map<FileName, SeedEntry> =
+    let private seed : Map<DirectoryEntryName, SeedEntry> =
         Map.ofList
             [
                 name "outer",

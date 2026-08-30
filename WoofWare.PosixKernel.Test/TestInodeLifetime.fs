@@ -19,7 +19,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestInodeLifetime =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private absolute (s : string) : AbsoluteUnixPath = AbsoluteUnixPath.parseOrFail "test" s
 
@@ -35,7 +35,7 @@ module TestInodeLifetime =
     /// `/outer/inner/` holding `a` and `b`, with the current directory at
     /// `/outer/inner` — so that the cwd is a directory the seed really contains
     /// rather than the root, which every other rule would keep alive anyway.
-    let private seed : Map<FileName, SeedEntry> =
+    let private seed : Map<DirectoryEntryName, SeedEntry> =
         Map.ofList
             [
                 name "outer",

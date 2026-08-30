@@ -3794,7 +3794,7 @@ module UnixSystem =
                 // neither is the case, so either is a broken graph rather than
                 // something the caller did.
                 failwith
-                    $"UnixSystem.openPath: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+                    $"UnixSystem.openPath: creating \"%s{DirectoryEntryName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
             | Ok (inode, filesystem) ->
                 { system with
                     Machine =
@@ -6269,7 +6269,7 @@ module UnixSystem =
             // neither is the case, so either is a broken graph rather than
             // something the caller did.
             failwith
-                $"UnixSystem.mkdir: creating \"%s{FileName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+                $"UnixSystem.mkdir: creating \"%s{DirectoryEntryName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
         | Ok (_, filesystem) ->
 
         SyscallAnswer.Completed 0L,
@@ -6317,7 +6317,7 @@ module UnixSystem =
             // directory does not bind. The walk has just established both, so
             // either is a broken graph rather than something the caller did.
             failwith
-                $"UnixSystem.unlink: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
+                $"UnixSystem.unlink: removing \"%s{DirectoryEntryName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
         | Ok (target, filesystem) ->
 
         // The name is gone; whether the *inode* is depends on whether any other
@@ -6442,7 +6442,7 @@ module UnixSystem =
         match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now system.Machine.FileSystem with
         | Error error ->
             failwith
-                $"UnixSystem.rmdir: removing \"%s{FileName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
+                $"UnixSystem.rmdir: removing \"%s{DirectoryEntryName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
         | Ok (target, filesystem) ->
 
         // A directory has only ever had the one name, so this was the last — but
@@ -6663,7 +6663,7 @@ module UnixSystem =
             // means the verdict let something through rather than that the
             // guest did anything unusual.
             failwith
-                $"UnixSystem.rename: moving \"%s{FileName.toString sourceName}\" from inode %O{sourceDirectory} to \"%s{FileName.toString destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
+                $"UnixSystem.rename: moving \"%s{DirectoryEntryName.toString sourceName}\" from inode %O{sourceDirectory} to \"%s{DirectoryEntryName.toString destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
         | Ok (outcome, filesystem) ->
 
         // A rename is the one syscall that can change the *path* of a directory
@@ -7209,7 +7209,7 @@ module UnixSystem =
     let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (platform : SimulatedUnixPlatform)
         (createdAt : UnixTimestamp)
-        (seed : Map<FileName, SeedEntry>)
+        (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, CurrentDirectoryFault>

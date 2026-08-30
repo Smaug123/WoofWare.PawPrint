@@ -17,9 +17,11 @@ open System.Text
 type UnixPathTextDefect =
     /// A NUL at this UTF-16 index.
     | ContainsNul of index : int
-    /// An unpaired UTF-16 surrogate at this index.
+    /// <summary>An unpaired UTF-16 surrogate at this UTF-16 index.</summary>
+    /// <remarks>
     /// This is a representable .NET string, but since it has no UTF-8 encoding, we do not attempt to
     /// convert it to a Unix path.
+    /// </remarks>
     | UnpairedSurrogate of index : int
 
 [<RequireQualifiedAccess>]

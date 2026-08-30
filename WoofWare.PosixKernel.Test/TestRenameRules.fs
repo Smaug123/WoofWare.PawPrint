@@ -28,7 +28,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestRenameRules =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private path (s : string) : UnixPath = UnixPath.parseOrFail "test" s
 
@@ -233,7 +233,7 @@ module TestRenameRules =
     let private moves (verdict : RenameVerdict) : string * string =
         match verdict with
         | RenameVerdict.Move (_, sourceName, _, destinationName) ->
-            FileName.toString sourceName, FileName.toString destinationName
+            DirectoryEntryName.toString sourceName, DirectoryEntryName.toString destinationName
         | other -> failwith $"expected a move, got %A{other}"
 
     let private refuses (platform : SimulatedUnixPlatform) (error : UnixError) (rows : (string * string) list) : unit =

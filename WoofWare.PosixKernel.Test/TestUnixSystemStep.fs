@@ -48,7 +48,7 @@ module TestUnixSystemStep =
             match
                 VirtualFileSystem.createFile
                     rootInode
-                    (FileName.parseOrFail context "f")
+                    (DirectoryEntryName.parseOrFail context "f")
                     (PermissionBits.parseOrFail context 0o644)
                     epoch
                     (ImmutableArray.CreateRange [ 1uy ; 2uy ; 3uy ; 4uy ; 5uy ])
@@ -720,7 +720,7 @@ module TestUnixSystemStep =
             match
                 VirtualFileSystem.createDirectory
                     rootInode
-                    (FileName.parseOrFail context "d")
+                    (DirectoryEntryName.parseOrFail context "d")
                     (PermissionBits.parseOrFail context 0o755)
                     epoch
                     system.Machine.FileSystem
@@ -1416,7 +1416,7 @@ module TestUnixSystemStep =
             match
                 VirtualFileSystem.createSymlink
                     rootInode
-                    (FileName.parseOrFail context "l")
+                    (DirectoryEntryName.parseOrFail context "l")
                     epoch
                     (SymlinkTarget.parseOrFail context "abcdefg")
                     system.Machine.FileSystem
@@ -1615,20 +1615,25 @@ module TestUnixSystemStep =
         let d, vfs =
             VirtualFileSystem.createDirectory
                 rootInode
-                (FileName.parseOrFail context "d")
+                (DirectoryEntryName.parseOrFail context "d")
                 dirPermissions
                 epoch
                 system.Machine.FileSystem
             |> orFail "/d"
 
         let inner, vfs =
-            VirtualFileSystem.createDirectory d (FileName.parseOrFail context "inner") innerPermissions epoch vfs
+            VirtualFileSystem.createDirectory
+                d
+                (DirectoryEntryName.parseOrFail context "inner")
+                innerPermissions
+                epoch
+                vfs
             |> orFail "/d/inner"
 
         let target, vfs =
             VirtualFileSystem.createFile
                 inner
-                (FileName.parseOrFail context "t")
+                (DirectoryEntryName.parseOrFail context "t")
                 (PermissionBits.parseOrFail context 0o600)
                 epoch
                 (ImmutableArray.CreateRange [ 1uy ; 2uy ; 3uy ])
@@ -1638,7 +1643,7 @@ module TestUnixSystemStep =
         let link, vfs =
             VirtualFileSystem.createSymlink
                 rootInode
-                (FileName.parseOrFail context "l")
+                (DirectoryEntryName.parseOrFail context "l")
                 epoch
                 (SymlinkTarget.parseOrFail context "/d/inner/t")
                 vfs
@@ -1650,7 +1655,7 @@ module TestUnixSystemStep =
         let _, vfs =
             VirtualFileSystem.createSymlink
                 rootInode
-                (FileName.parseOrFail context "dangling")
+                (DirectoryEntryName.parseOrFail context "dangling")
                 epoch
                 (SymlinkTarget.parseOrFail context "/d/inner/gone")
                 vfs
@@ -2024,7 +2029,7 @@ module TestUnixSystemStep =
                 VirtualFileSystem.unbind
                     UnbindTargetEffect.LostALink
                     rootInode
-                    (FileName.parseOrFail context "f")
+                    (DirectoryEntryName.parseOrFail context "f")
                     epoch
                     system.Machine.FileSystem
             with
@@ -2059,7 +2064,7 @@ module TestUnixSystemStep =
                 VirtualFileSystem.unbind
                     UnbindTargetEffect.LostALink
                     rootInode
-                    (FileName.parseOrFail context "f")
+                    (DirectoryEntryName.parseOrFail context "f")
                     epoch
                     system.Machine.FileSystem
             with
@@ -2102,7 +2107,7 @@ module TestUnixSystemStep =
                 VirtualFileSystem.unbind
                     UnbindTargetEffect.LostALink
                     rootInode
-                    (FileName.parseOrFail context "f")
+                    (DirectoryEntryName.parseOrFail context "f")
                     epoch
                     system.Machine.FileSystem
             with
@@ -3572,7 +3577,7 @@ module TestUnixSystemStep =
                 match
                     VirtualFileSystem.createFile
                         (VirtualFileSystem.root system.Machine.FileSystem)
-                        (FileName.parseOrFail context "readable")
+                        (DirectoryEntryName.parseOrFail context "readable")
                         (PermissionBits.parseOrFail context 0o400)
                         epoch
                         (ImmutableArray.CreateRange [ 1uy ])
@@ -3862,7 +3867,7 @@ module TestUnixSystemStep =
                 match
                     VirtualFileSystem.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
-                        (FileName.parseOrFail context "ld")
+                        (DirectoryEntryName.parseOrFail context "ld")
                         epoch
                         (SymlinkTarget.parseOrFail context "/d/inner")
                         system.Machine.FileSystem
@@ -4038,7 +4043,7 @@ module TestUnixSystemStep =
                 match
                     VirtualFileSystem.createSymlink
                         (VirtualFileSystem.root system.Machine.FileSystem)
-                        (FileName.parseOrFail context "wide")
+                        (DirectoryEntryName.parseOrFail context "wide")
                         epoch
                         (SymlinkTarget.parseOrFail context "/éé")
                         system.Machine.FileSystem
@@ -4369,7 +4374,9 @@ module TestUnixSystemStep =
             | Ok pair -> pair
             | Error error -> failwith $"could not seed %s{what}: %O{error}"
 
-        let n (s : string) = FileName.parseOrFail context s
+        let n (s : string) =
+            DirectoryEntryName.parseOrFail context s
+
         let mode (m : int) = PermissionBits.parseOrFail context m
 
         let _, vfs =
@@ -4587,7 +4594,9 @@ module TestUnixSystemStep =
     [<Test>]
     let ``rename displaces the destination and frees it when nothing holds it`` () : unit =
         let system = withRenameTree linux
-        let n (s : string) = FileName.parseOrFail context s
+
+        let n (s : string) =
+            DirectoryEntryName.parseOrFail context s
 
         let displaced, vfs =
             match
@@ -4939,7 +4948,9 @@ module TestUnixSystemStep =
             | Ok pair -> pair
             | Error error -> failwith $"could not seed %s{what}: %O{error}"
 
-        let n (s : string) = FileName.parseOrFail context s
+        let n (s : string) =
+            DirectoryEntryName.parseOrFail context s
+
         let mode (m : int) = PermissionBits.parseOrFail context m
 
         let d, vfs =

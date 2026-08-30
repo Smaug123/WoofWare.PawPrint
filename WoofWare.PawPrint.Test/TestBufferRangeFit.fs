@@ -34,7 +34,7 @@ module TestBufferRangeFit =
             FileSystem =
                 Map.ofList
                     [
-                        FileName.parseOrFail "test seed" "f",
+                        DirectoryEntryName.parseOrFail "test seed" "f",
                         SeedEntry.file (
                             System.Text.Encoding.UTF8.GetBytes (System.String ('x', 32))
                             |> ImmutableArray.CreateRange

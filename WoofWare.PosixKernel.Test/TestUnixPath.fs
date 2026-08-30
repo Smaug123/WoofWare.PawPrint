@@ -107,55 +107,66 @@ module TestUnixPath =
             match component_ with
             | PathComponent.Current -> "."
             | PathComponent.Parent -> ".."
-            | PathComponent.Name name -> FileName.toString name
+            | PathComponent.Name name -> DirectoryEntryName.toString name
         )
 
     // ---------------------------------------------------------------- FileName
 
     [<Test>]
     let ``FileName rejects the names no directory entry can have`` () : unit =
-        FileName.parse null |> shouldEqual (Error FileNameError.Empty)
-        FileName.parse "" |> shouldEqual (Error FileNameError.Empty)
-        FileName.parse "." |> shouldEqual (Error (FileNameError.Reserved "."))
-        FileName.parse ".." |> shouldEqual (Error (FileNameError.Reserved ".."))
-        FileName.parse "/" |> shouldEqual (Error (FileNameError.ContainsSeparator 0))
-        FileName.parse "a/b" |> shouldEqual (Error (FileNameError.ContainsSeparator 1))
-        FileName.parse "ab/" |> shouldEqual (Error (FileNameError.ContainsSeparator 2))
+        DirectoryEntryName.parse null |> shouldEqual (Error FileNameError.Empty)
+        DirectoryEntryName.parse "" |> shouldEqual (Error FileNameError.Empty)
+        DirectoryEntryName.parse "." |> shouldEqual (Error (FileNameError.Reserved "."))
 
-        FileName.parse "a\000b"
+        DirectoryEntryName.parse ".."
+        |> shouldEqual (Error (FileNameError.Reserved ".."))
+
+        DirectoryEntryName.parse "/"
+        |> shouldEqual (Error (FileNameError.ContainsSeparator 0))
+
+        DirectoryEntryName.parse "a/b"
+        |> shouldEqual (Error (FileNameError.ContainsSeparator 1))
+
+        DirectoryEntryName.parse "ab/"
+        |> shouldEqual (Error (FileNameError.ContainsSeparator 2))
+
+        DirectoryEntryName.parse "a\000b"
         |> shouldEqual (Error (FileNameError.Text (UnixPathTextDefect.ContainsNul 1)))
 
         // Built from `char` values rather than a literal: the F# lexer replaces
         // a lone surrogate in a string literal with U+FFFD, so a literal here
         // would silently test a replacement character instead.
-        FileName.parse (System.String [| 'a' ; char 0xD83D ; 'b' |])
+        DirectoryEntryName.parse (System.String [| 'a' ; char 0xD83D ; 'b' |])
         |> shouldEqual (Error (FileNameError.Text (UnixPathTextDefect.UnpairedSurrogate 1)))
 
     [<Test>]
     let ``FileName accepts names that merely start with dots`` () : unit =
         for candidate in [ ".a" ; "..a" ; "a." ; "a.." ; "..." ; ".hidden" ] do
-            match FileName.parse candidate with
-            | Ok name -> FileName.toString name |> shouldEqual candidate
-            | Error error -> failwith $"expected %s{candidate} to parse: %s{FileName.describe error}"
+            match DirectoryEntryName.parse candidate with
+            | Ok name -> DirectoryEntryName.toString name |> shouldEqual candidate
+            | Error error -> failwith $"expected %s{candidate} to parse: %s{DirectoryEntryName.describe error}"
 
     [<Test>]
     let ``FileName round-trips through parse and toString`` () : unit =
         let property (candidate : string) : unit =
-            match FileName.parse candidate with
-            | Error error -> FileName.describe error |> ignore<string>
+            match DirectoryEntryName.parse candidate with
+            | Error error -> DirectoryEntryName.describe error |> ignore<string>
             | Ok name ->
-                FileName.toString name |> shouldEqual candidate
-                FileName.toString name |> FileName.parse |> shouldEqual (Ok name)
+                DirectoryEntryName.toString name |> shouldEqual candidate
+
+                DirectoryEntryName.toString name
+                |> DirectoryEntryName.parse
+                |> shouldEqual (Ok name)
 
         Check.One (config, Prop.forAll (Arb.fromGen nameGen) property)
 
     [<Test>]
     let ``FileName encodes to NUL-free UTF-8 that decodes back`` () : unit =
         let property (candidate : string) : unit =
-            match FileName.parse candidate with
-            | Error error -> failwith $"expected %s{candidate} to parse: %s{FileName.describe error}"
+            match DirectoryEntryName.parse candidate with
+            | Error error -> failwith $"expected %s{candidate} to parse: %s{DirectoryEntryName.describe error}"
             | Ok name ->
-                let bytes = FileName.toUtf8 name |> Seq.toArray
+                let bytes = DirectoryEntryName.toUtf8 name |> Seq.toArray
                 bytes |> Array.contains 0uy |> shouldEqual false
                 // A strict decoder, so a malformed encoding fails rather than
                 // silently producing U+FFFD and comparing unequal for the
@@ -167,16 +178,19 @@ module TestUnixPath =
     [<Test>]
     let ``FileName parse never throws, whatever the input`` () : unit =
         let property (candidate : string) : unit =
-            match FileName.parse candidate with
+            match DirectoryEntryName.parse candidate with
             | Ok _ -> ()
-            | Error error -> FileName.describe error |> ignore<string>
+            | Error error -> DirectoryEntryName.describe error |> ignore<string>
 
         Check.One (config, property)
 
     [<Test>]
     let ``FileName parseOrFail names the offending boundary`` () : unit =
         let exn =
-            Assert.Throws<Exception> (fun () -> FileName.parseOrFail "seed manifest entry" ".." |> ignore<FileName>)
+            Assert.Throws<Exception> (fun () ->
+                DirectoryEntryName.parseOrFail "seed manifest entry" ".."
+                |> ignore<DirectoryEntryName>
+            )
 
         exn.Message |> shouldContainText "seed manifest entry"
         exn.Message |> shouldContainText ".."
@@ -222,7 +236,7 @@ module TestUnixPath =
         UnixPath.components (parseOk "a/../..")
         |> shouldEqual
             [
-                PathComponent.Name (FileName.parseOrFail "test" "a")
+                PathComponent.Name (DirectoryEntryName.parseOrFail "test" "a")
                 PathComponent.Parent
                 PathComponent.Parent
             ]
@@ -372,12 +386,12 @@ module TestUnixPath =
                 | PathComponent.Current
                 | PathComponent.Parent -> ()
                 | PathComponent.Name name ->
-                    let text = FileName.toString name
+                    let text = DirectoryEntryName.toString name
                     text |> shouldNotEqual "."
                     text |> shouldNotEqual ".."
                     // The name must survive its own parser, which is what makes
                     // it usable as a directory-entry key.
-                    FileName.parse text |> shouldEqual (Ok name)
+                    DirectoryEntryName.parse text |> shouldEqual (Ok name)
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
 

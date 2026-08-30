@@ -19,7 +19,7 @@ module TestFileSystemSeed =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 200
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private target (s : string) : SymlinkTarget = SymlinkTarget.parseOrFail "test" s
 
@@ -42,7 +42,7 @@ module TestFileSystemSeed =
     let private createdAt : UnixTimestamp =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 250_000_000
 
-    let private realise (seed : Map<FileName, SeedEntry>) : VirtualFileSystem =
+    let private realise (seed : Map<DirectoryEntryName, SeedEntry>) : VirtualFileSystem =
         FileSystemSeed.toVirtualFileSystem createdAt seed
 
     // ----------------------------------------------------------------- basics
@@ -175,7 +175,7 @@ module TestFileSystemSeed =
 
     // -------------------------------------------------------------- generated
 
-    let private nameGen : Gen<FileName> =
+    let private nameGen : Gen<DirectoryEntryName> =
         Gen.elements [ "a" ; "b" ; "c" ; "d" ] |> Gen.map name
 
     let private entryGen (depth : int) : Gen<SeedEntry> =
@@ -199,17 +199,21 @@ module TestFileSystemSeed =
 
         go depth
 
-    let private seedGen : Gen<Map<FileName, SeedEntry>> =
+    let private seedGen : Gen<Map<DirectoryEntryName, SeedEntry>> =
         Gen.zip nameGen (entryGen 3) |> Gen.listOf |> Gen.map Map.ofList
 
     /// Every absolute path the seed declares, paired with what it declares
     /// there. Computed from the seed rather than from the filesystem, so that
     /// it is an independent statement of what should be there.
-    let rec private declared (prefix : string) (entries : Map<FileName, SeedEntry>) : (string * SeedEntry) list =
+    let rec private declared
+        (prefix : string)
+        (entries : Map<DirectoryEntryName, SeedEntry>)
+        : (string * SeedEntry) list
+        =
         entries
         |> Map.toList
         |> List.collect (fun (name, entry) ->
-            let here = prefix + "/" + FileName.toString name
+            let here = prefix + "/" + DirectoryEntryName.toString name
 
             match entry with
             | SeedEntry.Directory (children, _) -> (here, entry) :: declared here children
@@ -222,7 +226,7 @@ module TestFileSystemSeed =
         let mutable observedDirectories = 0
         let mutable observedLeaves = 0
 
-        let property (seed : Map<FileName, SeedEntry>) : unit =
+        let property (seed : Map<DirectoryEntryName, SeedEntry>) : unit =
             let vfs = realise seed
             let root = VirtualFileSystem.root vfs
 
@@ -263,7 +267,7 @@ module TestFileSystemSeed =
         // replay contract, not an implementation detail — and it is the reason
         // the realiser folds over `Map`, whose iteration order is the keys'
         // rather than the host's insertion order.
-        let property (seed : Map<FileName, SeedEntry>) : unit =
+        let property (seed : Map<DirectoryEntryName, SeedEntry>) : unit =
             let first = realise seed
             let second = realise seed
 
@@ -276,7 +280,7 @@ module TestFileSystemSeed =
 
     [<Test>]
     let ``a realised seed is always a filesystem a kernel could produce`` () : unit =
-        let property (seed : Map<FileName, SeedEntry>) : unit =
+        let property (seed : Map<DirectoryEntryName, SeedEntry>) : unit =
             VirtualFileSystem.checkInvariants Set.empty (realise seed) |> shouldEqual []
 
         Check.One (config, Prop.forAll (Arb.fromGen seedGen) property)

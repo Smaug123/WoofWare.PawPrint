@@ -20,7 +20,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestEmulatedKernelCurrentDirectory =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private absolute (s : string) : AbsoluteUnixPath = AbsoluteUnixPath.parseOrFail "test" s
 
@@ -34,7 +34,7 @@ module TestEmulatedKernelCurrentDirectory =
     /// `outer/inner/`, plus `outer/file` and a link `outer/lnk -> inner`, so a
     /// row can ask for a current directory that is a file, that is reached
     /// through a symlink, and that does not exist at all.
-    let private seed : Map<FileName, SeedEntry> =
+    let private seed : Map<DirectoryEntryName, SeedEntry> =
         Map.ofList
             [
                 name "outer",

@@ -25,7 +25,7 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestSeedForOracle =
 
-    let private name (s : string) : FileName = FileName.parseOrFail "test" s
+    let private name (s : string) : DirectoryEntryName = DirectoryEntryName.parseOrFail "test" s
 
     let private target (s : string) : SymlinkTarget = SymlinkTarget.parseOrFail "test" s
 
@@ -42,7 +42,7 @@ module TestSeedForOracle =
         // answered questions about different filesystems.
         let reserved = [ "Guest.dll" ; "Guest.runtimeconfig.json" ]
 
-        let refused (seed : Map<FileName, SeedEntry>) : string =
+        let refused (seed : Map<DirectoryEntryName, SeedEntry>) : string =
             let failure =
                 Assert.Throws (fun () -> RealRuntime.validateSeedForOracle reserved seed)
 
@@ -198,7 +198,7 @@ module TestSeedForOracle =
 
         let reserved = [ "Guest.dll" ; "Guest.runtimeconfig.json" ]
 
-        let refused (seed : Map<FileName, SeedEntry>) : string =
+        let refused (seed : Map<DirectoryEntryName, SeedEntry>) : string =
             let failure =
                 Assert.Throws (fun () -> RealRuntime.validateSeedForOracle reserved seed)
 

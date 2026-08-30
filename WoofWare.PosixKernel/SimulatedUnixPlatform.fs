@@ -685,7 +685,8 @@ type CreatingOpenVerdict =
     /// Answer the guest with this errno.
     | Refuse of error : UnixError
     /// Bind a new empty regular file under `name` in `directory`.
-    | Create of directory : InodeNumber * name : FileName
+    | Create of directory : InodeNumber * name : DirectoryEntryName
+
     /// The object is already there; open it, subject to the checks any
     /// non-creating open would apply.
     | OpenExisting of inode : InodeNumber
@@ -787,10 +788,10 @@ module CreatingOpenRules =
                 | InodePermissions.Stored bits -> PermissionBits.toInt bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"CreatingOpenRules.verdict: the walk resolved \"%s{FileName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"CreatingOpenRules.verdict: the walk resolved \"%s{DirectoryEntryName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
             | None ->
                 failwith
-                    $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{FileName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         let lacksBindBits =
             match privilege with
@@ -865,7 +866,7 @@ type MkDirVerdict =
     /// permission bits are `parentPermissions` — carried out of the verdict
     /// because it read them to decide, and because `S_ISGID` inheritance needs
     /// them again.
-    | Create of directory : InodeNumber * name : FileName * parentPermissions : PermissionBits
+    | Create of directory : InodeNumber * name : DirectoryEntryName * parentPermissions : PermissionBits
 
 [<RequireQualifiedAccess>]
 module MkDirRules =
@@ -935,10 +936,10 @@ module MkDirRules =
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"MkDirRules.verdict: the walk resolved \"%s{FileName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"MkDirRules.verdict: the walk resolved \"%s{DirectoryEntryName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
             | None ->
                 failwith
-                    $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{FileName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         let lacks (bit : int) : bool =
             match privilege with
@@ -1023,7 +1024,7 @@ type UnlinkVerdict =
     /// actually unbound — so there is one source for "which inode lost a name",
     /// and it is the one the removal performed rather than the one a lookup saw
     /// beforehand.
-    | Remove of directory : InodeNumber * name : FileName
+    | Remove of directory : InodeNumber * name : DirectoryEntryName
 
 /// The two questions `unlink(2)` and `rmdir(2)` both ask about a name they have
 /// been asked to remove. Neither is a policy: which of them is asked first, and
@@ -1045,7 +1046,7 @@ module private RemovalChecks =
     let lacksWrite
         (privilege : CallerPrivilege)
         (directory : InodeNumber)
-        (name : FileName)
+        (name : DirectoryEntryName)
         (vfs : VirtualFileSystem)
         : bool
         =
@@ -1060,10 +1061,10 @@ module private RemovalChecks =
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"RemovalChecks.lacksWrite: the walk resolved \"%s{FileName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"RemovalChecks.lacksWrite: the walk resolved \"%s{DirectoryEntryName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
             | None ->
                 failwith
-                    $"RemovalChecks.lacksWrite: resolution named inode %O{directory} as the directory holding \"%s{FileName.toString name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"RemovalChecks.lacksWrite: resolution named inode %O{directory} as the directory holding \"%s{DirectoryEntryName.toString name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         PermissionBits.toInt permissions &&& 0o200 <> 0o200
 
@@ -1470,7 +1471,7 @@ type RmDirVerdict =
     /// Carries no inode for the reason `UnlinkVerdict.Remove` carries none: the
     /// removing code gets it from `VirtualFileSystem.unbind`, which answers the
     /// inode it actually unbound.
-    | Remove of directory : InodeNumber * name : FileName
+    | Remove of directory : InodeNumber * name : DirectoryEntryName
 
 [<RequireQualifiedAccess>]
 module RmDirRules =
@@ -1707,9 +1708,9 @@ type RenameVerdict =
     /// inode lost a name" and it is the one the move performed.
     | Move of
         sourceDirectory : InodeNumber *
-        sourceName : FileName *
+        sourceName : DirectoryEntryName *
         destinationDirectory : InodeNumber *
-        destinationName : FileName
+        destinationName : DirectoryEntryName
 
 /// The questions `rename(2)` asks about the four directories it can refuse for.
 [<RequireQualifiedAccess>]

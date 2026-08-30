@@ -31,7 +31,8 @@ module TestLSeek =
     let private seed : KernelConfig =
         { KernelConfig.Default with
             FileSystem =
-                let name (s : string) = FileName.parseOrFail "test seed" s
+                let name (s : string) =
+                    DirectoryEntryName.parseOrFail "test seed" s
 
                 Map.ofList
                     [

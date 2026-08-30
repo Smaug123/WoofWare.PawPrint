@@ -24,7 +24,7 @@ open System.Collections.Immutable
 [<RequireQualifiedAccess>]
 type SeedEntry =
     | File of contents : ImmutableArray<byte> * permissions : PermissionBits
-    | Directory of entries : Map<FileName, SeedEntry> * permissions : PermissionBits
+    | Directory of entries : Map<DirectoryEntryName, SeedEntry> * permissions : PermissionBits
     /// Held verbatim, and *not* resolved when the seed is realised: a symlink's
     /// target is a string to the kernel, so it may dangle, may be absolute, and
     /// may point outside anything the seed declares.
@@ -40,13 +40,13 @@ module SeedEntry =
 
     /// A directory with the mode a `umask 022` process's `mkdir` would have
     /// produced: 0777 &&& ~~~0o022.
-    let directory (entries : Map<FileName, SeedEntry>) : SeedEntry =
+    let directory (entries : Map<DirectoryEntryName, SeedEntry>) : SeedEntry =
         SeedEntry.Directory (entries, PermissionBits.defaultForDirectory)
 
 [<RequireQualifiedAccess>]
 module FileSystemSeed =
     /// A seed describing nothing but an empty root directory.
-    let empty : Map<FileName, SeedEntry> = Map.empty
+    let empty : Map<DirectoryEntryName, SeedEntry> = Map.empty
 
     /// Realise a seed as an inode graph whose root directory holds `entries`.
     ///
@@ -59,10 +59,14 @@ module FileSystemSeed =
     /// read from a clock: this file compiles before `EmulatedKernel`, and a
     /// filesystem that read the host's clock would make a replay depend on when
     /// it was recorded.
-    let toVirtualFileSystem (createdAt : UnixTimestamp) (entries : Map<FileName, SeedEntry>) : VirtualFileSystem =
+    let toVirtualFileSystem
+        (createdAt : UnixTimestamp)
+        (entries : Map<DirectoryEntryName, SeedEntry>)
+        : VirtualFileSystem
+        =
         let rec install
             (directory : InodeNumber)
-            (entries : Map<FileName, SeedEntry>)
+            (entries : Map<DirectoryEntryName, SeedEntry>)
             (vfs : VirtualFileSystem)
             : VirtualFileSystem
             =
@@ -79,19 +83,19 @@ module FileSystemSeed =
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith
-                                $"FileSystemSeed: could not create the file %s{FileName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                                $"FileSystemSeed: could not create the file %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
                     | SeedEntry.Symlink target ->
                         match VirtualFileSystem.createSymlink directory name createdAt target vfs with
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith
-                                $"FileSystemSeed: could not create the symlink %s{FileName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                                $"FileSystemSeed: could not create the symlink %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
                     | SeedEntry.Directory (children, permissions) ->
                         match VirtualFileSystem.createDirectory directory name permissions createdAt vfs with
                         | Ok (inode, vfs) -> install inode children vfs
                         | Error error ->
                             failwith
-                                $"FileSystemSeed: could not create the directory %s{FileName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                                $"FileSystemSeed: could not create the directory %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
                 )
                 vfs
 

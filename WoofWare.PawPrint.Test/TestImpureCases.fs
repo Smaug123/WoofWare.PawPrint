@@ -48,7 +48,7 @@ module TestImpureCases =
                     FileSystem =
                         Map.ofList
                             [
-                                FileName.parseOrFail "test seed" "f",
+                                DirectoryEntryName.parseOrFail "test seed" "f",
                                 SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                             ]
                 }
@@ -77,7 +77,7 @@ module TestImpureCases =
     /// process really can be started there. The kernel resolves its current
     /// directory when it is built, so a case configuring one must seed it —
     /// no process is ever started in a directory that does not exist.
-    let private directoryChain (path : string) : Map<FileName, SeedEntry> =
+    let private directoryChain (path : string) : Map<DirectoryEntryName, SeedEntry> =
         path.Split '/'
         |> Array.filter (fun segment -> segment <> "")
         |> Array.rev
@@ -85,7 +85,7 @@ module TestImpureCases =
             (fun contents segment ->
                 Map.ofList
                     [
-                        FileName.parseOrFail "test current directory" segment, SeedEntry.directory contents
+                        DirectoryEntryName.parseOrFail "test current directory" segment, SeedEntry.directory contents
                     ]
             )
             FileSystemSeed.empty
@@ -269,13 +269,14 @@ module TestImpureCases =
 
     /// The seed both write-wiring guests read: one file per mode shape, each
     /// holding the same five bytes, so a row's answer turns on its mode alone.
-    let private writeModeSeed : Map<FileName, SeedEntry> =
+    let private writeModeSeed : Map<DirectoryEntryName, SeedEntry> =
         let hello =
             Text.Encoding.UTF8.GetBytes "hello"
             |> System.Collections.Immutable.ImmutableArray.CreateRange
 
-        let entry (name : string) (mode : int) : FileName * SeedEntry =
-            FileName.parseOrFail "test seed" name, SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
+        let entry (name : string) (mode : int) : DirectoryEntryName * SeedEntry =
+            DirectoryEntryName.parseOrFail "test seed" name,
+            SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
 
         Map.ofList
             [
@@ -297,13 +298,14 @@ module TestImpureCases =
 
     /// The seed both truncation-wiring guests read: one file per mode shape, each
     /// holding the same five bytes, so a row's answer turns on its mode alone.
-    let private truncationModeSeed : Map<FileName, SeedEntry> =
+    let private truncationModeSeed : Map<DirectoryEntryName, SeedEntry> =
         let hello =
             Text.Encoding.UTF8.GetBytes "hello"
             |> System.Collections.Immutable.ImmutableArray.CreateRange
 
-        let entry (name : string) (mode : int) : FileName * SeedEntry =
-            FileName.parseOrFail "test seed" name, SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
+        let entry (name : string) (mode : int) : DirectoryEntryName * SeedEntry =
+            DirectoryEntryName.parseOrFail "test seed" name,
+            SeedEntry.File (hello, PermissionBits.parseOrFail "test seed" mode)
 
         Map.ofList
             [
@@ -324,8 +326,9 @@ module TestImpureCases =
     /// The seed both `GetFileSystemType` flavour guests read: one file and one
     /// directory, which is all the mount has to hold for descriptors of both
     /// kinds to exist.
-    let private getFileSystemTypeSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private getFileSystemTypeSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
 
         Map.ofList
             [
@@ -335,8 +338,10 @@ module TestImpureCases =
 
     /// Shared by the two `mkdir` wiring guests, so that the only thing that
     /// differs between them is the flavour.
-    let private mkDirWiringSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private mkDirWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
         let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
         let mode (raw : int) =
@@ -372,8 +377,10 @@ module TestImpureCases =
     /// Shared by the two `unlink` wiring guests, so that the only thing that
     /// differs between them is the configured flavour and the constants each
     /// expects.
-    let private unlinkWiringSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private unlinkWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
         let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
         let mode (raw : int) =
@@ -408,8 +415,9 @@ module TestImpureCases =
     /// For the guest that closes a directory stream's descriptor behind its
     /// back: an empty directory to remove, and a file to open so the stream's
     /// descriptor number can be derived rather than assumed.
-    let private enumerateClosedFdSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private enumerateClosedFdSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
 
         Map.ofList
             [
@@ -439,8 +447,9 @@ module TestImpureCases =
     /// The three names are chosen so that a *byte* count is the only rule that
     /// fits Darwin's answer: "e" is 1 byte and 1 char, "\u00e9" is 2 bytes and
     /// 1 char, and "\u4e2d\u4e2d" is 6 bytes and 2 chars.
-    let private enumerateWiringSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private enumerateWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
 
         let file (contents : string) =
             SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
@@ -461,8 +470,10 @@ module TestImpureCases =
     /// Shared by the two `rmdir` wiring guests, so that the only thing that
     /// differs between them is the configured flavour and the constants each
     /// expects.
-    let private rmDirWiringSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private rmDirWiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
         let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
         let mode (raw : int) =
@@ -543,8 +554,9 @@ module TestImpureCases =
 
     /// Two nested directories, the inner of which the orphan guests stand in and
     /// then remove.
-    let private rmDirOrphanSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private rmDirOrphanSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
 
         Map.ofList
             [
@@ -609,8 +621,9 @@ module TestImpureCases =
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
 
     /// The two files `UnlinkReapSeeded.cs` opens, one of which it closes.
-    let private unlinkReapSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private unlinkReapSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
 
         let file (contents : string) =
             SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
@@ -664,8 +677,10 @@ module TestImpureCases =
 
     /// Shared by the two search-permission wiring guests, so that the only thing
     /// that differs between them is the uid.
-    let private searchPermissionSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private searchPermissionSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
         let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
         let mode (raw : int) =
@@ -692,8 +707,9 @@ module TestImpureCases =
 
     /// An unsearchable directory holding the current directory, for the guest
     /// that pins how a relative path is resolved.
-    let private searchPermissionCwdSeed : Map<FileName, SeedEntry> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let private searchPermissionCwdSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
 
         let mode (raw : int) =
             PermissionBits.parseOrFail "test seed" raw
@@ -812,7 +828,9 @@ module TestImpureCases =
                         UserId = 1000u
                         GroupId = 2000u
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
+
                             let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
                             Map.ofList
@@ -839,7 +857,9 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
+
                             let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
                             Map.ofList
@@ -912,7 +932,8 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         FileSystemType = Some EmulatedFileSystemType.Nfs
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
 
                             Map.ofList
                                 [
@@ -937,7 +958,8 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
 
                             Map.ofList
                                 [
@@ -964,7 +986,8 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
 
                             Map.ofList
                                 [
@@ -994,7 +1017,8 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
 
                             let bytes (s : string) =
                                 Text.Encoding.UTF8.GetBytes s |> ImmutableArray.CreateRange
@@ -1040,7 +1064,7 @@ module TestImpureCases =
                         FileSystem =
                             Map.ofList
                                 [
-                                    FileName.parseOrFail "test seed" "f",
+                                    DirectoryEntryName.parseOrFail "test seed" "f",
                                     SeedEntry.file (Text.Encoding.UTF8.GetBytes "hello" |> ImmutableArray.CreateRange)
                                 ]
                     }
@@ -1421,7 +1445,8 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
 
                             Map.ofList
                                 [
@@ -1446,7 +1471,8 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
 
                             let file (contents : string) =
                                 SeedEntry.file (Text.Encoding.UTF8.GetBytes contents |> ImmutableArray.CreateRange)
@@ -1750,7 +1776,8 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
 
                             let mode (raw : int) =
                                 PermissionBits.parseOrFail "test seed" raw
@@ -1785,7 +1812,9 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         FileSystem =
-                            let name (s : string) = FileName.parseOrFail "test seed" s
+                            let name (s : string) =
+                                DirectoryEntryName.parseOrFail "test seed" s
+
                             let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
                             /// A chain of `length` links under `prefix`, ending
@@ -1904,12 +1933,12 @@ module TestImpureCases =
                         Umask = PermissionBits.parseOrFail "test seed" 0o077
                         FileSystem =
                             [
-                                FileName.parseOrFail "test seed" "f",
+                                DirectoryEntryName.parseOrFail "test seed" "f",
                                 SeedEntry.file (
                                     Text.Encoding.UTF8.GetBytes "hello"
                                     |> System.Collections.Immutable.ImmutableArray.CreateRange
                                 )
-                                FileName.parseOrFail "test seed" "d", SeedEntry.directory Map.empty
+                                DirectoryEntryName.parseOrFail "test seed" "d", SeedEntry.directory Map.empty
                             ]
                             |> Map.ofList
                     }
@@ -1949,8 +1978,8 @@ module TestImpureCases =
                             // `pathLimits`, so that this test disagrees with a
                             // wrong PATH_MAX instead of agreeing with it.
                             [
-                                FileName.parseOrFail "test seed" "atMax", SeedEntry.Symlink (dangling 1021)
-                                FileName.parseOrFail "test seed" "overMax", SeedEntry.Symlink (dangling 1022)
+                                DirectoryEntryName.parseOrFail "test seed" "atMax", SeedEntry.Symlink (dangling 1021)
+                                DirectoryEntryName.parseOrFail "test seed" "overMax", SeedEntry.Symlink (dangling 1022)
                             ]
                             |> Map.ofList
                     }

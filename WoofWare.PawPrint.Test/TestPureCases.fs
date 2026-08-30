@@ -91,8 +91,10 @@ module TestPureCases =
     ///
     /// Excluded from `simpleCases` because they need a non-default
     /// `KernelConfig`.
-    let seededCases : Map<string, Map<FileName, SeedEntry>> =
-        let name (s : string) = FileName.parseOrFail "test seed" s
+    let seededCases : Map<string, Map<DirectoryEntryName, SeedEntry>> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
         let target (s : string) = SymlinkTarget.parseOrFail "test seed" s
 
         let file (contents : string) =

@@ -471,12 +471,12 @@ module TestVirtualFileSystemAgainstHost =
             | Ok inode -> inode
             | Error error -> failwith $"could not resolve %s{relative} while building the model: %O{error}"
 
-        let split (relative : string) : InodeNumber * FileName =
+        let split (relative : string) : InodeNumber * DirectoryEntryName =
             match relative.LastIndexOf '/' with
-            | -1 -> VirtualFileSystem.root vfs, FileName.parseOrFail "test" relative
+            | -1 -> VirtualFileSystem.root vfs, DirectoryEntryName.parseOrFail "test" relative
             | index ->
                 resolveDirectory (relative.Substring (0, index)),
-                FileName.parseOrFail "test" (relative.Substring (index + 1))
+                DirectoryEntryName.parseOrFail "test" (relative.Substring (index + 1))
 
         let apply (result : Result<'a, UnixError>) (what : string) : 'a =
             match result with
@@ -657,7 +657,7 @@ module TestVirtualFileSystemAgainstHost =
                     | e -> failwith $"%s{label}: unexpected errno %d{e} from access(2)"
 
                 let modelPermits =
-                    PathLimits.nameWithinLimit limits (FileName.parseOrFail "name probe" candidate)
+                    PathLimits.nameWithinLimit limits (DirectoryEntryName.parseOrFail "name probe" candidate)
 
                 if hostPermits <> modelPermits then
                     let verb (permits : bool) =
@@ -801,7 +801,7 @@ module TestVirtualFileSystemAgainstHost =
                         let vfs =
                             VirtualFileSystem.createSymlink
                                 (VirtualFileSystem.root (VirtualFileSystem.empty buildTime))
-                                (FileName.parseOrFail "test" linkName)
+                                (DirectoryEntryName.parseOrFail "test" linkName)
                                 buildTime
                                 (SymlinkTarget.parseOrFail "test" targetText)
                                 (VirtualFileSystem.empty buildTime)
@@ -1655,9 +1655,9 @@ module TestVirtualFileSystemAgainstHost =
                 |> List.collect (fun (entry, child) ->
                     let relative =
                         if prefix = "" then
-                            FileName.toString entry
+                            DirectoryEntryName.toString entry
                         else
-                            prefix + "/" + FileName.toString entry
+                            prefix + "/" + DirectoryEntryName.toString entry
 
                     relative :: walk relative child
                 )
@@ -2276,7 +2276,8 @@ module TestVirtualFileSystemAgainstHost =
 
             match VirtualFileSystem.nextDirectoryEntry inode cursor vfs with
             | None -> acc
-            | Some (DirectoryStreamName.Entry name, _, next) -> go next (fuel - 1) (FileName.toString name :: acc)
+            | Some (DirectoryStreamName.Entry name, _, next) ->
+                go next (fuel - 1) (DirectoryEntryName.toString name :: acc)
             | Some (_, _, next) -> go next (fuel - 1) acc
 
         go DirectoryCursor.Start 1000 [] |> List.sort
@@ -2347,10 +2348,11 @@ module TestVirtualFileSystemAgainstHost =
             | Ok inode -> inode
             | Error error -> failwith $"could not place an entry under \"%s{relative}\": %O{error}"
 
-        let split (relative : string) : string * FileName =
+        let split (relative : string) : string * DirectoryEntryName =
             match relative.LastIndexOf '/' with
-            | -1 -> "", FileName.parseOrFail "test" relative
-            | index -> relative.Substring (0, index), FileName.parseOrFail "test" (relative.Substring (index + 1))
+            | -1 -> "", DirectoryEntryName.parseOrFail "test" relative
+            | index ->
+                relative.Substring (0, index), DirectoryEntryName.parseOrFail "test" (relative.Substring (index + 1))
 
         for directory in renameDirectories do
             let parent, leaf = split directory
@@ -2504,7 +2506,7 @@ module TestVirtualFileSystemAgainstHost =
     /// primitive, which is all this stage has: there is no `RenameRules` yet to
     /// decide anything.
     let private modelRename (source : string) (destination : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        let resolveEntry (relative : string) : InodeNumber * FileName =
+        let resolveEntry (relative : string) : InodeNumber * DirectoryEntryName =
             match
                 VirtualFileSystem.resolve
                     (limits ())
