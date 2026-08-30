@@ -1,11 +1,10 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System
 open System.IO
 open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// Measures how the *host* kernel screens a read buffer, and checks the model
@@ -17,7 +16,7 @@ open WoofWare.PosixKernel
 /// own limit. What is deliberately *not* checked is that limit's value: it
 /// varies by machine (paging depth, virtual-address width), so demanding that
 /// a host match the shipped default would be asserting that everyone runs the
-/// same hardware. `EmulatedKernel.UserAddressLimit` carries it as configuration
+/// same hardware. `UnixMachineState.UserAddressLimit` carries it as configuration
 /// for that reason, and `ObservedUserAddressLimit` records the values seen.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -37,6 +36,12 @@ module TestUserBufferCheckAgainstHost =
 
     [<Literal>]
     let private EFAULT = 14
+
+    /// A machine to apply this host's measured facts to. Every field this
+    /// fixture reads is written by the setters above before it is read, so the
+    /// flavour booted here is not observable.
+    let private initialMachine : UnixMachineState =
+        (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64).Machine
 
     /// Whether the host refuses `length` bytes at `address` on a descriptor with
     /// nothing to transfer.
@@ -115,7 +120,7 @@ module TestUserBufferCheckAgainstHost =
 
     /// *Whether* this host screens up front, which is what the model derives
     /// from the flavour. The limit it screens at is a property of the machine
-    /// and is deliberately not asserted here — see `EmulatedKernel.UserAddressLimit`.
+    /// and is deliberately not asserted here — see `UnixMachineState.UserAddressLimit`.
     [<Test>]
     let ``the flavour decides whether this kernel screens up front`` () : unit =
         HostPlatform.onUnixHost (fun flavour ->
@@ -157,12 +162,10 @@ module TestUserBufferCheckAgainstHost =
                     match measureLimit fd 1UL with
                     | None -> UserBufferCheck.AtCopyTime
                     | Some limit ->
-                        EmulatedKernel.initial
-                        |> EmulatedKernel.mapMachine (
-                            UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
-                        )
-                        |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
-                        |> fun kernel -> UnixMachineState.userBufferCheck kernel.Machine
+                        initialMachine
+                        |> UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
+                        |> UnixMachineState.withUserAddressLimit limit
+                        |> UnixMachineState.userBufferCheck
 
                 let describe (refuses : bool) : string =
                     if refuses then "refuses" else "accepts"

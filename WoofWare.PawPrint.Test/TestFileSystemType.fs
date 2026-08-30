@@ -5,6 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
+open WoofWare.PosixKernel.Test
 
 /// `SystemNative_GetFileSystemType`: the table of what `fstatfs(2)` answers for
 /// each kind of descriptor, and the coherence rule between a mount's type and
