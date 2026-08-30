@@ -5,14 +5,16 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.checkInvariants`, for the five rules nothing else exercises.
+/// `UnixSystem.checkInvariants`, for the six rules nothing else exercises.
 ///
-/// The other twelve are covered from `WoofWare.PawPrint.Test`, which is where
+/// The other ten are covered from `WoofWare.PawPrint.Test`, which is where
 /// these rules' tests were written before the checker moved here; they move in
-/// their own stages. These five were found by mutating each rule in turn and
-/// seeing which mutants no suite killed, and three of them are the same gap
-/// twice over: the `>=` against a counter is only ever tested with a strictly
-/// greater identity, so the boundary the rule exists for is untested.
+/// their own stages. Five of these six were found by mutating each rule in turn
+/// and seeing which mutants no suite killed, and three of those are the same
+/// gap twice over: the `>=` against a counter is only ever tested with a
+/// strictly greater identity, so the boundary the rule exists for is untested.
+/// The sixth, `CurrentDirectoryIsNotADirectory`, arrived with the setter that
+/// establishes the current directory.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnixSystemInvariants =
@@ -308,3 +310,77 @@ module TestUnixSystemInvariants =
             [
                 UnixSystemDefect.SocketEventRegistrationOrdinalNotFresh (ordinal, portId, ordinal)
             ]
+
+    // ------------------------------------------------------------------
+    // A current directory that is not a directory
+    // ------------------------------------------------------------------
+
+    /// A system standing in `/outer/inner`, from which both rows below are a
+    /// single edit away.
+    let private standing : UnixSystem<int, string> =
+        let seed =
+            Map.ofList
+                [
+                    FileName.parseOrFail context "outer",
+                    SeedEntry.directory (
+                        Map.ofList
+                            [
+                                FileName.parseOrFail context "inner", SeedEntry.directory FileSystemSeed.empty
+                                FileName.parseOrFail context "file", SeedEntry.file ImmutableArray<byte>.Empty
+                            ]
+                    )
+                ]
+
+        match
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+            |> UnixSystem.withFileSystemAndCurrentDirectory
+                SimulatedUnixPlatform.linuxX64
+                epoch
+                seed
+                (AbsoluteUnixPath.parseOrFail context "/outer/inner")
+        with
+        | Ok system -> system
+        | Error fault -> failwith $"the fixture's own seed did not boot: %O{fault}."
+
+    let private inodeOf (path : string) : InodeNumber =
+        match
+            VirtualFileSystem.resolveExisting
+                (SimulatedUnixPlatform.pathLimits standing.Machine.UnixPlatform)
+                CallerPrivilege.Privileged
+                (VirtualFileSystem.root standing.Machine.FileSystem)
+                SymlinkPolicy.Follow
+                (UnixPath.parseOrFail context path)
+                standing.Machine.FileSystem
+        with
+        | Ok inode -> inode
+        | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}."
+
+    [<Test>]
+    let ``a current directory that is a regular file is a defect`` () : unit =
+        let file = inodeOf "/outer/file"
+
+        { standing with
+            Process =
+                { standing.Process with
+                    CurrentDirectoryInode = file
+                }
+        }
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.CurrentDirectoryIsNotADirectory file ]
+
+    [<Test>]
+    let ``a current directory the filesystem does not contain is a defect`` () : unit =
+        // The same rule reached by the other input: an inode with no content at
+        // all reads as "not a directory" rather than as its own defect, which is
+        // what lets one rule cover both. A row asserting only the file case
+        // would leave a checker that special-cased `Some` passing.
+        let absent = VirtualFileSystem.nextInode standing.Machine.FileSystem
+
+        { standing with
+            Process =
+                { standing.Process with
+                    CurrentDirectoryInode = absent
+                }
+        }
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.CurrentDirectoryIsNotADirectory absent ]

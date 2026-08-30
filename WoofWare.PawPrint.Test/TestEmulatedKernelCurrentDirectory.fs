@@ -6,10 +6,16 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// The simulated process holds its current directory as an *inode*, the way a
-/// real process holds it, rather than as a name re-walked on every relative
-/// lookup. These are the claims about that pair: what maintains it, and what a
-/// host that misconfigures it is told.
+/// `EmulatedKernel.withFileSystemAndCurrentDirectory`, which is the wrapper
+/// around `UnixSystem.withFileSystemAndCurrentDirectory`: that it threads its
+/// arguments through rather than reading the kernel's own fields, and what a
+/// host that misconfigures the two knobs is told.
+///
+/// The messages are the reason these rows are here rather than in the library.
+/// The library answers a `CurrentDirectoryFault`, deliberately saying nothing
+/// about `KernelConfig`, which it cannot see; turning each case into advice
+/// naming the field the host actually set is this wrapper's whole job, and
+/// `TestWithFileSystemAndCurrentDirectory` covers everything underneath it.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestEmulatedKernelCurrentDirectory =
@@ -42,24 +48,6 @@ module TestEmulatedKernelCurrentDirectory =
                 )
             ]
 
-    /// The inode a path names, resolved independently of the kernel — so a row
-    /// asserting "the kernel held *this* inode" is checked against the graph
-    /// rather than against the kernel's own answer.
-    let private inodeOf (kernel : EmulatedKernel) (path : string) : InodeNumber =
-        let vfs = kernel.FileSystem
-
-        match
-            VirtualFileSystem.resolveExisting
-                (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
-                CallerPrivilege.Privileged
-                (VirtualFileSystem.root vfs)
-                SymlinkPolicy.Follow
-                (UnixPath.parseOrFail "test" path)
-                vfs
-        with
-        | Ok inode -> inode
-        | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}"
-
     /// A kernel seeded with the tree above, whose current directory is `dir`.
     let private seededAt (dir : string) : EmulatedKernel =
         EmulatedKernel.initial
@@ -69,7 +57,7 @@ module TestEmulatedKernelCurrentDirectory =
         let thrown = Assert.Throws<exn> (fun () -> body ())
         thrown.Message
 
-    // -------------------------------------------------- what the kernel holds
+    // ------------------------------------------------ what a fresh kernel holds
 
     [<Test>]
     let ``a freshly minted kernel holds the root`` () : unit =
@@ -81,35 +69,7 @@ module TestEmulatedKernelCurrentDirectory =
 
         EmulatedKernel.checkInvariants EmulatedKernel.initial |> shouldEqual []
 
-    [<Test>]
-    let ``the held inode is the one the configured path names`` () : unit =
-        let kernel = seededAt "/outer/inner"
-
-        kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
-
-        // ...and not merely *some* inode: the two directories in the seed are
-        // distinct, so a resolver that stopped at the first component would
-        // pass every other assertion here.
-        kernel.CurrentDirectoryInode |> shouldNotEqual (inodeOf kernel "/outer")
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
-
-    [<Test>]
-    let ``a symlinked current directory is canonicalised`` () : unit =
-        // A process launched into `outer/lnk` is launched into the directory
-        // that link names, and afterwards nothing can tell it went through a
-        // link: `getcwd(3)` reports the *physical* path. Measured on both
-        // kernels -- `chdir(".../outer/lnk")` with `lnk -> inner` is followed by
-        // `getcwd() == ".../outer/inner"`.
-        let kernel = seededAt "/outer/lnk"
-
-        kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
-
-        EmulatedKernel.currentDirectoryPath kernel
-        |> shouldEqual (Some (absolute "/outer/inner"))
-
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
-
-    // ------------------------------------------------------ order-independence
+    // ------------------------------- the arguments, not the kernel's own fields
 
     [<Test>]
     let ``the platform argument decides, not the one the kernel carries`` () : unit =
@@ -134,10 +94,12 @@ module TestEmulatedKernelCurrentDirectory =
         EmulatedKernel.checkInvariants darwin |> shouldEqual []
 
         // The kernel this ran against is still Linux-flavoured -- nothing set
-        // its platform -- so a setter reading `kernel.UnixPlatform` instead of
-        // its argument would have refused the name above. That is what makes
-        // the pair setter order-independent with respect to
-        // `withUnixPlatformAndFileSystemType`.
+        // its platform -- so a wrapper reading `kernel.UnixPlatform` instead of
+        // passing its argument down would have refused the name above. That is
+        // what makes the pair setter order-independent with respect to
+        // `withUnixPlatformAndFileSystemType`. The library function's own half
+        // of this claim is in `TestWithFileSystemAndCurrentDirectory`; what is
+        // tested here is that the wrapper hands the argument over.
         darwin.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
 
         // ...and the other flavour really does refuse it, so the row above is
@@ -184,36 +146,6 @@ module TestEmulatedKernelCurrentDirectory =
 
         text |> shouldContainText "KernelConfig.FileSystem"
 
-    [<Test>]
-    let ``replacing the filesystem re-resolves the current directory`` () : unit =
-        // Inode numbers are meaningless across graphs, so carrying the old one
-        // over would leave the kernel holding whatever happened to land on that
-        // number in the new seed -- or nothing at all.
-        let deeper =
-            Map.ofList
-                [
-                    name "pad", SeedEntry.directory (Map.ofList [ name "a", SeedEntry.directory Map.empty ])
-                    name "outer", SeedEntry.directory (Map.ofList [ name "inner", SeedEntry.directory Map.empty ])
-                ]
-
-        let kernel = seededAt "/outer/inner"
-
-        let replaced =
-            kernel
-            |> EmulatedKernel.withFileSystemAndCurrentDirectory
-                SimulatedUnixPlatform.linuxX64
-                createdAt
-                deeper
-                (absolute "/outer/inner")
-
-        replaced.CurrentDirectoryInode |> shouldEqual (inodeOf replaced "/outer/inner")
-        EmulatedKernel.checkInvariants replaced |> shouldEqual []
-
-        // The seeds mint inodes in a different order, so the two graphs really
-        // do disagree about which number `/outer/inner` is -- which is what
-        // makes "it was re-resolved" distinguishable from "it was carried over".
-        replaced.CurrentDirectoryInode |> shouldNotEqual kernel.CurrentDirectoryInode
-
     // -------------------------------------------------- what a host is told
 
     [<Test>]
@@ -232,55 +164,3 @@ module TestEmulatedKernelCurrentDirectory =
         let text = message (fun () -> seededAt "/outer/file" |> ignore<EmulatedKernel>)
 
         text |> shouldContainText "not to a directory"
-
-    // ------------------------------------------------------------- invariants
-
-    [<Test>]
-    let ``checkInvariants rejects a held inode that is not a directory`` () : unit =
-        let kernel = seededAt "/outer/inner"
-        let file = inodeOf kernel "/outer/file"
-
-        { kernel with
-            Process =
-                { kernel.Process with
-                    CurrentDirectoryInode = file
-                }
-        }
-        |> EmulatedKernel.checkInvariants
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.CurrentDirectoryIsNotADirectory file)
-            ]
-
-    [<Test>]
-    let ``checkInvariants rejects a held inode the filesystem does not contain`` () : unit =
-        let kernel = seededAt "/outer/inner"
-        let absent = VirtualFileSystem.nextInode kernel.FileSystem
-
-        { kernel with
-            Process =
-                { kernel.Process with
-                    CurrentDirectoryInode = absent
-                }
-        }
-        |> EmulatedKernel.checkInvariants
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (UnixSystemDefect.CurrentDirectoryIsNotADirectory absent)
-            ]
-
-    // ------------------------------------------------------------ through the config
-
-    [<Test>]
-    let ``KernelConfig applies the current directory whatever else it sets`` () : unit =
-        let config =
-            { KernelConfig.Default with
-                FileSystem = seed
-                UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                CurrentDirectory = absolute "/outer/inner"
-            }
-
-        let kernel = KernelConfig.applyTo config EmulatedKernel.initial
-
-        kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
-        EmulatedKernel.checkInvariants kernel |> shouldEqual []
