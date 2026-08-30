@@ -157,6 +157,34 @@ module TestEmulatedKernelCurrentDirectory =
         text |> shouldContainText "Linux"
 
     [<Test>]
+    let ``an overlong symlink expansion is not blamed on the configured path`` () : unit =
+        // Darwin re-checks the total length when it splices a symlink target in,
+        // and reports the same `ENAMETOOLONG` a component past `NAME_MAX` earns.
+        // A message that told this host only the `NAME_MAX` story would be wrong
+        // twice over: `/l` has no overlong component, and shortening it cannot
+        // help -- the seed's symlink target is what no path can accommodate.
+        //
+        // Four hundred two-byte components, each comfortably legal, so the only
+        // limit this can reach is the total length.
+        let deep = String.replicate 400 "/ab"
+
+        let seed =
+            Map.ofList [ name "l", SeedEntry.Symlink (SymlinkTarget.parseOrFail "test" deep) ]
+
+        let text =
+            message (fun () ->
+                EmulatedKernel.initial
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory
+                    SimulatedUnixPlatform.macOsArm64
+                    createdAt
+                    seed
+                    (absolute "/l")
+                |> ignore<EmulatedKernel>
+            )
+
+        text |> shouldContainText "KernelConfig.FileSystem"
+
+    [<Test>]
     let ``replacing the filesystem re-resolves the current directory`` () : unit =
         // Inode numbers are meaningless across graphs, so carrying the old one
         // over would leave the kernel holding whatever happened to land on that

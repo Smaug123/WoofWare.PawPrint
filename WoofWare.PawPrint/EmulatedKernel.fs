@@ -991,70 +991,6 @@ module EmulatedKernel =
         }
 
 
-    /// The directory `directory` names in this kernel's filesystem, as the
-    /// moment a process is started resolves it — which is the only moment
-    /// PawPrint resolves it, because after that the process holds the directory
-    /// rather than the name.
-    ///
-    /// Answers the inode alone. The path `getcwd` owes is derived from it by
-    /// `UnixSystem.currentDirectoryPath`, which is what makes that path the
-    /// **physical** one with every symlink resolved away — measured on both
-    /// kernels, `chdir("outer/lnk")` with `lnk -> inner` is followed by
-    /// `getcwd() == ".../outer/inner"`.
-    ///
-    /// Privileged and symlink-following, deliberately: this is the host saying
-    /// where its guest was launched, not a guest looking anything up, and a
-    /// process is launched into a directory its parent had already reached. A
-    /// failure here is therefore a host mistake with no honest errno — ENOENT
-    /// would blame a guest path that does not exist yet — so it crashes, naming
-    /// the two knobs that have to agree.
-    let private currentDirectoryOf
-        (directory : AbsoluteUnixPath)
-        (platform : SimulatedUnixPlatform)
-        (filesystem : VirtualFileSystem)
-        : InodeNumber
-        =
-        let limits = SimulatedUnixPlatform.pathLimits platform
-        let root = VirtualFileSystem.root filesystem
-
-        match
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                root
-                SymlinkPolicy.Follow
-                (UnixPath.ofAbsolute directory)
-                filesystem
-        with
-        | Ok inode ->
-            match VirtualFileSystem.tryGetContent inode filesystem with
-            | Some (InodeContent.Directory _) ->
-                // The walk started at the root, so a directory it reached has a
-                // path back to the root by construction. Asserted anyway,
-                // because the alternative to crashing here is a guest whose
-                // `getcwd` quietly reports ENOENT from its first instruction.
-                match VirtualFileSystem.pathOfDirectory inode filesystem with
-                | Some _ -> inode
-                | None ->
-                    failwith
-                        $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolved to inode %O{inode}, but no path from the root reaches it. Run VirtualFileSystem.checkInvariants."
-            | Some (InodeContent.RegularFile _)
-            | Some (InodeContent.Symlink _) ->
-                failwith
-                    $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolves in KernelConfig.FileSystem, but not to a directory. No process can be started anywhere else; point KernelConfig.CurrentDirectory at a directory the seed contains."
-            | None ->
-                failwith
-                    $"EmulatedKernel.CurrentDirectory: resolving \"%s{AbsoluteUnixPath.toString directory}\" gave inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
-        | Error UnixError.ENAMETOOLONG ->
-            // Distinguished because the remedy is different, and the message
-            // below would send the reader looking for a missing directory that
-            // is in fact present.
-            failwith
-                $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" contains a component longer than %O{SimulatedUnixPlatform.flavour platform}'s NAME_MAX, so no process could have been started in it. Shorten KernelConfig.CurrentDirectory."
-        | Error error ->
-            failwith
-                $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" does not resolve in KernelConfig.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
-
     /// Apply an operation to the simulated process's own state. Those operations
     /// live in `UnixProcessState`, which takes that state rather than the kernel.
     let mapProcess
@@ -1069,27 +1005,15 @@ module EmulatedKernel =
 
 
     /// Set the filesystem the guest sees, and the directory the simulated
-    /// process starts in, together.
+    /// process starts in, together: see
+    /// `UnixSystem.withFileSystemAndCurrentDirectory`, which does the work and
+    /// which says why the two are one operation.
     ///
-    /// One setter rather than two because neither answer is well-formed without
-    /// the other: a current directory is an inode of *this* filesystem, and a
-    /// filesystem replaces every inode number the previous one handed out. The
-    /// same reason `withUnixPlatformAndFileSystemType` is one setter.
-    ///
-    /// Takes the moment and the platform explicitly rather than reading
-    /// `kernel.WallClockEpochMs` and `kernel.UnixPlatform`, so that the result
-    /// does not depend on whether the caller happened to set the clock or the
-    /// flavour before or after the filesystem — an ordering dependence between
-    /// two `with` functions is exactly the kind of thing that works until
-    /// someone reorders `KernelConfig.applyTo`.
-    ///
-    /// The platform is here because its `NAME_MAX` decides whether the *path
-    /// the host wrote* is one a process on that flavour could name at all: 255
-    /// CJK characters is a legal directory name on Darwin and too long on
-    /// Linux. It is a check on that path and not on the graph — the seed itself
-    /// is realised without consulting any limit, so a filesystem may perfectly
-    /// well contain a directory whose name the current directory could not
-    /// spell.
+    /// Crashes rather than answering when the directory is not one a process
+    /// could have started in, naming the two `KernelConfig` knobs that have to
+    /// agree. A failure here is a host mistake with no honest errno — ENOENT
+    /// would blame a guest path that does not exist yet — and there is nothing
+    /// for the run to go on and do.
     let withFileSystemAndCurrentDirectory
         (platform : SimulatedUnixPlatform)
         (createdAt : UnixTimestamp)
@@ -1098,25 +1022,39 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
+        // Named for this kernel's own knobs before the library sees them, so a
+        // host that forged one is told which field it set rather than which
+        // library function received it.
         let platform =
             SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
 
         let directory =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
-        let filesystem = FileSystemSeed.toVirtualFileSystem createdAt seed
-        let inode = currentDirectoryOf directory platform filesystem
+        let described = AbsoluteUnixPath.toString directory
 
-        { kernel with
-            Machine =
-                { kernel.Machine with
-                    FileSystem = filesystem
-                }
-            Process =
-                { kernel.Process with
-                    CurrentDirectoryInode = inode
-                }
-        }
+        match
+            unix kernel
+            |> UnixSystem.withFileSystemAndCurrentDirectory platform createdAt seed directory
+        with
+        | Ok system -> withUnix system kernel
+        | Error (CurrentDirectoryFault.DoesNotResolve error) ->
+            failwith
+                $"EmulatedKernel.CurrentDirectory: \"%s{described}\" does not resolve in KernelConfig.FileSystem (%O{error}). A process cannot be started in a directory that does not exist; make KernelConfig.FileSystem contain KernelConfig.CurrentDirectory."
+        | Error (CurrentDirectoryFault.TooLong flavour) ->
+            // Distinguished because the remedy is different, and the message
+            // above would send the reader looking for a missing directory that
+            // is in fact present.
+            //
+            // Both causes are named because the walk reports one errno for
+            // them: a host told only about NAME_MAX would shorten a path that
+            // was never the problem.
+            failwith
+                $"EmulatedKernel.CurrentDirectory: %O{flavour} refuses \"%s{described}\" as too long, so no process could have been started in it. Either a component is past NAME_MAX -- shorten KernelConfig.CurrentDirectory -- or, on Darwin, a symbolic link it goes through expands past PATH_MAX, in which case shorten that link's target in KernelConfig.FileSystem."
+        | Error CurrentDirectoryFault.NotADirectory ->
+            failwith
+                $"EmulatedKernel.CurrentDirectory: \"%s{described}\" resolves in KernelConfig.FileSystem, but not to a directory. No process can be started anywhere else; point KernelConfig.CurrentDirectory at a directory the seed contains."
+
 
 
 

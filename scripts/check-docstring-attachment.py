@@ -32,6 +32,13 @@ WHAT THIS CANNOT SEE, and so must be checked by hand:
   * Which of a merged pair is the intruder. MERGED names the block that lost its
     identity and the declaration the survivor now documents; deciding which half
     belongs where is a reading task.
+  * A docstring only *partly* stranded, which is what a definition removed
+    along with some of its prose leaves behind. Blocks are keyed by their whole
+    text, so a surviving prefix matches no block at the base revision: it reads
+    as one block deleted and another added, and neither is a reportable shape.
+    Strand the *whole* block and MERGED fires as it should -- measured both
+    ways. Removing a definition is therefore the one edit where the remaining
+    `///` lines have to be read by hand.
   * Prose that was already attached to the wrong declaration at the base
     revision. This compares two revisions, so it inherits the base's mistakes.
   * Anything below a `let`: docstrings on local bindings inside a function body
