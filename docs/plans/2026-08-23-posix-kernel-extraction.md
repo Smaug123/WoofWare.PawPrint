@@ -5025,8 +5025,8 @@ docstrings name each other.
   measurement of the machine the suite runs on. A pure move, and it takes
   `HostPlatform` — the shared answer to "which kernel is this test host" — with it.
 * **24**: `TestFileSystemType`, split. It was paired with 23 above on the strength of
-  measuring the same host, but its last row — `this host's own filesystem is one
-  CoreCLR will lock` — is not about the library at all. It is an environmental
+  measuring the same host, but one of its thirteen rows — `this host's own filesystem
+  is one CoreCLR will lock` — is not about the library at all. It is an environmental
   premise for a guest, so it stays, and belongs with the other such premises in
   `TestOraclePolicy` rather than in a fixture whose remaining rows have all left.
 * **25**: `EmulatedKernel.withFileSystemAndCurrentDirectory` becomes the library's,
@@ -5159,16 +5159,80 @@ substitutions. Suite counts: library 1045 → 1048, PawPrint 3140 → 3137.
 
 #### `TestFileSystemType` does not come along
 
-The audit above called it a pure move, and it is not one. Eight of its rows are about
-`UnixMachineState`'s `fstatfs` table and the coherence between a mount and the flavour
-that mounted it, which are the library's. The ninth, `this host's own filesystem is
-one CoreCLR will lock`, is about neither the library nor its model: it is an
+The audit above called it a pure move, and it is not one. Twelve of its thirteen rows
+are about `UnixMachineState`'s `fstatfs` table and the coherence between a mount and
+the flavour that mounted it, which are the library's. The thirteenth, `this host's own
+filesystem is one CoreCLR will lock`, is about neither the library nor its model: it is an
 environmental premise for `sourcesPure/FlockContentionSeeded.cs`, which names
 CoreCLR's `SafeFileHandle.CanLockTheFile` — if the suite ran with `/tmp` on a
 filesystem CoreCLR will not lock, that guest's assertions would pass vacuously.
 
 That row cannot travel, because the guest it protects is PawPrint's; it also cannot
-stay in a fixture the rest of which has left. Its natural home is `TestOraclePolicy`,
-which already carries sibling premises of exactly this kind. That is a relocation
-rather than a move, so it gets its own stage rather than being smuggled into this
-one.
+stay in a fixture the rest of which has left. That is a relocation rather than a move,
+so it gets its own stage rather than being smuggled into this one — stage 24 below.
+
+### Stage 24: the filesystem-type fixture splits, twelve rows to one and one to the other
+
+**Dependencies**: 17 (`UnixSystem.initial`), 23 (`HostPlatform` in the library test
+project).
+
+Twelve of `TestFileSystemType`'s thirteen rows are the library's: the magic-number
+table `SystemNative_GetFileSystemType` answers from, the coherence rule between a
+mount and the flavour that claims to have mounted it, and the host comparison that
+manufactures a pipe, a socket and an anonymous inode on the real kernel and checks
+the model against the real PAL. The four `EmulatedKernel.initial |>
+EmulatedKernel.mapMachine` sites collapse the way stages 21 to 23 collapsed theirs.
+
+The local binding keeps the name `kernel` even though its type is now
+`UnixMachineState`. That is deliberate: this fixture's prose uses "kernel" for the
+state object and "machine" for the thing being simulated, in the same sentence — *a
+kernel carrying one of each would report a combination no machine could produce* — so
+renaming it would collide with the other noun rather than clarify anything.
+
+One comment is corrected rather than carried. It said `EmulatedKernel` is a public
+record whose `{ x with UnixPlatform = ... }` bypasses the setter; that record has been
+`UnixMachineState` since stage 2, and `EmulatedKernel` exposes the field as a
+forwarding member which cannot be updated that way at all. It is also no longer in
+scope, so this correction was not optional.
+
+#### The thirteenth row is relocated, not moved
+
+`this host's own filesystem is one CoreCLR will lock` is an environmental premise for
+`sourcesPure/FlockContentionSeeded.cs` rather than a claim about the model. Three
+places it could go:
+
+**Leave it in a shrunken `TestFileSystemType` on the PawPrint side.** Cheapest, and
+rejected for the reason stage 22 rejected the same shape: a fixture named for a
+subject that has entirely left is a fixture whose name is a lie.
+
+**Give it a new fixture** — `TestGuestEnvironmentPremises`, say. It names the category
+exactly, and `TestOraclePolicy`'s `this host's shape is described by the presets` could
+join it later. Rejected because that fixture would hold one row on the strength of a
+second only hypothetically moving to it, which is the speculative half of the same
+judgement stage 22 made in the other direction.
+
+**Relocate it into `TestOraclePolicy`.** Taken, and on the merits rather than by
+analogy: `FlockContentionSeeded.cs` lives in `sourcesPure`, where `runTest` refuses any
+case not declaring `OraclePolicy.Always`, so it *is* a compared case, and this row is a
+precondition for that comparison measuring anything. That is what `TestOraclePolicy` is
+about, and it already carries `this host's shape is described by the presets`, whose own
+comment makes the identical argument — "not a tautology restating the function: it says
+that the machine running the suite is one the compared cases are actually compared on".
+The fixture's docstring said two things were worth pinning; it now says three.
+
+`hostGetFileSystemType` is *duplicated* rather than moved: the twelve rows that left
+read it too, and a `private extern` cannot cross a project boundary.
+
+**Correctness oracle**: `verify24.py` makes two claims, because the stage does two
+things — that the moved file is exactly `origin/main`'s under `move24.py`, and that the
+lifted row appears in `TestOraclePolicy` *verbatim*, so the relocation carried the row
+rather than a retyping of it. Both halves were confirmed able to fail, by perturbing
+each file in turn.
+
+A duplicated `DllImport` in a second assembly is the one thing here that could bind
+differently, and a row that no longer measured anything would stay green. Mutated to
+fail on the *lockable* branch, it fails and reports this host's answer (`0x1A`, APFS),
+so the measurement runs where it landed.
+
+Suite counts: library 1053 → 1065, PawPrint 3137 → 3125. Twelve rows across the
+boundary and one relocated within PawPrint, which is why the two do not sum.

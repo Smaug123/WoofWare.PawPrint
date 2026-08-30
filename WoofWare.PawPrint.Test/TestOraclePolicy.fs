@@ -1,5 +1,6 @@
 namespace WoofWare.Pawprint.Test
 
+open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -8,10 +9,20 @@ open WoofWare.PosixKernel
 open WoofWare.PosixKernel.Test
 
 /// `OraclePolicy` decides which end-to-end cases are compared against the real
-/// runtime on the host at hand. Two things are worth pinning: the decision itself,
-/// and that the decision is actually consulted by the harness.
+/// runtime on the host at hand. Three things are worth pinning: the decision itself,
+/// that the decision is actually consulted by the harness, and the environmental
+/// premises a comparison rests on once it has been decided on -- a host that fails
+/// one of those still runs the comparison, and the comparison still passes, having
+/// measured nothing.
 [<TestFixture>]
 module TestOraclePolicy =
+
+    /// The real export, in the shim this test host runs against. Declared here as
+    /// well as in `WoofWare.PosixKernel.Test`'s `TestFileSystemType`, which reads it
+    /// to check the model against: a `private extern` cannot cross a project, and
+    /// the two ask different questions of the same symbol.
+    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_GetFileSystemType", SetLastError = true)>]
+    extern uint32 private hostGetFileSystemType(nativeint fd)
 
     // Short names purely so the table below reads as a table.
     let private linux : SimulatedUnixFlavour = SimulatedUnixFlavour.Linux
@@ -250,3 +261,45 @@ module TestOraclePolicy =
 
         exn.Message |> shouldContainText "PawPrint exited with code 0"
         exn.Message |> shouldContainText "the real runtime exited with 2"
+
+    [<Test>]
+    let ``this host's own filesystem is one CoreCLR will lock`` () : unit =
+        // Not a claim about the model: it is the environmental premise the
+        // differential half rests on. `sourcesPure/FlockContentionSeeded.cs`
+        // compares PawPrint's locking against the real runtime's, and the real
+        // runtime takes a shared lock under write access only when the scratch
+        // directory's filesystem is not NFS, CIFS or SMB. On a machine where
+        // that failed, those guest checks would pass vacuously against a
+        // runtime that locked nothing — so the premise is asserted here, where
+        // a failure names the actual cause.
+        match HostPlatform.flavour () with
+        | None -> Assert.Ignore $"no Unix shim to measure (%s{RuntimeInformation.OSDescription})"
+        | Some _ ->
+
+        let path = System.IO.Path.GetTempFileName ()
+
+        try
+            use handle =
+                System.IO.File.OpenHandle (path, System.IO.FileMode.Open, System.IO.FileAccess.Read)
+
+            let hostSaid = hostGetFileSystemType (handle.DangerousGetHandle ())
+
+            // The four `SafeFileHandle.CanLockTheFile` refuses, plus 0, which it
+            // treats as "unknown, so do not lock".
+            let unlockable =
+                Map.ofList
+                    [
+                        0u, "an unknown filesystem"
+                        0x6969u, "nfs"
+                        0x517Bu, "smb"
+                        0xFE534D42u, "smb2"
+                        0xFF534D42u, "cifs"
+                    ]
+
+            match Map.tryFind hostSaid unlockable with
+            | None -> ()
+            | Some name ->
+                failwith
+                    $"this host's temporary directory is on %s{name} (0x%X{hostSaid}), where CoreCLR declines to take a shared lock under write access. FlockContentionSeeded.cs's write-access checks would pass vacuously here."
+        finally
+            System.IO.File.Delete path
