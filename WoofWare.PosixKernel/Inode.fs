@@ -120,6 +120,21 @@ type InodeContent =
     /// pointed at when it was made.
     | Symlink of target : SymlinkTarget
 
+[<RequireQualifiedAccess>]
+module InodeContent =
+    /// The `S_IFMT` band of `st_mode`: which kind of thing lives at an inode.
+    /// Derived from the content rather than stored, so the two cannot disagree.
+    ///
+    /// The values are `Interop.Sys.FileTypes`' (`Interop.Stat.cs`), which are in
+    /// turn the POSIX ones. `TestVirtualFileSystemAgainstHost` pins them against
+    /// that declaration *as read from the pinned runtime source*, rather than
+    /// against a second copy of the same literals.
+    let fileTypeBits (content : InodeContent) : int =
+        match content with
+        | InodeContent.RegularFile _ -> 0o100000
+        | InodeContent.Directory _ -> 0o40000
+        | InodeContent.Symlink _ -> 0o120000
+
 /// One inode: what lives there, and the metadata every inode carries whatever
 /// kind of thing it is.
 type Inode =
@@ -134,8 +149,8 @@ type Inode =
 /// A DU rather than an `option`, so that a caller cannot reach for a default
 /// and quietly get the wrong answer: the symlink case is not "no permissions",
 /// it is "the answer is a property of the platform, which this module cannot
-/// see". `SimulatedUnixPlatform` lives in `EmulatedKernel.fs`, which compiles
-/// after this file; platform-flavoured presentation is a `stat` concern.
+/// see". `SimulatedUnixPlatform` compiles after this file; platform-flavoured
+/// presentation is a `stat` concern.
 [<RequireQualifiedAccess>]
 type InodePermissions =
     /// A regular file's or directory's stored, `chmod`-able bits.
@@ -153,3 +168,13 @@ type InodePermissions =
     /// while Linux reports 0o777 whatever the umask. So the caller — which
     /// knows the simulated platform — supplies the value.
     | PlatformSymlinkDefault
+
+[<RequireQualifiedAccess>]
+module Inode =
+    /// An inode's permission bits, as something the caller must match rather
+    /// than a number it might default. See `InodePermissions`.
+    let permissions (inode : Inode) : InodePermissions =
+        match inode.Content with
+        | InodeContent.RegularFile (_, permissions) -> InodePermissions.Stored permissions
+        | InodeContent.Directory directory -> InodePermissions.Stored directory.Permissions
+        | InodeContent.Symlink _ -> InodePermissions.PlatformSymlinkDefault

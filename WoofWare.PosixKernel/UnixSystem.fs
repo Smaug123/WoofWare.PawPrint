@@ -2643,7 +2643,7 @@ module UnixSystem =
         | Some entry ->
 
         let permissions =
-            match VirtualFileSystem.permissions entry with
+            match Inode.permissions entry with
             | InodePermissions.Stored bits -> bits
             | InodePermissions.PlatformSymlinkDefault ->
                 SimulatedUnixPlatform.symlinkPermissions system.Machine.UnixPlatform
@@ -2672,7 +2672,7 @@ module UnixSystem =
         Some
             {
                 Mode =
-                    VirtualFileSystem.fileTypeBits entry.Content
+                    InodeContent.fileTypeBits entry.Content
                     ||| PermissionBits.toInt permissions
                 // The calling process's, this kernel storing no per-inode
                 // ownership. See `FileStatus.UserId`.
@@ -3850,7 +3850,7 @@ module UnixSystem =
         // would give `File.ReadAllBytes("d")` the wrong exception. The type check
         // belongs in what `fstat` reports.
         let permissionBits =
-            match VirtualFileSystem.permissions entry with
+            match Inode.permissions entry with
             | InodePermissions.Stored bits -> bits
             | InodePermissions.PlatformSymlinkDefault ->
                 failwith

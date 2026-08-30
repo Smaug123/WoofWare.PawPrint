@@ -788,19 +788,6 @@ module VirtualFileSystem =
     /// allocated first.
     let private firstInode : InodeNumber = InodeNumber 1L
 
-    /// The `S_IFMT` band of `st_mode`: which kind of thing lives at an inode.
-    /// Derived from the content rather than stored, so the two cannot disagree.
-    ///
-    /// The values are `Interop.Sys.FileTypes`' (`Interop.Stat.cs`), which are in
-    /// turn the POSIX ones. `TestVirtualFileSystemAgainstHost` pins them against
-    /// that declaration *as read from the pinned runtime source*, rather than
-    /// against a second copy of the same literals.
-    let fileTypeBits (content : InodeContent) : int =
-        match content with
-        | InodeContent.RegularFile _ -> 0o100000
-        | InodeContent.Directory _ -> 0o40000
-        | InodeContent.Symlink _ -> 0o120000
-
     /// The `st_dev` every inode in this filesystem reports.
     ///
     /// One device for the whole tree, since this kernel models no mounts. The
@@ -811,14 +798,6 @@ module VirtualFileSystem =
     /// field nobody remembered to write.
     let deviceId : int64 = 0x1000001L
 
-    /// An inode's permission bits, as something the caller must match rather
-    /// than a number it might default. See `InodePermissions`.
-
-    let permissions (inode : Inode) : InodePermissions =
-        match inode.Content with
-        | InodeContent.RegularFile (_, permissions) -> InodePermissions.Stored permissions
-        | InodeContent.Directory directory -> InodePermissions.Stored directory.Permissions
-        | InodeContent.Symlink _ -> InodePermissions.PlatformSymlinkDefault
 
     /// A filesystem containing nothing but an empty root directory, created at
     /// `now`.

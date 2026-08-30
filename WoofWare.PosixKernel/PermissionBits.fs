@@ -59,8 +59,8 @@ type SetIdBitsOnTruncation =
 /// mode: `st_mode & 0o7777`, which is exactly `chmod(2)`'s domain.
 ///
 /// Deliberately *not* the `S_IFMT` file-type band, which is derived from
-/// `InodeContent` by `VirtualFileSystem.fileTypeBits` instead. `chmod(2)`
-/// cannot set the type band either, so keeping it out of the stored value
+/// `InodeContent` by `InodeContent.fileTypeBits` instead. `chmod(2)` cannot
+/// set the type band either, so keeping it out of the stored value
 /// makes "the recorded type disagrees with the content" unrepresentable.
 [<Struct>]
 type PermissionBits =
