@@ -5036,7 +5036,7 @@ docstrings name each other.
 * **25b**: `TestEmulatedKernelCurrentDirectory` follows it, splitting three ways: the
   resolution and invariant rows to the library, the message rows staying with the wrapper
   that formats them, and the `KernelConfig` orphan joining `TestKernelConfig`.
-* **26**: `TestEmulatedKernelInodeLifetime`, split — the directory-stream rows stay.
+* **26**: `TestEmulatedKernelInodeLifetime`, split — one row stays, and the fixture dissolves.
 * **27**: `TestAbsoluteUnixPath`, split.
 * **28**: `TestFileSystemSeed`, split.
 
@@ -5479,3 +5479,79 @@ all left — F# does not warn on an unused private binding, the build was clean,
 checker reported the duplicated prose. The dead helper is deleted.
 
 Library 1077 → 1082, PawPrint 3125 → 3120.
+
+### Stage 26: the inode-lifetime fixture becomes the library's, and dissolves
+
+**Dependencies**: 25 (`UnixSystem.withFileSystemAndCurrentDirectory`).
+
+`TestEmulatedKernelInodeLifetime`, 586 lines and nineteen rows, states when an inode stops
+existing: `UnixProcessState.heldInodes`, `UnixSystem.pinnedInodes`, `forgetIfUnheld`, what
+`close` does with them, and the cascade that frees an orphan's ancestors. Every one of
+those is the library's. The fixture held an `EmulatedKernel` only as a container, reaching
+into it with `unix`/`mapUnix` at almost every assertion, so the move is mostly the removal
+of that round trip.
+
+Eighteen rows cross. The nineteenth — `directoryStream refuses a block that names no
+stream` — is about PawPrint's `DIR*`-to-stream binding, so it joins its sibling in
+`TestDirectoryStreamId` and the fixture disappears entirely.
+
+That sibling is `a DIR* this kernel never issued is refused loudly`, and the two are not
+duplicates: one asks `directoryStreamId` about a block never bound, the other asks
+`directoryStream` about one bound and then released. The moved row is renamed to say so,
+since landing beside its sibling is what makes the distinction need stating.
+
+#### Two rows that looked PawPrint's are not
+
+`an open stream holds its directory even with its descriptor gone` and `a stream keeps an
+rmdir'd directory alive, and closing it reaps` reached their subject through PawPrint's
+`DIR*` block, but the rules they state — that `heldInodes` counts a stream, and that a
+stream keeps an orphan alive until it goes — are the library's. Library-side they use the
+`DirectoryStreamId` that `opendir` answers, and are shorter for it.
+
+Forgetting a stream had to be written out rather than called: **the library has no
+`closedir`.** `UnixSystem.opendir` mints a stream and nothing in the library removes one;
+PawPrint's `withoutDirectoryStream` is the only operation that does. That is a real gap
+rather than a consequence of this stage, and closing it is its own change.
+
+#### One row was cut and then put back
+
+`checkInvariants rejects a descriptor naming an inode the filesystem has forgotten` looked
+like another rule for `TestUnixSystemInvariants`, which stage 25b fed. It is not: its own
+comment says it brackets the reaping rule with `UnreachableFromRoot` — *"a `forget` that
+fires too late is caught there and one that fires too early is caught here"* — which makes
+it an inode-lifetime claim stated through the checker rather than an entry in the
+checker's catalogue. It also uses this fixture's `unbound` and `opened`, which the other
+would have had to grow copies of. So it stays, and 25b's count of six covered rules is
+unchanged.
+
+#### What the audit found before any code moved
+
+Two of the nineteen looked like duplicates of `TestUnixSystemStep`'s direct `forgetIfUnheld`
+rows, which reach the same rule through `unlink`. Neither is: the moving rows additionally
+assert that the result is *sound* — `VirtualFileSystem.checkInvariants` against
+`pinnedInodes` comes back clean — and that the pin is what excuses the unreachability,
+`checkInvariants Set.empty` reporting `UnreachableFromRoot` for exactly the inode held.
+The existing rows make neither claim. Both are kept, and land beside their counterparts.
+
+**Correctness oracle**: `move26.py` states every substitution and asserts its own
+occurrence count, so a rule that silently failed to apply is an error. Its counts are
+*measured*: the first draft guessed them and was wrong in five places, including
+`kernel.FileSystem` (twelve, not six). Where a count would have described an intermediate
+state — the field accessors, which earlier structural rules also rewrite — the rule is
+applied wholesale and the end-state assertions carry the weight instead: no `EmulatedKernel`
+and no `KernelSyscall` may remain.
+
+Beyond that, the two suites' full test-name inventories: 8086 rows before and after, 18
+crossing, exactly one renamed, none lost.
+
+Mutation, on the library rather than on the moved text: removing the directory-stream union
+from `heldInodes` fails `an open stream holds its directory even with its descriptor gone`
+and nothing else; stopping `pinnedInodes` climbing fails the two pinning rows and the
+orphan-cascade row.
+
+`check-docstring-attachment.py` reports the module rename as MOVED, which is what it is —
+the fixture's own docstring now precedes `TestInodeLifetime`. Its every claim was checked
+against the new home and still holds, including the `sourcesImpure/UnlinkReapSeeded.cs` it
+names, which is still PawPrint's and still the only other check on any of this.
+
+Library 1082 → 1100, PawPrint 3120 → 3102.

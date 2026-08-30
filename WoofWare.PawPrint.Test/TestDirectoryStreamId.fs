@@ -181,6 +181,22 @@ module TestDirectoryStreamId =
         exn.Message |> shouldContainText "names no open directory stream"
 
     [<Test>]
+    let ``directoryStream refuses a DIR* whose stream has been closed`` () : unit =
+        // The other provenance, and the other function. Above, a block this
+        // kernel never bound, asked through `directoryStreamId`; here one it
+        // bound and then released, asked through `directoryStream`. Both are
+        // undefined behaviour on a real libc rather than an error it reports,
+        // so there is no errno to invent -- but a lookup that answered a stale
+        // stream for either would be worse than a crash.
+        let block, kernel = openDir (kernel ())
+        let released = EmulatedKernel.withoutDirectoryStream block kernel
+
+        let exn =
+            Assert.Throws (fun () -> EmulatedKernel.directoryStream block released |> ignore<DirectoryStream>)
+
+        exn.Message |> shouldContainText "names no open directory stream"
+
+    [<Test>]
     let ``checkInvariants accepts an open stream`` () : unit =
         let _, kernel = kernel () |> openDir
 
