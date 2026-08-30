@@ -1,0 +1,18 @@
+# Darwin 25.6.0 arm64, uid 501
+a directory                              chdir(b'd'                ) -> ok, getcwd=<root>/d
+a directory, trailing separator          chdir(b'd/'               ) -> ok, getcwd=<root>/d
+nested                                   chdir(b'd/sub'            ) -> ok, getcwd=<root>/d/sub
+a regular file                           chdir(b'f'                ) -> errno=ENOTDIR
+a regular file, trailing separator       chdir(b'f/'               ) -> errno=ENOTDIR
+a symlink to a directory                 chdir(b'ld'               ) -> ok, getcwd=<root>/d
+a symlink to a directory, trailing sep   chdir(b'ld/'              ) -> ok, getcwd=<root>/d
+a symlink to a file                      chdir(b'lf'               ) -> errno=ENOTDIR
+a dangling symlink                       chdir(b'dang'             ) -> errno=ENOENT
+absent                                   chdir(b'nx'               ) -> errno=ENOENT
+the empty path                           chdir(b''                 ) -> errno=ENOENT
+search bit only (0o100)                  chdir(b'xonly'            ) -> ok, getcwd=<root>/xonly
+read bit only (0o400)                    chdir(b'ronly'            ) -> errno=EACCES
+a 300-byte name                          chdir(b'zzzzzzzzzzzz..(300)') -> errno=ENAMETOOLONG
+.                                        chdir(b'.'                ) -> ok, getcwd=<root>
+..                                       chdir(b'..'               ) -> ok, getcwd=/private/var/folders/tq/sx8_b6p91nz72q7_kgk1vgp80000gn/T
+chdir(".") in an rmdired cwd             -> rc=0 errno=0; before it, getcwd=getcwd failed ENOENT
