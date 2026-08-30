@@ -166,14 +166,20 @@ or -1 with errno. `SystemNative_ChDir` is a one-line dispatch arm beside
 
 ## Deliberately out of scope
 
-* **`getcwd` on an orphaned current directory.** *(Confirmed as a separate
-  slice.)* PawPrint answers the stale
-  cached path where a real `getcwd` fails ENOENT — measured above. This is
-  pre-existing (a guest can already `rmdir` the directory it started in), but
-  `chdir` makes the state much easier to reach, so a reviewer will ask. Fixing
-  it means giving `UnixProcessState.CurrentDirectory` a representation for "no
-  path", which changes a record every syscall touches and would fix a `getcwd`
-  bug under cover of a `chdir` slice. It should be its own change, and this
-  plan's tests pin the current behaviour so that change has something to break.
+* **`UnixProcessState.CurrentDirectory` on an orphaned current directory.**
+  *(Confirmed as a separate slice; see
+  docs/plans/2026-08-30-detached-current-directory.md, which carries it out.)*
+  The field keeps a path that no longer reaches `CurrentDirectoryInode`. Giving
+  it a representation for "no path" changes a record every syscall touches, so
+  it is its own change, and this plan's tests pin the current behaviour so that
+  change has something to break.
+
+  This bullet originally claimed that PawPrint therefore "answers the stale
+  cached path where a real `getcwd` fails ENOENT". That was **wrong**:
+  `UnixSystem.getcwd` has guarded the orphan since #1196, and
+  `sourcesImpure/RmDirOrphanLinuxSeeded.cs` asserts the ENOENT end-to-end. No
+  guest can observe the stale field; what is wrong with it is that its stated
+  contract is false, and that `checkInvariants` is silent for exactly as long as
+  it is false.
 * `fchdir(2)`: no CoreLib caller reaches it.
 * `chroot(2)`: PawPrint models one filesystem with one root.

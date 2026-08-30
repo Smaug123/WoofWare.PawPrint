@@ -5071,10 +5071,13 @@ module TestUnixSystemStep =
     [<Test>]
     let ``chdir into a removed current directory succeeds and moves no path`` () : unit =
         // Measured: `chdir(".")` there is a success on both kernels, though
-        // `getcwd` in that state fails. PawPrint's `getcwd` answers the stale
-        // cached path instead, which is a divergence this slice deliberately
-        // leaves alone -- see the plan. This row pins today's behaviour so that
-        // the change which fixes it has something to break.
+        // `getcwd` in that state fails -- and PawPrint's `getcwd` fails too, on
+        // `isOrphanedDirectory`, which `RmDirOrphanLinuxSeeded.cs` pins
+        // end-to-end. What this row is about is the *field*: with no path to
+        // record, `chdir` leaves the previous one in place, so
+        // `Process.CurrentDirectory` says "/d/sub" for a directory that no path
+        // reaches. That is invisible to a guest, and it is what
+        // docs/plans/2026-08-30-detached-current-directory.md removes.
         let system = withChDirTree linux
 
         let inSub =
