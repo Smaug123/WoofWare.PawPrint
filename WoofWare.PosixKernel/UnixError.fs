@@ -308,8 +308,8 @@ type UnixError =
     /// </summary>
     /// <example>
     /// Reported by <c>connect(2)</c> when a connect is issued on a non-blocking socket.
-    /// (This is true regardless of whether the destination is listening and refuses, and is true on loopback too, on
-    /// all platforms.)
+    /// (This is true regardless of whether the destination is already listening or has refused the connection,
+    /// and is true on loopback too, on all modelled platforms.)
     /// </example>
     /// <remarks>
     /// This is one of the many errnos with an integer value that's not portable.
@@ -320,9 +320,10 @@ type UnixError =
     /// Connection refused.
     /// </summary>
     /// <example>
-    /// Reported by <c>connect(2)</c> for a local destination with no listening socket
-    /// behind it - for a blocking connect, delivered inline, or for a non-blocking connect,
-    /// delivered by the first retry after the connect.
+    /// Reported by <c>connect(2)</c> on Linux when another idle stream socket is already bound to
+    /// the destination port but is not listening. (Not on Darwin, though; there, the SYN is dropped
+    /// and the connect pends towards <c>ETIMEDOUT</c> instead.)
+    /// Delivered inline if the connect was blocking, or on the first retry if the connect was non-blocking.
     /// </example>
     /// <remarks>
     /// This is one of the many errnos with an integer value that's not portable.
@@ -391,8 +392,12 @@ module UnixError =
         RawErrnoPortability.PlatformDependent (linux, darwin)
 
     /// <summary>
-    /// Obtain the integer for a <c>UnixError</c>.
+    /// Describe the errno corresponding to a <c>UnixError</c>, in a way that is agnostic about the flavour of
+    /// guest platform.
     /// </summary>
+    /// <remarks>
+    /// Use <c>toRawErrnoUnder</c> to get an actual integer.
+    /// </remarks>
     let rawNumbering (error : UnixError) : RawErrnoPortability =
         // Transcribed from the kernel ABI headers, and checked against the host's
         // own errno.h by `TestUnixError`.
@@ -489,8 +494,7 @@ module UnixError =
             | RawErrnoNumbering.Darwin -> darwin
 
     /// <summary>
-    /// Whether the integer is the number of a modelled errno which is portable across all WoofWare.PosixKernel's
-    /// modelled Unixes.
+    /// Whether the integer is an errno which is portable across all WoofWare.PosixKernel's modelled Unixes.
     /// </summary>
     /// <example>
     /// The number 5 is <c>EIO</c> on all modelled platforms, so is portable.
