@@ -21,6 +21,9 @@
         <Compile Include="UnixPathText.fs" />
         <Compile Include="AbsoluteUnixPath.fs" />
         <Compile Include="UnixPath.fs" />
+        <Compile Include="PermissionBits.fs" />
+        <Compile Include="UnixTimestamp.fs" />
+        <Compile Include="SymlinkTarget.fs" />
         <Compile Include="VirtualFileSystem.fs" />
         <Compile Include="FileSystemSeed.fs" />
         <Compile Include="InternetEndpoint.fs" />
