@@ -38,9 +38,13 @@ module TestSockaddrLayoutAgainstHost =
     /// little-endian and one row below reads a byte whose meaning depends on
     /// that — byte 0 of a Linux `sockaddr` is the family's low half, which on a
     /// big-endian Linux would be its high half instead.
+    ///
+    /// The flavour half asks `HostPlatform`, which is the same question
+    /// `hostPlatform` below asks: this fixture skips exactly when that function
+    /// would refuse, and sharing the classification is what makes that true by
+    /// construction rather than by two conditions agreeing.
     let private isDescribedByAPreset () : bool =
-        BitConverter.IsLittleEndian
-        && (OperatingSystem.IsMacOS () || OperatingSystem.IsLinux ())
+        BitConverter.IsLittleEndian && (HostPlatform.flavour ()).IsSome
 
     /// A platform of the host's own flavour, so that the library's per-flavour
     /// answers can be compared against the host's bytes.
@@ -50,12 +54,9 @@ module TestSockaddrLayoutAgainstHost =
     /// no preset describes would happen before the skip could run — so the skip
     /// would never run at all.
     let private hostPlatform () : SimulatedUnixPlatform =
-        if OperatingSystem.IsMacOS () then
-            SimulatedUnixPlatform.macOsArm64
-        elif OperatingSystem.IsLinux () then
-            SimulatedUnixPlatform.linuxX64
-        else
-            failwith "this fixture measures a Unix host; it should have been skipped"
+        match HostPlatform.flavour () with
+        | Some flavour -> HostPlatform.platformOf flavour
+        | None -> failwith "this fixture measures a Unix host; it should have been skipped"
 
     /// Deliberately asymmetric, so that a byte-order mistake cannot pass: every
     /// byte of the address differs, and the port differs in both halves.

@@ -99,18 +99,24 @@ module TestVirtualFileSystemAgainstHost =
     /// Which simulated platform this test host actually is, so the model is
     /// asked to resolve as a kernel of the flavour it is being compared against.
     ///
+    /// Classified by `HostPlatform`, so that what counts as "this host" is
+    /// written down once; the refusal below is this fixture's own, and is not
+    /// `HostPlatform.onUnixHost`, deliberately. That skips, and a skip here
+    /// would mean a fixture whose own `Assert.Ignore` had stopped working went
+    /// quiet instead of loud.
+    ///
+    /// Unlike `TestSockaddrLayoutAgainstHost`, whose `[<SetUp>]` skips on
+    /// exactly the hosts this refuses, the rows here skip on Windows alone — so
+    /// this really is reachable on an unmodelled Unix, and says so.
+    ///
     /// A function rather than a value so that the `failwith` cannot fire during
     /// module initialisation on a host where every test here `Assert.Ignore`s.
-    /// Only the *flavour* of the result is ever consumed, so `macOsArm64` is the
-    /// right answer on an Intel Mac too.
     let private hostPlatform () : SimulatedUnixPlatform =
-        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
-            SimulatedUnixPlatform.macOsArm64
-        elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
-            SimulatedUnixPlatform.linuxX64
-        else
+        match HostPlatform.flavour () with
+        | Some flavour -> HostPlatform.platformOf flavour
+        | None ->
             failwith
-                "TestVirtualFileSystemAgainstHost: this host is neither macOS nor Linux, so there is no SimulatedUnixPlatform to compare it against. Every test in this fixture is supposed to Assert.Ignore before reaching here."
+                "TestVirtualFileSystemAgainstHost: this host is neither macOS nor Linux, so there is no SimulatedUnixPlatform to compare it against. The rows here skip on Windows only, so on any other unmodelled Unix this is where you land: give that flavour a preset, or widen the skip."
 
     let private limits () : PathLimits =
         SimulatedUnixPlatform.pathLimits (hostPlatform ())
