@@ -161,6 +161,29 @@ Option 2. The bug is that one fact is stored twice; deriving it removes the
 class, not the instance. The two costs are a package-API break with one known
 consumer, and a performance question that is measurable before committing.
 
+## Measured: the derivation costs nothing that matters
+
+Option 2's one real risk was a parent-climb on every `getcwd`, which
+`Path.GetFullPath` reaches, so it is not a once-per-process call.
+
+`VirtualFileSystem.pathOfDirectory`, Release build, arm64:
+
+| cwd depth | path length | per call |
+| --- | --- | --- |
+| 1 | 3 | 0.78 µs |
+| 4 | 12 | 3.4 µs |
+| 16 | 55 | 10 µs |
+| 64 | 247 | 26 µs |
+| 256 | 1172 | 115 µs |
+
+Against that, one interpreted `Environment.CurrentDirectory` under PawPrint,
+measured by sweeping a guest's loop count (n = 1000 and n = 5000, twice each;
+means 5.13 s and 10.14 s, so a slope of **1.25 ms per call**).
+
+So at the depth guests actually run at, the derivation is **0.06%** of the call
+it serves; even a 256-deep current directory would be under a tenth of it. No
+cache, and the field stays gone.
+
 ## Work, if Option 2 is chosen
 
 1. **First, on #1253**: correct the two false comments (the plan's out-of-scope
