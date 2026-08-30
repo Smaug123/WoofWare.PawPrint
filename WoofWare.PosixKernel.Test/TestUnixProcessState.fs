@@ -34,7 +34,6 @@ module TestUnixProcessState =
             FileDescriptors = FileDescriptorRegistry.initial
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
             Environment = Map.empty
-            CurrentDirectory = AbsoluteUnixPath.parseOrFail context "/"
             CurrentDirectoryInode = rootInode
             ProcessPath = None
             DirectoryStreams = Map.empty

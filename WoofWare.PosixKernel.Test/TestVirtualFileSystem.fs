@@ -3471,6 +3471,65 @@ module TestVirtualFileSystem =
         // The class this sweep was blind to until `orphanGen` existed.
         refusedForOrphan |> shouldBeGreaterThan 60
 
+    /// The equivalence `UnixSystem.getcwd` rests on, over a corpus that
+    /// contains orphans and a rename that can move directories between parents.
+    ///
+    /// These are different questions: `pathOfDirectory` climbs the whole parent
+    /// chain to the root, `isOrphanedDirectory` counts one inode's own names.
+    /// They coincide only because nothing can orphan a *populated* directory —
+    /// `rmdir` refuses one and `rename` refuses a populated destination — so an
+    /// orphan is childless and can never be another directory's ancestor. That
+    /// argument spans three modules and was not asserted anywhere.
+    [<Test>]
+    let ``a directory has no path exactly when it is orphaned`` () : unit =
+        let mutable orphansSeen = 0
+
+        let check (vfs : VirtualFileSystem) : unit =
+            for inode, node in Map.toList (VirtualFileSystem.inodes vfs) do
+                match node.Content with
+                | InodeContent.Directory _ ->
+                    let orphaned = VirtualFileSystem.isOrphanedDirectory inode vfs
+                    let path = VirtualFileSystem.pathOfDirectory inode vfs
+
+                    if orphaned then
+                        orphansSeen <- orphansSeen + 1
+
+                    match orphaned, path with
+                    | true, Some found ->
+                        failwith
+                            $"inode %O{inode} is orphaned, but pathOfDirectory answered \"%s{AbsoluteUnixPath.toString found}\""
+                    | false, None -> failwith $"inode %O{inode} is not orphaned, but pathOfDirectory answered None"
+                    | true, None
+                    | false, Some _ -> ()
+                | InodeContent.RegularFile _
+                | InodeContent.Symlink _ -> ()
+
+        let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =
+            check vfs
+
+            if refusedLoudly vfs case then
+                ()
+            else
+
+            match
+                VirtualFileSystem.rename
+                    case.SourceDirectory
+                    case.SourceName
+                    case.DestinationDirectory
+                    case.DestinationName
+                    renameTime
+                    vfs
+            with
+            | Error _ -> ()
+            | Ok (_, renamed) -> check renamed
+
+        Check.One (config, Prop.forAll (Arb.fromGen renameScenarioGen) property)
+
+        // With no orphan in the corpus both sides are false for every directory
+        // and the property holds vacuously, so this is what makes it mean
+        // anything. Measured over eight runs: 64, 64, 65, 65, 67, 67, 71, 75.
+        orphansSeen |> shouldBeGreaterThan 30
+
     [<Test>]
     let ``a successful rename creates and destroys no inode`` () : unit =
         let property (vfs : VirtualFileSystem, _ : Set<InodeNumber>, case : RenameCase) : unit =

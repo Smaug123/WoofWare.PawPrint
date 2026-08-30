@@ -73,7 +73,8 @@ module TestEmulatedKernelCurrentDirectory =
 
     [<Test>]
     let ``a freshly minted kernel holds the root`` () : unit =
-        EmulatedKernel.initial.CurrentDirectory |> shouldEqual AbsoluteUnixPath.root
+        EmulatedKernel.currentDirectoryPath EmulatedKernel.initial
+        |> shouldEqual (Some AbsoluteUnixPath.root)
 
         EmulatedKernel.initial.CurrentDirectoryInode
         |> shouldEqual (VirtualFileSystem.root EmulatedKernel.initial.FileSystem)
@@ -102,26 +103,11 @@ module TestEmulatedKernelCurrentDirectory =
         let kernel = seededAt "/outer/lnk"
 
         kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
-        kernel.CurrentDirectory |> shouldEqual (absolute "/outer/inner")
+
+        EmulatedKernel.currentDirectoryPath kernel
+        |> shouldEqual (Some (absolute "/outer/inner"))
+
         EmulatedKernel.checkInvariants kernel |> shouldEqual []
-
-    [<Test>]
-    let ``checkInvariants rejects a path that does not reach the held inode`` () : unit =
-        let kernel = seededAt "/outer/inner"
-
-        { kernel with
-            Process =
-                { kernel.Process with
-                    CurrentDirectory = absolute "/outer"
-                }
-        }
-        |> EmulatedKernel.checkInvariants
-        |> shouldEqual
-            [
-                EmulatedKernelDefect.System (
-                    UnixSystemDefect.CurrentDirectoryPathDisagrees (absolute "/outer", absolute "/outer/inner")
-                )
-            ]
 
     // ------------------------------------------------------ order-independence
 

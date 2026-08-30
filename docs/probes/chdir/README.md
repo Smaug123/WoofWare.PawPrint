@@ -40,8 +40,15 @@ What the columns say:
   what following the final link and then demanding a directory produces.
 * The empty path is ENOENT; a 300-byte component is ENAMETOOLONG.
 * **`chdir(".")` in an `rmdir`'d current directory succeeds**, while `getcwd`
-  in that state fails ENOENT. The two facts together are why the cached path
-  cannot simply be recomputed on every `chdir`.
+  in that state fails ENOENT — before that `chdir` and equally after it. So
+  "detached" is not an error the `chdir` reports; it is a property of where the
+  process is standing.
+* **Stepping out of an orphan recovers `getcwd`.** `chdir("..")` from a removed
+  directory succeeds and `getcwd` answers the parent's path again. Taken with
+  the row above, that is what says the answer must be *derived* from the
+  directory the process is in rather than latched onto the process: a kernel
+  that recorded "detached" would have to remember to clear it, and one that kept
+  a stale path would have to remember to refresh it.
 
 The `..` row escapes the tree on the host, where the model's root is its own
 parent. It is recorded for completeness and is not comparable between the two

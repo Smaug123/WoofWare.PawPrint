@@ -115,7 +115,33 @@ def main():
             where = f"getcwd failed {nm(err.errno)}"
         rc, e = chdir(b".")
         label = 'chdir(".") in an rmdired cwd'
-        print(f"{label:40} -> rc={rc} errno={nm(e)}; before it, getcwd={where}")
+        try:
+            after = os.getcwd()
+        except OSError as err:
+            after = f"getcwd failed {nm(err.errno)}"
+        print(f"{label:40} -> rc={rc} errno={nm(e)}; before it, getcwd={where}; after it, getcwd={after}")
+    finally:
+        os.chdir(home)
+        shutil.rmtree(root, ignore_errors=True)
+
+    # Stepping *out* of an orphan is the one place a process recovers a working
+    # `getcwd`: the parent still has a path, so the answer is available again.
+    # A kernel that had latched "detached" onto the process rather than deriving
+    # it from where the process now stands would keep failing here.
+    root = os.path.realpath(tempfile.mkdtemp(prefix="cd-"))
+    try:
+        os.mkdir(os.path.join(root, "d"))
+        gone = os.path.join(root, "d", "gone")
+        os.mkdir(gone)
+        os.chdir(gone)
+        os.rmdir(gone)
+        rc, e = chdir(b"..")
+        try:
+            after = os.getcwd().replace(root, "<root>")
+        except OSError as err:
+            after = f"getcwd failed {nm(err.errno)}"
+        label = 'chdir("..") out of an rmdired cwd'
+        print(f"{label:40} -> rc={rc} errno={nm(e)}; getcwd={after}")
     finally:
         os.chdir(home)
         shutil.rmtree(root, ignore_errors=True)

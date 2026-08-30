@@ -15,4 +15,5 @@ read bit only (0o400)                    chdir(b'ronly'            ) -> errno=EA
 a 300-byte name                          chdir(b'zzzzzzzzzzzz..(300)') -> errno=ENAMETOOLONG
 .                                        chdir(b'.'                ) -> ok, getcwd=<root>
 ..                                       chdir(b'..'               ) -> ok, getcwd=/tmp
-chdir(".") in an rmdired cwd             -> rc=0 errno=0; before it, getcwd=getcwd failed ENOENT
+chdir(".") in an rmdired cwd             -> rc=0 errno=0; before it, getcwd=getcwd failed ENOENT; after it, getcwd=getcwd failed ENOENT
+chdir("..") out of an rmdired cwd        -> rc=0 errno=0; getcwd=<root>/d

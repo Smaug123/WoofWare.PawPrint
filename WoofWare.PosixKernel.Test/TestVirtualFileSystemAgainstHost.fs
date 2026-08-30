@@ -2638,7 +2638,6 @@ module TestVirtualFileSystemAgainstHost =
             Process =
                 { system.Process with
                     CurrentDirectoryInode = VirtualFileSystem.root vfs
-                    CurrentDirectory = AbsoluteUnixPath.root
                 }
                 |> UnixProcessState.withUserAndGroupId userId userId
         }
@@ -2945,14 +2944,20 @@ module TestVirtualFileSystemAgainstHost =
                 Process =
                     { system.Process with
                         CurrentDirectoryInode = VirtualFileSystem.root vfs
-                        CurrentDirectory = AbsoluteUnixPath.root
                     }
                     |> UnixProcessState.withUserAndGroupId userId userId
             }
 
         match UnixSystem.chdir (UnixPath.parseOrFail "test" relative) system with
         | SyscallAnswer.Completed 0L, moved ->
-            ChDirOutcome.Entered (AbsoluteUnixPath.toString moved.Process.CurrentDirectory)
+            match UnixSystem.currentDirectoryPath moved with
+            | Some path -> ChDirOutcome.Entered (AbsoluteUnixPath.toString path)
+            | None ->
+                // No operand in this fixture removes a directory, so nothing
+                // here can leave the process somewhere no path reaches -- and
+                // the host helper has no way to report that either.
+                failwith
+                    $"the model entered a directory no path reaches after chdir(\"%s{relative}\"), which no row here can produce"
         | SyscallAnswer.Failed error, _ -> ChDirOutcome.Refused (hostErrno error)
         | other -> failwith $"the model answered %A{other}, which no row here expects"
 

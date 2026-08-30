@@ -1492,13 +1492,6 @@ type UnixSystemDefect =
     /// The stream table holds an id at or above `NextDirectoryStreamId`, so the
     /// next `opendir` would hand out an id that is already in use.
     | NextDirectoryStreamIdNotFresh of nextDirectoryStreamId : DirectoryStreamId * existing : DirectoryStreamId
-    /// `CurrentDirectory` is not the path that reaches `CurrentDirectoryInode`,
-    /// so `getcwd` would report a directory the process is not in.
-    ///
-    /// Only raised while the inode still *has* a path: one held open after its
-    /// last name has gone has none, and a real `getcwd` fails there rather than
-    /// answering.
-    | CurrentDirectoryPathDisagrees of stored : AbsoluteUnixPath * physical : AbsoluteUnixPath
     /// A socket's phase references a connection the connection table does not
     /// hold.
     | DanglingConnection of socket : SocketId * connection : ConnectionId
@@ -2707,6 +2700,20 @@ module UnixSystem =
             failwith
                 $"UnixSystem.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
 
+    /// The absolute path of the directory the process is standing in, or `None`
+    /// if no path reaches it any more.
+    ///
+    /// `None` is the state a process enters when the directory it is in is
+    /// removed out from under it. It is not an error and not a latch: relative
+    /// paths still resolve (they start from the inode, which the process holds),
+    /// and stepping out with `chdir("..")` gives the process a path again.
+    /// Measured on both flavours; see docs/probes/chdir.
+    let currentDirectoryPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : AbsoluteUnixPath option
+        =
+        VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem
+
     /// `getcwd(3)`: report the current directory's path into the caller's buffer.
     ///
     /// Changes nothing and returns no system, for the reason `fstat` gives.
@@ -2729,12 +2736,6 @@ module UnixSystem =
         if capacity < 0 then
             failwith
                 $"UnixSystem.getcwd: capacity %d{capacity} is negative, which no `getcwd(3)` can be asked for -- its size argument is a `size_t`. Screen this in the client, where the signature that admits a negative number lives (this is a bug in the caller)."
-
-        /// The bytes a successful call would place, terminator included. Also
-        /// what the comparison producing ERANGE is made against, so the two
-        /// cannot disagree about whether the path fits.
-        let terminated : ImmutableArray<byte> =
-            (AbsoluteUnixPath.toUtf8 system.Process.CurrentDirectory).Add 0uy
 
         /// The destination is about to be written. Every caller of this has
         /// already decided that the bytes are wanted, so a destination that
@@ -2790,10 +2791,13 @@ module UnixSystem =
             // says "this library cannot tell you", which is honest, where
             // picking a side would answer ERANGE for a call that really dies.
             Error GetCwdRefusal.FatalToTheProcess
-        elif VirtualFileSystem.isOrphanedDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem then
-            // The stored path is stale -- nothing reaches it any more -- so it is
-            // not measured against the buffer. What the buffer can still change
-            // is per-flavour; see `GetCwdOrphanAnswer`.
+        else
+
+        match currentDirectoryPath system with
+        | None ->
+            // No path reaches the directory the process is in, so there is
+            // nothing to measure against the buffer. What the buffer can still
+            // change is per-flavour; see `GetCwdOrphanAnswer`.
             match SimulatedUnixPlatform.getCwdOrphanAnswer system.Machine.UnixPlatform with
             | GetCwdOrphanAnswer.AlwaysDetached -> Ok (GetCwdAnswer.Failed UnixError.ENOENT)
             | GetCwdOrphanAnswer.ShortestPathFirst ->
@@ -2805,7 +2809,14 @@ module UnixSystem =
                     Ok (GetCwdAnswer.Failed UnixError.ERANGE)
                 else
                     Ok (GetCwdAnswer.Failed UnixError.ENOENT)
-        elif capacity < terminated.Length then
+        | Some path ->
+
+        /// The bytes a successful call would place, terminator included. Also
+        /// what the comparison producing ERANGE is made against, so the two
+        /// cannot disagree about whether the path fits.
+        let terminated : ImmutableArray<byte> = (AbsoluteUnixPath.toUtf8 path).Add 0uy
+
+        if capacity < terminated.Length then
             // `getcwd` needs room for the path *and* its NUL, which is why a
             // buffer of the path's own length is one byte short rather than an
             // exact fit. Measured with an unwritable destination too: on the
@@ -6338,26 +6349,16 @@ module UnixSystem =
 
         let previous = system.Process.CurrentDirectoryInode
 
-        // The *physical* path, not the one the guest passed: measured,
-        // `chdir("ld")` with `ld -> d` leaves `getcwd` reporting d's path.
-        //
-        // `None` means the directory landed on has no path at all, which
-        // `chdir(".")` in an `rmdir`'d current directory reaches — measured, that
-        // call succeeds. The previous value is kept there, exactly as `rename`
-        // keeps it: a real `getcwd` fails rather than answering in that state, so
-        // a stale path is no worse than what the process already had. See the
-        // plan's out-of-scope note.
-        let recorded =
-            match VirtualFileSystem.pathOfDirectory target system.Machine.FileSystem with
-            | Some physical -> physical
-            | None -> system.Process.CurrentDirectory
-
+        // Only the inode moves. `getcwd` derives the path from it, so the two
+        // measured facts about the path come out on their own: `chdir("ld")`
+        // with `ld -> d` reports d's path because d is the inode the walk landed
+        // on, and `chdir(".")` in an `rmdir`'d directory reports nothing because
+        // no path reaches that inode.
         let moved =
             { system with
                 Process =
                     { system.Process with
                         CurrentDirectoryInode = target
-                        CurrentDirectory = recorded
                     }
             }
 
@@ -6627,31 +6628,16 @@ module UnixSystem =
         // A rename is the one syscall that can change the *path* of a directory
         // the process is already in, without changing its inode: moving any
         // ancestor of the current directory moves the current directory with it.
-        // The inode is what relative paths resolve from, so nothing about
-        // resolution notices — but `getcwd` reports the cached path, and a stale
-        // one names a directory that no longer exists.
-        //
-        // Recomputed rather than patched, because the move may have been of an
-        // ancestor several levels up, and `pathOfDirectory` is what
-        // `EmulatedKernelDefect.CurrentDirectoryPathDisagrees` compares against.
-        // `None` means the current directory has no path at all — it was
-        // displaced by this very rename and something still holds it — and a
-        // real `getcwd` fails there rather than answering, so the stale path is
-        // left exactly as `rmdir` of the current directory leaves it.
-        let currentDirectory =
-            match VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode filesystem with
-            | Some path -> path
-            | None -> system.Process.CurrentDirectory
-
+        // Nothing here has to notice. Relative paths resolve from the inode,
+        // which has not moved, and `getcwd` derives the path from the graph this
+        // rename has just rewritten — so it reports the new path however many
+        // levels up the move was, and reports nothing if this rename displaced
+        // the current directory itself.
         let moved =
             { system with
                 Machine =
                     { system.Machine with
                         FileSystem = filesystem
-                    }
-                Process =
-                    { system.Process with
-                        CurrentDirectory = currentDirectory
                     }
             }
 
@@ -6825,19 +6811,7 @@ module UnixSystem =
 
         let currentDirectory =
             match VirtualFileSystem.tryGetContent system.Process.CurrentDirectoryInode system.Machine.FileSystem with
-            | Some (InodeContent.Directory _) ->
-                // Only when some path still reaches it: an inode a process
-                // holds open after its last name has gone has no path, and
-                // `getcwd` on a real system fails rather than lying.
-                match
-                    VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem
-                with
-                | Some physical when physical <> system.Process.CurrentDirectory ->
-                    [
-                        UnixSystemDefect.CurrentDirectoryPathDisagrees (system.Process.CurrentDirectory, physical)
-                    ]
-                | Some _
-                | None -> []
+            | Some (InodeContent.Directory _) -> []
             | Some (InodeContent.RegularFile _)
             | Some (InodeContent.Symlink _)
             | None ->
@@ -7138,7 +7112,6 @@ module UnixSystem =
                     NextDirectoryStreamId = DirectoryStreamId 0L
                     OutputLog = ImmutableArray<OutputLogEntry>.Empty
                     Environment = Map.empty
-                    CurrentDirectory = defaultCurrentDirectory
                     // The default current directory is the root, which every filesystem
                     // has and no operation can remove, so the pair starts consistent
                     // whatever else a host goes on to set.

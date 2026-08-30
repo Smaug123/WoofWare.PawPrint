@@ -710,7 +710,6 @@ type EmulatedKernel =
     member this.FileDescriptors : FileDescriptorRegistry = this.Process.FileDescriptors
     member this.OutputLog : ImmutableArray<OutputLogEntry> = this.Process.OutputLog
     member this.Environment : Map<string, string> = this.Process.Environment
-    member this.CurrentDirectory : AbsoluteUnixPath = this.Process.CurrentDirectory
     member this.CurrentDirectoryInode : InodeNumber = this.Process.CurrentDirectoryInode
     member this.ProcessPath : AbsoluteUnixPath option = this.Process.ProcessPath
 
@@ -814,6 +813,13 @@ module EmulatedKernel =
             Process = kernel.Process
             Tasks = kernel.Tasks
         }
+
+    /// The path of the directory the simulated process is standing in, as
+    /// `SystemNative_GetCwd` reports it — or `None` if no path reaches it, which
+    /// is the state a process is left in when its directory is removed out from
+    /// under it. See `UnixSystem.currentDirectoryPath`.
+    let currentDirectoryPath (kernel : EmulatedKernel) : AbsoluteUnixPath option =
+        UnixSystem.currentDirectoryPath (unix kernel)
 
     /// Put back a POSIX half a syscall answered from. Total in both directions
     /// with `unix`, which `TestUnixSystemProjection` asserts: a syscall's answer
@@ -990,12 +996,11 @@ module EmulatedKernel =
     /// PawPrint resolves it, because after that the process holds the directory
     /// rather than the name.
     ///
-    /// Answers the inode *and* the path `getcwd` owes for it, which is not
-    /// always the path that was asked for: `getcwd(3)` reports the **physical**
-    /// path, with every symlink resolved away. Measured on both kernels —
-    /// `chdir("outer/lnk")` with `lnk -> inner` is followed by
-    /// `getcwd() == ".../outer/inner"`. Deriving both here is what stops the
-    /// pair describing a process no Unix could produce.
+    /// Answers the inode alone. The path `getcwd` owes is derived from it by
+    /// `UnixSystem.currentDirectoryPath`, which is what makes that path the
+    /// **physical** one with every symlink resolved away — measured on both
+    /// kernels, `chdir("outer/lnk")` with `lnk -> inner` is followed by
+    /// `getcwd() == ".../outer/inner"`.
     ///
     /// Privileged and symlink-following, deliberately: this is the host saying
     /// where its guest was launched, not a guest looking anything up, and a
@@ -1007,7 +1012,7 @@ module EmulatedKernel =
         (directory : AbsoluteUnixPath)
         (platform : SimulatedUnixPlatform)
         (filesystem : VirtualFileSystem)
-        : InodeNumber * AbsoluteUnixPath
+        : InodeNumber
         =
         let limits = SimulatedUnixPlatform.pathLimits platform
         let root = VirtualFileSystem.root filesystem
@@ -1024,8 +1029,12 @@ module EmulatedKernel =
         | Ok inode ->
             match VirtualFileSystem.tryGetContent inode filesystem with
             | Some (InodeContent.Directory _) ->
+                // The walk started at the root, so a directory it reached has a
+                // path back to the root by construction. Asserted anyway,
+                // because the alternative to crashing here is a guest whose
+                // `getcwd` quietly reports ENOENT from its first instruction.
                 match VirtualFileSystem.pathOfDirectory inode filesystem with
-                | Some physical -> inode, physical
+                | Some _ -> inode
                 | None ->
                     failwith
                         $"EmulatedKernel.CurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolved to inode %O{inode}, but no path from the root reaches it. Run VirtualFileSystem.checkInvariants."
@@ -1096,7 +1105,7 @@ module EmulatedKernel =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
         let filesystem = FileSystemSeed.toVirtualFileSystem createdAt seed
-        let inode, physical = currentDirectoryOf directory platform filesystem
+        let inode = currentDirectoryOf directory platform filesystem
 
         { kernel with
             Machine =
@@ -1105,7 +1114,6 @@ module EmulatedKernel =
                 }
             Process =
                 { kernel.Process with
-                    CurrentDirectory = physical
                     CurrentDirectoryInode = inode
                 }
         }
