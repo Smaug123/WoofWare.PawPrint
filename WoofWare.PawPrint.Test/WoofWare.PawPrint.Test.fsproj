@@ -88,7 +88,6 @@
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestRealRuntimeCleanup.fs" />
-    <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestGuestPathBytes.fs" />
     <Compile Include="TestRuntimeConfig.fs" />
     <Compile Include="TestDynamicCodeSupport.fs" />
