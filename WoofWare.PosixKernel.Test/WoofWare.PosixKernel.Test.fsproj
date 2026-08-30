@@ -25,6 +25,7 @@
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
     <Compile Include="TestUserBufferCheckAgainstHost.fs" />
+    <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />

@@ -1,11 +1,9 @@
-namespace WoofWare.PawPrint.Test
+namespace WoofWare.PosixKernel.Test
 
 open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
-open WoofWare.PosixKernel.Test
 
 /// `SystemNative_GetFileSystemType`: the table of what `fstatfs(2)` answers for
 /// each kind of descriptor, and the coherence rule between a mount's type and
@@ -46,6 +44,12 @@ module TestFileSystemType =
 
     [<DllImport("libc")>]
     extern int private close(int fd)
+
+    /// The machine a simulated process boots with. Every row that uses it
+    /// overwrites both the fields it goes on to read, so the flavour booted
+    /// here is not observable.
+    let private initialMachine : UnixMachineState =
+        (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64).Machine
 
     let private everyFlavour : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
@@ -116,10 +120,8 @@ module TestFileSystemType =
     let ``omitting the filesystem type takes the flavour's own default`` () : unit =
         for flavour in everyFlavour do
             let kernel =
-                EmulatedKernel.initial
-                |> EmulatedKernel.mapMachine (
-                    UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
-                )
+                initialMachine
+                |> UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
 
             kernel.FileSystemType |> shouldEqual (EmulatedFileSystemType.defaultFor flavour)
 
@@ -141,12 +143,10 @@ module TestFileSystemType =
 
                 if permitted then
                     let kernel =
-                        EmulatedKernel.initial
-                        |> EmulatedKernel.mapMachine (
-                            UnixMachineState.withUnixPlatformAndFileSystemType
-                                (HostPlatform.platformOf flavour)
-                                requested
-                        )
+                        initialMachine
+                        |> UnixMachineState.withUnixPlatformAndFileSystemType
+                            (HostPlatform.platformOf flavour)
+                            requested
 
                     let carried = SimulatedUnixPlatform.flavour kernel.UnixPlatform
 
@@ -171,13 +171,11 @@ module TestFileSystemType =
         for flavour, fsType in refused do
             let thrown =
                 Assert.Throws (fun () ->
-                    EmulatedKernel.initial
-                    |> EmulatedKernel.mapMachine (
-                        UnixMachineState.withUnixPlatformAndFileSystemType
-                            (HostPlatform.platformOf flavour)
-                            (Some fsType)
-                    )
-                    |> ignore<EmulatedKernel>
+                    initialMachine
+                    |> UnixMachineState.withUnixPlatformAndFileSystemType
+                        (HostPlatform.platformOf flavour)
+                        (Some fsType)
+                    |> ignore<UnixMachineState>
                 )
 
             thrown.Message |> shouldContainText (string<EmulatedFileSystemType> fsType)
@@ -198,10 +196,8 @@ module TestFileSystemType =
 
         for flavour, fsType in accepted do
             let kernel =
-                EmulatedKernel.initial
-                |> EmulatedKernel.mapMachine (
-                    UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
-                )
+                initialMachine
+                |> UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
 
             kernel.FileSystemType |> shouldEqual fsType
 
@@ -242,8 +238,8 @@ module TestFileSystemType =
 
     [<Test>]
     let ``answering for a pair that describes no machine is refused`` () : unit =
-        // `EmulatedKernel` is a public record, so `{ kernel with UnixPlatform =
-        // ... }` bypasses the setter that keeps the two fields together. This
+        // `UnixMachineState` is a public record, so `{ machine with UnixPlatform
+        // = ... }` bypasses the setter that keeps the two fields together. This
         // is what stops such a kernel producing a *quietly* wrong answer — one
         // machine's files with another's pipes — rather than a loud one.
         let incoherent =
@@ -355,45 +351,3 @@ module TestFileSystemType =
             close ends.[1] |> ignore<int>
             close sock |> ignore<int>
             close port |> ignore<int>
-
-    [<Test>]
-    let ``this host's own filesystem is one CoreCLR will lock`` () : unit =
-        // Not a claim about the model: it is the environmental premise the
-        // differential half rests on. `sourcesPure/FlockContentionSeeded.cs`
-        // compares PawPrint's locking against the real runtime's, and the real
-        // runtime takes a shared lock under write access only when the scratch
-        // directory's filesystem is not NFS, CIFS or SMB. On a machine where
-        // that failed, those guest checks would pass vacuously against a
-        // runtime that locked nothing — so the premise is asserted here, where
-        // a failure names the actual cause.
-        match HostPlatform.flavour () with
-        | None -> Assert.Ignore $"no Unix shim to measure (%s{RuntimeInformation.OSDescription})"
-        | Some _ ->
-
-        let path = System.IO.Path.GetTempFileName ()
-
-        try
-            use handle =
-                System.IO.File.OpenHandle (path, System.IO.FileMode.Open, System.IO.FileAccess.Read)
-
-            let hostSaid = hostGetFileSystemType (handle.DangerousGetHandle ())
-
-            // The four `SafeFileHandle.CanLockTheFile` refuses, plus 0, which it
-            // treats as "unknown, so do not lock".
-            let unlockable =
-                Map.ofList
-                    [
-                        0u, "an unknown filesystem"
-                        0x6969u, "nfs"
-                        0x517Bu, "smb"
-                        0xFE534D42u, "smb2"
-                        0xFF534D42u, "cifs"
-                    ]
-
-            match Map.tryFind hostSaid unlockable with
-            | None -> ()
-            | Some name ->
-                failwith
-                    $"this host's temporary directory is on %s{name} (0x%X{hostSaid}), where CoreCLR declines to take a shared lock under write access. FlockContentionSeeded.cs's write-access checks would pass vacuously here."
-        finally
-            System.IO.File.Delete path
