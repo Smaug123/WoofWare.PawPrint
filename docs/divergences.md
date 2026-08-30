@@ -666,6 +666,31 @@ catch (BadImageFormatException e) { Console.WriteLine(e.StackTrace); }
 is the shared ordering both failures use. `sourcesPure/DelegateToAbstractMethodOverNull.cs` pins the
 exception itself, which is faithful; only the trace is not.
 
+## An `[UnsafeAccessor]` that fails to bind runs its own type's initialiser first
+
+**CoreCLR**: an accessor's target is resolved while the stub is *compiled*, which happens before
+the method's prologue. A binding failure therefore escapes without the accessor's own declaring
+type having been initialised. Measured on .NET 10 with a counter kept on a *third* type — a counter
+on the accessor's own type cannot observe this, because reading it is itself the use that
+initialises that type — the counter is zero inside the `catch` and one after an ordinary use of the
+accessor's type.
+
+**PawPrint**: `executeOneStep` services a frame's `PendingTypeInit` before it reaches the body, and
+an accessor's frame is armed with that check like any other declared method's. So the initialiser
+runs, and only then does resolution fail; a guest that watches a third type's counter sees one where
+real .NET shows zero. `sourcesPure/UnsafeAccessorBindsBeforeCctor.cs` is parked on exactly that.
+
+**Spec status**: ECMA-335 II.10.5.3.1 says when a type *must* be initialised, not when a runtime may
+initialise it early, and says nothing about a runtime-synthesised body's compilation. Both orders
+are conforming.
+
+**Why we chose this**: the prologue is where every frame's class-initialisation check lives, and it
+runs before the body precisely so that no body can observe an uninitialised type. Special-casing one
+body kind to run *before* its own prologue inverts that for the one frame kind whose body is
+allowed to fail without running — which is a change to the shape of the dispatch loop, not to
+accessor dispatch. It buys the ordering on the failure path only: an accessor that binds runs the
+initialiser on both runtimes.
+
 ## Simulated time advances per retired instruction
 
 **CoreCLR**: time is what the OS says it is. `Environment.TickCount64`, `Stopwatch` and

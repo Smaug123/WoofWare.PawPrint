@@ -857,13 +857,20 @@ module NativeCall =
                 | RuntimeBehaviour.DelegateCtor -> "Runtime (delegate .ctor)"
                 | RuntimeBehaviour.DelegateInvoke -> "Runtime (delegate Invoke)"
                 | RuntimeBehaviour.StructMarshalStub -> "Runtime (struct-marshal stub)"
-                | RuntimeBehaviour.UnsafeAccessor (kind, targetName) ->
+                | RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides) ->
                     let nameStr =
                         match targetName with
                         | Some n -> $"\"%s{n}\""
                         | None -> "<attributed method name>"
 
-                    $"Runtime (UnsafeAccessor: kind=%O{kind}, target=%s{nameStr})"
+                    let overrides =
+                        if hasTypeNameOverrides then
+                            ", types named by [UnsafeAccessorType]"
+                        else
+                            ""
+
+                    $"Runtime (UnsafeAccessor: kind=%O{kind}, target=%s{nameStr}%s{overrides})"
+                | RuntimeBehaviour.UnsafeAccessorInvalidKind raw -> $"Runtime (UnsafeAccessor naming no kind: %d{raw})"
                 | RuntimeBehaviour.Unrecognised name -> $"Runtime (unrecognised: %s{name})"
             | MethodBody.Abstract -> "Abstract"
             | MethodBody.Il _ -> "IL"

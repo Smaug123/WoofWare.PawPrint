@@ -104,6 +104,7 @@
     <Compile Include="TestCrossAssemblyDispatch.fs" />
     <Compile Include="TestCrossAssemblyIsAssignableFrom.fs" />
     <Compile Include="TestCrossAssemblyLdsflda.fs" />
+    <Compile Include="TestCrossAssemblyUnsafeAccessor.fs" />
     <Compile Include="TestCrossAssemblyFieldScope.fs" />
     <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
     <Compile Include="TestCrossAssemblyStructZero.fs" />
@@ -113,6 +114,7 @@
     <Compile Include="TestCrossAssemblyTypeForwarding.fs" />
     <Compile Include="TestNativeMethodDetection.fs" />
     <Compile Include="TestUnsafeAccessorRead.fs" />
+    <Compile Include="TestUnsafeAccessorModifierStrip.fs" />
     <Compile Include="TestNativeKernel32.fs" />
     <Compile Include="TestNativeHeapFree.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />

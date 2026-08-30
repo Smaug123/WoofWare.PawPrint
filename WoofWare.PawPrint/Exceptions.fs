@@ -174,6 +174,9 @@ module internal ExceptionHResults =
             "System.BadImageFormatException", int 0x8007000Bu // COR_E_BADIMAGEFORMAT
             "System.ArgumentOutOfRangeException", int 0x80131502u // COR_E_ARGUMENTOUTOFRANGE
             "System.Reflection.TargetInvocationException", int 0x80131604u // COR_E_TARGETINVOCATION
+            "System.InvalidOperationException", int 0x80131509u // COR_E_INVALIDOPERATION
+            "System.Reflection.AmbiguousMatchException", int 0x8000211Du // COR_E_AMBIGUOUSMATCH
+            "System.Security.VerificationException", int 0x8013150Du // COR_E_VERIFICATION
         ]
 
     /// The fallback HResult for exception types not in the table.

@@ -361,6 +361,22 @@ type BaseClassTypes<'corelib> =
         FieldAccessException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Raised where the runtime refuses an operation the *program* is well-formed to express
+        /// but the object model forbids -- allocating an instance of an abstract class, which
+        /// CoreCLR reports as `Acc_CreateAbst` ("Instances of abstract classes cannot be
+        /// created."). No IL a C# compiler emits reaches that: `newobj` on an abstract class is a
+        /// compile error, and `[UnsafeAccessor(UnsafeAccessorKind.Constructor)]` naming an abstract
+        /// class's constructor is the route that gets there.
+        InvalidOperationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Raised where a generic instantiation violates a type parameter's constraints, which
+        /// CoreCLR reports as `IDS_EE_METHOD_CONSTRAINTS_VIOLATION`. Only one constraint is decided
+        /// here today: a parameter without `allows ref struct` refuses a byref-like type argument.
+        VerificationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Raised where a member lookup finds more than one equally good match. The runtime's own
+        /// lookups reach this as well as reflection's: an `[UnsafeAccessor]` naming a value type's
+        /// *virtual* method matches both the method and the unboxing stub CoreCLR generates beside
+        /// it, and cannot choose.
+        AmbiguousMatchException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Thrown by the runtime — not the BCL — when a wait-all names the same
         /// handle twice: CoreCLR's `Thread::DoAppropriateWait` turns the PAL's
         /// `WAIT_FAILED` + `ERROR_INVALID_PARAMETER` into this before the managed

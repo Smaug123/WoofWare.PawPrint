@@ -436,6 +436,72 @@ module internal UnaryMetadataFieldOps =
         |> IlMachineState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
+    /// The managed pointer that addresses `field` within the object or value `receiver` addresses:
+    /// what `ldflda` pushes, given a receiver already known to be non-null and a `fieldId` already
+    /// keyed on the field's concretized declaring type.
+    ///
+    /// Shared with `[UnsafeAccessor(UnsafeAccessorKind.Field)]` dispatch, whose synthesised body
+    /// CoreCLR builds as exactly `ldarg.0; ldflda` (`vm/unsafeaccessors.cpp`, `GenerateAccessor`).
+    /// One implementation, so the accessor cannot address a field differently from the opcode.
+    ///
+    /// `opName` names the operation in diagnostics. A null receiver is the caller's to reject: both
+    /// callers raise `NullReferenceException`, but they differ in what else must happen first, so
+    /// reaching here with one is a bug rather than a guest error.
+    let instanceFieldAddress
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (opName : string)
+        (field : FieldInfo<'typeGeneric, 'fieldGeneric>)
+        (fieldId : FieldId)
+        (receiver : EvalStackValue)
+        (state : IlMachineState)
+        : IlMachineState * ManagedPointerSource
+        =
+        match receiver with
+        | NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
+            match
+                MethodTableProjection.tryProjectAuxiliaryDataFieldAddress
+                    loggerFactory
+                    baseClassTypes
+                    field
+                    methodTableFor
+                    state
+            with
+            | Some (ptr, state) -> state, ptr
+            | None ->
+                failwith
+                    $"TODO: %s{opName} {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; this auxiliary-data field has no synthetic address modelled"
+        | NativeInt (NativeIntSource.TypeDescPtr typeDescFor) ->
+            match
+                MethodTableProjection.tryProjectTypeDescFieldAddress
+                    loggerFactory
+                    baseClassTypes
+                    field
+                    typeDescFor
+                    state
+            with
+            | Some (ptr, state) -> state, ptr
+            | None ->
+                failwith
+                    $"TODO: %s{opName} {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through TypeDescPtr %O{typeDescFor}; this TypeDesc field has no synthetic address modelled"
+        | NativeInt nativeIntSource ->
+            failwith
+                $"TODO: %s{opName} {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"
+        | ManagedPointer src -> state, ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
+        | NullObjectRef ->
+            failwith
+                $"BUG: %s{opName} reached instanceFieldAddress with a null receiver for {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name}; the caller must raise NullReferenceException itself"
+        | ObjectRef addr ->
+            match RuntimeFieldProjection.tryProjectFieldAddress baseClassTypes field addr state with
+            | Some ptr -> state, ptr
+            | None -> state, ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
+        | Int32 _
+        | Int64 _
+        | Float _
+        | UserDefinedValueType _ ->
+            failwith
+                $"TODO: %s{opName} {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through a receiver that is not a pointer or object reference: %O{receiver}"
+
     let executeLdflda (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -459,46 +525,7 @@ module internal UnaryMetadataFieldOps =
         | _ ->
 
         let state, projection =
-            match ptr with
-            | Int32 _
-            | Int64 _
-            | Float _ -> failwith "expected pointer type"
-            | NativeInt (NativeIntSource.MethodTableAuxiliaryDataPtr methodTableFor) ->
-                match
-                    MethodTableProjection.tryProjectAuxiliaryDataFieldAddress
-                        loggerFactory
-                        baseClassTypes
-                        field
-                        methodTableFor
-                        state
-                with
-                | Some (ptr, state) -> state, ptr
-                | None ->
-                    failwith
-                        $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through MethodTableAuxiliaryDataPtr %O{methodTableFor}; this auxiliary-data field has no synthetic address modelled"
-            | NativeInt (NativeIntSource.TypeDescPtr typeDescFor) ->
-                match
-                    MethodTableProjection.tryProjectTypeDescFieldAddress
-                        loggerFactory
-                        baseClassTypes
-                        field
-                        typeDescFor
-                        state
-                with
-                | Some (ptr, state) -> state, ptr
-                | None ->
-                    failwith
-                        $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through TypeDescPtr %O{typeDescFor}; this TypeDesc field has no synthetic address modelled"
-            | NativeInt nativeIntSource ->
-                failwith
-                    $"TODO: ldflda {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"
-            | ManagedPointer src -> state, ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
-            | NullObjectRef -> failwith "unreachable: NullObjectRef handled above"
-            | ObjectRef addr ->
-                match RuntimeFieldProjection.tryProjectFieldAddress baseClassTypes field addr state with
-                | Some ptr -> state, ptr
-                | None -> state, ManagedPointerSource.Byref (ByrefRoot.HeapObjectField (addr, fieldId), [])
-            | UserDefinedValueType evalStackValueUserType -> failwith "todo"
+            instanceFieldAddress loggerFactory baseClassTypes "ldflda" field fieldId ptr state
 
         let result = EvalStackValue.ManagedPointer projection
 
@@ -620,44 +647,34 @@ module internal UnaryMetadataFieldOps =
 
         state, WhatWeDid.Executed
 
-    let executeLdsflda (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
-        let loggerFactory = ctx.LoggerFactory
-        let baseClassTypes = ctx.BaseClassTypes
-        let thread = ctx.Thread
-
-
-        // TODO: check whether we should throw FieldAccessException
-
-        let state, field, declaringAssy = resolveFieldToken "ldsflda" "load" ctx state
-
-        checkFieldStaticness "ldsflda" "take the address of" true "ldflda" field
-
-        // Resolved before the field-RVA branch below, both so the `[ThreadStatic]`-implies-not-RVA
-        // assert inside `forField` fires on every path, and because the owner is baked into the
-        // byref we hand out: the pointer addresses *this* thread's slot forever after, even if
-        // some other thread dereferences it.
-        let owner = StaticOwner.forField thread field
-
-        let state, declaringTypeHandle, typeGenerics =
-            ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
-
-        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
-        | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-        | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
-        | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
-        | NothingToDo state ->
-
+    /// The managed pointer that addresses static `field`: what `ldsflda` pushes, once the
+    /// declaring type's initialiser has been dealt with by the caller.
+    ///
+    /// Shared with `[UnsafeAccessor(UnsafeAccessorKind.StaticField)]` dispatch, whose synthesised
+    /// body CoreCLR builds as exactly `ldsflda` (`vm/unsafeaccessors.cpp`, `GenerateAccessor`).
+    /// One implementation, so the accessor cannot address a static differently from the opcode --
+    /// including the lazy zero-initialisation of an untouched slot and the two runtime-initialised
+    /// statics that get sentinels installed here rather than by a `.cctor`.
+    ///
+    /// Class initialisation is deliberately *not* done here: it can suspend the thread, and what
+    /// a caller must do about that differs between the opcode (which leaves its program counter
+    /// naming the `ldsflda`, to be re-executed) and accessor dispatch (which has a synthetic frame
+    /// still on the stack). Both call `loadClass` themselves before calling this.
+    let staticFieldAddress
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (declaringAssy : DumpedAssembly)
+        (field : FieldInfo<'typeGeneric, TypeDefn>)
+        (declaringTypeHandle : ConcreteTypeHandle)
+        (typeGenerics : ConcreteTypeHandle ImmutableArray)
+        (owner : StaticOwner)
+        (state : IlMachineState)
+        : IlMachineState * ManagedPointerSource
+        =
         match
             IlMachineState.peByteRangeForFieldRva loggerFactory baseClassTypes declaringAssy field typeGenerics state
         with
-        | state, Some peByteRange ->
-            let state, ptr =
-                IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
-
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
-            |> IlMachineState.advanceProgramCounter thread
-            |> Tuple.withRight WhatWeDid.Executed
+        | state, Some peByteRange -> IlMachineState.peByteRangePointer loggerFactory baseClassTypes peByteRange state
         | state, None ->
             // TODO: if field type is unmanaged, push an unmanaged pointer
             let fieldHandle = ComparableFieldDefinitionHandle.Make field.Handle
@@ -694,10 +711,46 @@ module internal UnaryMetadataFieldOps =
 
                     IlMachineState.setStatic owner declaringTypeHandle fieldHandle zero state
 
-            let ptr =
-                ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringTypeHandle, fieldHandle, owner), [])
+            state, ManagedPointerSource.Byref (ByrefRoot.StaticField (declaringTypeHandle, fieldHandle, owner), [])
 
-            state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
-            |> IlMachineState.advanceProgramCounter thread
-            |> Tuple.withRight WhatWeDid.Executed
+    let executeLdsflda (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let thread = ctx.Thread
+
+        // TODO: check whether we should throw FieldAccessException
+
+        let state, field, declaringAssy = resolveFieldToken "ldsflda" "load" ctx state
+
+        checkFieldStaticness "ldsflda" "take the address of" true "ldflda" field
+
+        // Resolved before the field-RVA branch inside `staticFieldAddress`, both so the
+        // `[ThreadStatic]`-implies-not-RVA assert inside `forField` fires on every path, and
+        // because the owner is baked into the byref we hand out: the pointer addresses *this*
+        // thread's slot forever after, even if some other thread dereferences it.
+        let owner = StaticOwner.forField thread field
+
+        let state, declaringTypeHandle, typeGenerics =
+            ExecutionConcretization.concretizeFieldForExecution loggerFactory baseClassTypes thread field state
+
+        match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
+        | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+        | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
+        | NothingToDo state ->
+
+        let state, ptr =
+            staticFieldAddress
+                loggerFactory
+                baseClassTypes
+                declaringAssy
+                field
+                declaringTypeHandle
+                typeGenerics
+                owner
+                state
+
+        state
+        |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) thread
+        |> IlMachineState.advanceProgramCounter thread
+        |> Tuple.withRight WhatWeDid.Executed
