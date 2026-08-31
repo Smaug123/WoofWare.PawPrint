@@ -20,6 +20,38 @@ type CallerPrivilege =
     | Unprivileged
 
 /// <summary>
+/// The one thing a caller is asking permission to do, as
+/// <c>PermissionBits.deniedTo</c> is asked it.
+/// </summary>
+/// <remarks>
+/// There is deliberately no case for executing a regular file. That is the one
+/// request whose answer differs for a privileged caller -- both modelled kernels
+/// grant root <c>X_OK</c> only when at least one of the three execute bits is
+/// set, where root bypasses read, write and directory search outright -- and
+/// nothing in this library models <c>exec</c> or <c>access(2)</c>, so no caller
+/// can ask it. Leaving the case out is what stops a future caller asking a
+/// question <c>deniedTo</c> would answer wrongly; adding one is a compile error
+/// until root's rule is written down beside the others.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type AccessRequest =
+    /// <summary>Read the object's contents: <c>R_OK</c>, the <c>0o400</c> bit.</summary>
+    | Read
+    /// <summary>Change the object's contents: <c>W_OK</c>, the <c>0o200</c> bit.</summary>
+    | Write
+    /// <summary>
+    /// Traverse a directory, or name something inside it: <c>X_OK</c> on a
+    /// directory, the <c>0o100</c> bit.
+    /// </summary>
+    /// <remarks>
+    /// Named for the directory because the same bit means something else on a
+    /// regular file, where it is execute and root does not bypass it. Nothing
+    /// enforces that the object really is a directory; the name carries that,
+    /// and every caller has already established it.
+    /// </remarks>
+    | SearchDirectory
+
+/// <summary>
 /// Whether this Unix clears <c>S_ISGID</c> when an unprivileged process changes a
 /// file's contents, on a file that is not group-executable.
 /// </summary>
@@ -131,28 +163,46 @@ module PermissionBits =
         | PermissionBits bits -> bits
 
     /// <summary>
-    /// Whether a caller with <c>privilege</c> is denied any of <c>needed</c> on an object
-    /// carrying <c>bits</c>.
+    /// Whether a caller with <c>privilege</c> is refused <c>needed</c> on an
+    /// object carrying <c>bits</c>.
     /// </summary>
-    ///
-    /// <example>
-    /// <c>CallerPrivilege.Privileged</c> (e.g. the root user) gets read and write whatever the mode says.
-    /// </example>
-    ///
     /// <remarks>
-    /// Here are some currently-false statements, ported from some old docs, which we will fix
-    /// immediately in the next commit when we refactor this code:
-    ///
-    /// Only *execute* still needs a bit set for root, and nothing that consults this asks for it.
-    ///
-    /// Only the owner triple can ever apply, for the reason
-    /// `RemovalChecks.lacksWrite` gives: `stat` reports `Kernel.UserId` as every
-    /// inode's `st_uid`, so the caller owns everything.
+    /// <para>
+    /// Consults the <b>owner</b> triple only, and that is the contract rather
+    /// than a simplification: a consumer whose inodes have real per-uid
+    /// ownership needs a different function, not this one with an extra
+    /// argument.
+    /// </para>
+    /// <para>
+    /// It suffices for this kernel because <c>stat</c> reports
+    /// <c>Kernel.UserId</c> as every inode's <c>st_uid</c>: the emulated process
+    /// owns everything it can see, so the group and other triples can never be
+    /// the applicable ones.
+    /// </para>
     /// </remarks>
-    let deniedTo (privilege : CallerPrivilege) (needed : int) (bits : PermissionBits) : bool =
-        match privilege with
-        | CallerPrivilege.Privileged -> false
-        | CallerPrivilege.Unprivileged -> toInt bits &&& needed <> needed
+    /// <example>
+    /// A <c>CallerPrivilege.Privileged</c> caller is refused nothing that
+    /// <c>AccessRequest</c> can express, whatever the mode says.
+    /// </example>
+    let deniedTo (privilege : CallerPrivilege) (needed : AccessRequest) (bits : PermissionBits) : bool =
+        match privilege, needed with
+        // Enumerated rather than a `Privileged, _` wildcard, and that is the
+        // whole point: root bypasses each of these three, but would *not* bypass
+        // executing a regular file. A wildcard would absorb a fourth
+        // `AccessRequest` silently and answer it wrongly; enumerating makes
+        // adding one fail to compile here, where root's rule has to be decided.
+        | CallerPrivilege.Privileged, AccessRequest.Read
+        | CallerPrivilege.Privileged, AccessRequest.Write
+        | CallerPrivilege.Privileged, AccessRequest.SearchDirectory -> false
+        | CallerPrivilege.Unprivileged, _ ->
+
+        let bit =
+            match needed with
+            | AccessRequest.Read -> 0o400
+            | AccessRequest.Write -> 0o200
+            | AccessRequest.SearchDirectory -> 0o100
+
+        toInt bits &&& bit <> bit
 
     /// <summary>
     /// Parse a raw mode word's permission bits, or <c>None</c> if it does not fit in

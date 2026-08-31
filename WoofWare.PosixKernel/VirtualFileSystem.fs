@@ -1756,14 +1756,12 @@ module VirtualFileSystem =
         // ENAMETOOLONG, ELOOP or EISDIR the same call earns under a
         // searchable one.
         //
-        // Only the *owner* triple can ever apply: `stat` reports
-        // `Kernel.UserId` as every inode's `st_uid`, so the emulated process
-        // owns everything it can see. Measured, and a corpus of ordinary
-        // modes cannot show it: a 0o677 directory is EACCES to its owner
-        // though group and other may search it, while 0o100 is searchable
-        // though nobody else may.
-        let searchBit = 0o100
-
+        // Only the *owner* triple can ever apply, which is
+        // `PermissionBits.deniedTo`'s contract: `stat` reports `Kernel.UserId`
+        // as every inode's `st_uid`, so the emulated process owns everything it
+        // can see. Measured, and a corpus of ordinary modes cannot show it: a
+        // 0o677 directory is EACCES to its owner though group and other may
+        // search it, while 0o100 is searchable though nobody else may.
         let directoryContent =
             match tryGetDirectory directory vfs with
             | Some content -> content
@@ -1771,13 +1769,7 @@ module VirtualFileSystem =
                 failwith
                     $"VirtualFileSystem: about to consume a component from inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
 
-        let maySearch =
-            match privilege with
-            | CallerPrivilege.Privileged -> true
-            | CallerPrivilege.Unprivileged ->
-                PermissionBits.toInt directoryContent.Permissions &&& searchBit = searchBit
-
-        if not maySearch then
+        if PermissionBits.deniedTo privilege AccessRequest.SearchDirectory directoryContent.Permissions then
             Error UnixError.EACCES
         else
 

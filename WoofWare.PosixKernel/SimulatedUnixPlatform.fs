@@ -776,16 +776,12 @@ module CreatingOpenRules =
         else
 
         // Write alone: the search half of the rule is the walk's, and a
-        // resolution that reached here has already passed it. Only the owner
-        // triple can ever apply, since `stat` reports `Kernel.UserId` as every
-        // inode's `st_uid`.
-        let bindBits = 0o200
-
+        // resolution that reached here has already passed it.
         let parentBits =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
                 match Inode.permissions parent with
-                | InodePermissions.Stored bits -> PermissionBits.toInt bits
+                | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
                         $"CreatingOpenRules.verdict: the walk resolved \"%s{DirectoryEntryName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
@@ -793,12 +789,7 @@ module CreatingOpenRules =
                 failwith
                     $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
-        let lacksBindBits =
-            match privilege with
-            | CallerPrivilege.Privileged -> false
-            | CallerPrivilege.Unprivileged -> parentBits &&& bindBits <> bindBits
-
-        if lacksBindBits then
+        if PermissionBits.deniedTo privilege AccessRequest.Write parentBits then
             CreatingOpenVerdict.Refuse UnixError.EACCES
         else
             CreatingOpenVerdict.Create (directory, name)
@@ -924,11 +915,7 @@ module MkDirRules =
         else
 
         // Write alone: the search half of the rule is the walk's, and a
-        // resolution that reached here has already passed it. Only the owner
-        // triple can ever apply, since `stat` reports `Kernel.UserId` as every
-        // inode's `st_uid`.
-        let write = 0o200
-
+        // resolution that reached here has already passed it.
         let parentPermissions =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
@@ -941,16 +928,11 @@ module MkDirRules =
                 failwith
                     $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
-        let lacks (bit : int) : bool =
-            match privilege with
-            | CallerPrivilege.Privileged -> false
-            | CallerPrivilege.Unprivileged -> PermissionBits.toInt parentPermissions &&& bit <> bit
-
         match existing with
         | Some _ -> MkDirVerdict.Refuse UnixError.EEXIST
         | None ->
 
-        if lacks write then
+        if PermissionBits.deniedTo privilege AccessRequest.Write parentPermissions then
             MkDirVerdict.Refuse UnixError.EACCES
         else
             MkDirVerdict.Create (directory, name, parentPermissions)
@@ -1050,10 +1032,10 @@ module private RemovalChecks =
         (vfs : VirtualFileSystem)
         : bool
         =
-        match privilege with
-        | CallerPrivilege.Privileged -> false
-        | CallerPrivilege.Unprivileged ->
-
+        // The lookup is above the privilege test, so its two assertions below
+        // fire for a privileged caller too. That is deliberate: both name a
+        // corrupt inode graph, and root skipping the check would leave the
+        // corruption to be found somewhere less informative.
         let permissions =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
@@ -1066,7 +1048,7 @@ module private RemovalChecks =
                 failwith
                     $"RemovalChecks.lacksWrite: resolution named inode %O{directory} as the directory holding \"%s{DirectoryEntryName.toString name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
-        PermissionBits.toInt permissions &&& 0o200 <> 0o200
+        PermissionBits.deniedTo privilege AccessRequest.Write permissions
 
     /// Whether the inode a name is bound to is a directory. Partial in the same
     /// way `lacksWrite` is: the walk has just reported this inode.
@@ -1454,7 +1436,7 @@ module OpenDirRules =
             OpenDirVerdict.Refuse UnixError.ENOTDIR
         | Some (InodeContent.Directory content) ->
 
-        if PermissionBits.deniedTo privilege 0o400 content.Permissions then
+        if PermissionBits.deniedTo privilege AccessRequest.Read content.Permissions then
             OpenDirVerdict.Refuse UnixError.EACCES
         else
             OpenDirVerdict.Open inode
@@ -1736,7 +1718,7 @@ module private RenameChecks =
         match VirtualFileSystem.tryGet inode vfs with
         | Some entry ->
             match Inode.permissions entry with
-            | InodePermissions.Stored bits -> PermissionBits.deniedTo privilege 0o200 bits
+            | InodePermissions.Stored bits -> PermissionBits.deniedTo privilege AccessRequest.Write bits
             | InodePermissions.PlatformSymlinkDefault ->
                 failwith
                     $"RenameChecks.lacksWrite: %s{role} is inode %O{inode}, which reports platform-default symlink permissions -- but rename only asks this of a directory (this is an interpreter bug)."
