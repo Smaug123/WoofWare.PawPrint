@@ -3879,14 +3879,16 @@ module UnixSystem =
         //   0600   RDONLY|TRUNC        ok
         //   0200   WRONLY|TRUNC        ok
         //   0400   WRONLY|TRUNC        EACCES
-        let neededBits =
-            (if FileAccessMode.permitsRead flags.Access then 0o400 else 0)
-            ||| (if FileAccessMode.permitsWrite flags.Access || flags.Truncate then
-                     0o200
-                 else
-                     0)
+        // Both halves, where the mode asks for both: `O_RDWR` on a 0o400 file is
+        // refused for want of the write bit even though the read bit is there,
+        // which is what the disjunction says.
+        let denied =
+            (FileAccessMode.permitsRead flags.Access
+             && PermissionBits.deniedTo privilege AccessRequest.Read permissionBits)
+            || ((FileAccessMode.permitsWrite flags.Access || flags.Truncate)
+                && PermissionBits.deniedTo privilege AccessRequest.Write permissionBits)
 
-        if PermissionBits.deniedTo privilege neededBits permissionBits then
+        if denied then
             SyscallAnswer.Failed UnixError.EACCES, system
         else
 
@@ -6382,7 +6384,12 @@ module UnixSystem =
         //
         // The walk above checks search on every directory it *traverses*; this
         // is the target's own bit, which nothing has asked about yet.
-        if PermissionBits.deniedTo (UnixProcessState.callerPrivilege system.Process) 0o100 directory.Permissions then
+        if
+            PermissionBits.deniedTo
+                (UnixProcessState.callerPrivilege system.Process)
+                AccessRequest.SearchDirectory
+                directory.Permissions
+        then
             SyscallAnswer.Failed UnixError.EACCES, system
         else
 

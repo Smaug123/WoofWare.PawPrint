@@ -3609,6 +3609,61 @@ module TestUnixSystemStep =
             |> shouldEqual UnixError.EACCES
 
     [<Test>]
+    let ``O_RDWR demands both bits, not either of them`` () : unit =
+        // Measured at uid 1000 on both: `0400` and `0200` each open for the one
+        // access their bit grants, and each is EACCES for `O_RDWR`, which wants
+        // both. The pair of files is the point -- a single row cannot tell
+        // "needs both" from "needs the bit this file happens to lack", and a
+        // check that asked for *either* bit would let both `O_RDWR` opens
+        // through.
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            let seed (name : string) (mode : int) (vfs : VirtualFileSystem) : VirtualFileSystem =
+                match
+                    VirtualFileSystem.createFile
+                        (VirtualFileSystem.root vfs)
+                        (DirectoryEntryName.parseOrFail context name)
+                        (PermissionBits.parseOrFail context mode)
+                        epoch
+                        (ImmutableArray.CreateRange [ 1uy ])
+                        vfs
+                with
+                | Ok (_, vfs) -> vfs
+                | Error error -> failwith $"could not seed %s{name}: %O{error}"
+
+            let vfs =
+                system.Machine.FileSystem |> seed "readable" 0o400 |> seed "writable" 0o200
+
+            let system =
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = vfs
+                        }
+                }
+
+            let openAs (access : FileAccessMode) (path : string) =
+                UnixSystem.openPath
+                    { plainOpen with
+                        Access = access
+                    }
+                    (statPath path)
+                    0o666
+                    system
+
+            openAs FileAccessMode.ReadOnly "/readable" |> openedFd |> shouldBeGreaterThan 2
+            openAs FileAccessMode.WriteOnly "/writable" |> openedFd |> shouldBeGreaterThan 2
+
+            openAs FileAccessMode.ReadWrite "/readable"
+            |> openFailed
+            |> shouldEqual UnixError.EACCES
+
+            openAs FileAccessMode.ReadWrite "/writable"
+            |> openFailed
+            |> shouldEqual UnixError.EACCES
+
+    [<Test>]
     let ``O_NOFOLLOW makes opening a symbolic link ELOOP`` () : unit =
         // What `SafeFileHandle.OpenNoFollowSymlink` reads back to decide a path
         // was a symlink without racing. Paired with the same open *without* the

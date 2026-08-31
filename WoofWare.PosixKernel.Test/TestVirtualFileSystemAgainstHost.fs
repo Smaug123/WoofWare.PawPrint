@@ -87,6 +87,11 @@ module TestVirtualFileSystemAgainstHost =
     [<DllImport("libc")>]
     extern uint32 private geteuid()
 
+    /// The *real* uid, which is the one `access(2)` tests -- unlike almost
+    /// everything else here, which the effective uid governs.
+    [<DllImport("libc")>]
+    extern uint32 private getuid()
+
     [<DllImport("libc", SetLastError = true)>]
     extern nativeint private realpath(string path, nativeint resolved)
 
@@ -95,6 +100,15 @@ module TestVirtualFileSystemAgainstHost =
 
     [<Literal>]
     let private F_OK = 0
+
+    [<Literal>]
+    let private X_OK = 1
+
+    [<Literal>]
+    let private W_OK = 2
+
+    [<Literal>]
+    let private R_OK = 4
 
     /// Which simulated platform this test host actually is, so the model is
     /// asked to resolve as a kernel of the flavour it is being compared against.
@@ -1341,6 +1355,100 @@ module TestVirtualFileSystemAgainstHost =
                 // All-or-nothing: a host that takes some set-ID bits and drops
                 // others is one we do not understand, and this names the row.
                 compared |> shouldEqual (List.length setIdModeProbes)
+        )
+
+    /// Every `st_mode & 0o777`. Exhaustive rather than a corpus because the
+    /// mistake this is here to catch is a transposed bit, and a corpus of
+    /// ordinary modes cannot see one: 0o644 and 0o666 answer read and write the
+    /// same way round whichever bit the model consults. 0o400 and 0o200 disagree
+    /// only on modes granting exactly one of the two.
+    let private everyPermissionWord : int list = [ 0..0o777 ]
+
+    /// Compares the model's permission check against `access(2)` for every mode,
+    /// on a file (read, write, and the two together) and on a directory
+    /// (search). Returns how many rows were compared and how many of those the
+    /// kernel refused, so the caller can tell a sweep that agreed from one that
+    /// had nothing to disagree about.
+    ///
+    /// The combined read-and-write row is the one that is not just the other two
+    /// restated. `access(p, R_OK ||| W_OK)` fails when *either* is denied, so it
+    /// pins the *disjunction* -- which is the shape `openPath` composes for
+    /// `O_RDWR` -- against the kernel rather than against our own belief. Get
+    /// that wrong as a conjunction and a 0o200 file opens `O_RDWR`.
+    let private compareAccessModes (root : string) : int * int =
+        let mutable compared = 0
+        let mutable refused = 0
+
+        let check (path : string) (mask : int) (needed : AccessRequest list) (mode : int) (what : string) : unit =
+            let kernelSaid = access (path, mask) <> 0
+
+            let bits = PermissionBits.parseOrFail "test" mode
+
+            let modelSaid =
+                needed
+                |> List.exists (fun request -> PermissionBits.deniedTo CallerPrivilege.Unprivileged request bits)
+
+            if kernelSaid <> modelSaid then
+                failwith
+                    $"%s{what} on a 0o%04o{mode} entry: this kernel says denied=%b{kernelSaid} but PermissionBits.deniedTo says denied=%b{modelSaid}."
+
+            compared <- compared + 1
+
+            if kernelSaid then
+                refused <- refused + 1
+
+        for mode in everyPermissionWord do
+            let file = Path.Combine (root, "f")
+            File.WriteAllBytes (file, Array.empty)
+
+            if trySetMode file mode then
+                check file R_OK [ AccessRequest.Read ] mode "read"
+                check file W_OK [ AccessRequest.Write ] mode "write"
+                check file (R_OK ||| W_OK) [ AccessRequest.Read ; AccessRequest.Write ] mode "read-and-write"
+
+            // Restore before unlinking. A 0o000 file is removable anyway, since
+            // the *parent*'s bits govern that, but leaving the tree in an
+            // ordinary state keeps a failed run pokeable.
+            trySetMode file 0o600 |> ignore<bool>
+            File.Delete file
+
+            let directory = Path.Combine (root, "d")
+            Directory.CreateDirectory directory |> ignore<DirectoryInfo>
+
+            if trySetMode directory mode then
+                check directory X_OK [ AccessRequest.SearchDirectory ] mode "search"
+
+            // This one matters: a recursive delete cannot descend into a
+            // directory it may not search, so an unrestored 0o000 would take the
+            // whole fixture's cleanup down with it.
+            trySetMode directory 0o700 |> ignore<bool>
+            Directory.Delete directory
+
+        compared, refused
+
+    [<Test>]
+    let ``the model's permission check agrees with this kernel for every mode`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        // `access(2)` asks about the real uid where most of this fixture asks
+        // about the effective one, so both are checked: root by either measure
+        // is waved through every row, which would leave the sweep agreeing with
+        // a kernel that had stopped discriminating.
+        if getuid () = 0u || geteuid () = 0u then
+            Assert.Ignore "Running as root, which bypasses every bit here, so no row could falsify anything."
+
+        withModeProbeRoot (fun root ->
+            let compared, refused = compareAccessModes root
+
+            // Four questions per mode, and every row must land: these modes set
+            // no set-ID bit, so nothing here can refuse the `chmod`.
+            compared |> shouldEqual (4 * List.length everyPermissionWord)
+
+            // Non-vacuity. Agreement means nothing unless the kernel said
+            // "denied" somewhere; a sweep where it never did would pass against
+            // a model that returned `false` unconditionally.
+            refused |> shouldBeGreaterThan 0
         )
 
     // --------------------------------------------------------------- mkdir
