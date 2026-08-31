@@ -33,6 +33,14 @@
         <Compile Include="UnixTask.fs" />
         <Compile Include="Signal.fs" />
         <Compile Include="SignalState.fs" />
+        <Compile Include="SimulatedUnixFlavour.fs" />
+        <Compile Include="EmulatedFileSystemType.fs" />
+        <Compile Include="UserBuffer.fs" />
+        <Compile Include="Sockaddr.fs" />
+        <Compile Include="CreatingOpenRules.fs" />
+        <Compile Include="MkDirRules.fs" />
+        <Compile Include="RemovalRules.fs" />
+        <Compile Include="RenameRules.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />
         <Compile Include="UnixProcess.fs" />
         <Compile Include="UnixMachine.fs" />
