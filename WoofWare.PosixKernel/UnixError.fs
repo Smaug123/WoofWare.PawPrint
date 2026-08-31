@@ -203,7 +203,7 @@ type UnixError =
     /// Too many levels of symbolic links.
     /// </summary>
     /// <example>
-    /// Reported by <c>VirtualFileSystem.resolve</c> when a path resolution traverses
+    /// Reported by <c>PathWalk.resolve</c> when a path resolution traverses
     /// more symlinks than any of our modelled Unixes would allow.
     /// </example>
     /// <remarks>

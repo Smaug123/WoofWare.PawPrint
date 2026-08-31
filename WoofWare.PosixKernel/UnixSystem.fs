@@ -152,7 +152,7 @@ type CurrentDirectoryFault =
     /// `NAME_MAX` and — on a flavour that re-checks, which is Darwin — a
     /// symbolic link whose expansion would carry the whole path past
     /// `PATH_MAX`. A real kernel conflates them too. Splitting the case would
-    /// need `VirtualFileSystem.resolveExisting` to report which limit it hit,
+    /// need `PathWalk.resolveExisting` to report which limit it hit,
     /// which every other caller of that walk would pay for.
     ///
     /// Carries the flavour so that a fault which outlives the call still says
@@ -743,7 +743,7 @@ module UnixSystem =
 
         let located =
             match
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     limits
                     CallerPrivilege.Privileged
                     root

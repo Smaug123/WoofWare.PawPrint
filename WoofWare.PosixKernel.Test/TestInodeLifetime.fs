@@ -72,7 +72,7 @@ module TestInodeLifetime =
 
     let private inodeOf (kernel : UnixSystem<int, string>) (path : string) : InodeNumber =
         match
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits kernel.Machine.UnixPlatform)
                 CallerPrivilege.Privileged
                 (VirtualFileSystem.root kernel.Machine.FileSystem)

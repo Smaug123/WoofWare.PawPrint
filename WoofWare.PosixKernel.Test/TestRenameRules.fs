@@ -189,7 +189,7 @@ module TestRenameRules =
         let rules = SimulatedUnixPlatform.renameRules platform
 
         let resolve (candidate : string) =
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
                 privilege
                 startDirectory

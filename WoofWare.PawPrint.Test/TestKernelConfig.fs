@@ -45,7 +45,7 @@ module TestKernelConfig =
         let vfs = kernel.FileSystem
 
         match
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
                 CallerPrivilege.Privileged
                 (VirtualFileSystem.root vfs)

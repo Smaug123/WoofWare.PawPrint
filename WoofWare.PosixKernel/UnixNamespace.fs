@@ -886,7 +886,7 @@ module UnixNamespace =
             // orphan check below sits between the two, so a 300-byte source name
             // is ENAMETOOLONG while a 300-byte destination name under the same
             // orphaned parent is ENOENT. Measured both ways.
-            match VirtualFileSystem.completeResolution sourceParent with
+            match PathWalk.completeResolution sourceParent with
             | Error error -> Error (RenameStop.Errno error)
             | Ok sourceResolution ->
 
@@ -907,11 +907,11 @@ module UnixNamespace =
             // whole destination has resolved: measured, the same call is
             // ENAMETOOLONG there. So this is the Linux position of a check both
             // flavours make, not a check only Linux makes.
-            if VirtualFileSystem.pausedParentIsOrphaned destinationParent then
+            if PathWalk.pausedParentIsOrphaned destinationParent then
                 Error (RenameStop.Errno UnixError.ENOENT)
             else
 
-            VirtualFileSystem.completeResolution destinationParent
+            PathWalk.completeResolution destinationParent
             |> Result.mapError RenameStop.Errno
             |> Result.map (fun destinationResolution -> sourceResolution, destinationResolution)
 

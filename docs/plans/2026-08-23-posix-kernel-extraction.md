@@ -2501,7 +2501,7 @@ Ordered so that each has an oracle before the next depends on it.
   against the constant it came from, which is why that row asserts the literal.
 
 * **8i — `stat` and `lstat`**, which is the path resolution crossing: a library
-  `resolvePath` over `VirtualFileSystem.resolveFull`, taking the cwd inode, the
+  `resolvePath` over `PathWalk.resolveFull`, taking the cwd inode, the
   privilege and the limits that `UnixSystem` already holds. PawPrint keeps the
   guest-memory half — reading a NUL-terminated name within `PATH_MAX` — because
   that is its memory and not a kernel's. Once it exists, `mkdir`/`rmdir`/
@@ -5250,7 +5250,7 @@ boundary and one relocated within PawPrint, which is why the two do not sum.
 `EmulatedKernel.withFileSystemAndCurrentDirectory` realises a seed as the guest's
 filesystem and resolves the directory the simulated process starts in. Every one of
 its dependencies was already the library's — `FileSystemSeed.toVirtualFileSystem`,
-`VirtualFileSystem.resolveExisting`, `pathOfDirectory`, `SimulatedUnixPlatform.pathLimits`
+`PathWalk.resolveExisting`, `pathOfDirectory`, `SimulatedUnixPlatform.pathLimits`
 — so nothing but the setter itself was holding it in PawPrint.
 
 It is also the linchpin of what remains. Ten of `TestEmulatedKernelCurrentDirectory`'s
@@ -5316,7 +5316,7 @@ past `PATH_MAX`. Reporting the second as `NameTooLong` tells a host to shorten a
 symlink target in its `FileSystem`. `origin/main` had the same defect in the message; the
 type name would have entrenched it.
 
-The library cannot separate them without `VirtualFileSystem.resolveExisting` reporting
+The library cannot separate them without `PathWalk.resolveExisting` reporting
 which limit it hit, which every other caller of that walk would pay for — and a real
 kernel conflates them too. So the case says only what is known: `TooLong of
 SimulatedUnixFlavour`, documented with both sources, and PawPrint's message names both

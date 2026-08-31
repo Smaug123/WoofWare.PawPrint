@@ -114,7 +114,7 @@ module TestOpenDirRules =
         : OpenDirVerdict
         =
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
                 privilege
                 (VirtualFileSystem.root tree)

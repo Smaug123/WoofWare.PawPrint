@@ -471,7 +471,7 @@ module TestVirtualFileSystemAgainstHost =
 
         let resolveDirectory (relative : string) : InodeNumber =
             match
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     (limits ())
                     // Privileged: this is the builder placing an inode, not a
                     // guest looking one up. `ns/kid/gk` could not be reached
@@ -548,7 +548,7 @@ module TestVirtualFileSystemAgainstHost =
         // readlink(2) does not follow a final symlink, which is exactly
         // NoFollowFinal — and a trailing separator overrides that on both sides.
         match
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 (limits ())
                 (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
@@ -825,7 +825,7 @@ module TestVirtualFileSystemAgainstHost =
 
                         let modelOutcome =
                             match
-                                VirtualFileSystem.resolve
+                                PathWalk.resolve
                                     (limits ())
                                     CallerPrivilege.Privileged
                                     (VirtualFileSystem.root vfs)
@@ -991,7 +991,7 @@ module TestVirtualFileSystemAgainstHost =
                 SymlinkPolicy.Follow
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (limits ())
                 (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
@@ -1476,7 +1476,7 @@ module TestVirtualFileSystemAgainstHost =
         let rules = SimulatedUnixPlatform.mkDirRules (hostPlatform ())
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (limits ())
                 (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
@@ -1800,7 +1800,7 @@ module TestVirtualFileSystemAgainstHost =
         let rules = SimulatedUnixPlatform.unlinkRules (hostPlatform ())
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (limits ())
                 (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
@@ -1876,7 +1876,7 @@ module TestVirtualFileSystemAgainstHost =
         // host really does resolve those.
         let reachesRoot (relative : string) : bool =
             match
-                VirtualFileSystem.resolveFull
+                PathWalk.resolveFull
                     (limits ())
                     CallerPrivilege.Privileged
                     root
@@ -2005,7 +2005,7 @@ module TestVirtualFileSystemAgainstHost =
         let rules = SimulatedUnixPlatform.rmDirRules (hostPlatform ())
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (limits ())
                 (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
@@ -2236,7 +2236,7 @@ module TestVirtualFileSystemAgainstHost =
 
     let private modelOpenDirOutcome (vfs : VirtualFileSystem) (relative : string) : OpenDirOutcome =
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (limits ())
                 (hostPrivilege ())
                 (VirtualFileSystem.root vfs)
@@ -2355,7 +2355,7 @@ module TestVirtualFileSystemAgainstHost =
     let private modelNames (vfs : VirtualFileSystem) (relative : string) : string list =
         let inode =
             match
-                VirtualFileSystem.resolveFull
+                PathWalk.resolveFull
                     (limits ())
                     (hostPrivilege ())
                     (VirtualFileSystem.root vfs)
@@ -2363,7 +2363,7 @@ module TestVirtualFileSystemAgainstHost =
                     TrailingSeparatorPolicy.Demand
                     (UnixPath.parseOrFail "test" relative)
                     vfs
-                |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
+                |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target)
             with
             | Ok inode -> inode
             | Error error -> failwith $"the model could not resolve %s{relative}: %O{error}"
@@ -2440,7 +2440,7 @@ module TestVirtualFileSystemAgainstHost =
 
         let directoryOf (relative : string) : InodeNumber =
             match
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     (limits ())
                     CallerPrivilege.Privileged
                     (VirtualFileSystem.root vfs)
@@ -2583,7 +2583,7 @@ module TestVirtualFileSystemAgainstHost =
         modelListing vfs
         |> List.choose (fun relative ->
             match
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     (limits ())
                     CallerPrivilege.Privileged
                     (VirtualFileSystem.root vfs)
@@ -2611,7 +2611,7 @@ module TestVirtualFileSystemAgainstHost =
     let private modelRename (source : string) (destination : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
         let resolveEntry (relative : string) : InodeNumber * DirectoryEntryName =
             match
-                VirtualFileSystem.resolve
+                PathWalk.resolve
                     (limits ())
                     CallerPrivilege.Privileged
                     (VirtualFileSystem.root vfs)

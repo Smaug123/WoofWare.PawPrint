@@ -54,7 +54,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let vfs = system.Machine.FileSystem
 
         match
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
                 CallerPrivilege.Privileged
                 (VirtualFileSystem.root vfs)
