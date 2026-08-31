@@ -5,8 +5,8 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.setNonBlocking`, `UnixSystem.isNonBlocking` and
-/// `UnixSystem.createSocket`.
+/// `UnixSocket.setNonBlocking`, `UnixSocket.isNonBlocking` and
+/// `UnixSocket.createSocket`.
 ///
 /// The flag's whole subtlety is *where it lives* and *which targets may carry
 /// it*: it is a property of the open file description rather than of the
@@ -46,7 +46,7 @@ module TestNonBlocking =
         (system : UnixSystem<int, string>)
         : SetNonBlockingAnswer * UnixSystem<int, string>
         =
-        match UnixSystem.setNonBlocking fd value system with
+        match UnixSocket.setNonBlocking fd value system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{SetNonBlockingRefusal.describe refusal}"
 
@@ -66,7 +66,7 @@ module TestNonBlocking =
         let system = systemOn platform
 
         let fd, system =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
 
         let socketId =
             match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
@@ -85,17 +85,17 @@ module TestNonBlocking =
         socket.ReuseAddress |> shouldEqual false
 
         // ...and it is not born non-blocking.
-        UnixSystem.isNonBlocking fd system |> shouldEqual (Some false)
+        UnixSocket.isNonBlocking fd system |> shouldEqual (Some false)
 
     /// Each socket gets its own identity: the counter advances, so a second
     /// socket cannot overwrite the first in the table.
     [<TestCaseSource(nameof platforms)>]
     let ``each created socket gets a fresh identity`` (platform : SimulatedUnixPlatform) : unit =
         let first, system =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp (systemOn platform)
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp (systemOn platform)
 
         let second, system =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Datagram SocketProtocol.Udp system
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Datagram SocketProtocol.Udp system
 
         first |> shouldNotEqual second
         system.Machine.Sockets |> Map.count |> shouldEqual 2
@@ -115,7 +115,7 @@ module TestNonBlocking =
     [<Test>]
     let ``the flag lives on the description, so a dup shares it`` () : unit =
         let fd, system =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp linux
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp linux
 
         let duplicate, registry =
             match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
@@ -131,15 +131,15 @@ module TestNonBlocking =
             }
 
         let system = set fd true system
-        UnixSystem.isNonBlocking duplicate system |> shouldEqual (Some true)
+        UnixSocket.isNonBlocking duplicate system |> shouldEqual (Some true)
 
         // ...and clearing it through the *other* number clears it for both.
         let system = set duplicate false system
-        UnixSystem.isNonBlocking fd system |> shouldEqual (Some false)
+        UnixSocket.isNonBlocking fd system |> shouldEqual (Some false)
 
     [<Test>]
     let ``a descriptor that is not open has no flag and cannot be set`` () : unit =
-        UnixSystem.isNonBlocking 99 linux |> shouldEqual None
+        UnixSocket.isNonBlocking 99 linux |> shouldEqual None
 
         setOrFail 99 true linux
         |> fst
@@ -155,7 +155,7 @@ module TestNonBlocking =
     [<Test>]
     let ``a file and a socket both take the flag`` () : unit =
         let socketFd, system =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp linux
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp linux
 
         let fileFd, registry =
             FileDescriptorRegistry.openFile (InodeNumber 1L) FileAccessMode.ReadOnly system.Process.FileDescriptors
@@ -170,7 +170,7 @@ module TestNonBlocking =
 
         for fd in [ socketFd ; fileFd ] do
             let after = set fd true system
-            UnixSystem.isNonBlocking fd after |> shouldEqual (Some true)
+            UnixSocket.isNonBlocking fd after |> shouldEqual (Some true)
 
     /// A standard stream refuses to be *set*, because no modelled stream
     /// transfer consults the flag and storing it would keep blocking semantics
@@ -185,7 +185,7 @@ module TestNonBlocking =
             ]
 
         for fd, role in rows do
-            UnixSystem.setNonBlocking fd true linux
+            UnixSocket.setNonBlocking fd true linux
             |> shouldEqual (Error (SetNonBlockingRefusal.UnmodelledOnStandardStream role))
 
     /// ...but *clearing* it is answered, because `false` is what a stream
@@ -195,7 +195,7 @@ module TestNonBlocking =
     let ``clearing the flag on a standard stream is answered`` () : unit =
         for fd in [ 0 ; 1 ; 2 ] do
             setOrFail fd false linux |> fst |> shouldEqual SetNonBlockingAnswer.Set
-            UnixSystem.isNonBlocking fd linux |> shouldEqual (Some false)
+            UnixSocket.isNonBlocking fd linux |> shouldEqual (Some false)
 
     // ------------------------------------------------------------------
     // The event port, where store and answer come apart
@@ -224,7 +224,7 @@ module TestNonBlocking =
             let answer, after = setOrFail portFd true system
 
             // The bit toggled on both.
-            UnixSystem.isNonBlocking portFd after |> shouldEqual (Some true)
+            UnixSocket.isNonBlocking portFd after |> shouldEqual (Some true)
 
             let expected =
                 match SimulatedUnixPlatform.eventPortSetStatusFlagsError platform with

@@ -137,7 +137,7 @@ module TestUnixSystemInitial =
         system.Process.CurrentDirectoryInode
         |> shouldEqual (VirtualFileSystem.root system.Machine.FileSystem)
 
-        UnixSystem.currentDirectoryPath system
+        UnixPathResolution.currentDirectoryPath system
         |> shouldEqual (Some AbsoluteUnixPath.root)
 
     /// Every rule at once, which is the cheapest statement that a fresh system

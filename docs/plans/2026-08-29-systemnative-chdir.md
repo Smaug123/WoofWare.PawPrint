@@ -176,7 +176,7 @@ or -1 with errno. `SystemNative_ChDir` is a one-line dispatch arm beside
 
   This bullet originally claimed that PawPrint therefore "answers the stale
   cached path where a real `getcwd` fails ENOENT". That was **wrong**:
-  `UnixSystem.getcwd` has guarded the orphan since #1196, and
+  `UnixPathResolution.getcwd` has guarded the orphan since #1196, and
   `sourcesImpure/RmDirOrphanLinuxSeeded.cs` asserts the ENOENT end-to-end. No
   guest can observe the stale field; what is wrong with it is that its stated
   contract is false, and that `checkInvariants` is silent for exactly as long as

@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.listen`.
+/// `UnixSocket.listen`.
 ///
 /// It takes no buffer and has no shim screens of its own, so unlike `bind` there
 /// is nothing here that belongs to a caller: every row is `listen(2)`. The two
@@ -83,7 +83,7 @@ module TestListen =
             }
 
     let private listenOrFail (fd : int) (backlog : int) (system : UnixSystem<int, string>) =
-        match UnixSystem.listen fd backlog system with
+        match UnixSocket.listen fd backlog system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{ListenRefusal.describe refusal}"
 
@@ -337,7 +337,7 @@ module TestListen =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixSystem.listen fd 8 system
+            UnixSocket.listen fd 8 system
             |> shouldEqual (Error (ListenRefusal.UnmodelledDomain (SocketId 0L, domain)))
 
     [<TestCaseSource(nameof platforms)>]
@@ -346,7 +346,7 @@ module TestListen =
             let fd, system =
                 withSocket (SocketId 0L) (socketWith kind None false SocketPhase.Idle) (systemOn platform)
 
-            UnixSystem.listen fd 8 system
+            UnixSocket.listen fd 8 system
             |> shouldEqual (Error (ListenRefusal.UnmeasuredKind (SocketId 0L, kind)))
 
     /// Only `Idle` and `Listening` have measured answers; the rest are refused
@@ -370,7 +370,7 @@ module TestListen =
                     (socketWith SocketKind.Stream (boundAt (loopback 5000us)) false phase)
                     (systemOn platform)
 
-            UnixSystem.listen fd 8 system
+            UnixSocket.listen fd 8 system
             |> shouldEqual (Error (ListenRefusal.UnmeasuredPhase (SocketId 0L, phase)))
 
     /// The kind screen precedes the phase screen: a *datagram* socket in one of
@@ -423,5 +423,5 @@ module TestListen =
         let fd, system =
             withSocket (SocketId 0L) (socketWith SocketKind.Stream None false SocketPhase.Idle) system
 
-        UnixSystem.listen fd 8 system
+        UnixSocket.listen fd 8 system
         |> shouldEqual (Error (ListenRefusal.EphemeralPortsExhausted (40000us, 40000us)))

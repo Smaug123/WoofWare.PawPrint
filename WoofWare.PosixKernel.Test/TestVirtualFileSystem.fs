@@ -3477,7 +3477,7 @@ module TestVirtualFileSystem =
         // The class this sweep was blind to until `orphanGen` existed.
         refusedForOrphan |> shouldBeGreaterThan 60
 
-    /// The equivalence `UnixSystem.getcwd` rests on, over a corpus that
+    /// The equivalence `UnixPathResolution.getcwd` rests on, over a corpus that
     /// contains orphans and a rename that can move directories between parents.
     ///
     /// These are different questions: `pathOfDirectory` climbs the whole parent

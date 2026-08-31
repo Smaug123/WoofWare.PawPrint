@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.bind`, driven directly on a constructed system.
+/// `UnixSocket.bind`, driven directly on a constructed system.
 ///
 /// The screens it shares with `connect` are `TestConnect`'s; what is only here
 /// is what `bind` adds — the fault *ordering*, which the two flavours disagree
@@ -85,7 +85,7 @@ module TestBind =
         (system : UnixSystem<int, string>)
         : BindAnswer * UnixSystem<int, string>
         =
-        match UnixSystem.bind fd UserBuffer.Mapped exactLength false (Some inetFamily) (Some endpoint) system with
+        match UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some inetFamily) (Some endpoint) system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{BindRefusal.describe refusal}"
 
@@ -245,7 +245,7 @@ module TestBind =
     let ``a foreign family is EAFNOSUPPORT`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = stream platform
 
-        UnixSystem.bind fd UserBuffer.Mapped exactLength false (Some 99) (Some (loopback 5000us)) system
+        UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some 99) (Some (loopback 5000us)) system
         |> shouldEqual (Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, system))
 
     /// `AF_UNSPEC` is two rules. Linux takes it only with an all-zero address;
@@ -257,7 +257,7 @@ module TestBind =
 
             // A zero address: both take it.
             match
-                UnixSystem.bind
+                UnixSocket.bind
                     fd
                     UserBuffer.Mapped
                     exactLength
@@ -271,7 +271,7 @@ module TestBind =
 
             // A non-zero one: Linux refuses, Darwin binds it.
             let answer =
-                UnixSystem.bind fd UserBuffer.Mapped exactLength false (Some 0) (Some (loopback 5000us)) system
+                UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some 0) (Some (loopback 5000us)) system
 
             match SimulatedUnixPlatform.flavour platform, answer with
             | SimulatedUnixFlavour.Linux, Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, _) -> ()
@@ -323,7 +323,7 @@ module TestBind =
             let fd, system = stream platform
             let _, system = bound fd (loopback 5000us) system
 
-            UnixSystem.bind
+            UnixSocket.bind
                 fd
                 UserBuffer.Mapped
                 exactLength
@@ -362,7 +362,7 @@ module TestBind =
                 | UserBuffer.Mapped -> Some inetFamily, Some (loopback 1023us)
                 | _ -> None, None
 
-            match UnixSystem.bind fd destination declaredLength true family endpoint system with
+            match UnixSocket.bind fd destination declaredLength true family endpoint system with
             | Ok (BindAnswer.Failed _, after) ->
                 (UnixMachineState.socket (SocketId 0L) after.Machine).ReuseAddress
                 |> shouldEqual true
@@ -389,7 +389,7 @@ module TestBind =
         let fd, system = stream platform
         let multicast = 0xE0000001u
 
-        UnixSystem.bind
+        UnixSocket.bind
             fd
             UserBuffer.Mapped
             exactLength
@@ -423,7 +423,7 @@ module TestBind =
         let fd, system =
             withSocket (SocketId 0L) (socketOfKind SocketKind.Stream SocketPhase.Idle) system
 
-        UnixSystem.bind fd UserBuffer.Mapped exactLength false (Some inetFamily) (Some (loopback 0us)) system
+        UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some inetFamily) (Some (loopback 0us)) system
         |> shouldEqual (Error (BindRefusal.EphemeralPortsExhausted (40000us, 40000us)))
 
     /// The field-consistency contract `connect` states, restated because `bind`
@@ -434,7 +434,7 @@ module TestBind =
 
         let e =
             Assert.Throws<exn> (fun () ->
-                UnixSystem.bind fd UserBuffer.Mapped exactLength false None None system
+                UnixSocket.bind fd UserBuffer.Mapped exactLength false None None system
                 |> ignore<_>
             )
 

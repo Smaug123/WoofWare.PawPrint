@@ -1632,7 +1632,7 @@ which managed caller could have asked ("CoreLib never sends these —
 with more than one reason — `flock` has six, five of which are `refuseDarwin`
 call sites that the old code spelled as one `failwith` — and the first operation
 shared with a syscall that has not hoisted: `commitTruncation` becomes
-`UnixSystem.truncateAt`, which `ftruncate` calls and which PawPrint's `open`
+`UnixDescriptor.truncateAt`, which `ftruncate` calls and which PawPrint's `open`
 still calls directly for `O_TRUNC`. That is the "directly-callable operations
 with `step` delegating" shape the design predicted, arriving on schedule rather
 than as a surprise.
@@ -1733,7 +1733,7 @@ reads the same way whichever one a guest went through.
 
 **The two non-syscall callers hoisted with it**, as `truncateAt` predicted:
 `SystemNative_CloseDir` and `SystemNative_CloseSocketEventPort` both call
-`close(2)` underneath, so all three entry points now call `UnixSystem.close` and
+`close(2)` underneath, so all three entry points now call `UnixDescriptor.close` and
 differ only in how they encode its answer — `-1`-and-errno, `0`, or a PAL code.
 
 **One numbering changed, and it is asserted rather than assumed.** `Close` and
@@ -2437,7 +2437,7 @@ Ordered so that each has an oracle before the next depends on it.
   move, but the file's contents and timestamps do. So the pair of signatures
   states exactly which of the two directions writes.
 
-  PawPrint's `commitFileWrite` goes with the move. `UnixSystem.pwrite` was its
+  PawPrint's `commitFileWrite` goes with the move. `UnixReadWrite.pwrite` was its
   last caller, and it was the last place the set-ID rule and the timestamp rule
   were applied outside the library.
 
@@ -2646,8 +2646,8 @@ Ordered so that each has an oracle before the next depends on it.
   `checkInvariants` already refuses a state in which the two maps disagree in
   either direction, so a client that took only one of the steps is caught.
 
-  `closedir` stays where it is. It already delegates to `UnixSystem.close` and
-  `UnixSystem.forgetIfUnheld`; what is left of it is block bookkeeping and the
+  `closedir` stays where it is. It already delegates to `UnixDescriptor.close` and
+  `UnixDescriptor.forgetIfUnheld`; what is left of it is block bookkeeping and the
   ordering that reaps a directory whose last name went while a stream held it,
   which is client-side by the same rule.
 * **8m — `getcwd`, `readlink` and `getsockname`** (done). These
@@ -2718,7 +2718,7 @@ Ordered so that each has an oracle before the next depends on it.
   handler's note on the unmoved `atime` said this would be "the first mutation
   of the emulated filesystem in the interpreter", and that no handler writes
   back `Kernel.FileSystem`. Several do now. The contract half of that note is on
-  `UnixSystem.readlink`; the falsified half is gone rather than carried across.
+  `UnixNamespace.readlink`; the falsified half is gone rather than carried across.
 
     The ordering the handler already had is otherwise confirmed exactly, including
   two cells that only a size sweep reaches: a too-small buffer is ERANGE
@@ -3074,7 +3074,7 @@ will want, where a payload would not — `waitDeadline` is a pure function of
 `ThreadStatus` today, which is what would make that conversion expensive once
 `poll`'s deadline-carrying condition arrives.
 
-**Who writes the record.** `UnixSystem.parkFlock` *derives* it from the
+**Who writes the record.** `UnixDescriptor.parkFlock` *derives* it from the
 condition it is handed, rather than the handler building one beside the
 condition it destructured. 9a's notes said 9b would take the "kernel records the
 park" option; taken literally that means a task parameter on `flock`, which
@@ -3083,7 +3083,7 @@ caller. This keeps both: the library owns the record's coherence, and a record
 disagreeing with the condition a client polls is unwritable rather than merely
 unwritten.
 
-**How a woken call finishes.** Not by re-issuing it. `UnixSystem.flockAcquire`
+**How a woken call finishes.** Not by re-issuing it. `UnixDescriptor.flockAcquire`
 takes the open file description, and `FileDescriptorRegistry.flockOn` is the
 by-description primitive the by-fd `flock` now delegates to. A guest test pins
 why: it closes the descriptor it parked through — kept alive by a `dup` — and
@@ -3364,7 +3364,7 @@ join it.
 **The predicate becomes strict.** It answered `false` for a dead or non-port
 description, justified as "a thread can park on a port whose last descriptor later
 closes, and a real `epoll_wait` sleeps on regardless". That justification predates the
-port close refusal stage 7 added: `UnixSystem.close` refuses the last-descriptor close
+port close refusal stage 7 added: `UnixDescriptor.close` refuses the last-descriptor close
 on Linux and any close on Darwin precisely so a parked waiter's port cannot be
 destroyed, all three of PawPrint's close sites turn that refusal into a failure, and
 there is no other path that closes a descriptor. So the `false` arms are unreachable
@@ -3712,7 +3712,7 @@ was *checked* about them is worth recording so that nobody re-checks:
   reference here to "the open questions" pointed at a section that does not exist in this
   document; it was stale rather than outstanding.
 * **`docs/divergences.md`** needed one line. Both of its pointers into the library
-  (`UnixSystem.getcwd`, `UnixSystem.getsockname`) still resolve, but it pinned its
+  (`UnixPathResolution.getcwd`, `UnixSocket.getsockname`) still resolve, but it pinned its
   directory-enumeration cases on `WoofWare.PawPrint.Test/TestDirectoryEnumeration.fs`, and
   that file moved to `WoofWare.PosixKernel.Test` during the extraction. Reading the
   document had not caught it; a path checker did, which is the argument for running one
@@ -3779,7 +3779,7 @@ already exists.
 So `accept` first, and this slice invents exactly one new library concept: why an
 `accept` can be refused.
 
-**The precedent it follows.** `UnixSystem.getsockname`, from stage 8m. Both classify a
+**The precedent it follows.** `UnixSocket.getsockname`, from stage 8m. Both classify a
 descriptor and then copy a `sockaddr_in` out under a caller-declared length that bounds
 what is *written* and not what is *reported*. `accept` reuses that shape wholesale:
 `(fd, destination : UserBuffer, declaredLength, system)`, a negative declared length
@@ -3804,12 +3804,12 @@ fixtures (`TestEmulatedKernelSockets`, `TestSocketEventDelivery`, `SocketFuzz`).
 want the state transition and not the entry point: each holds a `SocketId` rather than
 a descriptor, and none has any use for a user buffer.
 
-* **Option A: publish `UnixSystem.acceptConnection`; keep `EmulatedKernel.acceptConnection`
+* **Option A: publish `UnixConnection.acceptConnection`; keep `EmulatedKernel.acceptConnection`
   as an adapter over it.** Zero churn at the ten sites.
 * **Option B: publish it, delete the PawPrint one, retarget the ten sites.** Each
   becomes three lines rather than one: `EmulatedKernel.unix` in, the call, `withUnix`
   back out.
-* **Option C: leave the transition in `EmulatedKernel`, and have `UnixSystem.accept`
+* **Option C: leave the transition in `EmulatedKernel`, and have `UnixConnection.accept`
   return a *description* of it for PawPrint to apply.**
 
 C is wrong outright: it would make `accept` the only library entry point that does not
@@ -3817,7 +3817,7 @@ apply its own effect, against `opendir`, `read` and `write`, which all return th
 system they produced.
 
 B was the initial choice, on the argument that `TestEmulatedKernelInodeLifetime.fs`
-already calls `UnixSystem.opendir (EmulatedKernel.unix kernel)` from a PawPrint
+already calls `UnixNamespace.opendir (EmulatedKernel.unix kernel)` from a PawPrint
 fixture, so the three-line shape is established rather than imposed — and that a
 wrapper existing only to save lines in fixtures is the sort of thing this repository
 deletes. Counting the sites is what overturned it: that precedent is *one* call site,
@@ -3831,7 +3831,7 @@ same convention for its `Process` and `Machine` reads, so that moving a field in
 costs no call site.
 
 Publishing `acceptConnection` publishes its precondition — the socket must be listening
-with a non-empty queue — and that is stated on the function, as `UnixSystem.readdir`
+with a non-empty queue — and that is stated on the function, as `UnixNamespace.readdir`
 states that a stream this kernel never issued is a caller bug rather than an errno.
 
 **What the library refuses.** Four cases, each a `failwith` in the handler today:
@@ -3878,7 +3878,7 @@ description it already has.
   success, EAGAIN, EINVAL, EOPNOTSUPP, ENOTSOCK, EBADF, all four EFAULT screens and the
   reported-versus-written length split; `sourcesImpure/SocketAccept{Linux,Darwin}.cs`
   cover the three errno numbers that are not portable.
-* A new `WoofWare.PosixKernel.Test/TestAccept.fs`, 40 cases, driving `UnixSystem.accept`
+* A new `WoofWare.PosixKernel.Test/TestAccept.fs`, 40 cases, driving `UnixConnection.accept`
   on a constructed system — which is the tier that reaches what a guest cannot: both
   flavours (a guest runs one), every refusal (a guest cannot hold a `SOCK_RAW` socket
   or ask for a copy-out through a buffer whose bytes nobody can produce), and the two
@@ -3902,7 +3902,7 @@ move *created the conditions to see* rather than introduced.
 * **The accepted socket's `O_NONBLOCK` was the PAL's answer, not the kernel's.**
   `FileDescriptorRegistry.createSocket` always mints a blocking description, and while
   that was PawPrint-internal it was right: the guest goes through
-  `SystemNative_Accept`, which clears the flag. Published as `UnixSystem.accept`, it
+  `SystemNative_Accept`, which clears the flag. Published as `UnixConnection.accept`, it
   became a claim about `accept(2)` — and the claim is false on Darwin. Measured with
   `accept-inherits-nonblock.c` (added beside the other probes in this plan's
   directory): on Linux 6.18.5 a non-blocking listener yields a **blocking** accepted
@@ -3977,7 +3977,7 @@ kills either:
 The second socket entry point, split in two. This is the first half: 748 lines of
 `connect(2)` ladder move from `EmulatedKernel.fs` to `WoofWare.PosixKernel`, and
 **nothing about what any caller sees changes**. The second half (9l) adds the
-`UnixSystem.connect` entry point and shrinks the handler.
+`UnixConnection.connect` entry point and shrinks the handler.
 
 **Why split at all**, when 9j moved `accept` in one PR: because the two moves are shaped
 differently. `accept`'s ladder was *inline in the handler*, so extracting it and writing
@@ -4003,7 +4003,7 @@ The substitutions are the whole of the change:
   word throughout this function's prose ("a real kernel", "this kernel's"), and renaming
   it there would be a meaning change smuggled into a move;
 * three prose repairs, which are the part a move cannot avoid: every message prefixed
-  `SystemNative_Connect:` now names `UnixSystem.connectSocket`, because a message must
+  `SystemNative_Connect:` now names `UnixConnection.connectSocket`, because a message must
   name the function it comes from and the shim's name would misdirect; and two
   references to types the library does not have (`EmulatedKernelDefect.SocketPhaseKindMismatch`,
   `KernelConfig.EphemeralPortRange`) would otherwise be dangling.
@@ -4043,7 +4043,7 @@ alongside the entry point.
 
 **Dependencies**: 9k, which is where the ladder went.
 
-`UnixSystem.admitConnect` and `UnixSystem.connect` now carry every screen the handler
+`UnixSystem.admitConnect` and `UnixConnection.connect` now carry every screen the handler
 used to, and `SystemNative_Connect` keeps only the guest-memory work: the shim's two
 null/negative screens, resolving the pointer, `requireBufferRoom`, reading the fields,
 and the errno write.
@@ -4111,7 +4111,7 @@ writing a test for it.
 **Dependencies**: none beyond the vocabulary 9j-9l settled.
 
 The third socket entry point, and the first of the two that carry a park.
-`UnixSystem.poll` takes the caller's entries and its timeout and answers what each
+`UnixPoll.poll` takes the caller's entries and its timeout and answers what each
 reports and how many carry anything. `SystemNative_Poll` keeps the shim's two screens,
 `struct PollEvent`'s layout, the int32 address-space bound, and the copy in and out.
 
@@ -4171,7 +4171,7 @@ read what a `DID-NOT-APPLY` actually matched.
 
 **Dependencies**: none beyond the admission vocabulary 9l settled.
 
-The last of the four socket entry points. `UnixSystem.admitSocketWait` carries
+The last of the four socket entry points. `UnixPoll.admitSocketWait` carries
 `epoll_wait(2)`'s four screens and `kevent(2)`'s two, in the order each kernel applies
 them. `SystemNative_WaitForSocketEvents` keeps the park machinery, and that division is
 the interesting part of this slice.
@@ -4423,7 +4423,7 @@ stages nearly shipped. This stage is a prose pass as much as a move.
 
 8m argued that the blob "does not cross" the boundary, and 9j and 9l repeated it. That
 reasoning was about the *entry points' signatures*, and it stands:
-`UnixSystem.getsockname` and `UnixSystem.accept` still answer an `InternetEndpoint`, not
+`UnixSocket.getsockname` and `UnixConnection.accept` still answer an `InternetEndpoint`, not
 bytes. Only the pure encoding function relocates. This discharges the deferral without
 reopening the question those stages actually settled.
 
@@ -4450,7 +4450,7 @@ and the change DU, and **nothing** PawPrint-only.
 #### What moved, and what stayed
 
 * **The ladder itself**, verbatim apart from the aggregate rename, as
-  `UnixSystem.changeSocketEventRegistration`.
+  `UnixPoll.changeSocketEventRegistration`.
 * **The Darwin refusal.** kqueue's registration model is structurally different rather
   than differently numbered — per `(ident, filter)` state, a silently-replacing `ADD`, a
   regular file registering where epoll answers `EPERM`, a `DEL` of a dead target
@@ -4535,7 +4535,7 @@ in this library, which is why `SimulatedUnixPlatform.bindAddressLength` is named
 So the admission is renamed for what it is rather than for its first caller:
 `admitConnect` → `admitSockaddrCopy`, and `ConnectFields`, `ConnectAdmission` and
 `ConnectRefusal` → `SockaddrCopyFields`, `SockaddrCopyAdmission` and
-`SockaddrCopyRefusal`. `UnixSystem.connect` keeps its name and its signature apart from
+`SockaddrCopyRefusal`. `UnixConnection.connect` keeps its name and its signature apart from
 the refusal type.
 
 One simplification falls out. `ConnectAdmission.Answered` carried a `ConnectOutcome`,
@@ -4580,13 +4580,13 @@ the field reads, `SocketArgumentsPal.isTcpProtocolType`, and the errno write.
 
 * **The `SO_REUSEADDR` write outlives every failure**, so it cannot sit behind the
   admission: measured, after a bind that answered EFAULT the option still reads back set.
-  `UnixSystem.bind` therefore resolves the descriptor itself, applies the write, and only
+  `UnixSocket.bind` therefore resolves the descriptor itself, applies the write, and only
   then calls the admission — which resolves the descriptor again. That is a lookup
   repeated, not a rule; the same shape `connect` already has, where the entry point
   re-derives the admission it was given.
 
   It also means the handler cannot return early on `Answered`: an admission failure still
-  has to go through `UnixSystem.bind` so that the write happens. The handler's two arms
+  has to go through `UnixSocket.bind` so that the write happens. The handler's two arms
   converge instead, with `family`/`endpoint` as `None` on the answered path.
 
 * **`privilegedPortCeiling` moves** from `EmulatedKernel` to `SimulatedUnixPlatform`, as
@@ -4643,11 +4643,11 @@ took across), `socket`, the two non-blocking `fcntl`s, and the fixture relocatio
 
 The shortest of the five, and the cleanest: `SystemNative_Listen` had, in its own words,
 "no screens of its own: it is `listen(2)`". So the whole handler is now the errno write,
-and `UnixSystem.listen` is the rest.
+and `UnixSocket.listen` is the rest.
 
 **The relation `bind` and `listen` share** — "does another socket's binding conflict with
 mine" — was a closure inside each of them. It is one function now,
-`UnixSystem.bindingConflicts`, because it is one kernel rule; the two callers differ only
+`UnixSocket.bindingConflicts`, because it is one kernel rule; the two callers differ only
 in *when* they ask. `listen` asks it twice: once on the flavour whose `listen(2)` re-runs
 the admission, and once per candidate port for the implicit bind an unbound `listen`
 performs.
@@ -4704,13 +4704,13 @@ this audit found still holding kernel logic on PawPrint's side.
 screen, the `*createdSocket` store, `SocketArgumentsPal.socketCreation` and the three
 conversion errnos are the shim's, and stay. What moves is
 `EmulatedKernel.createSocket` — the "mint a socket and a descriptor onto it, agreeing"
-transition — as `UnixSystem.createSocket`, with an adapter left behind for the nine
+transition — as `UnixSocket.createSocket`, with an adapter left behind for the nine
 fixtures that call it.
 
 **The two `fcntl`s are almost entirely kernel logic**, once the PAL return convention
 (0, or -1-and-errno, or the odd `Error_EFAULT` enum on a null out-pointer) and the
-argument decoding are taken off. `UnixSystem.setNonBlocking` and
-`UnixSystem.isNonBlocking` carry the rest.
+argument decoding are taken off. `UnixSocket.setNonBlocking` and
+`UnixSocket.isNonBlocking` carry the rest.
 
 Three things about the setter are worth having in the library rather than in a handler:
 
@@ -5487,7 +5487,7 @@ Library 1077 → 1082, PawPrint 3125 → 3120.
 **Dependencies**: 25 (`UnixSystem.withFileSystemAndCurrentDirectory`).
 
 `TestEmulatedKernelInodeLifetime`, 586 lines and nineteen rows, states when an inode stops
-existing: `UnixProcessState.heldInodes`, `UnixSystem.pinnedInodes`, `forgetIfUnheld`, what
+existing: `UnixProcessState.heldInodes`, `UnixDescriptor.pinnedInodes`, `forgetIfUnheld`, what
 `close` does with them, and the cascade that frees an orphan's ancestors. Every one of
 those is the library's. The fixture held an `EmulatedKernel` only as a container, reaching
 into it with `unix`/`mapUnix` at almost every assertion, so the move is mostly the removal
@@ -5511,7 +5511,7 @@ stream keeps an orphan alive until it goes — are the library's. Library-side t
 `DirectoryStreamId` that `opendir` answers, and are shorter for it.
 
 Forgetting a stream had to be written out rather than called: **the library has no
-`closedir`.** `UnixSystem.opendir` mints a stream and nothing in the library removes one;
+`closedir`.** `UnixNamespace.opendir` mints a stream and nothing in the library removes one;
 PawPrint's `withoutDirectoryStream` is the only operation that does. That is a real gap
 rather than a consequence of this stage, and closing it is its own change.
 

@@ -211,7 +211,7 @@ type ThreadStatus =
     ///
     /// **Carries nothing**, not even which syscall. What the thread waits for is the
     /// `ParkedSyscall` its task holds, which the emulated kernel must have anyway — the
-    /// re-entry finishes the call from it, and `UnixSystem.close` refuses a close that would
+    /// re-entry finishes the call from it, and `UnixDescriptor.close` refuses a close that would
     /// strand a waiter, a rule it can only apply to a park it can see. A payload here would be a
     /// second copy of that record with nothing keeping the two equal, read by the sweep while
     /// the completion read the record.

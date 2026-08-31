@@ -55,7 +55,7 @@ module TestDirectoryStreamId =
     /// the identity is the library's and the address is PawPrint's.
     let private openDir (kernel : EmulatedKernel) : NativeMemoryBlockId * EmulatedKernel =
         let id, system =
-            match UnixSystem.opendir (UnixPath.parseOrFail "test" "/dir") (EmulatedKernel.unix kernel) with
+            match UnixNamespace.opendir (UnixPath.parseOrFail "test" "/dir") (EmulatedKernel.unix kernel) with
             | OpenDirAnswer.Opened id, system -> id, system
             | other -> failwith $"could not open the directory: %O{other}"
 
@@ -122,7 +122,7 @@ module TestDirectoryStreamId =
         let before = EmulatedKernel.directoryStreamId block kernel
 
         let kernel =
-            EmulatedKernel.mapUnix (fun system -> snd (UnixSystem.readdir before system)) kernel
+            EmulatedKernel.mapUnix (fun system -> snd (UnixNamespace.readdir before system)) kernel
 
         EmulatedKernel.directoryStreamId block kernel |> shouldEqual before
         kernel.NextDirectoryStreamId |> shouldEqual (DirectoryStreamId 1L)

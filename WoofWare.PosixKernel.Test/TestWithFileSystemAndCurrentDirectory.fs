@@ -86,7 +86,7 @@ module TestWithFileSystemAndCurrentDirectory =
         // that refused everything.
         match startAt SimulatedUnixPlatform.linuxX64 seed "/outer/inner" with
         | Ok system ->
-            UnixSystem.currentDirectoryPath system
+            UnixPathResolution.currentDirectoryPath system
             |> shouldEqual (Some (absolute "/outer/inner"))
         | Error fault -> failwith $"expected /outer/inner to be accepted, but it answered %O{fault}."
 
@@ -115,7 +115,7 @@ module TestWithFileSystemAndCurrentDirectory =
         system.Process.CurrentDirectoryInode
         |> shouldEqual (inodeOf system "/outer/inner")
 
-        UnixSystem.currentDirectoryPath system
+        UnixPathResolution.currentDirectoryPath system
         |> shouldEqual (Some (absolute "/outer/inner"))
 
         UnixSystem.checkInvariants system |> shouldBeEmpty
@@ -185,7 +185,9 @@ module TestWithFileSystemAndCurrentDirectory =
         |> shouldEqual (Error (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Linux))
 
         match startAt SimulatedUnixPlatform.macOsArm64 entries path with
-        | Ok system -> UnixSystem.currentDirectoryPath system |> shouldEqual (Some (absolute path))
+        | Ok system ->
+            UnixPathResolution.currentDirectoryPath system
+            |> shouldEqual (Some (absolute path))
         | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."
 
     [<Test>]
@@ -214,7 +216,8 @@ module TestWithFileSystemAndCurrentDirectory =
         | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."
         | Ok system ->
 
-        UnixSystem.currentDirectoryPath system |> shouldEqual (Some (absolute path))
+        UnixPathResolution.currentDirectoryPath system
+        |> shouldEqual (Some (absolute path))
 
         // The argument is consulted and *not* written: the system still carries
         // the flavour it was booted on. Nothing else here would notice a
@@ -311,7 +314,7 @@ module TestWithFileSystemAndCurrentDirectory =
         // afterwards name a graph that no longer exists -- measured before the
         // guard existed, `checkInvariants` reported `DanglingOpenInode`.
         let _, withHandle =
-            UnixSystem.openPath plainOpen (UnixPath.ofAbsolute (absolute "/outer/file")) 0 (booted "/")
+            UnixNamespace.openPath plainOpen (UnixPath.ofAbsolute (absolute "/outer/file")) 0 (booted "/")
 
         // The handle really is filesystem-backed, so the guard below has
         // something to see. Without this the row would pass against a system
@@ -331,14 +334,14 @@ module TestWithFileSystemAndCurrentDirectory =
         // descriptor `opendir` took out from under the stream, and the stream
         // still names the directory afterwards.
         let answer, withStream =
-            UnixSystem.opendir (UnixPath.ofAbsolute (absolute "/outer")) (booted "/")
+            UnixNamespace.opendir (UnixPath.ofAbsolute (absolute "/outer")) (booted "/")
 
         match answer with
         | OpenDirAnswer.Failed error -> failwith $"opendir on /outer failed: %O{error}."
         | OpenDirAnswer.Opened _ ->
 
         let closed =
-            match UnixSystem.close 3 withStream with
+            match UnixDescriptor.close 3 withStream with
             | Ok (SyscallAnswer.Completed 0L, system) -> system
             | other -> failwith $"closing the stream's descriptor did not succeed: %A{other}."
 
@@ -375,7 +378,7 @@ module TestWithFileSystemAndCurrentDirectory =
         // and silently retarget, because the new graph reissues the root's
         // number -- `checkInvariants` cannot see that.
         let answer, withStream =
-            UnixSystem.opendir (UnixPath.ofAbsolute (absolute "/")) (booted "/")
+            UnixNamespace.opendir (UnixPath.ofAbsolute (absolute "/")) (booted "/")
 
         match answer with
         | OpenDirAnswer.Failed error -> failwith $"opendir on / failed: %O{error}."

@@ -1,6 +1,6 @@
 # `chdir(2)`, measured
 
-`chdir.py` is the probe behind `UnixSystem.chdir` and its rows in
+`chdir.py` is the probe behind `UnixPathResolution.chdir` and its rows in
 `TestUnixSystemStep`. Re-run it rather than re-deriving those; a row that
 disagrees is a measurement, not a bug report about the probe.
 

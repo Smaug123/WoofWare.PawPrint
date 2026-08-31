@@ -10,7 +10,7 @@ open WoofWare.PosixKernel
 
 /// A blocking `flock` that cannot be granted parks the calling thread, and a release wakes it.
 ///
-/// The library decided the park in stage 9a: `UnixSystem.flock` answers `WouldBlock` carrying the
+/// The library decided the park in stage 9a: `UnixDescriptor.flock` answers `WouldBlock` carrying the
 /// lock being waited for. This fixture is about the half PawPrint owns — a thread status, a
 /// readiness sweep, and a re-entrant native frame — and about the one thing neither half can state
 /// alone, which is that a parked call ever finishes.

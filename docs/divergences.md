@@ -1315,7 +1315,7 @@ unmapped destination on macOS 26.6:
 
 1016 is neither PATH_MAX (1024) nor any documented constant — it is one libc build's internal slack,
 selecting between the `__getcwd` syscall and the user-space backward assembly. PawPrint models
-kernels, not that route selection, so `UnixSystem.getcwd` **refuses** an unwritable destination for
+kernels, not that route selection, so `UnixPathResolution.getcwd` **refuses** an unwritable destination for
 any capacity of two or more, on that flavour, whatever the path length. This deliberately
 over-refuses the top row, where the real call answers ERANGE: a refusal says "this library cannot
 tell you", where encoding 1016 would answer ERANGE for calls that really die. At capacity 0 and 1 it
@@ -1334,7 +1334,7 @@ partial measurements were wrong in different ways, one of them writing past the 
 success, so no BCL caller can see this. It takes a hand-rolled P/Invoke that ignores a NULL return
 and reads its buffer anyway.
 
-**Where this lives in code**: `UnixSystem.getcwd` in `WoofWare.PosixKernel/UnixSystem.fs` returns
+**Where this lives in code**: `UnixPathResolution.getcwd` in `WoofWare.PosixKernel/UnixSystem.fs` returns
 `GetCwdAnswer.Failed` carrying an errno and nothing else; the measurements are recorded on
 `GetCwdOrphanAnswer.ShortestPathFirst` in `SimulatedUnixPlatform.fs`.
 ## A faulting `getsockname` copies out no partial address
@@ -1371,5 +1371,5 @@ blob only on success, so no BCL caller reads either. The length store is unreach
 hand-rolled P/Invoke: the shim passes `getsockname(2)` a local `socklen_t` and copies it back to the
 caller only when the call succeeded.
 
-**Where this lives in code**: `UnixSystem.getsockname` in `WoofWare.PosixKernel/UnixSystem.fs`; the
+**Where this lives in code**: `UnixSocket.getsockname` in `WoofWare.PosixKernel/UnixSystem.fs`; the
 length divergence is recorded on `GetSockNameFaultLength` in `SimulatedUnixPlatform.fs`.

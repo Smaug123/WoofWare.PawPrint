@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.admitSockaddrCopy` and `UnixSystem.connect`, driven directly on a
+/// `UnixSocket.admitSockaddrCopy` and `UnixConnection.connect`, driven directly on a
 /// constructed system.
 ///
 /// Two jobs. The first is the admission itself, which is new: which screens
@@ -115,7 +115,7 @@ module TestConnect =
         (system : UnixSystem<int, string>)
         : SockaddrCopyAdmission
         =
-        match UnixSystem.admitSockaddrCopy fd destination declaredLength system with
+        match UnixSocket.admitSockaddrCopy fd destination declaredLength system with
         | Ok admission -> admission
         | Error refusal -> failwith $"expected an admission, got a refusal: %s{SockaddrCopyRefusal.describe refusal}"
 
@@ -138,7 +138,7 @@ module TestConnect =
             | SockaddrCopyAdmission.Transfer (_, SockaddrCopyFields.FamilyAndEndpoint) ->
                 Some (inetFamily platform), Some destination
 
-        match UnixSystem.connect fd UserBuffer.Mapped declaredLength family endpoint system with
+        match UnixConnection.connect fd UserBuffer.Mapped declaredLength family endpoint system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{SockaddrCopyRefusal.describe refusal}"
 
@@ -185,7 +185,7 @@ module TestConnect =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixSystem.admitSockaddrCopy fd UserBuffer.Mapped 4096 system
+            UnixSocket.admitSockaddrCopy fd UserBuffer.Mapped 4096 system
             |> shouldEqual (Error (SockaddrCopyRefusal.UnmodelledDomain (SocketId 0L, domain)))
 
     /// Measured: Linux takes 16 through 128 and answers EINVAL above, Darwin
@@ -308,7 +308,7 @@ module TestConnect =
         for destination, expected in rows do
             let fd, system = client platform
 
-            UnixSystem.admitSockaddrCopy fd destination 16 system
+            UnixSocket.admitSockaddrCopy fd destination 16 system
             |> shouldEqual (Error (SockaddrCopyRefusal.Buffer expected))
 
     /// The length verdict precedes the buffer: a length the copy helper rejects
@@ -330,7 +330,7 @@ module TestConnect =
         let fd, system = client platform
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixSystem.admitSockaddrCopy fd UserBuffer.Mapped -1 system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixSocket.admitSockaddrCopy fd UserBuffer.Mapped -1 system |> ignore<_>)
 
         e.Message |> shouldContainText "is negative, which no kernel is ever asked"
 
@@ -352,7 +352,8 @@ module TestConnect =
         for family, endpoint in wrong do
             let e =
                 Assert.Throws<exn> (fun () ->
-                    UnixSystem.connect fd UserBuffer.Mapped 16 family endpoint system |> ignore<_>
+                    UnixConnection.connect fd UserBuffer.Mapped 16 family endpoint system
+                    |> ignore<_>
                 )
 
             e.Message |> shouldContainText "have different measured answers"
@@ -361,7 +362,7 @@ module TestConnect =
     /// so a caller that never asked is not punished for it.
     [<TestCaseSource(nameof platforms)>]
     let ``connect repeats the admission's answers`` (platform : SimulatedUnixPlatform) : unit =
-        UnixSystem.connect 99 UserBuffer.Mapped 16 None None (systemOn platform)
+        UnixConnection.connect 99 UserBuffer.Mapped 16 None None (systemOn platform)
         |> shouldEqual (Ok (ConnectOutcome.Failed UnixError.EBADF, systemOn platform))
 
     // ------------------------------------------------------------------

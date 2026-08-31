@@ -6,7 +6,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// The rules `UnixSystem.bind` consults, as objects in their own right: the
+/// The rules `UnixSocket.bind` consults, as objects in their own right: the
 /// fault ordering, the conflict relation across the whole measured matrix, and
 /// the port allocator's own guarantees.
 ///

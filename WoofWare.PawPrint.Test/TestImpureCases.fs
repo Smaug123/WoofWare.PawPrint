@@ -431,7 +431,7 @@ module TestImpureCases =
     /// it must have been reaped rather than left unreachable from the root.
     ///
     /// Not a fact any guest can read. Without it, a `CloseDir` that reaped only
-    /// through `UnixSystem.close` would pass every other assertion in this slice, because
+    /// through `UnixDescriptor.close` would pass every other assertion in this slice, because
     /// every other path has a live descriptor to reap through.
     let private assertClosedFdLeftNoOrphan (state : IlMachineState) : unit =
         state.Kernel.DirectoryStreams |> shouldEqual Map.empty
@@ -518,7 +518,7 @@ module TestImpureCases =
     /// Not a fact any guest can read — freeing an inode is not something a
     /// process can watch — and the orphan guests cannot check it either, since
     /// everything they remove stays pinned. Without this, a handler that never
-    /// called `UnixSystem.forgetIfUnheld` would pass every other assertion
+    /// called `UnixDescriptor.forgetIfUnheld` would pass every other assertion
     /// in this slice.
     let private assertRmDirLeftNoOrphan (state : IlMachineState) : unit =
         VirtualFileSystem.checkInvariants Set.empty state.Kernel.FileSystem
@@ -579,7 +579,7 @@ module TestImpureCases =
         let kernel = state.Kernel
         let filesystem = kernel.FileSystem
         let root = VirtualFileSystem.root filesystem
-        let pinned = UnixSystem.pinnedInodes (EmulatedKernel.unix kernel)
+        let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
 
         let survivors =
             VirtualFileSystem.inodes filesystem
@@ -642,14 +642,14 @@ module TestImpureCases =
     /// which are the two halves of the rule — and the third must not be, excused
     /// its unreachability by being pinned.
     ///
-    /// This is the only place either half of `UnixSystem.forgetIfUnheld` is
+    /// This is the only place either half of `UnixDescriptor.forgetIfUnheld` is
     /// visible: freeing an inode is not something a guest can observe, and
     /// failing to free one shows up only as a filesystem that grows without
     /// bound.
     let private assertUnlinkReapedExactlyOne (state : IlMachineState) : unit =
         let kernel = state.Kernel
         let filesystem = kernel.FileSystem
-        let pinned = UnixSystem.pinnedInodes (EmulatedKernel.unix kernel)
+        let pinned = UnixDescriptor.pinnedInodes (EmulatedKernel.unix kernel)
 
         let survivors =
             VirtualFileSystem.inodes filesystem
@@ -1884,7 +1884,7 @@ module TestImpureCases =
             {
                 // A content-changing write's set-ID rule, one guest per flavour,
                 // and the same pairing argument the truncation guests above make:
-                // a `UnixSystem.write` that hardcoded either answer instead of
+                // a `UnixReadWrite.write` that hardcoded either answer instead of
                 // reading `SimulatedUnixPlatform.setGroupIdOnWrite` would satisfy
                 // every unit test (they pass the rule in by hand), the host
                 // oracle (it compares the pure function) *and* one of these two.
