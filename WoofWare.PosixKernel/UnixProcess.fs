@@ -167,7 +167,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         ///
         /// Deliberately *not* consulted for seed entries. A seed describes a
         /// tree that some other process built, so this run's mask has no bearing
-        /// on it; `PermissionBits.defaultForRegularFile` shares the same 0o022
+        /// on it; `SeedEntry.defaultPermsForRegularFile` shares the same 0o022
         /// literal but is not derived from this field, so raising the mask
         /// cannot silently change what an unannotated seed entry means.
         Umask : PermissionBits

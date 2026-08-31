@@ -1,119 +1,179 @@
 namespace WoofWare.PosixKernel
 
-/// Whether the calling process is exempt from the file-permission rules — which
-/// is one question, asked by several of them, because the emulated kernel has a
-/// single identity and being exempt means being uid 0.
-///
-/// The rules that ask: whether a write or a truncation strips a file's
-/// set-user-ID and set-group-ID bits, and whether a permission bit is consulted
-/// at all before reading, writing, binding a name, or searching a directory on
-/// the way through a path.
-///
-/// A DU rather than a `bool`, so that a caller cannot silently pass the wrong
-/// one of two adjacent flags, and so that the answer arrives at a signature
-/// saying what it means.
+/// <summary>
+/// Whether the calling process is exempt from the file-permission rules.
+/// </summary>
+/// <example>
+/// If the emulated user has UID 0, for example, they are exempt.
+/// </example>
 [<RequireQualifiedAccess>]
 type CallerPrivilege =
-    /// uid 0. Measured on Linux as root: a write to an `04755` file leaves it
-    /// `04755`, and a directory whose mode is 0o000 can still be searched.
+    /// <summary>The caller is privileged and can ignore file permissions.</summary>
+    /// <example>
+    /// The Linux root user can write to a <c>04755</c> file (keeping the perms unchanged),
+    /// and can search a <c>0o000</c> directory.
+    /// </example>
     | Privileged
-    /// Any other identity.
+    /// <summary>
+    /// The caller is not privileged so is bound by file permissions.
+    /// </summary>
     | Unprivileged
 
-/// Whether this Unix clears `S_ISGID` when an unprivileged process changes a
+/// <summary>
+/// Whether this Unix clears <c>S_ISGID</c> when an unprivileged process changes a
 /// file's contents, on a file that is not group-executable.
+/// </summary>
 ///
-/// The one thing about a content-changing write the two platforms disagree
-/// about, so it is derived from `SimulatedUnixFlavour` rather than crashed on;
-/// see `SimulatedUnixPlatform.setGroupIdOnWrite`, which is where the measured
-/// table lives.
-///
-/// Only `S_ISGID` needs a rule. `S_ISUID` is cleared by both flavours in every
-/// measured row, and the sticky bit is left alone by both, so a DU spanning
-/// those too would carry a case no platform selects.
+/// <remarks>
+/// By contrast, both modelled Unixes clear <c>S_ISUID</c> and leave the sticky
+/// bit alone during a write from an unprivileged process, so there's no
+/// configuration knob for that behaviour.
+/// The behaviour is for security purposes: writing to an executable file should
+/// not cause you to be able to run your arbitrary new contents as an impersonated
+/// user.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type SetGroupIdOnWrite =
-    /// Linux: without `S_IXGRP` the bit means mandatory locking rather than
-    /// privilege, so a write leaves it alone — `02644` survives.
+    /// <summary>
+    /// An unprivileged write to the file does not change <c>S_IXGRP</c>.
+    /// </summary>
+    /// <remarks>
+    /// On Linux, the <c>S_IXGRP</c> bit means "mandatory locking" rather than privilege,
+    /// so a write can (and does) safely leave it alone.
+    /// </remarks>
+    /// <example>
+    /// This is the case on Linux.
+    ///
+    /// For example, <c>02644</c> remains <c>02644</c> after an unprivileged write.
+    /// </example>
     | StripWhenGroupExecutable
-    /// Darwin: the bit goes whatever the execute bits say, exactly as `S_ISUID`
-    /// does — `02644` becomes `00644`.
+    /// <summary>
+    /// Regardless of what the execute bits say, the group ID from <c>setgid</c> gets
+    /// cleared after an unprivileged write.
+    /// </summary>
+    /// <remarks>
+    /// On all platforms, <c>S_ISUID</c> already behaves this way.
+    /// </remarks>
+    /// <example>
+    /// This is the case on Darwin.
+    ///
+    /// For example, <c>02644</c> becomes <c>00644</c> after an unprivileged write.
+    /// </example>
     | StripAlways
 
-/// Whether this Unix clears a truncated file's set-user-ID and set-group-ID bits.
-///
-/// The one thing about truncation the two platforms disagree about, so it is
-/// derived from `SimulatedUnixFlavour` rather than crashed on; see
-/// `SimulatedUnixPlatform.setIdBitsOnTruncation`, which is where the measured
-/// table lives.
+/// <summary>
+/// Whether this Unix clears a file's set-user-ID (<c>setuid</c>) and set-group-ID (<c>setgid</c>)
+/// bits on truncating a file.
+/// </summary>
 [<RequireQualifiedAccess>]
 type SetIdBitsOnTruncation =
-    /// Linux: truncating is a content change like any other, and clears the same
-    /// bits a write clears.
+    /// <summary>
+    /// This Unix clears <c>S_ISUID</c> and <c>S_ISGID</c> on file truncation.
+    /// </summary>
+    /// <remarks>
+    /// That is, truncation is a content change like any other, and it clears the
+    /// same bits that a normal write would clear.
+    /// </remarks>
+    /// <example>
+    /// Linux behaves this way.
+    /// </example>
     | Strip
-    /// Darwin: truncating leaves the whole mode alone — even where a *write* to
-    /// the same file by the same process would strip it.
+    /// <summary>
+    /// This Unix leaves <c>S_ISUID</c> and <c>S_ISGID</c> alone on file truncation,
+    /// even if a write to the same file by the same process would strip them.
+    /// </summary>
+    /// <example>
+    /// Darwin behaves this way.
+    /// </example>
     | Preserve
 
+/// <summary>
 /// The permission, set-user-ID, set-group-ID and sticky bits of an inode's
-/// mode: `st_mode & 0o7777`, which is exactly `chmod(2)`'s domain.
+/// mode.
+/// </summary>
+/// <remarks>
+/// This is <c>st_mode & 0o7777</c>.
 ///
-/// Deliberately *not* the `S_IFMT` file-type band, which is derived from
-/// `InodeContent` by `InodeContent.fileTypeBits` instead. `chmod(2)` cannot
-/// set the type band either, so keeping it out of the stored value
-/// makes "the recorded type disagrees with the content" unrepresentable.
+/// You would feed this to <c>chmod(2)</c>, for example.
+///
+/// Deliberately <i>not</i> the <c>S_IFMT</c> file-type band, which is derived from
+/// <c>InodeContent</c> by <c>InodeContent.fileTypeBits</c> instead (because
+/// <c>chmod(2)</c> can't set that).
+/// </remarks>
 [<Struct>]
 type PermissionBits =
     private
     | PermissionBits of bits : int
 
+    /// <summary>
+    /// The octal digits that you would use in chmod, for example.
+    /// </summary>
+    /// <example>
+    /// "a+rwx,u-x,g-wx,o-wx,ug-s,-t" gives a <c>ToString</c> of "0o0644".
+    /// </example>
     override this.ToString () : string =
         match this with
         | PermissionBits bits -> "0o" + System.Convert.ToString(bits, 8).PadLeft (4, '0')
 
 [<RequireQualifiedAccess>]
 module PermissionBits =
-    /// The widest `st_mode & 0o7777` can be: three rwx triples, plus setuid,
-    /// setgid and the sticky bit.
+    /// <summary>
+    /// The widest <c>st_mode & 0o7777</c> can be:
+    /// three rwx triples, plus setuid, setgid and the sticky bit.
+    /// </summary>
     let private widest : int = 0o7777
 
+    /// <summary>
+    /// Render as an int.
+    /// </summary>
     let toInt (bits : PermissionBits) : int =
         match bits with
         | PermissionBits bits -> bits
 
-    /// Whether a caller with `privilege` is denied any of `needed` on an object
-    /// carrying `bits`.
+    /// <summary>
+    /// Whether a caller with <c>privilege</c> is denied any of <c>needed</c> on an object
+    /// carrying <c>bits</c>.
+    /// </summary>
     ///
-    /// Root gets read and write whatever the mode says — measured on Linux as
-    /// uid 0, where a mode-0000 file opens for writing. Only *execute* still
-    /// needs a bit set for root, and nothing that consults this asks for it.
+    /// <example>
+    /// <c>CallerPrivilege.Privileged</c> (e.g. the root user) gets read and write whatever the mode says.
+    /// </example>
+    ///
+    /// <remarks>
+    /// Here are some currently-false statements, ported from some old docs, which we will fix
+    /// immediately in the next commit when we refactor this code:
+    ///
+    /// Only *execute* still needs a bit set for root, and nothing that consults this asks for it.
     ///
     /// Only the owner triple can ever apply, for the reason
     /// `RemovalChecks.lacksWrite` gives: `stat` reports `Kernel.UserId` as every
     /// inode's `st_uid`, so the caller owns everything.
-    ///
-    /// Shared by `SystemNative_Open` and `OpenDirRules`, which ask the same
-    /// question of the same object — `opendir(3)` is an
-    /// `open(O_RDONLY | O_DIRECTORY)`, and the read bit it demands is the one
-    /// `open` was already demanding. Two copies of the rule could drift apart in
-    /// a way no differential test would catch, since a real runtime would agree
-    /// with itself either way.
+    /// </remarks>
     let deniedTo (privilege : CallerPrivilege) (needed : int) (bits : PermissionBits) : bool =
         match privilege with
         | CallerPrivilege.Privileged -> false
         | CallerPrivilege.Unprivileged -> toInt bits &&& needed <> needed
 
-    /// Parse a raw mode word's permission bits, or `None` if it does not fit in
-    /// `0o7777`.
-    ///
-    /// A caller passing a whole `st_mode` (type band included) is refused
-    /// rather than silently masked down.
+    /// <summary>
+    /// Parse a raw mode word's permission bits, or <c>None</c> if it does not fit in
+    /// <c>0o7777</c>.
+    /// </summary>
+    /// <remarks>
+    /// A caller passing a whole <c>st_mode</c> (including a type band) gets <c>None</c>
+    /// rather than silently masking down the non-permission bits.
+    /// </remarks>
     let parse (candidate : int) : PermissionBits option =
         if candidate < 0 || candidate > widest then
             None
         else
             Some (PermissionBits candidate)
 
+    /// <summary>
+    /// Parse a raw mode word's permission bits, throwing if the input doesn't fit in <c>0o7777</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is the throwing version of <c>parse</c>.
+    /// </remarks>
     let parseOrFail (context : string) (candidate : int) : PermissionBits =
         match parse candidate with
         | Some bits -> bits
@@ -121,27 +181,14 @@ module PermissionBits =
             failwith
                 $"%s{context}: 0o%s{System.Convert.ToString (candidate, 8)} is not a permission word; it must lie in [0, 0o7777]. If this is a whole st_mode, mask off the S_IFMT band — the file type is derived from InodeContent, never stored."
 
-    /// Re-check a value that crossed an API boundary, so a forged
-    /// `Unchecked.defaultof` or a hand-built out-of-range word is refused where
-    /// it enters rather than where it is next read.
-    ///
-    /// The zero it cannot catch is a real mask (`umask 000`), so this guards the
-    /// range rather than the default.
+    /// <summary>
+    /// Re-check a value that crossed an API boundary.
+    /// </summary>
+    /// <remarks>
+    /// You don't need to call this on the result of <c>PermissionBits.parse</c>; it's only for hand-constructed
+    /// permissions or <c>Unchecked.defaultof</c>.
+    /// </remarks>
     let assertValid (context : string) (bits : PermissionBits) : PermissionBits = parseOrFail context (toInt bits)
-
-    /// What a `umask 022` process gets from `open(2)` with the 0o666 that
-    /// CoreLib's `FileStream` passes: `0o666 &&& ~~~0o022`.
-    ///
-    /// A constant, and deliberately *not* derived from `EmulatedKernel.Umask`
-    /// even though that now exists: this is the default mode of a **seed** entry,
-    /// and a seed describes a tree that some other process built, so this run's
-    /// configured mask has no bearing on it. Deriving it would make raising the
-    /// mask silently change what an unannotated seed entry means.
-    let defaultForRegularFile : PermissionBits = PermissionBits (0o666 &&& ~~~0o022)
-
-    /// What a `umask 022` process gets from `mkdir(2)`'s 0o777:
-    /// `0o777 &&& ~~~0o022`. See `defaultForRegularFile`.
-    let defaultForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
 
     /// The bits an inode created with this `mode` argument ends up with, under
     /// this platform's own mask and this process's `umask`.

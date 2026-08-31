@@ -5,7 +5,6 @@ open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
-open System.Runtime.InteropServices
 open NUnit.Framework
 open WoofWare.PosixKernel
 
@@ -43,7 +42,7 @@ module TestFileSystemSeed =
         UnixTimestamp.createOrFail "test" 1_700_000_000L 250_000_000
 
     let private realise (seed : Map<DirectoryEntryName, SeedEntry>) : VirtualFileSystem =
-        FileSystemSeed.toVirtualFileSystem createdAt seed
+        VirtualFileSystem.ofFileSystemSeed createdAt seed
 
     // ----------------------------------------------------------------- basics
 
@@ -85,7 +84,7 @@ module TestFileSystemSeed =
         match contentAt "/etc/hostname" SymlinkPolicy.Follow with
         | InodeContent.RegularFile (contents, permissions) ->
             contents |> Seq.toArray |> shouldEqual (bytes "pawprint" |> Seq.toArray)
-            permissions |> shouldEqual PermissionBits.defaultForRegularFile
+            permissions |> shouldEqual SeedEntry.defaultPermsForRegularFile
         | other -> failwith $"expected a regular file, got %A{other}"
 
         match contentAt "/etc/localtime" SymlinkPolicy.NoFollowFinal with
@@ -98,7 +97,7 @@ module TestFileSystemSeed =
         match contentAt "/empty" SymlinkPolicy.Follow with
         | InodeContent.Directory directory ->
             directory.Entries |> Map.isEmpty |> shouldEqual true
-            directory.Permissions |> shouldEqual PermissionBits.defaultForDirectory
+            directory.Permissions |> shouldEqual SeedEntry.defaultPermsForDirectory
         | other -> failwith $"expected a directory, got %A{other}"
 
         // ...and nothing the seed did not describe exists.
@@ -374,7 +373,7 @@ module TestFileSystemSeed =
 
         // The smart constructors' defaults are what a `umask 022` process would
         // have produced, and are asserted as literals rather than by reference
-        // to `PermissionBits.defaultForRegularFile` — otherwise this test would
+        // to `SeedEntry.defaultPermsForRegularFile` — otherwise this test would
         // agree with any value that constant happened to take.
         permissionsAt "/byDefault" |> shouldEqual (InodePermissions.Stored (mode 0o644))
 

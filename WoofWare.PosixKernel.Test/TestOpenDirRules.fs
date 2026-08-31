@@ -72,10 +72,10 @@ module TestOpenDirRules =
             |> ok
             |> snd
 
-        let d, vfs = dir root "d" PermissionBits.defaultForDirectory vfs
-        let vfs = file d "x" PermissionBits.defaultForRegularFile vfs
+        let d, vfs = dir root "d" SeedEntry.defaultPermsForDirectory vfs
+        let vfs = file d "x" SeedEntry.defaultPermsForRegularFile vfs
 
-        let vfs = file root "f" PermissionBits.defaultForRegularFile vfs
+        let vfs = file root "f" SeedEntry.defaultPermsForRegularFile vfs
         let vfs = file root "f0" (mode 0o000) vfs
         let vfs = link root "lf" "f" vfs
         let vfs = link root "lf0" "f0" vfs
@@ -85,17 +85,17 @@ module TestOpenDirRules =
         // The narrowed directories are created *with* their modes: this module
         // has no `chmod`, and a builder applies no permission rule of its own.
         let dr, vfs = dir root "dr" (mode 0o111) vfs
-        let vfs = file dr "x" PermissionBits.defaultForRegularFile vfs
+        let vfs = file dr "x" SeedEntry.defaultPermsForRegularFile vfs
         let vfs = link root "ldr" "dr" vfs
 
         let dw, vfs = dir root "dw" (mode 0o444) vfs
-        let vfs = file dw "x" PermissionBits.defaultForRegularFile vfs
+        let vfs = file dw "x" SeedEntry.defaultPermsForRegularFile vfs
 
         let d0, vfs = dir root "d0" (mode 0o000) vfs
-        let vfs = file d0 "x" PermissionBits.defaultForRegularFile vfs
+        let vfs = file d0 "x" SeedEntry.defaultPermsForRegularFile vfs
 
         let nosearch, vfs = dir root "nosearch" (mode 0o666) vfs
-        let vfs = dir nosearch "kdir" PermissionBits.defaultForDirectory vfs |> snd
+        let vfs = dir nosearch "kdir" SeedEntry.defaultPermsForDirectory vfs |> snd
 
         vfs
 

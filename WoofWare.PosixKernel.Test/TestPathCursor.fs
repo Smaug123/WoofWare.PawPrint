@@ -470,18 +470,18 @@ module TestPathCursor =
         let root = VirtualFileSystem.root vfs
 
         let d1, vfs =
-            VirtualFileSystem.createDirectory root (name "d1") PermissionBits.defaultForDirectory buildTime vfs
+            VirtualFileSystem.createDirectory root (name "d1") SeedEntry.defaultPermsForDirectory buildTime vfs
             |> ok
 
         let d2, vfs =
-            VirtualFileSystem.createDirectory d1 (name "d2") PermissionBits.defaultForDirectory buildTime vfs
+            VirtualFileSystem.createDirectory d1 (name "d2") SeedEntry.defaultPermsForDirectory buildTime vfs
             |> ok
 
         let _, vfs =
             VirtualFileSystem.createFile
                 d2
                 (name "f")
-                PermissionBits.defaultForRegularFile
+                SeedEntry.defaultPermsForRegularFile
                 buildTime
                 ImmutableArray.Empty
                 vfs
@@ -491,7 +491,7 @@ module TestPathCursor =
             VirtualFileSystem.createFile
                 root
                 (name "f1")
-                PermissionBits.defaultForRegularFile
+                SeedEntry.defaultPermsForRegularFile
                 buildTime
                 ImmutableArray.Empty
                 vfs

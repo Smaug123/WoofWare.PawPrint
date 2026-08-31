@@ -26,12 +26,12 @@ module TestDirectoryEnumeration =
         | Error error -> failwith $"expected success, got %O{error}"
 
     let private mkfile (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createFile parent (name n) PermissionBits.defaultForRegularFile buildTime noBytes vfs
+        VirtualFileSystem.createFile parent (name n) SeedEntry.defaultPermsForRegularFile buildTime noBytes vfs
         |> ok
         |> snd
 
     let private mkdir (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : VirtualFileSystem =
-        VirtualFileSystem.createDirectory parent (name n) PermissionBits.defaultForDirectory buildTime vfs
+        VirtualFileSystem.createDirectory parent (name n) SeedEntry.defaultPermsForDirectory buildTime vfs
         |> ok
         |> snd
 
@@ -71,7 +71,7 @@ module TestDirectoryEnumeration =
         let root = VirtualFileSystem.root vfs
 
         let directory, vfs =
-            VirtualFileSystem.createDirectory root (name "d") PermissionBits.defaultForDirectory buildTime vfs
+            VirtualFileSystem.createDirectory root (name "d") SeedEntry.defaultPermsForDirectory buildTime vfs
             |> ok
 
         let vfs = (vfs, names) ||> List.fold (fun vfs n -> mkfile directory n vfs)

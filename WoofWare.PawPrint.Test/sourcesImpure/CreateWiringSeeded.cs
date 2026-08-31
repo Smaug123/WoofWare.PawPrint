@@ -17,7 +17,7 @@ using System.Runtime.InteropServices;
 //   * the flavour, because Linux answers EISDIR for a creating open on a
 //     directory while Darwin opens it, so a handler stuck on the default
 //     flavour gives the opposite answer to every directory row here;
-//   * the umask, because 0o022 is what `PermissionBits.defaultForRegularFile`
+//   * the umask, because 0o022 is what `SeedEntry.defaultPermsForRegularFile`
 //     already bakes in, so a created mode of 0o644 would be indistinguishable
 //     from a handler that never consulted the umask at all.
 //
