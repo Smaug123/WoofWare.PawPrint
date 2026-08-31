@@ -2062,7 +2062,7 @@ module TestVirtualFileSystemAgainstHost =
 
         if not (File.Exists path) then
             failwith
-                $"expected the pinned FileStatus declaration at %s{path}. If the sparse checkout in flake.nix no longer includes src/libraries/Common/src/Interop/Unix/System.Native, VirtualFileSystem.fileTypeBits has lost its oracle."
+                $"expected the pinned FileStatus declaration at %s{path}. If the sparse checkout in flake.nix no longer includes src/libraries/Common/src/Interop/Unix/System.Native, InodeContent.fileTypeBits has lost its oracle."
 
         let pinned =
             fileTypeEntry.Matches (File.ReadAllText path)
@@ -2078,12 +2078,12 @@ module TestVirtualFileSystemAgainstHost =
             | Some value -> value
             | None -> failwith $"the pinned Interop.Stat.cs no longer declares %s{name}"
 
-        VirtualFileSystem.fileTypeBits (
+        InodeContent.fileTypeBits (
             InodeContent.RegularFile (ImmutableArray<byte>.Empty, PermissionBits.defaultForRegularFile)
         )
         |> shouldEqual (ofName "S_IFREG")
 
-        VirtualFileSystem.fileTypeBits (
+        InodeContent.fileTypeBits (
             InodeContent.Directory
                 {
                     Entries = Map.empty
@@ -2093,7 +2093,7 @@ module TestVirtualFileSystemAgainstHost =
         )
         |> shouldEqual (ofName "S_IFDIR")
 
-        VirtualFileSystem.fileTypeBits (InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x"))
+        InodeContent.fileTypeBits (InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x"))
         |> shouldEqual (ofName "S_IFLNK")
 
         // ...and each of them really is inside the band, so that a value that
@@ -2106,7 +2106,7 @@ module TestVirtualFileSystemAgainstHost =
                 InodeContent.RegularFile (ImmutableArray<byte>.Empty, PermissionBits.defaultForRegularFile)
                 InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x")
             ] do
-            let bits = VirtualFileSystem.fileTypeBits content
+            let bits = InodeContent.fileTypeBits content
             bits &&& mask |> shouldEqual bits
 
     // --------------------------------------------------------------- opendir

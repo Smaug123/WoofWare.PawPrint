@@ -364,7 +364,7 @@ module TestFileSystemSeed =
             | Ok inode ->
 
             match VirtualFileSystem.tryGet inode vfs with
-            | Some entry -> VirtualFileSystem.permissions entry
+            | Some entry -> Inode.permissions entry
             | None -> failwith $"%s{p} resolved to an inode the graph does not contain"
 
         permissionsAt "/explicit" |> shouldEqual (InodePermissions.Stored (mode 0o600))

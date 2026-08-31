@@ -1571,7 +1571,7 @@ module TestVirtualFileSystem =
                 |> ok
 
             match VirtualFileSystem.tryGet inode vfs with
-            | Some entry -> VirtualFileSystem.permissions entry
+            | Some entry -> Inode.permissions entry
             | None -> failwith "missing inode"
 
         permissionsOf "/f" |> shouldEqual (InodePermissions.Stored filePerms)

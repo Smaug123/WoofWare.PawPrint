@@ -784,7 +784,7 @@ module CreatingOpenRules =
         let parentBits =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
-                match VirtualFileSystem.permissions parent with
+                match Inode.permissions parent with
                 | InodePermissions.Stored bits -> PermissionBits.toInt bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
@@ -932,7 +932,7 @@ module MkDirRules =
         let parentPermissions =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
-                match VirtualFileSystem.permissions parent with
+                match Inode.permissions parent with
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
@@ -1057,7 +1057,7 @@ module private RemovalChecks =
         let permissions =
             match VirtualFileSystem.tryGet directory vfs with
             | Some parent ->
-                match VirtualFileSystem.permissions parent with
+                match Inode.permissions parent with
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
@@ -1735,7 +1735,7 @@ module private RenameChecks =
         =
         match VirtualFileSystem.tryGet inode vfs with
         | Some entry ->
-            match VirtualFileSystem.permissions entry with
+            match Inode.permissions entry with
             | InodePermissions.Stored bits -> PermissionBits.deniedTo privilege 0o200 bits
             | InodePermissions.PlatformSymlinkDefault ->
                 failwith
