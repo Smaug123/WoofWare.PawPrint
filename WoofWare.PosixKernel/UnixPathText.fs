@@ -15,7 +15,9 @@ open System.Text
 /// </remarks>
 [<RequireQualifiedAccess>]
 type UnixPathTextDefect =
+    /// <summary>
     /// A NUL at this UTF-16 index.
+    /// </summary>
     | ContainsNul of index : int
     /// <summary>An unpaired UTF-16 surrogate at this UTF-16 index.</summary>
     /// <remarks>
@@ -26,7 +28,9 @@ type UnixPathTextDefect =
 
 [<RequireQualifiedAccess>]
 module UnixPathText =
+    /// <summary>
     /// The Unix directory separator. (Unlike Windows, Unix has no alternate separator to normalise away.)
+    /// </summary>
     [<Literal>]
     let separator : char = '/'
 
@@ -71,7 +75,9 @@ module UnixPathText =
 
         result
 
+    /// <summary>
     /// Human-readable rendering of a defect.
+    /// </summary>
     let describe (defect : UnixPathTextDefect) : string =
         match defect with
         | UnixPathTextDefect.ContainsNul index ->

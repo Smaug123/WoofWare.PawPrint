@@ -27,16 +27,21 @@ type RawErrnoNumbering =
 /// </remarks>
 [<RequireQualifiedAccess>]
 type RawErrnoPortability =
+    /// <summary>
     /// This error has the same raw number on every Unix we model, so the
     /// emulated kernel can report it without first deciding which platform it is
     /// impersonating.
+    /// </summary>
     | Portable of value : int
+    /// <summary>
     /// This error's raw number is not consistent among the modelled Unixes,
     /// so it can't be interpreted as an int without knowing what platform is being
     /// simulated.
-    ///
-    /// E.g. `ELOOP`: raw 40 is `ELOOP` on Linux but `EMSGSIZE` on Darwin, and
-    /// raw 62 is `ELOOP` on Darwin but `ETIME` on Linux.
+    /// </summary>
+    /// <example>
+    /// E.g. <c>ELOOP</c>: raw 40 is <c>ELOOP</c> on Linux but <c>EMSGSIZE</c> on Darwin, and
+    /// raw 62 is <c>ELOOP</c> on Darwin but <c>ETIME</c> on Linux.
+    /// </example>
     | PlatformDependent of linux : int * darwin : int
 
 /// <summary>
@@ -55,21 +60,37 @@ type RawErrnoPortability =
 /// </remarks>
 [<RequireQualifiedAccess>]
 type UnixError =
+    /// <summary>
     /// Operation not permitted.
+    /// </summary>
     | EPERM
+    /// <summary>
     /// No such file or directory.
+    /// </summary>
     | ENOENT
+    /// <summary>
     /// No such process.
+    /// </summary>
     | ESRCH
+    /// <summary>
     /// Interrupted function.
+    /// </summary>
     | EINTR
+    /// <summary>
     /// I/O error.
+    /// </summary>
     | EIO
+    /// <summary>
     /// No such device or address.
+    /// </summary>
     | ENXIO
+    /// <summary>
     /// Argument list too long.
+    /// </summary>
     | E2BIG
+    /// <summary>
     /// Executable file format error.
+    /// </summary>
     | ENOEXEC
     /// <summary>Bad file descriptor.</summary>
     /// <example>
@@ -77,11 +98,17 @@ type UnixError =
     /// file descriptor is not currently open.
     /// </example>
     | EBADF
+    /// <summary>
     /// No child processes.
+    /// </summary>
     | ECHILD
+    /// <summary>
     /// Not enough space.
+    /// </summary>
     | ENOMEM
+    /// <summary>
     /// Permission denied.
+    /// </summary>
     | EACCES
     /// <summary>
     /// Bad address.
@@ -94,25 +121,41 @@ type UnixError =
     /// The kernel performs no I/O for such a call.
     /// </example>
     | EFAULT
+    /// <summary>
     /// Device or resource busy.
+    /// </summary>
     | EBUSY
+    /// <summary>
     /// File exists.
+    /// </summary>
     | EEXIST
+    /// <summary>
     /// Cross-device link.
+    /// </summary>
     | EXDEV
+    /// <summary>
     /// No such device.
+    /// </summary>
     | ENODEV
+    /// <summary>
     /// Not a directory or a symbolic link to a directory.
+    /// </summary>
     | ENOTDIR
+    /// <summary>
     /// Is a directory.
+    /// </summary>
     | EISDIR
     /// <summary>
     /// Invalid argument.
     /// </summary>
     | EINVAL
+    /// <summary>
     /// Too many files open in system.
+    /// </summary>
     | ENFILE
+    /// <summary>
     /// File descriptor value too large.
+    /// </summary>
     | EMFILE
     /// <summary>Inappropriate I/O control operation.</summary>
     /// <example>
@@ -120,21 +163,37 @@ type UnixError =
     /// refer to a terminal.
     /// </example>
     | ENOTTY
+    /// <summary>
     /// Text file busy.
+    /// </summary>
     | ETXTBSY
+    /// <summary>
     /// File too large.
+    /// </summary>
     | EFBIG
+    /// <summary>
     /// No space left on device.
+    /// </summary>
     | ENOSPC
+    /// <summary>
     /// Invalid seek.
+    /// </summary>
     | ESPIPE
+    /// <summary>
     /// Read-only file system.
+    /// </summary>
     | EROFS
+    /// <summary>
     /// Too many links.
+    /// </summary>
     | EMLINK
+    /// <summary>
     /// Broken pipe.
+    /// </summary>
     | EPIPE
+    /// <summary>
     /// Mathematics argument out of domain of function.
+    /// </summary>
     | EDOM
     /// <summary>
     /// Result too large.
@@ -333,9 +392,11 @@ type UnixError =
 
 [<RequireQualifiedAccess>]
 module UnixError =
+    /// <summary>
     /// Every case of `UnixError`, exposed for property testing.
-    /// TODO: write a Myriad source generator for this, it's ridiculous
+    /// </summary>
     let all : UnixError list =
+        // TODO: write a Myriad source generator for this, it's ridiculous
         [
             UnixError.EPERM
             UnixError.ENOENT

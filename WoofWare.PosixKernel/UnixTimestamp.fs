@@ -14,7 +14,9 @@ type UnixTimestamp =
     private
     | UnixTimestamp of seconds : int64 * nanoseconds : int
 
+    /// <summary>
     /// Format this timestamp as a number of seconds since the epoch.
+    /// </summary>
     override this.ToString () : string =
         match this with
         | UnixTimestamp (seconds, nanoseconds) ->

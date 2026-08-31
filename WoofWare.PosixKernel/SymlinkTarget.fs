@@ -12,18 +12,26 @@ open System.Collections.Immutable
 [<Struct>]
 type SymlinkTarget =
     private
-    // Verbatim rather than parsed: `readlink(2)` returns the stored
-    // bytes unchanged, and `lstat` reports their length as the link's `st_size`, so
-    // a link created with target "a//b/" must read back as "a//b/" — a difference a
-    // guest really can see, through `FileInfo.LinkTarget` and `ResolveLinkTarget`.
+    /// <summary>
+    /// Verbatim rather than parsed.
+    /// </summary>
+    /// <remarks>
+    /// <c>readlink(2)</c> returns the stored bytes unchanged, and <c>lstat</c> reports their length as the link's
+    /// <c>st_size</c>, so a link created with target "a//b/" must read back as "a//b/" — a difference a
+    /// guest really can see.
+    /// </remarks>
     | SymlinkTarget of target : string
 
+    /// <summary>
     /// The exact string that was used to construct this target.
+    /// </summary>
     override this.ToString () : string =
         match this with
         | SymlinkTarget target -> target
 
+/// <summary>
 /// Why a string is not usable as the target of a symbolic link.
+/// </summary>
 [<RequireQualifiedAccess>]
 type SymlinkTargetError =
     /// <summary>
@@ -45,7 +53,9 @@ type SymlinkTargetError =
 
 [<RequireQualifiedAccess>]
 module SymlinkTarget =
+    /// <summary>
     /// The exact string that was used to construct this target.
+    /// </summary>
     let toString (target : SymlinkTarget) : string =
         match target with
         | SymlinkTarget target -> target

@@ -2,14 +2,18 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
-/// The state one POSIX process owns: what it inherited at exec, where it is, who
+/// <summary>
+/// The state one POSIX process owns.
+/// </summary>
+/// <remarks>
+/// Contains, for example: what it inherited at exec, where it is, who
 /// it is running as, and every kernel object its descriptors and streams name.
 ///
-/// Distinct from `UnixMachineState`, which is true of the machine whatever process
-/// is running: a second process on the same simulated kernel would have its own
-/// copy of this and share that. PawPrint models one process, so there is one of
-/// these, but the split is what makes `fork(2)` expressible later rather than a
-/// rewrite.
+/// Distinct from <c>UnixMachineState</c>, which describes the process-independent
+/// state of the kernel.
+/// A second process on the same simulated kernel would have its own
+/// copy of <c>UnixProcessState</c> but would share <c>UnixMachineState</c>.
+/// </remarks>
 type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     {
         /// In-memory model of the simulated process's Unix file descriptor
