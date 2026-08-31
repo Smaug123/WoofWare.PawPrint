@@ -28,6 +28,7 @@
         <Compile Include="Inode.fs" />
         <Compile Include="FileSystemSeed.fs" />
         <Compile Include="VirtualFileSystem.fs" />
+        <Compile Include="PathWalk.fs" />
         <Compile Include="InternetEndpoint.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
         <Compile Include="UnixTask.fs" />
