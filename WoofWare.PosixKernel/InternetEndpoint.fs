@@ -1,50 +1,70 @@
 namespace WoofWare.PosixKernel
 
-/// An IPv4 transport endpoint: the pair `bind(2)` gives a socket and
-/// `getsockname(2)` reports back.
+/// <summary>
+/// An IPv4 transport endpoint.
+/// </summary>
+/// <remarks>
+/// This is what <c>bind(2)</c> associates a socket with, and what <c>getsockname(2)</c> reports back.
 ///
-/// Both fields are in *host* order. The wire layout a guest hands us is network
-/// order, and converting once at the entry point keeps everything inside — the
-/// wildcard test, the privileged-port comparison, the prefix match — written the
-/// way the rule reads rather than byte-swapped.
+/// Both fields are stored in host order.
+/// The wire layout which we get from a guest is network order.
 ///
-/// IPv4 only, deliberately. `SocketPal.CreateSocket` sets `IPV6_V6ONLY` on every
-/// non-raw `AF_INET6` socket and `SystemNative_SetSockOpt` is unimplemented, so
-/// no managed guest can hold an IPv6 socket to bind; the entry points refuse one
-/// loudly rather than model an address nothing can reach.
+/// We currently only model IPv4.
+/// </remarks>
 type InternetEndpoint =
     {
-        /// The address, host order: `127.0.0.1` is `0x7F000001`.
+        /// <summary>
+        /// The address, host order.
+        /// </summary>
+        /// <example>
+        /// <c>127.0.0.1</c> is <c>0x7F000001</c>.
+        /// </example>
         Address : uint32
         /// The port, host order.
         Port : uint16
     }
 
-/// A route this machine has to a range of IPv4 addresses, as Linux's local
-/// routing table holds them.
+/// <summary>
+/// An IPv4 prefix that Linux considers local to this host, as represented by a route of type <c>local</c>
+/// in Linux's local routing table.
+/// </summary>
+/// <remarks>
+/// Not the same thing as the prefix length attached to an interface address assignment.
 ///
-/// Distinct from an *assigned* address, and the distinction is guest-visible.
-/// Linux lets `bind(2)` take any address it has a local route to, which is why
-/// `127.9.9.9` binds there: `127.0.0.0/8` is in the local table. It does **not**
-/// extend that to an interface's subnet — holding `192.168.1.10/24` does not
-/// make `192.168.1.11` bindable, because that is a route to a *peer*, not to
-/// this machine. Darwin takes only assigned addresses either way.
+/// The distinction is guest-visible.
+/// Linux lets <c>bind(2)</c> take any address which Linux's routing machinery regards as
+/// locally delivered: it consults its local routing table to determine this, and e.g.
+/// <c>127.0.0.0/8</c> is in the local table by default, so Linux permits binding to <c>127.9.9.9</c>.
+/// (It does <i>not</i> extend that to an interface's subnet. Having <c>192.168.1.10/24</c> assigned
+/// to an interface doesn't make <c>192.168.1.11</c> bindable, because that is considered a
+/// route to a <i>peer</i>, not to this machine.)
+/// Darwin instead restricts binding to addresses assigned to the host.
+/// </remarks>
 type Ipv4Prefix =
     {
+        /// <summary>
         /// The network address, host order.
+        /// </summary>
+        /// <example>
+        /// <c>127.0.0.1</c> is <c>0x7F000001</c>.
+        /// </example>
         Network : uint32
-        /// How many leading bits the prefix fixes, in `[0, 32]`.
+        /// <summary>How many leading bits the prefix fixes, in <c>[0, 32]</c>.</summary>
         Bits : int
     }
 
 [<RequireQualifiedAccess>]
 module InternetEndpoint =
 
-    /// `INADDR_ANY`: the address a socket binds to mean "every local address".
+    /// <summary>
+    /// <c>INADDR_ANY</c>: the address a socket binds to mean "every local address".
+    /// </summary>
     [<Literal>]
     let WildcardAddress = 0u
 
-    /// `INADDR_LOOPBACK`.
+    /// <summary>
+    /// <c>INADDR_LOOPBACK</c>: localhost via the loopback device.
+    /// </summary>
     [<Literal>]
     let LoopbackAddress = 0x7F000001u
 

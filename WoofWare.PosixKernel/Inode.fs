@@ -2,46 +2,68 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
-/// Identity of a file within the emulated filesystem: the `st_ino` a guest
-/// reads back from `stat`.
+/// <summary>
+/// Identity of a file within the emulated filesystem.
+/// </summary>
+/// <remarks>
+/// This is the <c>st_ino</c> a guest reads back from <c>stat</c>.
 ///
-/// Guest-observable: the BCL compares `(Dev, Ino)` pairs directly to decide
-/// whether two paths name the same file (`File.Copy`, `File.Move` and
-/// `File.Replace` all do this before touching anything).
+/// The exact values are guest-observable: for example, the .NET BCL often
+/// explicitly determines whether two paths name the same file by comparing
+/// device and inode identifiers as integers.
+/// </remarks>
 [<Struct>]
 type InodeNumber =
     | InodeNumber of value : int64
 
+    /// The underlying integer, formatted as a string.
     override this.ToString () : string =
         match this with
         | InodeNumber value -> string<int64> value
 
-/// The four times a kernel keeps for an inode.
-///
-/// All four are stored on every platform, including `Birth` — which Linux's
-/// `stat` does not report, but which *exists*: `pal_io.c` hard-zeroes it under
-/// `#else` with the comment "Linux path: until we use statx()". Modelling it
-/// here and gating only its *reporting* on the simulated platform confines the
-/// platform flavour to the `stat` boundary.
+/// <summary>
+/// The timestamp metadata a kernel keeps for an inode.
+/// </summary>
+/// <remarks>
+/// All these timestamps are stored on every platform.
+/// That includes <c>Birth</c>, even though some syscalls (like Linux's <c>stat</c>) might not report it.
+/// (<c>statx</c> does.)
+/// </remarks>
 type InodeTimes =
     {
-        /// `st_atim`: last read.
+        /// <summary>
+        /// <c>st_atim</c>: last read.
+        /// </summary>
         Access : UnixTimestamp
-        /// `st_mtim`: last change to the *contents*.
+        /// <summary>
+        /// <c>st_mtim</c>: last change to the contents.
+        /// </summary>
         Modification : UnixTimestamp
-        /// `st_ctim`: last change to the *inode* — which `chmod`, `link` and
-        /// `rename` all move even though they touch no content, and which is
-        /// why this is stored rather than derived from `Modification`.
+        /// <summary>
+        /// <c>st_ctim</c>: last change to the inode.
+        /// </summary>
+        /// <example>
+        /// <c>chmod</c>, <c>link</c>, and <c>rename</c> all move this, even though they touch no content.
+        /// </example>
         StatusChange : UnixTimestamp
-        /// `st_birthtim`: when the inode was created. Never moves afterwards.
+        /// <summary>
+        /// <c>st_birthtim</c>: when the inode was created.
+        /// </summary>
+        /// <remarks>
+        /// Never moves after creation.
+        /// </remarks>
         Birth : UnixTimestamp
     }
 
 [<RequireQualifiedAccess>]
 module InodeTimes =
-    /// The times a freshly-created inode has: all four equal, because creation
-    /// is simultaneously its birth, its last content change, its last inode
-    /// change, and (vacuously) its last access.
+    /// <summary>
+    /// The timing metadata of a freshly-created inode has.
+    /// </summary>
+    /// <remarks>
+    /// All four timestamps are equal, because creation is simultaneously its birth,
+    /// its last content change, its last inode change, and its last access.
+    /// </remarks>
     let createdAt (now : UnixTimestamp) : InodeTimes =
         {
             Access = now
@@ -143,36 +165,35 @@ type Inode =
         Times : InodeTimes
     }
 
-/// An inode's permission bits as a caller must handle them, which is not always
-/// "here is a number".
-///
-/// A DU rather than an `option`, so that a caller cannot reach for a default
-/// and quietly get the wrong answer: the symlink case is not "no permissions",
-/// it is "the answer is a property of the platform, which this module cannot
-/// see". `SimulatedUnixPlatform` compiles after this file; platform-flavoured
-/// presentation is a `stat` concern.
+/// <summary>
+/// An inode's permission bits as a caller must handle them.
+/// </summary>
+/// <remarks>
+/// This is usually just a number as you might pass to <c>chmod</c>.
+/// However, symlinks have platform-specific behaviour, so <c>InodePermissions</c> models them individually.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type InodePermissions =
-    /// A regular file's or directory's stored, `chmod`-able bits.
+    /// <summary>
+    /// A regular file's or directory's stored, <c>chmod</c>-able bits.
+    /// </summary>
     | Stored of bits : PermissionBits
-    /// A symbolic link's bits, which are **not stored** because no syscall
-    /// PawPrint models can make two links differ: Linux has no `lchmod`,
-    /// `chmod(2)` follows the link, and `fchmodat(AT_SYMLINK_NOFOLLOW)` is
-    /// ENOTSUP there. Under Linux the answer is invariably 0o777, so a stored
-    /// field could only ever express a filesystem no kernel could have
-    /// produced.
-    ///
-    /// Platform-dependent, and measured rather than assumed: macOS applies the
-    /// creating process's **umask** to a symlink (probed on this box: `umask
-    /// 022` gives 0o755, `umask 077` gives 0o700, `umask 000` gives 0o777),
-    /// while Linux reports 0o777 whatever the umask. So the caller — which
-    /// knows the simulated platform — supplies the value.
+    /// <summary>
+    /// A symbolic link's permission bits.
+    /// </summary>
+    /// <remarks>
+    /// Behaviour is platform-dependent. Darwin applies the creating process's <c>umask</c>
+    /// to a symlink, and Darwin also has <c>lchmod</c>.
+    /// By contrast, Linux reports <c>0o777</c> whatever the umask (and has no syscalls
+    /// like BSD's <c>lchmod</c> which could change that value).
+    /// </remarks>
     | PlatformSymlinkDefault
 
 [<RequireQualifiedAccess>]
 module Inode =
-    /// An inode's permission bits, as something the caller must match rather
-    /// than a number it might default. See `InodePermissions`.
+    /// <summary>
+    /// An inode's permission bits.
+    /// </summary>
     let permissions (inode : Inode) : InodePermissions =
         match inode.Content with
         | InodeContent.RegularFile (_, permissions) -> InodePermissions.Stored permissions
