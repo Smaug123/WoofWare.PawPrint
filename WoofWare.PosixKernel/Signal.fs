@@ -68,11 +68,6 @@ module Signal =
     /// Matches Linux's <c>SIGRTMAX</c> on every modern glibc build (the real
     /// native side reads <c>GetSignalMax()</c> from <c>&lt;signal.h&gt;</c>, which expands
     /// to <c>SIGRTMAX</c> whenever that macro is defined).
-    ///
-    /// Used as the ceiling for our "is this a plausible native signo?" check:
-    /// a guest can pass a <c>(PosixSignal)42</c> and WoofWare.PosixKernel will
-    /// round-trip the raw value through <c>Signal.Other</c>, but a <c>(PosixSignal)200</c>
-    /// is firmly outside any kernel's table and returns 0.
     /// </remarks>
     let linuxSignalMax : int = 64
 

@@ -295,8 +295,8 @@ module PermissionBits =
     /// be able to edit a file and then invoke it as that file's owner (or group) with the new
     /// attacker-controlled contents.
     ///
-    /// A write that doesn't actually edit any contents is exempt from this check; don't consult
-    /// this function if you're implementing a syscall that didn't change the file.
+    /// A write of no bytes is exempt from this check and should not consult
+    /// this function.
     ///
     /// `S_ISUID` is blatted on both platforms whatever the execute bits say, and the
     /// sticky bit is never touched on either. The whole of the disagreement is
