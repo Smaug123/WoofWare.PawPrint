@@ -42,25 +42,33 @@ type Signal =
 /// </remarks>
 [<RequireQualifiedAccess>]
 type DefaultDisposition =
+    /// <summary>
     /// Specify that the kernel default is to terminate the process.
+    /// </summary>
     | Terminate
+    /// <summary>
     /// Specify that the kernel default is to ignore the signal entirely. No state changes.
+    /// </summary>
     | Ignore
+    /// <summary>
     /// Specify that the kernel default is to suspend (stop) the process.
+    /// </summary>
     | Stop
+    /// <summary>
     /// Specify that the kernel default is to resume a stopped process.
+    /// </summary>
     | Continue
 
 [<RequireQualifiedAccess>]
 module Signal =
-    /// Highest signal number the simulator accepts from P/Invoke arguments.
-    /// Matches Linux's `SIGRTMAX` on every modern glibc build (the real
-    /// native side reads `GetSignalMax()` from `<signal.h>`, which expands
-    /// to `SIGRTMAX` whenever that macro is defined). Used as the ceiling
-    /// for the "is this a plausible native signo?" check: a guest can pass
-    /// a `(PosixSignal)42` and PawPrint will round-trip the raw value
-    /// through `Signal.Other`, but a `(PosixSignal)200` is firmly outside
-    /// any kernel's table and returns 0 like the real native function.
+    /// <summary>
+    /// The highest signal number the simulated kernel accepts from a guest.
+    /// </summary>
+    /// <remarks>
+    /// Matches Linux's <c>SIGRTMAX</c> on every modern glibc build (the real
+    /// native side reads <c>GetSignalMax()</c> from <c>&lt;signal.h&gt;</c>, which expands
+    /// to <c>SIGRTMAX</c> whenever that macro is defined).
+    /// </remarks>
     let linuxSignalMax : int = 64
 
     /// Map a domain `Signal` to its Linux native signo. PawPrint uses the
@@ -85,9 +93,16 @@ module Signal =
         | Signal.SIGWINCH -> 28
         | Signal.Other rawSignal -> rawSignal
 
-    /// Inverse of `toLinuxSigno` on the named cases. Returns `ValueNone` for
-    /// signos that don't correspond to a modelled signal — the caller can
-    /// then decide whether to fail loudly or wrap in `Other`.
+    /// <summary>
+    /// Convert a raw signo to a modelled signal description.
+    /// </summary>
+    /// <remarks>
+    /// This is the inverse of <c>toLinuxSigno</c> where defined.
+    /// </remarks>
+    /// <returns>
+    /// <c>ValueNone</c> for signos which don't correspond to a modelled signal.
+    /// You might want to wrap such a signal in <c>Signal.Other</c>.
+    /// </returns>
     let ofLinuxSigno (signo : int) : Signal voption =
         match signo with
         | 1 -> ValueSome Signal.SIGHUP
@@ -106,14 +121,13 @@ module Signal =
         | 28 -> ValueSome Signal.SIGWINCH
         | _ -> ValueNone
 
-    /// Signals that cannot be caught, blocked, or ignored on POSIX. The
-    /// kernel rejects `sigaction(SIGKILL, ...)` / `sigaction(SIGSTOP, ...)`
-    /// with `EINVAL`, so `SystemNative_EnablePosixSignalHandling` returns
-    /// `false` (install failed) and `PosixSignalRegistration.Create` throws
-    /// rather than recording an impossible handler. PawPrint mirrors this
-    /// at the P/Invoke boundary; the simulator never delivers either signal, regardless
-    /// of what's in the pending queue, because no one can legally install
-    /// a handler for them.
+    /// <summary>
+    /// Signals that cannot be caught, blocked, or ignored on POSIX.
+    /// </summary>
+    /// <remarks>
+    /// The kernel rejects <c>sigaction(SIGKILL, ...)</c> and <c>sigaction(SIGSTOP, ...)</c>
+    /// with <c>EINVAL</c>.
+    /// </remarks>
     let isUncatchable (signal : Signal) : bool =
         match signal with
         | Signal.Other 9 -> true // SIGKILL
@@ -139,20 +153,17 @@ module Signal =
             else
                 ValueNone
 
-    /// The POSIX kernel-level default disposition for `signal`. Used by
-    /// `SystemNative_HandleNonCanceledPosixSignal` to decide whether the
-    /// dispatcher path should treat the signal as a no-op or fall through
-    /// to process termination, and (in a later slice) by the dispatcher's
-    /// handler-return-0 path that mirrors the same decision.
+    /// <summary>
+    /// The kernel-level default disposition for <c>signal</c>.
+    /// </summary>
+    /// <remarks>
+    /// Unmodelled-but-known signals carried as <c>Signal.Other rawSigno</c>
+    /// still classify correctly: <c>Signal.Other 23</c> (<c>SIGURG</c>, signo 23 on
+    /// Linux) returns <c>Ignore</c>, matching the kernel default.
     ///
-    /// Unmodelled-but-known signals carried as `Signal.Other rawSigno`
-    /// still classify correctly: `Signal.Other 23` (SIGURG, signo 23 on
-    /// Linux) returns `Ignore`, matching the kernel default rather than
-    /// falling through to the conservative `Terminate` catch-all. Unknown
-    /// signos that don't correspond to a kernel default we recognise
-    /// classify as `Terminate`, which is the POSIX default for
-    /// unrecognised signals and matches the trailing `default:` branch in
-    /// `pal_signal.c`'s `SystemNative_HandleNonCanceledPosixSignal` switch.
+    /// Unmodelled-but-<i>unknown</i> signals classify conservatively as <c>Terminate</c>,
+    /// which is the POSIX default for unrecognised signals.
+    /// </remarks>
     let defaultDisposition (signal : Signal) : DefaultDisposition =
         // Key off the Linux signo, not the `Signal` DU case directly, so
         // unmodelled-but-known signals carried as `Signal.Other` classify

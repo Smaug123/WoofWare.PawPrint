@@ -2,7 +2,9 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
+/// <summary>
 /// A whole emulated filesystem: an inode graph rooted at a single directory.
+/// </summary>
 type VirtualFileSystem =
     private
         {
@@ -10,11 +12,15 @@ type VirtualFileSystem =
             /// The directory absolute paths resolve from. Its `Parent` is
             /// itself.
             Root : InodeNumber
-            /// The next inode number to hand out. Numbers are never reused,
-            /// even after the last link to a file is removed: reuse is
-            /// observable to a guest that cached an `(st_dev, st_ino)` pair,
+            /// <summary>
+            /// The next inode number to hand out.
+            /// </summary>
+            /// <remarks>
+            /// Numbers are never reused, even after the last link to a file is removed:
+            /// reuse is observable to a guest that cached an <c>(st_dev, st_ino)</c> pair,
             /// and a fresh number can only ever make a stale comparison report
             /// "different file", which is the safe direction to be wrong in.
+            /// </remarks>
             NextInode : InodeNumber
         }
 

@@ -62,14 +62,18 @@ type AbsoluteUnixPath =
     private
     | AbsoluteUnixPath of path : string
 
+    /// <summary>
     /// Round-trippable string representation.
+    /// </summary>
     override this.ToString () : string =
         match this with
         | AbsoluteUnixPath path -> path
 
 [<RequireQualifiedAccess>]
 module AbsoluteUnixPath =
+    /// <summary>
     /// The Unix directory separator.
+    /// </summary>
     [<Literal>]
     let separator : char = UnixPathText.separator
 
@@ -79,13 +83,17 @@ module AbsoluteUnixPath =
     /// </remarks>
     let root : AbsoluteUnixPath = AbsoluteUnixPath "/"
 
+    /// <summary>
     /// Round-trippable string representation.
+    /// </summary>
     let toString (path : AbsoluteUnixPath) : string =
         match path with
         | AbsoluteUnixPath path -> path
 
-    /// First encoding defect in `candidate`, scanning left to right, or `None`
+    /// <summary>
+    /// First encoding defect in <c>candidate</c>, scanning left to right, or <c>None</c>
     /// if there is none.
+    /// </summary>
     let private firstCharacterDefect (candidate : string) : AbsoluteUnixPathError option =
         // Shared with `UnixPath` via `UnixPathText`, so that the two path shapes
         // cannot drift on which strings survive the `char*` boundary; only the

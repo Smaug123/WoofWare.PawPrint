@@ -267,22 +267,18 @@ module PermissionBits =
         mode &&& toInt modeMask &&& ~~~(toInt umask &&& umaskBitsOnly)
         |> parseOrFail "PermissionBits.fromCreationMode"
 
-    /// The set-ID bits a Linux kernel clears when an unprivileged process changes
-    /// a file's contents.
-    ///
-    /// One rule, shared by `write(2)` and by truncation: measured non-root on
-    /// Linux 6.18.5, `write`, `ftruncate`, `O_TRUNC` and a no-op `ftruncate`
-    /// agree on all of `04755`, `04644`, `02755`, `02644`, `06755`, `02600`,
-    /// `02640`, `06644`, `03755` and `01755`. Factored out so the bit arithmetic
-    /// — which is where an off-by-one bit would hide — exists once.
-    ///
-    /// Linux only. Darwin strips nothing at all on truncation, and on a write
-    /// strips `S_ISGID` unconditionally; see `SetGroupIdOnWrite`.
+    /// <summary>
+    /// When an unprivileged process changes a file's contents, Linux strips set-ID bits
+    /// from that file. This is the set-user-ID bit which Linux clears.
+    /// </summary>
+    /// <remarks>
+    /// Darwin doesn't strip anything on truncation, so there is actual logic required here.
     ///
     /// `S_ISUID` goes whatever the execute bits say (`04644` becomes `00644`).
     /// `S_ISGID` goes only alongside `S_IXGRP`: without it the bit means
     /// mandatory locking rather than privilege, and `02644` survives. The sticky
     /// bit is never touched.
+    /// </remarks>
     let private setUserId : int = 0o4000
     let private setGroupId : int = 0o2000
     let private groupExecute : int = 0o0010
@@ -290,43 +286,56 @@ module PermissionBits =
     let private setIdBitsLinuxClears (raw : int) : int =
         setUserId ||| (if raw &&& groupExecute <> 0 then setGroupId else 0)
 
-    /// The bits a regular file is left with after a *content-changing* write by a
-    /// process with `privilege`, on a kernel with this `rule`. A write that
-    /// transfers nothing changes nothing, so a caller must not consult this for
-    /// one.
+    /// <summary>
+    /// After a content-changing write to a regular file by a process with the specified privilege,
+    /// what permission bits now apply to the file?
+    /// </summary>
+    /// <remarks>
+    /// This is a security measure imposed by the emulated platform: an unprivileged writer should not
+    /// be able to edit a file and then invoke it as that file's owner (or group) with the new
+    /// attacker-controlled contents.
     ///
-    /// Total. Measured non-root on macOS 26.6 and Linux 6.18.5:
+    /// A write of no bytes is exempt from this check and should not consult
+    /// this function.
     ///
-    /// | before | Linux | Darwin |
-    /// |---|---|---|
-    /// | `04755` | `00755` | `00755` |
-    /// | `04644` | `00644` | `00644` |
-    /// | `02755` | `00755` | `00755` |
-    /// | `02644` | `02644` | `00644` |
-    /// | `02600` | `02600` | `00600` |
-    /// | `02640` | `02640` | `00640` |
-    /// | `06755` | `00755` | `00755` |
-    /// | `06644` | `02644` | `00644` |
-    /// | `03755` | `01755` | `01755` |
-    /// | `01755` | `01755` | `01755` |
-    /// | `00644` | `00644` | `00644` |
-    ///
-    /// ...and as root every row is left exactly as it was, on both, which is what
-    /// `CallerPrivilege.Privileged` selects.
-    ///
-    /// `S_ISUID` goes on both flavours whatever the execute bits say, and the
+    /// `S_ISUID` is blatted on both platforms whatever the execute bits say, and the
     /// sticky bit is never touched on either. The whole of the disagreement is
-    /// `S_ISGID` on a file that is not group-executable, which is what `rule`
-    /// names: on Linux the bit means mandatory locking rather than privilege and
-    /// survives, and on Darwin it goes like any other set-ID bit. `06644` is the
-    /// row worth not eliding — it carries both bits with no group-execute bit, so
-    /// the two rules and "preserve everything" all answer it differently.
+    /// `S_ISGID` on a file that is not group-executable.
+    /// </remarks>
+    /// <param name="rule">
+    /// Different platforms do different things to the set-group-ID on an unprivileged write.
+    /// This parameter specifies what this platform does.
+    /// </param>>
+    /// <param name="privilege">
+    /// A privileged writer doesn't change any bits; this function only does anything when the
+    /// writer is unprivileged.
+    /// </param>
+    /// <param name="bits">
+    /// The original permissions of the file before the writer wrote to it.
+    /// </param>
     let afterContentChangingWrite
         (rule : SetGroupIdOnWrite)
         (privilege : CallerPrivilege)
         (bits : PermissionBits)
         : PermissionBits
         =
+        // Measured non-root on macOS 26.6 and Linux 6.18.5:
+        //
+        // | before | Linux | Darwin |
+        // |---|---|---|
+        // | `04755` | `00755` | `00755` |
+        // | `04644` | `00644` | `00644` |
+        // | `02755` | `00755` | `00755` |
+        // | `02644` | `02644` | `00644` |
+        // | `02600` | `02600` | `00600` |
+        // | `02640` | `02640` | `00640` |
+        // | `06755` | `00755` | `00755` |
+        // | `06644` | `02644` | `00644` |
+        // | `03755` | `01755` | `01755` |
+        // | `01755` | `01755` | `01755` |
+        // | `00644` | `00644` | `00644` |
+        //
+        // ...and as root every row is left exactly as it was, on both.
         match privilege with
         | CallerPrivilege.Privileged -> bits
         | CallerPrivilege.Unprivileged ->
@@ -340,38 +349,42 @@ module PermissionBits =
 
         parseOrFail "PermissionBits.afterContentChangingWrite" (raw &&& ~~~cleared)
 
-    /// The bits a regular file is left with after being truncated by a process
-    /// with `privilege`, on a kernel with this `rule`.
+    /// <summary>
+    /// After a truncation of a regular file by a process with the specified privilege,
+    /// what permission bits now apply to the file?
+    /// </summary>
+    /// <remarks>
+    /// <c>ftruncate(2)</c>, <c>O_TRUNC</c>, and an <c>ftruncate</c> to the length the file
+    /// already has, are all observed to give the same answers, so this function will do for
+    /// all three.
     ///
-    /// Measured non-root on macOS 26.6 and Linux 6.18.5:
-    ///
-    /// | before | Linux | Darwin |
-    /// |---|---|---|
-    /// | `04755` | `00755` | `04755` |
-    /// | `04644` | `00644` | `04644` |
-    /// | `02755` | `00755` | `02755` |
-    /// | `02644` | `02644` | `02644` |
-    /// | `02600` | `02600` | `02600` |
-    /// | `02640` | `02640` | `02640` |
-    /// | `06755` | `00755` | `06755` |
-    /// | `06644` | `02644` | `06644` |
-    /// | `03755` | `01755` | `03755` |
-    /// | `01755` | `01755` | `01755` |
-    ///
-    /// ...and as root every row is left exactly as it was, on both, which is what
-    /// `CallerPrivilege.Privileged` selects.
-    ///
-    /// `ftruncate(2)`, `O_TRUNC`, and an `ftruncate` to the length the file
-    /// already has all give the same answers, which is why one function serves
-    /// all three. That last column is the one worth not eliding: **a truncation
-    /// that changes no bytes still strips**, where a write of no bytes is not a
-    /// write at all.
+    /// If <c>rule</c> specifies that truncations strip, then <i>all</i> truncations strip,
+    /// even ones which change no bytes.
+    /// (This is by contrast to the situation with <c>afterContentChangingWrite</c>, which
+    /// explicitly only applies to writes of at least one byte.)
+    /// </remarks>
     let afterTruncation
         (rule : SetIdBitsOnTruncation)
         (privilege : CallerPrivilege)
         (bits : PermissionBits)
         : PermissionBits
         =
+        // Measured non-root on macOS 26.6 and Linux 6.18.5:
+        //
+        // | before | Linux | Darwin |
+        // |---|---|---|
+        // | `04755` | `00755` | `04755` |
+        // | `04644` | `00644` | `04644` |
+        // | `02755` | `00755` | `02755` |
+        // | `02644` | `02644` | `02644` |
+        // | `02600` | `02600` | `02600` |
+        // | `02640` | `02640` | `02640` |
+        // | `06755` | `00755` | `06755` |
+        // | `06644` | `02644` | `06644` |
+        // | `03755` | `01755` | `03755` |
+        // | `01755` | `01755` | `01755` |
+        //
+        // ...and as root every row is left exactly as it was, on both.
         match rule, privilege with
         | SetIdBitsOnTruncation.Preserve, _
         | _, CallerPrivilege.Privileged -> bits

@@ -72,46 +72,69 @@ module InodeTimes =
             Birth = now
         }
 
-    /// Record a change to the inode's contents: `mtime` and `ctime` both move,
+    /// <summary>
+    /// Record a change to the inode's contents.
+    /// </summary>
+    /// <remarks>
+    /// <c>mtime</c> and <c>ctime</c> both move,
     /// because changing what a file or directory holds also changes the inode
-    /// that describes it. `atime` and `birth` do not.
+    /// that describes it.
+    /// <c>atime</c> and <c>birth</c> do not move.
+    /// </remarks>
     let contentsChangedAt (now : UnixTimestamp) (times : InodeTimes) : InodeTimes =
         { times with
             Modification = now
             StatusChange = now
         }
 
-    /// Record a change to the inode itself, its contents untouched: `ctime`
-    /// moves and nothing else does. What gaining or losing a link does, since a
-    /// link count lives on the inode rather than in what the inode holds.
-    ///
-    /// Measured on both platforms through a held descriptor's `fstat`, which is
-    /// the only way to watch an inode whose last name has just gone: after
-    /// `unlink`, `ctime` has moved and `mtime` and `atime` have not — the same
-    /// for an inode that still has links left as for one that does not.
+    /// <summary>
+    /// Record a change to the inode itself, its contents untouched.
+    /// </summary>
+    /// <remarks>
+    /// <c>ctime</c> moves, and nothing else does.
+    /// </remarks>
+    /// <example>
+    /// This is the timestamp change that happens when the inode gains or loses a link does,
+    /// since a link count lives on the inode rather than in what the inode holds.
+    /// </example>
     let statusChangedAt (now : UnixTimestamp) (times : InodeTimes) : InodeTimes =
+        // Measured on both platforms through a held descriptor's `fstat`, which is
+        // the only way to watch an inode whose last name has just gone: after
+        // `unlink`, `ctime` has moved and `mtime` and `atime` have not — the same
+        // for an inode that still has links left as for one that does not.
         { times with
             StatusChange = now
         }
 
+/// <summary>
 /// The contents of a directory: what it holds, and what contains it.
-///
-/// `Entries` holds only *real* names. "." and ".." are genuine directory
-/// entries in a kernel, but storing them here would mean every traversal either
-/// special-cased them or recursed forever, and would let the graph express a
-/// directory whose "." pointed somewhere else. Both are instead derived — ".."
-/// from `Parent`, "." from the directory itself — so they cannot disagree with
-/// the structure they describe. `readdir` synthesises them.
+/// </summary>
 type DirectoryContent =
     {
+        /// <summary>
+        /// The inodes contained in this directory.
+        /// </summary>
+        /// <remarks>
+        /// Holds only <i>real</i> names. "." and ".." are genuine directory entries in the kernel,
+        /// but we don't store them here (because that would make recursion harder).
+        /// <c>readdir</c> synthesises them on demand.
+        /// </remarks>
         Entries : Map<DirectoryEntryName, InodeNumber>
+        /// <summary>
         /// The directory that holds this one, which is what ".." resolves to.
-        /// The root is its own parent, exactly as on a real Unix.
-        ///
-        /// This is the *physical* parent, so it is still correct after a walk
-        /// has crossed a symlink — the lexical predecessor in the path is not.
+        /// </summary>
+        /// <example>
+        /// The root is its own parent.
+        /// </example>
+        /// <remarks>
+        /// This is the <i>physical</i> parent, so it is still correct after a walk
+        /// has crossed a symlink.
+        /// By contrast, the <i>lexical</i> predecessor in the path need not be.
+        /// </remarks>
         Parent : InodeNumber
-        /// The `chmod`-able bits of this directory's mode.
+        /// <summary>
+        /// The <c>chmod</c>-able bits of this directory's mode.
+        /// </summary>
         Permissions : PermissionBits
     }
 
@@ -137,9 +160,14 @@ type DirectoryContent =
 type InodeContent =
     | RegularFile of contents : ImmutableArray<byte> * permissions : PermissionBits
     | Directory of directory : DirectoryContent
-    /// The link's target, unresolved: a symlink's target is a *string* to the
-    /// kernel, re-resolved on every traversal, not a reference to whatever it
-    /// pointed at when it was made.
+    /// <summary>
+    /// The link's target, unresolved.
+    /// </summary>
+    /// <remarks>
+    /// The kernel treats a symlink's target as a string to be re-resolved
+    /// on every traversal; it's not a reference to whatever it pointed at
+    /// when it was made.
+    /// </remarks>
     | Symlink of target : SymlinkTarget
 
 [<RequireQualifiedAccess>]
@@ -157,8 +185,10 @@ module InodeContent =
         | InodeContent.Directory _ -> 0o40000
         | InodeContent.Symlink _ -> 0o120000
 
+/// <summary>
 /// One inode: what lives there, and the metadata every inode carries whatever
 /// kind of thing it is.
+/// </summary>
 type Inode =
     {
         Content : InodeContent

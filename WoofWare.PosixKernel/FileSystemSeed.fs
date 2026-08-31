@@ -62,5 +62,7 @@ module SeedEntry =
 
 [<RequireQualifiedAccess>]
 module FileSystemSeed =
+    /// <summary>
     /// A seed describing nothing but an empty root directory.
+    /// </summary>
     let empty : Map<DirectoryEntryName, SeedEntry> = Map.empty

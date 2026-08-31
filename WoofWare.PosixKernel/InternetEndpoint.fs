@@ -87,8 +87,16 @@ module InternetEndpoint =
     let addressesOverlap (a : InternetEndpoint) (b : InternetEndpoint) : bool =
         isWildcard a || isWildcard b || a.Address = b.Address
 
-    /// Dotted quad, for a diagnostic. Not a guest-visible rendering: nothing in
-    /// the emulated kernel formats an address for a guest to read.
+    /// <summary>
+    /// Format this endpoint as a human-readable dotted quad.
+    /// </summary>
+    /// <example>
+    /// "192.168.0.1:8080"
+    /// </example>
+    /// <remarks>
+    /// Not a guest-visible rendering. (Nothing in the emulated kernel formats an address as a string
+    /// for a guest to read.)
+    /// </remarks>
     let toString (endpoint : InternetEndpoint) : string =
         let a = endpoint.Address
 
@@ -103,6 +111,12 @@ module InternetEndpoint =
 [<RequireQualifiedAccess>]
 module Ipv4Prefix =
 
+    /// <summary>
+    /// Assemble an IPv4 prefix from its parts.
+    /// </summary>
+    /// <returns>
+    /// Throws if the <c>bits</c> count is outside <c>[0, 32]</c>.
+    /// </returns>
     let create (network : uint32) (bits : int) : Ipv4Prefix =
         if bits < 0 || bits > 32 then
             failwith $"Ipv4Prefix.create: a prefix length of %d{bits} is not in [0, 32]."
@@ -122,6 +136,9 @@ module Ipv4Prefix =
 
         prefix
 
+    /// <summary>
+    /// True iff the given <c>address</c> has the given <c>prefix</c>.
+    /// </summary>
     let contains (address : uint32) (prefix : Ipv4Prefix) : bool =
         let mask =
             if prefix.Bits = 0 then

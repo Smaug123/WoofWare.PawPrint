@@ -2,7 +2,9 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
+/// <summary>
 /// Why a .NET string is not usable as a single Unix directory-entry name.
+/// </summary>
 [<RequireQualifiedAccess>]
 type FileNameError =
     /// <summary>The candidate was null or empty.</summary>
@@ -12,8 +14,10 @@ type FileNameError =
     /// <c>UnixPath.components</c> drops rather than turning into a name.
     /// </remarks>
     | Empty
+    /// <summary>
     /// The candidate contained a separator at this index, so it names a path
     /// rather than a single entry within one directory.
+    /// </summary>
     | ContainsSeparator of index : int
     /// <summary>The candidate could not survive the <c>char*</c> boundary.</summary>
     /// <remarks>See <c>UnixPathTextDefect</c>.</remarks>
@@ -42,14 +46,18 @@ type DirectoryEntryName =
     private
     | DirectoryEntryName of name : string
 
+    /// <summary>
     /// Round-trippable string representation.
+    /// </summary>
     override this.ToString () : string =
         match this with
         | DirectoryEntryName name -> name
 
 [<RequireQualifiedAccess>]
 module DirectoryEntryName =
+    /// <summary>
     /// Round-trippable string representation.
+    /// </summary>
     let toString (name : DirectoryEntryName) : string =
         match name with
         | DirectoryEntryName name -> name
@@ -75,7 +83,9 @@ module DirectoryEntryName =
         else
             Ok (DirectoryEntryName candidate)
 
+    /// <summary>
     /// Human-readable rendering of a rejection.
+    /// </summary>
     let describe (error : FileNameError) : string =
         match error with
         | FileNameError.Empty -> "name is null or empty, but no directory holds an entry with the empty name"
@@ -234,7 +244,9 @@ type PathCursor =
 
 [<RequireQualifiedAccess>]
 module PathCursor =
+    /// <summary>
     /// Begin walking a path, at its first component.
+    /// </summary>
     let ofPath (path : UnixPath) : PathCursor =
         {
             Buffer = path.Raw
@@ -250,12 +262,16 @@ module PathCursor =
                 "PathCursor: this cursor's buffer is null, which it can only be if the cursor came from `Unchecked.defaultof` or C# `default`; obtain one from PathCursor.ofPath instead."
         | buffer -> buffer
 
+    /// <summary>
     /// The buffer from the cursor onwards, separator runs intact.
+    /// </summary>
     let private remainder (cursor : PathCursor) : string =
         (bufferOf cursor).Substring cursor.Offset
 
+    /// <summary>
     /// Where the next component starts, or the end of the buffer if only
     /// separators remain.
+    /// </summary>
     let private afterSeparators (cursor : PathCursor) : int =
         let buffer = bufferOf cursor
         let mutable index = cursor.Offset
@@ -448,7 +464,9 @@ module UnixPath =
     /// </remarks>
     let isEmpty (path : UnixPath) : bool = path.Raw.Length = 0
 
+    /// <summary>
     /// The root, "/".
+    /// </summary>
     let root : UnixPath =
         {
             Raw = "/"
@@ -478,7 +496,9 @@ module UnixPath =
                     Raw = candidate
                 }
 
+    /// <summary>
     /// Human-readable rendering of a rejection.
+    /// </summary>
     let describe (error : UnixPathError) : string =
         match error with
         | UnixPathError.Null ->

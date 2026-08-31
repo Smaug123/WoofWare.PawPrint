@@ -34,44 +34,66 @@ open System.Collections.Immutable
 [<RequireQualifiedAccess>]
 [<Struct>]
 type NameLengthLimit =
-    /// ext4, and Linux filesystems generally: a raw byte count, which is what
-    /// the kernel stores and compares.
+    /// <summary>
+    /// The length limit is this number of UTF8 bytes.
+    /// </summary>
+    /// <example>
+    /// Linux filesystems generally, and ext4 specifically, use this limit:
+    /// a raw byte count, which is what the kernel stores and compares.
+    /// </example>
     | Utf8Bytes of bytes : int
-    /// APFS (and HFS+ before it), which stores names as UTF-16 and bounds the
-    /// count of code units. Conveniently exactly `String.Length`, because .NET
-    /// strings are UTF-16 — a coincidence worth naming, since it makes the
-    /// *wrong* implementation look right on a Mac.
+    /// <summary>
+    /// The length limit is this number of UTF-16 code units.
+    /// </summary>
+    /// <example>
+    /// APFS (and HFS+ before it) use this limit.
+    /// Those filesystems store names as UTF-16, and express bounds as a count
+    /// of code units.
+    /// </example>
+    /// <remarks>
+    /// Beware: .NET measures strings in UTF-16 code units, so will coincidentally get the right
+    /// answer on APFS if you use its <c>String.Length</c> instead of computing the proper
+    /// simulated kernel's answer!
+    /// </remarks>
     | Utf16CodeUnits of units : int
 
+/// <summary>
 /// Whether expanding a symbolic link re-checks that the path still fits in
-/// `PATH_MAX`.
-///
-/// Measured, by bisecting the symlink-target length at which a dangling link
-/// flips ENOENT → ENAMETOOLONG (Darwin 25.6.0 / macOS 26.6 and Linux 6.18.5).
-/// Darwin refuses when `linklen + ni_pathlen > MAXPATHLEN` — XNU's `lookup`
-/// splices by copying the target and the unconsumed remainder into a fresh
-/// `MAXPATHLEN` buffer, so the rule is simply that the new buffer must fit.
-/// Linux has no such check *at all*: measured, a 3842-byte target with an
-/// 806-byte remainder resolves at 4648 bytes spliced, well past its own
-/// `PATH_MAX`.
-///
-/// One kernel performs a check the other does not perform at any threshold,
-/// which is why this is a DU rather than a nullable limit.
-///
-/// A struct for the reason `NameLengthLimit` gives. Its forged default is
-/// `Recheck`: `PathLimits.assertValid` is what actually rejects a forged value
-/// (via the integer fields, which are zero), but were that guard ever
-/// weakened, a spurious ENAMETOOLONG is a visible wrong answer where a
-/// silently skipped check is an invisible one.
+/// <c>PATH_MAX</c>.
+/// </summary>
+/// <remarks>
+/// This is, surprisingly, platform-dependent: Linux will happily splice long
+/// symlinks into a path and vastly exceed <c>PATH_MAX</c>.
+/// </remarks>
+(*
+Measured, by bisecting the symlink-target length at which a dangling link
+flips ENOENT → ENAMETOOLONG (Darwin 25.6.0 / macOS 26.6 and Linux 6.18.5).
+Darwin refuses when `linklen + ni_pathlen > MAXPATHLEN` — XNU's `lookup`
+splices by copying the target and the unconsumed remainder into a fresh
+`MAXPATHLEN` buffer, so the rule is simply that the new buffer must fit.
+Linux has no such check *at all*: measured, a 3842-byte target with an
+806-byte remainder resolves at 4648 bytes spliced, well past its own
+`PATH_MAX`.
+*)
 [<RequireQualifiedAccess>]
 [<Struct>]
 type SpliceLengthRecheck =
-    /// Darwin. The spliced path — target bytes, unconsumed remainder, and the
-    /// NUL — must still fit in `PATH_MAX`.
+    /// <summary>
+    /// After splicing, the spliced path (target bytes, unconsumed remainder, and trailing NUL)
+    /// must still fit in <c>PATH_MAX</c>.
+    /// </summary>
+    /// <example>
+    /// Darwin does this.
+    /// </example>
     | Recheck
-    /// Linux. A path may grow without bound as links are expanded, so long as
-    /// each *component* is within `NAME_MAX` and the original argument was
-    /// within `PATH_MAX`.
+    /// <summary>
+    /// A path may grow without bound as links are expanded, so long as
+    /// each <i>component</i> is within <c>NAME_MAX</c> and the original argument was
+    /// within <c>PATH_MAX</c>.
+    /// </summary>
+    /// <example>
+    /// Linux does this.
+    /// </example>
     | NoRecheck
 
 /// The bounds a kernel puts on path resolution, which differ between the Unixes
