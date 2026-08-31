@@ -1924,7 +1924,7 @@ module TestImpureCases =
                 // Both knobs are set away from their defaults on purpose: macOS
                 // because Linux gives the opposite answer for every directory
                 // row, and umask 0o077 because 0o022 is what
-                // `PermissionBits.defaultForRegularFile` already bakes in.
+                // `SeedEntry.defaultPermsForRegularFile` already bakes in.
                 FileName = "CreateWiringSeeded.cs"
                 ExpectedReturnCode = 0
                 KernelConfig =

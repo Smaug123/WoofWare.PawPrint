@@ -7071,7 +7071,7 @@ module UnixSystem =
     /// File-mode creation mask a freshly-minted simulated process reports.
     /// 0o022 because that is what essentially every Unix login shell and service
     /// manager sets, and because it is the mask the existing seed defaults were
-    /// written against (`PermissionBits.defaultForRegularFile` is 0o666 with
+    /// written against (`SeedEntry.defaultPermsForRegularFile` is 0o666 with
     /// these bits cleared). Hosts choose otherwise via `KernelConfig.Umask`.
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
@@ -7269,7 +7269,7 @@ module UnixSystem =
             failwith
                 $"UnixSystem.withFileSystemAndCurrentDirectory: the process still holds %d{List.length stranded} handle(s) onto the current filesystem (%s{listed}). Replacing the filesystem would leave them naming a graph that no longer exists, or silently naming whatever the new one gives the same inode number. This is a boot-time operation; close them first, or build the system with the filesystem it is to run on."
 
-        let filesystem = FileSystemSeed.toVirtualFileSystem createdAt seed
+        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt seed
         let limits = SimulatedUnixPlatform.pathLimits platform
         let root = VirtualFileSystem.root filesystem
 

@@ -422,6 +422,7 @@ type DirectoryCursor =
 
 [<RequireQualifiedAccess>]
 module VirtualFileSystem =
+
     /// Inode 1, matching the convention that no real filesystem hands out inode
     /// 0. A zero default would otherwise silently alias whichever inode was
     /// allocated first.
@@ -455,7 +456,7 @@ module VirtualFileSystem =
                                     {
                                         Entries = Map.empty
                                         Parent = firstInode
-                                        Permissions = PermissionBits.defaultForDirectory
+                                        Permissions = SeedEntry.defaultPermsForDirectory
                                     }
                             Times = InodeTimes.createdAt now
                         }
@@ -2428,6 +2429,62 @@ module VirtualFileSystem =
         | defects ->
             let rendered = defects |> List.map (sprintf "%A") |> String.concat "; "
             failwith $"%s{context}: the inode graph is not a filesystem any kernel could produce: %s{rendered}"
+
+    /// Realise a seed as an inode graph whose root directory holds `entries`.
+    ///
+    /// The root is a `Map` rather than a `SeedEntry` because a filesystem's
+    /// root is always a directory: taking the entries directly makes "the root
+    /// is a regular file" unrepresentable instead of an error to report.
+    ///
+    /// `createdAt` is every seeded inode's birth, mtime, ctime and atime — the
+    /// filesystem springs into existence at one instant. Passed in rather than
+    /// read from a clock: this file compiles before `EmulatedKernel`, and a
+    /// filesystem that read the host's clock would make a replay depend on when
+    /// it was recorded.
+    let ofFileSystemSeed
+        (createdAt : UnixTimestamp)
+        (entries : Map<DirectoryEntryName, SeedEntry>)
+        : VirtualFileSystem
+        =
+        let rec install
+            (directory : InodeNumber)
+            (entries : Map<DirectoryEntryName, SeedEntry>)
+            (vfs : VirtualFileSystem)
+            : VirtualFileSystem
+            =
+            // `Map` iterates in key order, so the inode numbers a seed produces
+            // are a function of the seed alone rather than of how the host
+            // happened to build the map. Inode numbers are guest-observable
+            // through `st_ino`, so this is part of the replay contract.
+            entries
+            |> Map.fold
+                (fun vfs name entry ->
+                    match entry with
+                    | SeedEntry.File (contents, permissions) ->
+                        match createFile directory name permissions createdAt contents vfs with
+                        | Ok (_, vfs) -> vfs
+                        | Error error ->
+                            failwith
+                                $"ofFileSystemSeed: could not create the file %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                    | SeedEntry.Symlink target ->
+                        match createSymlink directory name createdAt target vfs with
+                        | Ok (_, vfs) -> vfs
+                        | Error error ->
+                            failwith
+                                $"ofFileSystemSeed: could not create the symlink %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                    | SeedEntry.Directory (children, permissions) ->
+                        match createDirectory directory name permissions createdAt vfs with
+                        | Ok (inode, vfs) -> install inode children vfs
+                        | Error error ->
+                            failwith
+                                $"ofFileSystemSeed: could not create the directory %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                )
+                vfs
+
+        let vfs = empty createdAt
+
+        install (root vfs) entries vfs
+        |> assertInvariants "VirtualFileSystem.ofFileSystemSeed"
 
     /// Construction that bypasses every invariant this module maintains.
     ///

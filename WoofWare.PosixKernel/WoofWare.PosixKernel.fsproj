@@ -26,8 +26,8 @@
         <Compile Include="SymlinkTarget.fs" />
         <Compile Include="PathLimits.fs" />
         <Compile Include="Inode.fs" />
-        <Compile Include="VirtualFileSystem.fs" />
         <Compile Include="FileSystemSeed.fs" />
+        <Compile Include="VirtualFileSystem.fs" />
         <Compile Include="InternetEndpoint.fs" />
         <Compile Include="FileDescriptorRegistry.fs" />
         <Compile Include="UnixTask.fs" />

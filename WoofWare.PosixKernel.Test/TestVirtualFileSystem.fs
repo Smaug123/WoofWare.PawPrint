@@ -38,9 +38,9 @@ module TestVirtualFileSystem =
 
     let private noBytes : ImmutableArray<byte> = ImmutableArray<byte>.Empty
 
-    let private filePerms : PermissionBits = PermissionBits.defaultForRegularFile
+    let private filePerms : PermissionBits = SeedEntry.defaultPermsForRegularFile
 
-    let private dirPerms : PermissionBits = PermissionBits.defaultForDirectory
+    let private dirPerms : PermissionBits = SeedEntry.defaultPermsForDirectory
 
     /// The moment the tests build their filesystems at, where the test is not
     /// *about* time. A distinctive non-epoch value with a nanosecond part, so
@@ -1490,14 +1490,14 @@ module TestVirtualFileSystem =
         // 022 is the umask that produces the familiar 644/755. Asserting the
         // arithmetic as well as the answer keeps the doc comment honest about
         // where the numbers come from.
-        PermissionBits.toInt PermissionBits.defaultForRegularFile
+        PermissionBits.toInt SeedEntry.defaultPermsForRegularFile
         |> shouldEqual (0o666 &&& ~~~0o022)
 
-        PermissionBits.toInt PermissionBits.defaultForDirectory
+        PermissionBits.toInt SeedEntry.defaultPermsForDirectory
         |> shouldEqual (0o777 &&& ~~~0o022)
 
-        PermissionBits.toInt PermissionBits.defaultForRegularFile |> shouldEqual 0o644
-        PermissionBits.toInt PermissionBits.defaultForDirectory |> shouldEqual 0o755
+        PermissionBits.toInt SeedEntry.defaultPermsForRegularFile |> shouldEqual 0o644
+        PermissionBits.toInt SeedEntry.defaultPermsForDirectory |> shouldEqual 0o755
 
     [<Test>]
     let ``a timestamp is a timespec, not a nanosecond count`` () : unit =
@@ -4319,20 +4319,20 @@ module TestCreatingOpenRules =
 
         vfs
         |> fun vfs ->
-            apply (VirtualFileSystem.createDirectory root (name "d") PermissionBits.defaultForDirectory buildTime vfs)
+            apply (VirtualFileSystem.createDirectory root (name "d") SeedEntry.defaultPermsForDirectory buildTime vfs)
         |> fun vfs ->
             apply (
                 VirtualFileSystem.createFile
                     root
                     (name "f")
-                    PermissionBits.defaultForRegularFile
+                    SeedEntry.defaultPermsForRegularFile
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs
             )
         |> fun vfs -> apply (VirtualFileSystem.createDirectory root (name "locked") lockedBits buildTime vfs)
 
-    let private tree : VirtualFileSystem = treeWith PermissionBits.defaultForDirectory
+    let private tree : VirtualFileSystem = treeWith SeedEntry.defaultPermsForDirectory
 
     /// Resolve as a creating open of the given flavour would, then ask for the
     /// verdict — so the `Resolution` under test is one the walk really produces
@@ -4584,13 +4584,13 @@ module TestMkDirRules =
 
         vfs
         |> fun vfs ->
-            apply (VirtualFileSystem.createDirectory root (name "d") PermissionBits.defaultForDirectory buildTime vfs)
+            apply (VirtualFileSystem.createDirectory root (name "d") SeedEntry.defaultPermsForDirectory buildTime vfs)
         |> fun vfs ->
             apply (
                 VirtualFileSystem.createFile
                     root
                     (name "f")
-                    PermissionBits.defaultForRegularFile
+                    SeedEntry.defaultPermsForRegularFile
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs
@@ -4610,10 +4610,10 @@ module TestMkDirRules =
                 | Error error -> failwith $"could not build the tree: %O{error}"
 
             apply (
-                VirtualFileSystem.createDirectory locked (name "kid") PermissionBits.defaultForDirectory buildTime vfs
+                VirtualFileSystem.createDirectory locked (name "kid") SeedEntry.defaultPermsForDirectory buildTime vfs
             )
 
-    let private tree : VirtualFileSystem = treeWith PermissionBits.defaultForDirectory
+    let private tree : VirtualFileSystem = treeWith SeedEntry.defaultPermsForDirectory
 
     /// Resolve as a `mkdir` of the given flavour would, then ask for the verdict
     /// — so the `Resolution` under test is one the walk really produces rather
@@ -4920,14 +4920,14 @@ module TestWalkSearchPermission =
 
         let p, vfs = dir root "p" bits vfs
 
-        let _, vfs = dir p "kid" PermissionBits.defaultForDirectory vfs
+        let _, vfs = dir p "kid" SeedEntry.defaultPermsForDirectory vfs
 
         let vfs =
             match
                 VirtualFileSystem.createFile
                     p
                     (name "f")
-                    PermissionBits.defaultForRegularFile
+                    SeedEntry.defaultPermsForRegularFile
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs

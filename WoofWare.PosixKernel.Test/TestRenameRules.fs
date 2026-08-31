@@ -77,7 +77,7 @@ module TestRenameRules =
             VirtualFileSystem.createDirectory parent (name n) bits buildTime vfs |> ok
 
         let file (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createFile parent (name n) PermissionBits.defaultForRegularFile buildTime noBytes vfs
+            VirtualFileSystem.createFile parent (name n) SeedEntry.defaultPermsForRegularFile buildTime noBytes vfs
             |> ok
 
         let link (parent : InodeNumber) (n : string) (t : string) (vfs : VirtualFileSystem) =
@@ -85,7 +85,7 @@ module TestRenameRules =
             |> ok
             |> snd
 
-        let plainDir = PermissionBits.defaultForDirectory
+        let plainDir = SeedEntry.defaultPermsForDirectory
 
         let f, vfs = file root "f" vfs
         let vfs = VirtualFileSystem.hardLink root (name "g") f buildTime vfs |> ok
@@ -153,7 +153,7 @@ module TestRenameRules =
         let root = VirtualFileSystem.root vfs
 
         let inode, vfs =
-            VirtualFileSystem.createDirectory root (name "gone") PermissionBits.defaultForDirectory buildTime vfs
+            VirtualFileSystem.createDirectory root (name "gone") SeedEntry.defaultPermsForDirectory buildTime vfs
             |> ok
 
         let unbound, vfs =

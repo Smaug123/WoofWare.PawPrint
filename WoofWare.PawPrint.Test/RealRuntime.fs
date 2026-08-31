@@ -7,7 +7,6 @@ open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
 open System.Runtime.InteropServices
 open System.Text
-open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// What the real runtime's stderr reveals about *which* fatal error killed the guest.
@@ -359,9 +358,9 @@ module RealRuntime =
             if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
                 let expected =
                     if isDirectory then
-                        PermissionBits.defaultForDirectory
+                        SeedEntry.defaultPermsForDirectory
                     else
-                        PermissionBits.defaultForRegularFile
+                        SeedEntry.defaultPermsForRegularFile
 
                 if permissions <> expected then
                     failwith
@@ -523,9 +522,9 @@ module RealRuntime =
         |> Map.forall (fun _ entry ->
             match entry with
             | SeedEntry.Symlink _ -> true
-            | SeedEntry.File (_, permissions) -> permissions = PermissionBits.defaultForRegularFile
+            | SeedEntry.File (_, permissions) -> permissions = SeedEntry.defaultPermsForRegularFile
             | SeedEntry.Directory (children, permissions) ->
-                permissions = PermissionBits.defaultForDirectory && canMaterialise children
+                permissions = SeedEntry.defaultPermsForDirectory && canMaterialise children
         )
 
     /// The seed's permission bits, as the mode `chmod(2)` takes. `PermissionBits`
@@ -629,7 +628,7 @@ module RealRuntime =
             File.WriteAllText (Path.Combine (tempDir, assemblyName + ".runtimeconfig.json"), runtimeConfig)
             // The scratch directory *is* the guest's "/" on this side of the
             // comparison, and `VirtualFileSystem.empty` gives PawPrint's root
-            // `PermissionBits.defaultForDirectory`. `Directory.CreateDirectory`
+            // `SeedEntry.defaultPermsForDirectory`. `Directory.CreateDirectory`
             // creates 0777 less the umask, so the two agree only while the
             // umask is 022 — and the seed, being a map of *entries*, has no way
             // to name the root and fix it.
@@ -641,7 +640,7 @@ module RealRuntime =
             // the devshell and one chmod is cheaper than the confusing failure
             // it would otherwise produce there.
             if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
-                applyMode tempDir PermissionBits.defaultForDirectory
+                applyMode tempDir SeedEntry.defaultPermsForDirectory
 
             materialiseSeed tempDir seed
 

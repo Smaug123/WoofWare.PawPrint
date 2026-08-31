@@ -33,73 +33,34 @@ type SeedEntry =
 [<RequireQualifiedAccess>]
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module SeedEntry =
+    /// <summary>
+    /// What a <c>umask 022</c> process gets from <c>open(2)</c> called with <c>0o666</c>.
+    /// </summary>
+    let defaultPermsForRegularFile : PermissionBits =
+        PermissionBits (0o666 &&& ~~~0o022)
+
+    /// <summary>
+    /// What a <c>umask 022</c> process inherits from <c>mkdir(2)</c>'s <c>0o777</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>022</c> (-rw-r--r--) is the default umask on the emulated Unixes, although apparently Ubuntu
+    /// relaxed this to <c>002</c> (-rw-rw-r--) starting at version 11.10.
+    ///
+    /// See <c>defaultForRegularFile</c> for the files version.
+    /// </remarks>
+    let defaultPermsForDirectory : PermissionBits = PermissionBits (0o777 &&& ~~~0o022)
+
     /// A regular file with the mode a `umask 022` process's `open(O_CREAT)`
     /// would have produced: 0666 &&& ~~~0o022.
     let file (contents : ImmutableArray<byte>) : SeedEntry =
-        SeedEntry.File (contents, PermissionBits.defaultForRegularFile)
+        SeedEntry.File (contents, defaultPermsForRegularFile)
 
     /// A directory with the mode a `umask 022` process's `mkdir` would have
     /// produced: 0777 &&& ~~~0o022.
     let directory (entries : Map<DirectoryEntryName, SeedEntry>) : SeedEntry =
-        SeedEntry.Directory (entries, PermissionBits.defaultForDirectory)
+        SeedEntry.Directory (entries, defaultPermsForDirectory)
 
 [<RequireQualifiedAccess>]
 module FileSystemSeed =
     /// A seed describing nothing but an empty root directory.
     let empty : Map<DirectoryEntryName, SeedEntry> = Map.empty
-
-    /// Realise a seed as an inode graph whose root directory holds `entries`.
-    ///
-    /// The root is a `Map` rather than a `SeedEntry` because a filesystem's
-    /// root is always a directory: taking the entries directly makes "the root
-    /// is a regular file" unrepresentable instead of an error to report.
-    ///
-    /// `createdAt` is every seeded inode's birth, mtime, ctime and atime — the
-    /// filesystem springs into existence at one instant. Passed in rather than
-    /// read from a clock: this file compiles before `EmulatedKernel`, and a
-    /// filesystem that read the host's clock would make a replay depend on when
-    /// it was recorded.
-    let toVirtualFileSystem
-        (createdAt : UnixTimestamp)
-        (entries : Map<DirectoryEntryName, SeedEntry>)
-        : VirtualFileSystem
-        =
-        let rec install
-            (directory : InodeNumber)
-            (entries : Map<DirectoryEntryName, SeedEntry>)
-            (vfs : VirtualFileSystem)
-            : VirtualFileSystem
-            =
-            // `Map` iterates in key order, so the inode numbers a seed produces
-            // are a function of the seed alone rather than of how the host
-            // happened to build the map. Inode numbers are guest-observable
-            // through `st_ino`, so this is part of the replay contract.
-            entries
-            |> Map.fold
-                (fun vfs name entry ->
-                    match entry with
-                    | SeedEntry.File (contents, permissions) ->
-                        match VirtualFileSystem.createFile directory name permissions createdAt contents vfs with
-                        | Ok (_, vfs) -> vfs
-                        | Error error ->
-                            failwith
-                                $"FileSystemSeed: could not create the file %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
-                    | SeedEntry.Symlink target ->
-                        match VirtualFileSystem.createSymlink directory name createdAt target vfs with
-                        | Ok (_, vfs) -> vfs
-                        | Error error ->
-                            failwith
-                                $"FileSystemSeed: could not create the symlink %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
-                    | SeedEntry.Directory (children, permissions) ->
-                        match VirtualFileSystem.createDirectory directory name permissions createdAt vfs with
-                        | Ok (inode, vfs) -> install inode children vfs
-                        | Error error ->
-                            failwith
-                                $"FileSystemSeed: could not create the directory %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
-                )
-                vfs
-
-        let vfs = VirtualFileSystem.empty createdAt
-
-        install (VirtualFileSystem.root vfs) entries vfs
-        |> VirtualFileSystem.assertInvariants "FileSystemSeed.toVirtualFileSystem"

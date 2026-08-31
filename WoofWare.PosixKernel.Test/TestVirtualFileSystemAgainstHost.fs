@@ -495,7 +495,7 @@ module TestVirtualFileSystemAgainstHost =
             let permissions =
                 match Map.tryFind directory narrowed with
                 | Some mode -> PermissionBits.parseOrFail "test" mode
-                | None -> PermissionBits.defaultForDirectory
+                | None -> SeedEntry.defaultPermsForDirectory
 
             let _, updated =
                 apply (VirtualFileSystem.createDirectory parent name permissions buildTime vfs) directory
@@ -510,7 +510,7 @@ module TestVirtualFileSystemAgainstHost =
                     (VirtualFileSystem.createFile
                         parent
                         name
-                        PermissionBits.defaultForRegularFile
+                        SeedEntry.defaultPermsForRegularFile
                         buildTime
                         ImmutableArray<byte>.Empty
                         vfs)
@@ -1343,11 +1343,6 @@ module TestVirtualFileSystemAgainstHost =
                 compared |> shouldEqual (List.length setIdModeProbes)
         )
 
-    // ------------------------------------------------ the S_IFMT band's values
-
-    /// The pinned runtime source only exists inside the Nix devshell, so a plain
-    /// `dotnet test` in a non-Nix checkout skips rather than fails. Same shape
-    /// as `TestUnixError.requireRuntimeSrc`, which is private to its own module.
     // --------------------------------------------------------------- mkdir
 
     /// What a `mkdir(2)` did, in terms both worlds can express.
@@ -2079,7 +2074,7 @@ module TestVirtualFileSystemAgainstHost =
             | None -> failwith $"the pinned Interop.Stat.cs no longer declares %s{name}"
 
         InodeContent.fileTypeBits (
-            InodeContent.RegularFile (ImmutableArray<byte>.Empty, PermissionBits.defaultForRegularFile)
+            InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
         )
         |> shouldEqual (ofName "S_IFREG")
 
@@ -2088,7 +2083,7 @@ module TestVirtualFileSystemAgainstHost =
                 {
                     Entries = Map.empty
                     Parent = InodeNumber 1L
-                    Permissions = PermissionBits.defaultForDirectory
+                    Permissions = SeedEntry.defaultPermsForDirectory
                 }
         )
         |> shouldEqual (ofName "S_IFDIR")
@@ -2103,7 +2098,7 @@ module TestVirtualFileSystemAgainstHost =
 
         for content in
             [
-                InodeContent.RegularFile (ImmutableArray<byte>.Empty, PermissionBits.defaultForRegularFile)
+                InodeContent.RegularFile (ImmutableArray<byte>.Empty, SeedEntry.defaultPermsForRegularFile)
                 InodeContent.Symlink (SymlinkTarget.parseOrFail "test" "x")
             ] do
             let bits = InodeContent.fileTypeBits content
@@ -2361,7 +2356,7 @@ module TestVirtualFileSystemAgainstHost =
                 VirtualFileSystem.createDirectory
                     (directoryOf parent)
                     leaf
-                    PermissionBits.defaultForDirectory
+                    SeedEntry.defaultPermsForDirectory
                     buildTime
                     vfs
                 |> function
@@ -2375,7 +2370,7 @@ module TestVirtualFileSystemAgainstHost =
                 VirtualFileSystem.createFile
                     (directoryOf parent)
                     leaf
-                    PermissionBits.defaultForRegularFile
+                    SeedEntry.defaultPermsForRegularFile
                     buildTime
                     ImmutableArray<byte>.Empty
                     vfs

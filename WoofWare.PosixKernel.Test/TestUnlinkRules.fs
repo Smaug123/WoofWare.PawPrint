@@ -65,7 +65,7 @@ module TestUnlinkRules =
             VirtualFileSystem.createDirectory parent (name n) bits buildTime vfs |> ok
 
         let file (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) =
-            VirtualFileSystem.createFile parent (name n) PermissionBits.defaultForRegularFile buildTime noBytes vfs
+            VirtualFileSystem.createFile parent (name n) SeedEntry.defaultPermsForRegularFile buildTime noBytes vfs
             |> ok
             |> snd
 
@@ -74,15 +74,15 @@ module TestUnlinkRules =
             |> ok
             |> snd
 
-        let vfs = dir root "d" PermissionBits.defaultForDirectory vfs |> snd
+        let vfs = dir root "d" SeedEntry.defaultPermsForDirectory vfs |> snd
 
         // Two levels, so that a `..` can land on a directory that is *not* the
         // root. Without it every `..` in this corpus reaches the root, and
         // Darwin's EBUSY arm would be indistinguishable from "`..` is EBUSY".
-        let nest, vfs = dir root "nest" PermissionBits.defaultForDirectory vfs
-        let vfs = dir nest "inner" PermissionBits.defaultForDirectory vfs |> snd
+        let nest, vfs = dir root "nest" SeedEntry.defaultPermsForDirectory vfs
+        let vfs = dir nest "inner" SeedEntry.defaultPermsForDirectory vfs |> snd
 
-        let dfull, vfs = dir root "dfull" PermissionBits.defaultForDirectory vfs
+        let dfull, vfs = dir root "dfull" SeedEntry.defaultPermsForDirectory vfs
         let vfs = file dfull "x" vfs
 
         let vfs = file root "f" vfs
@@ -96,7 +96,7 @@ module TestUnlinkRules =
         // The narrowed directories are created *with* their modes: this module
         // has no `chmod`, and a builder applies no permission rule of its own.
         let nowrite, vfs = dir root "nowrite" (mode 0o555) vfs
-        let vfs = dir nowrite "kdir" PermissionBits.defaultForDirectory vfs |> snd
+        let vfs = dir nowrite "kdir" SeedEntry.defaultPermsForDirectory vfs |> snd
         let vfs = file nowrite "kid" vfs
         let vfs = link nowrite "klink" "kid" vfs
 
