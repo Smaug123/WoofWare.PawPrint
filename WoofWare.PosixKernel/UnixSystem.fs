@@ -2671,9 +2671,7 @@ module UnixSystem =
 
         Some
             {
-                Mode =
-                    InodeContent.fileTypeBits entry.Content
-                    ||| PermissionBits.toInt permissions
+                Mode = InodeContent.fileTypeBits entry.Content ||| PermissionBits.toInt permissions
                 // The calling process's, this kernel storing no per-inode
                 // ownership. See `FileStatus.UserId`.
                 UserId = system.Process.UserId
