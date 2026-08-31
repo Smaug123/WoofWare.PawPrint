@@ -289,7 +289,7 @@ module TestUserBufferCheck =
     /// what a handler's buffer argument meets on its way to the kernel.
     ///
     /// Composed here rather than in the production code, which now hands the
-    /// classification straight to the library — `UnixSystem.admitSocketWait`
+    /// classification straight to the library — `UnixPoll.admitSocketWait`
     /// owns the one such screen that remains, and performs it itself. The two
     /// halves are still worth testing together, because the claims below are
     /// about how a `BufferPointer` *maps* onto what the screen sees.

@@ -13,7 +13,7 @@ That plan says:
 > PawPrint answers the stale cached path where a real `getcwd` fails ENOENT —
 > measured above.
 
-**It does not.** `UnixSystem.getcwd` has guarded the case since #1196:
+**It does not.** `UnixPathResolution.getcwd` has guarded the case since #1196:
 
 ```fsharp
 elif VirtualFileSystem.isOrphanedDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem then
@@ -49,8 +49,8 @@ three sites that maintain the field keep the previous value instead:
 | site | what it does when there is no path |
 | --- | --- |
 | `EmulatedKernel.withFileSystemAndCurrentDirectory` | cannot arise — the host names a live directory |
-| `UnixSystem.rename` (`UnixSystem.fs:6642`) | `\| None -> system.Process.CurrentDirectory` |
-| `UnixSystem.chdir` (`UnixSystem.fs:6351`) | `\| None -> system.Process.CurrentDirectory` |
+| `UnixNamespace.rename` (`UnixSystem.fs:6642`) | `\| None -> system.Process.CurrentDirectory` |
+| `UnixPathResolution.chdir` (`UnixSystem.fs:6351`) | `\| None -> system.Process.CurrentDirectory` |
 
 **B. Nothing checks the field during exactly the window in which it is wrong.**
 `checkInvariants` raises `CurrentDirectoryPathDisagrees` only while
@@ -239,7 +239,7 @@ Option 2, in the order the plan set out.
    `getcwd`, and `chdir(".")` in one leaves it failing ENOENT both before and
    after.
 4. Removed `UnixProcessState.CurrentDirectory`. `getcwd` derives via the new
-   `UnixSystem.currentDirectoryPath`; `rename`'s recompute and `chdir`'s
+   `UnixPathResolution.currentDirectoryPath`; `rename`'s recompute and `chdir`'s
    `recorded` are gone; `UnixSystemDefect.CurrentDirectoryPathDisagrees` is
    deleted along with the test that constructed the now-unrepresentable state
    (`CurrentDirectoryIsNotADirectory`, which survives, keeps its two tests).

@@ -37,7 +37,7 @@ module TestSocketTable =
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
-        match UnixSystem.close fd system with
+        match UnixDescriptor.close fd system with
         | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system
@@ -126,7 +126,7 @@ module TestSocketTable =
     [<Test>]
     let ``a fresh socket carries its triple into the socket table`` () : unit =
         let fd, kernel =
-            UnixSystem.createSocket SocketDomain.InterNetworkV6 SocketKind.Datagram SocketProtocol.Udp initialSystem
+            UnixSocket.createSocket SocketDomain.InterNetworkV6 SocketKind.Datagram SocketProtocol.Udp initialSystem
 
         match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
         | None -> failwith "the socket descriptor is not live"
@@ -147,10 +147,10 @@ module TestSocketTable =
     [<Test>]
     let ``two sockets get distinct identities`` () : unit =
         let _, kernel =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let _, kernel =
-            UnixSystem.createSocket SocketDomain.Unix SocketKind.Datagram SocketProtocol.Unspecified kernel
+            UnixSocket.createSocket SocketDomain.Unix SocketKind.Datagram SocketProtocol.Unspecified kernel
 
         kernel.Machine.Sockets |> Map.count |> shouldEqual 2
         kernel.Machine.NextSocketId |> shouldEqual (SocketId 2L)
@@ -162,7 +162,7 @@ module TestSocketTable =
     [<Test>]
     let ``closing the last descriptor destroys the socket`` () : unit =
         let fd, kernel =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         kernel.Machine.Sockets |> Map.count |> shouldEqual 1
 
@@ -184,7 +184,7 @@ module TestSocketTable =
     [<Test>]
     let ``closing a dup leaves the socket alive`` () : unit =
         let fd, kernel =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let duped, kernel =
             match FileDescriptorRegistry.dup fd kernel.Process.FileDescriptors with
@@ -220,7 +220,7 @@ module TestSocketTable =
     [<Test>]
     let ``closing a non-socket descriptor leaves the socket table alone`` () : unit =
         let _, kernel =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp initialSystem
 
         let port, registry =
             FileDescriptorRegistry.createSocketEventPort kernel.Process.FileDescriptors
@@ -488,7 +488,7 @@ module TestSocketTable =
                                             FileSystem = filesystem
                                         }
                                 }
-                                |> UnixSystem.forgetIfUnheld inode
+                                |> UnixDescriptor.forgetIfUnheld inode
 
                             observedUnlinks <- observedUnlinks + 1
 
@@ -532,7 +532,7 @@ module TestSocketTable =
                             SocketKind.Datagram
 
                     let _, kernel' =
-                        UnixSystem.createSocket domain kind SocketProtocol.Unspecified kernel
+                        UnixSocket.createSocket domain kind SocketProtocol.Unspecified kernel
 
                     kernel <- kernel'
                     observedSockets <- observedSockets + 1
@@ -542,7 +542,7 @@ module TestSocketTable =
                 FileDescriptorRegistry.checkInvariants kernel.Process.FileDescriptors
                 |> shouldEqual []
 
-                VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes kernel) kernel.Machine.FileSystem
+                VirtualFileSystem.checkInvariants (UnixDescriptor.pinnedInodes kernel) kernel.Machine.FileSystem
                 |> shouldEqual []
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genWalkSeed) property)
@@ -800,7 +800,7 @@ module TestSocketTable =
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        UnixSystem.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
+        UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
 
     /// The write-back a guest cannot inspect: the queue's content, the
     /// connection's two addresses, and the client's implicit binding. A
@@ -1126,7 +1126,7 @@ module TestSocketTable =
             | SocketPhase.Established connectionId -> connectionId
             | other -> failwith $"expected Established, got %A{other}"
 
-        let fd, tcpConnection, kernel = UnixSystem.acceptConnection (SocketId 0L) kernel
+        let fd, tcpConnection, kernel = UnixConnection.acceptConnection (SocketId 0L) kernel
         let firstClient = UnixMachineState.connection (connectionOf 1L) kernel.Machine
         tcpConnection |> shouldEqual firstClient
 
@@ -1158,10 +1158,10 @@ module TestSocketTable =
 
         UnixSystem.checkInvariants kernel |> shouldEqual []
 
-        let _, _, kernel = UnixSystem.acceptConnection (SocketId 0L) kernel
+        let _, _, kernel = UnixConnection.acceptConnection (SocketId 0L) kernel
 
         let e =
-            Assert.Throws<System.Exception> (fun () -> UnixSystem.acceptConnection (SocketId 0L) kernel |> ignore)
+            Assert.Throws<System.Exception> (fun () -> UnixConnection.acceptConnection (SocketId 0L) kernel |> ignore)
 
         e.Message |> shouldContainText "the accept queue is empty"
 
@@ -1171,7 +1171,7 @@ module TestSocketTable =
     let ``closing the last reference sweeps the connection`` () : unit =
         let kernel = listenerAndClients 8 5000us 1
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
-        let acceptedFd, _, kernel = UnixSystem.acceptConnection (SocketId 0L) kernel
+        let acceptedFd, _, kernel = UnixConnection.acceptConnection (SocketId 0L) kernel
 
         let connectionId =
             match (UnixMachineState.socket (SocketId 1L) kernel.Machine).Phase with
@@ -1259,7 +1259,7 @@ module TestSocketTable =
         // AF_UNSPEC dissolves on Linux, and — measured, unlike TCP's reset —
         // drops the implicit binding entirely, port included.
         let outcome, kernel =
-            UnixSystem.connectSocket (SocketId 0L) false 16 (Some 0) None kernel
+            UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None kernel
 
         outcome |> shouldEqual ConnectOutcome.Completed
         let socket = UnixMachineState.socket (SocketId 0L) kernel.Machine
@@ -1284,7 +1284,7 @@ module TestSocketTable =
             }
 
         let outcome, _ =
-            UnixSystem.connectSocket (SocketId 0L) false 16 (Some 0) None darwin
+            UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None darwin
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EAFNOSUPPORT)
 

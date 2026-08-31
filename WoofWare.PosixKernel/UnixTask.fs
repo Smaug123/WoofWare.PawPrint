@@ -228,7 +228,7 @@ module UnixTaskTable =
     /// with less of itself left to run is the obvious future instance — and that
     /// is the syscall's business rather than this table's.
     ///
-    /// Clients park in an `flock` through `UnixSystem.parkFlock` rather than
+    /// Clients park in an `flock` through `UnixDescriptor.parkFlock` rather than
     /// through this, which is what ties that record to the condition that
     /// produced it; this is how any park is cleared, and how `parkFlock` writes.
     let withParked<'Task when 'Task : comparison>

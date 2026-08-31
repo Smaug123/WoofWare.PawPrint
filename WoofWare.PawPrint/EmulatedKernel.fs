@@ -817,9 +817,9 @@ module EmulatedKernel =
     /// The path of the directory the simulated process is standing in, as
     /// `SystemNative_GetCwd` reports it — or `None` if no path reaches it, which
     /// is the state a process is left in when its directory is removed out from
-    /// under it. See `UnixSystem.currentDirectoryPath`.
+    /// under it. See `UnixPathResolution.currentDirectoryPath`.
     let currentDirectoryPath (kernel : EmulatedKernel) : AbsoluteUnixPath option =
-        UnixSystem.currentDirectoryPath (unix kernel)
+        UnixPathResolution.currentDirectoryPath (unix kernel)
 
     /// Put back a POSIX half a syscall answered from. Total in both directions
     /// with `unix`, which `TestUnixSystemProjection` asserts: a syscall's answer
@@ -1376,7 +1376,7 @@ module EmulatedKernel =
 
 
 
-    /// `UnixSystem.changeSocketEventRegistration` — `epoll_ctl(2)` past a
+    /// `UnixPoll.changeSocketEventRegistration` — `epoll_ctl(2)` past a
     /// caller's own screens — through this kernel rather than through its POSIX
     /// half.
     ///
@@ -1389,10 +1389,10 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : Result<SocketEventRegistrationAnswer * EmulatedKernel, SocketEventRegistrationRefusal>
         =
-        UnixSystem.changeSocketEventRegistration portFd targetFd change (unix kernel)
+        UnixPoll.changeSocketEventRegistration portFd targetFd change (unix kernel)
         |> Result.map (fun (answer, system) -> answer, withUnix system kernel)
 
-    /// `UnixSystem.createSocket` — allocate a fresh socket and a descriptor onto
+    /// `UnixSocket.createSocket` — allocate a fresh socket and a descriptor onto
     /// it — through this kernel rather than through its POSIX half.
     ///
     /// Here for the reason the adapters beside it are: nine fixtures call it
@@ -1404,7 +1404,7 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : int * EmulatedKernel
         =
-        let fd, system = UnixSystem.createSocket domain kind protocol (unix kernel)
+        let fd, system = UnixSocket.createSocket domain kind protocol (unix kernel)
         fd, withUnix system kernel
 
     /// The stream the `DIR*` backed by `block` names.
@@ -1437,7 +1437,7 @@ module EmulatedKernel =
                 $"EmulatedKernel.directoryStream: %O{block} names directory stream %O{id}, which the stream table does not hold. This is an interpreter bug: the two maps are maintained together."
 
     /// Bind `block` — the native block whose address the guest holds as its
-    /// `DIR*` — to a stream `UnixSystem.opendir` has just minted.
+    /// `DIR*` — to a stream `UnixNamespace.opendir` has just minted.
     ///
     /// The address is PawPrint's half of the stream and the identity is the
     /// library's, so opening one takes both steps. A client that took only this
@@ -1470,7 +1470,7 @@ module EmulatedKernel =
         }
 
 
-    /// `UnixSystem.connectSocket` — `connect(2)` past the caller's own screens
+    /// `UnixConnection.connectSocket` — `connect(2)` past the caller's own screens
     /// and copy-in faults — through this kernel rather than through its POSIX
     /// half.
     ///
@@ -1487,11 +1487,11 @@ module EmulatedKernel =
         : ConnectOutcome * EmulatedKernel
         =
         let outcome, system =
-            UnixSystem.connectSocket socketId nonBlocking declaredLength family destination (unix kernel)
+            UnixConnection.connectSocket socketId nonBlocking declaredLength family destination (unix kernel)
 
         outcome, withUnix system kernel
 
-    /// `UnixSystem.acceptConnection` — dequeue the oldest completed connection
+    /// `UnixConnection.acceptConnection` — dequeue the oldest completed connection
     /// from `socketId`'s accept queue and materialise the server-side socket
     /// onto it — through this kernel rather than through its POSIX half.
     ///
@@ -1499,7 +1499,7 @@ module EmulatedKernel =
     /// fixtures that hold an `EmulatedKernel`: writing `unix` in and `withUnix`
     /// back out at each would be this function, copied.
     let acceptConnection (socketId : SocketId) (kernel : EmulatedKernel) : int * TcpConnection * EmulatedKernel =
-        let fd, connection, system = UnixSystem.acceptConnection socketId (unix kernel)
+        let fd, connection, system = UnixConnection.acceptConnection socketId (unix kernel)
         fd, connection, withUnix system kernel
 
     /// Check that the kernel knows exactly the tasks that `liveThreads` are.
@@ -1563,9 +1563,9 @@ module EmulatedKernel =
     /// The descriptor table's own rules are `FileDescriptorRegistry.checkInvariants`,
     /// and the filesystem's are `VirtualFileSystem.checkInvariants`; this
     /// repeats neither. The latter takes a `pinned` argument, which is what
-    /// `UnixSystem.pinnedInodes` computes, so a caller wanting the whole picture
+    /// `UnixDescriptor.pinnedInodes` computes, so a caller wanting the whole picture
     /// pairs this with
-    /// `VirtualFileSystem.checkInvariants (UnixSystem.pinnedInodes (unix kernel))`.
+    /// `VirtualFileSystem.checkInvariants (UnixDescriptor.pinnedInodes (unix kernel))`.
     let checkInvariants (kernel : EmulatedKernel) : EmulatedKernelDefect list =
         // Both directions: a `DIR*` naming a stream that is gone would crash the
         // next `readdir`, and a stream no `DIR*` names can never be closed, so it

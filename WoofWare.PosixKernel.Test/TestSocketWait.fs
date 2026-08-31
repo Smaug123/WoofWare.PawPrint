@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.admitSocketWait`: the screens `epoll_wait(2)` and `kevent(2)`
+/// `UnixPoll.admitSocketWait`: the screens `epoll_wait(2)` and `kevent(2)`
 /// apply before either can deliver or sleep.
 ///
 /// Five of the eight measured rows differ between the flavours, and a guest runs
@@ -86,7 +86,7 @@ module TestSocketWait =
         (system : UnixSystem<int, string>)
         : SocketWaitAdmission
         =
-        match UnixSystem.admitSocketWait fd maxEvents buffer system with
+        match UnixPoll.admitSocketWait fd maxEvents buffer system with
         | Ok admission -> admission
         | Error refusal -> failwith $"expected an admission, got a refusal: %s{SocketWaitRefusal.describe refusal}"
 
@@ -185,7 +185,7 @@ module TestSocketWait =
         let fd, system = withPort (systemOn platform)
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixSystem.admitSocketWait fd -1 UserBuffer.Mapped system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixPoll.admitSocketWait fd -1 UserBuffer.Mapped system |> ignore<_>)
 
         e.Message |> shouldContainText "is negative, which neither kernel is ever asked"
 
@@ -260,7 +260,7 @@ module TestSocketWait =
     let ``an addressless buffer is refused only where the flavour screens`` () : unit =
         let linuxFd, linux = withPort (systemOn SimulatedUnixPlatform.linuxX64)
 
-        UnixSystem.admitSocketWait linuxFd 8 UserBuffer.Addressless linux
+        UnixPoll.admitSocketWait linuxFd 8 UserBuffer.Addressless linux
         |> shouldEqual (Error (SocketWaitRefusal.Buffer BufferRefusal.AddresslessAtScreen))
 
         let darwinFd, darwin = withPort (systemOn SimulatedUnixPlatform.macOsArm64)

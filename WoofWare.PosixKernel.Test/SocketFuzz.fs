@@ -77,7 +77,7 @@ module SocketFuzz =
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
-        match UnixSystem.close fd system with
+        match UnixDescriptor.close fd system with
         | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system
@@ -231,7 +231,7 @@ module SocketFuzz =
         match op with
         | FuzzOp.NewSocket slot ->
             let fd, kernel =
-                UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp state.Kernel
+                UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp state.Kernel
 
             "ok",
             assignSlot
@@ -298,7 +298,7 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                UnixSystem.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel
+                UnixConnection.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel
 
             let token =
                 match outcome with
@@ -315,7 +315,7 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                UnixSystem.connectSocket
+                UnixConnection.connectSocket
                     socketId
                     true
                     16
@@ -342,7 +342,7 @@ module SocketFuzz =
                 "EAGAIN", state
             | _ ->
 
-            let fd, _, kernel = UnixSystem.acceptConnection socketId state.Kernel
+            let fd, _, kernel = UnixConnection.acceptConnection socketId state.Kernel
 
             "ok",
             assignSlot
@@ -413,7 +413,7 @@ module SocketFuzz =
             let change = SocketEventRegistrationChange.Add (interestOfMask mask, uint64 target)
 
             match
-                UnixSystem.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
+                UnixPoll.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 "ok",
@@ -427,7 +427,7 @@ module SocketFuzz =
                 SocketEventRegistrationChange.Modify (interestOfMask mask, uint64 target)
 
             match
-                UnixSystem.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
+                UnixPoll.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) ->
                 "ok",
@@ -438,7 +438,7 @@ module SocketFuzz =
             | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Del (port, target) ->
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     (slotFd port state)
                     (slotFd target state)
                     SocketEventRegistrationChange.Remove
@@ -489,7 +489,7 @@ module SocketFuzz =
             let reported =
                 match FileDescriptorRegistry.tryFindId (slotFd slot state) state.Kernel.Process.FileDescriptors with
                 | Some descriptionId ->
-                    UnixSystem.pollReadinessOfDescription descriptionId state.Kernel
+                    UnixPoll.pollReadinessOfDescription descriptionId state.Kernel
                     |> PollEvents.ofLevel (PollEvents.ofBits (int16 events))
                 | None -> failwith $"INTERPRETER-DRIVER BUG: poll's slot %d{slot} is not live."
 

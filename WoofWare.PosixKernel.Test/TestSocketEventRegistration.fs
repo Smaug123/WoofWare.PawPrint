@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.changeSocketEventRegistration`: `epoll_ctl(2)` past a caller's
+/// `UnixPoll.changeSocketEventRegistration`: `epoll_ctl(2)` past a caller's
 /// own screens.
 ///
 /// `FileDescriptorRegistry.changeSocketEventRegistration` already has the
@@ -111,7 +111,7 @@ module TestSocketEventRegistration =
         (system : UnixSystem<int, string>)
         : SocketEventRegistrationAnswer * UnixSystem<int, string>
         =
-        match UnixSystem.changeSocketEventRegistration portFd targetFd change system with
+        match UnixPoll.changeSocketEventRegistration portFd targetFd change system with
         | Ok result -> result
         | Error refusal ->
             failwith $"expected an answer, got a refusal: %s{SocketEventRegistrationRefusal.describe refusal}"
@@ -214,11 +214,11 @@ module TestSocketEventRegistration =
             ]
 
         for change in changes do
-            UnixSystem.changeSocketEventRegistration portFd socketFd change darwin
+            UnixPoll.changeSocketEventRegistration portFd socketFd change darwin
             |> shouldEqual expected
 
             // ...including for descriptors epoll itself would refuse.
-            UnixSystem.changeSocketEventRegistration 99 99 change darwin
+            UnixPoll.changeSocketEventRegistration 99 99 change darwin
             |> shouldEqual expected
 
     // ------------------------------------------------------------------

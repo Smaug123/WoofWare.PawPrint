@@ -2725,7 +2725,7 @@ module TestVirtualFileSystemAgainstHost =
     /// "..". This one is about the refusals, and about one thing the tree
     /// comparison structurally cannot see: which errno comes out when both
     /// paths are bad. That is a property of the order the two paths are
-    /// resolved in, so it lives below `UnixSystem.rename` rather than below
+    /// resolved in, so it lives below `UnixNamespace.rename` rather than below
     /// `VirtualFileSystem.rename`, and no verdict test can reach it — a verdict
     /// is handed two finished resolutions and never learns which phase failed.
     type private RenameRefusal =
@@ -2774,7 +2774,7 @@ module TestVirtualFileSystemAgainstHost =
                     |> ImmutableArray.CreateRange
                     |> PathArgumentBytes.Bytes
 
-                match UnixSystem.rename (bytes source) (bytes destination) (renameModelSystem (buildModel ())) with
+                match UnixNamespace.rename (bytes source) (bytes destination) (renameModelSystem (buildModel ())) with
                 | Ok (SyscallAnswer.Completed 0L, _) -> RenameRefusal.Succeeded
                 | Ok (SyscallAnswer.Failed error, _) -> RenameRefusal.Refused (hostErrno error)
                 | other -> failwith $"the model answered %A{other}, which no row here expects"
@@ -3059,9 +3059,9 @@ module TestVirtualFileSystemAgainstHost =
                     |> UnixProcessState.withUserAndGroupId userId userId
             }
 
-        match UnixSystem.chdir (UnixPath.parseOrFail "test" relative) system with
+        match UnixPathResolution.chdir (UnixPath.parseOrFail "test" relative) system with
         | SyscallAnswer.Completed 0L, moved ->
-            match UnixSystem.currentDirectoryPath moved with
+            match UnixPathResolution.currentDirectoryPath moved with
             | Some path -> ChDirOutcome.Entered (AbsoluteUnixPath.toString path)
             | None ->
                 // No operand in this fixture removes a directory, so nothing

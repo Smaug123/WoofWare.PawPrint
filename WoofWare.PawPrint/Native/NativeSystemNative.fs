@@ -662,7 +662,7 @@ module NativeSystemNative =
         (path : UnixPath)
         : Result<Resolution, UnixError>
         =
-        UnixSystem.resolvePathFull policy trailingSeparatorPolicy path (EmulatedKernel.unix kernel)
+        UnixPathResolution.resolvePathFull policy trailingSeparatorPolicy path (EmulatedKernel.unix kernel)
 
     /// The inode a path names, or the errno the lookup owes the guest — what
     /// every non-creating caller wants.
@@ -672,7 +672,7 @@ module NativeSystemNative =
         (path : UnixPath)
         : Result<InodeNumber, UnixError>
         =
-        UnixSystem.resolvePath policy path (EmulatedKernel.unix kernel)
+        UnixPathResolution.resolvePath policy path (EmulatedKernel.unix kernel)
 
     /// How big the `d_name` buffer inside one directory stream is.
     ///
@@ -799,7 +799,7 @@ module NativeSystemNative =
     /// disagreement no differential test could catch, since the real runtime
     /// would agree with itself either way.
     ///
-    /// This is the whole of PawPrint's half of `stat`. `UnixSystem.fstat`
+    /// This is the whole of PawPrint's half of `stat`. `UnixPathResolution.fstat`
     /// answers what a kernel knows; the layout it goes into is .NET's platform
     /// abstraction layer, which is PawPrint's business and not a POSIX
     /// simulator's — so the offsets, the `FileStatusFlags` word and the fields
@@ -1031,12 +1031,12 @@ module NativeSystemNative =
         let source =
             pathArgumentBytes ctx operation "oldPath" ctx.Instruction.Arguments.[0] state
 
-        match UnixSystem.renameSourcePhase source (EmulatedKernel.unix state.Kernel) with
+        match UnixNamespace.renameSourcePhase source (EmulatedKernel.unix state.Kernel) with
         | Error refusal -> answer (Error refusal)
         | Ok (RenameProgress.Answered (syscallAnswer, system)) -> answer (Ok (syscallAnswer, system))
         | Ok (RenameProgress.NeedsDestination paused) ->
             pathArgumentBytes ctx operation "newPath" ctx.Instruction.Arguments.[1] state
-            |> fun destination -> UnixSystem.renameWithDestination destination paused
+            |> fun destination -> UnixNamespace.renameWithDestination destination paused
             |> answer
 
     /// Shared body of `SystemNative_Stat` and `SystemNative_LStat`, which
@@ -1103,7 +1103,7 @@ module NativeSystemNative =
         | Error error -> fail error
         | Ok path ->
 
-        match UnixSystem.stat policy path (EmulatedKernel.unix state.Kernel) with
+        match UnixPathResolution.stat policy path (EmulatedKernel.unix state.Kernel) with
         | FileStatusAnswer.Failed error -> fail error
         | FileStatusAnswer.Reported status ->
 
@@ -2322,7 +2322,7 @@ module NativeSystemNative =
                 | BufferPointer.Unstatable _ -> false
 
             if bufferSize < 0 then
-                // The shim's own guard, and the reason `UnixSystem.getcwd`
+                // The shim's own guard, and the reason `UnixPathResolution.getcwd`
                 // refuses a negative capacity rather than answering one: no
                 // `getcwd(3)` sees a negative size, its argument being a
                 // `size_t`. It *also* `assert`s this, so a checked native build
@@ -2346,7 +2346,7 @@ module NativeSystemNative =
             else
 
             match
-                UnixSystem.getcwd
+                UnixPathResolution.getcwd
                     (BufferPointer.toUserBuffer bufferPointer)
                     bufferSize
                     (EmulatedKernel.unix state.Kernel)
@@ -2415,7 +2415,7 @@ module NativeSystemNative =
             // reachable. Leaving them unimplemented means a guest that gets
             // there stops loudly instead, naming the entry point.
             // `sourcesImpure/EffectiveUserIdConfigured.cs` pins the premise.
-            let uid = UnixSystem.effectiveUserId (EmulatedKernel.unix state.Kernel)
+            let uid = UnixDescriptor.effectiveUserId (EmulatedKernel.unix state.Kernel)
 
             state
             |> IlMachineState.pushToEvalStack (NativeCall.cliUInt32 uid) ctx.Thread
@@ -2507,7 +2507,7 @@ module NativeSystemNative =
             // Each bit becomes the fact it stands for. `O_EXCL` is passed
             // through exactly as the guest set it rather than combined with
             // `O_CREAT` here: that it does nothing on its own is the kernel's
-            // rule, and `UnixSystem.openPath` owns it.
+            // rule, and `UnixNamespace.openPath` owns it.
             let openFlags : OpenFlags =
                 {
                     Access =
@@ -2544,11 +2544,11 @@ module NativeSystemNative =
             | Ok path ->
 
             // The `mode` argument crosses raw and unvalidated; see
-            // `UnixSystem.openPath` for why refusing a nonzero one without
+            // `UnixNamespace.openPath` for why refusing a nonzero one without
             // `O_CREAT` would refuse the BCL's own read path.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            match UnixSystem.openPath openFlags path mode (EmulatedKernel.unix state.Kernel) with
+            match UnixNamespace.openPath openFlags path mode (EmulatedKernel.unix state.Kernel) with
             | SyscallAnswer.Failed error, system ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim -1L)) ctx.Thread
@@ -2576,7 +2576,7 @@ module NativeSystemNative =
             // pre-empt the EFAULT a bad path earns.
             let mode = NativeCall.int32Argument operation instruction.Arguments.[1]
 
-            pathSyscall ctx operation (fun path system -> UnixSystem.mkdir path mode system) state
+            pathSyscall ctx operation (fun path system -> UnixNamespace.mkdir path mode system) state
         // `int32_t SystemNative_Unlink(const char* path)` (pal_io.c:368), an
         // EINTR-retrying `unlink(2)` and nothing else. CoreLib declares it as
         // `int Unlink(string)` under UTF-8 marshalling, so the argument that
@@ -2585,7 +2585,7 @@ module NativeSystemNative =
         | Some "SystemNative_Unlink",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_Unlink" UnixSystem.unlink state
+            pathSyscall ctx "SystemNative_Unlink" UnixNamespace.unlink state
         // `int32_t SystemNative_ChDir(const char* path)` (pal_io.c): `chdir(2)`
         // and nothing else. CoreLib declares it as `int ChDir(string)` under
         // UTF-8 marshalling, so what arrives is the same NUL-terminated byte
@@ -2593,14 +2593,14 @@ module NativeSystemNative =
         | Some "SystemNative_ChDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_ChDir" UnixSystem.chdir state
+            pathSyscall ctx "SystemNative_ChDir" UnixPathResolution.chdir state
         // `int32_t SystemNative_RmDir(const char* path)` (pal_io.c): an
         // EINTR-retrying `rmdir(2)` and nothing else, taking a UTF-8 path
         // exactly as `SystemNative_Unlink` does.
         | Some "SystemNative_RmDir",
           [ ConcretePointer _ ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            pathSyscall ctx "SystemNative_RmDir" UnixSystem.rmdir state
+            pathSyscall ctx "SystemNative_RmDir" UnixNamespace.rmdir state
         // `int32_t SystemNative_Rename(const char* oldPath, const char* newPath)`
         // (pal_io.c): `rename(2)` and nothing else -- not even an EINTR retry,
         // which `rename` cannot return. CoreLib declares both a UTF-8 `string`
@@ -2657,7 +2657,7 @@ module NativeSystemNative =
             // succeed, "f" and "f/" are both ENOTDIR. Nothing reads
             // `TrailingSeparatorDemanded`, because a directory is demanded
             // outright whether the separator was there or not.
-            match UnixSystem.opendir path (EmulatedKernel.unix state.Kernel) with
+            match UnixNamespace.opendir path (EmulatedKernel.unix state.Kernel) with
             | OpenDirAnswer.Failed error, system ->
                 let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
 
@@ -2750,7 +2750,7 @@ module NativeSystemNative =
             // `docs/divergences.md`.
             let state = state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread 0)
 
-            match UnixSystem.readdir id (EmulatedKernel.unix state.Kernel) with
+            match UnixNamespace.readdir id (EmulatedKernel.unix state.Kernel) with
             | ReadDirAnswer.EndOfStream, system ->
                 // "0 returned with null result -> end-of-stream". The C
                 // `memset`s the output struct first, with the comment "managed
@@ -2781,7 +2781,7 @@ module NativeSystemNative =
                 // the limit before each lookup.
                 //
                 // The buffer's size is the ABI's rather than the kernel's, which
-                // is why this check is here and not in `UnixSystem.readdir`.
+                // is why this check is here and not in `UnixNamespace.readdir`.
                 failwith
                     $"%s{operation}: an entry of %d{nameBytes.Length} bytes does not fit the %d{directoryNameBufferBytes}-byte `d_name` buffer. No name either modelled kernel can store is this long, so this filesystem was seeded with one that could not exist."
 
@@ -2850,7 +2850,7 @@ module NativeSystemNative =
                 |> IlMachineState.freeNativeMemory block
 
             let state, result =
-                match UnixSystem.close stream.Fd (EmulatedKernel.unix state.Kernel) with
+                match UnixDescriptor.close stream.Fd (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> failwith (closeRefusalMessage operation stream.Fd refusal)
                 | Ok (SyscallAnswer.Completed _, system) -> withAnswered system state, 0
                 | Ok (SyscallAnswer.Failed error, system) ->
@@ -2860,7 +2860,7 @@ module NativeSystemNative =
                     // `close` on that fd, so EBADF is what a real one reports.
                     withErrno ctx error system state, -1
 
-            // Reaped here rather than left to `UnixSystem.close`, which does it
+            // Reaped here rather than left to `UnixDescriptor.close`, which does it
             // only for the descriptor it actually closed. Two paths reach this
             // with the directory still in the graph and nothing holding it: the
             // guest closed the stream's own descriptor beforehand (the EBADF arm
@@ -2870,7 +2870,7 @@ module NativeSystemNative =
             // kernel with an inode no path reaches — `checkInvariants` would
             // report it, and it would be PawPrint's bookkeeping at fault rather
             // than the guest's. Idempotent when the descriptor did the job.
-            state.MapKernel (EmulatedKernel.mapUnix (UnixSystem.forgetIfUnheld stream.Inode))
+            state.MapKernel (EmulatedKernel.mapUnix (UnixDescriptor.forgetIfUnheld stream.Inode))
             |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim result)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2940,7 +2940,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
             let length = NativeCall.int64Argument operation instruction.Arguments.[1]
 
-            match UnixSystem.ftruncate fd length (EmulatedKernel.unix state.Kernel) with
+            match UnixDescriptor.ftruncate fd length (EmulatedKernel.unix state.Kernel) with
             | Error refusal -> failwith $"%s{operation}: %s{TruncationRefusal.describe refusal}"
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
@@ -2963,7 +2963,7 @@ module NativeSystemNative =
             let operation = "SystemNative_FStat"
             let fd = fdArgument operation instruction.Arguments.[0]
 
-            match UnixSystem.fstat fd (EmulatedKernel.unix state.Kernel) with
+            match UnixPathResolution.fstat fd (EmulatedKernel.unix state.Kernel) with
             | Error refusal -> failwith (fstatRefusalMessage operation fd refusal)
             | Ok (FileStatusAnswer.Failed error) ->
                 withErrnoOnly ctx error state
@@ -3016,7 +3016,7 @@ module NativeSystemNative =
                 // task cannot be parked on one lock while the sweep polls for
                 // another; and `close` needs it, to refuse destroying the
                 // description this thread is waiting on.
-                withAnswered (UnixSystem.parkFlock ctx.Thread condition system) state
+                withAnswered (UnixDescriptor.parkFlock ctx.Thread condition system) state
                 |> Scheduler.parkInSyscall ctx.Thread
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
@@ -3049,7 +3049,7 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a socket wait. A task blocks in one syscall at a time, so the wait's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.Flock parked) ->
-                match UnixSystem.flockAcquire parked.Requester parked.Mode (EmulatedKernel.unix state.Kernel) with
+                match UnixDescriptor.flockAcquire parked.Requester parked.Mode (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refused refusal
                 | Ok (SyscallOutcome.WouldBlock condition, system) ->
                     // Woken and beaten: a release wakes every waiter and they
@@ -3071,7 +3071,7 @@ module NativeSystemNative =
                         $"%s{operation}: finishing a parked acquisition on %O{parked.Requester} answered %O{error}. A resume acquires on a description the close path is obliged to keep alive, so it can only be granted or still blocked (this is an interpreter bug)."
             | None ->
 
-            match UnixSystem.flock fd request (EmulatedKernel.unix state.Kernel) with
+            match UnixDescriptor.flock fd request (EmulatedKernel.unix state.Kernel) with
             | Error refusal -> refused refusal
             | Ok (SyscallOutcome.WouldBlock condition, system) ->
                 // The system this parks with is not the one the call arrived
@@ -3133,7 +3133,7 @@ module NativeSystemNative =
             // The Darwin answer for stdout and stderr does *not* get that retry,
             // EBADF not being one of the errnos that clears the flag.
             match
-                UnixSystem.pread
+                UnixReadWrite.pread
                     fd
                     (BufferPointer.toUserBuffer buffer)
                     bufferSize
@@ -3215,7 +3215,7 @@ module NativeSystemNative =
                         $"%s{operation}: fd %d{fd}: %s{PWriteRefusal.describe refusal} Reachable from the BCL: `RandomAccess.WriteAtOffset` passes the guest's own offset through, so a guest writing far past the end of a file gets here. Represent file contents sparsely (issue #956) before answering it."
 
             match
-                UnixSystem.admitPWrite
+                UnixReadWrite.admitPWrite
                     fd
                     (BufferPointer.toUserBuffer buffer)
                     bufferSize
@@ -3250,7 +3250,7 @@ module NativeSystemNative =
 
             let bytes = readBytesThrough ctx operation source count state
 
-            match UnixSystem.pwrite fd bytes fileOffset (EmulatedKernel.unix state.Kernel) with
+            match UnixReadWrite.pwrite fd bytes fileOffset (EmulatedKernel.unix state.Kernel) with
             | Error refusal -> refused refusal
             | Ok (WriteAnswer.Failed error, system) ->
                 withErrno ctx error system state
@@ -3304,7 +3304,7 @@ module NativeSystemNative =
             // the C returns before `ToFileDescriptor` is ever evaluated, so
             // `Read(badfd, buf, -1)` is EINVAL rather than EBADF. That ordering
             // is a fact about the shim rather than about any kernel, which is
-            // why it is answered here rather than passed on — `UnixSystem.read`
+            // why it is answered here rather than passed on — `UnixReadWrite.read`
             // refuses a negative count outright.
             //
             // EINVAL, not ERANGE: `Common_Write` answers ERANGE for the same
@@ -3320,7 +3320,7 @@ module NativeSystemNative =
             let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
             match
-                UnixSystem.read fd (BufferPointer.toUserBuffer buffer) bufferSize (EmulatedKernel.unix state.Kernel)
+                UnixReadWrite.read fd (BufferPointer.toUserBuffer buffer) bufferSize (EmulatedKernel.unix state.Kernel)
             with
             | Error (ReadRefusal.Buffer refusal) -> failwith (BufferPointer.refusalMessage buffer refusal)
             | Error (ReadRefusal.SocketConnectionState _ as refusal) ->
@@ -3376,7 +3376,7 @@ module NativeSystemNative =
             let offset = NativeCall.int64Argument operation instruction.Arguments.[1]
             let whence = NativeCall.int32Argument operation instruction.Arguments.[2]
 
-            match UnixSystem.lseek fd offset whence (EmulatedKernel.unix state.Kernel) with
+            match UnixDescriptor.lseek fd offset whence (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
                 // The kernel's half of the message is the library's, because it
                 // is what that library measured; which managed caller could have
@@ -3490,7 +3490,7 @@ module NativeSystemNative =
             let destination = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
             match
-                UnixSystem.readlink
+                UnixNamespace.readlink
                     path
                     (BufferPointer.toUserBuffer destination)
                     bufferSize
@@ -3583,7 +3583,7 @@ module NativeSystemNative =
             let oldFd = fdArgument "SystemNative_Dup" instruction.Arguments.[0]
 
             let resultFd, state =
-                match UnixSystem.dup oldFd (EmulatedKernel.unix state.Kernel) with
+                match UnixDescriptor.dup oldFd (EmulatedKernel.unix state.Kernel) with
                 | SyscallAnswer.Completed newFd, system -> newFd, withAnswered system state
                 | SyscallAnswer.Failed error, system -> -1L, withErrno ctx error system state
 
@@ -3605,7 +3605,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             let resultCode, state =
-                match UnixSystem.close fd (EmulatedKernel.unix state.Kernel) with
+                match UnixDescriptor.close fd (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> failwith (closeRefusalMessage operation fd refusal)
                 | Ok (SyscallAnswer.Completed _, system) -> 0, withAnswered system state
                 | Ok (SyscallAnswer.Failed error, system) -> -1, withErrno ctx error system state
@@ -3654,7 +3654,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match UnixSystem.setNonBlocking fd isNonBlocking (EmulatedKernel.unix state.Kernel) with
+            match UnixSocket.setNonBlocking fd isNonBlocking (EmulatedKernel.unix state.Kernel) with
             | Error refusal -> failwith $"%s{operation}: fd %d{fd}: %s{SetNonBlockingRefusal.describe refusal}"
             | Ok (answer, unix) ->
 
@@ -3706,7 +3706,7 @@ module NativeSystemNative =
                 BinaryPrimitives.WriteInt32LittleEndian (System.Span<byte> bytes, value)
                 writeBytesThrough ctx operation outCell (ImmutableArray.CreateRange bytes) state
 
-            match UnixSystem.isNonBlocking fd (EmulatedKernel.unix state.Kernel) with
+            match UnixSocket.isNonBlocking fd (EmulatedKernel.unix state.Kernel) with
             | None ->
                 // The C stores 0 through the pointer before returning -1, and the
                 // only failure the modelled targets can produce is EBADF.
@@ -3818,7 +3818,7 @@ module NativeSystemNative =
             | Ok (domain, kind, protocol) ->
 
             let fd, unix =
-                UnixSystem.createSocket domain kind protocol (EmulatedKernel.unix state.Kernel)
+                UnixSocket.createSocket domain kind protocol (EmulatedKernel.unix state.Kernel)
 
             state.MapKernel (EmulatedKernel.withUnix unix)
             |> storeCreatedSocket (int64 fd)
@@ -3900,7 +3900,7 @@ module NativeSystemNative =
             // `SystemNative_CreateSocketEventPort`'s out-parameter, which the
             // wrapper itself dereferences and `requireStorage` refuses for.
             match
-                UnixSystem.admitSockaddrCopy
+                UnixSocket.admitSockaddrCopy
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
@@ -3912,7 +3912,7 @@ module NativeSystemNative =
             let family, endpoint =
                 match admission with
                 | SockaddrCopyAdmission.Answered _ ->
-                    // The call still goes through `UnixSystem.bind`, which
+                    // The call still goes through `UnixSocket.bind`, which
                     // re-derives this answer — because the `SO_REUSEADDR` write
                     // survives every one of these failures and only `bind`
                     // applies it. No field is read: the kernel never touches the
@@ -3974,7 +3974,7 @@ module NativeSystemNative =
                         $"%s{operation}: the library asked for %O{fields} out of a copy of %d{length} bytes, which cannot be zero. This is an interpreter bug."
 
             match
-                UnixSystem.bind
+                UnixSocket.bind
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
@@ -4009,7 +4009,7 @@ module NativeSystemNative =
                 |> NativeHandlerResult.completed
                 |> Some
 
-            match UnixSystem.listen fd backlog (EmulatedKernel.unix state.Kernel) with
+            match UnixSocket.listen fd backlog (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
                 // The library says why no kernel answer exists; PawPrint says how
                 // a guest could be holding such a socket, which is a fact about
@@ -4115,7 +4115,7 @@ module NativeSystemNative =
                 |> complete (UnixErrorPal.toPal error)
 
             match
-                UnixSystem.accept
+                UnixConnection.accept
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
@@ -4213,7 +4213,7 @@ module NativeSystemNative =
         //     while ((err = connect(fd, ..., (socklen_t)socketAddressLen)) < 0 && errno == EINTR);
         //
         // so both screens precede even the fd decode, and everything else is
-        // `connect(2)`'s own ladder — `UnixSystem.connect`, which holds the
+        // `connect(2)`'s own ladder — `UnixConnection.connect`, which holds the
         // measured per-flavour table.
         | Some "SystemNative_Connect",
           [ ConcreteIntPtr state.ConcreteTypes
@@ -4283,7 +4283,7 @@ module NativeSystemNative =
             // takes no bytes never touches it, so a pointer PawPrint cannot
             // dereference is only a problem when bytes actually move.
             match
-                UnixSystem.admitSockaddrCopy
+                UnixSocket.admitSockaddrCopy
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
@@ -4349,7 +4349,7 @@ module NativeSystemNative =
                         $"%s{operation}: the library asked for %O{fields} out of a copy of %d{length} bytes, which cannot be zero. This is an interpreter bug."
 
             match
-                UnixSystem.connect
+                UnixConnection.connect
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
@@ -4417,7 +4417,7 @@ module NativeSystemNative =
                 |> complete (UnixErrorPal.toPal error)
 
             match
-                UnixSystem.getsockname
+                UnixSocket.getsockname
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
@@ -4453,7 +4453,7 @@ module NativeSystemNative =
                 SimulatedUnixPlatform.encodeInternetSockaddr state.Kernel.UnixPlatform endpoint
 
             // The caller's declared length bounds what is *written*, and does not
-            // bound what is *reported* -- see `UnixSystem.getsockname`, which is
+            // bound what is *reported* -- see `UnixSocket.getsockname`, which is
             // where that measurement is recorded.
             let written = min declaredLength reportedLength
 
@@ -4580,7 +4580,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             let error, state =
-                match UnixSystem.close fd (EmulatedKernel.unix state.Kernel) with
+                match UnixDescriptor.close fd (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> failwith (closeRefusalMessage operation fd refusal)
                 | Ok (SyscallAnswer.Completed _, system) -> UnixErrorPal.palSuccess, withAnswered system state
                 | Ok (SyscallAnswer.Failed error, system) -> UnixErrorPal.toPal error, withErrno ctx error system state
@@ -5092,7 +5092,7 @@ module NativeSystemNative =
             // it captured outlive anything the guest has done to the
             // arguments since — the count cell can be overwritten, and the
             // fd the wait was called through can be closed (a dup keeps the
-            // description alive; `UnixSystem.close`'s retention refusal keeps the
+            // description alive; `UnixDescriptor.close`'s retention refusal keeps the
             // last descriptor from destroying it). So a re-entry consults no
             // screen and no descriptor table: it delivers from the captured
             // description, or parks again.
@@ -5123,7 +5123,7 @@ module NativeSystemNative =
             let fd = fdArgument operation instruction.Arguments.[0]
 
             match
-                UnixSystem.admitSocketWait
+                UnixPoll.admitSocketWait
                     fd
                     requestedCount
                     (BufferPointer.toUserBuffer buffer)
@@ -5287,7 +5287,7 @@ module NativeSystemNative =
                         }
                     )
 
-            match UnixSystem.poll entries milliseconds (EmulatedKernel.unix state.Kernel) with
+            match UnixPoll.poll entries milliseconds (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
                 // The library says why no kernel answer exists; PawPrint says
                 // which guest call asked, and what a guest could do instead.
@@ -5385,7 +5385,7 @@ module NativeSystemNative =
             // The emulated kernel never returns short, never returns EINTR and
             // never blocks. A guest depending on EAGAIN or a partial write from
             // a non-blocking socket would need connection state PawPrint does
-            // not model, which `UnixSystem.write` refuses rather than guesses.
+            // not model, which `UnixReadWrite.write` refuses rather than guesses.
             let operation = "SystemNative_Write"
             let fd = fdArgument operation instruction.Arguments.[0]
             let bufferSize = NativeCall.int32Argument operation instruction.Arguments.[2]
@@ -5436,7 +5436,7 @@ module NativeSystemNative =
                 let buffer = bufferPointerArgument operation "buffer" instruction.Arguments.[1]
 
                 match
-                    UnixSystem.admitWrite
+                    UnixReadWrite.admitWrite
                         fd
                         (BufferPointer.toUserBuffer buffer)
                         bufferSize
@@ -5458,7 +5458,7 @@ module NativeSystemNative =
 
                 let bytes = readBytesThrough ctx operation source count state
 
-                match UnixSystem.write fd bytes (EmulatedKernel.unix state.Kernel) with
+                match UnixReadWrite.write fd bytes (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refused refusal
                 | Ok (answer, system) ->
 

@@ -1,0 +1,1099 @@
+namespace WoofWare.PosixKernel
+
+/// Which of the two non-portable `lseek` extensions a raw `whence` names on the
+/// simulated platform. Linux numbers `SEEK_DATA` 3 and `SEEK_HOLE` 4; Darwin
+/// transposes them, which is why the raw number alone names no operation.
+[<RequireQualifiedAccess>]
+type SeekExtension =
+    | SeekData
+    | SeekHole
+
+/// Why this kernel will not answer an `lseek`.
+///
+/// Distinct from an errno: an errno is an answer, and these are the inputs for
+/// which this library has measured what real kernels do and found no single
+/// answer to give.
+[<RequireQualifiedAccess>]
+type LSeekRefusal =
+    /// `SEEK_DATA` or `SEEK_HOLE` on a seekable file.
+    | Sparseness of whence : int * meaning : SeekExtension
+    /// `SEEK_END` on a directory.
+    | DirectoryEnd of inode : InodeNumber
+
+[<RequireQualifiedAccess>]
+module LSeekRefusal =
+    /// What this kernel knows about why it cannot answer, for a client composing
+    /// a diagnostic. The client supplies its own half — which entry point, which
+    /// descriptor — because those are things it decoded and this library never
+    /// saw.
+    let describe (refusal : LSeekRefusal) : string =
+        match refusal with
+        | LSeekRefusal.Sparseness (whence, meaning) ->
+            let named =
+                match meaning with
+                | SeekExtension.SeekData -> "SEEK_DATA"
+                | SeekExtension.SeekHole -> "SEEK_HOLE"
+
+            $"whence %d{whence} is %s{named} on the simulated platform. This kernel models file contents as a byte array with no notion of sparseness, so it cannot say where the data and holes are; and the two platforms transpose the numbers (3 is SEEK_DATA on Linux and SEEK_HOLE on Darwin), so the raw value does not name one operation."
+        | LSeekRefusal.DirectoryEnd inode ->
+            $"inode %O{inode} is a directory, and was asked to seek relative to its end. A directory's size is a filesystem artefact rather than a fact about its contents, and there is no portable answer: measured, lseek(dir, 0, SEEK_END) is EINVAL on Linux/tmpfs, 4096 on Linux/ext4 and 64 on macOS/APFS. SEEK_SET and SEEK_CUR on a directory are portable and are supported."
+
+/// Why this kernel will not answer an `flock`.
+///
+/// Every case is a measured divergence between the two flavours that this
+/// library models Linux's side of. Darwin's `flock` is unmodelled not because
+/// its return codes are unknown — they are measured, and named in each case's
+/// description — but because what they leave the *lock state* as is not, which
+/// is what a model would have to commit to.
+[<RequireQualifiedAccess>]
+type FLockRefusal =
+    /// Not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB.
+    | DarwinMalformedOperation of operation : int
+    /// A pipe, which is what this kernel models the standard streams as.
+    | DarwinStandardStream of role : FileDescriptorRole
+    /// A socket event port: an epoll descriptor on Linux, a kqueue on Darwin.
+    | DarwinSocketEventPort
+    | DarwinSocket of socket : SocketId
+    /// An acquire by a description that already holds a lock. Only a conversion
+    /// can expose the keep-versus-drop divergence, and only when it fails —
+    /// refused on the request rather than on the outcome, so that the refusal is
+    /// a property of what was asked rather than of who else held a lock.
+    | DarwinConversion
+
+[<RequireQualifiedAccess>]
+module FLockRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half — which entry point, and which managed caller could have
+    /// reached it.
+    let describe (refusal : FLockRefusal) : string =
+        match refusal with
+        | FLockRefusal.DarwinMalformedOperation operation ->
+            $"operation %d{operation} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL and Darwin does not treat uniformly -- measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
+        | FLockRefusal.DarwinStandardStream role ->
+            $"the descriptor is the standard stream %O{role}, which this kernel models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
+        | FLockRefusal.DarwinSocketEventPort ->
+            "the descriptor is a socket event port. Linux permits `flock` on an epoll descriptor and returns 0; Darwin refuses it on a kqueue with ENOTSUP (raw 45), for every operation including LOCK_UN."
+        | FLockRefusal.DarwinSocket socket ->
+            $"the descriptor is socket %O{socket}. Linux permits `flock` on a socket and returns 0; Darwin refuses it with ENOTSUP (raw 45)."
+        | FLockRefusal.DarwinConversion ->
+            "the descriptor is converting a lock it already holds. Should that conversion fail, Linux leaves the description holding *nothing* (`flock` removes the old lock before establishing the new one, and the two steps are not atomic) while Darwin leaves the old lock in place -- measured on both, and indistinguishable from the return code, which is EWOULDBLOCK either way."
+
+/// Why this kernel will not commit a truncation.
+[<RequireQualifiedAccess>]
+type TruncationRefusal =
+    /// Longer than this kernel can represent. A real filesystem answers without
+    /// difficulty — measured on ext4 and APFS alike, `ftruncate` to three
+    /// gigabytes succeeds and leaves a sparse file — so this is a limit of the
+    /// model, and refusing beats reporting an errno no kernel would produce for
+    /// that length.
+    | ExceedsRepresentableLength of inode : InodeNumber * length : int64
+
+[<RequireQualifiedAccess>]
+module TruncationRefusal =
+    let describe (refusal : TruncationRefusal) : string =
+        match refusal with
+        | TruncationRefusal.ExceedsRepresentableLength (inode, length) ->
+            $"inode %O{inode} was asked to become %d{length} bytes, which is longer than the %d{VirtualFileSystem.maxFileLength} bytes this kernel can represent. A real filesystem answers this without difficulty -- measured on ext4 and APFS alike, ftruncate to three gigabytes succeeds and leaves a sparse file -- so this is a limit of the model, and refusing is better than reporting an errno no kernel would have produced for that length."
+
+/// Why this kernel will not close a descriptor.
+///
+/// Generic in what names a task because two of the three are about a task
+/// parked in a wait, and which one that is cannot be recomputed by the client:
+/// nothing stops two tasks parking on the same port, so a client repeating the
+/// search could name a different one from the one this refusal is about.
+[<RequireQualifiedAccess>]
+type CloseRefusal<'Task> =
+    /// The last descriptor onto a socket event port that `task` is parked in a
+    /// wait on, under the Linux flavour.
+    | LinuxLastPortDescriptorWithWaiter of port : OpenFileDescriptionId * task : 'Task
+    /// Any descriptor onto a socket event port that `task` is parked in a wait
+    /// on, under the Darwin flavour.
+    | DarwinPortDescriptorWithWaiter of port : OpenFileDescriptionId * task : 'Task
+    /// The last descriptor onto a listening socket whose accept queue still
+    /// holds a connection whose client is open.
+    | ListenerWouldResetUnacceptedClient of listener : SocketId * connection : ConnectionId * client : SocketId
+    /// The last descriptor onto an open file description that `task` is parked
+    /// on an `flock` of.
+    ///
+    /// Unlike the two port cases above, this does not split by flavour, because
+    /// it models no platform's behaviour: a real kernel of either flavour keeps
+    /// the file alive — a blocked `flock` holds a reference to it — and
+    /// eventually grants the waiter its lock on a file nothing names any more.
+    /// This table cannot represent that reference at all, so the refusal is a
+    /// fact about the model and is the same on both. There is nothing here to
+    /// measure and complete.
+    | LastFlockedDescriptorWithWaiter of description : OpenFileDescriptionId * task : 'Task
+
+[<RequireQualifiedAccess>]
+module CloseRefusal =
+    /// What this kernel knows about why it cannot close the descriptor. The
+    /// client supplies its own half — which entry point, which descriptor
+    /// number, and what it would have to build to lift the refusal.
+    let describe (refusal : CloseRefusal<'Task>) : string =
+        match refusal with
+        | CloseRefusal.LinuxLastPortDescriptorWithWaiter (port, task) ->
+            $"it is the last descriptor onto socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Linux's epoll_wait holds the port by file reference: the last close leaves the in-flight wait's registrations live, and a later edge can still complete it. Representing that needs the port to outlive its last descriptor, which this kernel's descriptor table cannot express."
+        | CloseRefusal.DarwinPortDescriptorWithWaiter (port, task) ->
+            $"the descriptor names socket event port %O{port}, and task %O{task} is parked in a wait on it. Measured, Darwin's kevent *ends* such a wait with an error when the fd it was entered through closes -- but which error is not measured precisely, and what a close of a *different* descriptor onto the same kqueue does is not measured at all."
+        | CloseRefusal.LastFlockedDescriptorWithWaiter (description, task) ->
+            $"the descriptor is the last one onto open file description %O{description}, and task %O{task} is parked on an `flock` of it. A real kernel's blocked `flock` holds a reference to the file, so the description outlives every descriptor onto it and the waiter is eventually granted its lock; this table has no such reference to represent, so destroying the description would either strand the waiter for ever or wake it into an EBADF no kernel produces."
+        | CloseRefusal.ListenerWouldResetUnacceptedClient (listener, connection, client) ->
+            $"the close destroys listening socket %O{listener} while connection %O{connection} sits unaccepted in its queue, and that connection's client (socket %O{client}) is still open. A real kernel RSTs the unaccepted client on listener close, leaving it in a state this kernel has not measured: its readiness level, and what connect(2) then answers, are both unknown, and it would otherwise be indistinguishable from a cleanly FIN'd peer."
+
+/// Why a file descriptor cannot be seeked, as a *fault* rather than as the errno
+/// it becomes.
+///
+/// Not a `UnixError`, because `lseek` orders the two faults differently per
+/// flavour: measured, Linux validates `whence` between them while Darwin does
+/// not, so an ordering written over errnos would let a future third fault
+/// inherit whichever position its errno's arm happened to occupy.
+[<RequireQualifiedAccess>]
+type private DescriptorFault =
+    /// No such descriptor in the process's table; `EBADF`. Precedes everything
+    /// else on both platforms.
+    | NotOpen
+    /// The descriptor names something with no file offset — a pipe, which is
+    /// what this kernel models the standard streams as; `ESPIPE`.
+    | NotSeekable
+
+[<RequireQualifiedAccess>]
+module UnixDescriptor =
+
+    /// Every inode that must not be freed: `UnixProcessState.heldInodes`, closed under
+    /// `DirectoryContent.Parent`.
+    ///
+    /// The closure is not caution — it is measured. `rmdir` can remove a
+    /// directory something still holds, and that orphan keeps its "..": probed
+    /// on both flavours, with `a/b` and the current directory inside `b`,
+    /// `rmdir(b)` then `rmdir(a)` both succeed and `stat("..")` still answers
+    /// `a`'s inode while `stat("../..")` still answers the live grandparent's.
+    /// So a held orphan holds its whole ancestor chain, and freeing one of them
+    /// would leave a `DirectoryContent.Parent` naming an inode the graph no
+    /// longer contains.
+    ///
+    /// This is the set `VirtualFileSystem.checkInvariants` takes as `pinned`,
+    /// and the check `forgetIfUnheld` makes before freeing an inode. Ancestors
+    /// that are still reachable from the root are in it too, harmlessly: both
+    /// callers only ever ask about an inode no name reaches.
+    let pinnedInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : Set<InodeNumber>
+        =
+        let rec climb (frontier : InodeNumber list) (seen : Set<InodeNumber>) : Set<InodeNumber> =
+            match frontier with
+            | [] -> seen
+            | inode :: rest ->
+                if Set.contains inode seen then
+                    climb rest seen
+                else
+
+                let seen = Set.add inode seen
+
+                match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+                | Some (InodeContent.Directory directory) -> climb (directory.Parent :: rest) seen
+                // A file or a link records no parent, and a held inode the graph
+                // has already forgotten records nothing at all — which is a
+                // defect (`UnixSystemDefect.DanglingOpenInode`) rather than
+                // something to climb from.
+                | Some (InodeContent.RegularFile _)
+                | Some (InodeContent.Symlink _)
+                | None -> climb rest seen
+
+        climb (UnixProcessState.heldInodes system.Process |> Set.toList) Set.empty
+
+    /// Free `inode` if the filesystem no longer names it and this system holds
+    /// no reference to it — what a real kernel does once the last link and the
+    /// last descriptor have both gone.
+    ///
+    /// Total and idempotent: an inode that still has a name, that something
+    /// still holds, or that is already gone, is left exactly as it was. Call it
+    /// after anything that can drop a reference of either kind — removing a
+    /// name, and closing a descriptor — because either may be the one that
+    /// finishes the job, and which one that is cannot be known from the call
+    /// site.
+    ///
+    /// Freeing a *directory* cascades onto its recorded parent, which the
+    /// directory's ".." was the last reference to. So one call collects a whole
+    /// orphaned chain, and the caller passes only the inode whose reference it
+    /// just dropped.
+    let rec forgetIfUnheld<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inode : InodeNumber)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        // The root is excluded explicitly rather than by the binding count,
+        // which is zero for it by construction: nothing holds an entry naming
+        // the root (`VirtualFileSystemDefect.RootHasIncomingLink` states that),
+        // so the count alone would free the filesystem out from under every
+        // path. A guest can reach here with it — `close(open("/"))` is an
+        // ordinary thing to do.
+        if inode = VirtualFileSystem.root system.Machine.FileSystem then
+            system
+        elif (VirtualFileSystem.tryGet inode system.Machine.FileSystem).IsNone then
+            system
+        elif VirtualFileSystem.bindingCount inode system.Machine.FileSystem <> 0 then
+            system
+        elif Set.contains inode (pinnedInodes system) then
+            system
+        else
+
+        // Read before the removal, because it is the removal that makes the
+        // parent's own reference count drop.
+        let parent =
+            match VirtualFileSystem.tryGetContent inode system.Machine.FileSystem with
+            | Some (InodeContent.Directory directory) -> Some directory.Parent
+            | Some (InodeContent.RegularFile _)
+            | Some (InodeContent.Symlink _)
+            | None -> None
+
+        let freed =
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = VirtualFileSystem.forget inode system.Machine.FileSystem
+                    }
+            }
+
+        // A directory freed here was the last thing holding its parent's ".."
+        // reference, so the parent may now be free in turn — the chain a held
+        // orphan kept alive is collected as soon as the last holder goes.
+        // Terminating: each step has removed one inode, and the root is refused
+        // above.
+        match parent with
+        | None -> freed
+        | Some parent -> forgetIfUnheld parent freed
+
+    /// The effective user ID, as `geteuid(2)` reports it.
+    ///
+    /// Total, and changes nothing: `geteuid` cannot fail, and this library
+    /// models one identity for the whole process.
+    let effectiveUserId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : uint32
+        =
+        system.Process.UserId
+
+    /// `dup(2)`: the lowest non-negative descriptor not in use, sharing `fd`'s
+    /// open file description. EBADF is its only failure.
+    let dup<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : SyscallAnswer * UnixSystem<'Task, 'Handler>
+        =
+        match FileDescriptorRegistry.dup fd system.Process.FileDescriptors with
+        | Ok (newFd, registry) ->
+            SyscallAnswer.Completed (int64 newFd),
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+        | Error FileDescriptorDupError.BadFd -> SyscallAnswer.Failed UnixError.EBADF, system
+
+    /// `lseek(2)`: move `fd`'s file offset and report where it lands.
+    ///
+    /// Refuses the two inputs for which real kernels have been measured to
+    /// disagree without a portable answer; see `LSeekRefusal`.
+    let lseek<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (offset : int64)
+        (whence : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, LSeekRefusal>
+        =
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+        // `Interop.Sys.SeekWhence` (Interop.LSeek.cs), which is also POSIX's
+        // numbering and both platforms' `<unistd.h>` — for these three. It
+        // stops here; 3 and 4 are handled below and are *not* portable.
+        let seekSet = 0
+        let seekCur = 1
+        let seekEnd = 2
+        let seekMax = 4
+
+        // The two orderings below are measured, and this is the syscall where
+        // they differ most. On a single-fault input the platforms agree on
+        // every row; they part company on two:
+        //
+        //   input                       Linux    Darwin
+        //   pipe + whence 99            EINVAL   ESPIPE
+        //   pipe + whence 99 + overflow EINVAL   ESPIPE
+        //
+        // So Linux validates `whence` before it asks whether the object is
+        // seekable, and Darwin the other way round. The descriptor itself
+        // precedes both on either platform — `lseek(badfd, ..)` is EBADF for
+        // every whence and offset measured, including 99, 3, 4 and INT64_MAX —
+        // and the offset arithmetic follows both, pinned by
+        // `lseek(pipe, -1, SEEK_SET)` = ESPIPE on both (seekability first) and
+        // `lseek(f, 1, 99)` from INT64_MAX = EINVAL on both (whence first).
+        let whenceValid = whence >= seekSet && whence <= seekMax
+
+        let target = FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors
+
+        let descriptorFault : DescriptorFault option =
+            match target with
+            | None -> Some DescriptorFault.NotOpen
+            | Some (OpenFileTarget.StandardStream _) ->
+                // Not seekable: this kernel models the standard streams as
+                // pipes, and `lseek` on a pipe is ESPIPE on both platforms
+                // whichever end it is. This is the answer `SafeFileHandle` reads
+                // back to decide `CanSeek`, so it is on the BCL's own path
+                // rather than a corner.
+                Some DescriptorFault.NotSeekable
+            | Some (OpenFileTarget.SocketEventPort _) ->
+                // The one target whose *seekability* depends on the platform,
+                // rather than merely the errno or the ordering. Measured: Darwin
+                // refuses `lseek` on a kqueue with ESPIPE, while Linux gives an
+                // epoll descriptor `noop_llseek`, which succeeds and reports 0
+                // without consulting the offset or moving anything. So Darwin
+                // has a descriptor fault here and Linux has none; the Linux
+                // success is served below, after the whence check the syscall
+                // still applies.
+                match flavour with
+                | SimulatedUnixFlavour.Darwin -> Some DescriptorFault.NotSeekable
+                | SimulatedUnixFlavour.Linux -> None
+            | Some (OpenFileTarget.Socket _) ->
+                // Unseekable on both, unlike the port above: measured, both
+                // platforms answer ESPIPE for every whence in 0..4 and every
+                // offset, `-1` and `INT64_MAX` alike. The whence-ordering
+                // divergence still shows through this, and is exactly what the
+                // ladder below reproduces — measured, `lseek(sock, 0, 9)` is
+                // EINVAL on Linux (whence checked first) and ESPIPE on Darwin
+                // (seekability checked first).
+                Some DescriptorFault.NotSeekable
+            | Some (OpenFileTarget.File _) -> None
+
+        let ordered : UnixError option =
+            match descriptorFault with
+            | Some DescriptorFault.NotOpen ->
+                // Ahead of everything on both platforms.
+                Some UnixError.EBADF
+            | notOpenRejected ->
+
+            let unseekable =
+                match notOpenRejected with
+                | Some DescriptorFault.NotSeekable -> true
+                | Some DescriptorFault.NotOpen
+                | None -> false
+
+            match flavour with
+            | SimulatedUnixFlavour.Linux ->
+                if not whenceValid then Some UnixError.EINVAL
+                elif unseekable then Some UnixError.ESPIPE
+                else None
+            | SimulatedUnixFlavour.Darwin ->
+                if unseekable then Some UnixError.ESPIPE
+                elif not whenceValid then Some UnixError.EINVAL
+                else None
+
+        match ordered with
+        | Some error -> Ok (SyscallAnswer.Failed error, system)
+        | None ->
+
+        // Linux's `noop_llseek`, reached only under the Linux flavour (Darwin
+        // answered ESPIPE above). It returns the file position unchanged, and an
+        // epoll descriptor's is always 0, so the answer is 0 for every input
+        // that gets here — measured for `SEEK_SET` with offset -1 and with
+        // INT64_MAX alike, and for whence 3 and 4.
+        //
+        // Ahead of the SEEK_DATA/SEEK_HOLE refusal below, which is why that
+        // refusal is not simply hoisted to the whence check: it is a statement
+        // about a *file's* sparseness, and a port has none. The syscall's own
+        // `whence <= SEEK_MAX` guard still applies and has already run, so
+        // whence 5 and above were rejected as EINVAL.
+        match target with
+        | Some (OpenFileTarget.SocketEventPort _) -> Ok (SyscallAnswer.Completed 0L, system)
+        | _ ->
+
+        // Whence *validity* is settled; whence *semantics* is not, and the two
+        // sit at different points in Linux's order — which is why refusing 3 and
+        // 4 up front would be wrong. Measured, `lseek(badfd, 0, 3)` is EBADF and
+        // `lseek(pipe, 0, 3)` is ESPIPE on both platforms, so a guest reaching
+        // here with whence 3 or 4 really is asking about a seekable file's
+        // sparseness.
+        //
+        // No BCL caller can reach it: `Interop.Sys.SeekWhence` declares only 0,
+        // 1 and 2.
+        if whence > seekEnd then
+            let meaning =
+                match flavour with
+                | SimulatedUnixFlavour.Linux ->
+                    if whence = 3 then
+                        SeekExtension.SeekData
+                    else
+                        SeekExtension.SeekHole
+                | SimulatedUnixFlavour.Darwin ->
+                    if whence = 3 then
+                        SeekExtension.SeekHole
+                    else
+                        SeekExtension.SeekData
+
+            Error (LSeekRefusal.Sparseness (whence, meaning))
+        else
+
+        let seekWhence =
+            if whence = seekSet then
+                SeekWhence.Set
+            elif whence = seekCur then
+                SeekWhence.Current
+            elif whence = seekEnd then
+                SeekWhence.End
+            else
+                failwith
+                    $"UnixDescriptor.lseek: whence %d{whence} passed the validity and semantics checks but is not one of SEEK_SET, SEEK_CUR or SEEK_END (this is a bug in this library)"
+
+        let inode, current =
+            match target with
+            | Some (OpenFileTarget.File (inode, current)) -> inode, current
+            | _ ->
+                failwith
+                    $"UnixDescriptor.lseek: fd %d{fd} is not a seekable file, but the descriptor checks above did not reject it (this is a bug in this library)"
+
+        let entry =
+            match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
+            | Some entry -> entry
+            | None ->
+                failwith
+                    $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
+
+        // The content is inspected only where a size is wanted, which is
+        // `SEEK_END` alone. A directory has none this kernel will state, and a
+        // symlink should not be here at all — but `SEEK_SET` and `SEEK_CUR` ask
+        // neither question, so neither may fire on those paths.
+        let sized : Result<int64 option, LSeekRefusal> =
+            match seekWhence with
+            | SeekWhence.Set
+            | SeekWhence.Current -> Ok None
+            | SeekWhence.End ->
+                match entry.Content with
+                | InodeContent.RegularFile (contents, _) -> Ok (Some (int64 contents.Length))
+                | InodeContent.Symlink _ ->
+                    // Not reachable: `open` resolves symlinks, so no descriptor
+                    // names one. Stated rather than folded in so that an
+                    // `O_PATH`-style descriptor finds a decision here.
+                    failwith
+                        $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what seeking a link through a descriptor means (this is a bug in this library)."
+                | InodeContent.Directory _ -> Error (LSeekRefusal.DirectoryEnd inode)
+
+        match sized with
+        | Error refusal -> Error refusal
+        | Ok forced ->
+
+        let sizeOf =
+            lazy
+                match forced with
+                | Some size -> size
+                | None ->
+                    failwith
+                        "UnixDescriptor.lseek: the file size was consulted on a path that does not consult it (this is a bug in this library)"
+
+        match VirtualFileSystem.seekTarget seekWhence current sizeOf offset with
+        | Error SeekFault.Negative ->
+            // EINVAL on both, and the offset is left where it was — measured, a
+            // failed `lseek` does not move the description.
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | Error SeekFault.Overflow ->
+            // The one place the *errno* differs rather than the ordering.
+            // Measured on a tmpfs-backed file, so that the filesystem is held
+            // constant: `lseek(f, INT64_MAX-4, SEEK_END)` on a 5-byte file is
+            // EINVAL on Linux and EOVERFLOW on Darwin.
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+            | SimulatedUnixFlavour.Darwin -> Ok (SyscallAnswer.Failed UnixError.EOVERFLOW, system)
+        | Ok position ->
+
+        Ok (
+            SyscallAnswer.Completed position,
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = FileDescriptorRegistry.setOffset fd position system.Process.FileDescriptors
+                    }
+            }
+        )
+
+    /// Commit a truncation of the regular file `inode` to `length`, together with
+    /// the `mtime`, `ctime` and set-ID bits it moves.
+    ///
+    /// Shared by `ftruncate` and by `open`'s `O_TRUNC`, which are the same
+    /// operation with the same measured consequences — the mode rule, the
+    /// timestamp rule and the truncate-to-the-same-length rule all agree between
+    /// them on both platforms.
+    ///
+    /// Not short-circuited when the file is already that length: unlike a write
+    /// of no bytes, a truncation that moves no bytes still stamps the inode.
+    let truncateAt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (inode : InodeNumber)
+        (length : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<UnixSystem<'Task, 'Handler>, TruncationRefusal>
+        =
+        let now = UnixMachineState.fileTimestamp system.Machine
+        let rule = SimulatedUnixPlatform.setIdBitsOnTruncation system.Machine.UnixPlatform
+        let privilege = UnixProcessState.callerPrivilege system.Process
+
+        match VirtualFileSystem.truncateFile inode length rule privilege now system.Machine.FileSystem with
+        | Ok filesystem ->
+            Ok
+                { system with
+                    Machine =
+                        { system.Machine with
+                            FileSystem = filesystem
+                        }
+                }
+        | Error (FileTruncationRefusal.WouldExceedMaxLength length) ->
+            Error (TruncationRefusal.ExceedsRepresentableLength (inode, length))
+
+    /// `ftruncate(2)`: set a regular file's length through a descriptor open for
+    /// writing.
+    let ftruncate<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (length : int64)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, TruncationRefusal>
+        =
+        // **Ahead of the descriptor**, measured on both platforms: the same
+        // unknown fd is EBADF with a length of 0 and EINVAL with a length of -1,
+        // so the length really is validated first rather than the two faults
+        // merely sharing an errno.
+        if length < 0L then
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        else
+
+        match FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+        | None -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Some description ->
+
+        match description.Target with
+        | OpenFileTarget.StandardStream _
+        | OpenFileTarget.SocketEventPort _
+        | OpenFileTarget.Socket _ ->
+            // EINVAL on both platforms for every object that is not a regular
+            // file: measured on a pipe (either end), an INET socket, a UNIX
+            // socket, an epoll port and a kqueue. Unlike `pread`/`pwrite` there
+            // is no unseekable-versus-unwritable tie for the platforms to break
+            // differently, so this arm deliberately carries no Darwin flag.
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        | OpenFileTarget.File (inode, _) ->
+
+        // A descriptor not open for writing is EINVAL rather than EBADF —
+        // `ftruncate(2)` differs from `write(2)` here, and it is measured on both
+        // platforms.
+        //
+        // This is also what makes a *directory* descriptor answer EINVAL without
+        // a type check: one can only ever be opened `O_RDONLY`, `open` answering
+        // EISDIR for every write access mode. Adding a type check here would be a
+        // mistake as well as redundant — EISDIR is what path-based `truncate(2)`
+        // answers for a directory, where `ftruncate(2)` answers EINVAL.
+        if not (FileAccessMode.permitsWrite description.AccessMode) then
+            Ok (SyscallAnswer.Failed UnixError.EINVAL, system)
+        else
+
+        truncateAt inode length system
+        |> Result.map (fun system -> SyscallAnswer.Completed 0L, system)
+
+    /// `flock(2)`: take, convert or release an advisory lock on `fd`'s open file
+    /// description.
+    ///
+    /// Models Linux's rules and refuses under Darwin rather than guessing, for
+    /// each of the divergences `FLockRefusal` names.
+    ///
+    /// A blocking acquisition that another description's lock stands in the way
+    /// of answers `SyscallOutcome.WouldBlock`, in the system a real kernel would
+    /// have slept in — which is not the system the call arrived with, because
+    /// the caller's own old lock has already gone.
+    let flock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (operation : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
+        =
+        // Unlike a foreign-function layer's error and open-flag encodings, these
+        // are *not* values anything translates: `flock(2)` takes them verbatim,
+        // and Linux and Darwin happen to agree on all four — measured on both
+        // rather than assumed.
+        let lockShared = 1
+        let lockExclusive = 2
+        let lockNonBlocking = 4
+        let lockUnlock = 8
+
+        let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+        let nonBlocking = operation &&& lockNonBlocking <> 0
+        let mode = operation &&& ~~~lockNonBlocking
+
+        let request : FlockRequest option =
+            if mode = lockUnlock then
+                Some FlockRequest.Release
+            elif mode = lockShared then
+                Some (FlockRequest.Acquire FlockMode.Shared)
+            elif mode = lockExclusive then
+                Some (FlockRequest.Acquire FlockMode.Exclusive)
+            else
+                None
+
+        // Linux validates strictly: exactly one of SH/EX/UN, optionally with NB,
+        // and nothing else. Darwin is laxer *and* uses a different errno.
+        match request with
+        | None ->
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EINVAL), system)
+            | SimulatedUnixFlavour.Darwin -> Error (FLockRefusal.DarwinMalformedOperation operation)
+        | Some request ->
+
+        // The remaining divergences are all about a descriptor already resolved,
+        // so they are checked here rather than in the registry: that module
+        // models one coherent set of rules. An unknown fd is EBADF on both
+        // platforms, so there is nothing to refuse for one.
+        let darwinRefusal : FLockRefusal option =
+            match flavour, FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            | SimulatedUnixFlavour.Linux, _
+            | _, None -> None
+            | SimulatedUnixFlavour.Darwin, Some description ->
+                match OpenFileDescription.object description with
+                | OpenFileObject.StandardStream role -> Some (FLockRefusal.DarwinStandardStream role)
+                | OpenFileObject.AnonymousInode -> Some FLockRefusal.DarwinSocketEventPort
+                | OpenFileObject.Socket socketId -> Some (FLockRefusal.DarwinSocket socketId)
+                | OpenFileObject.File _ ->
+                    match request, description.Flock with
+                    | FlockRequest.Acquire _, Some _ -> Some FLockRefusal.DarwinConversion
+                    | _, _ -> None
+
+        match darwinRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        // The table advances even when the call fails: a conversion that could
+        // not be granted has already dropped the caller's old lock. So the new
+        // table is committed *before* the outcome is inspected, and every branch
+        // below reports from `advanced`.
+        let registry, error =
+            FileDescriptorRegistry.flock fd request system.Process.FileDescriptors
+
+        let advanced =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        match error with
+        | Some FlockError.BadFd -> Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EBADF), advanced)
+        | Some FlockError.WouldBlock ->
+            if nonBlocking then
+                Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EAGAIN), advanced)
+            else
+
+            // A blocking acquisition that *can* be satisfied is served above, so
+            // only genuine contention reaches here. Parking must never quietly
+            // become the non-blocking answer, which would hand the caller an
+            // EWOULDBLOCK no kernel would have produced.
+            let requested =
+                match request with
+                | FlockRequest.Acquire mode -> mode
+                | FlockRequest.Release ->
+                    // `FileDescriptorRegistry.flock` grants every release, so a
+                    // release cannot be what contended.
+                    failwith
+                        $"flock: fd %d{fd} reported contention for a release, which cannot contend (this is an interpreter bug)"
+
+            // The requester is the description rather than the descriptor: a
+            // `dup` of `fd` waits on the same lock, and a wake keyed on the
+            // number would miss a waiter that had closed the one it asked
+            // through.
+            let requester =
+                match FileDescriptorRegistry.tryFindId fd system.Process.FileDescriptors with
+                | Some id -> id
+                | None ->
+                    failwith
+                        $"flock: fd %d{fd} reported contention but names no open file description (this is an interpreter bug)"
+
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, requested)), advanced)
+        | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
+
+    /// Finish an `flock` acquisition that parked, against the open file
+    /// description it parked on.
+    ///
+    /// This rather than re-issuing `flock` with the descriptor the call was made
+    /// through, and not as a convenience: descriptor numbers are allocated
+    /// lowest-free and reused as soon as they are freed, so a `close` of that
+    /// number elsewhere — survivable whenever a `dup` keeps the description
+    /// alive — can leave it naming a different object by the time the lock frees.
+    /// A real kernel has no such hazard: the sleeping call holds the file.
+    ///
+    /// Answers `WouldBlock` again, with the same condition, when the lock has
+    /// been taken since the waiter was woken. That is the ordinary case rather
+    /// than an edge one: a release wakes every waiter and they race, so all but
+    /// one of them find it gone.
+    ///
+    /// Most of what `flock` screens is not re-screened, because a screen over
+    /// facts that cannot change is spent: the operation bits were validated
+    /// before the park, and this signature makes a malformed resume
+    /// unrepresentable; the Darwin refusals for a pipe, a socket and a socket
+    /// event port are about the description's object kind, which never changes.
+    /// `DarwinConversion` is the exception, because it screens *mutable* state —
+    /// while this task held nothing, another through a `dup` of its descriptor
+    /// could have taken a lock on this same description, which Darwin serves as
+    /// a first acquisition, and the resume is then the conversion whose
+    /// keep-versus-drop divergence is unmeasured.
+    let flockAcquire<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (requester : OpenFileDescriptionId)
+        (mode : FlockMode)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
+        =
+        let descriptions =
+            FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+
+        match Map.tryFind requester descriptions with
+        | None ->
+            failwith
+                $"UnixDescriptor.flockAcquire: open file description %O{requester} is not in the table, so a task parked on an flock of it has had that description closed underneath it. `close` refuses such a close precisely so that this cannot happen (this is an interpreter bug)."
+        | Some description ->
+
+        match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform, description.Flock with
+        | SimulatedUnixFlavour.Darwin, Some _ -> Error FLockRefusal.DarwinConversion
+        | SimulatedUnixFlavour.Darwin, None
+        | SimulatedUnixFlavour.Linux, _ ->
+
+        let registry, error =
+            FileDescriptorRegistry.flockOn requester (FlockRequest.Acquire mode) system.Process.FileDescriptors
+
+        let advanced =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        match error with
+        | Some FlockError.BadFd ->
+            // `flockOn` never resolves a descriptor, so it has no bad one to
+            // report.
+            failwith
+                $"UnixDescriptor.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is an interpreter bug)."
+        | Some FlockError.WouldBlock ->
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, mode)), advanced)
+        | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
+
+    /// Record that `task` has parked in the `flock` `condition` describes.
+    ///
+    /// The record is derived from the condition rather than built beside it, so
+    /// that a client cannot park a task on one lock while polling for another.
+    /// Clearing it is `UnixTaskTable.withParked task None`, which the client does
+    /// when the acquisition finishes.
+    let parkFlock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
+        (condition : WakeCondition)
+        (system : UnixSystem<'Task, 'Handler>)
+        : UnixSystem<'Task, 'Handler>
+        =
+        match condition with
+        | WakeCondition.FlockGrantable (requester, mode) ->
+            { system with
+                Tasks =
+                    UnixTaskTable.withParked
+                        task
+                        (Some (
+                            ParkedSyscall.Flock
+                                {
+                                    ParkedFlock.Requester = requester
+                                    Mode = mode
+                                }
+                        ))
+                        system.Tasks
+            }
+        | WakeCondition.SocketEventDeliverable port ->
+            // No sibling of this function exists for the socket wait, and none can:
+            // `ParkedSocketWait` also carries the event count the finishing call
+            // copies out with, which is re-entry state no condition mentions. So a
+            // socket wait's record cannot be derived from its condition, and the
+            // client writes it directly. `WakeCondition.ofPark` is the direction
+            // that works for both.
+            failwith
+                $"UnixDescriptor.parkFlock: asked to park task %O{task} in an flock, but the condition is a wait for events on open file description %O{port}. A socket wait's record carries an event count its condition does not, so it cannot be derived from one; write the record directly."
+
+    /// `close(2)`: drop `fd` from the process's table, together with the kernel
+    /// objects the description it named was the last reference to — the socket,
+    /// the connections nothing else references, and the inode whose last name
+    /// had already gone.
+    ///
+    /// `FileDescriptorRegistry.close` cannot do this itself: the socket table is
+    /// the machine's rather than the process's, and whether an inode is still
+    /// named is a question about the filesystem. Closing one of several
+    /// descriptors onto a description destroys nothing, and so frees neither.
+    ///
+    /// EBADF is its only errno; see `CloseRefusal` for the three inputs it
+    /// declines to answer at all.
+    let close<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SyscallAnswer * UnixSystem<'Task, 'Handler>, CloseRefusal<'Task>>
+        =
+        // Resolved before the close so both port refusals below can name what the
+        // fd referred to.
+        let closing = FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors
+
+        match FileDescriptorRegistry.close fd system.Process.FileDescriptors with
+        | Error FileDescriptorCloseError.BadFd -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
+        | Ok (registry, destroyed) ->
+
+        // Closing a descriptor onto a port with a task parked in a wait on it is
+        // where the flavours part, and each side is measured (PawPrint's
+        // SocketEventWaitSurvivesCloseLinux.cs and its macOS run):
+        //
+        //   * Linux's epoll_wait holds the port by file reference — a close that
+        //     leaves a dup changes nothing, and even the last close leaves the
+        //     in-flight syscall's registrations alive for a later edge to
+        //     complete. The dup case is modelled (the description survives and
+        //     the wait completes); the last-close case would need retention this
+        //     table does not represent, so it refuses.
+        //   * Darwin's kevent *ends* with an error when the fd it was entered
+        //     through closes (measured; which error, and what a close of a
+        //     different descriptor onto the same kqueue does, are not), so any
+        //     such close refuses.
+        //
+        // Checked against the parked-wait record rather than a task's run state,
+        // so the window between a wake and the woken task's re-entry is covered
+        // too.
+        let portRefusal : CloseRefusal<'Task> option =
+            match closing with
+            | None -> None
+            | Some (closingId, description) ->
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.File _
+            | OpenFileTarget.Socket _ -> None
+            | OpenFileTarget.SocketEventPort _ ->
+
+            let waiter =
+                system.Tasks
+                |> Map.tryPick (fun task state ->
+                    match state.Parked with
+                    | Some (ParkedSyscall.SocketWait wait) when wait.Port = closingId -> Some task
+                    | Some _
+                    | None -> None
+                )
+
+            match waiter with
+            | None -> None
+            | Some task ->
+                match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
+                | SimulatedUnixFlavour.Linux ->
+                    if destroyed.IsSome then
+                        Some (CloseRefusal.LinuxLastPortDescriptorWithWaiter (closingId, task))
+                    else
+                        None
+                | SimulatedUnixFlavour.Darwin -> Some (CloseRefusal.DarwinPortDescriptorWithWaiter (closingId, task))
+
+        match portRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        // The same question for a lock rather than a port, and the reason
+        // `WakeCondition.isSatisfied` may treat a vanished description as an
+        // interpreter bug rather than as something to answer.
+        //
+        // Two ladders over one park record rather than one ladder, because they
+        // ask different questions of different things: this one fires only on a
+        // close that destroys the description and does not care what kind of
+        // object it names, where the port one is gated on the object being a
+        // port and fires on any Darwin close. A description can in principle
+        // match both — nothing on Linux refuses an `flock` of a port descriptor,
+        // so one description can hold a lock and carry a waiter — in which case
+        // the port refusal above wins and this one is never named. Either way it
+        // is a refusal, so the shadowing costs only which message is reported.
+        let flockRefusal : CloseRefusal<'Task> option =
+            match destroyed with
+            | None -> None
+            | Some _ ->
+
+            match closing with
+            | None -> None
+            | Some (closingId, _) ->
+
+            system.Tasks
+            |> Map.tryPick (fun task state ->
+                match state.Parked with
+                | Some (ParkedSyscall.Flock parked) when parked.Requester = closingId ->
+                    Some (CloseRefusal.LastFlockedDescriptorWithWaiter (closingId, task))
+                | Some _
+                | None -> None
+            )
+
+        match flockRefusal with
+        | Some refusal -> Error refusal
+        | None ->
+
+        let socketEffects
+            : Result<
+                  Map<SocketId, SocketDescription> * Map<ConnectionId, TcpConnection> * SocketId list,
+                  CloseRefusal<'Task>
+               > =
+            match destroyed with
+            | None -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.File _ -> Ok (system.Machine.Sockets, system.Machine.Connections, [])
+            | OpenFileTarget.Socket socketId ->
+
+            let dying =
+                match Map.tryFind socketId system.Machine.Sockets with
+                | Some socket -> socket
+                | None ->
+                    failwith
+                        $"UnixDescriptor.close: fd %d{fd}'s description names socket %O{socketId}, which this system's socket table does not hold. Closing is the only operation here that removes a socket, and it removes it together with the description that named it, so a live descriptor onto an absent socket means the two tables were built out of step. There is nothing to repair it with: the objects this close would have released cannot be found (this is a bug in this library or in whatever assembled this system)."
+
+            let sockets = Map.remove socketId system.Machine.Sockets
+
+            // A connection lives while any socket phase or accept queue
+            // references it. The dying socket may have been the last such
+            // reference — directly, or by being the listener whose queue held it
+            // (the queue dies with the listener, as Linux's
+            // inet_csk_listen_stop discards a closed listener's accept queue).
+            let candidates =
+                match dying.Phase with
+                | SocketPhase.Established connection
+                | SocketPhase.EstablishedPendingReport connection -> [ connection ]
+                | SocketPhase.Listening listenState -> listenState.Queue
+                | SocketPhase.Idle
+                | SocketPhase.RefusedPendingDelivery
+                | SocketPhase.Dead
+                | SocketPhase.DatagramPeer _ -> []
+
+            let stillReferenced (connection : ConnectionId) : bool =
+                sockets
+                |> Map.exists (fun _ survivor ->
+                    match survivor.Phase with
+                    | SocketPhase.Established c
+                    | SocketPhase.EstablishedPendingReport c -> c = connection
+                    | SocketPhase.Listening listenState -> List.contains connection listenState.Queue
+                    | SocketPhase.Idle
+                    | SocketPhase.RefusedPendingDelivery
+                    | SocketPhase.Dead
+                    | SocketPhase.DatagramPeer _ -> false
+                )
+
+            // What this close does to the sockets sharing the dying socket's
+            // connections splits by which end is dying. The peer of an
+            // established pair sees the FIN: its level becomes the measured
+            // half-closed IN|OUT|RDHUP and the driver signals it (`order3.c` row
+            // Q) — collected here and signalled below, once the socket table
+            // reflects the close, so the level the signal filters against is the
+            // survivor's new one. A dying *listener* instead RSTs its unaccepted
+            // queue entries' clients, whose resulting level is unmeasured — that
+            // case refuses when a registration could observe it, and an RST
+            // raises ERR, which no interest mask can hide, so any registration
+            // could.
+            let establishedSurvivors : Result<SocketId list, CloseRefusal<'Task>> =
+                match dying.Phase with
+                | SocketPhase.Established _
+                | SocketPhase.EstablishedPendingReport _ ->
+                    sockets
+                    |> Map.toList
+                    |> List.choose (fun (survivorId, survivor) ->
+                        match survivor.Phase with
+                        | SocketPhase.Established c
+                        | SocketPhase.EstablishedPendingReport c when List.contains c candidates -> Some survivorId
+                        | _ -> None
+                    )
+                    |> Ok
+                | SocketPhase.Listening _ ->
+                    // The first candidate with a live client, which is the one
+                    // the old `for`-and-crash reported.
+                    let refusal =
+                        candidates
+                        |> List.tryPick (fun candidate ->
+                            sockets
+                            |> Map.toSeq
+                            |> Seq.filter (fun (_, survivor) ->
+                                match survivor.Phase with
+                                | SocketPhase.Established c
+                                | SocketPhase.EstablishedPendingReport c -> c = candidate
+                                | SocketPhase.Listening _
+                                | SocketPhase.Idle
+                                | SocketPhase.RefusedPendingDelivery
+                                | SocketPhase.Dead
+                                | SocketPhase.DatagramPeer _ -> false
+                            )
+                            |> Seq.map fst
+                            |> Seq.tryHead
+                            |> Option.map (fun survivor ->
+                                CloseRefusal.ListenerWouldResetUnacceptedClient (socketId, candidate, survivor)
+                            )
+                        )
+
+                    match refusal with
+                    | Some refusal -> Error refusal
+                    | None -> Ok []
+                | SocketPhase.Idle
+                | SocketPhase.RefusedPendingDelivery
+                | SocketPhase.Dead
+                | SocketPhase.DatagramPeer _ -> Ok []
+
+            match establishedSurvivors with
+            | Error refusal -> Error refusal
+            | Ok establishedSurvivors ->
+
+            let connections =
+                (system.Machine.Connections, candidates)
+                ||> List.fold (fun connections connection ->
+                    if stillReferenced connection then
+                        connections
+                    else
+                        Map.remove connection connections
+                )
+
+            Ok (sockets, connections, establishedSurvivors)
+
+        match socketEffects with
+        | Error refusal -> Error refusal
+        | Ok (sockets, connections, establishedSurvivors) ->
+
+        let closed =
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets = sockets
+                        Connections = connections
+                    }
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        // The FIN's edge, raised now that the survivor's level is the
+        // half-closed one. The signal filters by each registration's interest,
+        // so a survivor nobody watches — or one watched only for conditions the
+        // half-closed level does not meet — records nothing.
+        let closed =
+            (closed, establishedSurvivors)
+            ||> List.fold (fun system survivor ->
+                { system with
+                    Process = UnixProcessState.signalSocketStateChange survivor system.Process
+                }
+            )
+
+        // The close may have been the last reference to an inode whose last name
+        // went away earlier, which is what keeps `read` on an unlinked descriptor
+        // working right up until the descriptor goes. Reaped against the *closed*
+        // system, so this description no longer counts as holding it.
+        let reaped =
+            match destroyed with
+            | None -> closed
+            | Some description ->
+
+            match description.Target with
+            | OpenFileTarget.File (inode, _) -> forgetIfUnheld inode closed
+            | OpenFileTarget.StandardStream _
+            | OpenFileTarget.SocketEventPort _
+            | OpenFileTarget.Socket _ -> closed
+
+        Ok (SyscallAnswer.Completed 0L, reaped)

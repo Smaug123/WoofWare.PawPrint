@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.accept`, driven directly on a constructed system.
+/// `UnixConnection.accept`, driven directly on a constructed system.
 ///
 /// The guest tier already exercises the answers a managed program can reach
 /// (`sourcesPure/SocketAccept.cs`, and the errno numbers in
@@ -154,7 +154,7 @@ module TestAccept =
         (system : UnixSystem<int, string>)
         : AcceptAnswer * UnixSystem<int, string>
         =
-        match UnixSystem.accept fd destination declaredLength system with
+        match UnixConnection.accept fd destination declaredLength system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{AcceptRefusal.describe refusal}"
 
@@ -440,7 +440,7 @@ module TestAccept =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixSystem.accept fd UserBuffer.Mapped 16 system
+            UnixConnection.accept fd UserBuffer.Mapped 16 system
             |> shouldEqual (Error (AcceptRefusal.UnmodelledDomain (SocketId 0L, domain)))
 
     [<TestCaseSource(nameof platforms)>]
@@ -453,14 +453,14 @@ module TestAccept =
 
             let fd, system = withSocket (SocketId 0L) socket (systemOn platform)
 
-            UnixSystem.accept fd UserBuffer.Mapped 16 system
+            UnixConnection.accept fd UserBuffer.Mapped 16 system
             |> shouldEqual (Error (AcceptRefusal.UnmeasuredKind (SocketId 0L, kind)))
 
     [<TestCaseSource(nameof platforms)>]
     let ``an empty queue on a blocking listener is refused`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 0
 
-        UnixSystem.accept fd UserBuffer.Mapped 16 system
+        UnixConnection.accept fd UserBuffer.Mapped 16 system
         |> shouldEqual (Error (AcceptRefusal.WouldPark (SocketId 0L)))
 
     /// An unmapped destination faults the copy-out, and the fault happens once a
@@ -470,7 +470,7 @@ module TestAccept =
     let ``a copy-out through an unmapped destination is refused`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 1
 
-        UnixSystem.accept fd (UserBuffer.Unmapped 4096UL) 16 system
+        UnixConnection.accept fd (UserBuffer.Unmapped 4096UL) 16 system
         |> shouldEqual (Error (AcceptRefusal.UnmeasuredCopyOutFault (SocketId 0L)))
 
     /// A destination whose bytes the client cannot produce is a different
@@ -491,7 +491,7 @@ module TestAccept =
         for destination, expected in rows do
             let fd, _, system = listenerWith platform 1
 
-            UnixSystem.accept fd destination 16 system
+            UnixConnection.accept fd destination 16 system
             |> shouldEqual (Error (AcceptRefusal.Buffer expected))
 
     /// A refusal carries no system, so the connection it would have handed over
@@ -501,7 +501,7 @@ module TestAccept =
     let ``a refused copy-out leaves the connection queued`` (platform : SimulatedUnixPlatform) : unit =
         let fd, connections, system = listenerWith platform 1
 
-        UnixSystem.accept fd UserBuffer.Opaque 16 system
+        UnixConnection.accept fd UserBuffer.Opaque 16 system
         |> shouldEqual (Error (AcceptRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
         queueOf (SocketId 0L) system |> shouldEqual connections
@@ -513,7 +513,7 @@ module TestAccept =
     let ``an empty queue outranks an unwritable buffer`` (platform : SimulatedUnixPlatform) : unit =
         let fd, _, system = listenerWith platform 0
 
-        UnixSystem.accept fd UserBuffer.Opaque 16 system
+        UnixConnection.accept fd UserBuffer.Opaque 16 system
         |> shouldEqual (Error (AcceptRefusal.WouldPark (SocketId 0L)))
 
 
@@ -631,7 +631,7 @@ module TestAccept =
                     }
             }
 
-        let acceptedFd, _, system = UnixSystem.acceptConnection (SocketId 0L) system
+        let acceptedFd, _, system = UnixConnection.acceptConnection (SocketId 0L) system
 
         (acceptedDescription acceptedFd system).NonBlocking |> shouldEqual false
 
@@ -644,7 +644,7 @@ module TestAccept =
         let fd, _, system = listenerWith SimulatedUnixPlatform.linuxX64 1
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixSystem.accept fd UserBuffer.Mapped -1 system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixConnection.accept fd UserBuffer.Mapped -1 system |> ignore<_>)
 
         e.Message |> shouldContainText "is negative, which no kernel is ever asked"
 
@@ -656,7 +656,7 @@ module TestAccept =
             withSocket (SocketId 0L) socket (systemOn SimulatedUnixPlatform.linuxX64)
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixSystem.accept fd UserBuffer.Mapped 16 system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixConnection.accept fd UserBuffer.Mapped 16 system |> ignore<_>)
 
         e.Message |> shouldContainText "socket invariants forbid"
 
@@ -665,7 +665,7 @@ module TestAccept =
         let _, _, system = listenerWith SimulatedUnixPlatform.linuxX64 0
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixSystem.acceptConnection (SocketId 0L) system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixConnection.acceptConnection (SocketId 0L) system |> ignore<_>)
 
         e.Message |> shouldContainText "the accept queue is empty"
 
@@ -675,6 +675,6 @@ module TestAccept =
             withSocket (SocketId 0L) (streamSocket SocketPhase.Idle) (systemOn SimulatedUnixPlatform.linuxX64)
 
         let e =
-            Assert.Throws<exn> (fun () -> UnixSystem.acceptConnection (SocketId 0L) system |> ignore<_>)
+            Assert.Throws<exn> (fun () -> UnixConnection.acceptConnection (SocketId 0L) system |> ignore<_>)
 
         e.Message |> shouldContainText "not listening"

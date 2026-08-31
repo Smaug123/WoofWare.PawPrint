@@ -54,7 +54,7 @@ module TestSocketEventDelivery =
     /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
     /// guest; an errno comes back, because that is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
-        match UnixSystem.close fd system with
+        match UnixDescriptor.close fd system with
         | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system
@@ -113,7 +113,7 @@ module TestSocketEventDelivery =
 
     let private addStream (kernel : UnixSystem<int, string>) : int * SocketId * UnixSystem<int, string> =
         let fd, kernel =
-            UnixSystem.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp kernel
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp kernel
 
         let socketId =
             match FileDescriptorRegistry.tryFind fd kernel.Process.FileDescriptors with
@@ -168,7 +168,7 @@ module TestSocketEventDelivery =
         : UnixSystem<int, string>
         =
         match
-            UnixSystem.changeSocketEventRegistration
+            UnixPoll.changeSocketEventRegistration
                 portFd
                 targetFd
                 (SocketEventRegistrationChange.Add (allInterest, data))
@@ -185,7 +185,7 @@ module TestSocketEventDelivery =
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        UnixSystem.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
+        UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
 
     /// The delivered rows' `Data` fields, so a test can assert order without
     /// restating every mask.
@@ -223,7 +223,7 @@ module TestSocketEventDelivery =
 
         readyOf portId kernel |> List.length |> shouldEqual 1
 
-        let _, _, kernel = UnixSystem.acceptConnection listenerId kernel
+        let _, _, kernel = UnixConnection.acceptConnection listenerId kernel
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         delivered |> shouldEqual []
@@ -277,7 +277,7 @@ module TestSocketEventDelivery =
         let delivered, kernel = deliverSocketEvents portId 8 kernel
         dataOf delivered |> shouldEqual [ 7UL ]
 
-        let _, _, kernel = UnixSystem.acceptConnection listenerId kernel
+        let _, _, kernel = UnixConnection.acceptConnection listenerId kernel
         let _, kernel = connect c2 false (loopback 5000us) kernel
 
         let delivered, kernel = deliverSocketEvents portId 8 kernel
@@ -459,7 +459,7 @@ module TestSocketEventDelivery =
 
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     listenerFd
                     (SocketEventRegistrationChange.Modify (allInterest, 7UL))
@@ -488,7 +488,7 @@ module TestSocketEventDelivery =
 
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     l2Fd
                     (SocketEventRegistrationChange.Modify (allInterest, 2UL))
@@ -583,7 +583,7 @@ module TestSocketEventDelivery =
 
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration portFd listenerFd SocketEventRegistrationChange.Remove kernel
+                UnixPoll.changeSocketEventRegistration portFd listenerFd SocketEventRegistrationChange.Remove kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
             | Ok (SocketEventRegistrationAnswer.Failed reason, _) -> failwith $"remove failed: %O{reason}"
@@ -634,7 +634,7 @@ module TestSocketEventDelivery =
         let before = kernel.Machine.NextSocketEventRegistrationOrdinal
 
         match
-            UnixSystem.changeSocketEventRegistration
+            UnixPoll.changeSocketEventRegistration
                 portFd
                 listenerFd
                 (SocketEventRegistrationChange.Add (allInterest, 8UL))
@@ -658,7 +658,7 @@ module TestSocketEventDelivery =
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
-        let serverFd, _, kernel = UnixSystem.acceptConnection listenerId kernel
+        let serverFd, _, kernel = UnixConnection.acceptConnection listenerId kernel
         let kernel = register portFd clientFd 5UL kernel
 
         // Consume the ADD-of-ready edge (established, live peer: OUT).
@@ -711,11 +711,11 @@ module TestSocketEventDelivery =
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
-        let serverFd, _, kernel = UnixSystem.acceptConnection listenerId kernel
+        let serverFd, _, kernel = UnixConnection.acceptConnection listenerId kernel
 
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     clientFd
                     (SocketEventRegistrationChange.Add (emptyInterest, 5UL))
@@ -747,7 +747,7 @@ module TestSocketEventDelivery =
 
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     clientFd
                     (SocketEventRegistrationChange.Modify (allInterest, 5UL))
@@ -769,7 +769,7 @@ module TestSocketEventDelivery =
         let _, listenerId, kernel = addListener 5000us kernel
         let clientFd, clientId, kernel = addStream kernel
         let _, kernel = connect clientId false (loopback 5000us) kernel
-        let serverFd, _, kernel = UnixSystem.acceptConnection listenerId kernel
+        let serverFd, _, kernel = UnixConnection.acceptConnection listenerId kernel
 
         let kernel =
             match closeFd serverFd kernel with
@@ -808,7 +808,7 @@ module TestSocketEventDelivery =
         // Asserted as the refusal's own case rather than as a crash: the
         // library now says which measured gap it declined to answer across, and
         // a message match would pass for any of the three.
-        match UnixSystem.close listenerFd kernel with
+        match UnixDescriptor.close listenerFd kernel with
         | Error (CloseRefusal.ListenerWouldResetUnacceptedClient _) -> ()
         | other -> failwith $"expected a listener-reset refusal, got %O{other}"
 
@@ -908,7 +908,7 @@ module TestSocketEventDelivery =
         // listener reports no ERR or HUP.
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     l1Fd
                     (SocketEventRegistrationChange.Add (writeInterest, 1UL))
@@ -928,7 +928,7 @@ module TestSocketEventDelivery =
 
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     l1Fd
                     (SocketEventRegistrationChange.Modify (allInterest, 1UL))
@@ -956,7 +956,7 @@ module TestSocketEventDelivery =
 
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     listenerFd
                     (SocketEventRegistrationChange.Modify (writeInterest, 6UL))
@@ -1000,7 +1000,7 @@ module TestSocketEventDelivery =
         // nothing pends yet, so nothing to consume; MOD the older entry.
         let kernel =
             match
-                UnixSystem.changeSocketEventRegistration
+                UnixPoll.changeSocketEventRegistration
                     portFd
                     listenerFd
                     (SocketEventRegistrationChange.Modify (allInterest, 1UL))
@@ -1065,7 +1065,7 @@ module TestSocketEventDelivery =
             | Error error -> failwith $"close failed: %O{error}"
 
         // ...and destroying the description refuses.
-        match UnixSystem.close portFd kernel with
+        match UnixDescriptor.close portFd kernel with
         | Error (CloseRefusal.LinuxLastPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual 1
         | other -> failwith $"expected a Linux port-retention refusal, got %O{other}"
 
@@ -1080,7 +1080,7 @@ module TestSocketEventDelivery =
                     }
             }
 
-        match UnixSystem.close dupFd kernel with
+        match UnixDescriptor.close dupFd kernel with
         | Error (CloseRefusal.DarwinPortDescriptorWithWaiter (_, waiter)) -> waiter |> shouldEqual 1
         | other -> failwith $"expected a Darwin kqueue refusal, got %O{other}"
 

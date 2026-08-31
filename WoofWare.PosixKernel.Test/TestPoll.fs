@@ -5,7 +5,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
 
-/// `UnixSystem.poll`, driven directly on a constructed system.
+/// `UnixPoll.poll`, driven directly on a constructed system.
 ///
 /// The tier that reaches what `sourcesPure/SocketPoll.cs` cannot: the Darwin
 /// refusal (a guest runs one flavour, and PawPrint's guests run Linux), the
@@ -59,7 +59,7 @@ module TestPoll =
         (system : UnixSystem<int, string>)
         : PollEvents list * int
         =
-        match UnixSystem.poll entries milliseconds system with
+        match UnixPoll.poll entries milliseconds system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{PollRefusal.describe refusal}"
 
@@ -293,9 +293,9 @@ module TestPoll =
         let darwin = systemOn SimulatedUnixPlatform.macOsArm64
         let expected = Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
 
-        UnixSystem.poll [] 0 darwin |> shouldEqual expected
-        UnixSystem.poll [ entry 0 all ] 0 darwin |> shouldEqual expected
-        UnixSystem.poll [ entry 99 all ] 0 darwin |> shouldEqual expected
+        UnixPoll.poll [] 0 darwin |> shouldEqual expected
+        UnixPoll.poll [ entry 0 all ] 0 darwin |> shouldEqual expected
+        UnixPoll.poll [ entry 99 all ] 0 darwin |> shouldEqual expected
 
     /// A guest can reach this where it cannot reach epoll's equivalent:
     /// `epoll_ctl` screens the targets it accepts, and `poll(2)` accepts any
@@ -313,13 +313,13 @@ module TestPoll =
                     }
             }
 
-        UnixSystem.poll [ entry portFd all ] 0 system
+        UnixPoll.poll [ entry portFd all ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmeasuredTarget portFd))
 
         // ...and it is refused from anywhere in the list, not only at the head:
         // the entries are all decoded before the answer, exactly as the caller
         // fills its whole array before the syscall.
-        UnixSystem.poll [ entry 0 all ; entry portFd all ] 0 system
+        UnixPoll.poll [ entry 0 all ; entry portFd all ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmeasuredTarget portFd))
 
     /// Nothing ready and a non-zero timeout is the only case that needs a park.
@@ -331,7 +331,7 @@ module TestPoll =
         let entries = [ entry 1 PollEvents.none ]
 
         for timeout in [ -1 ; 1 ; 5000 ] do
-            UnixSystem.poll entries timeout linux
+            UnixPoll.poll entries timeout linux
             |> shouldEqual (Error (PollRefusal.WouldPark timeout))
 
         pollOrFail entries 0 linux |> shouldEqual ([ PollEvents.none ], 0)
@@ -351,7 +351,7 @@ module TestPoll =
     /// *count*, not about having entries.
     [<Test>]
     let ``an empty poll with a timeout is refused`` () : unit =
-        UnixSystem.poll [] -1 linux |> shouldEqual (Error (PollRefusal.WouldPark -1))
+        UnixPoll.poll [] -1 linux |> shouldEqual (Error (PollRefusal.WouldPark -1))
 
     /// `pollReadinessOfDescription` refuses the two entries `poll` screens
     /// first, and says so rather than inventing a level.
@@ -359,7 +359,7 @@ module TestPoll =
     let ``the level function refuses what poll screens`` () : unit =
         let e =
             Assert.Throws<exn> (fun () ->
-                UnixSystem.pollReadinessOfDescription (OpenFileDescriptionId 99L) linux
+                UnixPoll.pollReadinessOfDescription (OpenFileDescriptionId 99L) linux
                 |> ignore<_>
             )
 

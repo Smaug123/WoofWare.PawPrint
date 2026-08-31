@@ -36,6 +36,15 @@
         <Compile Include="SimulatedUnixPlatform.fs" />
         <Compile Include="UnixProcess.fs" />
         <Compile Include="UnixMachine.fs" />
+        <Compile Include="UnixSystemState.fs" />
+        <Compile Include="UnixSocket.fs" />
+        <Compile Include="UnixConnection.fs" />
+        <Compile Include="UnixPoll.fs" />
+        <Compile Include="WakeCondition.fs" />
+        <Compile Include="UnixDescriptor.fs" />
+        <Compile Include="UnixPathResolution.fs" />
+        <Compile Include="UnixReadWrite.fs" />
+        <Compile Include="UnixNamespace.fs" />
         <Compile Include="UnixSystem.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>

@@ -79,7 +79,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// This is the whole of the process's current directory. The *path* —
         /// what `SystemNative_GetCwd`, and hence `Environment.CurrentDirectory`
         /// and every relative `Path.GetFullPath`, reports — is derived from this
-        /// inode and the filesystem by `UnixSystem.currentDirectoryPath`, and is
+        /// inode and the filesystem by `UnixPathResolution.currentDirectoryPath`, and is
         /// not stored: a path is a fact about the directory graph, which a
         /// `rename` of any ancestor rewrites, and a second copy could only go
         /// stale. That derivation is also what makes the path the **physical**
@@ -362,7 +362,7 @@ module UnixProcessState =
     /// file description that names `socketId`.
     ///
     /// This is what makes a readiness change on the socket *observable*: the
-    /// `UnixSystem.close` consults it before destroying the peer of an
+    /// `UnixDescriptor.close` consults it before destroying the peer of an
     /// established pair, because the survivor's level would change to one this
     /// kernel cannot represent, and with no registration there is nothing that
     /// could deliver the difference.
@@ -413,7 +413,7 @@ module UnixProcessState =
     /// Everything that can *create* a reference must appear here: an omission
     /// makes a live inode look free, and freeing it leaves a descriptor pointing
     /// at nothing. It is not what callers want, though — see
-    /// `UnixSystem.pinnedInodes`, which adds the references the *filesystem*
+    /// `UnixDescriptor.pinnedInodes`, which adds the references the *filesystem*
     /// holds on behalf of these.
     let heldInodes<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (proc : UnixProcessState<'Task, 'Handler>)
