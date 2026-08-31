@@ -178,18 +178,6 @@ module EmulatedFileSystemType =
         // nothing here.
         | Some OpenFileObject.AnonymousInode -> pseudoFileSystem 0x09041934u
 
-/// Why a string is not usable as a `utsname.release`.
-[<RequireQualifiedAccess>]
-type SimulatedUnixReleaseError =
-    /// Every Unix fills `utsname.release`, so the empty string names no system.
-    | Empty
-    /// Longer than any `utsname.release` can hold.
-    | TooLong of length : int * limit : int
-    /// The value is handed to the guest as a C string of single bytes, so a
-    /// non-ASCII character has no faithful encoding and an embedded NUL would
-    /// silently truncate what the guest sees.
-    | NotPrintableAscii of index : int * character : char
-
 /// Whether a kernel validates the whole of a user buffer before it performs a
 /// read or write, and if so which ranges it accepts.
 ///
@@ -384,49 +372,6 @@ module UserBufferCheck =
             match check with
             | UserBufferCheck.AtCopyTime -> Ok false
             | UserBufferCheck.BeforeOperation _ -> Error BufferRefusal.AddresslessAtScreen
-
-/// Identity of the Unix-shaped platform the simulated process believes it is
-/// running on. Consulted by the `SystemNative_*` entry points that report
-/// host identity — today only `SystemNative_GetUnixRelease`, which surfaces
-/// as `Environment.OSVersion` on a Unix CoreLib.
-///
-/// This is a value in kernel state rather than a host read, for the same
-/// reason `ProcessorCount` is: real CoreCLR answers it from `uname(2)`, which
-/// would make a replay depend on the machine that produced it — and worse,
-/// guests branch on `Environment.OSVersion` (feature detection, quirk
-/// workarounds), so letting the host leak in here would change guest
-/// *control flow* between runs.
-///
-/// Modelled as a flavour plus a release string, rather than as a bag of loose
-/// `utsname` fields, so that the facts we report stay mutually consistent as
-/// more of `utsname` gets implemented: a future `SystemNative_GetUnixVersion`
-/// or `SystemNative_GetOSArchitecture` is a new total *function* of the
-/// flavour, not a new independently-settable string that could claim a Darwin
-/// release alongside an x86_64 machine.
-///
-/// One representation per platform, which is what the flavour buys: every
-/// platform-dependent fact below is a total function of it, with no failure
-/// arms for an unclassifiable platform.
-///
-/// Construct with `SimulatedUnixPlatform.linuxX64`, `macOsArm64`, or `create`
-/// for a specific release string.
-[<CustomEquality ; NoComparison>]
-type SimulatedUnixPlatform =
-    private
-        {
-            Flavour : SimulatedUnixFlavour
-            Release : string
-        }
-
-    override this.ToString () : string = $"%O{this.Flavour} %s{this.Release}"
-
-    override this.Equals (other : obj) : bool =
-        match other with
-        | :? SimulatedUnixPlatform as other -> this.Flavour = other.Flavour && this.Release = other.Release
-        | _ -> false
-
-    override this.GetHashCode () : int =
-        System.HashCode.Combine (this.Flavour, this.Release)
 
 /// The four `sizeof`s `SystemNative_GetSocketAddressSizes` reports in one call,
 /// which `System.Net.Primitives`' `SocketAddressPal` class initialiser latches
@@ -632,6 +577,52 @@ module SockaddrFamilyField =
                 Width = width field
             }
             declaredLength
+
+/// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
+/// errno: which errno a fault becomes is fixed, but *which fault is reported*
+/// when several hold at once is per-flavour. See
+/// `SimulatedUnixPlatform.bindFaultOrder`.
+/// What this platform's `bind(2)` makes of a declared `socketAddressLen`.
+///
+/// The two rejections are not interchangeable, and the difference is *when* they
+/// happen rather than which errno they carry. Measured on both: a length past the
+/// upper bound is rejected before the kernel copies anything, so it beats a
+/// faulting pointer and beats the family check — an unmapped pointer at 129 is
+/// EINVAL on Linux where at 8 it is EFAULT, and a wrong-family blob at 256 is
+/// ENAMETOOLONG on Darwin where at 129 it is EAFNOSUPPORT. A length merely too
+/// short takes its ordinary place in `bindFaultOrder`.
+[<RequireQualifiedAccess>]
+type BindLengthVerdict =
+    /// A length this platform will parse an address out of.
+    | Accepted
+    /// Past the greatest length this platform will consider, and so refused
+    /// before the address is copied or read at all. Linux answers `EINVAL` above
+    /// `sizeof(struct sockaddr_storage)`; Darwin answers `ENAMETOOLONG` above its
+    /// own, larger threshold.
+    | RejectedBeforeCopy of error : UnixError
+    /// `EINVAL`, from the `Length` position of this platform's fault order.
+    | Invalid
+
+[<RequireQualifiedAccess>]
+type BindFault =
+    /// The declared `socketAddressLen` is not one this platform accepts for the
+    /// address family in the blob. Which errno that becomes is the
+    /// `BindLengthVerdict` the length classifier gave — `EINVAL`, or
+    /// `ENAMETOOLONG` past the greatest length the platform considers — but the
+    /// *position* in the order is the same either way, which is why the verdict
+    /// is not carried here.
+    | Length
+    /// The blob's address family is not the socket's. `EAFNOSUPPORT`.
+    | Family
+    /// No local interface holds the address. `EADDRNOTAVAIL`.
+    | AddressNotLocal
+    /// The port is below `privilegedPortCeiling` and the process is not root.
+    /// `EACCES`.
+    | PrivilegedPort
+    /// This socket already has a local address. `EINVAL`.
+    | AlreadyBound
+    /// Another socket holds a conflicting address. `EADDRINUSE`.
+    | AddressInUse
 
 /// Everything a kernel does differently when `open(2)` is asked to *create*.
 ///
@@ -1220,126 +1211,6 @@ module UnlinkRules =
         match flavour with
         | SimulatedUnixFlavour.Linux -> linuxVerdict privilege resolution vfs
         | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege resolution vfs
-
-/// What the PAL puts in `DirectoryEntry.NameLength`, which is a fact about the
-/// libc it was compiled against rather than about any directory.
-///
-/// `ConvertDirent` (`pal_io.c:497`) copies `d_namlen` under
-/// `HAVE_DIRENT_NAME_LEN` and writes `-1` otherwise, the sentinel meaning "walk
-/// to the NUL yourself". Established by compiling rather than by reading:
-/// glibc's `struct dirent` has no `d_namlen` member at all (`gcc` rejects
-/// `d.d_namlen`), while macOS's `sys/dirent.h` declares one.
-///
-/// Invisible to managed code — `DirectoryEntry.GetName` takes
-/// `CreateReadOnlySpanFromNullTerminated` for the sentinel and a plain span
-/// otherwise — so only a guest that hand-rolls the P/Invoke can tell.
-[<RequireQualifiedAccess>]
-type DirectoryEntryNameLength =
-    /// The name's length in bytes, as macOS reports it.
-    | Reported
-    /// `-1`, as every libc without `d_namlen` gets.
-    | WalkToTerminator
-
-/// What `getcwd(3)` answers when the current directory has been *removed* — so
-/// there is no path to report — and how small a buffer can still change that
-/// answer.
-///
-/// Only reachable since `rmdir` could orphan a current directory. Measured on
-/// both with the cwd removed out from under the process, sweeping the size from
-/// 1 past the length of the path that used to be there: a zero-length buffer is
-/// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
-/// and everything else splits on the *first byte* only.
-[<RequireQualifiedAccess>]
-type GetCwdOrphanAnswer =
-    /// ENOENT whatever the size. Linux's `sys_getcwd` builds the path, fails
-    /// because it is disconnected, and never reaches the length comparison —
-    /// measured ENOENT at every size from 1 up.
-    | AlwaysDetached
-    /// ENOENT unless the buffer cannot hold even `"/"` and a terminator, which
-    /// is ERANGE. Darwin's `getcwd(3)` builds the path from the root downwards,
-    /// so it needs those two bytes before it can start; measured, size 1 is
-    /// ERANGE and *every* larger size is ENOENT — including sizes far below the
-    /// length of the path that used to be there. It is a minimum, not a
-    /// comparison against a path that no longer exists.
-    ///
-    /// **This flavour's failing `getcwd` scribbles on the caller's buffer, and
-    /// this library does not reproduce what it leaves.** `GetCwdAnswer.Failed`
-    /// carries an errno and says nothing about the destination's contents; the
-    /// errno itself is exact. Measured by sweeping the capacity with the
-    /// destination prefilled `0xAA` and reporting every byte that changed:
-    ///
-    /// * orphaned, capacity 1: nothing written, ERANGE;
-    /// * orphaned, 2 ≤ capacity < PATH_MAX: a NUL at the buffer's *last* byte;
-    /// * orphaned, capacity ≥ PATH_MAX: that NUL, and the stale path at offset
-    ///   0 as well;
-    /// * intact but the path does not fit: a *suffix* of the path, filled
-    ///   backwards from the last byte — 976 bytes at offsets 48..1023 for a
-    ///   1418-byte path in a 1024-byte buffer — and ERANGE.
-    ///
-    /// That last shape is BSD `getcwd(3)` assembling the path backwards from
-    /// the end of the buffer and moving it to the front once it fits, so the
-    /// residue is a function of libc's internal progress rather than of
-    /// anything a kernel decides. Reproducing it faithfully means reproducing
-    /// that algorithm, including which of its paths a given capacity takes;
-    /// reproducing it approximately means inventing bytes a guest can read. No
-    /// caller in the BCL reads the destination after a NULL return, so this
-    /// library reports the errno and leaves the buffer alone — recorded in
-    /// `docs/divergences.md` rather than left to be discovered.
-    ///
-    /// Linux writes nothing on any failure path at any capacity, which is why
-    /// only this case needs the note.
-    | ShortestPathFirst
-
-/// What an unwritable destination does to a `getcwd(3)` that has got as far as
-/// storing into it — which is a question about *where the bytes are copied*,
-/// and so splits by flavour rather than by kernel behaviour.
-///
-/// Measured with a destination that is mapped `PROT_READ` only, which
-/// discriminates the two mechanisms where an unmapped address cannot: a kernel
-/// copying with `copy_to_user` reports EFAULT, while a store executed in user
-/// space takes a fatal signal. `readlink(2)` answers EFAULT on both platforms
-/// in the same probe, so this is `getcwd`'s own property and not a general one.
-[<RequireQualifiedAccess>]
-type GetCwdDestinationFault =
-    /// EFAULT, the destination untouched. Linux's `getcwd` is a syscall whose
-    /// `copy_to_user` reports a bad destination as an ordinary error.
-    | ReportedAsEfault
-    /// A fatal signal — SIGSEGV for an unmapped destination, SIGBUS for a
-    /// read-only one. Darwin's `getcwd(3)` assembles the path with stores
-    /// executed in the caller's own context, so a destination it cannot write
-    /// kills the process instead of producing an errno.
-    ///
-    /// A kernel cannot answer this, and neither can this library: see
-    /// `GetCwdRefusal.FatalToTheProcess` for what it says instead.
-    | FatalToTheProcess
-
-/// What a `getsockname(2)` that faults copying the address out has already put
-/// in the caller's length cell.
-///
-/// The two kernels order the two stores differently, so a call that fails
-/// leaves the caller's `socklen_t` reading different things. Measured against a
-/// wholly unmapped destination and against one writable for its first few bytes
-/// only, with sentinel lengths of 7, 13, 100 and 4096 so that a value that came
-/// back changed can only have been written: on Linux 6.18.5 every one of them
-/// reads 16 afterwards, and on macOS 26.6 every one still reads what it went in
-/// with. A descriptor that fails earlier -- EBADF, ENOTSOCK -- touches the cell
-/// on neither, so this is the fault path's property rather than the failure
-/// path's in general.
-///
-/// Whether a *client* can see this is a separate question, and for the .NET PAL
-/// the answer is no: `SystemNative_GetSockName` copies the caller's length into
-/// a local `socklen_t`, passes that, and writes it back only when the call
-/// succeeded, so the kernel's store lands on the shim's stack. A client speaking
-/// raw POSIX does see it.
-[<RequireQualifiedAccess>]
-type GetSockNameFaultLength =
-    /// The cell still holds what the caller put there. Darwin copies the address
-    /// out first and reports the length only once that has succeeded.
-    | Untouched
-    /// The cell holds the address's *untruncated* length -- what a successful
-    /// call would have reported -- because the kernel stored that before
-    /// attempting the copy that then faulted.
-    | AlreadyReported
 
 /// Everything a kernel does differently when `rmdir(2)` removes a directory.
 ///
@@ -2127,51 +1998,180 @@ module RenameRules =
         | SimulatedUnixFlavour.Linux -> linuxVerdict privilege source destination vfs
         | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege source destination vfs
 
-/// A reason `bind(2)` refuses, as one of the checks it makes rather than as an
-/// errno: which errno a fault becomes is fixed, but *which fault is reported*
-/// when several hold at once is per-flavour. See
-/// `SimulatedUnixPlatform.bindFaultOrder`.
-/// What this platform's `bind(2)` makes of a declared `socketAddressLen`.
-///
-/// The two rejections are not interchangeable, and the difference is *when* they
-/// happen rather than which errno they carry. Measured on both: a length past the
-/// upper bound is rejected before the kernel copies anything, so it beats a
-/// faulting pointer and beats the family check — an unmapped pointer at 129 is
-/// EINVAL on Linux where at 8 it is EFAULT, and a wrong-family blob at 256 is
-/// ENAMETOOLONG on Darwin where at 129 it is EAFNOSUPPORT. A length merely too
-/// short takes its ordinary place in `bindFaultOrder`.
+/// Why a string is not usable as a `utsname.release`.
 [<RequireQualifiedAccess>]
-type BindLengthVerdict =
-    /// A length this platform will parse an address out of.
-    | Accepted
-    /// Past the greatest length this platform will consider, and so refused
-    /// before the address is copied or read at all. Linux answers `EINVAL` above
-    /// `sizeof(struct sockaddr_storage)`; Darwin answers `ENAMETOOLONG` above its
-    /// own, larger threshold.
-    | RejectedBeforeCopy of error : UnixError
-    /// `EINVAL`, from the `Length` position of this platform's fault order.
-    | Invalid
+type SimulatedUnixReleaseError =
+    /// Every Unix fills `utsname.release`, so the empty string names no system.
+    | Empty
+    /// Longer than any `utsname.release` can hold.
+    | TooLong of length : int * limit : int
+    /// The value is handed to the guest as a C string of single bytes, so a
+    /// non-ASCII character has no faithful encoding and an embedded NUL would
+    /// silently truncate what the guest sees.
+    | NotPrintableAscii of index : int * character : char
 
+/// Identity of the Unix-shaped platform the simulated process believes it is
+/// running on. Consulted by the `SystemNative_*` entry points that report
+/// host identity — today only `SystemNative_GetUnixRelease`, which surfaces
+/// as `Environment.OSVersion` on a Unix CoreLib.
+///
+/// This is a value in kernel state rather than a host read, for the same
+/// reason `ProcessorCount` is: real CoreCLR answers it from `uname(2)`, which
+/// would make a replay depend on the machine that produced it — and worse,
+/// guests branch on `Environment.OSVersion` (feature detection, quirk
+/// workarounds), so letting the host leak in here would change guest
+/// *control flow* between runs.
+///
+/// Modelled as a flavour plus a release string, rather than as a bag of loose
+/// `utsname` fields, so that the facts we report stay mutually consistent as
+/// more of `utsname` gets implemented: a future `SystemNative_GetUnixVersion`
+/// or `SystemNative_GetOSArchitecture` is a new total *function* of the
+/// flavour, not a new independently-settable string that could claim a Darwin
+/// release alongside an x86_64 machine.
+///
+/// One representation per platform, which is what the flavour buys: every
+/// platform-dependent fact below is a total function of it, with no failure
+/// arms for an unclassifiable platform.
+///
+/// Construct with `SimulatedUnixPlatform.linuxX64`, `macOsArm64`, or `create`
+/// for a specific release string.
+[<CustomEquality ; NoComparison>]
+type SimulatedUnixPlatform =
+    private
+        {
+            Flavour : SimulatedUnixFlavour
+            Release : string
+        }
+
+    override this.ToString () : string = $"%O{this.Flavour} %s{this.Release}"
+
+    override this.Equals (other : obj) : bool =
+        match other with
+        | :? SimulatedUnixPlatform as other -> this.Flavour = other.Flavour && this.Release = other.Release
+        | _ -> false
+
+    override this.GetHashCode () : int =
+        System.HashCode.Combine (this.Flavour, this.Release)
+
+/// What the PAL puts in `DirectoryEntry.NameLength`, which is a fact about the
+/// libc it was compiled against rather than about any directory.
+///
+/// `ConvertDirent` (`pal_io.c:497`) copies `d_namlen` under
+/// `HAVE_DIRENT_NAME_LEN` and writes `-1` otherwise, the sentinel meaning "walk
+/// to the NUL yourself". Established by compiling rather than by reading:
+/// glibc's `struct dirent` has no `d_namlen` member at all (`gcc` rejects
+/// `d.d_namlen`), while macOS's `sys/dirent.h` declares one.
+///
+/// Invisible to managed code — `DirectoryEntry.GetName` takes
+/// `CreateReadOnlySpanFromNullTerminated` for the sentinel and a plain span
+/// otherwise — so only a guest that hand-rolls the P/Invoke can tell.
 [<RequireQualifiedAccess>]
-type BindFault =
-    /// The declared `socketAddressLen` is not one this platform accepts for the
-    /// address family in the blob. Which errno that becomes is the
-    /// `BindLengthVerdict` the length classifier gave — `EINVAL`, or
-    /// `ENAMETOOLONG` past the greatest length the platform considers — but the
-    /// *position* in the order is the same either way, which is why the verdict
-    /// is not carried here.
-    | Length
-    /// The blob's address family is not the socket's. `EAFNOSUPPORT`.
-    | Family
-    /// No local interface holds the address. `EADDRNOTAVAIL`.
-    | AddressNotLocal
-    /// The port is below `privilegedPortCeiling` and the process is not root.
-    /// `EACCES`.
-    | PrivilegedPort
-    /// This socket already has a local address. `EINVAL`.
-    | AlreadyBound
-    /// Another socket holds a conflicting address. `EADDRINUSE`.
-    | AddressInUse
+type DirectoryEntryNameLength =
+    /// The name's length in bytes, as macOS reports it.
+    | Reported
+    /// `-1`, as every libc without `d_namlen` gets.
+    | WalkToTerminator
+
+/// What `getcwd(3)` answers when the current directory has been *removed* — so
+/// there is no path to report — and how small a buffer can still change that
+/// answer.
+///
+/// Only reachable since `rmdir` could orphan a current directory. Measured on
+/// both with the cwd removed out from under the process, sweeping the size from
+/// 1 past the length of the path that used to be there: a zero-length buffer is
+/// EINVAL everywhere (the shim's own guard, before `getcwd` is called at all),
+/// and everything else splits on the *first byte* only.
+[<RequireQualifiedAccess>]
+type GetCwdOrphanAnswer =
+    /// ENOENT whatever the size. Linux's `sys_getcwd` builds the path, fails
+    /// because it is disconnected, and never reaches the length comparison —
+    /// measured ENOENT at every size from 1 up.
+    | AlwaysDetached
+    /// ENOENT unless the buffer cannot hold even `"/"` and a terminator, which
+    /// is ERANGE. Darwin's `getcwd(3)` builds the path from the root downwards,
+    /// so it needs those two bytes before it can start; measured, size 1 is
+    /// ERANGE and *every* larger size is ENOENT — including sizes far below the
+    /// length of the path that used to be there. It is a minimum, not a
+    /// comparison against a path that no longer exists.
+    ///
+    /// **This flavour's failing `getcwd` scribbles on the caller's buffer, and
+    /// this library does not reproduce what it leaves.** `GetCwdAnswer.Failed`
+    /// carries an errno and says nothing about the destination's contents; the
+    /// errno itself is exact. Measured by sweeping the capacity with the
+    /// destination prefilled `0xAA` and reporting every byte that changed:
+    ///
+    /// * orphaned, capacity 1: nothing written, ERANGE;
+    /// * orphaned, 2 ≤ capacity < PATH_MAX: a NUL at the buffer's *last* byte;
+    /// * orphaned, capacity ≥ PATH_MAX: that NUL, and the stale path at offset
+    ///   0 as well;
+    /// * intact but the path does not fit: a *suffix* of the path, filled
+    ///   backwards from the last byte — 976 bytes at offsets 48..1023 for a
+    ///   1418-byte path in a 1024-byte buffer — and ERANGE.
+    ///
+    /// That last shape is BSD `getcwd(3)` assembling the path backwards from
+    /// the end of the buffer and moving it to the front once it fits, so the
+    /// residue is a function of libc's internal progress rather than of
+    /// anything a kernel decides. Reproducing it faithfully means reproducing
+    /// that algorithm, including which of its paths a given capacity takes;
+    /// reproducing it approximately means inventing bytes a guest can read. No
+    /// caller in the BCL reads the destination after a NULL return, so this
+    /// library reports the errno and leaves the buffer alone — recorded in
+    /// `docs/divergences.md` rather than left to be discovered.
+    ///
+    /// Linux writes nothing on any failure path at any capacity, which is why
+    /// only this case needs the note.
+    | ShortestPathFirst
+
+/// What an unwritable destination does to a `getcwd(3)` that has got as far as
+/// storing into it — which is a question about *where the bytes are copied*,
+/// and so splits by flavour rather than by kernel behaviour.
+///
+/// Measured with a destination that is mapped `PROT_READ` only, which
+/// discriminates the two mechanisms where an unmapped address cannot: a kernel
+/// copying with `copy_to_user` reports EFAULT, while a store executed in user
+/// space takes a fatal signal. `readlink(2)` answers EFAULT on both platforms
+/// in the same probe, so this is `getcwd`'s own property and not a general one.
+[<RequireQualifiedAccess>]
+type GetCwdDestinationFault =
+    /// EFAULT, the destination untouched. Linux's `getcwd` is a syscall whose
+    /// `copy_to_user` reports a bad destination as an ordinary error.
+    | ReportedAsEfault
+    /// A fatal signal — SIGSEGV for an unmapped destination, SIGBUS for a
+    /// read-only one. Darwin's `getcwd(3)` assembles the path with stores
+    /// executed in the caller's own context, so a destination it cannot write
+    /// kills the process instead of producing an errno.
+    ///
+    /// A kernel cannot answer this, and neither can this library: see
+    /// `GetCwdRefusal.FatalToTheProcess` for what it says instead.
+    | FatalToTheProcess
+
+/// What a `getsockname(2)` that faults copying the address out has already put
+/// in the caller's length cell.
+///
+/// The two kernels order the two stores differently, so a call that fails
+/// leaves the caller's `socklen_t` reading different things. Measured against a
+/// wholly unmapped destination and against one writable for its first few bytes
+/// only, with sentinel lengths of 7, 13, 100 and 4096 so that a value that came
+/// back changed can only have been written: on Linux 6.18.5 every one of them
+/// reads 16 afterwards, and on macOS 26.6 every one still reads what it went in
+/// with. A descriptor that fails earlier -- EBADF, ENOTSOCK -- touches the cell
+/// on neither, so this is the fault path's property rather than the failure
+/// path's in general.
+///
+/// Whether a *client* can see this is a separate question, and for the .NET PAL
+/// the answer is no: `SystemNative_GetSockName` copies the caller's length into
+/// a local `socklen_t`, passes that, and writes it back only when the call
+/// succeeded, so the kernel's store lands on the shim's stack. A client speaking
+/// raw POSIX does see it.
+[<RequireQualifiedAccess>]
+type GetSockNameFaultLength =
+    /// The cell still holds what the caller put there. Darwin copies the address
+    /// out first and reports the length only once that has succeeded.
+    | Untouched
+    /// The cell holds the address's *untruncated* length -- what a successful
+    /// call would have reported -- because the kernel stored that before
+    /// attempting the copy that then faulted.
+    | AlreadyReported
 
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
