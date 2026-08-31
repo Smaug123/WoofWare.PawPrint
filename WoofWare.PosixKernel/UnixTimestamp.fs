@@ -1,27 +1,20 @@
 namespace WoofWare.PosixKernel
 
-/// A filesystem timestamp: `struct timespec`, whole seconds since the Unix
-/// epoch plus a nanosecond part in `[0, 1e9)`.
+/// <summary>
+/// A filesystem timestamp, measured in whole seconds since the Unix epoch
+/// plus a nanosecond part in <c>[0, 1e9)</c>.
+/// </summary>
+/// <remarks>
+/// This is a model of <c>struct timespec</c>.
 ///
-/// Two fields rather than one nanosecond count. `st_atim.tv_sec` is a 64-bit
-/// *second* count, so folding the pair into nanoseconds would cap the
-/// representable range at 1677–2262 — and `File.SetLastWriteTime` will happily
-/// be handed a `DateTime` outside it, which would then have to overflow or be
-/// clamped. Neither is a thing a filesystem does.
-///
-/// Negative seconds are permitted: a pre-1970 mtime is ordinary, and `tar`
-/// archives are full of them. A negative *nanosecond* part is not, matching the
-/// kernel's own normalisation, so the pair always compares in the obvious
-/// lexicographic order.
-///
-/// There is no `assertValid` counterpart to `FileName`'s: this type's
-/// `Unchecked.defaultof` is `(0L, 0)`, the Unix epoch, which is a perfectly
-/// legal timestamp. There is no forged value to catch.
+/// Negative seconds are permitted; negative nanoseconds are not.
+/// </remarks>
 [<Struct>]
 type UnixTimestamp =
     private
     | UnixTimestamp of seconds : int64 * nanoseconds : int
 
+    /// Format this timestamp as a number of seconds since the epoch.
     override this.ToString () : string =
         match this with
         | UnixTimestamp (seconds, nanoseconds) ->
@@ -49,24 +42,38 @@ type UnixTimestamp =
 module UnixTimestamp =
     let private nanosecondsPerSecond : int = 1_000_000_000
 
+    /// <summary>
+    /// The raw number of seconds in this timestamp (i.e. the timestamp rounded down to the latest second).
+    /// </summary>
     let seconds (timestamp : UnixTimestamp) : int64 =
         match timestamp with
         | UnixTimestamp (seconds, _) -> seconds
 
+    /// <summary>
+    /// The raw number of nanoseconds in this timestamp (i.e. the timestamp's fractional non-second part).
+    /// </summary>
     let nanoseconds (timestamp : UnixTimestamp) : int =
         match timestamp with
         | UnixTimestamp (_, nanoseconds) -> nanoseconds
 
-    /// A timestamp, or `None` if the nanosecond part is not in `[0, 1e9)`.
-    /// Deliberately not normalising an out-of-range part by carrying into the
-    /// seconds: a caller who computed 1.5e9 nanoseconds has a unit bug, and
-    /// silently absorbing it would hide it.
+    /// <summary>
+    /// A timestamp formed from "seconds since the epoch" plus a fractional nanosecond part.
+    /// </summary>
+    /// <returns>
+    /// <c>None</c> if the nanosecond part is not in <c>[0, 1e9)</c>.
+    /// </returns>
     let create (seconds : int64) (nanoseconds : int) : UnixTimestamp option =
         if nanoseconds < 0 || nanoseconds >= nanosecondsPerSecond then
             None
         else
             Some (UnixTimestamp (seconds, nanoseconds))
 
+    /// <summary>
+    /// A timestamp formed from "seconds since the epoch" plus a fractional nanosecond part.
+    /// </summary>
+    /// <remarks>
+    /// This is <c>create</c> except it throws (naming <c>context</c>) instead of returning <c>None</c>.
+    /// </remarks>
     let createOrFail (context : string) (seconds : int64) (nanoseconds : int) : UnixTimestamp =
         match create seconds nanoseconds with
         | Some timestamp -> timestamp
@@ -74,15 +81,22 @@ module UnixTimestamp =
             failwith
                 $"%s{context}: %d{nanoseconds} is not a nanosecond part; it must lie in [0, %d{nanosecondsPerSecond}). A whole-second count belongs in the seconds field."
 
+    /// <summary>
+    /// A timestamp formed from "integer number of seconds since the epoch".
+    /// </summary>
     let ofSeconds (seconds : int64) : UnixTimestamp = UnixTimestamp (seconds, 0)
 
-    /// A timestamp from a count of milliseconds since the Unix epoch, which is
-    /// how the emulated kernel holds its wall clock.
-    ///
-    /// Floor division, so that a negative millisecond count keeps the
-    /// nanosecond part non-negative rather than producing a `timespec` no
-    /// kernel would write: -1 ms is (-1 s, 999 000 000 ns), not (0 s, -1e6 ns).
+    /// <summary>
+    /// A timestamp from an integer count of milliseconds since the Unix epoch.
+    /// </summary>
+    /// <remarks>
+    /// This is how the emulated kernel holds its wall clock.
+    /// </remarks>
     let ofMillisecondsSinceEpoch (milliseconds : int64) : UnixTimestamp =
+        // Floor division, so that a negative millisecond count keeps the
+        // nanosecond part non-negative rather than producing a `timespec` no
+        // kernel would write: -1 ms is (-1 s, 999 000 000 ns), not (0 s, -1e6 ns).
+        //
         // Derived from the truncating quotient and remainder rather than by
         // biasing the dividend. `(milliseconds - 999L) / 1000L` is the obvious
         // way to floor a negative, and it silently overflows for the bottom 999
@@ -101,6 +115,11 @@ module UnixTimestamp =
             // exactly the difference.
             UnixTimestamp (quotient - 1L, int (remainder + 1000L) * 1_000_000)
 
-    /// The Unix epoch itself, which is also what a kernel booted at the default
-    /// `WallClockEpochMs` of 0 believes the time to be.
+    /// <summary>
+    /// The Unix epoch.
+    /// </summary>
+    /// <remarks>
+    /// This is what what a kernel booted at the default
+    /// <c>WallClockEpochMs</c> of 0 believes the time to be.
+    /// </remarks>
     let epoch : UnixTimestamp = UnixTimestamp (0L, 0)

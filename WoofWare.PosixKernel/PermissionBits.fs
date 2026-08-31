@@ -228,29 +228,39 @@ module PermissionBits =
     /// </remarks>
     let assertValid (context : string) (bits : PermissionBits) : PermissionBits = parseOrFail context (toInt bits)
 
-    /// The bits an inode created with this `mode` argument ends up with, under
-    /// this platform's own mask and this process's `umask`.
+    /// <summary>
+    /// Describe the permission bits you end up with when you create an inode with this
+    /// <c>mode</c> argument, accounting for the platform-dependent default <c>modeMask</c>
+    /// and the simulated process's <c>umask</c>.
+    /// </summary>
+    /// <param name="modeMask">
+    /// The default mode mask for this syscall on this platform.
     ///
-    /// Two masks, in this order, and both measured. `modeMask` is the
-    /// platform's, and it is per-*syscall* rather than per-platform: measured at
-    /// `umask 022`, Linux's `mkdir(p, 0o7777)` gives 0o1755 while its
-    /// `open(p, O_CREAT, 0o7777)` gives 0o7755, so `mkdir` keeps only the sticky
-    /// bit where `open` keeps all twelve. Darwin drops all three upper bits from
-    /// both. See `CreatingOpenRules.ModeMask` and `MkDirRules.ModeMask` for the
-    /// values, which is where each syscall's rows live.
+    /// This does depend on the syscall; for example, on Linux, under <c>umask 022</c>,
+    /// the <c>mkdir(p, 0o7777)</c> syscall gives <c>0o1755</c>, while
+    /// <c>open(p, O_CREAT, 0o7777)</c> instead gives <c>0o7755</c>.
     ///
-    /// Only the low nine bits of `umask` take part, and that is exact on both
-    /// platforms for two *different* measured reasons. Linux's `umask(2)` stores
-    /// just `mask &&& 0o777` -- `umask(0o4000)` reads back 0o0000 -- so a
-    /// requested 0o4644 stays 0o4644 there; a mask applied at full width would
-    /// strip the set-user-ID bit instead, making a setuid file impossible for a
-    /// guest to create. Darwin *does* store all twelve bits, but creation cannot
-    /// see the upper three because `modeMask` has already cleared them:
-    /// measured, `umask 0o4000` with mode 0o4644 gives 0o0644 there whether or
-    /// not the mask is truncated. So one expression is right for both.
+    /// It also depends on the platform: Darwin drops all three upper bits in both those cases.
     ///
-    /// A bit above the permission word is dropped rather than rejected -- `mode`
-    /// 0o10777 creates 0o0755 on both kernels, under `mkdir` as under `open`.
+    /// See <c>CreatingOpenRules.ModeMask</c> or <c>MkDirRules.ModeMask</c>, for example,
+    /// to find the specific mask you should provide here for the syscall you're executing.
+    /// </param>
+    ///
+    /// <param name="umask">
+    /// Only the low nine bits of <c>umask</c> take part in <c>fromCreationMode</c>, although this appears to be
+    /// something of an empirically-verified coincidence rather than a principled fact.
+    /// Linux's <c>umask(2)</c> only stores the low nine bits, but Darwin stores all twelve
+    /// and happens instead to have <c>modeMask</c> clear them in all cases.
+    /// </param>
+    ///
+    /// <param name="mode">
+    /// The integer which a guest passes as a filemode argument to the syscall you're implementing.
+    /// </param>
+    ///
+    /// <remarks>
+    /// Any bits above the permission word are dropped rather than rejected.
+    /// For example, <c>mode</c> of <c>0o10777</c> creates <c>0o0755</c> on both kernels.
+    /// </remarks>
     let fromCreationMode (modeMask : PermissionBits) (umask : PermissionBits) (mode : int) : PermissionBits =
         let umaskBitsOnly = 0o777
 
