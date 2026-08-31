@@ -36,7 +36,7 @@ module TestDirectoryStreamId =
 
     let private dirInode (kernel : EmulatedKernel) : InodeNumber =
         match
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits kernel.UnixPlatform)
                 CallerPrivilege.Privileged
                 (VirtualFileSystem.root kernel.FileSystem)

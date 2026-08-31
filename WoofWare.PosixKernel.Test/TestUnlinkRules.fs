@@ -123,7 +123,7 @@ module TestUnlinkRules =
         let rules = SimulatedUnixPlatform.unlinkRules platform
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
                 privilege
                 (VirtualFileSystem.root tree)

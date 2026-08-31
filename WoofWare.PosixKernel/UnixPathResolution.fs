@@ -179,7 +179,7 @@ module UnixPathResolution =
         // `isRooted` itself and starts at the root regardless of what it is
         // handed, so a caller that branched here would be computing a value the
         // walk discards.
-        VirtualFileSystem.resolveFull
+        PathWalk.resolveFull
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             (UnixProcessState.callerPrivilege system.Process)
             system.Process.CurrentDirectoryInode
@@ -193,7 +193,7 @@ module UnixPathResolution =
     /// Only `rename` wants this, and only under Linux's walk order: it resolves
     /// *both* paths' parents before it looks either final component up, which
     /// no pair of `resolvePathFull` calls can express. Finish one with
-    /// `VirtualFileSystem.completeResolution`.
+    /// `PathWalk.completeResolution`.
     let resolvePathParent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -201,7 +201,7 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PausedResolution, UnixError>
         =
-        VirtualFileSystem.resolveParent
+        PathWalk.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             (UnixProcessState.callerPrivilege system.Process)
             system.Process.CurrentDirectoryInode
@@ -213,7 +213,7 @@ module UnixPathResolution =
     /// The inode a path names, or the errno the lookup owes the caller — what
     /// every non-creating caller wants.
     ///
-    /// Shares `resolvePathFull`'s walk and `VirtualFileSystem.existingOf`'s
+    /// Shares `resolvePathFull`'s walk and `PathWalk.existingOf`'s
     /// free-name-is-ENOENT rule, rather than restating either.
     let resolvePath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
@@ -222,7 +222,7 @@ module UnixPathResolution =
         : Result<InodeNumber, UnixError>
         =
         resolvePathFull policy TrailingSeparatorPolicy.Demand path system
-        |> Result.bind (fun resolution -> VirtualFileSystem.existingOf resolution.Target)
+        |> Result.bind (fun resolution -> PathWalk.existingOf resolution.Target)
 
     /// The status of an inode this filesystem holds, or `None` if it holds no
     /// such inode.

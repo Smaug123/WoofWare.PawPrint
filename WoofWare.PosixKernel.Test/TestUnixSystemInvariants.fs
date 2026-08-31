@@ -344,7 +344,7 @@ module TestUnixSystemInvariants =
 
     let private inodeOf (path : string) : InodeNumber =
         match
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits standing.Machine.UnixPlatform)
                 CallerPrivilege.Privileged
                 (VirtualFileSystem.root standing.Machine.FileSystem)

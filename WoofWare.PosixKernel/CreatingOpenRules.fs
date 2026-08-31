@@ -82,7 +82,7 @@ module CreatingOpenRules =
     ///    both kernels — but that half is not checked here: no resolution can
     ///    reach this function without it, because the walk refuses an
     ///    unsearchable directory before it looks a component up at all. See
-    ///    `VirtualFileSystem.resolveFull`, which is also where the rows that
+    ///    `PathWalk.resolveFull`, which is also where the rows that
     ///    pin it live.
     ///
     /// A freshly created inode is deliberately *not* screened against the mode
@@ -99,7 +99,7 @@ module CreatingOpenRules =
         (vfs : VirtualFileSystem)
         : CreatingOpenVerdict
         =
-        let existing = VirtualFileSystem.existingOf resolution.Target |> Result.toOption
+        let existing = PathWalk.existingOf resolution.Target |> Result.toOption
 
         if not creating then
             match existing with

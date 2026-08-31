@@ -510,7 +510,7 @@ relative target is stable, which is why the corpus uses one.
 
 - **Stage 2a** (done): `RenameRules`, `RenameVerdict`, both verdicts,
   `TestRenameRules`, and the probe. No guest can see any of it.
-- **Stage 2b** (done): `VirtualFileSystem.resolveParent` /
+- **Stage 2b** (done): `PathWalk.resolveParent` /
   `completeResolution` as a *pure* refactor. See below for what implementing it
   changed.
 - **Stage 2c**: `WalkOrder`, the handler, the guests.

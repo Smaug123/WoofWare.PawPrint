@@ -580,7 +580,7 @@ module TestPathCursor =
 
             let parsed = path candidate
 
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 limits
                 CallerPrivilege.Privileged
                 start

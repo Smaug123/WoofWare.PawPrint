@@ -86,7 +86,7 @@ module MkDirRules =
     /// The holding directory's *search* bit is needed as well — and needed
     /// earlier, since without it the final name cannot be looked up at all, so
     /// its absence beats even EEXIST. That check is the walk's
-    /// (`VirtualFileSystem.resolveFull`), which refuses before this function is
+    /// (`PathWalk.resolveFull`), which refuses before this function is
     /// reached; the rows that pin it live there.
     ///
     /// A *free* final name carrying a trailing separator creates, on both

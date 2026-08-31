@@ -336,7 +336,7 @@ module OpenDirRules =
     /// reason to say so rather than leave it implied: `opendir("/")`,
     /// `opendir("d/.")` and `opendir("d/..")` all simply succeed, on both.
     let verdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : OpenDirVerdict =
-        match VirtualFileSystem.existingOf resolution.Target with
+        match PathWalk.existingOf resolution.Target with
         | Error error -> OpenDirVerdict.Refuse error
         | Ok inode ->
 

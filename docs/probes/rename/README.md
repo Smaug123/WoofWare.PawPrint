@@ -146,7 +146,7 @@ there was nothing to choose. This row must never enter the host-equality tier.
 source's parent, the destination's parent, then look the source up, then the
 destination — which is `do_renameat2`'s shape. Darwin's are consistent with
 resolving the source completely and then the destination. That divergence is
-deliberately not modelled yet: it needs `VirtualFileSystem.resolveFull` split
+deliberately not modelled yet: it needs `PathWalk.resolveFull` split
 into a parent walk and a final lookup, which every other syscall shares.
 
 ## `walk-order.py` — the order the two paths are settled in

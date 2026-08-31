@@ -48,7 +48,7 @@ module TestResolutionSplit =
         | Some (InodeContent.Symlink _)
         | None -> None
 
-    /// `VirtualFileSystem.resolveFull` as it stood before the split: one walk,
+    /// `PathWalk.resolveFull` as it stood before the split: one walk,
     /// doing the parent traversal and the final lookup in a single call.
     let private referenceResolveFull
         (limits : PathLimits)
@@ -411,7 +411,7 @@ module TestResolutionSplit =
         let rootInode = VirtualFileSystem.root corpus
 
         let resolved (p : string) =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 (SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64)
                 CallerPrivilege.Privileged
                 rootInode
@@ -449,7 +449,7 @@ module TestResolutionSplit =
                                     referenceResolveFull limits privilege start policy trailing (path p) corpus
 
                                 let actual =
-                                    VirtualFileSystem.resolveFull limits privilege start policy trailing (path p) corpus
+                                    PathWalk.resolveFull limits privilege start policy trailing (path p) corpus
 
                                 if actual <> expected then
                                     failwith
@@ -650,7 +650,7 @@ module TestResolutionSplit =
                     case.FileSystem
 
             let actual =
-                VirtualFileSystem.resolveFull
+                PathWalk.resolveFull
                     case.Limits
                     case.Privilege
                     case.Start
@@ -669,7 +669,7 @@ module TestResolutionSplit =
         SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
 
     let private parentOf (limits : PathLimits) (privilege : CallerPrivilege) (p : string) (vfs : VirtualFileSystem) =
-        VirtualFileSystem.resolveParent
+        PathWalk.resolveParent
             limits
             privilege
             (VirtualFileSystem.root vfs)
@@ -715,9 +715,7 @@ module TestResolutionSplit =
         | Error error ->
             failwith
                 $"resolveParent refused an over-long *final* name with %O{error}; it is the lookup's job to refuse it"
-        | Ok paused ->
-            VirtualFileSystem.completeResolution paused
-            |> shouldEqual (Error UnixError.ENAMETOOLONG)
+        | Ok paused -> PathWalk.completeResolution paused |> shouldEqual (Error UnixError.ENAMETOOLONG)
 
     [<Test>]
     let ``the parent walk does measure a non-final name's length`` () : unit =
@@ -738,14 +736,14 @@ module TestResolutionSplit =
             match parentOf linuxLimits CallerPrivilege.Unprivileged p corpus with
             | Error _ -> ()
             | Ok paused ->
-                VirtualFileSystem.completeResolution paused
-                |> shouldEqual (VirtualFileSystem.completeResolution paused)
+                PathWalk.completeResolution paused
+                |> shouldEqual (PathWalk.completeResolution paused)
 
     [<Test>]
     let ``a forged paused resolution is refused loudly`` () : unit =
         let exn =
             Assert.Throws<exn> (fun () ->
-                VirtualFileSystem.completeResolution Unchecked.defaultof<PausedResolution>
+                PathWalk.completeResolution Unchecked.defaultof<PausedResolution>
                 |> ignore<Result<Resolution, UnixError>>
             )
 

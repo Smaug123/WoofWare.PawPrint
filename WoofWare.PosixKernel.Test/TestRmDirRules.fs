@@ -134,7 +134,7 @@ module TestRmDirRules =
         let rules = SimulatedUnixPlatform.rmDirRules platform
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 (SimulatedUnixPlatform.pathLimits platform)
                 privilege
                 (VirtualFileSystem.root tree)

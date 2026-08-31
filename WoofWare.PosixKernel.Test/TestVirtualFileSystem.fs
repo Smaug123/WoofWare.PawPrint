@@ -95,13 +95,7 @@ module TestVirtualFileSystem =
         VirtualFileSystem.inodes emptyFs |> Map.count |> shouldEqual 1
 
         // The root's parent is itself, so "/.." is "/".
-        VirtualFileSystem.resolve
-            limits
-            CallerPrivilege.Privileged
-            (rootOf emptyFs)
-            SymlinkPolicy.Follow
-            (path "/..")
-            emptyFs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf emptyFs) SymlinkPolicy.Follow (path "/..") emptyFs
         |> shouldEqual (Ok (ResolvedTarget.Directory (rootOf emptyFs, FinalNavigation.Parent)))
 
     [<Test>]
@@ -109,13 +103,7 @@ module TestVirtualFileSystem =
         // The trap this guards: a walk over zero components would silently mean
         // "the start directory", which is a successful answer to a call every
         // Unix rejects.
-        VirtualFileSystem.resolve
-            limits
-            CallerPrivilege.Privileged
-            (rootOf emptyFs)
-            SymlinkPolicy.Follow
-            UnixPath.empty
-            emptyFs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf emptyFs) SymlinkPolicy.Follow UnixPath.empty emptyFs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -123,23 +111,17 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/f")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged file SymlinkPolicy.Follow (path "a") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged file SymlinkPolicy.Follow (path "a") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
     let ``a path cannot continue through a regular file`` () : unit =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f/x") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     [<Test>]
@@ -148,20 +130,14 @@ module TestVirtualFileSystem =
         // open(O_CREAT) need this state, and only stat turns it into ENOENT.
         let vfs = emptyFs
 
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
 
-        VirtualFileSystem.resolveExisting
-            limits
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/nx")
-            vfs
+        PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/nx") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
         // ...but a free name part-way along is ENOENT even so.
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/nx/y") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/nx/y") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     // --------------------------------------------------- the trailing separator
@@ -175,7 +151,7 @@ module TestVirtualFileSystem =
         let vfs = emptyFs
 
         let resolution : Resolution =
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -193,7 +169,7 @@ module TestVirtualFileSystem =
         // Whereas the genuinely-dotted path has no final name at all, which is
         // what makes rmdir able to tell the two apart and report EINVAL.
         let withDot =
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -209,18 +185,18 @@ module TestVirtualFileSystem =
         // The part of the trailing-separator rule every platform agrees on.
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f/") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
         // Without the separator the same path is perfectly fine.
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
         |> shouldEqual (
             Ok (
                 ResolvedTarget.Entry (
                     rootOf vfs,
                     name "f",
                     Some (
-                        VirtualFileSystem.resolveExisting
+                        PathWalk.resolveExisting
                             limits
                             CallerPrivilege.Privileged
                             (rootOf vfs)
@@ -240,17 +216,11 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "ld" "d" ]
 
         let directory =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/d")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
         let withSlash =
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -271,7 +241,7 @@ module TestVirtualFileSystem =
 
         // Without the separator, NoFollowFinal stops at the link itself.
         let link =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -290,7 +260,7 @@ module TestVirtualFileSystem =
 
         // "lf" expands to "f/", whose trailing separator now demands that f be
         // a directory. It is not.
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/lf") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/lf") vfs
         |> shouldEqual (Error UnixError.ENOTDIR)
 
     // ------------------------------------------------------------- symlinks
@@ -301,14 +271,14 @@ module TestVirtualFileSystem =
         // has to hand back the *target's* parent and name.
         let vfs = build [ mklink (rootOf emptyFs) "dang" "nx" ]
 
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/dang") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/dang") vfs
         |> shouldEqual (Ok (ResolvedTarget.Entry (rootOf vfs, name "nx", None)))
 
         // But a dangling link whose target's *parent* is missing is ENOENT,
         // because that failure happens part-way along.
         let vfs = build [ mklink (rootOf emptyFs) "deep" "nx1/nx2" ]
 
-        VirtualFileSystem.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
+        PathWalk.resolve limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/deep") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -319,7 +289,7 @@ module TestVirtualFileSystem =
                     mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
-                            VirtualFileSystem.resolveExisting
+                            PathWalk.resolveExisting
                                 limits
                                 CallerPrivilege.Privileged
                                 (rootOf vfs)
@@ -333,7 +303,7 @@ module TestVirtualFileSystem =
                 ]
 
         let f2 =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -342,13 +312,7 @@ module TestVirtualFileSystem =
                 vfs
             |> ok
 
-        VirtualFileSystem.resolveExisting
-            limits
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/a/up")
-            vfs
+        PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/a/up") vfs
         |> shouldEqual (Ok f2)
 
     /// A chain of `length` symlinks ending at a regular file, so that resolving
@@ -382,7 +346,7 @@ module TestVirtualFileSystem =
 
         let exn =
             Assert.Throws<Exception> (fun () ->
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     forged
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -397,7 +361,7 @@ module TestVirtualFileSystem =
         // ...and it is refused even where no symlink is involved, so that the
         // guard cannot be satisfied by a check that only runs at a traversal.
         Assert.Throws<Exception> (fun () ->
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 forged
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -457,7 +421,7 @@ module TestVirtualFileSystem =
             ]
 
     let private refuse (candidate : string) : Result<Resolution, UnixError> =
-        VirtualFileSystem.resolveFull
+        PathWalk.resolveFull
             limits
             CallerPrivilege.Privileged
             (rootOf separatorFs)
@@ -467,7 +431,7 @@ module TestVirtualFileSystem =
             separatorFs
 
     let private demand (candidate : string) : Result<Resolution, UnixError> =
-        VirtualFileSystem.resolveFull
+        PathWalk.resolveFull
             limits
             CallerPrivilege.Privileged
             (rootOf separatorFs)
@@ -561,7 +525,7 @@ module TestVirtualFileSystem =
     /// Resolve a bare name in the root of an otherwise empty filesystem, so the
     /// only thing that can be reported is the name's own length.
     let private resolveName (limits : PathLimits) (candidate : string) : Result<InodeNumber, UnixError> =
-        VirtualFileSystem.resolveExisting
+        PathWalk.resolveExisting
             limits
             CallerPrivilege.Privileged
             (rootOf emptyFs)
@@ -630,7 +594,7 @@ module TestVirtualFileSystem =
         // up front would report ENAMETOOLONG here.
         let tooLong = String.replicate 300 "a"
 
-        VirtualFileSystem.resolveExisting
+        PathWalk.resolveExisting
             linuxLimits
             CallerPrivilege.Privileged
             (rootOf emptyFs)
@@ -640,7 +604,7 @@ module TestVirtualFileSystem =
         |> shouldEqual (Error UnixError.ENOENT)
 
         // ...whereas with the long component *first*, it is reached and refused.
-        VirtualFileSystem.resolveExisting
+        PathWalk.resolveExisting
             linuxLimits
             CallerPrivilege.Privileged
             (rootOf emptyFs)
@@ -658,7 +622,7 @@ module TestVirtualFileSystem =
         let tooLong = String.replicate 300 "a"
         let vfs = build [ mklink (rootOf emptyFs) "l" tooLong ]
 
-        VirtualFileSystem.resolveExisting
+        PathWalk.resolveExisting
             linuxLimits
             CallerPrivilege.Privileged
             (rootOf vfs)
@@ -673,7 +637,7 @@ module TestVirtualFileSystem =
             let limits = SimulatedUnixPlatform.pathLimits platform
             let vfs = symlinkChain (PathLimits.maxSymlinkTraversals limits)
 
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -689,7 +653,7 @@ module TestVirtualFileSystem =
             let limits = SimulatedUnixPlatform.pathLimits platform
             let vfs = symlinkChain (PathLimits.maxSymlinkTraversals limits + 1)
 
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -710,22 +674,10 @@ module TestVirtualFileSystem =
 
         let vfs = symlinkChain inBetween
 
-        VirtualFileSystem.resolveExisting
-            darwin
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/s1")
-            vfs
+        PathWalk.resolveExisting darwin CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
-        VirtualFileSystem.resolveExisting
-            linux
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/s1")
-            vfs
+        PathWalk.resolveExisting linux CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
         |> Result.isOk
         |> shouldEqual true
 
@@ -754,22 +706,10 @@ module TestVirtualFileSystem =
 
         let vfs = build steps
 
-        VirtualFileSystem.resolveExisting
-            darwin
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/s1")
-            vfs
+        PathWalk.resolveExisting darwin CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
-        VirtualFileSystem.resolveExisting
-            linux
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/s1")
-            vfs
+        PathWalk.resolveExisting linux CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/s1") vfs
         |> shouldEqual (Error UnixError.ENOENT)
 
     [<Test>]
@@ -779,13 +719,7 @@ module TestVirtualFileSystem =
         // traversal count stops it, which is why there is no seen-state set.
         let vfs = build [ mklink (rootOf emptyFs) "l" "l/x" ]
 
-        VirtualFileSystem.resolveExisting
-            limits
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/l")
-            vfs
+        PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/l") vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
     [<Test>]
@@ -796,13 +730,7 @@ module TestVirtualFileSystem =
         let vfs =
             build [ mklink (rootOf emptyFs) "a" "b" ; mklink (rootOf emptyFs) "b" "a" ]
 
-        VirtualFileSystem.resolveExisting
-            limits
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path "/a")
-            vfs
+        PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/a") vfs
         |> shouldEqual (Error UnixError.ELOOP)
 
     [<Test>]
@@ -814,7 +742,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mklink (rootOf emptyFs) "l" raw ]
 
         let link =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -865,7 +793,7 @@ module TestVirtualFileSystem =
 
         let reachedBy (candidate : string) =
             match
-                VirtualFileSystem.resolve
+                PathWalk.resolve
                     limits
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -900,23 +828,11 @@ module TestVirtualFileSystem =
         let root = rootOf vfs
 
         let file =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                root
-                SymlinkPolicy.Follow
-                (path "/f")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged root SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         let directory =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                root
-                SymlinkPolicy.Follow
-                (path "/d")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged root SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
         VirtualFileSystem.createDirectory root (name "d") dirPerms buildTime vfs
@@ -937,13 +853,7 @@ module TestVirtualFileSystem =
         let linked = VirtualFileSystem.hardLink root (name "f2") file buildTime vfs |> ok
         VirtualFileSystem.checkInvariants Set.empty linked |> shouldEqual []
 
-        VirtualFileSystem.resolveExisting
-            limits
-            CallerPrivilege.Privileged
-            root
-            SymlinkPolicy.Follow
-            (path "/f2")
-            linked
+        PathWalk.resolveExisting limits CallerPrivilege.Privileged root SymlinkPolicy.Follow (path "/f2") linked
         |> shouldEqual (Ok file)
 
     [<Test>]
@@ -1000,7 +910,7 @@ module TestVirtualFileSystem =
                     mkdir (rootOf emptyFs) "a"
                     fun vfs ->
                         let a =
-                            VirtualFileSystem.resolveExisting
+                            PathWalk.resolveExisting
                                 limits
                                 CallerPrivilege.Privileged
                                 (rootOf vfs)
@@ -1018,7 +928,7 @@ module TestVirtualFileSystem =
                 match VirtualFileSystem.pathOfDirectory inode vfs with
                 | None -> failwith $"no path for directory %O{inode} in a sound filesystem"
                 | Some absolute ->
-                    VirtualFileSystem.resolveExisting
+                    PathWalk.resolveExisting
                         limits
                         CallerPrivilege.Privileged
                         (rootOf vfs)
@@ -1379,7 +1289,7 @@ module TestVirtualFileSystem =
                         // no final name ("/", ".", "..") yields
                         // ResolvedTarget.Directory, and pathOfDirectory names
                         // every directory but the root.
-                        VirtualFileSystem.resolveExisting
+                        PathWalk.resolveExisting
                             limits
                             CallerPrivilege.Privileged
                             (rootOf vfs)
@@ -1421,7 +1331,7 @@ module TestVirtualFileSystem =
 
         let property (vfs : VirtualFileSystem, candidate : string) : unit =
             for policy in [ SymlinkPolicy.Follow ; SymlinkPolicy.NoFollowFinal ] do
-                VirtualFileSystem.resolveFull
+                PathWalk.resolveFull
                     limits
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -1439,7 +1349,7 @@ module TestVirtualFileSystem =
 
         let property (vfs : VirtualFileSystem, candidate : string) : unit =
             let full =
-                VirtualFileSystem.resolve
+                PathWalk.resolve
                     limits
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -1448,7 +1358,7 @@ module TestVirtualFileSystem =
                     vfs
 
             let existing =
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     limits
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -1561,7 +1471,7 @@ module TestVirtualFileSystem =
 
         let permissionsOf (p : string) : InodePermissions =
             let inode =
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     limits
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -1588,13 +1498,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/f")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         timesOf file vfs |> shouldEqual (InodeTimes.createdAt buildTime)
@@ -1635,13 +1539,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/f")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         let linked =
@@ -1666,13 +1564,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
         let file =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/f")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         let written =
@@ -1737,7 +1629,7 @@ module TestVirtualFileSystem =
                 |> snd
 
             let file =
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     limits
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -1793,7 +1685,7 @@ module TestVirtualFileSystem =
             let vfs = build [ mkfile (rootOf emptyFs) "f" ]
 
             let file =
-                VirtualFileSystem.resolveExisting
+                PathWalk.resolveExisting
                     limits
                     CallerPrivilege.Privileged
                     (rootOf vfs)
@@ -1816,13 +1708,7 @@ module TestVirtualFileSystem =
             | Error refusal -> failwith $"expected success, got %O{refusal}"
 
         let file =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/f")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/f") vfs
             |> ok
 
         let truncated =
@@ -1866,13 +1752,7 @@ module TestVirtualFileSystem =
             |> snd
 
         let file =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/s")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/s") vfs
             |> ok
 
         let modeAfter (rule : SetIdBitsOnTruncation) (privilege : CallerPrivilege) : int =
@@ -1905,17 +1785,11 @@ module TestVirtualFileSystem =
         let vfs = build [ mkdir (rootOf emptyFs) "d" ; mklink (rootOf emptyFs) "l" "d" ]
 
         let directory =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/d")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
         let link =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -2070,17 +1944,11 @@ module TestVirtualFileSystem =
         let some = ImmutableArray.CreateRange [| 1uy |]
 
         let directory =
-            VirtualFileSystem.resolveExisting
-                limits
-                CallerPrivilege.Privileged
-                (rootOf vfs)
-                SymlinkPolicy.Follow
-                (path "/d")
-                vfs
+            PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path "/d") vfs
             |> ok
 
         let link =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -2204,13 +2072,7 @@ module TestVirtualFileSystem =
     /// The inode a path names, resolved privileged so that a permission bit can
     /// never be why a fixture could not find its own object.
     let private inodeAt (p : string) (vfs : VirtualFileSystem) : InodeNumber =
-        VirtualFileSystem.resolveExisting
-            limits
-            CallerPrivilege.Privileged
-            (rootOf vfs)
-            SymlinkPolicy.Follow
-            (path p)
-            vfs
+        PathWalk.resolveExisting limits CallerPrivilege.Privileged (rootOf vfs) SymlinkPolicy.Follow (path p) vfs
         |> ok
 
     let private unbindTime : UnixTimestamp =
@@ -2231,7 +2093,7 @@ module TestVirtualFileSystem =
         target |> shouldEqual file
 
         // The name is gone...
-        VirtualFileSystem.resolveExisting
+        PathWalk.resolveExisting
             limits
             CallerPrivilege.Privileged
             (rootOf after)
@@ -2337,7 +2199,7 @@ module TestVirtualFileSystem =
 
         // `resolveExisting` under `NoFollowFinal` gives the link itself.
         let link =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -2560,7 +2422,7 @@ module TestVirtualFileSystem =
         let file = inodeAt "/f" vfs
 
         let link =
-            VirtualFileSystem.resolveExisting
+            PathWalk.resolveExisting
                 limits
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -2652,7 +2514,7 @@ module TestVirtualFileSystem =
         =
         let vfs = build [ mklink (rootOf emptyFs) "L" (danglingTarget targetBytes) ]
 
-        VirtualFileSystem.resolve
+        PathWalk.resolve
             (SimulatedUnixPlatform.pathLimits platform)
             CallerPrivilege.Privileged
             (rootOf vfs)
@@ -2746,7 +2608,7 @@ module TestVirtualFileSystem =
         let resolve (length : int) (lastTarget : string) : Result<ResolvedTarget, UnixError> =
             let vfs = chain length lastTarget
 
-            VirtualFileSystem.resolve
+            PathWalk.resolve
                 (SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64)
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -2783,7 +2645,7 @@ module TestVirtualFileSystem =
                 ]
 
         let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
-            VirtualFileSystem.resolve
+            PathWalk.resolve
                 (SimulatedUnixPlatform.pathLimits platform)
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -2826,7 +2688,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mklink (rootOf emptyFs) "L" target ]
 
         let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
-            VirtualFileSystem.resolve
+            PathWalk.resolve
                 (SimulatedUnixPlatform.pathLimits platform)
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -2865,7 +2727,7 @@ module TestVirtualFileSystem =
         let vfs = build [ mklink (rootOf emptyFs) "L" target ]
 
         let resolve (platform : SimulatedUnixPlatform) : Result<ResolvedTarget, UnixError> =
-            VirtualFileSystem.resolve
+            PathWalk.resolve
                 (SimulatedUnixPlatform.pathLimits platform)
                 CallerPrivilege.Privileged
                 (rootOf vfs)
@@ -4354,7 +4216,7 @@ module TestCreatingOpenRules =
                 SymlinkPolicy.Follow
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 limits
                 privilege
                 (VirtualFileSystem.root vfs)
@@ -4462,7 +4324,7 @@ module TestCreatingOpenRules =
 
         let resolveFor (candidate : string) : Resolution =
             match
-                VirtualFileSystem.resolveFull
+                PathWalk.resolveFull
                     limits
                     CallerPrivilege.Privileged
                     (VirtualFileSystem.root tree)
@@ -4635,7 +4497,7 @@ module TestMkDirRules =
         let limits = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
 
         match
-            VirtualFileSystem.resolveFull
+            PathWalk.resolveFull
                 limits
                 privilege
                 (VirtualFileSystem.root vfs)
@@ -4952,13 +4814,7 @@ module TestWalkSearchPermission =
         =
         let vfs = treeWith bits
 
-        VirtualFileSystem.resolve
-            limits
-            privilege
-            (VirtualFileSystem.root vfs)
-            SymlinkPolicy.Follow
-            (path candidate)
-            vfs
+        PathWalk.resolve limits privilege (VirtualFileSystem.root vfs) SymlinkPolicy.Follow (path candidate) vfs
 
     let private refuses (bits : int) (candidate : string) : unit =
         match resolveAs CallerPrivilege.Unprivileged (mode bits) candidate with
