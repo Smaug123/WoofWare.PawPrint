@@ -76,9 +76,8 @@ type FileStatus =
 /// Why this kernel refused to report a <c>struct stat</c> for a descriptor.
 /// </summary>
 /// <remarks>
-/// Real kernels would never refuse <c>fstat</c>, but WoofWare.PosixKernel
-/// doesn't have an inode for these specific file descriptors, so can't provide
-/// an answer.
+/// WoofWare.PosixKernel doesn't have an inode for some specific types of file descriptor, so can't provide
+/// an answer to <c>fstat</c>.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type FStatRefusal =
@@ -178,13 +177,18 @@ module GetCwdRefusal =
 [<RequireQualifiedAccess>]
 module UnixPathResolution =
 
-    /// The full result of walking `path`, which a caller that must distinguish
-    /// "the name exists" from "the name is free in a directory that exists"
-    /// needs — `open` with `O_CREAT`, `rename`, `link`. Callers that only want
-    /// the inode use `resolvePath`.
+    /// <summary>
+    /// The full result of walking <c>path</c>.
+    /// </summary>
+    /// <remarks>
+    /// Callers that only want the resulting inode should use <c>resolvePath</c> instead.
+    /// This function is for callers that must distinguish
+    /// "the name exists" from "the name is free in a directory that exists", such as
+    /// <c>rename</c>, <c>link</c>, and <c>open</c> with <c>O_CREAT</c>.
     ///
-    /// Relative paths start at the process's current directory *inode*, not at a
+    /// Relative paths start at the process's current directory <i>inode</i>, not at a
     /// re-walk of its path.
+    /// </remarks>
     let resolvePathFull<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -218,12 +222,15 @@ module UnixPathResolution =
             path
             system.Machine.FileSystem
 
-    /// `resolvePathFull`, stopped at the directory holding the final name.
+    /// <summary>
+    /// <c>resolvePathFull</c>, but with resolution paused at the directory holding the final name.
+    /// </summary>
+    /// <remarks>
+    /// This is here for <c>rename</c> under Linux.
+    /// Linux's walk order resolves <i>both</i> paths' parents before looking up either final component.
     ///
-    /// Only `rename` wants this, and only under Linux's walk order: it resolves
-    /// *both* paths' parents before it looks either final component up, which
-    /// no pair of `resolvePathFull` calls can express. Finish one with
-    /// `PathWalk.completeResolution`.
+    /// Finish such a walk with <c>PathWalk.completeResolution</c>.
+    /// </remarks>
     let resolvePathParent<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (trailingSeparatorPolicy : TrailingSeparatorPolicy)
@@ -240,11 +247,12 @@ module UnixPathResolution =
             path
             system.Machine.FileSystem
 
-    /// The inode a path names, or the errno the lookup owes the caller — what
-    /// every non-creating caller wants.
-    ///
-    /// Shares `resolvePathFull`'s walk and `PathWalk.existingOf`'s
-    /// free-name-is-ENOENT rule, rather than restating either.
+    /// <summary>
+    /// The inode a path names, or the errno the lookup would return to the caller.
+    /// </summary>
+    /// <remarks>
+    /// This is the call path for every non-creating caller.
+    /// </remarks>
     let resolvePath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (path : UnixPath)
@@ -506,11 +514,6 @@ module UnixPathResolution =
     /// <summary>
     /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.
     /// </summary>
-    /// <remarks>
-    /// This is never refused at the WoofWare.PosixKernel level: every outcome is a success or an errno.
-    ///
-    /// This has the same behaviour across all modelled platforms.
-    /// </remarks>
     let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
