@@ -1,12 +1,11 @@
 namespace WoofWare.PosixKernel
 
-/// Everything a kernel does differently when `open(2)` is asked to *create*.
-///
-/// One record rather than a scatter of booleans, because the divergence is
-/// several facts that always travel together: a platform that answers one of
-/// them Linux's way answers all of them Linux's way, and a third Unix must
-/// supply every field before it compiles. All four were measured on macOS
-/// 26.6/APFS and Linux 6.x, at an unprivileged uid.
+/// <summary>
+/// Everything a kernel does differently when <c>open(2)</c> is asked to create.
+/// </summary>
+/// <remarks>
+/// All these rules were measured on macOS 26.6/APFS and Linux 6.x, at an unprivileged uid.
+/// </remarks>
 type CreatingOpenRules =
     {
         /// What the walk owes a final component carrying a trailing separator.
@@ -161,9 +160,12 @@ module CreatingOpenRules =
         else
             CreatingOpenVerdict.Create (directory, name)
 
-    /// The permission bits a file created with this `mode` argument ends up
-    /// with, under `umask`. See `PermissionBits.fromCreationMode`, which states
-    /// the rule once for every creating syscall; `ModeMask` is `open`'s half of
-    /// it, and is how a Darwin guest cannot create a setuid file at all.
+    /// <summary>
+    /// The permission bits you get under <c>umask</c> when you create a file with this <c>mode</c>.
+    /// </summary>
+    /// <remarks>
+    /// See <c>PermissionBits.fromCreationMode</c>, which is the general method to which <c>CreatingOpenRules</c>
+    /// supplies platform-specific information.
+    /// </remarks>
     let createdPermissions (rules : CreatingOpenRules) (umask : PermissionBits) (mode : int) : PermissionBits =
         PermissionBits.fromCreationMode rules.ModeMask umask mode

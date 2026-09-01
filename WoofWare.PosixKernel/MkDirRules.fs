@@ -1,12 +1,12 @@
 namespace WoofWare.PosixKernel
 
-/// Everything a kernel does differently when `mkdir(2)` creates a directory.
-///
-/// Deliberately not folded into `CreatingOpenRules`, even though two fields
-/// share a name with one of its: the values differ, so a shared record would
-/// have to be right for both syscalls at once and is right for neither.
-/// Measured at `umask 022` on macOS 25.6/APFS at uid 501 and Linux 6.x arm64 at
-/// uid 1000, fresh tree per row.
+/// <summary>
+/// Everything a kernel does differently when <c>mkdir(2)</c> creates a directory.
+/// </summary>
+/// <remarks>
+/// Measured at <c>umask 022</c> on macOS 25.6/APFS at uid 501 and Linux 6.x arm64 at
+/// uid 1000.
+/// </remarks>
 type MkDirRules =
     {
         /// The walk `mkdir` resolves its path with. Linux's last component is a
@@ -44,18 +44,22 @@ type MkDirRules =
         InheritsSetGroupIdFromParent : bool
     }
 
-/// What `mkdir(2)` should do next, once its path has been resolved.
-///
-/// The same shape as `CreatingOpenVerdict`, less `OpenExisting`: `mkdir` has no
-/// success that is not a creation.
+/// <summary>
+/// What <c>mkdir(2)</c> should do, now that its path has been resolved.
+/// </summary>
 [<RequireQualifiedAccess>]
 type MkDirVerdict =
+    /// <summary>
     /// Answer the guest with this errno.
+    /// </summary>
     | Refuse of error : UnixError
-    /// Bind a new empty directory under `name` in `directory`, whose own
-    /// permission bits are `parentPermissions` — carried out of the verdict
-    /// because it read them to decide, and because `S_ISGID` inheritance needs
-    /// them again.
+    /// <summary>
+    /// Bind a new empty directory under <c>name</c> in <c>directory</c>.
+    /// </summary>
+    /// <remarks>
+    /// The permission bits of the parent directory are carried with the verdict because
+    /// the <c>S_ISGID</c> bit of the created directory depends on them.
+    /// </remarks>
     | Create of directory : InodeNumber * name : DirectoryEntryName * parentPermissions : PermissionBits
 
 [<RequireQualifiedAccess>]

@@ -1,16 +1,18 @@
 namespace WoofWare.PosixKernel
 
-/// Everything a kernel does differently when `unlink(2)` removes a name.
+/// <summary>
+/// Parametrises the behaviour of different kernels when <c>unlink(2)</c> removes a name.
+/// </summary>
+/// <remarks>
+/// Unlike e.g. <c>mkdir</c>, whose platform-dependent behaviour is confined entirely to
+/// the directory walk, <c>unlink</c> diverges in the order of its refusals too.
 ///
-/// One field, and that is the whole record: unlike `mkdir`, whose divergence is
-/// spent entirely inside the walk, `unlink` diverges in the *order and
-/// vocabulary* of its refusals as well, and those live in
-/// `UnlinkRules.linuxVerdict` and `UnlinkRules.darwinVerdict` rather than in
-/// fields here. See `UnlinkRules.verdict` for why there are two functions
-/// rather than a table.
-///
-/// Measured on macOS 26.6/APFS at uid 501 and 0, and Linux 6.x arm64 at uid
-/// 1000 and 0, one fresh tree per row.
+/// Create one of these with <c>UnlinkRules.verdict</c>.
+/// </remarks>
+(*
+Measured on macOS 26.6/APFS at uid 501 and 0, and Linux 6.x arm64 at uid
+1000 and 0, one fresh tree per row.
+*)
 type UnlinkRules =
     {
         /// The walk `unlink` resolves its path with, under
@@ -29,19 +31,25 @@ type UnlinkRules =
         TrailingSeparator : TrailingSeparatorPolicy
     }
 
-/// What `unlink(2)` should do next, once its path has been resolved.
+/// <summary>
+/// What <c>unlink(2)</c> should do, now that its path has been resolved.
+/// </summary>
 [<RequireQualifiedAccess>]
 type UnlinkVerdict =
+    /// <summary>
     /// Answer the guest with this errno.
+    /// </summary>
     | Refuse of error : UnixError
-    /// Remove `name` from `directory`, and — if that was the last name the
-    /// inode had and no open file description holds it — free the inode.
-    ///
-    /// Carries no inode, though the verdict read one to decide. The removing
-    /// code gets it from `VirtualFileSystem.unbind`, which answers the inode it
-    /// actually unbound — so there is one source for "which inode lost a name",
-    /// and it is the one the removal performed rather than the one a lookup saw
-    /// beforehand.
+    /// <summary>
+    /// Remove <c>name</c> from <c>directory</c>, and - if that was the last name the
+    /// inode had and no open file description holds it - free the inode.
+    /// </summary>
+    /// <remarks>
+    /// This doesn't carry the inode, so you should never store these for long enough
+    /// that an inode-to-name mapping could become invalid.
+    /// (WoofWare.PosixKernel's <c>unlink(2)</c> implementation uses the result straight
+    /// away.)
+    /// </remarks>
     | Remove of directory : InodeNumber * name : DirectoryEntryName
 
 /// The two questions `unlink(2)` and `rmdir(2)` both ask about a name they have
@@ -86,8 +94,12 @@ module private RemovalChecks =
 
         PermissionBits.deniedTo privilege AccessRequest.Write permissions
 
-    /// Whether the inode a name is bound to is a directory. Partial in the same
-    /// way `lacksWrite` is: the walk has just reported this inode.
+    /// <summary>
+    /// Whether the inode a name is bound to is a directory.
+    /// </summary>
+    /// <remarks>
+    /// Throws if the supplied inode doesn't exist.
+    /// </remarks>
     let isDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
         match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Directory _) -> true
@@ -97,13 +109,17 @@ module private RemovalChecks =
             failwith
                 $"RemovalChecks.isDirectory: the walk resolved a name to inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
 
-    /// Whether the directory at `inode` still holds an entry, which is what
-    /// `rmdir(2)` answers ENOTEMPTY for. "." and ".." do not count: they are
-    /// derived rather than stored (see `DirectoryContent.Entries`), and a real
-    /// `rmdir` does not count them either.
+    /// <summary>
+    /// Whether the directory at <c>inode</c> still holds an entry.
+    /// </summary>
+    /// <remarks>
+    /// This is so that we can determine whether <c>rmdir(2)</c> should return
+    /// <c>ENOTEMPTY</c>.
     ///
-    /// Partial in the same way the two above are, and additionally in the inode
-    /// being a directory: the caller has just asked `isDirectory`.
+    /// "." and ".." are ignored for this check, just like real <c>rmdir</c> does.
+    ///
+    /// Throws if the supplied inode is a symlink or a regular file, or doesn't exist.
+    /// </remarks>
     let isEmptyDirectory (inode : InodeNumber) (vfs : VirtualFileSystem) : bool =
         match VirtualFileSystem.tryGetContent inode vfs with
         | Some (InodeContent.Directory directory) -> Map.isEmpty directory.Entries
@@ -230,22 +246,9 @@ module UnlinkRules =
         else
             UnlinkVerdict.Remove (directory, name)
 
-    /// Decide what an `unlink(2)` owes, given how its path resolved.
-    ///
-    /// Two whole functions rather than one reading a rules record, against the
-    /// `MkDirRules.verdict` precedent, because what diverges here is the *order*
-    /// of the checks and the errno vocabulary rather than a constant they both
-    /// consult. A record spelling that as `{ DirectoryErrno; RootNavigationErrno;
-    /// TypeCheckPrecedesPermission : bool }` would make most of its inhabitants
-    /// describe a kernel nobody ships, and a boolean that reorders control flow
-    /// is exactly the illegal-state-representable shape this codebase avoids.
-    /// Each function above instead reads top-to-bottom against its own measured
-    /// column.
-    ///
-    /// The same argument rules out `SimulatedUnixPlatform.bindFaultOrder`'s
-    /// shape — compute the fault set, then pick the first by a per-flavour
-    /// order — which works there because both flavours agree on the faults and
-    /// on the errno each carries. Here they agree on neither.
+    /// <summary>
+    /// Decide what <c>unlink(2)</c> does, given how its input path resolved.
+    /// </summary>
     let verdict
         (flavour : SimulatedUnixFlavour)
         (privilege : CallerPrivilege)
