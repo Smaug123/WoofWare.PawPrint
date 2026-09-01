@@ -11,9 +11,15 @@ namespace WoofWare.PosixKernel
 /// (`sun_path`, `sockaddr_storage`'s padding) are sized from a constant.
 type SocketAddressSizes =
     {
-        /// `sizeof(struct sockaddr_in)`. 16 on both.
+        /// <summary>
+        /// <c>sizeof(struct sockaddr_in)</c>.
+        /// </summary>
+        /// <example>16 on both Linux and Darwin.</example>
         InterNetwork : int
-        /// `sizeof(struct sockaddr_in6)`. 28 on both.
+        /// <summary>
+        /// <c>sizeof(struct sockaddr_in6)</c>.
+        /// </summary>
+        /// <example>28 on both Linux and Darwin.</example>
         InterNetworkV6 : int
         /// `sizeof(struct sockaddr_un)`. The one of the four that differs: 110 on
         /// Linux, whose `sun_path` is 108 bytes, against 106 on Darwin, whose is
@@ -83,26 +89,29 @@ module SockaddrField =
         // what keeps this subtraction from underflowing.
         declaredLength >= field.Offset && declaredLength - field.Offset >= field.Width
 
-/// `struct sockaddr_in`'s fields beyond the family, which
-/// `SockaddrFamilyField` describes because it is the one that moves between
-/// platforms.
-///
-/// Measured on Linux 6.18.5 and Darwin 25.6.0 with
-/// `docs/plans/2026-08-23-posix-kernel-extraction/sockaddr-layout.c`: both put
-/// `sin_port` at 2 and `sin_addr` at 4, and both make the struct 16 bytes. These
-/// are therefore plain values rather than functions of the platform -- the same
-/// distinction `internetAddressFamily` draws against `internetV6AddressFamily`.
+/// <summary>
+/// <c>struct sockaddr_in</c>'s fields, excluding the family.
+/// </summary>
+/// <remarks>
+/// For the family field, see <c>SockaddrFamilyField</c> (which is split out because it differs between platforms).
+/// </remarks>
+(*
+Measured on Linux 6.18.5 and Darwin 25.6.0 with
+`docs/plans/2026-08-23-posix-kernel-extraction/sockaddr-layout.c`: both put
+`sin_port` at 2 and `sin_addr` at 4, and both make the struct 16 bytes. These
+are therefore plain values rather than functions of the platform -- the same
+distinction `internetAddressFamily` draws against `internetV6AddressFamily`.
+*)
 [<RequireQualifiedAccess>]
 module InternetSockaddr =
-    /// `sin_port`, in network byte order.
+    /// <summary><c>sin_port</c>, in network byte order.</summary>
     let port : SockaddrField =
         {
             Offset = 2
             Width = 2
         }
 
-    /// `sin_addr`, four bytes in network byte order. A caller that holds an
-    /// address in that order too moves it verbatim in both directions.
+    /// <summary><c>sin_addr</c>, four bytes in network byte order.</summary>
     let address : SockaddrField =
         {
             Offset = 4
