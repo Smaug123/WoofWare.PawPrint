@@ -16,7 +16,9 @@ open System.Collections.Immutable
 type InodeNumber =
     | InodeNumber of value : int64
 
+    /// <summary>
     /// The underlying integer, formatted as a string.
+    /// </summary>
     override this.ToString () : string =
         match this with
         | InodeNumber value -> string<int64> value
@@ -138,24 +140,19 @@ type DirectoryContent =
         Permissions : PermissionBits
     }
 
-/// What lives at an inode. The `S_IFMT` file-type bits a guest reads from
-/// `stat` are *derived* from which case this is, never stored, so the two can
-/// never disagree.
+/// <summary>
+/// What lives at an inode.
+/// </summary>
+/// <remarks>
+/// Carries only the metadata whose existence depends on which kind of thing
+/// this inode is (e.g. permission bits, which can't necessarily be set on symlinks on Linux).
+/// Metadata whose existence is guaranteed for all inodes lives on <c>Inode</c> instead.
 ///
-/// Carries the metadata whose *existence* depends on which kind of thing this
-/// is, and only that. A regular file and a directory have `chmod`-able
-/// permission bits; a symbolic link does not, and the field is absent rather
-/// than present-and-ignored — see `InodePermissions.PlatformSymlinkDefault` for
-/// why a stored one could only ever describe a filesystem no kernel could
-/// produce. Metadata that every inode has regardless (the four timestamps)
-/// lives on `Inode` instead.
-///
-/// Names are compared with F#'s ordinal string comparison, so the emulated
-/// filesystem is case-sensitive and normalisation-preserving. That is not a
-/// platform divergence to crash on: case-sensitivity is a property of a
-/// *filesystem* rather than of an OS (Linux mounts case-insensitive
-/// directories; macOS runs case-sensitive APFS). It does mean the model
-/// resembles a Linux default rather than a macOS one.
+/// The emulated filesystem is case-sensitive and normalisation-preserving,
+/// because names are compared with .NET's ordinal string comparison.
+/// This is more like a standard Linux filesystem than APFS, although it's not <i>wrong</i>
+/// from the point of view of the kernel.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type InodeContent =
     | RegularFile of contents : ImmutableArray<byte> * permissions : PermissionBits
@@ -172,13 +169,10 @@ type InodeContent =
 
 [<RequireQualifiedAccess>]
 module InodeContent =
-    /// The `S_IFMT` band of `st_mode`: which kind of thing lives at an inode.
-    /// Derived from the content rather than stored, so the two cannot disagree.
-    ///
-    /// The values are `Interop.Sys.FileTypes`' (`Interop.Stat.cs`), which are in
-    /// turn the POSIX ones. `TestVirtualFileSystemAgainstHost` pins them against
-    /// that declaration *as read from the pinned runtime source*, rather than
-    /// against a second copy of the same literals.
+    /// <summary>
+    /// The <c>S_IFMT</c> band of <c>st_mode</c>, indicating which kind of thing (directory, regular file, symlink)
+    /// lives at an inode.
+    /// </summary>
     let fileTypeBits (content : InodeContent) : int =
         match content with
         | InodeContent.RegularFile _ -> 0o100000

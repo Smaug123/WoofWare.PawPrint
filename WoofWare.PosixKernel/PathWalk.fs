@@ -1,16 +1,29 @@
 namespace WoofWare.PosixKernel
 
-/// Whether a resolution follows a symlink found in the *final* position.
-/// Symlinks in every earlier position are always followed; a path cannot
-/// continue through one otherwise.
+/// <summary>
+/// Whether this syscall follows symlinks found in the <i>final</i> position.
+/// </summary>
+/// <remarks>
+/// Symlinks in every earlier position are always followed.
 ///
-/// A trailing separator overrides this — see `Resolution`.
+/// A trailing separator can override this (see <c>TrailingSeparatorPolicy</c>).
+/// </remarks>
 [<RequireQualifiedAccess>]
 type SymlinkPolicy =
-    /// Follow it: what `stat`, and `open` without `O_NOFOLLOW`, do.
+    /// <summary>
+    /// Follow it.
+    /// </summary>
+    /// <example>
+    /// This is what <c>stat</c>, or <c>open</c> without <c>O_NOFOLLOW</c>, do.
+    /// </example>
     | Follow
-    /// Stop at the link itself: what `lstat`, `readlink`, `unlink`, `rename`
-    /// and `open` with `O_NOFOLLOW` do.
+    /// <summary>
+    /// Stop at the link itself.
+    /// </summary>
+    /// <example>
+    /// This is what <c>lstat</c>, <c>readlink</c>, <c>unlink</c>, <c>rename</c>,
+    /// and <c>open</c> with <c>O_NOFOLLOW</c> do.
+    /// </example>
     | NoFollowFinal
 
 /// What a trailing separator on the *final* component means to this walk.

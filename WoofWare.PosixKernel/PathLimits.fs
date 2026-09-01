@@ -96,27 +96,13 @@ type SpliceLengthRecheck =
     /// </example>
     | NoRecheck
 
-/// The bounds a kernel puts on path resolution, which differ between the Unixes
-/// PawPrint models and so cannot be constants in the walk.
-///
-/// A record rather than a bare `int`: `MAXSYMLINKS`, `PATH_MAX` and `NAME_MAX`
-/// are the same kind of fact, and a caller that needs one generally needs the
-/// others.
-///
-/// Not `SimulatedUnixPlatform` itself, which lives in `EmulatedKernel` and
-/// compiles later — the same split `RawErrnoNumbering` makes, and for the same
-/// reason: this file has no business knowing what a platform *is*, only that
-/// something has chosen limits. `SimulatedUnixPlatform.pathLimits` is the
-/// mapping, and is where the numbers are justified as measured facts about
-/// real kernels.
-///
-/// Not a field of `VirtualFileSystem` either, which would have saved threading
-/// it through every call. A `VirtualFileSystem` is a filesystem *image*: it
-/// comes from a seed, which has no platform and could not sensibly acquire
-/// one. `MAXSYMLINKS` is a property of the kernel doing the walking, not of
-/// the tree being walked, and storing it in the image would let two
-/// filesystems under one kernel disagree about it — a state no real system can
-/// be in.
+/// <summary>
+/// The bounds a kernel may place on the path resolution procedure.
+/// </summary>
+/// <remarks>
+/// These differ substantially between platforms.
+/// Use <c>SimulatedUnixPlatform.pathLimits</c> to produce one of these for a given platform.
+/// </remarks>
 [<Struct>]
 type PathLimits =
     private
@@ -153,10 +139,14 @@ type PathLimits =
 
 [<RequireQualifiedAccess>]
 module PathLimits =
-    /// Fails rather than returning an option: unlike `PermissionBits.parse`,
-    /// whose input is a guest's, every caller of this is the platform table
-    /// passing a literal, so a bad value is an interpreter bug and not something
-    /// a caller could handle.
+    /// <summary>
+    /// Package up the various quantities which bound a kernel's path resolution.
+    /// </summary>
+    /// <remarks>
+    /// This throws on error cases, because we expect every external caller to be
+    /// using the pre-made <c>SimulatedUnixPlatform.pathLimits</c> instances instead
+    /// of constructing a <c>PathLimits</c> by hand.
+    /// </remarks>
     let create
         (maxSymlinkTraversals : int)
         (pathMaxBytes : int)
@@ -196,10 +186,19 @@ module PathLimits =
             SpliceRecheck = spliceRecheck
         }
 
+    /// <summary>
+    /// How many symbolic links a single resolution may traverse before the kernel gives up and returns <c>ELOOP</c>.
+    /// </summary>
+    /// <param name="limits"></param>
     let maxSymlinkTraversals (limits : PathLimits) : int = limits.MaxSymlinkTraversals
 
-    /// The longest pathname this kernel accepts as a syscall argument,
-    /// *including* the NUL terminator — so a usable path is one byte shorter.
+    /// <summary>
+    /// The longest pathname this kernel accepts as a syscall argument.
+    /// </summary>
+    /// <remarks>
+    /// This includes the NUL terminator.
+    /// That means a usable path is one byte shorter than <c>pathMaxBytes</c>.
+    /// </remarks>
     let pathMaxBytes (limits : PathLimits) : int = limits.PathMaxBytes
 
     /// Whether a single path component is short enough for this kernel, measured
@@ -310,57 +309,61 @@ type PathArgumentBytes =
     /// takes them.
     | Bytes of bytes : ImmutableArray<byte>
 
+/// <summary>
 /// Why this kernel cannot say what a path argument names.
-///
-/// A gap in *representation* rather than in measurement — what a real kernel
-/// does is not in doubt — so a message composed for this should not claim to
-/// report a measurement.
+/// </summary>
+/// <remarks>
+/// This indicates a gap in WoofWare.PosixKernel's representation. Sorry.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type PathArgumentRefusal =
-    /// The bytes are not valid UTF-8. A real kernel looks up the raw bytes, so
-    /// byte 0xFF names a file no valid UTF-8 name can; this kernel models a
-    /// filename as a string of characters and has no such name to look up.
+    /// <summary>
+    /// The bytes are not valid UTF-8.
+    /// </summary>
+    /// <remarks>
+    /// This kernel models a filename as a string of characters (where real Linux
+    /// models it just as a stream of non-NUL bytes), so WoofWare.PosixKernel
+    /// can't name a file with a non-UTF-8 string.
+    /// </remarks>
     | NotUtf8
 
 [<RequireQualifiedAccess>]
 module PathArgument =
-    /// What a real kernel would look up, given the bytes of a path argument
-    /// **without its NUL terminator** — which is what a caller that stopped at
-    /// the NUL holds.
-    ///
-    /// The three stages run in this order, and the order is measured rather than
-    /// arbitrary:
-    ///
-    ///  1. **Length first.** `PATH_MAX` is enforced by `getname()`/`copyinstr`
-    ///     when the kernel copies the string in, before anything looks at what
-    ///     it says. So a path that is *both* over-long and not valid UTF-8 is
-    ///     `ENAMETOOLONG`, not a refusal — if the decode ran first, a path a real
-    ///     kernel rejects cheaply would instead have no answer at all.
-    ///  2. **Strict decode**, never a lenient one: substituting U+FFFD would
-    ///     silently name a *different* file, one literally called "�".
-    ///  3. **Parse.**
-    ///
-    /// The limit counts the NUL and these bytes do not, so the comparison is
-    /// against `pathMaxBytes - 1`; and the limit is per-flavour (Darwin 1024,
-    /// Linux 4096), which is why it arrives as `PathLimits` rather than as a
-    /// constant.
+
+    /// <summary>
+    /// What path the kernel would look up, given the bytes of a path argument.
+    /// </summary>
+    /// <example>
+    /// Both arguments to <c>rename(2)</c> undergo this parsing.
+    /// </example>
+    /// <returns>
+    /// <c>Error(PathArgumentRefusal)</c> if the path can't even be represented by the kernel's filesystem (which e.g. only permits UTF-8 paths).
+    /// <c>Ok(Failed)</c> if the path is valid to pass to the kernel, but fails the <c>limits</c>.
+    /// <c>Ok(Parsed)</c> if the parse was successful.
+    /// </returns>
+    /// <param name="limits">
+    /// The emulated kernel's path-limits behaviour; use <c>SimulatedUnixPlatform.pathLimits</c>
+    /// to obtain this.
+    /// </param>
+    /// <param name="bytes">
+    /// The path argument, without its NUL terminator.
+    /// If this is not a UTF-8 string (but is within the length limit), we return a refusal.
+    /// </param>
     let parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : Result<PathArgument, PathArgumentRefusal> =
-        // A forged `PathLimits` has a `PathMaxBytes` of zero, under which *every*
-        // path is over-long — a plausible-looking ENAMETOOLONG from a kernel that
-        // cannot exist, produced silently for every path a guest names. Checked
-        // before the limit is read, as `resolveFull` checks it before the walk.
+        // A forged `PathLimits` has a `PathMaxBytes` of zero, which is not very
+        // helpful but is modelled; reject it.
         let limits = PathLimits.assertValid "PathArgument.parse" limits
 
         // `ImmutableArray` is a struct wrapping an array, so `default` carries a
         // null one and would throw on the `Length` read below rather than at the
-        // point the mistake was made. Rejected rather than treated as empty: an
-        // empty path argument is a real thing a guest passes, and `open("")` is
-        // ENOENT, so silently conflating the two would answer about a path the
-        // caller never had.
+        // point the mistake was made.
         if bytes.IsDefault then
             failwith
                 "PathArgument.parse: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty path; pass ImmutableArray<byte>.Empty."
 
+        // The limit counts the NUL byte, but the caller has not passed that; hence `- 1`.
+        // Length is checked first: PATH_MAX is enforced by getname()/copyinstr
+        // when the kernel copies the string in, before anything looks at what it says.
         if bytes.Length > PathLimits.pathMaxBytes limits - 1 then
             Ok (PathArgument.Failed UnixError.ENAMETOOLONG)
         else
