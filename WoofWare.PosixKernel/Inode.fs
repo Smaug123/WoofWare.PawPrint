@@ -145,7 +145,7 @@ type DirectoryContent =
 /// </summary>
 /// <remarks>
 /// Carries only the metadata whose existence depends on which kind of thing
-/// this inode is (e.g. permission bits, which can't be set on symlinks on Darwin).
+/// this inode is (e.g. permission bits, which can't necessarily be set on symlinks on Linux).
 /// Metadata whose existence is guaranteed for all inodes lives on <c>Inode</c> instead.
 ///
 /// The emulated filesystem is case-sensitive and normalisation-preserving,

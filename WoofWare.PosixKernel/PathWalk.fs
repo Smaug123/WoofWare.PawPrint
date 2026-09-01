@@ -6,7 +6,7 @@ namespace WoofWare.PosixKernel
 /// <remarks>
 /// Symlinks in every earlier position are always followed.
 ///
-/// A trailing separator overrides this, causing the symlink to be followed unconditionally.
+/// A trailing separator can override this (see <c>TrailingSeparatorPolicy</c>).
 /// </remarks>
 [<RequireQualifiedAccess>]
 type SymlinkPolicy =

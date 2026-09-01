@@ -7,7 +7,7 @@ namespace WoofWare.PosixKernel
 /// Unlike e.g. <c>mkdir</c>, whose platform-dependent behaviour is confined entirely to
 /// the directory walk, <c>unlink</c> diverges in the order of its refusals too.
 ///
-/// Create one of these with <c>UnlinkRules.verdict</c>.
+/// Create one of these with <c>SimulatedUnixPlatform.unlinkRules</c>.
 /// </remarks>
 (*
 Measured on macOS 26.6/APFS at uid 501 and 0, and Linux 6.x arm64 at uid
