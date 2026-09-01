@@ -347,7 +347,7 @@ module PathArgument =
     /// </param>
     /// <param name="bytes">
     /// The path argument, without its NUL terminator.
-    /// If this is not a UTF-8 string, we return a refusal.
+    /// If this is not a UTF-8 string (but is within the length limit), we return a refusal.
     /// </param>
     let parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : Result<PathArgument, PathArgumentRefusal> =
         // A forged `PathLimits` has a `PathMaxBytes` of zero, which is not very

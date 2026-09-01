@@ -14,7 +14,7 @@ type SymlinkPolicy =
     /// Follow it.
     /// </summary>
     /// <example>
-    /// This is what <c>stat</c>, or <c>open</c> without <c>I_NOFOLLOW</c>, do.
+    /// This is what <c>stat</c>, or <c>open</c> without <c>O_NOFOLLOW</c>, do.
     /// </example>
     | Follow
     /// <summary>
