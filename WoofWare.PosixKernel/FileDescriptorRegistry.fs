@@ -2,10 +2,10 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
+/// <summary>
 /// Which of the simulated process's inherited standard streams an open file
-/// description refers to. Also the routing key for `EmulatedKernel.OutputLog`
-/// and `StepEffect.WroteToFd`, so it names a stream rather than a file: the
-/// host is what ultimately receives stdout/stderr bytes.
+/// description refers to.
+/// </summary>
 [<RequireQualifiedAccess>]
 type FileDescriptorRole =
     | StandardInput

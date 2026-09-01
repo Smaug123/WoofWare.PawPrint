@@ -2,19 +2,15 @@ namespace WoofWare.PosixKernel
 
 open System.Collections.Immutable
 
-/// What `stat(2)` and its siblings report about one inode.
+/// <summary>
+/// What <c>stat(2)</c> and its siblings report about one inode.
+/// </summary>
+/// <remarks>
+/// Stored as structured information, rather than the bytes of a <c>struct stat</c>.
+/// This is because we don't want to be opinionated about the client's ABI.
 ///
-/// The POSIX fields as *facts*, not as any particular `struct stat`'s bytes:
-/// which struct a client fills in, at what offsets, and in what order is the
-/// client's ABI rather than this kernel's, and a client that wrote these
-/// straight out in declaration order would be filling in its own struct rather
-/// than the one its runtime declares.
-///
-/// The fields this kernel does not model are absent rather than zeroed, so that
-/// a client is not handed a zero it might mistake for a measurement: there is no
-/// `st_nlink`, no `st_blksize`, no `st_blocks` and no BSD `st_flags` here. A
-/// client whose ABI has those fields writes what its own runtime would write for
-/// a filesystem that has no such notion.
+/// Some fields are not yet modelled and so don't appear in here yet (e.g. no <c>st_blksize</c>).
+/// </remarks>
 type FileStatus =
     {
         /// `st_mode`: the file-type band and the permission band together, as
@@ -22,22 +18,41 @@ type FileStatus =
         /// here rather than by the client, so that the two bands are assembled
         /// in exactly one place.
         Mode : int
-        /// `st_uid` and `st_gid`.
-        ///
-        /// The *calling process's* ids, always: this kernel stores no per-inode
-        /// ownership, so every file it holds is owned by whoever is asking. A
-        /// client must not read these as a claim that ownership was recorded.
+        /// <summary>
+        /// <c>st_uid</c>.
+        /// </summary>
+        /// <remarks>
+        /// This kernel currently stores no per-inode ownership, so every file is currently
+        /// owned by the caller. (Issue #1273 tracks this.)
+        /// </remarks>
         UserId : uint32
+        /// <summary>
+        /// <c>st_gid</c>.
+        /// </summary>
+        /// <remarks>
+        /// This kernel currently stores no per-inode ownership, so every file is currently
+        /// owned by the caller. (Issue #1273 tracks this.)
+        /// </remarks>
         GroupId : uint32
-        /// `st_size`. For a symbolic link this is the target's length in bytes,
-        /// which is what `readlink(2)` would copy out.
+        /// <summary>
+        /// <c>st_size</c>.
+        /// </summary>
+        /// <remarks>
+        /// For a symbolic link this is the target's length in bytes, as you'd get
+        /// from <c>readlink(2)</c>.
+        /// </remarks>
         Size : int64
-        /// `st_atim`. Never moves in this kernel: no operation records an
-        /// access, so this is the inode's creation time until something sets it.
+        /// <summary>
+        /// <c>st_atim</c>.
+        /// </summary>
         AccessTime : UnixTimestamp
-        /// `st_mtim`.
+        /// <summary>
+        /// <c>st_mtim</c>.
+        /// </summary>
         ModificationTime : UnixTimestamp
-        /// `st_ctim`.
+        /// <summary>
+        /// <c>st_ctim</c>.
+        /// </summary>
         StatusChangeTime : UnixTimestamp
         /// `st_birthtim`, or `None` on a flavour whose `stat(2)` has no such
         /// field.
@@ -47,32 +62,42 @@ type FileStatus =
         /// guest sees, and a client with a birth-time field writes whatever its
         /// own runtime writes when the kernel did not supply one.
         BirthTime : UnixTimestamp option
-        /// `st_dev`.
+        /// <summary>
+        /// <c>st_dev</c>.
+        /// </summary>
         DeviceId : int64
-        /// `st_ino`.
+        /// <summary>
+        /// <c>st_ino</c>.
+        /// </summary>
         Inode : InodeNumber
     }
 
-/// Why this kernel will not report a `struct stat` for a descriptor.
-///
-/// One genus, three shapes, and it is a limit of the model rather than a
-/// measured absence of an answer: real kernels answer `fstat` for all three of
-/// these quite happily. What this kernel has not got is an *inode* to report
-/// them from, and every field would therefore be invented.
+/// <summary>
+/// Why this kernel refused to report a <c>struct stat</c> for a descriptor.
+/// </summary>
+/// <remarks>
+/// Real kernels would never refuse <c>fstat</c>, but WoofWare.PosixKernel
+/// doesn't have an inode for these specific file descriptors, so can't provide
+/// an answer.
+/// </remarks>
 [<RequireQualifiedAccess>]
 type FStatRefusal =
+    /// <summary>
     /// A standard stream, which this kernel models as one end of a pipe.
+    /// </summary>
     | StandardStream of role : FileDescriptorRole
+    /// <summary>
     /// A socket event port: an anonymous kernel object.
+    /// </summary>
     | SocketEventPort
-    /// A socket, which has an identity here but not an inode-shaped one.
+    /// <summary>
+    /// A socket, which has an identity in WoofWare.PosixKernel, but not an inode-shaped one.
+    /// </summary>
     | Socket of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module FStatRefusal =
-    /// What this kernel knows about why it cannot report a status. The client
-    /// supplies its own half — which entry point, which descriptor, and what it
-    /// would have to build to lift the refusal.
+    /// <summary>Human-readable description.</summary>
     let describe (refusal : FStatRefusal) : string =
         match refusal with
         | FStatRefusal.StandardStream role ->
@@ -82,14 +107,19 @@ module FStatRefusal =
         | FStatRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}, for which this kernel holds no inode — a `SocketId` is a contention key rather than an inode number. Measured, only Linux gives a socket an inode at all (`st_dev` 8 and a distinct `st_ino` per socket, on `sockfs`), a Darwin AF_INET socket reporting 0 for both; and the rest would be invented either way — `st_mode` is S_IFSOCK|0777 on Linux against S_IFSOCK|0666 on Darwin, `st_nlink` 1 against 0, and Darwin's `st_blksize` varies with the socket itself (131072 for TCP, 9216 for UDP, 8192 for a Unix-domain socket)."
 
-/// What `fstat(2)` reported, for a descriptor this kernel could answer for.
+/// <summary>
+/// What <c>fstat(2)</c> reported.
+/// </summary>
 [<RequireQualifiedAccess>]
 type FileStatusAnswer =
-    /// The status of the inode the descriptor names.
+    /// <summary>
+    /// The status of the inode named by the file descriptor.
+    /// </summary>
     | Reported of status : FileStatus
+    /// <summary>
     /// The entry point returns -1, stores `error` wherever its libc keeps errno,
-    /// and — measured on both flavours, and what `ConvertFileStatus` in
-    /// `pal_io.c` relies on — leaves the caller's output struct untouched.
+    /// and leaves the caller's output struct untouched.
+    /// </summary>
     | Failed of error : UnixError
 
 /// What `getcwd(3)` does to the caller's buffer and what it returns.
@@ -336,39 +366,49 @@ module UnixPathResolution =
             failwith
                 $"UnixPathResolution.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
 
-    /// The absolute path of the directory the process is standing in, or `None`
-    /// if no path reaches it any more.
-    ///
-    /// `None` is the state a process enters when the directory it is in is
-    /// removed out from under it. It is not an error and not a latch: relative
-    /// paths still resolve (they start from the inode, which the process holds),
-    /// and stepping out with `chdir("..")` gives the process a path again.
-    /// Measured on both flavours; see docs/probes/chdir.
+    /// <summary>
+    /// The absolute path of this process's current working directory, or <c>None</c> if
+    /// no path reaches it any more.
+    /// </summary>
+    /// <remarks>
+    /// You get <c>None</c> if the working directory was deleted while the process was running.
+    /// In that case, relative paths still resolve (because they start from the inode, which the
+    /// process still holds), and you can use <c>chdir("..")</c>, for example, to step to a different
+    /// directory and get a path again.
+    /// </remarks>
     let currentDirectoryPath<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : AbsoluteUnixPath option
         =
+        // Measured on both flavours; see docs/probes/chdir.
         VirtualFileSystem.pathOfDirectory system.Process.CurrentDirectoryInode system.Machine.FileSystem
 
-    /// `getcwd(3)`: report the current directory's path into the caller's buffer.
-    ///
-    /// Changes nothing and returns no system, for the reason `fstat` gives.
-    ///
-    /// `capacity` is the caller's buffer size and must not be negative: a
-    /// negative size is not a value any `getcwd` sees, since the C library takes
-    /// a `size_t`. Rejecting one is the PAL shim's own guard, and stays with the
-    /// client that holds the shim's signature.
-    ///
-    /// The whole measured ordering lives here, and the destination's
-    /// classification is consulted last on both flavours — a too-small buffer is
-    /// ERANGE whatever the destination is, and a removed current directory
-    /// outranks even that on Linux.
+    /// <summary>
+    /// <c>getcwd(3)</c>: report the current directory's path into the caller's buffer.
+    /// </summary>
+    /// <remarks>
+    /// This has no side-effects on the kernel.
+    /// </remarks>
+    /// <param name="destination">
+    /// Where the kernel writes the result.
+    /// </param>
+    /// <param name="capacity">
+    /// The caller's buffer size. Must not be negative; the C library takes <c>size_t</c>.
+    /// </param>
+    /// <param name="system">
+    /// The state of the kernel we're reading data out of.
+    /// </param>
     let getcwd<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (destination : UserBuffer)
         (capacity : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<GetCwdAnswer, GetCwdRefusal>
         =
+        // The whole measured ordering lives here, and the destination's
+        // classification is consulted last on both flavours — a too-small buffer is
+        // ERANGE whatever the destination is, and a removed current directory
+        // outranks even that on Linux.
+
         if capacity < 0 then
             failwith
                 $"UnixPathResolution.getcwd: capacity %d{capacity} is negative, which no `getcwd(3)` can be asked for -- its size argument is a `size_t`. Screen this in the client, where the signature that admits a negative number lives (this is a bug in the caller)."
@@ -463,20 +503,24 @@ module UnixPathResolution =
         else
             transfer (GetCwdAnswer.Reported terminated)
 
-    /// `chdir(2)`: make `path` the directory relative paths resolve from.
+    /// <summary>
+    /// <c>chdir(2)</c>: set the relative-path resolution base directory to <c>path</c>.
+    /// </summary>
+    /// <remarks>
+    /// This is never refused at the WoofWare.PosixKernel level: every outcome is a success or an errno.
     ///
-    /// Never refused: every outcome is a success or an errno.
-    ///
-    /// The one filesystem syscall here with no flavour divergence, so it takes
-    /// no rules record. Measured on both kernels across object type, final
-    /// symlink following, trailing separator, which permission bit, name length,
-    /// navigation, and the current directory removed underneath the process —
-    /// every row identical. See `docs/probes/chdir/`.
+    /// This has the same behaviour across all modelled platforms.
+    /// </remarks>
     let chdir<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : SyscallAnswer * UnixSystem<'Task, 'Handler>
         =
+        // Conformance across platforms was measured on both kernels across object type, final
+        // symlink following, trailing separator, which permission bit, name length,
+        // navigation, and the current directory removed underneath the process —
+        // every row identical. See `docs/probes/chdir/`.
+        //
         // `Follow`, which carries `TrailingSeparatorPolicy.Demand`. That one
         // call is most of this syscall's error surface: ENOENT for a name that
         // is not there and for a dangling link, ENOTDIR for a regular file and

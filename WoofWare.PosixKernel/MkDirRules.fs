@@ -140,13 +140,10 @@ module MkDirRules =
         else
             MkDirVerdict.Create (directory, name, parentPermissions)
 
-    /// The permission bits a directory created with this `mode` argument ends up
-    /// with, inside a parent whose own bits are `parentPermissions`.
-    ///
-    /// `PermissionBits.fromCreationMode` under `MkDirRules.ModeMask`, then
-    /// `S_ISGID` OR-ed in where the platform inherits it. The OR is last, and
-    /// measured to be: Linux's `mkdir(sg, 0o7777)` in a 0o2777 parent gives
-    /// 0o3755, so the bit survives a mask that would otherwise have cleared it.
+    /// <summary>
+    /// The permission bits a directory created with this <c>mode</c> argument ends up
+    /// with, inside a parent whose own bits are <c>parentPermissions</c>.
+    /// </summary>
     let createdPermissions
         (rules : MkDirRules)
         (parentPermissions : PermissionBits)
@@ -162,6 +159,8 @@ module MkDirRules =
             && PermissionBits.toInt parentPermissions &&& setGroupId <> 0
 
         if inherited then
+            // Linux's `mkdir(sg, 0o7777)` in a 0o2777 parent is measured to give 0o3755,
+            // so the S_ISGID bit survives.
             PermissionBits.toInt masked ||| setGroupId
             |> PermissionBits.parseOrFail "MkDirRules.createdPermissions"
         else
