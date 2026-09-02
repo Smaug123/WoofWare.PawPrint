@@ -2582,11 +2582,13 @@ module NullaryIlOp =
 
             match MethodState.popExceptionContinuation currentMethodState with
             | None, _ ->
-                // Not in a finally block, just advance PC
-                state
-                |> IlMachineState.advanceProgramCounter currentThread
-                |> Tuple.withRight WhatWeDid.Executed
-                |> ExecutionResult.stepped
+                // Control enters a `finally` or `fault` block only through the exception
+                // mechanism (ECMA-335 III.3.35), and both of PawPrint's ways in — `leave` and the
+                // second pass of dispatch — park a continuation on the frame first. Reaching the
+                // block's end with none means the interpreter's own state is corrupt, so this is
+                // not a guest fault to model but a state to refuse.
+                failwith
+                    $"Endfinally at IL offset %d{currentMethodState.IlOpIndex} of %s{currentMethodState.ExecutingMethod.Name} encountered without an exception continuation; a finally or fault block can only be entered by leave or by exception dispatch, both of which park one"
             | Some {
                        Scope = ExceptionContinuationScope.FinallyHandler justRan
                        Continuation = ExceptionContinuation.ResumeAfterFinally targetPC
