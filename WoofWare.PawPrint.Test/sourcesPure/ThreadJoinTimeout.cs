@@ -22,10 +22,9 @@ namespace HelloWorldApp
             // thread is Runnable, so the 50 ms timeout resolves
             // deterministically.
             //
-            // We deliberately leave the worker still parked when Main
-            // returns: the driver reports NormalExit as soon as the entry
-            // thread terminates, and the worker is BlockedOnSyncBlockWait
-            // (not Runnable, so no resources to release before Main exits).
+            // The worker is still parked when Main returns, so it must be
+            // a background thread: the process ends only when the last
+            // foreground thread does, and this one never finishes.
             object locker = new object();
             Thread worker = new Thread(() =>
             {
@@ -35,14 +34,9 @@ namespace HelloWorldApp
                     Monitor.Wait(locker);
                 }
             });
-            // Mark background so the real-runtime oracle
-            // (`RealRuntime.executeWithRealRuntime` runs the compiled assembly
-            // in the NUnit test process) doesn't hang on a leaked foreground
-            // thread once Main returns: a foreground worker stuck in
-            // Monitor.Wait would keep the host process alive indefinitely.
-            // PawPrint's driver reports NormalExit as soon as the entry
-            // thread terminates and does not consult IsBackground, so this
-            // does not affect the interpreter side.
+            // Background, or neither runtime would ever exit: real .NET
+            // would hang in WaitForOtherThreads on the parked worker, and
+            // PawPrint reports that shape as a deadlock.
             worker.IsBackground = true;
             worker.Start();
 

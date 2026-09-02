@@ -165,11 +165,16 @@ module RealRuntime =
     /// Run `exePath` to completion and classify how it terminated.
     ///
     /// We do it in a separate process so that e.g. calling `Environment.Exit` does not terminate the host.
+    ///
+    /// `environment` is overlaid on the test host's own environment, which the
+    /// child otherwise inherits whole: a name here replaces the host's value of
+    /// it, and every other host variable comes through untouched.
     let private runToCompletion
         (timeout : TimeSpan)
         (exePath : string)
         (arguments : string list)
         (workingDirectory : string)
+        (environment : Map<string, string>)
         (description : string)
         : RealRuntimeResult
         =
@@ -177,6 +182,9 @@ module RealRuntime =
 
         for arg in arguments do
             startInfo.ArgumentList.Add arg
+
+        for KeyValue (name, value) in environment do
+            startInfo.Environment.[name] <- value
 
         // A published app runs from its own directory; match that rather than leaking the test
         // host's working directory, which varies by how the suite was invoked.
@@ -606,9 +614,18 @@ module RealRuntime =
     /// A guest that enumerated its working directory would therefore diverge
     /// for a reason that has nothing to do with the code under test; probe named
     /// paths only. A seed that collides with either name is refused outright.
+    ///
+    /// `environment` is overlaid on the host's environment in the guest process,
+    /// the way `KernelConfig.Environment` is overlaid on the emulated kernel's
+    /// default table: it is the same description on both sides of a
+    /// comparison, so a guest may name a variable from it. The two tables still
+    /// differ outside the overlay -- PawPrint's holds only its seeded defaults,
+    /// the oracle's holds whatever the test host was started with -- so a
+    /// guest may not assert anything about a variable the overlay does not name.
     let executeWithTimeoutAndSeed
         (timeout : TimeSpan)
         (seed : Map<DirectoryEntryName, SeedEntry>)
+        (environment : Map<string, string>)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
@@ -644,7 +661,7 @@ module RealRuntime =
 
             materialiseSeed tempDir seed
 
-            runToCompletion timeout muxerPath (dllPath :: List.ofArray args) tempDir assemblyName
+            runToCompletion timeout muxerPath (dllPath :: List.ofArray args) tempDir environment assemblyName
         finally
             try
                 // A seed may deliberately have left a directory unreadable or
@@ -658,18 +675,20 @@ module RealRuntime =
             | :? IOException
             | :? UnauthorizedAccessException -> ()
 
-    /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed.
+    /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed and no
+    /// environment overlay.
     let executeWithTimeout (timeout : TimeSpan) (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
-        executeWithTimeoutAndSeed timeout FileSystemSeed.empty args assemblyBytes
+        executeWithTimeoutAndSeed timeout FileSystemSeed.empty Map.empty args assemblyBytes
 
     /// As `executeWithTimeoutAndSeed`, with the standard guest time limit.
     let executeWithSeed
         (seed : Map<DirectoryEntryName, SeedEntry>)
+        (environment : Map<string, string>)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
         =
-        executeWithTimeoutAndSeed guestTimeout seed args assemblyBytes
+        executeWithTimeoutAndSeed guestTimeout seed environment args assemblyBytes
 
     /// As `executeWithTimeout`, with the standard guest time limit.
     let executeWithRealRuntime (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
@@ -695,7 +714,7 @@ module RealRuntime =
         let name = Path.GetFileNameWithoutExtension dllPath
         File.WriteAllText (Path.Combine (directory, name + ".runtimeconfig.json"), runtimeConfig)
 
-        runToCompletion guestTimeout muxerPath (dllPath :: List.ofArray args) directory name
+        runToCompletion guestTimeout muxerPath (dllPath :: List.ofArray args) directory Map.empty name
 
     /// Run an already-published application in place, by executing its apphost.
     ///
@@ -714,4 +733,5 @@ module RealRuntime =
             executablePath
             (List.ofArray args)
             (Path.GetDirectoryName executablePath)
+            Map.empty
             (Path.GetFileName executablePath)
