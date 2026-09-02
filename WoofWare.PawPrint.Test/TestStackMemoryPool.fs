@@ -423,16 +423,10 @@ module TestStackMemoryPool =
 
     [<Test>]
     let ``writeCell evicts the overlay bytes it covers`` () : unit =
-        // The eviction in `writeCell` is invisible for as long as the new cell survives:
-        // reads consult cells before the byte overlay, so a covering cell shadows a stale
-        // byte underneath it whatever its value. To observe eviction at all, the covering
-        // cell has to be removed again without the replacement covering the stale offset —
-        // which is what the one-byte cell below does, since a cell is evicted wholesale on
-        // any intersection.
-        //
-        // `writeCell evicts overlapping cells and bytes` above does not cover this: its
-        // `tryReadCell block 4 |> shouldEqual None` holds whether or not the overlay byte at
-        // 4 was evicted, because an overlay byte is never reported as a cell.
+        // Eviction is not observable through reads: a cell shadows any overlay byte beneath it,
+        // and when the cell is itself evicted, the bytes that become visible are the cell's own
+        // (see `writeCell keeps the bytes of a cell it overlaps at its head` below), not
+        // whatever lay underneath. So this asserts the representation invariant directly.
         let block, pool = allocateZeroInitialized 8 StackMemoryPool.empty
 
         let pool = StackMemoryPool.writeBytes block 1 [| 0xAAuy |] pool
@@ -440,72 +434,224 @@ module TestStackMemoryPool =
         let pool =
             StackMemoryPool.writeCell block 0 (CliType.Numeric (CliNumericType.Int32 0x11223344)) pool
 
-        // Evicts the Int32 cell wholesale (it intersects offset 0), but covers only byte 0,
-        // so byte 1 is now backed by neither a cell nor — if eviction worked — the overlay.
-        let pool =
-            StackMemoryPool.writeCell
-                block
-                0
-                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0x55uy)))
-                pool
+        StackMemoryPool.checkInvariants block pool
 
-        // Zero from the block's zero-initialisation. Without the eviction, 0xAA resurfaces.
-        StackMemoryPool.readBytes block 1 1 pool |> shouldEqual [| 0uy |]
+    let private int64Cell (value : int64) : CliType =
+        CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim value))
 
-    /// Cells are confined to aligned four-byte slots so that a new cell either replaces an
-    /// existing one exactly or does not touch it. Partially overlapping cells are evicted
-    /// *wholesale*, which loses the bytes of the old cell outside the new one — correct
-    /// behaviour, but not last-write-wins, so a byte-level model could not describe it.
+    [<Test>]
+    let ``writeCell keeps the bytes of a cell it overlaps at its tail`` () : unit =
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
+        let pool = StackMemoryPool.writeCell block 4 (int64Cell 0x1122334455667788L) pool
+        let pool = StackMemoryPool.writeCell block 0 (int64Cell 0x0102030405060708L) pool
+
+        StackMemoryPool.readBytes block 0 16 pool
+        |> shouldEqual
+            [|
+                0x08uy
+                0x07uy
+                0x06uy
+                0x05uy
+                0x04uy
+                0x03uy
+                0x02uy
+                0x01uy
+                0x44uy
+                0x33uy
+                0x22uy
+                0x11uy
+                0uy
+                0uy
+                0uy
+                0uy
+            |]
+
+        StackMemoryPool.tryReadCell block 4 pool |> shouldEqual None
+        StackMemoryPool.checkInvariants block pool
+
+    [<Test>]
+    let ``writeCell keeps the bytes of a cell it overlaps at its head`` () : unit =
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
+        let pool = StackMemoryPool.writeCell block 0 (int64Cell 0x1122334455667788L) pool
+        let pool = StackMemoryPool.writeCell block 4 (int64Cell 0x0102030405060708L) pool
+
+        StackMemoryPool.readBytes block 0 16 pool
+        |> shouldEqual
+            [|
+                0x88uy
+                0x77uy
+                0x66uy
+                0x55uy
+                0x08uy
+                0x07uy
+                0x06uy
+                0x05uy
+                0x04uy
+                0x03uy
+                0x02uy
+                0x01uy
+                0uy
+                0uy
+                0uy
+                0uy
+            |]
+
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual None
+        StackMemoryPool.checkInvariants block pool
+
+    [<Test>]
+    let ``The bytes kept from an overlapped cell are the cell's, not the block's default`` () : unit =
+        // In an uninitialised block the only bytes that can be read are ones that were written,
+        // so a read of the kept tail succeeding at all shows the cell's bytes survived, while
+        // the byte after them is still unreadable.
+        let block, pool = allocateUninitialized 16 StackMemoryPool.empty
+        let pool = StackMemoryPool.writeCell block 4 (int64Cell 0x1122334455667788L) pool
+        let pool = StackMemoryPool.writeCell block 0 (int64Cell 0x0102030405060708L) pool
+
+        StackMemoryPool.readBytes block 8 4 pool
+        |> shouldEqual [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy |]
+
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block 12 1 pool |> ignore)
+        |> ignore
+
+    [<Test>]
+    let ``writeCell refuses to overlap part of a tagged pointer cell`` () : unit =
+        // A tagged pointer has no byte image, so the bytes of it that the new cell does not
+        // cover cannot be kept; discarding them silently is the one thing that must not happen.
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
+
+        let tagged =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let pool = StackMemoryPool.writeCell block 4 tagged pool
+
+        Assert.Throws<System.Exception> (fun () ->
+            StackMemoryPool.writeCell block 0 (int64Cell 0x0102030405060708L) pool |> ignore
+        )
+        |> ignore
+
+        Assert.Throws<System.Exception> (fun () ->
+            StackMemoryPool.writeCell block 8 (int64Cell 0x0102030405060708L) pool |> ignore
+        )
+        |> ignore
+
+    [<Test>]
+    let ``writeCell replaces a tagged pointer cell it covers entirely`` () : unit =
+        // Nothing of a fully covered cell survives, so its lack of a byte image is no obstacle,
+        // whether the new cell is the same width or wider.
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
+
+        let taggedInt =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L))
+
+        let pool = StackMemoryPool.writeCell block 4 taggedInt pool
+        let replacement = int64Cell 0x0102030405060708L
+        let pool = StackMemoryPool.writeCell block 4 replacement pool
+        StackMemoryPool.tryReadCell block 4 pool |> shouldEqual (Some replacement)
+
+        let taggedByte =
+            CliType.Numeric (CliNumericType.UInt8 (UInt8Source.NativeIntByte (NativeIntSource.FieldHandlePtr 1234L, 0)))
+
+        let pool = StackMemoryPool.writeCell block 2 taggedByte pool
+        let wider = CliType.Numeric (CliNumericType.Int32 0x11223344)
+        let pool = StackMemoryPool.writeCell block 0 wider pool
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual (Some wider)
+        StackMemoryPool.tryReadCell block 2 pool |> shouldEqual None
+        StackMemoryPool.checkInvariants block pool
+
+    /// Cells of every primitive width at any offset, so that a new cell can replace an existing
+    /// one exactly, cover several, or overlap the head or the tail of one. A cell written over
+    /// part of an existing cell keeps the bytes of the old cell it does not cover, so the whole
+    /// history reads back as a last-write-wins byte array.
     type private MemOp =
-        | WriteCell of slot : int * value : int
+        | WriteCell of offset : int * bytes : byte[]
         | WriteRawBytes of offset : int * bytes : byte[]
 
     let private blockLength : int = 16
 
+    /// Every byte value equally likely. The default `byte` generator is size-bounded and so
+    /// mostly produces small values, whose upper bytes are zero — exactly what a lost byte in a
+    /// zero-initialised block also reads as.
+    let private genFullRangeBytes (count : int) : Gen<byte[]> =
+        Gen.arrayOfLength count (Gen.choose (0, 255) |> Gen.map byte)
+
     let private genMemOp : Gen<MemOp> =
         let genCell =
             gen {
-                let! slot = Gen.choose (0, (blockLength / 4) - 1)
-                let! value = ArbMap.defaults |> ArbMap.generate<int>
-                return MemOp.WriteCell (slot, value)
+                let! width = Gen.elements [ 1 ; 2 ; 4 ; 8 ]
+                let! offset = Gen.choose (0, blockLength - width)
+                let! bytes = genFullRangeBytes width
+                return MemOp.WriteCell (offset, bytes)
             }
 
         let genBytes =
             gen {
                 let! offset = Gen.choose (0, blockLength - 1)
                 let! count = Gen.choose (1, blockLength - offset)
-                let! bytes = Gen.arrayOfLength count (ArbMap.defaults |> ArbMap.generate<byte>)
+                let! bytes = genFullRangeBytes count
                 return MemOp.WriteRawBytes (offset, bytes)
             }
 
         Gen.oneof [ genCell ; genBytes ]
 
+    /// The primitive cell whose little-endian image is `bytes`. Decoded with `BitConverter`
+    /// rather than with the interpreter's own `CliType` byte helpers, so the model is an
+    /// independent oracle for the layout and not merely a restatement of it.
+    let private cellOfBytes (bytes : byte[]) : CliType =
+        match bytes.Length with
+        | 1 -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim bytes.[0]))
+        | 2 -> CliType.Numeric (CliNumericType.Int16 (System.BitConverter.ToInt16 (bytes, 0)))
+        | 4 -> CliType.Numeric (CliNumericType.Int32 (System.BitConverter.ToInt32 (bytes, 0)))
+        | 8 -> int64Cell (System.BitConverter.ToInt64 (bytes, 0))
+        | other -> failwith $"no primitive cell is %d{other} bytes wide"
+
     [<Test>]
     let ``Mixed cell and byte writes read back as a last-write-wins byte array`` () : unit =
+        // How often a cell write overlapped only part of an existing cell, at that cell's head
+        // or at its tail. Those are the shapes a wholesale eviction gets wrong, so the run must
+        // be seen to reach both.
+        let headOverlaps = ref 0
+        let tailOverlaps = ref 0
+        let block = StackMemoryBlockId 0
+
         let property (ops : MemOp list) : unit =
             let pool =
                 (snd (allocateZeroInitialized blockLength StackMemoryPool.empty), ops)
                 ||> List.fold (fun pool op ->
-                    let block = StackMemoryBlockId 0
+                    let pool =
+                        match op with
+                        | MemOp.WriteCell (offset, bytes) ->
+                            match StackMemoryPool.tryFindCellCovering block offset pool with
+                            | Some (cellOffset, _) when cellOffset < offset ->
+                                headOverlaps.Value <- headOverlaps.Value + 1
+                            | _ -> ()
 
-                    match op with
-                    | MemOp.WriteCell (slot, value) ->
-                        StackMemoryPool.writeCell block (slot * 4) (CliType.Numeric (CliNumericType.Int32 value)) pool
-                    | MemOp.WriteRawBytes (offset, bytes) -> StackMemoryPool.writeBytes block offset bytes pool
+                            let last = offset + bytes.Length - 1
+
+                            match StackMemoryPool.tryFindCellCovering block last pool with
+                            | Some (cellOffset, cell) when cellOffset + CliType.sizeOf cell > last + 1 ->
+                                tailOverlaps.Value <- tailOverlaps.Value + 1
+                            | _ -> ()
+
+                            StackMemoryPool.writeCell block offset (cellOfBytes bytes) pool
+                        | MemOp.WriteRawBytes (offset, bytes) -> StackMemoryPool.writeBytes block offset bytes pool
+
+                    StackMemoryPool.checkInvariants block pool
+                    pool
                 )
 
-            // The model encodes with `BitConverter` rather than with the interpreter's own
-            // `CliType` byte helpers, so it is an independent oracle for the layout and not
-            // merely a restatement of it.
             let expected : byte[] = Array.zeroCreate blockLength
 
             for op in ops do
                 match op with
-                | MemOp.WriteCell (slot, value) ->
-                    System.Array.Copy (System.BitConverter.GetBytes value, 0, expected, slot * 4, 4)
+                | MemOp.WriteCell (offset, bytes)
                 | MemOp.WriteRawBytes (offset, bytes) -> System.Array.Copy (bytes, 0, expected, offset, bytes.Length)
 
-            StackMemoryPool.readBytes (StackMemoryBlockId 0) 0 blockLength pool
-            |> shouldEqual expected
+            StackMemoryPool.readBytes block 0 blockLength pool |> shouldEqual expected
 
         Check.One (config, Prop.forAll (Arb.fromGen (Gen.listOf genMemOp)) property)
+
+        // Four runs of 500 cases each observed between 1700 and 1800 of each; a run that reached
+        // fewer than 400 is exploring some other space than this one.
+        headOverlaps.Value |> shouldBeGreaterThan 400
+        tailOverlaps.Value |> shouldBeGreaterThan 400

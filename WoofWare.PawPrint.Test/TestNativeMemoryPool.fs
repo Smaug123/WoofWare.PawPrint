@@ -192,3 +192,26 @@ module TestNativeMemoryPool =
 
         Assert.Throws<System.Exception> (fun () -> NativeMemoryPool.writeBytes block 3 [| 1uy ; 2uy |] pool |> ignore)
         |> ignore
+
+    [<Test>]
+    let ``writeCell keeps the bytes of a cell it overlaps at its tail`` () : unit =
+        let block, pool = allocateZeroInitialized 16 NativeMemoryPool.empty
+
+        let pool =
+            NativeMemoryPool.writeCell
+                block
+                4
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x1122334455667788L)))
+                pool
+
+        let pool =
+            NativeMemoryPool.writeCell
+                block
+                0
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x0102030405060708L)))
+                pool
+
+        NativeMemoryPool.readBytes block 8 8 pool
+        |> shouldEqual [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy ; 0uy ; 0uy ; 0uy ; 0uy |]
+
+        NativeMemoryPool.tryReadCell block 4 pool |> shouldEqual None

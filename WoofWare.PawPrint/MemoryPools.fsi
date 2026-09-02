@@ -65,10 +65,19 @@ module StackMemoryPool =
     /// is not a cell, so this also answers "was this offset written as a typed value".
     val tryReadCell : blockId : StackMemoryBlockId -> offset : int -> pool : StackMemoryPool -> CliType option
 
+    /// Fail unless `blockId`'s representation satisfies the non-overlap invariant described
+    /// on the type. For tests: every operation below maintains the invariant, and this is
+    /// how a test asserts that it did without seeing the representation.
+    val internal checkInvariants : blockId : StackMemoryBlockId -> pool : StackMemoryPool -> unit
+
     /// Store `value` as a typed cell at `offset`, evicting whatever the new cell's byte range
-    /// overlaps: any intersecting cell wholesale, and every overlay byte within the range.
-    /// The eviction is what keeps the non-overlap invariant true, and it is why a stale byte
-    /// cannot resurface once a covering cell is later displaced.
+    /// overlaps: every overlay byte within the range, and every intersecting cell. A cell the
+    /// new one only partly covers keeps its uncovered bytes, so the block reads back as if the
+    /// new cell's bytes had simply been written over the old ones; that needs the old cell to
+    /// have a byte image, and partly covering a cell without one (a tagged pointer, say) fails
+    /// rather than dropping the rest of it. The eviction is what keeps the non-overlap
+    /// invariant true, and it is why a stale byte cannot resurface once a covering cell is
+    /// later displaced.
     val writeCell :
         blockId : StackMemoryBlockId -> offset : int -> value : CliType -> pool : StackMemoryPool -> StackMemoryPool
 
@@ -141,8 +150,13 @@ module NativeMemoryPool =
     /// is not a cell, so this also answers "was this offset written as a typed value".
     val tryReadCell : blockId : NativeMemoryBlockId -> offset : int -> pool : NativeMemoryPool -> CliType option
 
+    /// Fail unless `blockId`'s representation satisfies the non-overlap invariant described
+    /// on `StackMemoryPool`. For tests, as there.
+    val internal checkInvariants : blockId : NativeMemoryBlockId -> pool : NativeMemoryPool -> unit
+
     /// Store `value` as a typed cell at `offset`, evicting whatever the new cell's byte range
-    /// overlaps: any intersecting cell wholesale, and every overlay byte within the range.
+    /// overlaps, as for the stack pool: a partly covered cell keeps its uncovered bytes, and
+    /// partly covering a cell with no byte image fails.
     val writeCell :
         blockId : NativeMemoryBlockId -> offset : int -> value : CliType -> pool : NativeMemoryPool -> NativeMemoryPool
 
