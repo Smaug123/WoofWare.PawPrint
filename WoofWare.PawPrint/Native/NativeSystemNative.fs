@@ -179,6 +179,33 @@ module NativeSystemNative =
         =
         state.MapKernel (EmulatedKernel.withUnix system) |> withErrnoOnly ctx error
 
+    /// The signal that a signo handed to `SystemNative_EnablePosixSignalHandling`,
+    /// `SystemNative_DisablePosixSignalHandling` or
+    /// `SystemNative_HandleNonCanceledPosixSignal` names under the configured
+    /// platform's numbering.
+    ///
+    /// By contract the BCL only calls those entry points with a signo that
+    /// `SystemNative_GetPlatformSignalNumber` returned non-zero for, and the
+    /// real shim asserts `signalCode > 0 && signalCode <= GetSignalMax()`. A
+    /// signo outside that range can only be a guest bypassing the registration
+    /// path with a hand-rolled P/Invoke, and this fails loudly rather than
+    /// mirror the shim indexing its tables out of bounds. Within the range,
+    /// `ValueNone` is the one number the shim admits that the kernel has no
+    /// signal for: Darwin's 32, which is its `NSIG`.
+    let private signalWithinShimRange
+        (operation : string)
+        (numbering : SignalNumbering)
+        (signo : int)
+        : Signal voption
+        =
+        let signalMax = PosixSignalPal.signalMax numbering
+
+        if signo <= 0 || signo > signalMax then
+            failwith
+                $"%s{operation}: refusing out-of-range signo %d{signo} (signos arriving here must lie within (0, %d{signalMax}] under the %O{numbering} numbering; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
+
+        Signal.ofRawSignoUnder numbering signo
+
     /// Write back the system a syscall answered from, having neither failed nor
     /// been refused. Errno is left alone, as a successful syscall leaves it.
     let private withAnswered (system : UnixSystem<ThreadId, SignalHandler>) (state : IlMachineState) : IlMachineState =
@@ -5596,65 +5623,54 @@ module NativeSystemNative =
         | Some "SystemNative_GetPlatformSignalNumber",
           [ PosixSignalParam state.ConcreteTypes ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            // Real native code keys off the host's <signal.h>; PawPrint always
-            // uses the Linux signo table (see `Signal.toLinuxSigno`) so a
-            // simulation trace is byte-for-byte identical across host OSes.
-            // Unmodelled cross-platform negatives and out-of-range positives
-            // (outside `(0, Signal.linuxSignalMax]`) both map to 0 — which
-            // `PosixSignalRegistration.Register` promotes to an
-            // `ArgumentOutOfRangeException`, matching the real native semantics
-            // where unknown signals fall through to the trailing `return 0;`
-            // in `SystemNative_GetPlatformSignalNumber`. Positive signos within
-            // range that PawPrint doesn't name still round-trip via
-            // `Signal.Other`, so a guest that casts `(PosixSignal)4` for SIGILL
-            // gets `4` back, matching the C-side check
-            // `if (signal > 0 && signal <= GetSignalMax()) return signal;`.
+            // Real native code keys off the <signal.h> it was compiled
+            // against; PawPrint keys off the configured platform's, so the
+            // answer is a fact about `KernelConfig.UnixPlatform` rather than
+            // about the host running the simulation, and a Darwin guest is
+            // handed 20 for `PosixSignal.SIGCHLD` where a Linux one is handed
+            // 17. `PosixSignalPal.platformSignalNumber` is the C side's rule
+            // exactly: the enum's members map to their signo, a positive
+            // number within `GetSignalMax()` is echoed back uninterpreted,
+            // and everything else answers 0, which
+            // `PosixSignalRegistration.Register` reports as
+            // `PlatformNotSupportedException`.
             let raw =
                 NativeCall.int32Argument "SystemNative_GetPlatformSignalNumber" instruction.Arguments.[0]
 
-            let signo =
-                match PosixSignalPal.ofEnum raw with
-                | ValueSome signal -> Signal.toLinuxSigno signal
-                | ValueNone -> 0
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
-            pushInt32 signo ctx |> Some
+            pushInt32 (PosixSignalPal.platformSignalNumber numbering raw) ctx |> Some
         | Some "SystemNative_EnablePosixSignalHandling",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
             // Flips the per-signo "managed code wants this" bit. The handler
             // dictionary itself lives on the simulated managed heap (maintained
             // by `PosixSignalRegistration`'s `s_registrations`); this arm only
-            // touches the kernel-side enable set. By contract, the BCL only
-            // calls this with signos that `SystemNative_GetPlatformSignalNumber`
-            // returned non-zero for, so a signo arriving here must lie within
-            // `(0, Signal.linuxSignalMax]` (modelled signals get a named case;
-            // unmodelled-but-valid signos round-trip via `Signal.Other` so the
-            // kernel still tracks the enable bit) — anything else indicates a
-            // guest bypassing the standard registration path with a hand-rolled
-            // P/Invoke, and we fail loudly rather than silently dropping the
-            // request. Real native code asserts `signalCode > 0 && <= GetSignalMax()`.
+            // touches the kernel-side enable set.
             let operation = "SystemNative_EnablePosixSignalHandling"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
-            match Signal.ofPlatformSigno signo with
-            | ValueNone ->
-                failwith
-                    $"%s{operation}: refusing to enable out-of-range signo %d{signo} (signos arriving here must lie within (0, Signal.linuxSignalMax]; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
-            | ValueSome signal when Signal.isUncatchable signal ->
-                // Real native code calls `sigaction(signo, ...)` which the
-                // kernel rejects with `EINVAL` for `SIGKILL` (9) and
-                // `SIGSTOP` (19). `InstallSignalHandler` returns false and
-                // `SystemNative_EnablePosixSignalHandling` propagates 0 with
-                // `errno = EINVAL`, which `PosixSignalRegistration.Create`
-                // then reads via `Marshal.GetLastSystemError` to throw. We
-                // mirror exactly that: leave the enable bit clear, set
-                // errno, push 0. Don't fail loud here — uncatchable signals
-                // are a documented BCL-observable failure mode, not a
-                // simulator bug.
+            // Real native code calls `sigaction(signo, ...)`, which fails with
+            // `EINVAL` for a number the kernel has no signal for (Darwin's 32),
+            // for SIGKILL and SIGSTOP, and — in glibc's wrapper rather than
+            // the kernel — for the 32 and 33 glibc reserves for itself.
+            // `InstallSignalHandler` then returns false and the shim
+            // propagates 0 with `errno = EINVAL`, which
+            // `PosixSignalRegistration.Register` reads via
+            // `Marshal.GetLastSystemError` to throw an `IOException`. We
+            // mirror exactly that: leave the enable bit clear, set errno, push
+            // 0. Not a loud failure — this is a documented BCL-observable
+            // failure mode, not a simulator bug.
+            let refused () : NativeHandlerResult option =
                 state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread (UnixError.toRawErrno UnixError.EINVAL))
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+
+            match signalWithinShimRange operation numbering signo with
+            | ValueNone -> refused ()
+            | ValueSome signal when Signal.isUncatchableUnder numbering signal -> refused ()
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with
@@ -5714,29 +5730,26 @@ module NativeSystemNative =
             // terminate-by-default signals it restores the original
             // `sigaction` and re-raises so the process exits with the
             // signal-default behaviour. PawPrint matches the no-op
-            // branches exactly (there is nothing to do) and refuses the
-            // terminate branch with a clear marker: signal-driven
-            // process termination is a follow-up slice that needs a
-            // `RunOutcome` variant or equivalent, not silently squashed
-            // here.
+            // branches exactly (there is nothing to do) and surfaces the
+            // terminate branch as `SignalTerminated`.
             //
-            // By contract the BCL only calls this with signos that
-            // `SystemNative_GetPlatformSignalNumber` previously returned
-            // non-zero for, so a signo arriving here must lie within
-            // `(0, Signal.linuxSignalMax]` (modelled signals get a named
-            // case; unmodelled-but-valid signos round-trip via
-            // `Signal.Other`). Anything else indicates a guest bypassing
-            // the standard registration path and we fail loudly rather
-            // than silently dropping the request.
+            // Which signal a signo names, and so which branch it takes, is
+            // read under the configured platform's numbering: 29 is SIGIO
+            // on Linux and terminates, and SIGINFO on Darwin and is
+            // discarded.
             let operation = "SystemNative_HandleNonCanceledPosixSignal"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
-            match Signal.ofPlatformSigno signo with
+            match signalWithinShimRange operation numbering signo with
             | ValueNone ->
-                failwith
-                    $"%s{operation}: refusing to handle out-of-range signo %d{signo} (signos arriving here must lie within (0, Signal.linuxSignalMax]; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
+                // Darwin's 32. The shim's `default:` branch restores a
+                // handler that was never installed and calls
+                // `kill(g_pid, 32)`, which the kernel refuses with EINVAL
+                // and the shim does not check; the process carries on.
+                NativeHandlerResult.completed state |> Some
             | ValueSome signal ->
-                match Signal.defaultDisposition signal with
+                match Signal.defaultDispositionUnder numbering signal with
                 | DefaultDisposition.Ignore
                 | DefaultDisposition.Stop
                 | DefaultDisposition.Continue ->
@@ -5755,10 +5768,10 @@ module NativeSystemNative =
                     // exit status. PawPrint surfaces this as a
                     // dedicated `SignalTerminated` outcome so the App
                     // layer can compute the POSIX-conventional exit
-                    // code (`128 + Signal.toLinuxSigno signal`) and
-                    // distinguish signal-driven termination from a
-                    // managed `Environment.Exit` call carrying the
-                    // same exit code.
+                    // code (`128 + signo`, under the platform's
+                    // numbering) and distinguish signal-driven
+                    // termination from a managed `Environment.Exit`
+                    // call carrying the same exit code.
                     ExecutionResult.SignalTerminated (state, signal)
                     |> NativeHandlerResult.ofExecutionResult
                     |> Some
@@ -5769,17 +5782,17 @@ module NativeSystemNative =
             // the per-signo enable bit. Real native code also conditionally
             // restores the prior `sigaction` disposition; PawPrint has no
             // installed disposition to restore, so the only kernel-visible
-            // effect is the cleared bit. Same round-trip contract as enable:
-            // an out-of-range signo arriving here (outside
-            // `(0, Signal.linuxSignalMax]`) is a guest bypassing
-            // `GetPlatformSignalNumber`, and we surface the divergence.
+            // effect is the cleared bit.
             let operation = "SystemNative_DisablePosixSignalHandling"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
-            match Signal.ofPlatformSigno signo with
+            match signalWithinShimRange operation numbering signo with
             | ValueNone ->
-                failwith
-                    $"%s{operation}: refusing to disable out-of-range signo %d{signo} (signos arriving here must lie within (0, Signal.linuxSignalMax]; this looks like a guest bypassing SystemNative_GetPlatformSignalNumber)"
+                // Darwin's 32: nothing can have enabled it, and the
+                // `sigaction` the real shim calls to restore its prior
+                // disposition fails unchecked. Nothing to clear.
+                NativeHandlerResult.completed state |> Some
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with
