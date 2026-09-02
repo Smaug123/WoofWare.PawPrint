@@ -1608,16 +1608,22 @@ module NullaryIlOp =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.stepped
 
+    /// Whether the int32 a filter block left on its stack selects the associated handler.
+    ///
+    /// ECMA-335 III.3.34 defines only 0 (decline) and 1 (accept), but CoreCLR has an answer for
+    /// every int32: `CallFilterFunclet` in `vm/exceptionhandling.cpp` compares the funclet's
+    /// result with `EXCEPTION_EXECUTE_HANDLER` (1) exactly, so 2, -1 or 256 declines the exception
+    /// just as 0 does. Only hand-written IL reaches this, since a Roslyn `when` clause is a `bool`.
     let internal endfilterAccepts (filterResult : EvalStackValue) : bool =
         match filterResult with
-        | EvalStackValue.Int32 (Int32Source.Verbatim 0) -> false
-        | EvalStackValue.Int32 (Int32Source.Verbatim _) -> true
-        // A byref that `conv.i4` truncated is not known to be non-zero: the low half
-        // of an address PawPrint does not model can perfectly well be zero. Guessing
-        // "true" here would pick an exception handler the guest did not select.
+        | EvalStackValue.Int32 (Int32Source.Verbatim 1) -> true
+        | EvalStackValue.Int32 (Int32Source.Verbatim _) -> false
+        // A byref that `conv.i4` truncated is not known to differ from 1: the low half
+        // of an address PawPrint does not model can perfectly well be 1. Guessing
+        // either way here could pick, or skip, an exception handler the guest did not.
         | EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer ptr) ->
             failwith
-                $"Endfilter: refusing to decide whether managed pointer %O{ptr}, truncated to 32 bits, is a non-zero filter result; that depends on the container's address, which PawPrint does not model"
+                $"Endfilter: refusing to decide whether managed pointer %O{ptr}, truncated to 32 bits, is the filter result 1; that depends on the container's address, which PawPrint does not model"
         | value -> failwith $"Endfilter requires an int32 result on the stack; got %O{value}"
 
     /// Store into an array element, coercing to the array's *declared* element type.

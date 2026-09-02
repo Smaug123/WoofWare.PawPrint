@@ -3,6 +3,8 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Generic
 open System.Collections.Immutable
 open System.IO
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -313,23 +315,38 @@ module TestFaultHandlers =
 
         blocks |> shouldEqual [ finallyOffset ]
 
+    /// CoreCLR compares a filter's result with `EXCEPTION_EXECUTE_HANDLER` (1) exactly, so every
+    /// other int32, zero or not, declines the exception.
     [<Test>]
-    let ``Endfilter treats any non-zero int32 as accept`` () : unit =
+    let ``Endfilter accepts exactly the int32 result 1`` () : unit =
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 0))
         |> shouldEqual false
 
         NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 1))
         |> shouldEqual true
 
-        NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim 2))
-        |> shouldEqual true
+        for rejected in [ 2 ; -1 ; 256 ; 0x10000 ; System.Int32.MinValue ; System.Int32.MaxValue ] do
+            NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim rejected))
+            |> shouldEqual false
+
+    [<Test>]
+    let ``Endfilter accepts no int32 result other than 1`` () : unit =
+        let property (result : int32) : bool =
+            NullaryIlOp.endfilterAccepts (EvalStackValue.Int32 (Int32Source.Verbatim result)) = (result = 1)
+
+        let config : Config = Config.QuickThrowOnFailure.WithMaxTest 1000
+
+        Check.One (
+            config,
+            Prop.forAll (Arb.fromGen (Gen.choose (System.Int32.MinValue, System.Int32.MaxValue))) property
+        )
 
     [<Test>]
     let ``Endfilter refuses a truncated managed pointer rather than accepting it`` () : unit =
         // `conv.i4` on a byref keeps the pointer alive so an alignment mask can be
-        // asked of it; the low half of that address is unknown and may be zero. A
-        // "non-zero, so accept" answer here would run an exception handler the guest
-        // did not select.
+        // asked of it; the low half of that address is unknown and may be 1. An
+        // answer either way here would run, or skip, an exception handler on the
+        // strength of an address PawPrint does not model.
         let narrowedByref =
             EvalStackValue.Int32 (
                 Int32Source.NarrowedManagedPointer (
