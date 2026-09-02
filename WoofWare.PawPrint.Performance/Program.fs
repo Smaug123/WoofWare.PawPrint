@@ -272,7 +272,7 @@ module private Harness =
     /// framework the guests resolve against.
     type private Marker = class end
 
-    /// Interpret `image` to completion and return the exit code the guest left on the stack.
+    /// Interpret `image` to completion and return the guest's latched exit code.
     let runPawPrint (sourceName : string) (image : byte array) (dotnetRuntimeDirs : ImmutableArray<string>) : int =
         use peImage = new MemoryStream (image)
 
@@ -283,12 +283,8 @@ module private Harness =
                 peImage
                 (HostConfig.Default dotnetRuntimeDirs)
         with
-        | RunOutcome.NormalExit (terminalState, terminatingThread)
-        | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
-            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode
-            | [] -> failwith "Expected PawPrint run to leave an int exit code, but the stack was empty"
-            | head :: _ -> failwith $"Expected PawPrint run to leave an int exit code, but got %O{head}"
+        | RunOutcome.NormalExit (terminalState, _)
+        | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
         | RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
