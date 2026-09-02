@@ -314,6 +314,36 @@ module TestSharedTypeGraphResolution =
         // closed answer is one that needs no environment to resolve a second time.
         resolveToTypeDefn fixture resolved [] [] |> shouldEqual resolved
 
+    /// The other half of the convention above: an environment with nothing in it leaves the
+    /// definition open, which is what a caller that only wants the definition's identity asks for.
+    [<Test>]
+    let ``a bare generic definition in an empty environment is open`` () : unit =
+        let fixture = setUp ()
+        let dictionary = topLevel fixture "System.Collections.Generic" "Dictionary`2"
+
+        resolveToTypeDefn fixture dictionary [] []
+        |> shouldEqual (
+            genericInstantiation dictionary [ TypeDefn.GenericTypeParameter 0 ; TypeDefn.GenericTypeParameter 1 ]
+        )
+
+    /// An environment that binds some of the definition's parameters but not all of them has no
+    /// answer: a type whose generics mixed the bound ones with unbound variables would be
+    /// indistinguishable from an open type.
+    [<Test>]
+    let ``a bare generic definition in an environment shorter than its arity is refused`` () : unit =
+        let fixture = setUp ()
+        let dictionary = topLevel fixture "System.Collections.Generic" "Dictionary`2"
+
+        let ex =
+            Assert.Throws<Exception> (fun () ->
+                resolveToTypeDefn fixture dictionary [ TypeDefn.PrimitiveType PrimitiveType.Int32 ] []
+                |> ignore<TypeDefn>
+            )
+
+        Assert.That (ex.Message, Does.Contain "Dictionary`2")
+        Assert.That (ex.Message, Does.Contain "1 argument")
+        Assert.That (ex.Message, Does.Contain "2 generic parameter")
+
     // ------------------------------------------------------------------
     // The properties.
     // ------------------------------------------------------------------

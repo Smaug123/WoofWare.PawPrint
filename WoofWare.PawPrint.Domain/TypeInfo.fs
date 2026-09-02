@@ -477,6 +477,33 @@ module TypeInfo =
     let mapGeneric<'a, 'b, 'field> (f : 'a -> 'b) (t : TypeInfo<'a, 'field>) : TypeInfo<'b, 'field> =
         withGenerics (t.Generics |> ImmutableArray.map f) t
 
+    /// <summary>
+    /// Instantiate a type definition at <paramref name="genericArgs" />, or leave it open.
+    /// </summary>
+    /// <remarks>
+    /// An empty <paramref name="genericArgs" /> leaves the type open: each generic parameter
+    /// becomes the <see cref="TypeDefn.GenericTypeParameter" /> of its own index. Otherwise
+    /// there must be exactly one argument per parameter the type declares, counting the
+    /// parameters a nested type inherits from its declaring types, and anything else fails.
+    /// There is no third outcome: a type whose generics mixed supplied arguments with
+    /// unsubstituted parameters would be indistinguishable from an open type, and the
+    /// parameters left over would later be resolved against whatever generic context
+    /// happened to be in scope.
+    /// </remarks>
+    let applyGenericArgs
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : TypeInfo<TypeDefn, TypeDefn>
+        =
+        if genericArgs.IsEmpty then
+            ty
+            |> mapGeneric (fun (param, _) -> TypeDefn.GenericTypeParameter param.SequenceNumber)
+        elif genericArgs.Length <> ty.Generics.Length then
+            failwith
+                $"Type %s{ty.Namespace}.%s{ty.Name} in %s{ty.AssemblyFullName} declares %d{ty.Generics.Length} generic parameter(s), but %d{genericArgs.Length} argument(s) were supplied"
+        else
+            ty |> mapGeneric (fun (param, _) -> genericArgs.[param.SequenceNumber])
+
     // Takes the whole assembly definition rather than its name: the readers below want an
     // `AssemblyName`, this type's own identity wants the display name, and passing the pair keeps
     // them from disagreeing. Qualified because `System.Reflection.Metadata` has a type of the same

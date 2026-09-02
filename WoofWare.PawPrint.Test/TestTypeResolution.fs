@@ -1325,3 +1325,268 @@ public class Outer<T>
             loaded.OriginalPath |> shouldEqual (Some firstPath)
         finally
             Directory.Delete (root, true)
+
+    /// One argument per position, all distinct, so that a substitution which permutes or repeats
+    /// its inputs is visible in the result.
+    let private distinctPrimitiveArgs (count : int) : ImmutableArray<TypeDefn> =
+        let pool =
+            [
+                PrimitiveType.Int32
+                PrimitiveType.String
+                PrimitiveType.Boolean
+                PrimitiveType.Char
+                PrimitiveType.Int64
+                PrimitiveType.Double
+                PrimitiveType.Byte
+                PrimitiveType.Single
+            ]
+
+        if count > pool.Length then
+            failwith $"distinctPrimitiveArgs: at most %d{pool.Length} distinct arguments are available"
+
+        pool
+        |> List.truncate count
+        |> List.map TypeDefn.PrimitiveType
+        |> ImmutableArray.CreateRange
+
+    [<Test>]
+    let ``applyGenericArgs accepts exactly the declared arity or no arguments at all`` () =
+        // Every arity from 0 to 4, both top-level and nested (a nested type's arity includes the
+        // parameters it inherits from its declaring types), so that the rule is checked at every
+        // shape a TypeRef or TypeSpec can name.
+        let assemblyBytes =
+            compileLibrary
+                "ApplyGenericArgs.Arity"
+                []
+                [
+                    """
+namespace N;
+public class Plain { }
+public struct PlainStruct { }
+public class One<T>
+{
+    public class InnerZero { }
+    public class InnerOne<U> { }
+}
+public class Two<T, U>
+{
+    public class InnerTwo<V, W> { }
+}
+"""
+                ]
+
+        let assy = dumpedAssembly (Some "ApplyGenericArgs.Arity.dll") assemblyBytes
+
+        let typeDefs = assy.TypeDefs.Values |> Seq.toList
+        // 8 definitions: <Module>, Plain, PlainStruct, One, InnerZero, InnerOne, Two, InnerTwo.
+        typeDefs.Length |> shouldEqual 8
+
+        typeDefs
+        |> List.map (fun ty -> ty.Name, ty.Generics.Length)
+        |> List.sort
+        |> shouldEqual (
+            [
+                "<Module>", 0
+                "Plain", 0
+                "PlainStruct", 0
+                "One`1", 1
+                "InnerZero", 1
+                "InnerOne`1", 2
+                "Two`2", 2
+                "InnerTwo`2", 4
+            ]
+            |> List.sort
+        )
+
+        for ty in typeDefs do
+            let arity = ty.Generics.Length
+
+            for count in 0 .. arity + 2 do
+                let args = distinctPrimitiveArgs count
+
+                if count = 0 then
+                    let resolved = TypeInfo.applyGenericArgs args ty
+
+                    resolved.Generics
+                    |> Seq.toList
+                    |> shouldEqual (List.init arity TypeDefn.GenericTypeParameter)
+                elif count = arity then
+                    let resolved = TypeInfo.applyGenericArgs args ty
+                    resolved.Generics |> Seq.toList |> shouldEqual (Seq.toList args)
+                else
+                    let ex =
+                        Assert.Throws<System.Exception> (fun () -> TypeInfo.applyGenericArgs args ty |> ignore)
+
+                    Assert.That (ex.Message, Does.Contain ty.Name, $"%s{ty.Name} with %d{count} argument(s)")
+                    Assert.That (ex.Message, Does.Contain $"%d{arity} generic parameter")
+                    Assert.That (ex.Message, Does.Contain $"%d{count} argument")
+
+    let private nestedGenericDefiningSource : string =
+        """
+namespace N;
+public class Outer<T>
+{
+    public class Inner<U> { }
+}
+"""
+
+    [<Test>]
+    let ``resolving a nested generic TypeRef substitutes every parameter or refuses`` () =
+        let definingBytes =
+            compileLibrary "NestedGeneric.Defining" [] [ nestedGenericDefiningSource ]
+
+        let consumerBytes =
+            compileLibrary
+                "NestedGeneric.Consumer"
+                [ metadataReferenceFromImage definingBytes ]
+                [
+                    """
+using N;
+public class Consumer
+{
+    public static Outer<int>.Inner<string> Make() => new Outer<int>.Inner<string>();
+}
+"""
+                ]
+
+        let defining = dumpedAssembly (Some "NestedGeneric.Defining.dll") definingBytes
+        let consumer = dumpedAssembly (Some "NestedGeneric.Consumer.dll") consumerBytes
+        let assemblies = loadedAssemblies [ defining ; consumer ]
+
+        let innerRef =
+            findTypeRef
+                (fun typeRef ->
+                    typeRef.Name = "Inner`1"
+                    && match typeRef.ResolutionScope with
+                       | TypeRefResolutionScope.TypeRef _ -> true
+                       | _ -> false
+                )
+                consumer
+
+        let outer = getTopLevelTypeDef defining "N" "Outer`1"
+        let inner = getNestedTypeDef defining outer "Inner`1"
+
+        let expectedIdentity =
+            ResolvedTypeIdentity.ofTypeDefinition defining.Name inner.TypeDefHandle
+
+        // Inner<U> has two generic parameters: T inherited from Outer, then its own U.
+        inner.Generics.Length |> shouldEqual 2
+
+        // The full instantiation, spelled the way a TypeSpec for Outer<int>.Inner<string> is.
+        let fullArgs =
+            ImmutableArray.CreateRange
+                [
+                    TypeDefn.PrimitiveType PrimitiveType.Int32
+                    TypeDefn.PrimitiveType PrimitiveType.String
+                ]
+
+        let resolvedAssembly, identity, resolvedType =
+            AssemblyApi.resolveTypeRef assemblies consumer fullArgs innerRef
+            |> getResolvedIdentity
+
+        resolvedAssembly.Name.FullName |> shouldEqual defining.Name.FullName
+        identity |> shouldEqual expectedIdentity
+        resolvedType.Generics |> Seq.toList |> shouldEqual (Seq.toList fullArgs)
+
+        // No arguments leaves the type open.
+        let _, identity, openType =
+            AssemblyApi.resolveTypeRef assemblies consumer ImmutableArray.Empty innerRef
+            |> getResolvedIdentity
+
+        identity |> shouldEqual expectedIdentity
+
+        openType.Generics
+        |> Seq.toList
+        |> shouldEqual [ TypeDefn.GenericTypeParameter 0 ; TypeDefn.GenericTypeParameter 1 ]
+
+        // Only the outer instantiation's argument: neither open nor closed, and the resolver must
+        // say so rather than hand back a type whose second parameter would be resolved against
+        // whatever generic context happens to be in scope.
+        let shortArgs = ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Int32)
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                AssemblyApi.resolveTypeRef assemblies consumer shortArgs innerRef |> ignore
+            )
+
+        Assert.That (ex.Message, Does.Contain "Inner`1")
+        Assert.That (ex.Message, Does.Contain "2 generic parameter")
+        Assert.That (ex.Message, Does.Contain "1 argument")
+
+        // One too many is refused the same way.
+        let longArgs = distinctPrimitiveArgs 3
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                AssemblyApi.resolveTypeRef assemblies consumer longArgs innerRef |> ignore
+            )
+
+        Assert.That (ex.Message, Does.Contain "Inner`1")
+        Assert.That (ex.Message, Does.Contain "3 argument")
+
+    [<Test>]
+    let ``resolving a nested generic exported type substitutes every parameter or refuses`` () =
+        let targetBytes =
+            compileLibrary "NestedGeneric.Forwarded.Target" [] [ nestedGenericDefiningSource ]
+
+        let forwarderBytes =
+            compileLibrary
+                "NestedGeneric.Forwarded.Forwarder"
+                [ metadataReferenceFromImage targetBytes ]
+                [
+                    """
+using System.Runtime.CompilerServices;
+using N;
+[assembly: TypeForwardedTo(typeof(Outer<>))]
+public class Placeholder { }
+"""
+                ]
+
+        let target = dumpedAssembly (Some "NestedGeneric.Forwarded.Target.dll") targetBytes
+
+        let forwarder =
+            dumpedAssembly (Some "NestedGeneric.Forwarded.Forwarder.dll") forwarderBytes
+
+        let parentExport =
+            findExportedType
+                (fun export ->
+                    export.Name = "Outer`1"
+                    && export.Namespace = Some "N"
+                    && match export.Data with
+                       | ExportedTypeData.ForwardsTo _ -> true
+                       | _ -> false
+                )
+                forwarder
+
+        let nestedExport, forwarder =
+            getOrSynthesizeNestedExportedType parentExport "Inner`1" forwarder
+
+        let assemblies = loadedAssemblies [ target ; forwarder ]
+
+        let outer = getTopLevelTypeDef target "N" "Outer`1"
+        let inner = getNestedTypeDef target outer "Inner`1"
+
+        let expectedIdentity =
+            ResolvedTypeIdentity.ofTypeDefinition target.Name inner.TypeDefHandle
+
+        let fullArgs = distinctPrimitiveArgs 2
+
+        let resolvedAssembly, identity, resolvedType =
+            AssemblyApi.resolveTypeFromExport forwarder assemblies fullArgs nestedExport
+            |> getResolvedIdentity
+
+        resolvedAssembly.Name.FullName |> shouldEqual target.Name.FullName
+        identity |> shouldEqual expectedIdentity
+        resolvedType.Generics |> Seq.toList |> shouldEqual (Seq.toList fullArgs)
+
+        let shortArgs = distinctPrimitiveArgs 1
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                AssemblyApi.resolveTypeFromExport forwarder assemblies shortArgs nestedExport
+                |> ignore
+            )
+
+        Assert.That (ex.Message, Does.Contain "Inner`1")
+        Assert.That (ex.Message, Does.Contain "2 generic parameter")
+        Assert.That (ex.Message, Does.Contain "1 argument")

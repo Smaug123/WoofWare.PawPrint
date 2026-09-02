@@ -459,7 +459,7 @@ module internal MethodTableProjection =
         | TypeDefn.FromReference (_, SignatureTypeKind.Unknown)
         | TypeDefn.FromDefinition (_, SignatureTypeKind.Unknown) ->
             let state, assembly, typeInfo =
-                resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly typeGenericArgs fieldType
+                resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly fieldType
 
             if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
                 typeInfoInstanceFieldsMayContainGcPointers
@@ -494,13 +494,7 @@ module internal MethodTableProjection =
             | TypeDefn.FromReference (_, SignatureTypeKind.Unknown)
             | TypeDefn.FromDefinition (_, SignatureTypeKind.Unknown) ->
                 let state, assembly, typeInfo =
-                    resolveTypeInfoForTypeDefn
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        currentAssembly
-                        typeGenericArgs
-                        fieldType
+                    resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly fieldType
 
                 if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
                     typeInfoInstanceFieldsMayContainGcPointers
@@ -531,35 +525,32 @@ module internal MethodTableProjection =
             | TypeDefn.GenericMethodParameter _
             | TypeDefn.Void -> contains generic
 
+    /// Resolve the nominal type a field signature spells, instantiated at whatever arguments the
+    /// signature itself supplies: a `GenericInstantiation` carries its target's full argument
+    /// list, and a bare `FromDefinition` or `FromReference` names a type with no arguments of its
+    /// own. The enclosing type's instantiation is deliberately not consulted; those arguments
+    /// belong to the enclosing type, not to the field's.
     and private resolveTypeInfoForTypeDefn
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (currentAssembly : DumpedAssembly)
-        (typeGenericArgs : ImmutableArray<TypeDefn>)
         (fieldType : TypeDefn)
         : IlMachineState * DumpedAssembly * TypeInfo<TypeDefn, TypeDefn>
         =
-        match fieldType with
+        // If one of the instantiation's arguments is still an unbound outer parameter, the field
+        // walker treats it conservatively as maybe-GC.
+        let nominal, args =
+            match fieldType with
+            | TypeDefn.GenericInstantiation (generic, args) -> generic, args
+            | nominal -> nominal, ImmutableArray.Empty
+
+        match nominal with
         | TypeDefn.FromDefinition (identity, _) ->
             let assembly, typeInfo = typeInfoForIdentityOrFail state identity
-
-            let typeInfo =
-                typeInfo
-                |> TypeInfo.mapGeneric (fun (param, _) ->
-                    if param.SequenceNumber < typeGenericArgs.Length then
-                        typeGenericArgs.[param.SequenceNumber]
-                    else
-                        TypeDefn.GenericTypeParameter param.SequenceNumber
-                )
-
-            state, assembly, typeInfo
+            state, assembly, TypeInfo.applyGenericArgs args typeInfo
         | TypeDefn.FromReference (typeRef, _) ->
-            IlMachineTypeResolution.resolveTypeFromRef loggerFactory currentAssembly typeRef typeGenericArgs state
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            // The instantiation owns the target type's generic arguments here. If one of those arguments
-            // is still an unbound outer parameter, the field walker treats it conservatively as maybe-GC.
-            resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly args generic
+            IlMachineTypeResolution.resolveTypeFromRef loggerFactory currentAssembly typeRef args state
         | TypeDefn.PrimitiveType primitiveType ->
             let typeInfo =
                 match primitiveType with
@@ -592,6 +583,7 @@ module internal MethodTableProjection =
         | TypeDefn.FunctionPointer _
         | TypeDefn.GenericTypeParameter _
         | TypeDefn.GenericMethodParameter _
+        | TypeDefn.GenericInstantiation _
         | TypeDefn.Void -> failwith $"TODO: MethodTable::Flags type-info resolution for %O{fieldType}"
 
     and private typeDefnInstanceFieldsMayContainGcPointers
@@ -628,7 +620,7 @@ module internal MethodTableProjection =
         | TypeDefn.FromDefinition _
         | TypeDefn.GenericInstantiation _ ->
             let state, assembly, typeInfo =
-                resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly typeGenericArgs fieldType
+                resolveTypeInfoForTypeDefn loggerFactory baseClassTypes state currentAssembly fieldType
 
             typeInfoInstanceFieldsMayContainGcPointers
                 loggerFactory
