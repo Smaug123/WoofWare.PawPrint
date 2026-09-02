@@ -73,6 +73,10 @@ module AbstractMachine =
 
             ExecutionResult.stepped (state, WhatWeDid.ThrowingTypeInitializationException)
             |> Choice1Of2
+        | StateLoadResult.UnhandledTypeInitializationException (state, exn) ->
+            // The thread is terminating, so no frame's flag needs clearing: nothing on it runs
+            // again.
+            ExecutionResult.UnhandledException (state, thread, exn) |> Choice1Of2
 
     /// The active frame's prologue has run; execute one of its instructions.
     let private executeOneStepInitialised
@@ -242,8 +246,6 @@ module AbstractMachine =
                 | FunctionPointerTarget.RuntimeAllocator ->
                     FunctionPointerTarget.requireManaged "delegate invocation" methodPtrTarget
                     |> fun m -> state, Ok m
-
-            let methodGenerics = instruction.ExecutingMethod.Generics
 
             // Preserve the original call-site offset from the callvirt Invoke that
             // created this delegate frame.  After returnStackFrame the caller's
@@ -421,7 +423,7 @@ module AbstractMachine =
                     false
                     false
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                    methodGenerics
+                    methodPtr.Generics
                     methodPtr
                     thread
                     currentThreadState
@@ -545,17 +547,21 @@ module AbstractMachine =
             UnaryStringTokenIlOp.execute loggerFactory baseClassTypes unaryStringTokenIlOp stringHandle state thread
             |> ExecutionResult.stepped
 
-    /// Convert a step that tore the process down into the terminating outcome.
+    /// Convert a step that tore the process down -- by aborting, or by raising an exception
+    /// nothing on the thread handles -- into the terminating outcome.
     ///
     /// This is the one translation the step protocol cannot perform for itself: `WhatWeDid` is
-    /// reported per-thread and so carries no `ThreadId`, while `ExecutionResult.Aborted` names the
-    /// thread that gave up. Applied at the single exit from `executeOneStep`, so nothing
-    /// downstream — the scheduler in particular — ever observes `WhatWeDid.Aborted`; a step that
-    /// aborted is not a step that retired, and `Scheduler.onStepOutcome` has no answer for one.
-    let internal surfaceAbort (thread : ThreadId) (result : ExecutionResult) : ExecutionResult =
+    /// reported per-thread and so carries no `ThreadId`, while `ExecutionResult.Aborted` and
+    /// `ExecutionResult.UnhandledException` name the thread that gave up. Applied at the single
+    /// exit from `executeOneStep`, so nothing downstream — the scheduler in particular — ever
+    /// observes `WhatWeDid.Aborted` or `WhatWeDid.UnhandledException`; a step that ended the
+    /// process is not a step that retired, and `Scheduler.onStepOutcome` has no answer for one.
+    let internal surfaceTerminatingStep (thread : ThreadId) (result : ExecutionResult) : ExecutionResult =
         match result with
         | ExecutionResult.Stepped (state, WhatWeDid.Aborted fatal, StepEffect.NoEffect) ->
             ExecutionResult.Aborted (state, thread, fatal)
+        | ExecutionResult.Stepped (state, WhatWeDid.UnhandledException exn, StepEffect.NoEffect) ->
+            ExecutionResult.UnhandledException (state, thread, exn)
         | ExecutionResult.Stepped (_, WhatWeDid.Aborted fatal, effect) ->
             // An aborting step did not finish whatever it was describing, so an effect here would
             // be a write the driver is being asked to perform on behalf of a step that never
@@ -563,6 +569,10 @@ module AbstractMachine =
             // between dropping the effect and performing it.
             failwith
                 $"logic error: thread %O{thread} aborted (%O{fatal.Code}) while also requesting the step effect %O{effect}; an aborting step must not emit one"
+        | ExecutionResult.Stepped (_, WhatWeDid.UnhandledException _, effect) ->
+            // As for an abort: the step never completed, so it has no effect to ask for.
+            failwith
+                $"logic error: thread %O{thread} ended with an unhandled exception while also requesting the step effect %O{effect}; a step that did not retire must not emit one"
         | _ -> result
 
     /// Execute one step of the given thread: its active frame's prologue if it still has one, and
@@ -583,11 +593,11 @@ module AbstractMachine =
         match state.ThreadState.[thread].MethodState.PendingTypeInit with
         | None ->
             executeOneStepInitialised loggerFactory baseClassTypes state thread logger
-            |> surfaceAbort thread
+            |> surfaceTerminatingStep thread
         | Some ty ->
 
         match runPendingTypeInit loggerFactory baseClassTypes state thread ty with
-        | Choice1Of2 result -> result |> surfaceAbort thread
+        | Choice1Of2 result -> result |> surfaceTerminatingStep thread
         | Choice2Of2 state ->
             executeOneStepInitialised loggerFactory baseClassTypes state thread logger
-            |> surfaceAbort thread
+            |> surfaceTerminatingStep thread

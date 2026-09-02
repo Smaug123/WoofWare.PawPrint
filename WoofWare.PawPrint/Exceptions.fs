@@ -26,7 +26,12 @@ type ExceptionStackFrame<'typeGen, 'methodGen, 'methodVar
         IsLastFrameFromForeignExceptionStackTrace : bool
     }
 
-/// Represents a CLI exception being propagated
+/// Represents a CLI exception being propagated.
+///
+/// Compared by reference: its frames name `MethodInfo`s, which have no structural equality, and
+/// nothing needs to compare two in-flight exceptions by content. Being comparable at all is what
+/// lets a `WhatWeDid` carry one without losing its own equality.
+[<ReferenceEquality>]
 type CliException<'typeGen, 'methodGen, 'methodVar when 'typeGen : comparison and 'typeGen :> IComparable<'typeGen>> =
     {
         /// The exception object allocated on the heap

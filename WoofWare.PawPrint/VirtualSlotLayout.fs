@@ -88,8 +88,9 @@ module VirtualSlotLayout =
         }
 
     /// The methods of a type that CoreCLR's `DeclaredMethodIterator` ranges over, paired with their
-    /// metadata facts. Both halves of the method table are laid out from this one list, so that
-    /// neither can disagree with the other about what the type declares.
+    /// metadata facts. Both halves of the method table are laid out from this one list, and
+    /// `introducedMethodsOf` enumerates it, so that none of the three can disagree with another
+    /// about what the type declares.
     ///
     /// Two kinds of row are absent from it.
     ///
@@ -1861,6 +1862,11 @@ module VirtualSlotLayout =
     /// The methods a declaring type introduces, as CoreCLR's `IntroducedMethodIterator` walks
     /// them: the type's own MethodDef rows in metadata order, never an inherited one.
     ///
+    /// This is the same list the slot table is laid out from, so a row `declaredMethodsOf` drops
+    /// (a COM vtable-gap marker, which has no MethodDesc for the iterator to reach) is absent here
+    /// too. `PopulateMethods` asks `GetSlot` about every virtual this walk yields, and the table
+    /// can only answer for rows it placed.
+    ///
     /// Returns the defining assembly and the declaring target alongside them, because those are
     /// what `MethodHandleRegistry.getOrAllocateInternalHandle` needs to mint a handle and they
     /// differ between the closed and open-definition cases.
@@ -1884,22 +1890,24 @@ module VirtualSlotLayout =
                     failwith $"%s{operation}: concrete type handle was not registered: %O{handle}"
                 )
 
-            Some (concreteType.AssemblyFullName, target, typeInfo.Methods)
+            let declared =
+                declaredMethodsOf operation (slotOwnerOfClosed concreteType) typeInfo
+                |> List.map fst
+
+            Some (concreteType.AssemblyFullName, target, declared)
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             // CoreCLR's typical instantiation of `G<>` is a MethodTable carrying the definition's
             // own TypeDef token, and its MethodDescChunks hold the definition's MethodDefs. So the
             // answer is the metadata method list read straight off the typedef: no instantiation is
             // needed, which is what makes this answerable where `numVirtuals` is not — that needs
             // to *match* signatures across the base chain, and this only needs to list them.
-            let assembly =
-                state.LoadedAssembly identity.AssemblyFullName
-                |> Option.defaultWith (fun () ->
-                    failwith $"%s{operation}: assembly %s{identity.AssemblyFullName} is not loaded"
-                )
+            let _, typeInfo = definitionMetadata operation state identity
 
-            let typeInfo = Assembly.resolveTypeIdentityDefinition assembly identity
+            let declared =
+                declaredMethodsOf operation (ownerOfDefinition operation state identity) typeInfo
+                |> List.map fst
 
-            Some (identity.AssemblyFullName, target, typeInfo.Methods)
+            Some (identity.AssemblyFullName, target, declared)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) ->

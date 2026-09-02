@@ -63,6 +63,9 @@ module TestPureCases =
             "EnumHasFlagMismatchUnhandled.cs"
             "EnumHasFlagNullFlagUnhandled.cs"
             "ArrayGetLengthOutOfRangeUnhandled.cs"
+            "CachedCctorFailureUnhandledOnFieldStore.cs"
+            "CachedCctorFailureUnhandledOnCall.cs"
+            "CachedCctorFailureUnhandledOnRunClassConstructor.cs"
         ]
         |> Set.ofList
 
