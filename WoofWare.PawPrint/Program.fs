@@ -29,10 +29,23 @@ module Program =
         | StartupCall
         /// `Main`. Its return latches the exit code if `Main` returns one, and does not end the
         /// run: the entry thread goes to `ThreadStatus.WaitingForForegroundThreads` (and
-        /// background), and the run ends with `NormalExit` at the first tick at which no
-        /// foreground thread is alive — CoreCLR's `ThreadStore::WaitForOtherThreads`, which
-        /// `RunMainPost` blocks in after `Main`.
-        | Main of returns : MainReturn
+        /// background), and the run ends with `NormalExit` once `shutdownSignalled` — CoreCLR's
+        /// `ThreadStore::WaitForOtherThreads`, which `RunMainPost` blocks in after `Main`.
+        ///
+        /// `shutdownSignalled` is CoreCLR's `m_TerminationEvent`, a manual-reset event that
+        /// `CheckForEEShutdown` sets at the first moment, once `Main` is running, at which no
+        /// foreground thread is alive, and which nothing resets. It is set *before* `Main`
+        /// returns if `Main` makes itself background while it is the only foreground thread —
+        /// and then `WaitForOtherThreads` returns at once whatever `Main` started afterwards
+        /// (measured on real .NET 10: `Main` goes background, starts a foreground worker that
+        /// sleeps for ever, returns 3; the process exits 3). So it is carried as state rather
+        /// than recomputed from the thread table when `Main` returns.
+        ///
+        /// CoreCLR arms this (`g_fWeControlLifetime`) in `RunMainPre`, which is also before
+        /// the entry type's class initialiser runs; PawPrint arms it only once `Main` itself is
+        /// installed, so a `.cctor` that sends the entry thread background and starts a
+        /// foreground worker is waited for here where real .NET would abandon it.
+        | Main of returns : MainReturn * shutdownSignalled : bool
 
     type PreparedProgram =
         {
@@ -744,41 +757,45 @@ module Program =
             failwith
                 $"logic error: Main (%O{returns}) returned with %d{List.length stack} values on its eval stack, which returnStackFrame should have refused as invalid CIL"
 
-    /// Once `Main` has returned, end the run at the first tick at which no thread holds the
-    /// process open; until then, and before `Main` returns, hand back `continuing` unchanged.
+    /// Finish a tick that did not end the run by itself: CoreCLR's `CheckForEEShutdown`, then
+    /// the exit `WaitForOtherThreads` is waiting for.
     ///
-    /// CoreCLR's `ThreadStore::CheckForEEShutdown` runs whenever a component of
-    /// `OtherThreadsComplete` changes — a thread dying, or flipping to background — so the
-    /// check here is applied to every outcome that continues the run, rather than only where
-    /// those changes are known to happen, so that no handler that makes one can forget it. The
-    /// entry thread's status is what says whether `Main` has returned, so before then this is
-    /// one map lookup per tick and no scan.
+    /// `CheckForEEShutdown` runs whenever a component of `OtherThreadsComplete` changes — a
+    /// thread dying, a thread flipping to background — and latches `shutdownSignalled` if no
+    /// foreground thread is alive. It is run here after every continuing outcome rather than
+    /// only where those changes are known to happen, so that no handler that makes one can
+    /// forget it; the latch only ever goes one way, so checking more often than CoreCLR does
+    /// changes nothing. While `Main` is running and the entry thread is itself foreground, it
+    /// holds the process open on its own and the tick costs one map lookup, no scan.
     ///
-    /// `continuing` must be an outcome that continues the run: this decides whether the run
-    /// goes on, and an outcome that has already ended it has nothing to decide.
-    let private exitIfNoForegroundThreads
+    /// Once the entry thread is `WaitingForForegroundThreads` and the latch is set, the run
+    /// ends with `NormalExit`; otherwise `continuing` builds the tick's outcome from the
+    /// program with the latch brought up to date. Inlined for the same reason `annotating` is:
+    /// this runs once per interpreted instruction.
+    let inline private afterStep
         (prepared : PreparedProgram)
-        (continuing : ProgramStepOutcome)
+        ([<InlineIfLambda>] continuing : PreparedProgram -> ProgramStepOutcome)
         : ProgramStepOutcome
         =
-        match continuing with
-        | ProgramStepOutcome.Completed _
-        | ProgramStepOutcome.Deadlocked _ ->
-            failwith "logic error: exitIfNoForegroundThreads was handed an outcome that had already ended the run"
-        | ProgramStepOutcome.InstructionStepped _
-        | ProgramStepOutcome.WorkerTerminated _ -> ()
-
         match prepared.EntryFrame with
-        | EntryFrameKind.StartupCall -> continuing
-        | EntryFrameKind.Main _ ->
+        | EntryFrameKind.StartupCall -> continuing prepared
+        | EntryFrameKind.Main (returns, shutdownSignalled) ->
 
-        match prepared.State.ThreadState.[prepared.EntryThread].Status with
-        | ThreadStatus.WaitingForForegroundThreads ->
-            if prepared.State.ThreadState |> Map.exists (fun _ ts -> holdsProcessOpen ts) then
-                continuing
-            else
-                ProgramStepOutcome.Completed (RunOutcome.NormalExit (prepared.State, prepared.EntryThread))
-        | _ -> continuing
+        let entry = prepared.State.ThreadState.[prepared.EntryThread]
+
+        let shutdownSignalled =
+            shutdownSignalled
+            || (not (holdsProcessOpen entry)
+                && not (prepared.State.ThreadState |> Map.exists (fun _ ts -> holdsProcessOpen ts)))
+
+        match entry.Status with
+        | ThreadStatus.WaitingForForegroundThreads when shutdownSignalled ->
+            ProgramStepOutcome.Completed (RunOutcome.NormalExit (prepared.State, prepared.EntryThread))
+        | _ ->
+            continuing
+                { prepared with
+                    EntryFrame = EntryFrameKind.Main (returns, shutdownSignalled)
+                }
 
     /// The second half of a scheduler tick: ask the policy which thread runs next, run it, and
     /// fold the outcome back into the thread states. `prepared` must already have been through
@@ -829,7 +846,7 @@ module Program =
                     match prepared.EntryFrame with
                     | EntryFrameKind.StartupCall ->
                         ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
-                    | EntryFrameKind.Main returns ->
+                    | EntryFrameKind.Main (returns, _) ->
                         // `Main` has returned. Its return value, if it has one, is latched as the
                         // exit code now, and the entry thread keeps its final frame and waits for
                         // the other foreground threads; the run ends below if there are none.
@@ -854,15 +871,18 @@ module Program =
                                 LastRan = prepared.EntryThread
                             }
 
-                        ProgramStepOutcome.InstructionStepped (
-                            prepared,
-                            prepared.EntryThread,
-                            WhatWeDid.Executed,
-                            // `ExecutionResult.Terminated` carries no effect: a `ret` performs
-                            // no I/O of its own.
-                            StepEffect.NoEffect
-                        )
-                        |> exitIfNoForegroundThreads prepared
+                        afterStep
+                            prepared
+                            (fun prepared ->
+                                ProgramStepOutcome.InstructionStepped (
+                                    prepared,
+                                    prepared.EntryThread,
+                                    WhatWeDid.Executed,
+                                    // `ExecutionResult.Terminated` carries no effect: a `ret`
+                                    // performs no I/O of its own.
+                                    StepEffect.NoEffect
+                                )
+                            )
                 elif SignalState.signalThread state.Kernel.Signals = Some terminatingThread then
                     // The kernel-owned signal-dispatch thread's handler frame
                     // has returned past its bottom; `Ret` surfaces that as a
@@ -886,16 +906,19 @@ module Program =
                             LastRan = terminatingThread
                         }
 
-                    ProgramStepOutcome.InstructionStepped (
-                        prepared,
-                        terminatingThread,
-                        WhatWeDid.Executed,
-                        // The signal dispatcher's handler frame returning past its
-                        // bottom arrives as `ExecutionResult.Terminated`, which carries
-                        // no effect: the step performed no I/O of its own.
-                        StepEffect.NoEffect
-                    )
-                    |> exitIfNoForegroundThreads prepared
+                    afterStep
+                        prepared
+                        (fun prepared ->
+                            ProgramStepOutcome.InstructionStepped (
+                                prepared,
+                                terminatingThread,
+                                WhatWeDid.Executed,
+                                // The signal dispatcher's handler frame returning past its
+                                // bottom arrives as `ExecutionResult.Terminated`, which carries
+                                // no effect: the step performed no I/O of its own.
+                                StepEffect.NoEffect
+                            )
+                        )
                 else
                     let state = Scheduler.onThreadTerminated terminatingThread state
 
@@ -905,8 +928,9 @@ module Program =
                             LastRan = terminatingThread
                         }
 
-                    ProgramStepOutcome.WorkerTerminated (prepared, terminatingThread)
-                    |> exitIfNoForegroundThreads prepared
+                    afterStep
+                        prepared
+                        (fun prepared -> ProgramStepOutcome.WorkerTerminated (prepared, terminatingThread))
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
             | ExecutionResult.Aborted (state, abortingThread, message) ->
@@ -926,8 +950,9 @@ module Program =
                         LastRan = nextThread
                     }
 
-                ProgramStepOutcome.InstructionStepped (prepared, nextThread, whatWeDid, effect)
-                |> exitIfNoForegroundThreads prepared
+                afterStep
+                    prepared
+                    (fun prepared -> ProgramStepOutcome.InstructionStepped (prepared, nextThread, whatWeDid, effect))
 
     /// <summary>
     /// Run <paramref name="tick" />, annotating any host failure with where the guest was at
@@ -992,8 +1017,9 @@ module Program =
     ///     proceed past its Join before `Main` has started.
     ///   * `Main`: an `int Main`'s return value is latched as the exit code, the entry thread
     ///     goes to `WaitingForForegroundThreads` and becomes a background thread, as
-    ///     `WaitForOtherThreads` makes it, and the run goes on until no foreground thread is
-    ///     left alive, at which tick it reports `NormalExit`; the exit code is whatever
+    ///     `WaitForOtherThreads` makes it, and the run goes on until shutdown has been
+    ///     signalled — the first tick, `Main`'s own included, at which no foreground thread was
+    ///     alive — at which point it reports `NormalExit`; the exit code is whatever
     ///     `IlMachineState.LatchedExitCode` holds by then, which a worker may have rewritten
     ///     through `Environment.ExitCode`. A worker's `Environment.Exit` in the meantime is a
     ///     `ProcessExit` like any other. If the foreground threads that remain can make no
@@ -1411,7 +1437,9 @@ module Program =
                     State = state
                     BaseClassTypes = baseClassTypes
                     EntryThread = mainThread
-                    EntryFrame = EntryFrameKind.Main mainReturn
+                    // Nothing can have signalled shutdown yet: the entry thread is about to
+                    // run `Main` as a foreground thread, and only `Main` arms the latch.
+                    EntryFrame = EntryFrameKind.Main (mainReturn, false)
                     LastRan = mainThread
                 }
 
