@@ -224,6 +224,7 @@
     <Compile Include="TestFabricatedUnaligned.fs" />
     <Compile Include="TestFabricatedCpblk.fs" />
     <Compile Include="TestFabricatedRankOneArrayCast.fs" />
+    <Compile Include="TestFabricatedUnsignedDivision.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />

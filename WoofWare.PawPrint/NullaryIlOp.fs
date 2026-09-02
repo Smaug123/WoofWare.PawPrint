@@ -382,6 +382,12 @@ module NullaryIlOp =
     /// the same route `div` and `rem`'s faults take out of `BinaryArithmetic.executeFaulting`.
     /// `div.un` is unsigned, so a zero divisor is its only fault: every quotient is
     /// representable (ECMA-335 III.3.32).
+    ///
+    /// An int32 operand paired with a native int is *sign*-extended to native width before the
+    /// unsigned divide. The `.un` suffix chooses the division, not the widening: ECMA-335 III.1.5
+    /// gives every binary numeric instruction the same int32-to-native-int widening, and CoreCLR's
+    /// importer applies the signed one to `div.un` (`ldc.i4.m1; ldc.i8 2; conv.i; div.un` yields
+    /// 0x7FFFFFFFFFFFFFFF, not 0x7FFFFFFF).
     let internal divUnValues (v1 : EvalStackValue) (v2 : EvalStackValue) : Result<EvalStackValue, OpcodeFault> =
         match v1, v2 with
         | EvalStackValue.Int32 (Int32Source.Verbatim v1), EvalStackValue.Int32 (Int32Source.Verbatim v2) ->
@@ -409,7 +415,7 @@ module NullaryIlOp =
             if v2 = 0L then
                 Error OpcodeFault.DivideByZero
             else
-                (uint64 (uint32<int32> v1) / uint64<int64> v2)
+                (uint64<int64> (int64<int32> v1) / uint64<int64> v2)
                 |> int64<uint64>
                 |> NativeIntSource.Verbatim
                 |> EvalStackValue.NativeInt
@@ -418,7 +424,7 @@ module NullaryIlOp =
             if v2 = 0 then
                 Error OpcodeFault.DivideByZero
             else
-                (uint64<int64> v1 / uint64 (uint32<int32> v2))
+                (uint64<int64> v1 / uint64<int64> (int64<int32> v2))
                 |> int64<uint64>
                 |> NativeIntSource.Verbatim
                 |> EvalStackValue.NativeInt
