@@ -115,4 +115,7 @@ module CommandLineArgsInit =
                     CliType.RuntimePointer (CliRuntimePointer.Managed pArgv)
                 ]
 
-        HostStartupCall.buildFrame loggerFactory baseClassTypes method args Purpose state
+        let state, frame, _declaringType =
+            HostStartupCall.buildFrame loggerFactory baseClassTypes method args Purpose state
+
+        state, frame
