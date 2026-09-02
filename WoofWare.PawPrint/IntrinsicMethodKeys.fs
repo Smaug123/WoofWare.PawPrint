@@ -1407,10 +1407,13 @@ module IntrinsicMethodKeys =
             // GetTypeFromHandle / op_Equality throughout, all modelled boundaries — which the
             // JIT merely constant-folds. All five types share the same body shape.
             //
-            // A true answer commits PawPrint to nothing further: every other member of these
-            // types is itself method-level [Intrinsic] and absent from this list, so a guest
-            // that goes on to use the vector still stops at the unimplemented-intrinsic gate
-            // rather than running IL the scalar profile cannot honour.
+            // A true answer commits PawPrint to nothing further. All five types carry a
+            // type-level [Intrinsic], and `isIntrinsic` (IlMachineStateExecution.fs) reads that
+            // attribute off the call site's declaring type, so a direct call to any other member
+            // — including the ones with no [Intrinsic] of their own, such as the constructors,
+            // `ToString` and `CopyTo` — is routed to the intrinsic dispatcher and stops at the
+            // unimplemented-intrinsic gate rather than running IL the scalar profile cannot
+            // honour.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics/Vector256_1.cs#L78-L97
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/Vector_1.cs#L169-L183
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector64`1" "get_IsSupported" []
