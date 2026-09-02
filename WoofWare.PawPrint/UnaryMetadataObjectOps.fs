@@ -404,100 +404,6 @@ module internal UnaryMetadataObjectOps =
             state,
         WhatWeDid.Executed
 
-    /// Wrap a value-type value in a fresh heap object, returning the box's address.
-    ///
-    /// This is the plain value-type half of the `box` opcode: `Nullable<T>` must be normalised by
-    /// the caller (ECMA-335 III.4.1 boxes a `Nullable<T>` as a `T`, or as null, so a box whose
-    /// declared type *is* `Nullable<T>` is a shape this never produces), and reference types are a
-    /// no-op that the caller should not route here at all.
-    ///
-    /// Callers outside the `box` opcode exist because the CLR boxes in places that have no IL:
-    /// the `RuntimeMethodHandle_InvokeMethod` QCall must box a value-type return
-    /// (`InvokeUtil::CreateObjectAfterInvoke`, reflectioninvocation.cpp:678) before handing it back
-    /// through its `ObjectHandleOnStack`.
-    let boxValueType
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (typeHandle : ConcreteTypeHandle)
-        (toBox : EvalStackValue)
-        (state : IlMachineState)
-        : ManagedHeapAddress * IlMachineState
-        =
-        let targetType, defn =
-            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes typeHandle
-            |> Option.defaultWith (fun () ->
-                failwith $"boxValueType: ConcreteTypeHandle %O{typeHandle} is not registered in AllConcreteTypes"
-            )
-
-        if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn) then
-            failwith
-                $"boxValueType: %s{defn.Namespace}.%s{defn.Name} is not a value type; boxing a reference type is a no-op and must not reach here"
-
-        let cvt, state =
-            match toBox with
-            | EvalStackValue.UserDefinedValueType cvt ->
-                // Already have the CliValueType with the right field structure
-                cvt, state
-            | _ ->
-                // Primitive value on the eval stack (Int32, Int64, Float, etc.)
-                // Construct a CliValueType from the type definition's instance fields
-                let targetAssembly =
-                    state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName
-
-                let instanceFields =
-                    defn.Fields
-                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
-
-                let state, fieldValues =
-                    ((state, []), instanceFields)
-                    ||> List.fold (fun (state, acc) field ->
-                        let state, fieldZero, fieldTypeHandle =
-                            IlMachineState.cliTypeZeroOf
-                                loggerFactory
-                                baseClassTypes
-                                targetAssembly
-                                field.Signature
-                                targetType.Generics
-                                ImmutableArray.Empty
-                                state
-
-                        let coerced = EvalStackValue.toCliTypeCoerced fieldZero toBox
-
-                        let cliField : CliField =
-                            {
-                                Id = FieldId.metadata typeHandle field.Handle field.Name
-                                Name = field.Name
-                                Contents = coerced
-                                Offset = field.Offset
-                                Type = fieldTypeHandle
-                                MarshallingDescriptor = field.MarshallingDescriptor
-                            }
-
-                        state, cliField :: acc
-                    )
-
-                let cvt =
-                    List.rev fieldValues
-                    // Unreachable for an inline array (an N>1 inline array is never
-                    // primitive-like, so it always arrives as `UserDefinedValueType` and takes the
-                    // branch above), but routed through the shared expansion rather than relying
-                    // on that being true here.
-                    |> InlineArrayStorage.expand
-                        (fun () -> $"%s{defn.Namespace}.%s{defn.Name}")
-                        defn.Layout
-                        (InlineArrayStorage.effectiveLength
-                            (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn)
-                            defn.InlineArrayLength)
-                    |> CliValueType.OfFields
-                        baseClassTypes
-                        state.ConcreteTypes
-                        typeHandle
-                        (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies defn)
-
-                cvt, state
-
-        IlMachineState.allocateManagedObject typeHandle cvt state
-
     let executeBox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -579,116 +485,11 @@ module internal UnaryMetadataObjectOps =
         let defn =
             (state._LoadedAssemblies.ByDefinitionName targetType.AssemblyFullName).TypeDefs.[targetType.Definition.Get]
 
-        let isNullable =
-            InternalTypeKind.kind baseClassTypes targetType = InternalTypeKind.Nullable
-
         let toPush, state =
-            if isNullable then
-                // Nullable<T> boxing: null when !HasValue, box underlying T when HasValue.
-                match toBox with
-                | EvalStackValue.UserDefinedValueType cvt ->
-                    let hasValueField =
-                        IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "hasValue"
-
-                    let hasValue = CliValueType.DereferenceFieldById hasValueField cvt
-
-                    match hasValue with
-                    | CliType.Bool 0uy ->
-                        // Nullable with HasValue=false boxes to null.
-                        EvalStackValue.NullObjectRef, state
-                    | CliType.Bool _ ->
-                        // Nullable with HasValue=true: box the underlying value as T.
-                        let underlyingTypeHandle = targetType.Generics.[0]
-
-                        let valueField =
-                            IlMachineState.requiredOwnInstanceFieldId state cvt.Declared "value"
-
-                        let value = CliValueType.DereferenceFieldById valueField cvt
-
-                        let cvt, state =
-                            match value with
-                            | CliType.ValueType existingCvt ->
-                                // Multi-field struct: use the stored CliValueType directly.
-                                existingCvt, state
-                            | _ ->
-                                // Primitive or single-field: reconstruct from type definition.
-                                let underlyingConcreteType =
-                                    AllConcreteTypes.lookup underlyingTypeHandle state.ConcreteTypes |> Option.get
-
-                                let underlyingDefn =
-                                    (state._LoadedAssemblies.ByDefinitionName underlyingConcreteType.AssemblyFullName)
-                                        .TypeDefs.[underlyingConcreteType.Definition.Get]
-
-                                let underlyingInstanceFields =
-                                    underlyingDefn.Fields
-                                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
-
-                                let underlyingAssembly =
-                                    state._LoadedAssemblies.ByDefinitionName underlyingConcreteType.AssemblyFullName
-
-                                let valueAsEval = EvalStackValue.ofCliType value
-
-                                let state, fieldValues =
-                                    ((state, []), underlyingInstanceFields)
-                                    ||> List.fold (fun (state, acc) field ->
-                                        let state, fieldZero, fieldTypeHandle =
-                                            IlMachineState.cliTypeZeroOf
-                                                loggerFactory
-                                                baseClassTypes
-                                                underlyingAssembly
-                                                field.Signature
-                                                underlyingConcreteType.Generics
-                                                ImmutableArray.Empty
-                                                state
-
-                                        let coerced = EvalStackValue.toCliTypeCoerced fieldZero valueAsEval
-
-                                        let cliField : CliField =
-                                            {
-                                                Id = FieldId.metadata underlyingTypeHandle field.Handle field.Name
-                                                Name = field.Name
-                                                Contents = coerced
-                                                Offset = field.Offset
-                                                Type = fieldTypeHandle
-                                                MarshallingDescriptor = field.MarshallingDescriptor
-                                            }
-
-                                        state, cliField :: acc
-                                    )
-
-                                List.rev fieldValues
-                                // Not reachable for an inline array — an N>1 inline array is never
-                                // primitive-like, so it always arrives here as
-                                // `UserDefinedValueType` and takes the branch above — but routed
-                                // through the expansion anyway so the invariant is enforced by the
-                                // one shared helper rather than assumed at each site.
-                                |> InlineArrayStorage.expand
-                                    (fun () -> $"%s{underlyingDefn.Namespace}.%s{underlyingDefn.Name}")
-                                    underlyingDefn.Layout
-                                    (InlineArrayStorage.effectiveLength
-                                        (DumpedAssembly.isValueType
-                                            baseClassTypes
-                                            state._LoadedAssemblies
-                                            underlyingDefn)
-                                        underlyingDefn.InlineArrayLength)
-                                |> CliValueType.OfFields
-                                    baseClassTypes
-                                    state.ConcreteTypes
-                                    underlyingTypeHandle
-                                    (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies underlyingDefn),
-                                state
-
-                        let addr, state =
-                            IlMachineState.allocateManagedObject underlyingTypeHandle cvt state
-
-                        EvalStackValue.ObjectRef addr, state
-                    | other -> failwith $"Box Nullable: expected Bool for hasValue field, got %O{other}"
-                | _ -> failwith $"Box Nullable: expected UserDefinedValueType on eval stack, got %O{toBox}"
-            elif DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
-                // Boxing a value type: wrap it in a heap object and push an ObjectRef
-                let addr, state = boxValueType loggerFactory baseClassTypes typeHandle toBox state
-
-                EvalStackValue.ObjectRef addr, state
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies defn then
+                // Boxing a value type: wrap it in a heap object and push an ObjectRef. A
+                // `Nullable<T>` boxes to null or to a boxed `T`; `boxValue` owns that rule.
+                Boxing.boxValue loggerFactory baseClassTypes typeHandle toBox state
             else
                 // Reference type: box is a no-op, value passes through unchanged
                 toBox, state
@@ -961,12 +762,12 @@ module internal UnaryMetadataObjectOps =
                 | Some boxed when boxed.ConcreteType = targetConcreteTypeHandle ->
                     // CoreCLR has a "for safety's sake" arm here that copies a genuinely boxed
                     // `Nullable<T>` straight through. Nothing in this interpreter can produce one:
-                    // `executeBox` never boxes a Nullable as itself, and the only other boxing path
-                    // (the `constrained.` callvirt fallback in UnaryMetadataCallOps) requires the
-                    // method to be unresolvable on the value type and declared on
-                    // Object/ValueType/Enum — whereas `Nullable<T>` overrides all three, and by an
-                    // explicit CoreLib invariant ("Do NOT add any interfaces to Nullable!",
-                    // Nullable.cs) implements no interfaces to dispatch through either.
+                    // every path that boxes — `box`, the `constrained.` callvirt fallback in
+                    // UnaryMetadataCallOps (reachable with a `Nullable<T>` receiver, since
+                    // `Object::GetType` is not virtual and so is inherited by every value type),
+                    // and the reflection-invocation QCall — goes through `Boxing.boxValue`, which
+                    // boxes a `Nullable<T>` as null or as its `T`, and `Boxing.boxValueType`
+                    // refuses a `Nullable<T>` handle outright.
                     // So this is unreachable rather than merely untested; fail loudly if that
                     // assumption ever stops holding, instead of silently answering
                     // InvalidCastException like the arm below.
