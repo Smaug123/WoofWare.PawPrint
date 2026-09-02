@@ -24,8 +24,8 @@ open WoofWare.PawPrint.Test
 ///
 /// Each generated program measures four sizes — N = 1, 2 and 3, plus the buffer's placement inside
 /// a larger struct — from a single compilation. PawPrint returns all four packed into one int32,
-/// which is read directly off the evaluation stack; the real runtime is a real process, whose exit
-/// code on Unix is only 8 bits, so it is run once per measurement. On disagreement the assertion
+/// read as its latched exit code with all 32 bits intact; the real runtime is a real process, whose
+/// exit code on Unix is only 8 bits, so it is run once per measurement. On disagreement the assertion
 /// message decodes both sides, so a failure names the shape.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
