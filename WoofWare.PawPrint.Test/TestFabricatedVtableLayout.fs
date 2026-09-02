@@ -553,6 +553,42 @@ module TestFabricatedVtableLayout =
         definePlain vtblGap "AfterTheGap"
         vtblGap.CreateType () |> ignore
 
+        // The same shape on a generic definition. The introduced-method walk answers for an open
+        // definition by reading the typedef's own rows rather than by concretising, so that arm
+        // needs a gap it can be asked about without an instantiation.
+        let genericVtblGap =
+            moduleBuilder.DefineType ("HasVtableGap`1", TypeAttributes.Public ||| TypeAttributes.Class, typeof<obj>)
+
+        genericVtblGap.DefineGenericParameters [| "T" |] |> ignore
+
+        let genericGapMethod =
+            genericVtblGap.DefineMethod (
+                "_VtblGap1_3",
+                MethodAttributes.Public
+                ||| MethodAttributes.SpecialName
+                ||| MethodAttributes.RTSpecialName
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                Type.EmptyTypes
+            )
+
+        (genericGapMethod.GetILGenerator ()).Emit OpCodes.Ret
+
+        let genericAfterGap =
+            genericVtblGap.DefineMethod (
+                "VirtualAfterTheGap",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.NewSlot,
+                typeof<Void>,
+                Type.EmptyTypes
+            )
+
+        (genericAfterGap.GetILGenerator ()).Emit OpCodes.Ret
+        definePlain genericVtblGap "AfterTheGap"
+        genericVtblGap.CreateType () |> ignore
+
         // `_VtblGap` with a suffix that is not the count grammar: CoreCLR recognises the prefix,
         // fails to parse the rest, and throws rather than treating the row as an ordinary method
         // (methodtablebuilder.cpp:2865-2907). A prefix-only match would silently drop it.
@@ -601,9 +637,13 @@ module TestFabricatedVtableLayout =
             _LoadedAssemblies = loaded
         }
 
-    /// The vtable of a fabricated type, closed at the given corelib type arguments (none, for the
-    /// non-generic ones).
-    let private vtableOfClosedAt (name : string) (typeArguments : (string * string) list) : VtableSlot list =
+    /// A fabricated type, closed at the given corelib type arguments (none, for the non-generic
+    /// ones), together with the state that registered it.
+    let private closedAt
+        (name : string)
+        (typeArguments : (string * string) list)
+        : IlMachineState * ConcreteTypeHandle
+        =
         let state = state ()
 
         let typeInfo =
@@ -635,39 +675,25 @@ module TestFabricatedVtableLayout =
         // As in TestVirtualMethodSlots: `typeInfoToTypeDefn'` already yields the instantiation shape
         // `T`n<!0, ..>`, so close it by supplying the arguments as the type-generic context rather
         // than by wrapping it again.
-        let state, handle =
-            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
-            |> IlMachineState.concretizeType
-                loggerFactory
-                bct
-                state
-                fabricated.DefinitionFullName
-                (ImmutableArray.CreateRange (List.rev argumentHandles))
-                ImmutableArray.Empty
+        DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
+        |> IlMachineState.concretizeType
+            loggerFactory
+            bct
+            state
+            fabricated.DefinitionFullName
+            (ImmutableArray.CreateRange (List.rev argumentHandles))
+            ImmutableArray.Empty
 
+    /// The vtable of a fabricated type, closed at the given corelib type arguments.
+    let private vtableOfClosedAt (name : string) (typeArguments : (string * string) list) : VtableSlot list =
+        let state, handle = closedAt name typeArguments
         VirtualSlotLayout.vtableOfClosed loggerFactory bct "test" state handle |> snd
 
     let private vtableOf (name : string) : VtableSlot list = vtableOfClosedAt name []
 
     /// The slot table of a fabricated type, both halves.
     let private slotTableOf (name : string) : VirtualSlotLayout.MethodSlotTable =
-        let state = state ()
-
-        let typeInfo =
-            match fabricated.TryGetTopLevelTypeDef "" name with
-            | None -> failwith $"fabricated assembly has no type %s{name}"
-            | Some typeInfo -> typeInfo
-
-        let state, handle =
-            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies typeInfo
-            |> IlMachineState.concretizeType
-                loggerFactory
-                bct
-                state
-                fabricated.DefinitionFullName
-                ImmutableArray.Empty
-                ImmutableArray.Empty
-
+        let state, handle = closedAt name []
         VirtualSlotLayout.slotTableOfClosed loggerFactory bct "test" state handle |> snd
 
     let private hostSlotOf : MethodBase -> int =
@@ -981,6 +1007,109 @@ module TestFabricatedVtableLayout =
         table.BeyondVtable
         |> List.map _.Method.Name
         |> shouldEqual [ ".ctor" ; "AfterTheGap" ]
+
+    /// The MethodDef tokens the host's `GetMethods` and `GetConstructors` report for a type's own
+    /// members, in token order. Both go through `PopulateMethods`/`PopulateConstructors`, which walk
+    /// the type's `IntroducedMethodIterator`, so together they are exactly what that iterator
+    /// yields -- and a gap row, which has no MethodDesc, is what they cannot contain.
+    let private hostIntroducedTokens (name : string) : int list =
+        match hostAssembly.GetType (name, false) with
+        | null -> failwith $"host CLR could not load fabricated type %s{name}"
+        | t ->
+            let flags =
+                BindingFlags.DeclaredOnly
+                ||| BindingFlags.Instance
+                ||| BindingFlags.Static
+                ||| BindingFlags.Public
+                ||| BindingFlags.NonPublic
+
+            [
+                yield! (t.GetMethods flags |> Seq.cast<MethodBase>)
+                yield! (t.GetConstructors flags |> Seq.cast<MethodBase>)
+            ]
+            |> List.map _.MetadataToken
+            |> List.distinct
+            |> List.sort
+
+    let private introducedTokens
+        (methods : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list)
+        : int list
+        =
+        methods
+        |> List.map (fun method ->
+            match method.TryMetadata with
+            | Some facts ->
+                MetadataTokens.GetToken (
+                    System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit facts.Handle
+                    : System.Reflection.Metadata.EntityHandle
+                )
+            | None -> failwith $"introduced method %s{method.Name} has no MethodDef row"
+        )
+        |> List.sort
+
+    /// `Type.GetMethods` enumerates through `GetFirstIntroducedMethod`/`GetNextIntroducedMethod`
+    /// and asks `RuntimeMethodHandle.GetSlot` of every virtual it is handed. So the introduced
+    /// list must be the very list the slot table was laid out from: a gap row surfaced here but
+    /// dropped there has no slot for `GetSlot` to report, and the enumeration crashes on it.
+    ///
+    /// Three targets, because the walk has two arms that read the rows by different routes: the
+    /// closed handle reads the registered concrete type, and the open definition reads the typedef
+    /// straight off the assembly.
+    [<Test>]
+    let ``the introduced-method enumeration omits the vtable-gap marker`` () : unit =
+        let introducedOf
+            (name : string)
+            (state : IlMachineState)
+            (target : RuntimeTypeHandleTarget)
+            : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> list
+            =
+            let _, _, methods =
+                VirtualSlotLayout.introducedMethodsOf "test" state target
+                |> Option.defaultWith (fun () -> failwith $"%s{name} reported no introduced methods")
+
+            // Vacuity guard, and a check on the fixture: the row this test is about really is in the
+            // metadata, so an empty or gap-free answer is the walk's doing rather than the image's.
+            match fabricated.TryGetTopLevelTypeDef "" name with
+            | None -> failwith $"fabricated assembly has no type %s{name}"
+            | Some typeInfo ->
+                typeInfo.Methods
+                |> List.map _.Name
+                |> List.contains "_VtblGap1_3"
+                |> shouldEqual true
+
+            methods
+
+        let closedNonGeneric =
+            let state, handle = closedAt "HasVtableGap" []
+            introducedOf "HasVtableGap" state (RuntimeTypeHandleTarget.Closed handle)
+
+        let closedGeneric =
+            let state, handle = closedAt "HasVtableGap`1" [ "System", "String" ]
+            introducedOf "HasVtableGap`1" state (RuntimeTypeHandleTarget.Closed handle)
+
+        let openDefinition =
+            let state = state ()
+
+            let identity =
+                match fabricated.TryGetTopLevelTypeDef "" "HasVtableGap`1" with
+                | None -> failwith "fabricated assembly has no type HasVtableGap`1"
+                | Some typeInfo -> typeInfo.Identity
+
+            introducedOf "HasVtableGap`1" state (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity)
+
+        for name, methods in
+            [
+                "HasVtableGap", closedNonGeneric
+                "HasVtableGap`1", closedGeneric
+                "HasVtableGap`1", openDefinition
+            ] do
+            // The assertion that reads: no gap.
+            methods |> List.map _.Name |> List.contains "_VtblGap1_3" |> shouldEqual false
+
+            // The assertion that bites: token for token, the host's enumeration -- so a walk that
+            // dropped too much (a constructor, say) fails here as surely as one that dropped too
+            // little.
+            introducedTokens methods |> shouldEqual (hostIntroducedTokens name)
 
     /// Guards the whole fixture against going vacuous. Every assertion below is about a non-NewSlot
     /// virtual that matches nothing; if `PersistedAssemblyBuilder` ever started setting NewSlot for
