@@ -341,12 +341,19 @@ module AllConcreteTypes =
 
 [<AutoOpen>]
 module ConcreteActivePatterns =
-    /// Active pattern to match primitive types from concrete type handles
+    /// Matches a concrete type handle that is one of CoreLib's primitive types, yielding which.
+    ///
+    /// Only a type CoreLib declares is a primitive: a guest assembly may declare its own
+    /// `System.Int32`, and that is an ordinary value type, whatever its name.
     let (|ConcretePrimitive|_|) (concreteTypes : AllConcreteTypes) (handle : ConcreteTypeHandle) =
         match handle with
         | ConcreteTypeHandle.Concrete id ->
             match concreteTypes.Mapping |> Map.tryFind id with
-            | Some ct when ct.Namespace = "System" && ct.Generics.IsEmpty ->
+            | Some ct when
+                ct.Namespace = "System"
+                && ct.Generics.IsEmpty
+                && AssemblyDefinitionName.isNamed "System.Private.CoreLib" ct.AssemblyFullName
+                ->
                 match ct.Name with
                 | "Int32" -> Some PrimitiveType.Int32
                 | "Int64" -> Some PrimitiveType.Int64
