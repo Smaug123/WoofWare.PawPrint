@@ -448,7 +448,10 @@ module IlMachineThreadState =
                 // unprepared thread.
                 ActiveMethodState = FrameId -1
                 Status = ThreadStatus.Parked
-                IsBackground = false
+                // The managed thread that runs the guest's handlers is background on real
+                // .NET (`PosixSignalRegistration.Unix.cs` constructs it with
+                // `IsBackground = true`), so it never holds the process open after `Main`.
+                IsBackground = true
                 Name = None
                 YieldDebt = Set.empty
                 // As above: this thread has run no IL yet.

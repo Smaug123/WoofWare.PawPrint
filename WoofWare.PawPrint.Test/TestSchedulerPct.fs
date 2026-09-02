@@ -269,6 +269,7 @@ module TestSchedulerPct =
                 ThreadStatus.NotStarted
                 ThreadStatus.Terminated
                 ThreadStatus.Parked
+                ThreadStatus.WaitingForForegroundThreads
                 ThreadStatus.BlockedOnSleep None
                 ThreadStatus.BlockedOnSleep (Some 5L)
                 ThreadStatus.BlockedOnClassInit (ThreadId 0)
