@@ -442,7 +442,8 @@ type ExecutionResult =
     /// `128 + signo`). Carries no `ThreadId` because POSIX
     /// `kill(pid, sig)` is process-global; there is no single owning
     /// thread for this termination. The App layer derives the exit code
-    /// from `Signal.toLinuxSigno`.
+    /// from `Signal.toRawSignoUnder` under the simulated platform's
+    /// numbering.
     | SignalTerminated of IlMachineState * signal : Signal
     | Stepped of IlMachineState * WhatWeDid * StepEffect
     | UnhandledException of
@@ -635,7 +636,8 @@ type RunOutcome =
     /// registered handler(s) did not cancel the default disposition,
     /// and whose kernel default is `Terminate`. Carries the originating
     /// `Signal` so the host can compute the POSIX-conventional exit
-    /// code `128 + Signal.toLinuxSigno signal` and surface the cause
+    /// code `128 + signo`, with the signo read under the simulated
+    /// platform's numbering, and surface the cause
     /// for diagnostics. No `ThreadId` because process-level signal
     /// termination is not attributable to a single thread (the real
     /// native code calls `kill(g_pid, signalCode)`, which tears down

@@ -256,9 +256,13 @@ module AppProgram =
                     // the POSIX-conventional code `128 + signo`. Mirror that
                     // here so guests that install a signal handler and
                     // forward to the default disposition observe the same
-                    // shell-level exit code as a real .NET process.
+                    // shell-level exit code as a real .NET process — under the
+                    // numbering of the platform the guest simulated, which is
+                    // the shell that process would have had.
                     drainRemaining state
-                    let signo = Signal.toLinuxSigno signal
+
+                    let signo =
+                        Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signal
 
                     logger.LogInformation (
                         "Guest terminated by POSIX signal {SignalName} (signo {Signo}); exiting with code {ExitCode}",

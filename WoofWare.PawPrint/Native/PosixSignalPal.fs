@@ -9,13 +9,15 @@ open WoofWare.PosixKernel
 /// (`UnixErrorPal`, `SocketEventsPal`, `SocketArgumentsPal` are the others).
 /// The enum carries no kernel content whatever: it is a managed alphabet of ten
 /// negative integers naming the signals .NET considers portable, and a kernel
-/// knows only signos. So `WoofWare.PosixKernel` states the signo, and these two
+/// knows only signos. So `WoofWare.PosixKernel` states the signo, under a
+/// `SignalNumbering` that says whose `<signal.h>` it is read from, and these
 /// functions are where a guest's `PosixSignal` becomes one and back.
 ///
 /// A transcription, so the compiler cannot keep it correct. Its oracle is the
 /// enum itself, which `TestPosixSignalPal` reads from the running BCL — a
 /// stronger position than the other three, whose upstream vocabulary is
-/// internal and had to be parsed out of pinned source.
+/// internal and had to be parsed out of pinned source — and, for the
+/// numbering, the host's own `SystemNative_GetPlatformSignalNumber`.
 [<RequireQualifiedAccess>]
 module PosixSignalPal =
 
@@ -36,23 +38,36 @@ module PosixSignalPal =
             -10, Signal.SIGTSTP
         ]
 
-    /// Map a managed `PosixSignal` value, as the BCL passes it across the
-    /// P/Invoke boundary, to a `Signal`.
+    /// `pal_signal.c`'s `GetSignalMax()`: the largest positive number
+    /// `SystemNative_GetPlatformSignalNumber` echoes back as a signo, and the
+    /// bound the enable/disable/handle entry points assert their argument
+    /// against.
     ///
-    /// The enum's own members are negative; a caller may equally pass a
-    /// positive native signo directly, which
-    /// `PosixSignalRegistration.Register` allows and which
-    /// `SystemNative_GetPlatformSignalNumber` echoes back when it is in range.
-    /// Anything this does not recognise — including 0, which is
-    /// `PosixSignalInvalid` — answers `ValueNone`, and the caller reports the
-    /// shim's 0 sentinel.
-    let ofEnum (raw : int) : Signal voption =
+    /// `SIGRTMAX` where the header defines one, and `NSIG` otherwise. On Linux
+    /// that is 64, the kernel's highest signal; on Darwin, which has no
+    /// `SIGRTMAX`, it is `NSIG` = 32 — one *past* the highest signal, 31. So
+    /// under Darwin the shim admits a 32 that `sigaction(2)` then refuses,
+    /// which is why this is the shim's number and `Signal.highestSignoUnder`
+    /// is the kernel's, and the two are stated separately.
+    let signalMax (numbering : SignalNumbering) : int =
+        match numbering with
+        | SignalNumbering.Linux -> Signal.highestSignoUnder SignalNumbering.Linux
+        | SignalNumbering.Darwin -> Signal.highestSignoUnder SignalNumbering.Darwin + 1
+
+    /// `SystemNative_GetPlatformSignalNumber`: the signo the BCL registers a
+    /// managed `PosixSignal` value under.
+    ///
+    /// The enum's own members are negative and map to their signo under the
+    /// given numbering. A caller may equally pass a positive native signo
+    /// directly, which `PosixSignalRegistration.Register` allows; the shim
+    /// echoes any such number in `(0, signalMax]` back without interpreting
+    /// it, and this does the same. Anything else — including 0, which is
+    /// `PosixSignalInvalid` — answers 0, which `Register` reports as
+    /// `PlatformNotSupportedException`.
+    let platformSignalNumber (numbering : SignalNumbering) (raw : int) : int =
         match List.tryFind (fun (value, _) -> value = raw) enumIdentities with
-        | Some (_, signal) -> ValueSome signal
-        | None ->
-            // Not one of the enum's ten, so it can only be a raw signo — which
-            // screens out 0 and every negative, since no signo is either.
-            Signal.ofPlatformSigno raw
+        | Some (_, signal) -> Signal.toRawSignoUnder numbering signal
+        | None -> if raw > 0 && raw <= signalMax numbering then raw else 0
 
     /// The `PosixSignal` value the dispatcher hands a registered handler as its
     /// second argument.
