@@ -2497,10 +2497,14 @@ module NullaryIlOp =
                 | EvalStackValue.ObjectRef addr -> addr
                 | _ -> failwith $"can't get len of {popped}"
 
-            let popped = ManagedHeap.getArrayShape popped state.ManagedHeap
+            let shape = ManagedHeap.getArrayShape popped state.ManagedHeap
 
+            // ECMA-335 III.4.12: the result is a native unsigned int. The int32 that
+            // `Array.Length` yields is the `conv.i4` Roslyn emits straight after, not the
+            // instruction's own result, and a consumer that takes the raw value (a `nint`
+            // local, a `nuint` return, a `ceq` against a native int) sees the native-int slot.
             IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim popped.Length))
+                (EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 shape.Length)))
                 currentThread
                 state
             |> IlMachineState.advanceProgramCounter currentThread

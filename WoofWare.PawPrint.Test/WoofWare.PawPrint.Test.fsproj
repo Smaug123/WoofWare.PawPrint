@@ -53,6 +53,7 @@
     <Compile Include="TestTypeInfoAssemblyIdentity.fs" />
     <Compile Include="TestEnumClassification.fs" />
     <Compile Include="TestEvalStack.fs" />
+    <Compile Include="TestMixedWidthComparisons.fs" />
     <Compile Include="TestIntrinsicValueArguments.fs" />
     <Compile Include="TestTaggedPointerBits.fs" />
     <Compile Include="TestNativeIntSource.fs" />
@@ -223,6 +224,7 @@
     <Compile Include="TestFabricatedAttributeUsage.fs" />
     <Compile Include="TestFabricatedUnaligned.fs" />
     <Compile Include="TestFabricatedCpblk.fs" />
+    <Compile Include="TestFabricatedLdlen.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
