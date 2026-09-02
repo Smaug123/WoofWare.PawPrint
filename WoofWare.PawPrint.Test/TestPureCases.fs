@@ -69,7 +69,6 @@ module TestPureCases =
     let customExitCodes =
         [
             "ExceptionWithNoOpFinally.cs", 3
-            "ForegroundThreadExitsAfterMainReturns.cs", 7
             "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", 5
             "BackgroundWorkerJoinsMainThread.cs", 4
             "EntryThreadIsBackgroundAfterMainReturns.cs", 11
