@@ -1485,48 +1485,63 @@ module NullaryIlOp =
         |> Tuple.withRight WhatWeDid.Executed
         |> ExecutionResult.stepped
 
-    let internal getArrayElt
+    /// The index an `ldelem.*`/`stelem.*` opcode popped, at the width ECMA-335 III.4.8 and
+    /// III.4.26 compare it against the array's length. A native-int index keeps every one of its
+    /// bits: narrowed to 32 bits first, `0x1_0000_0001` would name element 1 of a three-element
+    /// array instead of lying outside it.
+    let private arrayIndex (index : EvalStackValue) : int64 =
+        match index with
+        | EvalStackValue.NativeInt src ->
+            match src with
+            | NativeIntSource.FunctionPointer _
+            | NativeIntSource.FieldHandlePtr _
+            | NativeIntSource.MethodHandlePtr _
+            | NativeIntSource.TypeHandlePtr _
+            | NativeIntSource.TypeDescPtr _
+            | NativeIntSource.MethodTablePtr _
+            | NativeIntSource.MethodTableAuxiliaryDataPtr _
+            | NativeIntSource.PerInstInfoPtr _
+            | NativeIntSource.PerInstDictPtr _
+            | NativeIntSource.GcHandlePtr _
+            | NativeIntSource.AssemblyHandle _
+            | NativeIntSource.ModuleHandle _
+            | NativeIntSource.MetadataImportHandle _
+            | NativeIntSource.EventPipeProviderPtr _
+            | NativeIntSource.EventPipeEventPtr _
+            | NativeIntSource.LowLevelMonitorPtr _
+            | NativeIntSource.WaitHandlePtr _
+            | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
+            | NativeIntSource.SyntheticCrossArrayOffset _ ->
+                failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
+            | NativeIntSource.OpaqueHashBits bits ->
+                // Synthesised pointer-hash bits are deterministic, so an index derived from them
+                // is bounds-checked like any other native int rather than refused.
+                bits
+            | NativeIntSource.Verbatim i -> i
+        | EvalStackValue.Int32 int32Source -> Int32Source.value "array index" int32Source |> int64<int32>
+        | _ -> failwith $"Invalid index: {index}"
+
+    /// The `array` and `index` operands of an `ldelem.*`/`stelem.*` opcode, resolved against
+    /// the array's bounds.
+    [<RequireQualifiedAccess>]
+    type internal ArrayElementOperands =
+        /// `index` names a cell of the array at `array`.
+        | InRange of array : ManagedHeapAddress * index : int
+        /// The index lies outside the array, and `IndexOutOfRangeException` has been raised into
+        /// the guest. This is the opcode's result: the program counter has deliberately not been
+        /// advanced, because exception dispatch needs the faulting instruction's offset.
+        | OutOfRange of IlMachineState * WhatWeDid
+
+    let internal resolveArrayElementOperands
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (index : EvalStackValue)
         (arr : EvalStackValue)
         (currentThread : ThreadId)
         (state : IlMachineState)
-        : CliType
+        : ArrayElementOperands
         =
-        let index =
-            match index with
-            | EvalStackValue.NativeInt src ->
-                match src with
-                | NativeIntSource.FunctionPointer _
-                | NativeIntSource.FieldHandlePtr _
-                | NativeIntSource.MethodHandlePtr _
-                | NativeIntSource.TypeHandlePtr _
-                | NativeIntSource.TypeDescPtr _
-                | NativeIntSource.MethodTablePtr _
-                | NativeIntSource.MethodTableAuxiliaryDataPtr _
-                | NativeIntSource.PerInstInfoPtr _
-                | NativeIntSource.PerInstDictPtr _
-                | NativeIntSource.GcHandlePtr _
-                | NativeIntSource.AssemblyHandle _
-                | NativeIntSource.ModuleHandle _
-                | NativeIntSource.MetadataImportHandle _
-                | NativeIntSource.EventPipeProviderPtr _
-                | NativeIntSource.EventPipeEventPtr _
-                | NativeIntSource.LowLevelMonitorPtr _
-                | NativeIntSource.WaitHandlePtr _
-                | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
-                | NativeIntSource.SyntheticCrossArrayOffset _ ->
-                    failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
-                | NativeIntSource.OpaqueHashBits bits ->
-                    // Synthesised hash bits narrowing to an array index is the
-                    // exact cast-cache load path: `(int)((hash * ...) >> shift)`
-                    // yields a bucket index. Truncate via int32 the same way as
-                    // Verbatim.
-                    bits |> int32
-                | NativeIntSource.Verbatim i -> i |> int32
-            | EvalStackValue.Int32 int32Source ->
-                let i = Int32Source.value "array index" int32Source
-                i
-            | _ -> failwith $"Invalid index: {index}"
+        let index = arrayIndex index
 
         let arrAddr =
             match arr with
@@ -1534,7 +1549,20 @@ module NullaryIlOp =
             | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
             | _ -> failwith $"Invalid array: %O{arr}"
 
-        IlMachineState.getArrayValue arrAddr index state
+        let shape = ManagedHeap.getArrayShape arrAddr state.ManagedHeap
+
+        if index < 0L || index >= int64<int32> shape.Length then
+            IlMachineStateExecution.raiseOpcodeFault
+                loggerFactory
+                baseClassTypes
+                OpcodeFault.IndexOutOfRange
+                currentThread
+                state
+            |> ArrayElementOperands.OutOfRange
+        else
+            // The check just established `0 <= index < Length`, and `Length` is an int32, so
+            // narrowing loses nothing.
+            ArrayElementOperands.InRange (arrAddr, int32<int64> index)
 
     /// Read an array element and project it to the width and signedness that the concrete-width
     /// `ldelem.*` opcode is asking for.
@@ -1544,6 +1572,8 @@ module NullaryIlOp =
     /// arrays — which is the same representation locals, fields and statics use. The opcode is
     /// asking for a *view* of that cell at a given width.
     let internal ldElem
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (targetCliType : CliType)
         (index : EvalStackValue)
         (arr : EvalStackValue)
@@ -1551,7 +1581,11 @@ module NullaryIlOp =
         (state : IlMachineState)
         : ExecutionResult
         =
-        let value = getArrayElt index arr currentThread state
+        match resolveArrayElementOperands loggerFactory baseClassTypes index arr currentThread state with
+        | ArrayElementOperands.OutOfRange (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
+        | ArrayElementOperands.InRange (arrAddr, index) ->
+
+        let value = IlMachineState.getArrayValue arrAddr index state
 
         // The identical two-step projection `executeLdind` performs: `ofCliType` canonically
         // widens the stored form (flattening `Bool`, `Char` and primitive-like wrappers to
@@ -1591,47 +1625,10 @@ module NullaryIlOp =
         (state : IlMachineState)
         : ExecutionResult
         =
-        let index =
-            match index with
-            | EvalStackValue.NativeInt src ->
-                match src with
-                | NativeIntSource.FunctionPointer _
-                | NativeIntSource.FieldHandlePtr _
-                | NativeIntSource.MethodHandlePtr _
-                | NativeIntSource.TypeHandlePtr _
-                | NativeIntSource.TypeDescPtr _
-                | NativeIntSource.MethodTablePtr _
-                | NativeIntSource.MethodTableAuxiliaryDataPtr _
-                | NativeIntSource.PerInstInfoPtr _
-                | NativeIntSource.PerInstDictPtr _
-                | NativeIntSource.GcHandlePtr _
-                | NativeIntSource.AssemblyHandle _
-                | NativeIntSource.ModuleHandle _
-                | NativeIntSource.MetadataImportHandle _
-                | NativeIntSource.EventPipeProviderPtr _
-                | NativeIntSource.EventPipeEventPtr _
-                | NativeIntSource.LowLevelMonitorPtr _
-                | NativeIntSource.WaitHandlePtr _
-                | NativeIntSource.ManagedPointer _ -> failwith "Refusing to treat a pointer as an array index"
-                | NativeIntSource.SyntheticCrossArrayOffset _ ->
-                    failwith "Refusing to treat a synthetic cross-storage byte offset as an array index"
-                | NativeIntSource.OpaqueHashBits bits -> bits |> int32
-                | NativeIntSource.Verbatim i -> i |> int32
-            | EvalStackValue.Int32 int32Source ->
-                let i = Int32Source.value "array index" int32Source
-                i
-            | _ -> failwith $"Invalid index: {index}"
-
-        let arrAddr =
-            match arr with
-            | EvalStackValue.ObjectRef addr -> addr
-            | EvalStackValue.NullObjectRef -> failwith "TODO: throw NRE"
-            | _ -> failwith $"Invalid array: %O{arr}"
-
-        let arr = ManagedHeap.getArrayShape arrAddr state.ManagedHeap
-
-        if index < 0 || index >= arr.Length then
-            failwith "TODO: throw IndexOutOfRangeException"
+        // ECMA-335 III.4.26: the bounds check fires before the array-store variance check.
+        match resolveArrayElementOperands loggerFactory baseClassTypes index arr currentThread state with
+        | ArrayElementOperands.OutOfRange (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
+        | ArrayElementOperands.InRange (arrAddr, index) ->
 
         // ECMA-335 III.4.x runtime-assignment-compatibility gate (see
         // IlMachineStateExecution.checkArrayStoreVariance).
@@ -3133,6 +3130,8 @@ module NullaryIlOp =
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             ldElem
+                loggerFactory
+                corelib
                 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
                 index
                 arr
@@ -3142,55 +3141,73 @@ module NullaryIlOp =
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.Int8 0y)) index arr currentThread state
+            ldElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int8 0y)) index arr currentThread state
         | Ldelem_u1 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))) index arr currentThread state
+            ldElem
+                loggerFactory
+                corelib
+                (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy)))
+                index
+                arr
+                currentThread
+                state
         | Ldelem_i2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.Int16 0s)) index arr currentThread state
+            ldElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int16 0s)) index arr currentThread state
         | Ldelem_u2 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.UInt16 0us)) index arr currentThread state
+            ldElem loggerFactory corelib (CliType.Numeric (CliNumericType.UInt16 0us)) index arr currentThread state
         | Ldelem_i4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.Int32 0)) index arr currentThread state
+            ldElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) index arr currentThread state
         | Ldelem_u4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
             // unsigned int32 is not a distinct CliType; the spec stores it on the stack as if
             // signed, with two's complement wraparound. Matches `getTargetLdindCliType`'s LdindU4.
-            ldElem (CliType.Numeric (CliNumericType.Int32 0)) index arr currentThread state
+            ldElem loggerFactory corelib (CliType.Numeric (CliNumericType.Int32 0)) index arr currentThread state
         | Ldelem_i8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) index arr currentThread state
+            ldElem
+                loggerFactory
+                corelib
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L)))
+                index
+                arr
+                currentThread
+                state
         | Ldelem_u8 -> failwith "TODO: Ldelem_u8 unimplemented"
         | Ldelem_r4 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.Float32 0.0f)) index arr currentThread state
+            ldElem loggerFactory corelib (CliType.Numeric (CliNumericType.Float32 0.0f)) index arr currentThread state
         | Ldelem_r8 ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            ldElem (CliType.Numeric (CliNumericType.Float64 0.0)) index arr currentThread state
+            ldElem loggerFactory corelib (CliType.Numeric (CliNumericType.Float64 0.0)) index arr currentThread state
         | Ldelem_ref ->
             let index, state = IlMachineState.popEvalStack currentThread state
             let arr, state = IlMachineState.popEvalStack currentThread state
 
-            let value = getArrayElt index arr currentThread state
+            match resolveArrayElementOperands loggerFactory corelib index arr currentThread state with
+            | ArrayElementOperands.OutOfRange (state, whatWeDid) -> ExecutionResult.stepped (state, whatWeDid)
+            | ArrayElementOperands.InRange (arrAddr, index) ->
+
+            let value = IlMachineState.getArrayValue arrAddr index state
 
             match value with
             | CliType.ObjectRef _
