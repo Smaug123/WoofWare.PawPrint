@@ -389,3 +389,123 @@ public static class Driver
         let image = fabricate ()
         assertMethodSpecsWrapMethodDefs image
         FabricatedGuest.run "Gv" image "CallvirtMethodSpecMethodDefDriver" driverSource 0
+
+    /// The same token shape over a generic *interface*'s method: `I<T>` with `int Foo<U>()`, the
+    /// class `C : I<int>` implementing it, and a non-generic `Caller.CallFooOn(object)` that is
+    /// `ldarg.0; callvirt I`1::Foo<string>; ret` with a MethodSpec over `I`'s own MethodDef.
+    let private fabricateInterface () : byte[] =
+        let builder = PersistedAssemblyBuilder (AssemblyName "Iv", typeof<obj>.Assembly)
+
+        let modul = builder.DefineDynamicModule "Iv"
+
+        let i =
+            modul.DefineType ("I", TypeAttributes.Public ||| TypeAttributes.Interface ||| TypeAttributes.Abstract)
+
+        i.DefineGenericParameters [| "T" |] |> ignore<GenericTypeParameterBuilder[]>
+
+        let iFoo =
+            i.DefineMethod (
+                "Foo",
+                MethodAttributes.Public
+                ||| MethodAttributes.Virtual
+                ||| MethodAttributes.Abstract
+                ||| MethodAttributes.HideBySig
+                ||| MethodAttributes.NewSlot
+            )
+
+        iFoo.DefineGenericParameters [| "U" |] |> ignore<GenericTypeParameterBuilder[]>
+
+        iFoo.SetReturnType typeof<int>
+        i.CreateType () |> ignore<Type>
+
+        let c = modul.DefineType ("C", TypeAttributes.Public ||| TypeAttributes.Class)
+
+        c.DefineDefaultConstructor MethodAttributes.Public |> ignore<ConstructorBuilder>
+
+        let iOfInt = i.MakeGenericType [| typeof<int> |]
+        c.AddInterfaceImplementation iOfInt
+
+        let cFoo = c.DefineMethod ("Foo", virtualAttributes ||| MethodAttributes.Final)
+
+        cFoo.DefineGenericParameters [| "U" |] |> ignore<GenericTypeParameterBuilder[]>
+
+        cFoo.SetReturnType typeof<int>
+
+        do
+            let il = cFoo.GetILGenerator ()
+            il.Emit (OpCodes.Ldc_I4, 5)
+            il.Emit OpCodes.Ret
+
+        c.DefineMethodOverride (cFoo, TypeBuilder.GetMethod (iOfInt, iFoo))
+        c.CreateType () |> ignore<Type>
+
+        let caller =
+            modul.DefineType ("Caller", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
+
+        do
+            let callFooOn =
+                caller.DefineMethod (
+                    "CallFooOn",
+                    MethodAttributes.Public
+                    ||| MethodAttributes.Static
+                    ||| MethodAttributes.HideBySig,
+                    typeof<int>,
+                    [| typeof<obj> |]
+                )
+
+            let il = callFooOn.GetILGenerator ()
+            il.Emit OpCodes.Ldarg_0
+            il.Emit (OpCodes.Callvirt, iFoo.MakeGenericMethod [| typeof<string> |])
+            il.Emit OpCodes.Ret
+
+        caller.CreateType () |> ignore<Type>
+
+        use image = new MemoryStream ()
+        builder.Save image
+        image.ToArray ()
+
+    /// PawPrint refuses the interface shape rather than answering it. The real runtime's answer
+    /// is pinned alongside, so the refusal is measured against what a model of it would have to
+    /// produce: a receiver implementing `I<int>` gets `EntryPointNotFoundException` from the
+    /// typical `I<T>::Foo`, not a dispatch to `C.Foo`.
+    [<Test>]
+    let ``callvirt of a MethodSpec over a MethodDef on a generic interface is refused`` () : unit =
+        let image = fabricateInterface ()
+        assertMethodSpecsWrapMethodDefs image
+
+        let driverSource =
+            """
+public static class Driver
+{
+    public static int Main(string[] args)
+    {
+        return Caller.CallFooOn(new C());
+    }
+}
+"""
+
+        let onHost, onPawPrint =
+            FabricatedGuest.runOnBoth "Iv" image "CallvirtMethodSpecMethodDefInterfaceDriver" driverSource
+
+        match onHost with
+        | RealRuntimeResult.UnhandledException report ->
+            report.Contains "System.EntryPointNotFoundException: Entry point was not found."
+            |> shouldEqual true
+        | other -> failwith $"real runtime did not raise: %O{other}"
+
+        match onPawPrint with
+        | FabricatedOutcome.Failed e ->
+            let rec messages (e : exn) : string list =
+                match e.InnerException with
+                | null -> [ e.Message ]
+                | inner -> e.Message :: messages inner
+
+            match
+                messages e
+                |> List.tryFind (fun m -> m.StartsWith "TODO: callvirt of Foo on generic interface ")
+            with
+            | Some refusal ->
+                refusal.Contains "which names the interface's typical instantiation"
+                |> shouldEqual true
+            | None -> failwith $"PawPrint failed for another reason: %A{messages e}"
+        | FabricatedOutcome.Exited code -> failwith $"PawPrint ran the guest to completion with exit code %d{code}"

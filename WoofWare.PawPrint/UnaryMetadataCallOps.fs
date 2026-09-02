@@ -961,6 +961,18 @@ module internal UnaryMetadataCallOps =
                         None
                     else
 
+                    if activeAssy.TypeDefs.[method.RequiredDeclaringType.Definition.Get].IsInterface then
+                        // The receiver supplies an interface's instantiation through its interface
+                        // map rather than its class chain, and the real runtime's answer is not
+                        // the class one either. Measured on .NET 10 for `callvirt` of a MethodSpec
+                        // over `I`1::Foo<string>`'s MethodDef: a receiver implementing `I<int>`
+                        // (directly, or as `D<T> : I<T>`) gets `EntryPointNotFoundException`
+                        // ("Entry point was not found."), while a receiver that does not implement
+                        // `I` at all, and a null receiver, get `TypeLoadException` ("Could not
+                        // load type 'I' from assembly ..."). Neither is modelled.
+                        failwith
+                            $"TODO: callvirt of %s{method.Name} on generic interface %s{MethodOwner.describe method.Owner} through a MethodSpec over its MethodDef, which names the interface's typical instantiation; real .NET raises EntryPointNotFoundException for a receiver implementing the interface and TypeLoadException otherwise, and PawPrint models neither"
+
                     if method.IsStatic then
                         failwith
                             $"TODO: callvirt of static method %s{method.Name} on generic type %s{MethodOwner.describe method.Owner} through a MethodSpec over its MethodDef; callvirt of a static method is not valid IL and has not been measured"
