@@ -35,7 +35,6 @@ module MethodSpec =
         let signature = p.DecodeSignature (TypeDefn.typeProvider assemblyName, ())
 
         {
-            // Horrible abuse to get this as an int
-            Method = MetadataToken.ofInt (p.Method.GetHashCode ())
+            Method = MetadataToken.ofEntityHandle p.Method
             Signature = signature
         }
