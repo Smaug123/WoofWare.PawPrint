@@ -195,6 +195,43 @@ module IlMachineThreadState =
         let returningFrameId = threadStateAtEndOfMethod.ActiveMethodState
         let returningMethodState = threadStateAtEndOfMethod.MethodState
 
+        // The frame's stack is checked against its signature whatever becomes of the value, and
+        // whether or not there is a frame to return to: a method that returned the wrong number
+        // of values is an invalid program whether or not anyone wanted the value, and CoreCLR's
+        // JIT refuses it (`InvalidProgramException`) before it runs. A thread's bottom frame —
+        // `Main` above all — reaches `ret` with nothing to return to, and is held to this like any
+        // other, or a `void Main` that left a value behind would be reported as a clean exit. Only
+        // the *push* is the disposition's business.
+        let returned : (EvalStackValue * ConcreteTypeHandle) option =
+            match
+                returningMethodState.ExecutingMethod.Signature.ReturnType, returningMethodState.EvaluationStack.Values
+            with
+            | MethodReturnType.Void, [] -> None
+            | MethodReturnType.Void, _ ->
+                failwith
+                    $"Invalid CIL: void method %s{returningMethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
+            | MethodReturnType.Returns retType, [] ->
+                // A concretised signature never says `Returns System.Void`: no method returns
+                // `System.Void` by value, and `void*` is a pointer. The one thing that produces it is
+                // a signature whose return column was `void` under custom modifiers -- every C#
+                // `init` accessor -- reaching here without going through
+                // `IlMachineState.concretizeMethodSignature`, which is what looks through them.
+                // Distinguishing that from a genuinely malformed method costs a lookup only on the
+                // path that is about to fail anyway.
+                if
+                    AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Void.Identity = Some
+                        retType
+                then
+                    failwith
+                        $"logic error: %s{returningMethodState.ExecutingMethod.Name} has a concretised signature claiming to return System.Void by value; its signature bypassed the custom-modifier fold in IlMachineState.concretizeMethodSignature"
+
+                failwith
+                    $"Invalid CIL: non-void method %s{returningMethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
+            | MethodReturnType.Returns retType, [ retVal ] -> Some (retVal, retType)
+            | MethodReturnType.Returns _, _ ->
+                failwith
+                    $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
+
         match returningMethodState.ReturnState with
         | None -> ReturnFrameResult.NoFrameToReturn
         | Some returnState ->
@@ -250,39 +287,6 @@ module IlMachineThreadState =
                 state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
             |> ReturnFrameResult.NormalReturn
         | ConstructionState.NotConstructing ->
-
-        // The frame's stack is checked against its signature whatever becomes of the value: a
-        // method that returned the wrong number of values is an invalid program whether or not
-        // anyone wanted the value. Only the *push* is the disposition's business.
-        let returned : (EvalStackValue * ConcreteTypeHandle) option =
-            match
-                returningMethodState.ExecutingMethod.Signature.ReturnType, returningMethodState.EvaluationStack.Values
-            with
-            | MethodReturnType.Void, [] -> None
-            | MethodReturnType.Void, _ ->
-                failwith
-                    $"Invalid CIL: void method %s{returningMethodState.ExecutingMethod.Name} returned with a non-empty evaluation stack"
-            | MethodReturnType.Returns retType, [] ->
-                // A concretised signature never says `Returns System.Void`: no method returns
-                // `System.Void` by value, and `void*` is a pointer. The one thing that produces it is
-                // a signature whose return column was `void` under custom modifiers -- every C#
-                // `init` accessor -- reaching here without going through
-                // `IlMachineState.concretizeMethodSignature`, which is what looks through them.
-                // Distinguishing that from a genuinely malformed method costs a lookup only on the
-                // path that is about to fail anyway.
-                if
-                    AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Void.Identity = Some
-                        retType
-                then
-                    failwith
-                        $"logic error: %s{returningMethodState.ExecutingMethod.Name} has a concretised signature claiming to return System.Void by value; its signature bypassed the custom-modifier fold in IlMachineState.concretizeMethodSignature"
-
-                failwith
-                    $"Invalid CIL: non-void method %s{returningMethodState.ExecutingMethod.Name} returned with an empty evaluation stack"
-            | MethodReturnType.Returns retType, [ retVal ] -> Some (retVal, retType)
-            | MethodReturnType.Returns _, _ ->
-                failwith
-                    $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
 
         match returnState.ReturnValueDisposition with
         | ReturnValueDisposition.DispatchAsException _ ->
