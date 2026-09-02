@@ -713,28 +713,31 @@ module Program =
         not thread.IsBackground && ThreadStatus.keepsProcessAlive thread.Status
 
     /// `RunMain`'s `SetLatchedExitCode(*piRetVal)`: the moment an `int Main` returns, its return
-    /// value — which its `ret` left on top of the entry thread's eval stack — becomes the
-    /// latched exit code. A `void Main` latches nothing.
+    /// value — which its `ret` left as the only value on the entry thread's eval stack — becomes
+    /// the latched exit code. A `void Main` latches nothing.
+    ///
+    /// The eval stack is exactly what the signature says by the time this runs:
+    /// `returnStackFrame` has already refused, as invalid CIL, a `Main` that returned with any
+    /// other number of values on it.
     let private latchMainReturnValue
         (returns : MainReturn)
         (entry : ThreadId)
         (state : IlMachineState)
         : IlMachineState
         =
-        match returns with
-        | MainReturn.Void -> state
-        | MainReturn.Int32 ->
-            match state.ThreadState.[entry].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ ->
-                { state with
-                    LatchedExitCode = code
-                }
-            | [] ->
-                failwith
-                    "logic error: an int Main returned without leaving its return value on the entry thread's eval stack"
-            | other :: _ ->
-                failwith
-                    $"an int Main returned %O{other}, which is not a verbatim int32; PawPrint cannot report it as an exit code"
+        match returns, state.ThreadState.[entry].MethodState.EvaluationStack.Values with
+        | MainReturn.Void, [] -> state
+        | MainReturn.Int32, [ EvalStackValue.Int32 (Int32Source.Verbatim code) ] ->
+            { state with
+                LatchedExitCode = code
+            }
+        | MainReturn.Int32, [ other ] ->
+            failwith
+                $"an int Main returned %O{other}, which is not a verbatim int32; PawPrint cannot report it as an exit code"
+        | MainReturn.Void, stack
+        | MainReturn.Int32, stack ->
+            failwith
+                $"logic error: Main (%O{returns}) returned with %d{List.length stack} values on its eval stack, which returnStackFrame should have refused as invalid CIL"
 
     /// Once `Main` has returned, end the run at the first tick at which no thread holds the
     /// process open; until then, and before `Main` returns, hand back `continuing` unchanged.
@@ -1198,6 +1201,14 @@ module Program =
                     (MethodInfo.Synthesised (
                         { rawMainMethod.Core with
                             Body = MethodBody.Il (MethodInstructions.onlyRet ())
+                            // The body returns nothing, so the signature must say so: every
+                            // frame's stack is checked against its signature at `ret`, the
+                            // bottom frame's included, and `Main`'s own return type would
+                            // have an `int Main`'s placeholder refused as invalid CIL.
+                            Signature =
+                                { rawMainMethod.Core.Signature with
+                                    ReturnType = MethodReturnType.Void
+                                }
                         },
                         SynthesisedMethod.EntryPointPlaceholder
                     ))
