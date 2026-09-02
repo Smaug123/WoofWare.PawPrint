@@ -1070,8 +1070,6 @@ module internal UnaryMetadataCallOps =
                     AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes tHandle
                     |> Option.get
 
-                let tAssy = state._LoadedAssemblies.ByDefinitionName tConcrete.AssemblyFullName
-
                 let tIsValueType =
                     DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn
 
@@ -1126,68 +1124,14 @@ module internal UnaryMetadataCallOps =
                         let derefCli = IlMachineState.readManagedByref baseClassTypes state src
                         let derefEval = EvalStackValue.ofCliType derefCli
 
-                        // Share the Box opcode's construction strategy: reuse an existing
-                        // CliValueType when the dereferenced value already carries one,
-                        // otherwise rebuild from T's instance fields (primitive-like values
-                        // like enums and IntPtr arrive flattened).
-                        let cvt, state =
-                            match derefEval with
-                            | EvalStackValue.UserDefinedValueType cvt -> cvt, state
-                            | _ ->
-                                let instanceFields =
-                                    tDefn.Fields
-                                    |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+                        // Box `*ptr` exactly as `box T` would (ECMA III.4.1), Nullable rule
+                        // included: a value-less `Nullable<T>` becomes null, so the null check
+                        // below raises NullReferenceException; one with a value boxes its `T`,
+                        // so `GetType` on the box answers `T`.
+                        let boxed, state =
+                            Boxing.boxValue loggerFactory baseClassTypes tHandle derefEval state
 
-                                let state, fieldValues =
-                                    ((state, []), instanceFields)
-                                    ||> List.fold (fun (state, acc) field ->
-                                        let state, fieldZero, fieldTypeHandle =
-                                            IlMachineState.cliTypeZeroOf
-                                                loggerFactory
-                                                baseClassTypes
-                                                tAssy
-                                                field.Signature
-                                                tConcrete.Generics
-                                                ImmutableArray.Empty
-                                                state
-
-                                        let coerced = EvalStackValue.toCliTypeCoerced fieldZero derefEval
-
-                                        let cliField : CliField =
-                                            {
-                                                Id = FieldId.metadata tHandle field.Handle field.Name
-                                                Name = field.Name
-                                                Contents = coerced
-                                                Offset = field.Offset
-                                                Type = fieldTypeHandle
-                                                MarshallingDescriptor = field.MarshallingDescriptor
-                                            }
-
-                                        state, cliField :: acc
-                                    )
-
-                                List.rev fieldValues
-                                // Unreachable for an inline array (it is never primitive-like, so
-                                // it arrives as `UserDefinedValueType` and takes the branch above),
-                                // but routed through the shared expansion all the same.
-                                |> InlineArrayStorage.expand
-                                    (fun () -> $"%s{tDefn.Namespace}.%s{tDefn.Name}")
-                                    tDefn.Layout
-                                    (InlineArrayStorage.effectiveLength
-                                        (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies tDefn)
-                                        tDefn.InlineArrayLength)
-                                |> CliValueType.OfFields
-                                    baseClassTypes
-                                    state.ConcreteTypes
-                                    tHandle
-                                    (DeclaredTypeFacts.ofTypeInfo baseClassTypes state._LoadedAssemblies tDefn),
-                                state
-
-                        let addr, state = IlMachineState.allocateManagedObject tHandle cvt state
-
-                        IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef addr) thread state,
-                        concretizedMethod,
-                        true
+                        IlMachineState.pushToEvalStack' boxed thread state, concretizedMethod, true
                     | None ->
                         failwith
                             $"constrained.callvirt case 2: non-base method %s{methodToCall.Name} had no direct value-type implementation for type %s{tConcrete.Namespace}.%s{tConcrete.Name}"

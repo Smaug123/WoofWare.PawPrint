@@ -363,6 +363,20 @@ type WhatWeDid =
     /// aborted is not a step that made progress, and `Scheduler.onStepOutcome` has no meaningful
     /// answer for one.
     | Aborted of FatalError
+    /// The step did not retire: an exception it raised found no handler on the thread, and the
+    /// second pass of dispatch has run every `finally` and `fault` between the throw point and
+    /// the thread's outermost frame. The process terminates, as it does for a `throw` opcode
+    /// whose exception nothing catches.
+    ///
+    /// This channel exists for the same reason `Aborted` does. A `throw` has an `ExecutionResult`
+    /// to report with and produces `ExecutionResult.UnhandledException` itself; a step that raises
+    /// from inside its type-initialisation check -- a static-field opcode, a method prologue, or
+    /// a native handler, each rethrowing a cached `TypeInitializationException` -- has only a
+    /// `WhatWeDid`.
+    ///
+    /// `AbstractMachine` converts this to `ExecutionResult.UnhandledException` at the same point
+    /// it converts `Aborted`, so the scheduler never observes it.
+    | UnhandledException of CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
 /// An externally-observable side-effect that a single interpreter step requests
 /// from the driver (the imperative shell around the functional core). The
@@ -640,6 +654,13 @@ type StateLoadResult =
     | FirstLoadThis of IlMachineState
     /// The type's .cctor previously failed. A TypeInitializationException has been dispatched into the guest.
     | ThrowingTypeInitializationException of IlMachineState
+    /// The type's .cctor previously failed, and the cached TypeInitializationException found no
+    /// handler on the thread: dispatch has run every `finally` and `fault` on the way out, and
+    /// the thread is terminating. The caller must surface `ExecutionResult.UnhandledException`
+    /// rather than carry on.
+    | UnhandledTypeInitializationException of
+        IlMachineState *
+        CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
     /// Another thread is currently running the type's .cctor. The current thread must park on
     /// `BlockedOnClassInit blockedBy` until that thread completes initialisation (or its cctor
     /// fails, at which point the parked thread is woken to observe the cached
@@ -777,6 +798,17 @@ module NativeHandlerResult =
     let aborted (thread : ThreadId) (fatal : FatalError) (state : IlMachineState) : NativeHandlerResult =
         NativeHandlerResult.Terminating (ExecutionResult.Aborted (state, thread, fatal))
 
+    /// Forward a `WhatWeDid.UnhandledException` outcome from a sub-call. The thread is
+    /// terminating and takes the process with it, so, as for `aborted`, the native frame's own
+    /// bookkeeping is irrelevant and the dispatcher surfaces a `Terminating` result verbatim.
+    let unhandledException
+        (thread : ThreadId)
+        (exn : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : NativeHandlerResult
+        =
+        NativeHandlerResult.Terminating (ExecutionResult.UnhandledException (state, thread, exn))
+
     /// Translate the outcome of a managed sub-call (e.g. `ensureTypeInitialised`,
     /// `callMethod`) into a `NativeHandlerResult` the native handler can return early
     /// with. Returns `Some` when the sub-call's outcome means the native handler must
@@ -800,6 +832,7 @@ module NativeHandlerResult =
         // afterwards matters, so propagate rather than letting it run on against a state whose
         // thread has already given up.
         | WhatWeDid.Aborted fatal -> Some (aborted thread fatal state)
+        | WhatWeDid.UnhandledException exn -> Some (unhandledException thread exn state)
         // A sub-call that voluntarily yielded did make forward progress, so the
         // calling native handler should continue exactly as for Executed. The yield
         // hint is meaningful only at the dispatcher/scheduler boundary; it does not

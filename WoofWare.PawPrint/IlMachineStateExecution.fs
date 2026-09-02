@@ -2604,8 +2604,8 @@ module IlMachineStateExecution =
                     tieType
             with
             | ExceptionDispatchResult.Dispatched state -> StateLoadResult.ThrowingTypeInitializationException state
-            | ExceptionDispatchResult.ExceptionUnhandled _ ->
-                failwith $"Unhandled TypeInitializationException during class loading for type with cached TIE"
+            | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                StateLoadResult.UnhandledTypeInitializationException (state, exn)
         | Some (TypeInitState.InProgress tid) when tid = currentThread ->
             // We're already initializing this type on this thread; just proceed with the initialisation, no extra
             // class loading required.
@@ -2751,34 +2751,13 @@ module IlMachineStateExecution =
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
         =
-        match TypeInitTable.tryGet ty state.TypeInitTable with
-        | None ->
-            match loadClass loggerFactory baseClassTypes ty thread state with
-            | NothingToDo state -> state, WhatWeDid.Executed
-            | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
-            | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
-            | Blocked _ ->
-                // Unreachable: we just observed `None` in the TypeInitTable, so no thread
-                // (including another one) can hold the in-progress lock. The state isn't
-                // mutated between the lookup and the loadClass call (single-threaded F# code).
-                failwith "logic error: loadClass returned Blocked after tryGet observed no TypeInitTable entry"
-        | Some TypeInitState.Initialized -> state, WhatWeDid.Executed
-        | Some (TypeInitState.Failed (tieAddr, tieType)) ->
-            // The .cctor for this type threw. Per ECMA-335, subsequent access should throw
-            // TypeInitializationException. Rethrow the cached instance for CLR identity semantics.
-            match
-                ExceptionDispatching.throwExceptionObject loggerFactory baseClassTypes state thread tieAddr tieType
-            with
-            | ExceptionDispatchResult.Dispatched state -> state, WhatWeDid.ThrowingTypeInitializationException
-            | ExceptionDispatchResult.ExceptionUnhandled _ ->
-                failwith
-                    "Unhandled TypeInitializationException during ensureTypeInitialised; should have been caught by a handler"
-        | Some (TypeInitState.InProgress threadId) ->
-            if threadId = thread then
-                // II.10.5.3.2: avoid the deadlock by simply proceeding.
-                state, WhatWeDid.Executed
-            else
-                state, WhatWeDid.BlockedOnClassInit threadId
+        match loadClass loggerFactory baseClassTypes ty thread state with
+        | StateLoadResult.NothingToDo state -> state, WhatWeDid.Executed
+        | StateLoadResult.FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
+        | StateLoadResult.ThrowingTypeInitializationException state ->
+            state, WhatWeDid.ThrowingTypeInitializationException
+        | StateLoadResult.UnhandledTypeInitializationException (state, exn) -> state, WhatWeDid.UnhandledException exn
+        | StateLoadResult.Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
 
     /// Synthesise an exception from inside the runtime itself (the host emulating the CLR),
     /// as opposed to a `throw` opcode executed by guest IL. Allocates the exception without

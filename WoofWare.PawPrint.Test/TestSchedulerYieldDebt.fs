@@ -45,6 +45,14 @@ module TestSchedulerYieldDebt =
         let _, loggerFactory = LoggerFactory.makeTest ()
         IlMachineState.initial loggerFactory ImmutableArray.Empty corelib
 
+    /// An unhandled exception for the refusal test to carry; its contents are arbitrary, since
+    /// the refusal is keyed on the case alone.
+    let private unhandledException () : CliException<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+        {
+            ExceptionObject = ManagedHeapAddress 1
+            StackTrace = []
+        }
+
     /// Frame-less stub thread state. See `TestSchedulerVoluntaryYield.stubThreadState`: the
     /// paths under test here read `Status` and `YieldDebt` only, so a sentinel FrameId that
     /// would crash loudly on dereference is the right stub.
@@ -494,17 +502,19 @@ module TestSchedulerYieldDebt =
         debtOf (ThreadId 0) state |> shouldEqual Set.empty
 
     [<Test>]
-    let ``onStepOutcome refuses an aborting step, and refuses only that`` () : unit =
-        // `AbstractMachine.surfaceAbort` turns `WhatWeDid.Aborted` into `ExecutionResult.Aborted`
-        // at the single exit from `executeOneStep`, which is upstream of every call to
-        // `onStepOutcome` — so the scheduler never sees one. That is deliberate: a step that tore
-        // the process down did not retire, and neither half of this function's bookkeeping (waking
-        // class-init waiters, charging yield debt) has a meaningful answer for one.
+    let ``onStepOutcome refuses a step that ended the process, and refuses only those`` () : unit =
+        // `AbstractMachine.surfaceTerminatingStep` turns `WhatWeDid.Aborted` into
+        // `ExecutionResult.Aborted`, and `WhatWeDid.UnhandledException` into
+        // `ExecutionResult.UnhandledException`, at the single exit from `executeOneStep`, which
+        // is upstream of every call to `onStepOutcome` — so the scheduler never sees either. That
+        // is deliberate: a step that tore the process down did not retire, and neither half of
+        // this function's bookkeeping (waking class-init waiters, charging yield debt) has a
+        // meaningful answer for one.
         //
         // Pin both halves. That the refusal is real, so a conversion quietly removed upstream
-        // surfaces here rather than as a scheduler silently treating an abort as progress; and
-        // that it is the *only* variant refused, so this stays a statement about aborts rather
-        // than drifting into a general-purpose guard.
+        // surfaces here rather than as a scheduler silently treating a dead thread as progress;
+        // and that those are the *only* variants refused, so this stays a statement about steps
+        // that ended the process rather than drifting into a general-purpose guard.
         let state = baseState () |> withThreads (runnable 2)
         let ran = ThreadId 0
 
@@ -523,6 +533,7 @@ module TestSchedulerYieldDebt =
                         Code = FatalErrorCode.ExecutionEngine
                         Message = Some "boom"
                     }
+                WhatWeDid.UnhandledException (unhandledException ())
             ]
 
         // As in `mapState reaches ...` below: the table is hand-written, so tie it to the type or
@@ -531,15 +542,18 @@ module TestSchedulerYieldDebt =
         |> Array.length
         |> shouldEqual variants.Length
 
+        let expectRefusal (variant : WhatWeDid) (conversion : string) : unit =
+            let e =
+                Assert.Throws (fun () -> Scheduler.onStepOutcome ran variant state |> ignore)
+
+            if not (e.Message.Contains conversion) then
+                failwith
+                    $"expected the refusal to name the conversion that should have happened upstream (%s{conversion}), got: %s{e.Message}"
+
         for variant in variants do
             match variant with
-            | WhatWeDid.Aborted _ ->
-                let e =
-                    Assert.Throws (fun () -> Scheduler.onStepOutcome ran variant state |> ignore)
-
-                if not (e.Message.Contains "ExecutionResult.Aborted") then
-                    failwith
-                        $"expected the refusal to name the conversion that should have happened upstream, got: %s{e.Message}"
+            | WhatWeDid.Aborted _ -> expectRefusal variant "ExecutionResult.Aborted"
+            | WhatWeDid.UnhandledException _ -> expectRefusal variant "ExecutionResult.UnhandledException"
             | _ -> Scheduler.onStepOutcome ran variant state |> ignore
 
     [<Test>]
