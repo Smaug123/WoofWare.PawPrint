@@ -736,10 +736,7 @@ class QuietParkedWaiter
                 (HostConfig.Default dotnetRuntimes)
 
         match outcome with
-        | RunOutcome.NormalExit (state, thread) ->
-            (match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-             | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-             | other -> failwith $"expected an int exit code, got %O{other}")
-
+        | RunOutcome.NormalExit (state, _) ->
+            state.LatchedExitCode |> shouldEqual 0
             state.Kernel.StepCounter |> shouldBeSmallerThan 500_000L
         | other -> failwith $"expected a normal exit, got %O{other}"

@@ -331,6 +331,7 @@ module IlMachineThreadState =
                 InternedStrings = ImmutableDictionary.Empty
                 _LoadedAssemblies = LoadedAssemblies.empty
                 EntryAssembly = entryAssembly.Name
+                LatchedExitCode = 0
                 Statics = StaticStorage.empty
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs

@@ -80,11 +80,8 @@ module TestSchedulerSleepFairness =
 
             let rec loop (prepared : Program.PreparedProgram) : RunMeasurement =
                 match Program.stepPrepared loggerFactory logger prepared with
-                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, thread)) ->
-                    let code =
-                        match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-                        | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> code
-                        | other -> failwith $"guest Main did not return an int32: %A{other}"
+                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _)) ->
+                    let code = state.LatchedExitCode
 
                     {
                         ExitCode = code
