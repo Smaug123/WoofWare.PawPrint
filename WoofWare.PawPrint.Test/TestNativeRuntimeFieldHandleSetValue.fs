@@ -276,7 +276,7 @@ public sealed class RvaHolder
     /// contents' shape is the one `BoxedValue.contents` is the inverse of.
     let private boxedInt32 (fixture : Fixture) (value : int) (state : IlMachineState) : CliType * IlMachineState =
         let addr, state =
-            UnaryMetadataObjectOps.boxValueType
+            Boxing.boxValueType
                 fixture.LoggerFactory
                 fixture.BaseClassTypes
                 fixture.Int32Handle

@@ -308,6 +308,7 @@ module internal UnaryMetadataFieldOps =
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | UnhandledTypeInitializationException (state, exn) -> state, WhatWeDid.UnhandledException exn
         | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 
@@ -542,6 +543,7 @@ module internal UnaryMetadataFieldOps =
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | UnhandledTypeInitializationException (state, exn) -> state, WhatWeDid.UnhandledException exn
         | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 
@@ -644,6 +646,7 @@ module internal UnaryMetadataFieldOps =
         match IlMachineStateExecution.loadClass loggerFactory baseClassTypes declaringTypeHandle thread state with
         | FirstLoadThis state -> state, WhatWeDid.SuspendedForClassInit
         | ThrowingTypeInitializationException state -> state, WhatWeDid.ThrowingTypeInitializationException
+        | UnhandledTypeInitializationException (state, exn) -> state, WhatWeDid.UnhandledException exn
         | Blocked (state, blockedBy) -> state, WhatWeDid.BlockedOnClassInit blockedBy
         | NothingToDo state ->
 

@@ -62,6 +62,8 @@ module NativeRuntimeHelpers =
                     match typeInit with
                     | WhatWeDid.Executed -> NativeHandlerResult.completed state |> Some
                     | WhatWeDid.Aborted fatal -> NativeHandlerResult.aborted ctx.Thread fatal state |> Some
+                    | WhatWeDid.UnhandledException exn ->
+                        NativeHandlerResult.unhandledException ctx.Thread exn state |> Some
                     | WhatWeDid.SuspendedForClassInit ->
                         // The cctor was pushed as a new frame. We must NOT go through the normal
                         // returnStackFrame path (which would pop the cctor frame we just pushed).

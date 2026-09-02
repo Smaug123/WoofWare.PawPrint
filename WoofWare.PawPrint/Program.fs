@@ -509,6 +509,11 @@ module Program =
                 fatal.Code,
                 (fatal.Message |> Option.defaultValue "<no message>")
             )
+        | WhatWeDid.UnhandledException exn ->
+            logger.LogTrace (
+                "Step ended the thread with an unhandled exception at {ExceptionObject}",
+                exn.ExceptionObject
+            )
         | WhatWeDid.SuspendedForClassInit ->
             logger.LogTrace "Suspended execution of current method for class initialisation."
         | WhatWeDid.SuspendedForManagedCall ->
@@ -1251,8 +1256,12 @@ module Program =
             with
             | StateLoadResult.NothingToDo ilMachineState -> ilMachineState
             | StateLoadResult.FirstLoadThis ilMachineState -> loadInitialState ilMachineState
-            | StateLoadResult.ThrowingTypeInitializationException _ ->
-                failwith "TypeInitializationException during initial class load of entry point type"
+            | StateLoadResult.ThrowingTypeInitializationException _
+            | StateLoadResult.UnhandledTypeInitializationException _ ->
+                // Unreachable at startup: `loadClass` only pushes cctor frames, and no cctor has
+                // run yet, so the entry type cannot already have failed.
+                failwith
+                    "logic error: initial loadClass for entry point type observed an already-failed class initialiser"
             | StateLoadResult.Blocked _ ->
                 // Unreachable at startup: only the entry thread exists, so no other thread can
                 // be mid-cctor on the entry type.
@@ -1319,8 +1328,11 @@ module Program =
                 failwith "logic error: ensureTypeInitialised cannot suspend for an arbitrary managed call"
             | WhatWeDid.BlockedOnClassInit _ ->
                 failwith "logic error: surely this thread can't be blocked on class init"
-            | WhatWeDid.ThrowingTypeInitializationException ->
-                failwith "TypeInitializationException during entry point type initialisation"
+            | WhatWeDid.ThrowingTypeInitializationException
+            | WhatWeDid.UnhandledException _ ->
+                // A failing entry-type cctor ends the run during the class-initialisation phase,
+                // as `RunOutcome.GuestUnhandledException`, before Main is ever installed.
+                failwith "logic error: entry point type's class initialiser had already failed when Main was installed"
             | WhatWeDid.VoluntaryYield _ ->
                 // ensureTypeInitialised drives cctor execution, which has no path to a
                 // yield primitive: voluntary yields are produced by native handlers like
@@ -1663,6 +1675,7 @@ module Program =
                     $"Program: thread %O{ran} yielded at a tick whose scheduling decision was forced, but the state after the step is contended (Runnable: %A{contenders}). Scheduler.chargeYieldDebt reads contention after class-init waiters are woken, so a Pct policy would have drawn here — and could have declined the yield where RoundRobin honours it — which means the prefix up to this point is not seed-independent and must not be shared. See Scheduler.onStepOutcome."
         | WhatWeDid.Executed
         | WhatWeDid.Aborted _
+        | WhatWeDid.UnhandledException _
         | WhatWeDid.SuspendedForClassInit
         | WhatWeDid.SuspendedForManagedCall
         | WhatWeDid.BlockedOnClassInit _

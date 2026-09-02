@@ -1028,6 +1028,11 @@ module NativeThreading =
                 // which of the two threads is named makes no difference to what happens next, since
                 // nothing runs after this on either.
                 NativeHandlerResult.aborted newThreadId fatal state |> Some
+            | WhatWeDid.UnhandledException exn ->
+                // The cached TypeInitializationException was dispatched onto the worker's frames
+                // and nothing there catches it: the worker is terminating before its first step,
+                // and the process with it. Attributed to the worker for the same reason as above.
+                NativeHandlerResult.unhandledException newThreadId exn state |> Some
             | WhatWeDid.Executed
             | WhatWeDid.VoluntaryYield _
             | WhatWeDid.SuspendedForClassInit
