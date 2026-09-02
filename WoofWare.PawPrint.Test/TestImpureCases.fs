@@ -2739,8 +2739,9 @@ module TestImpureCases =
                 // Enable/Disable/HandleNonCanceled under the Darwin flavour,
                 // on the signos whose identity differs from Linux's: 17 is
                 // SIGSTOP there (uncatchable), 19 is SIGCONT, 29 is SIGINFO
-                // (discarded by default), and 32 passes the PAL's ceiling
-                // without being a signal Darwin has.
+                // and 23 is SIGIO (both discarded by default, and neither
+                // named by the PAL's switch), and 32 passes the PAL's
+                // ceiling without being a signal Darwin has.
                 FileName = "SystemNativePosixSignalHandlingDarwin.cs"
                 ExpectedReturnCode = 0
                 KernelConfig =
@@ -2750,7 +2751,16 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
-                AssertTerminalState = None
+                AssertTerminalState =
+                    Some (fun state ->
+                        let enabled = SignalState.enabled state.Kernel.Signals
+                        // SIGINFO and SIGIO took the PAL's default arm, which
+                        // restored SIG_DFL: no later occurrence reaches
+                        // managed code, which the model records as the
+                        // enable bit cleared. SIGURG has an explicit arm and
+                        // keeps its handler.
+                        enabled |> shouldEqual (Set.ofList [ Signal.SIGURG ])
+                    )
             }
             {
                 // The Linux column of the same rows, including glibc's
@@ -2764,7 +2774,15 @@ module TestImpureCases =
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
                 ExpectsUnhandledException = false
-                AssertTerminalState = None
+                AssertTerminalState =
+                    Some (fun state ->
+                        // SIGCHLD and SIGURG both have explicit arms in the
+                        // PAL's switch, so handling them leaves their
+                        // handlers installed; SIGRTMAX was disabled by the
+                        // guest itself.
+                        SignalState.enabled state.Kernel.Signals
+                        |> shouldEqual (Set.ofList [ Signal.SIGCHLD ; Signal.SIGURG ])
+                    )
             }
             {
                 // Exercises the SystemNative_IsATty PawPrint handler against

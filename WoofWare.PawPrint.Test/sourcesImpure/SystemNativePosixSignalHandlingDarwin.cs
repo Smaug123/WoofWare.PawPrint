@@ -11,7 +11,12 @@ using System.Runtime.InteropServices;
 // Every expectation here was measured on Darwin 25.6.0 with a C probe:
 // `sigaction(2)` refuses 9 (SIGKILL), 17 (SIGSTOP) and everything from 32 up
 // with EINVAL; 19 is SIGCONT and 30 is SIGUSR1, both catchable; and a process
-// with the default disposition survives SIGINFO (29) and SIGURG (16).
+// with the default disposition survives SIGINFO (29), SIGIO (23) and
+// SIGURG (16).
+//
+// The registration asserts on the terminal kernel state as well as on the
+// exit code: which of the signals enabled below are still enabled after
+// their non-cancelled handling ran.
 class Program
 {
     const int EINVAL = 22;
@@ -50,14 +55,20 @@ class Program
         Disable(30);
 
         // Kernel-default dispositions that do not end the process. 29 is
-        // SIGINFO here, whose default is to discard the signal; under Linux
-        // 29 is SIGIO, which terminates. 16 is SIGURG (discarded) and 17 is
-        // SIGSTOP (stops; the runtime cannot stop itself, so nothing
-        // happens). 32 is not a signal at all, so the PAL's kill(2) fails
-        // and the process continues.
+        // SIGINFO here and 23 is SIGIO, both discarded by default; under
+        // Linux 29 is SIGIO, which terminates. Neither has an explicit arm
+        // in the PAL's switch, so the PAL restores SIG_DFL and re-raises:
+        // the process survives, but its native handler for that signo is
+        // gone, which the registration observes as the enable bit having
+        // been cleared. 16 is SIGURG, which the PAL's switch names, so its
+        // handler stays installed. 32 is not a signal at all, so the PAL's
+        // kill(2) fails and the process continues.
+        if (Enable(29) != 1) return 7;
+        if (Enable(23) != 1) return 8;
+        if (Enable(16) != 1) return 9;
         HandleNonCanceled(29);
+        HandleNonCanceled(23);
         HandleNonCanceled(16);
-        HandleNonCanceled(17);
         HandleNonCanceled(32);
 
         return 0;

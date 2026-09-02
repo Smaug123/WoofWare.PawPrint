@@ -61,7 +61,13 @@ module TestPosixSignalPal =
     /// Signals this repo models that the enum has no member for. They reach a
     /// guest handler as `PosixSignalInvalid`.
     let private withoutEnumMember : Signal list =
-        [ Signal.SIGPIPE ; Signal.SIGABRT ; Signal.SIGUSR1 ; Signal.SIGUSR2 ]
+        [
+            Signal.SIGPIPE
+            Signal.SIGABRT
+            Signal.SIGUSR1
+            Signal.SIGUSR2
+            Signal.SIGURG
+        ]
 
     /// A new member appearing upstream is a real divergence rather than a
     /// curiosity: `platformSignalNumber` would treat its negative value as an
@@ -181,6 +187,55 @@ module TestPosixSignalPal =
             if host <> modelled then
                 failwith
                     $"%O{numbering}: for input %d{raw} PawPrint answers %d{modelled} but this host's SystemNative_GetPlatformSignalNumber answers %d{host}"
+
+    // ---------------------------------------------------------------------
+    // `handledWithoutRestoring`.
+    // ---------------------------------------------------------------------
+
+    /// Transcribed from the `switch` in `SystemNative_HandleNonCanceledPosixSignal`
+    /// in the pinned `pal_signal.c`: the seven signals with an explicit arm.
+    /// Every other case, named or not, takes `default:`.
+    [<Test>]
+    let ``handledWithoutRestoring names exactly the seven signals with an explicit arm`` () : unit =
+        let explicitArms : Signal list =
+            [
+                Signal.SIGCONT
+                Signal.SIGTSTP
+                Signal.SIGTTIN
+                Signal.SIGTTOU
+                Signal.SIGCHLD
+                Signal.SIGURG
+                Signal.SIGWINCH
+            ]
+
+        for numbering in everyNumbering do
+            for signo in 1 .. Signal.highestSignoUnder numbering do
+                match Signal.ofRawSignoUnder numbering signo with
+                | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
+                | ValueSome signal ->
+                    PosixSignalPal.handledWithoutRestoring numbering signal
+                    |> shouldEqual (List.contains signal explicitArms)
+
+                    // And spelled as `Other`, which is how a hand-rolled
+                    // P/Invoke's number arrives.
+                    PosixSignalPal.handledWithoutRestoring numbering (Signal.Other signo)
+                    |> shouldEqual (List.contains signal explicitArms)
+
+    /// The row that motivates the function: SIGURG and Darwin's SIGIO are
+    /// both discarded by the kernel, and only one of them has an arm.
+    [<Test>]
+    let ``handledWithoutRestoring splits the ignored-by-default signals by the shim's switch`` () : unit =
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Darwin Signal.SIGURG
+        |> shouldEqual true
+
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Darwin (Signal.Other 23)
+        |> shouldEqual false // SIGIO
+
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Darwin (Signal.Other 29)
+        |> shouldEqual false // SIGINFO
+
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Linux (Signal.Other 23)
+        |> shouldEqual true // SIGURG spelled by number
 
     // ---------------------------------------------------------------------
     // `toEnum`.
