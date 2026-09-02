@@ -797,7 +797,7 @@ module NativeCustomAttribute =
                         state
 
                 let boxAddr, state =
-                    UnaryMetadataObjectOps.boxValueType
+                    Boxing.boxValueType
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
                         boxHandle

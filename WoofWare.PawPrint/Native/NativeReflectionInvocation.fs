@@ -453,11 +453,11 @@ module internal NativeReflectionInvocation =
                 failwith
                     $"TODO: %s{operation} on %s{describe ()}: a pointer return must be boxed as System.Reflection.Pointer, and a function-pointer return as IntPtr, before it leaves the QCall"
             | _ ->
-
-            if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state returnType then
-                // `Nullable::NormalizeBox` boxes a `Nullable<T>` return as a `T`, or as null.
-                failwith
-                    $"TODO: %s{operation} on %s{describe ()}: a Nullable<T> return must be normalised by Nullable::NormalizeBox before it leaves the QCall"
+                // A `Nullable<T>` return is accepted: CoreCLR boxes it as a true `Nullable<T>` and
+                // then `Nullable::NormalizeBox`es that to a boxed `T` or to null, and the
+                // resumption branch reaches the same result by boxing the returned value through
+                // `Boxing.boxValue`.
+                ()
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -797,16 +797,17 @@ module internal NativeReflectionInvocation =
 
                         if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state returnType then
                             // `InvokeUtil::CreateObjectAfterInvoke` (reflectioninvocation.cpp:678):
-                            // the QCall's contract is to hand back a boxed value.
-                            let addr, state =
-                                UnaryMetadataObjectOps.boxValueType
-                                    ctx.LoggerFactory
-                                    ctx.BaseClassTypes
-                                    returnType
-                                    returnValue
-                                    state
+                            // the QCall's contract is to hand back a boxed value, and for a
+                            // `Nullable<T>` return that is `Nullable::Box`'s null-or-boxed-`T`.
+                            let boxed, state =
+                                Boxing.boxValue ctx.LoggerFactory ctx.BaseClassTypes returnType returnValue state
 
-                            CliType.ObjectRef (Some addr), state
+                            match boxed with
+                            | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr), state
+                            | EvalStackValue.NullObjectRef -> CliType.ObjectRef None, state
+                            | other ->
+                                failwith
+                                    $"RuntimeMethodHandle_InvokeMethod: boxing the value-type return %O{returnType} produced %O{other}, expected an object reference"
                         else
                             match returnValue with
                             | EvalStackValue.ObjectRef addr -> CliType.ObjectRef (Some addr), state

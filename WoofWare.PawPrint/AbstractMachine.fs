@@ -247,8 +247,6 @@ module AbstractMachine =
                     FunctionPointerTarget.requireManaged "delegate invocation" methodPtrTarget
                     |> fun m -> state, Ok m
 
-            let methodGenerics = instruction.ExecutingMethod.Generics
-
             // Preserve the original call-site offset from the callvirt Invoke that
             // created this delegate frame.  After returnStackFrame the caller's
             // IlOpIndex has already been advanced, so we must carry the original
@@ -425,7 +423,7 @@ module AbstractMachine =
                     false
                     false
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                    methodGenerics
+                    methodPtr.Generics
                     methodPtr
                     thread
                     currentThreadState
