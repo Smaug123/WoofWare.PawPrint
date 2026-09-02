@@ -61,6 +61,7 @@
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestFieldIdDiagnostics.fs" />
     <Compile Include="TestConcreteTypeDescription.fs" />
+    <Compile Include="TestConcretePrimitivePattern.fs" />
     <Compile Include="TestFieldIdAgreement.fs" />
     <Compile Include="TestDispatchesVirtually.fs" />
     <Compile Include="TestProjectionByteOffset.fs" />
