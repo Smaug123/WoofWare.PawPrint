@@ -258,11 +258,21 @@ type ThreadStatus =
     /// subsystem, not by guest IL); for now `Parked` is permanent for
     /// the run.
     ///
-    /// Permanently-`Parked` threads do not cause spurious deadlock
-    /// detection because the driver short-circuits to `NormalExit` as
-    /// soon as the entry thread terminates; the scheduler is never
-    /// asked to find another `Runnable` thread after that point.
+    /// A permanently-`Parked` thread is no obstacle to the run ending: it does
+    /// not keep the process alive (`ThreadStatus.keepsProcessAlive`), and the
+    /// driver reports a deadlock only while some thread does.
     | Parked
+    /// The entry thread after `Main` has returned. CoreCLR's `RunMainPost` blocks the
+    /// entry thread in `ThreadStore::WaitForOtherThreads` until no other foreground thread
+    /// is alive, and only then does the process exit; this is that wait. The thread never
+    /// runs again — its final frame stays in place, with `Main`'s return value on the eval
+    /// stack for the driver to report as the exit code — but it is *not* dead: a `Join` on
+    /// it blocks for as long as the process lasts, exactly as on real .NET.
+    ///
+    /// Only the entry thread ever holds this status, and only `Program.stepPrepared` puts
+    /// it there. Nothing takes it out again: the run ends with `NormalExit` at the first
+    /// tick at which no foreground thread `keepsProcessAlive`.
+    | WaitingForForegroundThreads
 
 [<RequireQualifiedAccess>]
 module ThreadStatus =
@@ -288,6 +298,7 @@ module ThreadStatus =
         | ThreadStatus.Parked -> true
         | ThreadStatus.Runnable -> false
         | ThreadStatus.Terminated -> false
+        | ThreadStatus.WaitingForForegroundThreads -> false
         | ThreadStatus.BlockedOnJoin _ -> false
         | ThreadStatus.BlockedOnClassInit _ -> false
         | ThreadStatus.BlockedOnMonitorAcquire _ -> false
@@ -333,6 +344,7 @@ module ThreadStatus =
         | ThreadStatus.Parked -> false
         | ThreadStatus.Runnable -> false
         | ThreadStatus.Terminated -> false
+        | ThreadStatus.WaitingForForegroundThreads -> false
         | ThreadStatus.BlockedOnClassInit _ -> false
         | ThreadStatus.BlockedInSyscall -> false
         | ThreadStatus.BlockedOnJoin _ -> true
@@ -344,6 +356,35 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnWaitHandles _ -> true
         | ThreadStatus.BlockedOnSleep _ -> true
 
+    /// True iff a thread in this status is one the process waits for before it can exit,
+    /// provided the thread is foreground: it has been started and has not finished. This is
+    /// the population CoreCLR's `ThreadStore::OtherThreadsComplete` counts — every thread in
+    /// the store, less the unstarted and the dead — and `Program.stepPrepared` ends the run
+    /// once `Main` has returned and no foreground thread answers true here.
+    ///
+    /// `Parked` is false because such a thread stands for a pthread the runtime owns rather
+    /// than a managed thread in the store; `WaitingForForegroundThreads` is false because it
+    /// is the entry thread doing the waiting, which does not wait for itself.
+    let keepsProcessAlive (status : ThreadStatus) : bool =
+        // Fully enumerated, like the two above, so a new `ThreadStatus` must say whether the
+        // process waits for it.
+        match status with
+        | ThreadStatus.NotStarted -> false
+        | ThreadStatus.Terminated -> false
+        | ThreadStatus.Parked -> false
+        | ThreadStatus.WaitingForForegroundThreads -> false
+        | ThreadStatus.Runnable -> true
+        | ThreadStatus.BlockedOnJoin _ -> true
+        | ThreadStatus.BlockedOnClassInit _ -> true
+        | ThreadStatus.BlockedOnMonitorAcquire _ -> true
+        | ThreadStatus.BlockedOnMonitorWait _ -> true
+        | ThreadStatus.BlockedOnSyncBlockAcquire _ -> true
+        | ThreadStatus.BlockedOnSyncBlockWait _ -> true
+        | ThreadStatus.BlockedOnWaitHandle _ -> true
+        | ThreadStatus.BlockedOnWaitHandles _ -> true
+        | ThreadStatus.BlockedOnSleep _ -> true
+        | ThreadStatus.BlockedInSyscall -> true
+
 type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context
@@ -351,13 +392,12 @@ type ThreadState =
         NextFrameId : int
         ActiveMethodState : FrameId
         Status : ThreadStatus
-        /// Mirrors the CoreCLR `Thread.IsBackground` flag set via the
-        /// `ThreadNative_SetIsBackground` QCall. The interpreter does not yet
-        /// model the "process terminates when the last foreground thread
-        /// exits" semantics; this field exists so the QCall can store the
-        /// guest's request faithfully and the paired getter can return it,
-        /// preserving round-trip semantics for guest code that reads back
-        /// `Thread.IsBackground`. Default `false` matches the BCL.
+        /// Mirrors the CoreCLR `Thread.IsBackground` flag, written by the
+        /// `ThreadNative_SetIsBackground` QCall and read back by its getter.
+        /// Once `Main` has returned, the process ends at the first tick at
+        /// which no thread with this `false` still `keepsProcessAlive`
+        /// (`Program.stepPrepared`), so setting it on a worker decides whether
+        /// the process waits for that worker. Default `false` matches the BCL.
         IsBackground : bool
         /// Diagnostic mirror of the thread's name, populated when the guest
         /// invokes the `ThreadNative_InformThreadNameChange` QCall (i.e. via

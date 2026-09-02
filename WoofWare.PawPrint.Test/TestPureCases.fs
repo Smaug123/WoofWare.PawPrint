@@ -66,7 +66,14 @@ module TestPureCases =
         ]
         |> Set.ofList
 
-    let customExitCodes = [ "ExceptionWithNoOpFinally.cs", 3 ] |> Map.ofList
+    let customExitCodes =
+        [
+            "ExceptionWithNoOpFinally.cs", 3
+            "ForegroundThreadExitsAfterMainReturns.cs", 7
+            "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", 5
+            "BackgroundWorkerJoinsMainThread.cs", 4
+        ]
+        |> Map.ofList
 
     let allPure =
         assy.GetManifestResourceNames ()

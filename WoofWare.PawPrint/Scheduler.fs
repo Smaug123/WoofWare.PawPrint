@@ -600,6 +600,29 @@ module Scheduler =
 
         setThreadStatus thread ThreadStatus.Runnable state
 
+    /// Record that the entry thread has returned from `Main`.
+    ///
+    /// The thread never runs again but is not dead: it goes to `WaitingForForegroundThreads`,
+    /// keeping its final frame — `Main`'s return value on its eval stack is the process exit
+    /// code — and any thread joined on it stays blocked. That is what CoreCLR does: after
+    /// `Main`, `RunMainPost` blocks the entry thread in `WaitForOtherThreads` until every other
+    /// foreground thread has finished, and a `Join` on it waits for a death that never comes.
+    /// So none of the checks `onThreadTerminated` makes apply — a monitor the entry thread still
+    /// holds is held by a live thread, and a waiter on it is stuck exactly as it would be on
+    /// real .NET.
+    let onMainReturned (entry : ThreadId) (state : IlMachineState) : IlMachineState =
+        match state.ThreadState |> Map.tryFind entry with
+        | None -> failwith $"Scheduler.onMainReturned: entry thread %O{entry} has no ThreadState."
+        | Some ts ->
+            match ts.Status with
+            | ThreadStatus.Runnable -> ()
+            | other ->
+                // It has just retired `Main`'s `ret`, which only a Runnable thread can do.
+                failwith
+                    $"logic error: entry thread %O{entry} returned from Main while in status %O{other}; only a Runnable thread can retire an instruction."
+
+        setThreadStatus entry ThreadStatus.WaitingForForegroundThreads state
+
     /// Record that `terminated` has finished executing its final `ret`.
     /// - Flips its own status to Terminated.
     /// - Wakes every thread that was BlockedOnJoin on it; they proceed past Join.

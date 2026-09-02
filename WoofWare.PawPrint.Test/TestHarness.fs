@@ -214,7 +214,7 @@ module BoundedRun =
                 // the interpreter builds it with the same renderer — so re-summarising the
                 // returned state here would print the same thing twice in two formats.
                 failwith
-                    $"%s{description} deadlocked: no runnable threads and the entry thread has not terminated. Threads: %s{stuck}"
+                    $"%s{description} deadlocked: no runnable threads and the process has not exited. Threads: %s{stuck}"
             | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
             | Program.ProgramStepOutcome.WorkerTerminated (prepared, _) -> goMain (steps + 1L) prepared
 
