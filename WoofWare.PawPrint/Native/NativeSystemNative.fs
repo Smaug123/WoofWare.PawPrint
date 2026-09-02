@@ -5724,16 +5724,20 @@ module NativeSystemNative =
             // The BCL's managed `OnPosixSignal` calls this from a
             // thread-pool worker after all registered handlers have run
             // and none called `PosixSignalContext.Cancel = true`. Real
-            // native code runs the signal's kernel-default disposition:
-            // no-op for ignore/stop/continue defaults (SIGCHLD, SIGURG,
-            // SIGWINCH, SIGTSTP, SIGTTIN, SIGTTOU, SIGCONT), and for
-            // terminate-by-default signals it restores the original
-            // `sigaction` and re-raises so the process exits with the
-            // signal-default behaviour. PawPrint matches the no-op
-            // branches exactly (there is nothing to do) and surfaces the
-            // terminate branch as `SignalTerminated`.
+            // native code has an explicit no-op arm for seven signals
+            // (SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU, SIGCHLD, SIGURG,
+            // SIGWINCH; see `PosixSignalPal.handledWithoutRestoring`) and
+            // for everything else restores the original `sigaction` and
+            // re-raises the signal with `kill(2)`, so the process gets the
+            // kernel's default. PawPrint matches the no-op arms exactly
+            // (there is nothing to do) and, for the default arm, runs the
+            // kernel default: `SignalTerminated` where that is to
+            // terminate, and — where it is to discard the signal, which
+            // is Darwin's SIGIO and SIGINFO — clears the enable bit,
+            // because the shim's handler is gone and no later occurrence
+            // reaches managed code.
             //
-            // Which signal a signo names, and so which branch it takes, is
+            // Which signal a signo names, and so which arm it takes, is
             // read under the configured platform's numbering: 29 is SIGIO
             // on Linux and terminates, and SIGINFO on Darwin and is
             // discarded.
@@ -5748,18 +5752,51 @@ module NativeSystemNative =
                 // `kill(g_pid, 32)`, which the kernel refuses with EINVAL
                 // and the shim does not check; the process carries on.
                 NativeHandlerResult.completed state |> Some
+            | ValueSome signal when PosixSignalPal.handledWithoutRestoring numbering signal ->
+                // Nothing to do: the runtime cannot stop or continue
+                // itself, and the ignored ones are literally no-ops (the
+                // terminal re-initialisation on SIGCONT is not relevant to
+                // PawPrint, which has no terminal). The shim's handler
+                // stays installed, so the enable bit stays set.
+                NativeHandlerResult.completed state |> Some
             | ValueSome signal ->
                 match Signal.defaultDispositionUnder numbering signal with
-                | DefaultDisposition.Ignore
+                | DefaultDisposition.Ignore ->
+                    // The `default:` arm for a signal the kernel discards:
+                    // `RestoreSignalHandler` puts back `SIG_DFL`, then
+                    // `kill(g_pid, signo)` delivers a signal the kernel
+                    // drops. The process carries on, but with no native
+                    // handler for this signo any more, so nothing the BCL
+                    // still records for it can be reached; `g_hasPosix-
+                    // SignalRegistrations` stays set there, but it is only
+                    // read on a delivery that can no longer happen, and a
+                    // later `EnablePosixSignalHandling` — which the BCL
+                    // sends only once every token is unregistered —
+                    // reinstalls the handler, exactly as it re-enables
+                    // here.
+                    state.MapKernel (fun kernel ->
+                        { kernel with
+                            Process =
+                                { kernel.Process with
+                                    Signals = SignalState.disable signal kernel.Signals
+                                }
+                        }
+                    )
+                    |> NativeHandlerResult.completed
+                    |> Some
                 | DefaultDisposition.Stop
                 | DefaultDisposition.Continue ->
-                    // Nothing to do: the runtime cannot stop or continue
-                    // itself, and Ignore is literally a no-op. Matches
-                    // the per-signal no-op branches in `pal_signal.c`'s
-                    // `SystemNative_HandleNonCanceledPosixSignal` switch
-                    // (and the implicit terminal-reinit call on SIGCONT
-                    // is not relevant to PawPrint, which has no terminal).
-                    NativeHandlerResult.completed state |> Some
+                    // The `default:` arm would restore `SIG_DFL` and
+                    // re-raise, and the kernel would then stop or continue
+                    // the whole process, which PawPrint does not model. No
+                    // signal the BCL can register gets here — the ones
+                    // with these defaults either have an explicit arm or
+                    // are SIGSTOP, which `EnablePosixSignalHandling`
+                    // refuses — so this is a guest hand-rolling the
+                    // P/Invoke, and it is refused rather than answered
+                    // with an invented continuation.
+                    failwith
+                        $"%s{operation}: signo %d{signo} (%O{signal} under the %O{numbering} numbering) reaches the shim's default arm, which would restore the kernel's disposition and re-raise it; the kernel would then stop or continue the process, which PawPrint does not model. Only a guest bypassing PosixSignalRegistration can reach this."
                 | DefaultDisposition.Terminate ->
                     // Mirrors `pal_signal.c`'s Terminate branch, which
                     // restores the original `sigaction` and calls

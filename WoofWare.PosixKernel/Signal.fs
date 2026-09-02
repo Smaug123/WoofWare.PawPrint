@@ -40,6 +40,7 @@ type Signal =
     | SIGUSR1
     | SIGUSR2
     | SIGABRT
+    | SIGURG
     /// Catch-all for signals the simulator doesn't model semantically yet.
     /// Carries a raw signo, read under the numbering of whichever platform the
     /// process simulates: `Other 17` is `SIGSTOP` in a Darwin process and
@@ -106,7 +107,8 @@ module Signal =
     /// </summary>
     /// <remarks>
     /// Nine of the named signals have the same number on both; <c>SIGUSR1</c>,
-    /// <c>SIGUSR2</c>, <c>SIGCHLD</c>, <c>SIGCONT</c> and <c>SIGTSTP</c> do not.
+    /// <c>SIGUSR2</c>, <c>SIGCHLD</c>, <c>SIGCONT</c>, <c>SIGTSTP</c> and
+    /// <c>SIGURG</c> do not.
     /// Both columns were measured with a C probe rather than transcribed, on
     /// Linux 6.18.5 / glibc 2.41 and Darwin 25.6.0.
     ///
@@ -144,6 +146,10 @@ module Signal =
             match numbering with
             | SignalNumbering.Linux -> 20
             | SignalNumbering.Darwin -> 18
+        | Signal.SIGURG ->
+            match numbering with
+            | SignalNumbering.Linux -> 23
+            | SignalNumbering.Darwin -> 16
         | Signal.Other rawSignal -> rawSignal
 
     /// Every case but `Other`, which is the search space for `ofRawSignoUnder`.
@@ -163,6 +169,7 @@ module Signal =
             Signal.SIGUSR1
             Signal.SIGUSR2
             Signal.SIGABRT
+            Signal.SIGURG
         ]
 
     /// <summary>
@@ -189,11 +196,19 @@ module Signal =
             else
                 ValueNone
 
-    /// `Other` is public and enforces nothing, so a client can spell a named
-    /// signal as `Other` carrying its number. The classifiers below answer
-    /// for the signal a value *is* under the numbering, so they ask for that
-    /// spelling first; a number naming no case, or none at all, is unchanged.
-    let private canonical (numbering : SignalNumbering) (signal : Signal) : Signal =
+    /// <summary>
+    /// The named spelling of a signal that may have arrived as <c>Other</c>
+    /// carrying a named signal's number.
+    /// </summary>
+    /// <remarks>
+    /// <c>Other</c> is public and enforces nothing, so a client can spell
+    /// <c>SIGCHLD</c> as <c>Other 17</c> under Linux. The classifiers here
+    /// answer for the signal a value <i>is</i> under the numbering, so they
+    /// ask for this spelling first; a client keying its own tables on the
+    /// case should do the same. A number naming no case, or none at all, is
+    /// handed back unchanged.
+    /// </remarks>
+    let canonicalUnder (numbering : SignalNumbering) (signal : Signal) : Signal =
         match signal with
         | Signal.Other rawSignal ->
             match ofRawSignoUnder numbering rawSignal with
@@ -219,7 +234,7 @@ module Signal =
     /// which classifies as the signal it is.
     /// </remarks>
     let isUncatchableUnder (numbering : SignalNumbering) (signal : Signal) : bool =
-        match canonical numbering signal with
+        match canonicalUnder numbering signal with
         | Signal.Other rawSignal ->
             match numbering with
             | SignalNumbering.Linux -> rawSignal = 9 || rawSignal = 19 || rawSignal = 32 || rawSignal = 33
@@ -237,7 +252,8 @@ module Signal =
         | Signal.SIGPIPE
         | Signal.SIGUSR1
         | Signal.SIGUSR2
-        | Signal.SIGABRT -> false
+        | Signal.SIGABRT
+        | Signal.SIGURG -> false
 
     /// <summary>
     /// The kernel-level default disposition for <c>signal</c>, read under the
@@ -246,12 +262,11 @@ module Signal =
     /// <remarks>
     /// The named cases have the same disposition everywhere. Only a
     /// <c>Signal.Other</c> needs the numbering, because its payload's identity
-    /// does: 23 is <c>SIGURG</c> (discarded) on Linux where Darwin's
-    /// <c>SIGURG</c> is 16, Darwin's 29 is <c>SIGINFO</c> (discarded) where
-    /// Linux's 29 is <c>SIGIO</c> (terminates), and <c>SIGIO</c> itself —
-    /// Darwin's 23 — is discarded there. Measured on Linux 6.18.5 and Darwin
-    /// 25.6.0 by having a forked child raise each signal on itself under
-    /// <c>SIG_DFL</c>.
+    /// does: Darwin's 29 is <c>SIGINFO</c> (discarded) where Linux's 29 is
+    /// <c>SIGIO</c> (terminates), and <c>SIGIO</c> itself — Darwin's 23 — is
+    /// discarded there where Linux's 23 is <c>SIGURG</c>. Measured on Linux
+    /// 6.18.5 and Darwin 25.6.0 by having a forked child raise each signal on
+    /// itself under <c>SIG_DFL</c>.
     ///
     /// Signals the measurement could not classify — <c>SIGTSTP</c>,
     /// <c>SIGTTIN</c> and <c>SIGTTOU</c>, which both kernels discard rather
@@ -263,9 +278,10 @@ module Signal =
     /// signal: <c>Other 17</c> under Linux is <c>SIGCHLD</c>, and is ignored.
     /// </remarks>
     let defaultDispositionUnder (numbering : SignalNumbering) (signal : Signal) : DefaultDisposition =
-        match canonical numbering signal with
+        match canonicalUnder numbering signal with
         | Signal.SIGCHLD
-        | Signal.SIGWINCH -> DefaultDisposition.Ignore
+        | Signal.SIGWINCH
+        | Signal.SIGURG -> DefaultDisposition.Ignore
         | Signal.SIGCONT -> DefaultDisposition.Continue
         | Signal.SIGTSTP
         | Signal.SIGTTIN
@@ -284,15 +300,12 @@ module Signal =
                 match rawSignal with
                 // SIGSTOP
                 | 19 -> DefaultDisposition.Stop
-                // SIGURG
-                | 23 -> DefaultDisposition.Ignore
                 | _ -> DefaultDisposition.Terminate
             | SignalNumbering.Darwin ->
                 match rawSignal with
                 // SIGSTOP
                 | 17 -> DefaultDisposition.Stop
-                // SIGURG, SIGIO and SIGINFO
-                | 16
+                // SIGIO and SIGINFO
                 | 23
                 | 29 -> DefaultDisposition.Ignore
                 | _ -> DefaultDisposition.Terminate

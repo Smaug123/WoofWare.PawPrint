@@ -30,7 +30,7 @@ module TestSignal =
     let private everyNumbering : SignalNumbering list =
         [ SignalNumbering.Linux ; SignalNumbering.Darwin ]
 
-    /// The 14 modelled signals paired with their Linux signo, measured on Linux
+    /// The 15 modelled signals paired with their Linux signo, measured on Linux
     /// 6.18.5 / glibc 2.41 with a C probe that printed each `SIG*` macro.
     let private linuxColumn : (Signal * int) list =
         [
@@ -47,12 +47,13 @@ module TestSignal =
             Signal.SIGTSTP, 20
             Signal.SIGTTIN, 21
             Signal.SIGTTOU, 22
+            Signal.SIGURG, 23
             Signal.SIGWINCH, 28
         ]
 
-    /// The same 14 with their Darwin signo, measured the same way on Darwin
-    /// 25.6.0. Five rows differ from the Linux column: SIGUSR1, SIGUSR2,
-    /// SIGCHLD, SIGCONT and SIGTSTP.
+    /// The same 15 with their Darwin signo, measured the same way on Darwin
+    /// 25.6.0. Six rows differ from the Linux column: SIGUSR1, SIGUSR2,
+    /// SIGCHLD, SIGCONT, SIGTSTP and SIGURG.
     let private darwinColumn : (Signal * int) list =
         [
             Signal.SIGHUP, 1
@@ -61,6 +62,7 @@ module TestSignal =
             Signal.SIGABRT, 6
             Signal.SIGPIPE, 13
             Signal.SIGTERM, 15
+            Signal.SIGURG, 16
             Signal.SIGTSTP, 18
             Signal.SIGCONT, 19
             Signal.SIGCHLD, 20
@@ -112,10 +114,10 @@ module TestSignal =
             for signal, signo in column numbering do
                 Signal.toRawSignoUnder numbering signal |> shouldEqual signo
 
-    /// The five rows that differ are the whole reason the numbering exists,
+    /// The six rows that differ are the whole reason the numbering exists,
     /// so they are asserted by name as well as through the tables.
     [<Test>]
-    let ``the five divergent rows are the ones measured`` () : unit =
+    let ``the six divergent rows are the ones measured`` () : unit =
         let divergent : (Signal * int * int) list =
             [
                 Signal.SIGUSR1, 10, 30
@@ -123,6 +125,7 @@ module TestSignal =
                 Signal.SIGCHLD, 17, 20
                 Signal.SIGCONT, 18, 19
                 Signal.SIGTSTP, 20, 18
+                Signal.SIGURG, 23, 16
             ]
 
         for signal, linux, darwin in divergent do
@@ -214,6 +217,26 @@ module TestSignal =
         Signal.ofRawSignoUnder SignalNumbering.Darwin 30
         |> shouldEqual (ValueSome Signal.SIGUSR1)
 
+        Signal.ofRawSignoUnder SignalNumbering.Linux 23
+        |> shouldEqual (ValueSome Signal.SIGURG)
+
+        Signal.ofRawSignoUnder SignalNumbering.Darwin 23
+        |> shouldEqual (ValueSome (Signal.Other 23)) // SIGIO
+
+    [<Test>]
+    let ``canonicalUnder names an Other carrying a named signal's number and leaves the rest alone`` () : unit =
+        for numbering in everyNumbering do
+            for signal, signo in column numbering do
+                Signal.canonicalUnder numbering (Signal.Other signo) |> shouldEqual signal
+                Signal.canonicalUnder numbering signal |> shouldEqual signal
+
+            Signal.canonicalUnder numbering (Signal.Other 9) |> shouldEqual (Signal.Other 9) // SIGKILL
+
+            Signal.canonicalUnder numbering (Signal.Other 0) |> shouldEqual (Signal.Other 0)
+
+            Signal.canonicalUnder numbering (Signal.Other 999)
+            |> shouldEqual (Signal.Other 999)
+
     [<Test>]
     let ``isUncatchableUnder flags exactly the signos sigaction refuses`` () : unit =
         // Measured by installing SIG_DFL for every number up to NSIG + 1:
@@ -275,6 +298,7 @@ module TestSignal =
                 Signal.SIGTERM, DefaultDisposition.Terminate
                 Signal.SIGCHLD, DefaultDisposition.Ignore
                 Signal.SIGWINCH, DefaultDisposition.Ignore
+                Signal.SIGURG, DefaultDisposition.Ignore
                 Signal.SIGCONT, DefaultDisposition.Continue
                 Signal.SIGTSTP, DefaultDisposition.Stop
                 Signal.SIGTTIN, DefaultDisposition.Stop
@@ -288,12 +312,11 @@ module TestSignal =
                 Signal.defaultDispositionUnder numbering signal |> shouldEqual disposition
 
     /// The unnamed signals whose kernel default is not Terminate, measured by
-    /// having a forked child raise each signal on itself under SIG_DFL: SIGURG
-    /// (23 on Linux, 16 on Darwin), SIGIO (29 on Linux terminates; 23 on
-    /// Darwin is discarded), SIGINFO (Darwin's 29, discarded), and SIGSTOP
-    /// (which stops). The dispatcher must not fall through to Terminate for
-    /// these just because the case is unnamed — and must not discard Linux's
-    /// 29 because Darwin's is discarded.
+    /// having a forked child raise each signal on itself under SIG_DFL: SIGIO
+    /// (29 on Linux terminates; 23 on Darwin is discarded), SIGINFO (Darwin's
+    /// 29, discarded), and SIGSTOP (which stops). The dispatcher must not fall
+    /// through to Terminate for these just because the case is unnamed — and
+    /// must not discard Linux's 29 because Darwin's is discarded.
     [<Test>]
     let ``defaultDispositionUnder classifies unnamed signos under their own numbering`` () : unit =
         let expected (numbering : SignalNumbering) : (int * DefaultDisposition) list =
@@ -301,14 +324,14 @@ module TestSignal =
             | SignalNumbering.Linux ->
                 [
                     19, DefaultDisposition.Stop // SIGSTOP
-                    23, DefaultDisposition.Ignore // SIGURG
+                    23, DefaultDisposition.Ignore // SIGURG, named: reached via ofRawSignoUnder below
                     29, DefaultDisposition.Terminate // SIGIO
                     16, DefaultDisposition.Terminate // SIGSTKFLT
                 ]
             | SignalNumbering.Darwin ->
                 [
                     17, DefaultDisposition.Stop // SIGSTOP
-                    16, DefaultDisposition.Ignore // SIGURG
+                    16, DefaultDisposition.Ignore // SIGURG, named: reached via ofRawSignoUnder below
                     23, DefaultDisposition.Ignore // SIGIO
                     29, DefaultDisposition.Ignore // SIGINFO
                     19, DefaultDisposition.Continue // SIGCONT, named: reached via ofRawSignoUnder below
@@ -362,8 +385,8 @@ module TestSignal =
         // above, and everything else in range must classify as Terminate.
         let exceptions (numbering : SignalNumbering) : int list =
             match numbering with
-            | SignalNumbering.Linux -> [ 19 ; 23 ]
-            | SignalNumbering.Darwin -> [ 17 ; 16 ; 23 ; 29 ]
+            | SignalNumbering.Linux -> [ 19 ]
+            | SignalNumbering.Darwin -> [ 17 ; 23 ; 29 ]
 
         for numbering in everyNumbering do
             for signo in 1 .. Signal.highestSignoUnder numbering do

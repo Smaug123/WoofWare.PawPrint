@@ -14,6 +14,10 @@ using System.Runtime.InteropServices;
 // glibc's own SIGCANCEL and SIGSETXID, screened in its wrapper — with
 // EINVAL, while 64 (SIGRTMAX) is accepted; and a process with the default
 // disposition survives SIGCHLD (17) and SIGURG (23).
+//
+// The registration asserts on the terminal kernel state as well as on the
+// exit code: which of the signals enabled below are still enabled after
+// their non-cancelled handling ran.
 class Program
 {
     const int EINVAL = 22;
@@ -47,16 +51,16 @@ class Program
         // SIGRTMAX itself is an ordinary catchable signal.
         if (Enable(64) != 1) return 8;
 
-        Disable(17);
         Disable(32);
         Disable(64);
 
         // Kernel-default dispositions that do not end the process: 17 is
-        // SIGCHLD (discarded), 23 is SIGURG (discarded), 19 is SIGSTOP (the
-        // runtime cannot stop itself, so nothing happens).
+        // SIGCHLD and 23 is SIGURG, both discarded, and both named by the
+        // PAL's switch, so their handlers stay installed and the enable
+        // bits stay set.
+        if (Enable(23) != 1) return 9;
         HandleNonCanceled(17);
         HandleNonCanceled(23);
-        HandleNonCanceled(19);
 
         return 0;
     }

@@ -69,6 +69,43 @@ module PosixSignalPal =
         | Some (_, signal) -> Signal.toRawSignoUnder numbering signal
         | None -> if raw > 0 && raw <= signalMax numbering then raw else 0
 
+    /// Whether `SystemNative_HandleNonCanceledPosixSignal` has an explicit arm
+    /// for this signal, so that running the kernel's default disposition costs
+    /// the shim nothing.
+    ///
+    /// `pal_signal.c` names SIGCONT, SIGTSTP, SIGTTIN, SIGTTOU, SIGCHLD, SIGURG
+    /// and SIGWINCH, and for each does nothing to the process and leaves its
+    /// own handler installed, so the next occurrence still reaches managed
+    /// code. Every other signal takes the `default:` arm, which restores the
+    /// original `sigaction` and re-raises the signal with `kill(2)` — so the
+    /// process gets whatever the kernel does by default, and the shim's
+    /// handler is *gone* even when that default is to discard the signal
+    /// (Darwin's SIGIO and SIGINFO). The two are told apart here rather than
+    /// by the kernel's disposition, because which signals have an arm is the
+    /// shim's choice: SIGURG and SIGWINCH are ignored by default and have one,
+    /// Darwin's SIGIO is ignored by default and has none.
+    ///
+    /// Answers for the signal the value *is* under the numbering, so an
+    /// `Other` carrying SIGURG's number counts.
+    let handledWithoutRestoring (numbering : SignalNumbering) (signal : Signal) : bool =
+        match Signal.canonicalUnder numbering signal with
+        | Signal.SIGCONT
+        | Signal.SIGTSTP
+        | Signal.SIGTTIN
+        | Signal.SIGTTOU
+        | Signal.SIGCHLD
+        | Signal.SIGURG
+        | Signal.SIGWINCH -> true
+        | Signal.SIGHUP
+        | Signal.SIGINT
+        | Signal.SIGQUIT
+        | Signal.SIGTERM
+        | Signal.SIGPIPE
+        | Signal.SIGUSR1
+        | Signal.SIGUSR2
+        | Signal.SIGABRT
+        | Signal.Other _ -> false
+
     /// The `PosixSignal` value the dispatcher hands a registered handler as its
     /// second argument.
     ///

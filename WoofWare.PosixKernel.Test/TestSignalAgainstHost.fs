@@ -58,6 +58,7 @@ module TestSignalAgainstHost =
         | Signal.SIGUSR1 -> "USR1"
         | Signal.SIGUSR2 -> "USR2"
         | Signal.SIGABRT -> "ABRT"
+        | Signal.SIGURG -> "URG"
         | Signal.Other raw -> failwith $"Signal.Other %d{raw} has no name to look up"
 
     let private named : Signal list =
@@ -76,6 +77,7 @@ module TestSignalAgainstHost =
             Signal.SIGUSR1
             Signal.SIGUSR2
             Signal.SIGABRT
+            Signal.SIGURG
         ]
 
     /// Well past either platform's ceiling, so the sweep sees the shell refuse.
