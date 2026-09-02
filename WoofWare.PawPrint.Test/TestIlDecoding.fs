@@ -10,6 +10,8 @@ open System.Reflection.Emit
 open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
 open FSharp.Reflection
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -132,6 +134,11 @@ module TestIlDecoding =
             ]
         | other -> failwith $"TestIlDecoding has no sample operands for OperandType %O{other} (opcode %s{op.Name})"
 
+    let private int32Bytes (v : int32) : byte[] =
+        let buf = Array.zeroCreate 4
+        BinaryPrimitives.WriteInt32LittleEndian (buf.AsSpan (), v)
+        buf
+
     /// The bytes ECMA-335 III.1.2 says encode this instruction: the opcode (one byte, or
     /// 0xFE followed by a second), then the operand little-endian.
     let private encode (op : OpCode) (operand : Operand) : byte[] =
@@ -140,11 +147,6 @@ module TestIlDecoding =
             | 1 -> [| byte op.Value |]
             | 2 -> [| byte (uint16 op.Value >>> 8) ; byte op.Value |]
             | size -> failwith $"unexpected opcode size %i{size} for %s{op.Name}"
-
-        let int32Bytes (v : int32) : byte[] =
-            let buf = Array.zeroCreate 4
-            BinaryPrimitives.WriteInt32LittleEndian (buf.AsSpan (), v)
-            buf
 
         let operandBytes =
             match operand with
@@ -327,6 +329,224 @@ module TestIlDecoding =
 
         if not failures.IsEmpty then
             failwith (String.Join ("\n", failures))
+
+    /// The bytes of a `switch` instruction which declares `count` targets, followed by
+    /// exactly `targetBytes`, which may be fewer than the `4 * count` the declaration calls for.
+    let private switchBytes (count : uint32) (targetBytes : byte[]) : byte[] =
+        let countBytes = Array.zeroCreate 4
+        BinaryPrimitives.WriteUInt32LittleEndian (countBytes.AsSpan (), count)
+        Array.concat [ [| byte OpCodes.Switch.Value |] ; countBytes ; targetBytes ]
+
+    let private nops (n : int) : byte[] = Array.create n (byte OpCodes.Nop.Value)
+
+    /// A well-formed body: some `nop`s, a `switch` over `targets`, and perhaps a `ret`.
+    type private WellFormedSwitchBody =
+        {
+            Prefix : int
+            Targets : int32 list
+            TrailingRet : bool
+        }
+
+    let private wellFormedSwitchGen : Gen<WellFormedSwitchBody> =
+        gen {
+            let! prefix = Gen.choose (0, 3)
+            let! count = Gen.frequency [ 1, Gen.constant 0 ; 4, Gen.choose (1, 64) ]
+            let! targets = Gen.listOfLength count (Gen.choose (Int32.MinValue, Int32.MaxValue))
+            let! trailingRet = Gen.elements [ true ; false ]
+
+            return
+                {
+                    Prefix = prefix
+                    Targets = targets
+                    TrailingRet = trailingRet
+                }
+        }
+
+    [<Test>]
+    let ``a switch whose targets all fit decodes to exactly those targets`` () =
+        // The guard against a truncated jump table must not refuse a table that ends exactly
+        // where the body does, so make sure that shape is generated.
+        let mutable endsTheBody = 0
+
+        let property (body : WellFormedSwitchBody) : unit =
+            let targetBytes = body.Targets |> List.map int32Bytes |> Array.concat
+
+            let bytes =
+                Array.concat
+                    [
+                        nops body.Prefix
+                        switchBytes (uint32 body.Targets.Length) targetBytes
+                        (if body.TrailingRet then
+                             [| byte OpCodes.Ret.Value |]
+                         else
+                             [||])
+                    ]
+
+            if not body.TrailingRet then
+                endsTheBody <- endsTheBody + 1
+
+            let switchOffset = body.Prefix
+            let afterSwitch = switchOffset + 5 + 4 * body.Targets.Length
+
+            let expected =
+                [
+                    for i in 0 .. body.Prefix - 1 do
+                        yield IlOp.Nullary NullaryIlOp.Nop, i
+                    yield IlOp.Switch (ImmutableArray.CreateRange body.Targets), switchOffset
+                    if body.TrailingRet then
+                        yield IlOp.Nullary NullaryIlOp.Ret, afterSwitch
+                ]
+
+            let actual =
+                IlDecoding.decodeInstructions (IlTokenUniverse.Metadata sourceAssembly) bytes
+
+            List.length actual |> shouldEqual (List.length expected)
+
+            List.zip expected actual
+            |> List.iter (fun ((e, eOff), (a, aOff)) ->
+                if not (opsEqual e a) then
+                    failwith $"expected %O{e} at %i{eOff} but decoded %O{a} at %i{aOff}"
+
+                aOff |> shouldEqual eOff
+            )
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen wellFormedSwitchGen) property)
+        endsTheBody |> shouldBeGreaterThan 300
+
+    /// A `switch` whose operand is cut short: either within the four-byte count, or within
+    /// the jump table the count declares.
+    [<RequireQualifiedAccess>]
+    type private Truncation =
+        /// Only this many of the count's four bytes are present, and nothing after them.
+        | WithinCount of present : int
+        /// The count is present and declares this many targets, but only `presentBytes` of
+        /// the `4 * count` bytes of jump table follow it.
+        | WithinTargets of count : uint32 * presentBytes : byte[]
+
+    type private TruncatedSwitchBody =
+        {
+            Prefix : int
+            Truncation : Truncation
+        }
+
+    let private truncatedSwitchGen : Gen<TruncatedSwitchBody> =
+        let countGen : Gen<uint32> =
+            Gen.frequency
+                [
+                    // A table that would fit in memory, so a decoder that allocates it before
+                    // checking gets as far as the truncated read.
+                    2, Gen.choose (1, 64) |> Gen.map uint32
+                    1, Gen.choose (65, 250_000) |> Gen.map uint32
+                    // A table that is at least 2 GB, so a decoder that allocates it before
+                    // checking either dies or exhausts the host.
+                    2, Gen.choose (Int32.MaxValue / 4 + 1, Int32.MaxValue) |> Gen.map uint32
+                    // Counts above Int32.MaxValue cannot be allocated at all.
+                    1, Gen.choose (0, Int32.MaxValue) |> Gen.map (fun i -> uint32 i + 0x80000000u)
+                    1, Gen.elements [ 0x7FFFFFFFu ; 0x80000000u ; 0xFFFFFFFFu ]
+                ]
+
+        gen {
+            let! prefix = Gen.choose (0, 3)
+
+            let! truncation =
+                Gen.frequency
+                    [
+                        1, Gen.choose (0, 3) |> Gen.map Truncation.WithinCount
+                        3,
+                        gen {
+                            let! count = countGen
+                            let missingAtLeast = 1
+                            let longestPrefix = min 64L (4L * int64 count - int64 missingAtLeast)
+                            let! present = Gen.choose (0, int longestPrefix)
+                            let! bytes = Gen.arrayOfLength present (Gen.choose (0, 255) |> Gen.map byte)
+                            return Truncation.WithinTargets (count, bytes)
+                        }
+                    ]
+
+            return
+                {
+                    Prefix = prefix
+                    Truncation = truncation
+                }
+        }
+
+    [<Test>]
+    let ``a switch whose operand is cut short is refused as a malformed image`` () =
+        let mutable withinCount = 0
+        let mutable withinSmallTable = 0
+        let mutable withinHugeTable = 0
+
+        let property (body : TruncatedSwitchBody) : unit =
+            let bytes =
+                match body.Truncation with
+                | Truncation.WithinCount present ->
+                    withinCount <- withinCount + 1
+
+                    Array.concat
+                        [
+                            nops body.Prefix
+                            [| byte OpCodes.Switch.Value |]
+                            Array.create present 0uy
+                        ]
+                | Truncation.WithinTargets (count, presentBytes) ->
+                    if count > uint32 (Int32.MaxValue / 4) then
+                        withinHugeTable <- withinHugeTable + 1
+                    else
+                        withinSmallTable <- withinSmallTable + 1
+
+                    Array.concat [ nops body.Prefix ; switchBytes count presentBytes ]
+
+            let outcome =
+                try
+                    IlDecoding.decodeInstructions (IlTokenUniverse.Metadata sourceAssembly) bytes
+                    |> Ok
+                with e ->
+                    Error e
+
+            match outcome, body.Truncation with
+            | Ok decoded, _ ->
+                let rendered =
+                    decoded
+                    |> List.map (fun (op, off) -> $"%O{op} at %i{off}")
+                    |> String.concat "; "
+
+                failwith $"a truncated switch decoded to [%s{rendered}]"
+            | Error (:? BadImageFormatException), Truncation.WithinCount _ -> ()
+            | Error (:? BadImageFormatException as e), Truncation.WithinTargets (count, presentBytes) ->
+                // The diagnostic must name the instruction that was cut short, not merely say
+                // that a read ran off the end.
+                let message : string = e.Message
+
+                for expected in
+                    [
+                        $"IL offset %i{body.Prefix}"
+                        $"declares %u{count} targets"
+                        $"%i{presentBytes.Length} bytes of IL remain"
+                    ] do
+                    if not (message.Contains expected) then
+                        failwith $"the diagnostic %A{message} does not mention %A{expected}"
+            | Error e, _ ->
+                failwith
+                    $"a truncated switch raised %s{e.GetType().FullName} rather than BadImageFormatException: %s{e.Message}"
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen truncatedSwitchGen) property)
+        withinCount |> shouldBeGreaterThan 200
+        withinSmallTable |> shouldBeGreaterThan 200
+        withinHugeTable |> shouldBeGreaterThan 200
+
+    [<Test>]
+    let ``a switch declaring Int32.MaxValue targets with none present is refused without allocating`` () =
+        // The jump table this declares would be 8 GB; the decoder must refuse the instruction
+        // from the count alone.
+        let bytes = [| byte OpCodes.Switch.Value ; 0xFFuy ; 0xFFuy ; 0xFFuy ; 0x7Fuy |]
+
+        let e =
+            Assert.Throws<BadImageFormatException> (fun () ->
+                IlDecoding.decodeInstructions (IlTokenUniverse.Metadata sourceAssembly) bytes
+                |> ignore
+            )
+
+        e.Message |> shouldContainText "declares 2147483647 targets"
 
     [<Test>]
     let ``an empty body decodes to no instructions`` () =

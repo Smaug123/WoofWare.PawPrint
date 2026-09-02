@@ -365,9 +365,17 @@ module IlDecoding =
                     | ILOpCode.Switch ->
                         let count = reader.ReadUInt32 ()
 
-                        if count > uint32 System.Int32.MaxValue then
-                            failwith "Debugger error: can't create a jump table with more than int32.Max entries"
+                        // The count is four bytes of untrusted input, so check that the jump
+                        // table it declares fits in the body before sizing an allocation by it.
+                        // A truncated table then gets the same malformed-image diagnostic as any
+                        // other truncated operand, which BlobReader reports on the read itself.
+                        if uint64 count * 4UL > uint64 reader.RemainingBytes then
+                            raise (
+                                System.BadImageFormatException
+                                    $"switch at IL offset %i{offset} declares %u{count} targets, which need %d{uint64 count * 4UL} bytes, but only %i{reader.RemainingBytes} bytes of IL remain"
+                            )
 
+                        // In range for int, because the remaining byte count is.
                         let count = int count
                         let result = ImmutableArray.CreateBuilder count
 
