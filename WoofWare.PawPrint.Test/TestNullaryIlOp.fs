@@ -448,6 +448,142 @@ module TestNullaryIlOp =
             failwith
                 $"Div_un native-int generator was unbalanced: high-bit denominators %d{highBitDenominators}, low-bit denominators %d{lowBitDenominators}"
 
+    /// One operand of an unsigned division is an int32 and the other a native int, so the int32
+    /// has to be widened before the divide. `Int32NativeInt` puts the int32 on the left (the
+    /// dividend); `NativeIntInt32` puts it on the right (the divisor). The divisor is never zero:
+    /// the faulting path has its own tests.
+    [<RequireQualifiedAccess>]
+    type private MixedWidthDivisionCase =
+        | Int32NativeInt of dividend : int32 * divisor : int64
+        | NativeIntInt32 of dividend : int64 * divisor : int32
+
+    let private genMixedWidthDivisionCase : Gen<MixedWidthDivisionCase> =
+        // Both int32 draws set the top bit half the time: a non-negative int32 widens the same
+        // way whichever extension is used, so only the negative half can tell the two apart.
+        let int32Dividend =
+            Gen.frequency
+                [
+                    8, genNonZeroInt32Bits
+                    1, Gen.elements [ 0 ; -1 ; Int32.MinValue ; Int32.MaxValue ]
+                ]
+
+        // A native-int dividend below 2^32 cannot see how its int32 divisor was widened either:
+        // it is smaller than the divisor under both extensions, so the quotient is 0 and the
+        // remainder is the dividend. Draw the dividend full-width rather than from FsCheck's
+        // size-bounded default.
+        let nativeIntDividend =
+            Gen.frequency
+                [
+                    8, genNonZeroInt64Bits
+                    1, Gen.elements [ 0L ; 1L ; -1L ; 0x100000000L ; Int64.MinValue ]
+                ]
+
+        Gen.oneof
+            [
+                gen {
+                    let! dividend = int32Dividend
+                    let! divisor = genNonZeroInt64Bits
+                    return MixedWidthDivisionCase.Int32NativeInt (dividend, divisor)
+                }
+                gen {
+                    let! dividend = nativeIntDividend
+                    let! divisor = genNonZeroInt32Bits
+                    return MixedWidthDivisionCase.NativeIntInt32 (dividend, divisor)
+                }
+            ]
+
+    /// The host runs the mixed-width instruction for us, emitted into a `DynamicMethod` whose two
+    /// parameters carry the operands' own stack types. Neither C# nor F# emits `div.un` or
+    /// `rem.un` on an int32 and a native int — both convert the int32 themselves first — so the
+    /// opcode is the only oracle for how the CLR widens it, and it is the host, not this file,
+    /// that says the widening is a *sign* extension despite the `.un` suffix (the suffix chooses
+    /// the division, not the widening: ECMA-335 III.1.5 gives one widening for every binary
+    /// numeric operation). The host is the same 64-bit width PawPrint models.
+    let private hostMixedWidthDivision<'left, 'right> (opcode : OpCode) : 'left -> 'right -> int64 =
+        let dm =
+            DynamicMethod (
+                $"%s{opcode.Name}_%s{typeof<'left>.Name}_%s{typeof<'right>.Name}",
+                typeof<int64>,
+                [| typeof<'left> ; typeof<'right> |]
+            )
+
+        let il = dm.GetILGenerator ()
+        il.Emit OpCodes.Ldarg_0
+        il.Emit OpCodes.Ldarg_1
+        il.Emit opcode
+        il.Emit OpCodes.Conv_I8
+        il.Emit OpCodes.Ret
+
+        let compiled =
+            dm.CreateDelegate typeof<Func<'left, 'right, int64>> :?> Func<'left, 'right, int64>
+
+        fun left right -> compiled.Invoke (left, right)
+
+    [<TestCase("Div_un")>]
+    [<TestCase("Rem_un")>]
+    let ``an unsigned division on an int32 and a native int widens the int32 as the CLR does``
+        (opName : string)
+        : unit
+        =
+        let op = faultingDivisionOp opName
+
+        let opcode =
+            match op with
+            | NullaryIlOp.Div_un -> OpCodes.Div_Un
+            | NullaryIlOp.Rem_un -> OpCodes.Rem_Un
+            | other -> failwith $"test bug: %O{other} is not an unsigned division"
+
+        let hostInt32NativeInt : int32 -> nativeint -> int64 =
+            hostMixedWidthDivision<int32, nativeint> opcode
+
+        let hostNativeIntInt32 : nativeint -> int32 -> int64 =
+            hostMixedWidthDivision<nativeint, int32> opcode
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let mutable negativeInt32s = 0
+        let mutable nonNegativeInt32s = 0
+
+        let property (case : MixedWidthDivisionCase) : unit =
+            let val1, val2, expected =
+                match case with
+                | MixedWidthDivisionCase.Int32NativeInt (dividend, divisor) ->
+                    if dividend < 0 then
+                        negativeInt32s <- negativeInt32s + 1
+                    else
+                        nonNegativeInt32s <- nonNegativeInt32s + 1
+
+                    EvalStackValue.Int32 (Int32Source.Verbatim dividend),
+                    EvalStackValue.NativeInt (NativeIntSource.Verbatim divisor),
+                    hostInt32NativeInt dividend (nativeint<int64> divisor)
+                | MixedWidthDivisionCase.NativeIntInt32 (dividend, divisor) ->
+                    if divisor < 0 then
+                        negativeInt32s <- negativeInt32s + 1
+                    else
+                        nonNegativeInt32s <- nonNegativeInt32s + 1
+
+                    EvalStackValue.NativeInt (NativeIntSource.Verbatim dividend),
+                    EvalStackValue.Int32 (Int32Source.Verbatim divisor),
+                    hostNativeIntInt32 (nativeint<int64> dividend) divisor
+
+            let state, thread = stateWithBinary loggerFactory op val1 val2
+
+            match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+            | ExecutionResult.Stepped (state, whatWeDid, _) ->
+                whatWeDid |> shouldEqual WhatWeDid.Executed
+
+                match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+                | [ EvalStackValue.NativeInt (NativeIntSource.Verbatim actual) ] -> actual |> shouldEqual expected
+                | other -> failwith $"Expected %s{opName} to leave one native int on the stack, got %O{other}"
+            | other -> failwith $"Expected %s{opName} to step, got %O{other}"
+
+        Check.One (config, Prop.forAll (Arb.fromGen genMixedWidthDivisionCase) property)
+
+        if negativeInt32s < 100 || nonNegativeInt32s < 100 then
+            failwith
+                $"%s{opName} mixed-width generator was unbalanced: negative int32 operands %d{negativeInt32s}, non-negative %d{nonNegativeInt32s}"
+
     /// `div`, `div.un`, `rem` and `rem.un` are the only arithmetic instructions that fault on
     /// their operands, and a guest can catch what they raise. These four cases pin the mapping
     /// from the fault to the exception type PawPrint manufactures — the end-to-end guest can only
