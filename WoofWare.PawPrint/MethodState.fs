@@ -132,8 +132,6 @@ and MethodState =
         /// On return, we restore this state. This should be Some almost always; an exception is the entry point.
         ReturnState : MethodReturnState option
         Generics : ImmutableArray<ConcreteTypeHandle>
-        /// Track which exception regions are currently active (innermost first)
-        ActiveExceptionRegions : ExceptionRegion list
         /// When executing finally/fault/filter bodies, we need to know how to resume.
         /// Nested EH inside those bodies pushes a new continuation over the outer one.
         ExceptionContinuations :
@@ -168,18 +166,9 @@ and MethodState =
 
     /// Set the program counter to an absolute byte offset from the start of the method.
     static member setProgramCounter (absoluteOffset : int) (state : MethodState) =
-        let jumped =
-            { state with
-                _IlOpIndex = absoluteOffset
-            }
-
-        let newActiveRegions =
-            ExceptionHandling.getActiveRegionsAtOffset jumped.IlOpIndex state.ExecutingMethod
-
-        { jumped with
-            ActiveExceptionRegions = newActiveRegions
+        { state with
+            _IlOpIndex = absoluteOffset
         }
-
 
     static member jumpProgramCounter (bytes : int) (state : MethodState) =
         MethodState.setProgramCounter (state._IlOpIndex + bytes) state
@@ -392,8 +381,6 @@ and MethodState =
 
             result.ToImmutable ()
 
-        let activeRegions = ExceptionHandling.getActiveRegionsAtOffset 0 method
-
         {
             EvaluationStack = EvalStack.Empty
             LocalVariables = localVars
@@ -403,7 +390,6 @@ and MethodState =
             StackMemoryPool = StackMemoryPool.empty
             ReturnState = returnState
             Generics = methodGenerics
-            ActiveExceptionRegions = activeRegions
             ExceptionContinuations = []
             CatchExceptions = Map.empty
             PendingPrefix = PrefixState.empty

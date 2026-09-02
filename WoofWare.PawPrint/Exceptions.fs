@@ -388,37 +388,3 @@ module ExceptionHandling =
             // region belonging to a different method.
             failwith
                 $"endfinally: finally handler at IL offset %d{justRan.HandlerOffset} (try %d{justRan.TryOffset}..%d{justRan.TryOffset + justRan.TryLength}) is not among the finally regions a leave to IL offset %d{targetPC} would run in %s{method.Name}"
-
-    /// Get the active exception regions at a given offset
-    let getActiveRegionsAtOffset
-        (offset : int)
-        (method : WoofWare.PawPrint.MethodInfo<'a, 'b, 'c>)
-        : WoofWare.PawPrint.ExceptionRegion list
-        =
-        match MethodInfo.tryIlBody method with
-        | None -> []
-        | Some instructions ->
-
-        // `MethodState.setProgramCounter` calls this on every program-counter update, so this
-        // runs once per interpreted instruction. Most methods carry no handler table at all, and
-        // for those the answer is `[]` without inspecting anything: taking that exit before the
-        // pipeline below is what keeps a region-free method from allocating an enumerator and a
-        // lazy sequence per instruction (measured at ~170 bytes per instruction, ~7% of the
-        // interpreter's whole per-instruction allocation on a guest that is a bare IL loop).
-        //
-        // `IsEmpty` rather than `IsDefaultOrEmpty`, so an uninitialised handler table still
-        // faults here as it did when the sequence below was the only path to it.
-        if instructions.ExceptionRegions.IsEmpty then
-            []
-        else
-
-        instructions.ExceptionRegions
-        |> Seq.filter (fun region ->
-            match region with
-            | ExceptionRegion.Catch (_, exOffset)
-            | ExceptionRegion.Finally exOffset
-            | ExceptionRegion.Fault exOffset
-            | ExceptionRegion.Filter (_, exOffset) ->
-                offset >= exOffset.TryOffset && offset < exOffset.TryOffset + exOffset.TryLength
-        )
-        |> Seq.toList
