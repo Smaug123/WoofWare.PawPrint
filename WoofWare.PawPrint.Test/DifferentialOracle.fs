@@ -66,27 +66,21 @@ module DifferentialOracle =
         : unit
         =
         // NormalExit and ProcessExit both represent a clean process termination with
-        // an exit code on the terminating thread's eval stack; the only difference is
-        // whether the guest returned from Main or called Environment.Exit. The real
-        // runtime surfaces both as RealRuntimeResult.NormalExit, so normalise here.
+        // the latched exit code; the only difference is whether the guest returned from
+        // Main or called Environment.Exit. The real runtime surfaces both as
+        // RealRuntimeResult.NormalExit, so normalise here.
         let normalisedPawPrint =
             match pawPrintResult with
             | RunOutcome.ProcessExit (s, t) -> RunOutcome.NormalExit (s, t)
             | other -> other
 
         match realResult, normalisedPawPrint with
-        | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+        | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _) ->
             if exitCode <> expectedReturnCode then
                 failwith
                     $"Real runtime exited with code %d{exitCode} for %s{fileName}, but the case declares ExpectedReturnCode = %d{expectedReturnCode}."
 
-            let pawPrintExitCode =
-                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | [] -> failwith "expected program to return a value, but it returned void"
-                | head :: _ ->
-                    match head with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+            let pawPrintExitCode = terminalState.LatchedExitCode
 
             if pawPrintExitCode <> exitCode then
                 failwith
@@ -101,15 +95,9 @@ module DifferentialOracle =
         | RealRuntimeResult.Aborted (_code, report), _ ->
             failwith
                 $"Real runtime called Environment.FailFast for %s{fileName}; this fixture does not exercise FailFast:\n%s{report}"
-        | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-            let pawPrintExitCode =
-                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | [] -> None
-                | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> Some i
-                | _ -> None
-
+        | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, _) ->
             failwith
-                $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %O{pawPrintExitCode}):\n%s{realExn}"
+                $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %d{terminalState.LatchedExitCode}):\n%s{realExn}"
         | _, RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
 

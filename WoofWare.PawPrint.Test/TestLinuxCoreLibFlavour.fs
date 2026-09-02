@@ -85,7 +85,7 @@ module TestLinuxCoreLibFlavour =
         }
         |> ImmutableArray.CreateRange
 
-    let private runOnLinuxFramework (frameworkDir : string) (source : string) : IlMachineState * ThreadId =
+    let private runOnLinuxFramework (frameworkDir : string) (source : string) : IlMachineState =
         let image = Roslyn.compile [ source ]
         let _, loggerFactory = LoggerFactory.makeTest ()
         use _loggerFactoryResource = loggerFactory
@@ -99,14 +99,8 @@ module TestLinuxCoreLibFlavour =
                 (HostConfig.Default (runtimeDirsPreferringLinux frameworkDir))
 
         match outcome with
-        | RunOutcome.NormalExit (terminalState, terminatingThread) -> terminalState, terminatingThread
+        | RunOutcome.NormalExit (terminalState, _) -> terminalState
         | other -> failwith $"Expected the guest to exit normally on the linux-x64 CoreLib, got %O{other}"
-
-    let private exitCode (terminalState : IlMachineState) (thread : ThreadId) : int =
-        match terminalState.ThreadState.[thread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> code
-        | [] -> failwith "Guest returned void; expected an int32 exit code"
-        | other :: _ -> failwith $"Guest left %O{other} on the eval stack; expected an int32 exit code"
 
     let private loadedCorelibPath (terminalState : IlMachineState) : string =
         let corelibs =
@@ -187,9 +181,9 @@ public class Program
 }
 """
 
-        let terminalState, thread = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework frameworkDir source
 
-        exitCode terminalState thread |> shouldEqual 0
+        terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
 
     /// The production path for `SystemNative_TryGetUInt32OSThreadId`, which is the whole reason
@@ -254,9 +248,9 @@ public class Program
 }
 """
 
-        let terminalState, thread = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework frameworkDir source
 
-        exitCode terminalState thread |> shouldEqual 0
+        terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
 
     /// `BitOperations.LeadingZeroCount`'s uint32 and uint64 overloads are modelled as arms, but
@@ -307,9 +301,9 @@ public class Program
 }
 """
 
-        let terminalState, thread = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework frameworkDir source
 
-        exitCode terminalState thread |> shouldEqual 0
+        terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
 
     /// The flavour risk is larger for `TrailingZeroCount` than for its sibling: only the uint32
@@ -365,9 +359,9 @@ public class Program
 }
 """
 
-        let terminalState, thread = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework frameworkDir source
 
-        exitCode terminalState thread |> shouldEqual 0
+        terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
 
     /// `BitOperations.PopCount` is the strongest flavour case of the three: no width of it is
@@ -426,7 +420,7 @@ public class Program
 }
 """
 
-        let terminalState, thread = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework frameworkDir source
 
-        exitCode terminalState thread |> shouldEqual 0
+        terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)

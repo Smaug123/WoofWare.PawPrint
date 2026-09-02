@@ -85,6 +85,20 @@ type IlMachineState =
         /// of the entry thread is a CoreLib `.cctor` during pre-`Main` pumping and absent entirely
         /// once `Main` has returned.
         EntryAssembly : AssemblyName
+        /// CoreCLR's latched exit code (`LatchedExitCode`, ceemain.cpp): the exit code the host
+        /// reports for a clean exit, `RunOutcome.NormalExit` and `ProcessExit` alike.
+        /// `Environment.ExitCode` reads and writes it (the `get_ExitCode` / `set_ExitCode`
+        /// FCalls); `Environment.Exit(n)` writes `n` before tearing the process down; and
+        /// `RunMain` writes an `int Main`'s return value to it the moment `Main` returns. So a
+        /// `void Main` leaves the guest's last write in place, and a foreground worker that
+        /// writes it after `Main` has returned still decides the exit code, because the host
+        /// reads it only once the last foreground thread has finished.
+        ///
+        /// Zero at `IlMachineState.initial`, standing in for `RunMain`'s `SetLatchedExitCode(0)`:
+        /// on CoreCLR that reset precedes every class initialiser `Main` triggers, and nothing
+        /// PawPrint runs before those (the AppContext seed, the command-line initialiser) writes
+        /// it. Startup hooks, which run before the reset on CoreCLR, are not modelled.
+        LatchedExitCode : int
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         /// The guest's static fields. An ordinary static lives under `StaticOwner.Shared`; a
@@ -603,12 +617,14 @@ type ReturnFrameResult =
 
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
-    /// Every thread ran to `ret`. `terminatingThread` is the entry thread, whose
-    /// eval stack carries the exit code.
+    /// The entry thread's bottom frame returned. For `Main` that means the process exited
+    /// cleanly — `Main` returned and then the last foreground thread finished — with the exit
+    /// code `IlMachineState.LatchedExitCode`; during startup it means the pumped call is done
+    /// (see `Program.EntryFrameKind`). `terminatingThread` is the entry thread.
     | NormalExit of IlMachineState * terminatingThread : ThreadId
     /// A thread called `Environment.Exit`. The process tore itself down regardless
-    /// of other threads still running; `exitingThread`'s eval stack carries the exit
-    /// code. Distinct from `NormalExit` so the pre-main cctor pump can bail rather
+    /// of other threads still running, with the exit code `IlMachineState.LatchedExitCode`.
+    /// Distinct from `NormalExit` so the pre-main cctor pump can bail rather
     /// than silently continuing into `Main` after the guest already asked to die.
     | ProcessExit of IlMachineState * exitingThread : ThreadId
     /// A fatal error aborted the process while `abortingThread` was running: `Environment.FailFast`,

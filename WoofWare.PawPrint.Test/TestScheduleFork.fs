@@ -77,12 +77,8 @@ module TestScheduleFork =
     /// printable at any sane size.
     let private describeOutcome (outcome : RunOutcome) : string =
         match outcome with
-        | RunOutcome.NormalExit (state, thread)
-        | RunOutcome.ProcessExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> $"exit %d{code}"
-            | [] -> "exit void"
-            | other :: _ -> $"exit non-int %O{other}"
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> $"exit %d{state.LatchedExitCode}"
         | RunOutcome.Aborted (_, _, fatal) ->
             let message = fatal.Message |> Option.defaultValue "<none>"
             $"aborted %O{fatal.Code} %s{message}"

@@ -74,11 +74,8 @@ class Program
 
     let private outcomeSignature (outcome : RunOutcome) : OutcomeSignature =
         match outcome with
-        | RunOutcome.NormalExit (state, thread)
-        | RunOutcome.ProcessExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> OutcomeSignature.ExitCode i
-            | other -> failwith $"Expected int32 exit stack, got %O{other}"
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> OutcomeSignature.ExitCode state.LatchedExitCode
         | RunOutcome.Aborted (_, _, fatal) -> OutcomeSignature.Aborted (fatal.Code, fatal.Message)
         | RunOutcome.SignalTerminated (_, signal) -> OutcomeSignature.SignalTerminated signal
         | RunOutcome.GuestUnhandledException _ -> OutcomeSignature.GuestUnhandledException

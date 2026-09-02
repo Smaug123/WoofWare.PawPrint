@@ -12,9 +12,9 @@ open WoofWare.PosixKernel
 /// The process ends when the last foreground thread does, not when `Main` returns: after
 /// `Main`, CoreCLR's `RunMainPost` blocks the entry thread in `WaitForOtherThreads` until
 /// every other foreground thread has finished. These tests pin the two halves of that which
-/// the differential cases in `sourcesPure` cannot: what a foreground worker does *after*
-/// `Main` has returned, which the exit code cannot see, and what happens when such a worker
-/// never finishes, which on real .NET is a hang and so has no oracle.
+/// the differential cases in `sourcesPure` cannot: what a foreground worker *prints* after
+/// `Main` has returned, which those cases compare no output to see, and what happens when
+/// such a worker never finishes, which on real .NET is a hang and so has no oracle.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestForegroundThreadsAtExit =
@@ -40,12 +40,6 @@ module TestForegroundThreadsAtExit =
         |> Seq.toArray
         |> Encoding.UTF8.GetString
 
-    let private exitCodeOf (state : IlMachineState) (thread : ThreadId) : int =
-        match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
-        | [] -> failwith "expected Main to leave an int on the entry thread's eval stack, but it left nothing"
-        | other :: _ -> failwith $"expected Main to leave an int on the entry thread's eval stack, got %O{other}"
-
     /// The guest from the issue: measured on real .NET 10, this prints `worker ran` and exits 3.
     [<Test>]
     let ``a foreground worker still runs after Main has returned, and Main's exit code survives it`` () : unit =
@@ -67,7 +61,7 @@ class WorkerAfterMain
         match runSource "WorkerAfterMain.cs" source with
         | RunOutcome.NormalExit (state, entryThread) ->
             stdoutOf state |> shouldEqual "worker ran\n"
-            exitCodeOf state entryThread |> shouldEqual 3
+            state.LatchedExitCode |> shouldEqual 3
 
             // The worker really finished, rather than being left runnable at the end of the
             // run; and the entry thread is what carried the exit code, not the worker.
@@ -205,5 +199,5 @@ class WorkerPrintsAfterMain
         match runSource "WorkerPrintsAfterMain.cs" source with
         | RunOutcome.NormalExit (state, entryThread) ->
             stdoutOf state |> shouldEqual "line 0\nline 1\nline 2\nline 3\nline 4\n"
-            exitCodeOf state entryThread |> shouldEqual 6
+            state.LatchedExitCode |> shouldEqual 6
         | other -> failwith $"expected a normal exit, got %O{other}"

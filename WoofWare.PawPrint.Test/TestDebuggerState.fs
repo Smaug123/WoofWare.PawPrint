@@ -11,22 +11,16 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestDebuggerState =
     let private exitCodeOfRunOutcome (outcome : RunOutcome) : int =
-        let terminalState, terminatingThread =
-            match outcome with
-            | RunOutcome.NormalExit (state, thread)
-            | RunOutcome.ProcessExit (state, thread) -> state, thread
-            | RunOutcome.Aborted (_, _, fatal) ->
-                let m = fatal.Message |> Option.defaultValue "<no message>"
-                failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
-            | RunOutcome.SignalTerminated (_, signal) ->
-                failwith $"PawPrint guest was terminated by POSIX signal %O{signal}"
-            | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                failwith $"PawPrint threw an unexpected guest exception: %O{exn.ExceptionObject}"
-
-        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode
-        | [] -> failwith "expected program to return an int, but it returned void"
-        | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+        match outcome with
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
+        | RunOutcome.Aborted (_, _, fatal) ->
+            let m = fatal.Message |> Option.defaultValue "<no message>"
+            failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
+        | RunOutcome.SignalTerminated (_, signal) ->
+            failwith $"PawPrint guest was terminated by POSIX signal %O{signal}"
+        | RunOutcome.GuestUnhandledException (_, _, exn) ->
+            failwith $"PawPrint threw an unexpected guest exception: %O{exn.ExceptionObject}"
 
     let private runSource (sourceFileName : string) (source : string) : RunOutcome =
         let image = Roslyn.compile [ source ]

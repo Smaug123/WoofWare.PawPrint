@@ -108,10 +108,11 @@ public static class Program
                     failwith "guest did not terminate"
 
                 match Program.stepPrepared loggerFactory logger prepared with
-                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, thread)) ->
-                    match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim 0) :: _ -> state
-                    | other -> failwith $"guest did not return 0: %O{other}"
+                | Program.ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, _)) ->
+                    if state.LatchedExitCode <> 0 then
+                        failwith $"guest did not return 0: %d{state.LatchedExitCode}"
+
+                    state
                 | Program.ProgramStepOutcome.Completed other -> failwith $"guest did not exit normally: %O{other}"
                 | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
                 | Program.ProgramStepOutcome.InstructionStepped (prepared, _, _, _)

@@ -361,11 +361,8 @@ module TestSchedulerPct =
     /// promises — terminal observable state is determined by seed + program.
     let private outcomeSignature (outcome : RunOutcome) : string =
         match outcome with
-        | RunOutcome.NormalExit (state, thread)
-        | RunOutcome.ProcessExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> $"exit %d{i}"
-            | other -> $"exit other (%A{other})"
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> $"exit %d{state.LatchedExitCode}"
         | RunOutcome.Aborted (_, _, fatal) ->
             let msg = fatal.Message |> Option.defaultValue "<none>"
             $"aborted %O{fatal.Code} %s{msg}"

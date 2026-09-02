@@ -80,10 +80,10 @@ module TestDynamicMethodTracing =
                     }
             }
 
-        let terminalState, terminatingThread =
+        let terminalState =
             match BoundedRun.run traceEnabledFactory "DynamicMethodInvoke.cs (traced)" None peImage hostConfig with
-            | RunOutcome.NormalExit (state, thread) -> state, thread
-            | RunOutcome.ProcessExit (state, thread) -> state, thread
+            | RunOutcome.NormalExit (state, _) -> state
+            | RunOutcome.ProcessExit (state, _) -> state
             | RunOutcome.GuestUnhandledException (_, _, exn) ->
                 failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
             | RunOutcome.Aborted (_, _, fatal) ->
@@ -91,7 +91,4 @@ module TestDynamicMethodTracing =
                 failwith $"Guest aborted (%O{fatal.Code}): %s{message}"
             | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
 
-        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-        | [] -> failwith "expected the guest to return a value, but it returned void"
-        | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-        | ret :: _ -> failwith $"expected the guest to return an int, but it returned %O{ret}"
+        terminalState.LatchedExitCode |> shouldEqual 0
