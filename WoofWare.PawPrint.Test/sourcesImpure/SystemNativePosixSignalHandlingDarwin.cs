@@ -48,9 +48,15 @@ class Program
         // 30 is SIGUSR1 here (10 under Linux).
         if (Enable(30) != 1) return 6;
 
-        // Disabling is a no-op on the enable bit for a signo that could never
-        // have been enabled, and clears it for one that was.
+        // Disabling clears the enable bit for a signo that was enabled. For
+        // 32, which never could have been, the PAL still calls sigaction(2)
+        // to restore the prior disposition and does not check the result;
+        // Darwin refuses it, so what the call leaves behind is EINVAL in
+        // errno. Reset errno first so the value read back was written here
+        // rather than left over from Enable(32) above.
+        Marshal.SetLastSystemError(0);
         Disable(32);
+        if (Marshal.GetLastSystemError() != EINVAL) return 10;
         Disable(19);
         Disable(30);
 
@@ -62,14 +68,17 @@ class Program
         // gone, which the registration observes as the enable bit having
         // been cleared. 16 is SIGURG, which the PAL's switch names, so its
         // handler stays installed. 32 is not a signal at all, so the PAL's
-        // kill(2) fails and the process continues.
+        // sigaction(2) and kill(2) both fail with EINVAL, unchecked, and the
+        // process continues with that in errno.
         if (Enable(29) != 1) return 7;
         if (Enable(23) != 1) return 8;
         if (Enable(16) != 1) return 9;
         HandleNonCanceled(29);
         HandleNonCanceled(23);
         HandleNonCanceled(16);
+        Marshal.SetLastSystemError(0);
         HandleNonCanceled(32);
+        if (Marshal.GetLastSystemError() != EINVAL) return 11;
 
         return 0;
     }
