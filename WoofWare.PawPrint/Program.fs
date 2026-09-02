@@ -732,8 +732,9 @@ module Program =
     ///
     /// Once the entry thread is `WaitingForForegroundThreads` and the latch is set, the run
     /// ends with `NormalExit`; otherwise `continuing` builds the tick's outcome from the
-    /// program with the latch brought up to date. Inlined for the same reason `annotating` is:
-    /// this runs once per interpreted instruction.
+    /// program with the latch brought up to date — which is `prepared` itself unless the latch
+    /// has just flipped, so the usual tick allocates nothing here. Inlined for the same reason
+    /// `annotating` is: this runs once per interpreted instruction.
     let inline private afterStep
         (prepared : PreparedProgram)
         ([<InlineIfLambda>] continuing : PreparedProgram -> ProgramStepOutcome)
@@ -745,19 +746,24 @@ module Program =
 
         let entry = prepared.State.ThreadState.[prepared.EntryThread]
 
-        let shutdownSignalled =
+        let nowSignalled =
             shutdownSignalled
             || (not (holdsProcessOpen entry)
                 && not (prepared.State.ThreadState |> Map.exists (fun _ ts -> holdsProcessOpen ts)))
 
         match entry.Status with
-        | ThreadStatus.WaitingForForegroundThreads when shutdownSignalled ->
+        | ThreadStatus.WaitingForForegroundThreads when nowSignalled ->
             ProgramStepOutcome.Completed (RunOutcome.NormalExit (prepared.State, prepared.EntryThread))
         | _ ->
-            continuing
-                { prepared with
-                    EntryFrame = EntryFrameKind.Main shutdownSignalled
-                }
+            // The latch goes one way, so this rebuilds the program at most once per run; every
+            // other tick hands `prepared` on as it is.
+            if nowSignalled = shutdownSignalled then
+                continuing prepared
+            else
+                continuing
+                    { prepared with
+                        EntryFrame = EntryFrameKind.Main nowSignalled
+                    }
 
     /// The second half of a scheduler tick: ask the policy which thread runs next, run it, and
     /// fold the outcome back into the thread states. `prepared` must already have been through
