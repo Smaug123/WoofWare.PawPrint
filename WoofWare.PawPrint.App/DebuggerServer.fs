@@ -206,6 +206,7 @@ module DebuggerServer =
             writer.WriteEndObject ()
         | ThreadStatus.Terminated -> writer.WriteStringValue "terminated"
         | ThreadStatus.Parked -> writer.WriteStringValue "parked"
+        | ThreadStatus.WaitingForForegroundThreads -> writer.WriteStringValue "waitingForForegroundThreads"
 
     /// The source span the compiler attributed to `sourceIlOffset` in `frame`, or `null`.
     ///

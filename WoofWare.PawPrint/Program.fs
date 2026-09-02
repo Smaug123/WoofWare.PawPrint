@@ -9,11 +9,25 @@ open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module Program =
+    /// What the entry thread is running, which decides what its bottom frame returning means.
+    [<RequireQualifiedAccess>]
+    type EntryFrameKind =
+        /// One of the calls startup pumps to completion: the AppContext seed, the command-line
+        /// initialiser, a class initialiser. Its return ends the pump with `NormalExit`, and the
+        /// entry thread is left as it is for startup to give it its next frame.
+        | StartupCall
+        /// `Main`. Its return does not end the run: the entry thread goes to
+        /// `ThreadStatus.WaitingForForegroundThreads` (and background), and the run ends with
+        /// `NormalExit` at the first tick at which no foreground thread is alive — CoreCLR's
+        /// `ThreadStore::WaitForOtherThreads`, which `RunMainPost` blocks in after `Main`.
+        | Main
+
     type PreparedProgram =
         {
             State : IlMachineState
             BaseClassTypes : BaseClassTypes<DumpedAssembly>
             EntryThread : ThreadId
+            EntryFrame : EntryFrameKind
             LastRan : ThreadId
         }
 
@@ -187,6 +201,7 @@ module Program =
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
         | ThreadStatus.Terminated
+        | ThreadStatus.WaitingForForegroundThreads
         | ThreadStatus.Parked -> None
 
     /// Fire a timeout wake for every blocked-with-deadline thread whose
@@ -679,6 +694,48 @@ module Program =
             State = advanceUntilRunnableOrQuiescent state
         }
 
+    /// True iff the process waits for `thread` before it can exit: what CoreCLR's
+    /// `ThreadStore::OtherThreadsComplete` counts, a foreground thread that has been started and
+    /// has not finished.
+    let private holdsProcessOpen (thread : ThreadState) : bool =
+        not thread.IsBackground && ThreadStatus.keepsProcessAlive thread.Status
+
+    /// Once `Main` has returned, end the run at the first tick at which no thread holds the
+    /// process open; until then, and before `Main` returns, hand back `continuing` unchanged.
+    ///
+    /// CoreCLR's `ThreadStore::CheckForEEShutdown` runs whenever a component of
+    /// `OtherThreadsComplete` changes — a thread dying, or flipping to background — so the
+    /// check here is applied to every outcome that continues the run, rather than only where
+    /// those changes are known to happen, so that no handler that makes one can forget it. The
+    /// entry thread's status is what says whether `Main` has returned, so before then this is
+    /// one map lookup per tick and no scan.
+    ///
+    /// `continuing` must be an outcome that continues the run: this decides whether the run
+    /// goes on, and an outcome that has already ended it has nothing to decide.
+    let private exitIfNoForegroundThreads
+        (prepared : PreparedProgram)
+        (continuing : ProgramStepOutcome)
+        : ProgramStepOutcome
+        =
+        match continuing with
+        | ProgramStepOutcome.Completed _
+        | ProgramStepOutcome.Deadlocked _ ->
+            failwith "logic error: exitIfNoForegroundThreads was handed an outcome that had already ended the run"
+        | ProgramStepOutcome.InstructionStepped _
+        | ProgramStepOutcome.WorkerTerminated _ -> ()
+
+        match prepared.EntryFrame with
+        | EntryFrameKind.StartupCall -> continuing
+        | EntryFrameKind.Main ->
+
+        match prepared.State.ThreadState.[prepared.EntryThread].Status with
+        | ThreadStatus.WaitingForForegroundThreads ->
+            if prepared.State.ThreadState |> Map.exists (fun _ ts -> holdsProcessOpen ts) then
+                continuing
+            else
+                ProgramStepOutcome.Completed (RunOutcome.NormalExit (prepared.State, prepared.EntryThread))
+        | _ -> continuing
+
     /// The second half of a scheduler tick: ask the policy which thread runs next, run it, and
     /// fold the outcome back into the thread states. `prepared` must already have been through
     /// `advanceToDecision`; running this against an inter-tick value would consult the policy
@@ -725,7 +782,40 @@ module Program =
             match stepResult with
             | ExecutionResult.Terminated (state, terminatingThread) ->
                 if terminatingThread = prepared.EntryThread then
-                    ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
+                    match prepared.EntryFrame with
+                    | EntryFrameKind.StartupCall ->
+                        ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
+                    | EntryFrameKind.Main ->
+                        // `Main` has returned. The entry thread keeps its final frame — the
+                        // return value on its eval stack is the exit code — and waits for the
+                        // other foreground threads; the run ends below if there are none.
+                        logger.LogDebug (
+                            "Main returned on {Thread}; the process now waits for its other foreground threads",
+                            prepared.EntryThread
+                        )
+
+                        let state = Scheduler.onMainReturned prepared.EntryThread state
+
+                        // The `ret` retired a step, reported here as `WhatWeDid.Executed`, so it
+                        // gets that outcome's consequences — as the dispatcher's final `ret`
+                        // does below.
+                        let state = Scheduler.onStepOutcome prepared.EntryThread WhatWeDid.Executed state
+
+                        let prepared =
+                            { prepared with
+                                State = state
+                                LastRan = prepared.EntryThread
+                            }
+
+                        ProgramStepOutcome.InstructionStepped (
+                            prepared,
+                            prepared.EntryThread,
+                            WhatWeDid.Executed,
+                            // `ExecutionResult.Terminated` carries no effect: a `ret` performs
+                            // no I/O of its own.
+                            StepEffect.NoEffect
+                        )
+                        |> exitIfNoForegroundThreads prepared
                 elif SignalState.signalThread state.Kernel.Signals = Some terminatingThread then
                     // The kernel-owned signal-dispatch thread's handler frame
                     // has returned past its bottom; `Ret` surfaces that as a
@@ -743,11 +833,14 @@ module Program =
                     // the bookkeeping has already happened, in the discharge above.)
                     let state = Scheduler.onStepOutcome terminatingThread WhatWeDid.Executed state
 
-                    ProgramStepOutcome.InstructionStepped (
+                    let prepared =
                         { prepared with
                             State = state
                             LastRan = terminatingThread
-                        },
+                        }
+
+                    ProgramStepOutcome.InstructionStepped (
+                        prepared,
                         terminatingThread,
                         WhatWeDid.Executed,
                         // The signal dispatcher's handler frame returning past its
@@ -755,16 +848,18 @@ module Program =
                         // no effect: the step performed no I/O of its own.
                         StepEffect.NoEffect
                     )
+                    |> exitIfNoForegroundThreads prepared
                 else
                     let state = Scheduler.onThreadTerminated terminatingThread state
 
-                    ProgramStepOutcome.WorkerTerminated (
+                    let prepared =
                         { prepared with
                             State = state
                             LastRan = terminatingThread
-                        },
-                        terminatingThread
-                    )
+                        }
+
+                    ProgramStepOutcome.WorkerTerminated (prepared, terminatingThread)
+                    |> exitIfNoForegroundThreads prepared
             | ExecutionResult.ProcessExit (state, exitingThread) ->
                 ProgramStepOutcome.Completed (RunOutcome.ProcessExit (state, exitingThread))
             | ExecutionResult.Aborted (state, abortingThread, message) ->
@@ -778,15 +873,14 @@ module Program =
 
                 let state = Scheduler.onStepOutcome nextThread whatWeDid state
 
-                ProgramStepOutcome.InstructionStepped (
+                let prepared =
                     { prepared with
                         State = state
                         LastRan = nextThread
-                    },
-                    nextThread,
-                    whatWeDid,
-                    effect
-                )
+                    }
+
+                ProgramStepOutcome.InstructionStepped (prepared, nextThread, whatWeDid, effect)
+                |> exitIfNoForegroundThreads prepared
 
     /// <summary>
     /// Run <paramref name="tick" />, annotating any host failure with where the guest was at
@@ -843,22 +937,19 @@ module Program =
 
     /// Advance the machine by one scheduler tick.
     ///
-    /// The stepper reports NormalExit as soon as `EntryThread` Terminates, regardless
-    /// of whether other threads are still Runnable or Blocked. This matches both
-    /// use sites:
-    ///   * Pre-Main cctor pump: the synthetic onlyRet frame has returned, which
-    ///     means class initialisation is done. The entry thread isn't actually
-    ///     finished — Program.run is about to resurrect it with the real Main
-    ///     frame — so we deliberately do NOT mark it Terminated, because doing so
-    ///     would let a worker that joined the entry thread during a .cctor observe
-    ///     a false end-of-thread and proceed past the Join before Main has started.
-    ///   * Post-Main pump: when Main returns, we report NormalExit immediately
-    ///     rather than waiting for foreground threads. The test comparison oracles
-    ///     in WoofWare.PawPrint.Test just invoke `assy.EntryPoint.Invoke` via
-    ///     reflection, which also returns as soon as Main returns without waiting
-    ///     for foreground workers, so matching that behaviour keeps PawPrint and
-    ///     the oracle aligned. Environment.Exit from a worker still propagates as
-    ///     ProcessExit (handled below) before Main has a chance to return.
+    /// What the entry thread's bottom frame returning means depends on `prepared.EntryFrame`:
+    ///   * `StartupCall`: the pumped call is done, and the tick reports `NormalExit` at once,
+    ///     whatever the other threads are doing. The entry thread is deliberately not marked
+    ///     Terminated — startup is about to give it its next frame, ultimately `Main` — because
+    ///     a worker that joined it during a `.cctor` must not observe a false end-of-thread and
+    ///     proceed past its Join before `Main` has started.
+    ///   * `Main`: the entry thread goes to `WaitingForForegroundThreads` and becomes a
+    ///     background thread, as `WaitForOtherThreads` makes it, and the run goes on
+    ///     until no foreground thread is left alive, at which tick it reports `NormalExit` with
+    ///     `Main`'s return value still on the entry thread's eval stack as the exit code. A
+    ///     worker's `Environment.Exit` in the meantime is a `ProcessExit` like any other. If the
+    ///     foreground threads that remain can make no progress, the tick reports `Deadlocked`:
+    ///     real .NET would hang there.
     let stepPrepared
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
@@ -871,27 +962,9 @@ module Program =
         match stepPrepared loggerFactory logger prepared with
         | ProgramStepOutcome.Completed outcome -> outcome
         | ProgramStepOutcome.Deadlocked (_, stuck) ->
-            failwith $"Deadlock: no runnable threads and entry thread has not terminated. Stuck: {stuck}"
+            failwith $"Deadlock: no runnable threads and the process has not exited. Stuck: {stuck}"
         | ProgramStepOutcome.InstructionStepped (prepared, _, _, _)
         | ProgramStepOutcome.WorkerTerminated (prepared, _) -> pumpPrepared loggerFactory logger prepared
-
-    let internal pumpToReturn
-        (loggerFactory : ILoggerFactory)
-        (logger : ILogger)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (entryThread : ThreadId)
-        (state : IlMachineState)
-        : RunOutcome
-        =
-        let prepared =
-            {
-                State = state
-                BaseClassTypes = baseClassTypes
-                EntryThread = entryThread
-                LastRan = entryThread
-            }
-
-        pumpPrepared loggerFactory logger prepared
 
     /// Reads the guest assembly and performs the one-time setup needed before Main is ready to schedule.
     ///
@@ -1263,6 +1336,7 @@ module Program =
                     State = state
                     BaseClassTypes = baseClassTypes
                     EntryThread = mainThread
+                    EntryFrame = EntryFrameKind.Main
                     LastRan = mainThread
                 }
 
@@ -1273,6 +1347,7 @@ module Program =
                         State = state
                         BaseClassTypes = baseClassTypes
                         EntryThread = mainThread
+                        EntryFrame = EntryFrameKind.StartupCall
                         LastRan = mainThread
                     }
                 Phase = phase
