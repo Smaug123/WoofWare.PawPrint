@@ -80,5 +80,7 @@ module AppContextSeed =
                     CliType.Numeric (CliNumericType.Int32 (List.length entries))
                 ]
 
-        HostStartupCall.buildFrame loggerFactory baseClassTypes setup args Purpose state
-        |> Some
+        let state, frame, _declaringType =
+            HostStartupCall.buildFrame loggerFactory baseClassTypes setup args Purpose state
+
+        Some (state, frame)

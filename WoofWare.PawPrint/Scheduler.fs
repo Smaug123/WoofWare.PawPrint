@@ -782,7 +782,7 @@ module Scheduler =
             // `ensureTypeInitialised` (which is what feeds this entry point) today.
             state
         | WhatWeDid.BlockedOnClassInit blocker ->
-            // Another thread is mid-init of the worker's declaring type. StartInternal
+            // Another thread is mid-init of the declaring type of the worker's bottom frame. StartInternal
             // currently fails loud for this case (see the guard before this call), so
             // we shouldn't reach here; keep the branch for completeness and as the
             // obvious extension point when cross-thread class-init synchronisation for

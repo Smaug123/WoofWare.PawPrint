@@ -572,8 +572,8 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread parked
         }
 
-    /// Populate the bottom frame of a `NotStarted` thread with the user's
-    /// delegate target and flip its status to `Runnable`. The thread was
+    /// Populate the bottom frame of a `NotStarted` thread with `newMethodState`
+    /// and flip its status to `Runnable`. The thread was
     /// previously allocated by `allocateUnstartedThread` at `Thread.Initialize`
     /// time. Fails loud if the thread is missing, in a non-`NotStarted`
     /// status (double-Start would be the typical cause; the real CLR raises
