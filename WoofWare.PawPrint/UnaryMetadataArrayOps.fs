@@ -163,6 +163,61 @@ module internal UnaryMetadataArrayOps =
             IlMachineTypeResolution.resolveType loggerFactory refHandle ImmutableArray.Empty activeAssy state
         | x -> failwith $"TODO: {opName} element type resolution unimplemented for {x}"
 
+    /// The `array` and `index` operands of an `ldelem`, `ldelema` or `stelem` opcode, checked
+    /// against the array they name.
+    [<RequireQualifiedAccess>]
+    type private ArrayElementOperands =
+        /// `index` names a cell of the array at `array`.
+        | InRange of array : ManagedHeapAddress * index : int
+        /// The array was null, or the index lay outside it, and the corresponding exception has
+        /// been raised into the guest. This is the opcode's result: the program counter has
+        /// deliberately not been advanced, because exception dispatch needs the faulting
+        /// instruction's offset.
+        | Faulted of IlMachineState * WhatWeDid
+
+    /// Checks the popped `array` and `index` operands the way ECMA-335 III.4.8 (`ldelem`),
+    /// III.4.9 (`ldelema`) and III.4.26 (`stelem`) order their faults: a null array raises
+    /// `NullReferenceException` before the index is looked at, and an index outside the array
+    /// raises `IndexOutOfRangeException` before anything about the element type is checked.
+    let private resolveArrayElementOperands
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (opName : string)
+        (index : EvalStackValue)
+        (arr : EvalStackValue)
+        (thread : ThreadId)
+        (state : IlMachineState)
+        : ArrayElementOperands
+        =
+        let index =
+            match index with
+            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
+            | _ ->
+                failwith
+                    $"TODO: %s{opName}: expected an int32 index, but got %O{index}. ECMA-335 III.4.8 also permits a native int here — Roslyn emits `conv.ovf.i` before the opcode for a `long` index — which the token forms do not yet decode."
+
+        match IlMachineState.evalStackValueToObjectRef baseClassTypes state arr with
+        | None ->
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+            |> ArrayElementOperands.Faulted
+        | Some arrAddr ->
+
+        let shape =
+            match ManagedHeap.tryGetArrayShape arrAddr state.ManagedHeap with
+            | Some v -> v
+            | None -> failwith $"%s{opName}: array allocation not found at %O{arrAddr}"
+
+        if index < 0 || index >= shape.Length then
+            IlMachineStateExecution.raiseOpcodeFault
+                loggerFactory
+                baseClassTypes
+                OpcodeFault.IndexOutOfRange
+                thread
+                state
+            |> ArrayElementOperands.Faulted
+        else
+            ArrayElementOperands.InRange (arrAddr, index)
+
     let executeLdelema (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -200,20 +255,11 @@ module internal UnaryMetadataArrayOps =
         let index, state = IlMachineState.popEvalStack thread state
         let arr, state = IlMachineState.popEvalStack thread state
 
-        let index =
-            match index with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-            | _ -> failwith $"TODO: {index}"
-
-        let arrAddr =
-            match IlMachineState.evalStackValueToObjectRef baseClassTypes state arr with
-            | Some addr -> addr
-            | None -> failwith "TODO: throw NRE"
+        match resolveArrayElementOperands loggerFactory baseClassTypes "Ldelema" index arr thread state with
+        | ArrayElementOperands.Faulted (state, whatWeDid) -> state, whatWeDid
+        | ArrayElementOperands.InRange (arrAddr, index) ->
 
         let arrAlloc = ManagedHeap.getArrayShape arrAddr state.ManagedHeap
-
-        if index < 0 || index >= arrAlloc.Length then
-            failwith "TODO: throw IndexOutOfRangeException"
 
         let arrayElementHandle =
             match arrAlloc.ConcreteType with
@@ -310,36 +356,14 @@ module internal UnaryMetadataArrayOps =
 
         let contents, state = IlMachineState.popEvalStack thread state
         let index, state = IlMachineState.popEvalStack thread state
-
-        let index =
-            match index with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-            | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
-
         let arr, state = IlMachineState.popEvalStack thread state
-
-        let arr =
-            match IlMachineState.evalStackValueToObjectRef baseClassTypes state arr with
-            | Some addr -> addr
-            | None -> failwith "expected heap allocation for array, got null"
 
         // ECMA-335 III.4.x: bounds check fires before the array-store variance
         // check, matching CoreCLR ordering (e.g. `Store<object>(new string[0], 0, new object())`
         // must raise IndexOutOfRangeException, not ArrayTypeMismatchException).
-        let arrAlloc =
-            match ManagedHeap.tryGetArrayShape arr state.ManagedHeap with
-            | Some v -> v
-            | None -> failwith $"executeStelem: array allocation not found at %O{arr}"
-
-        if index < 0 || index >= arrAlloc.Length then
-            // Don't advance PC: exception dispatch needs the faulting instruction's offset.
-            IlMachineStateExecution.raiseOpcodeFault
-                loggerFactory
-                baseClassTypes
-                OpcodeFault.IndexOutOfRange
-                thread
-                state
-        else
+        match resolveArrayElementOperands loggerFactory baseClassTypes "Stelem" index arr thread state with
+        | ArrayElementOperands.Faulted (state, whatWeDid) -> state, whatWeDid
+        | ArrayElementOperands.InRange (arr, index) ->
 
         let elementType =
             DumpedAssembly.typeInfoToTypeDefn baseClassTypes state._LoadedAssemblies elementType
@@ -396,18 +420,11 @@ module internal UnaryMetadataArrayOps =
                 state
 
         let index, state = IlMachineState.popEvalStack thread state
-
-        let index =
-            match index with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-            | _ -> failwith $"Expected int32 index in Stelem, but got: {index}"
-
         let arr, state = IlMachineState.popEvalStack thread state
 
-        let arr =
-            match IlMachineState.evalStackValueToObjectRef baseClassTypes state arr with
-            | Some addr -> addr
-            | None -> failwith "expected heap allocation for array, got null"
+        match resolveArrayElementOperands loggerFactory baseClassTypes "Ldelem" index arr thread state with
+        | ArrayElementOperands.Faulted (state, whatWeDid) -> state, whatWeDid
+        | ArrayElementOperands.InRange (arr, index) ->
 
         let toPush = ManagedHeap.getArrayValue arr index state.ManagedHeap
 
