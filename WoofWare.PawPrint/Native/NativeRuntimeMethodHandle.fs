@@ -890,9 +890,7 @@ module NativeRuntimeMethodHandle =
                     Friends = attrAssembly.Friends
                 }
 
-            let sameAssembly = accessor.Assembly.FullName = target.Assembly.FullName
-
-            let visible = AccessCheck.canAccessMethod sameAssembly accessor target attrCtorAttrs
+            let visible = AccessCheck.canAccessMethod accessor target attrCtorAttrs
 
             // Interop.BOOL is int-backed with FALSE=0, TRUE=1.
             let state =

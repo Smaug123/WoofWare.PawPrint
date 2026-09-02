@@ -55,7 +55,10 @@ module AccessCheck =
 
     /// Mirrors CoreCLR's <c>ClassLoader::AssemblyOrFriendAccessAllowed</c>:
     /// <list type="number">
-    /// <item>If the two parties are the same assembly, access is granted.</item>
+    /// <item>If the two parties are the same assembly, access is granted.
+    /// CoreCLR compares <c>Assembly*</c> identity; PawPrint's assembly
+    /// identity is the definition display string, which is what
+    /// <c>AssemblyName.FullName</c> renders for a metadata-derived name.</item>
     /// <item>If the accessor's <c>IgnoresAccessChecksTo</c> list names the
     /// target's assembly, access is granted (the accessor has opted out of
     /// the target's visibility checks; this is the standard mechanism the
@@ -66,13 +69,8 @@ module AccessCheck =
     /// friend status to the accessor).</item>
     /// <item>Otherwise access is denied.</item>
     /// </list>
-    let private assemblyOrFriendAccessAllowed
-        (sameAssembly : bool)
-        (accessor : AccessParty)
-        (target : AccessParty)
-        : bool
-        =
-        sameAssembly
+    let private assemblyOrFriendAccessAllowed (accessor : AccessParty) (target : AccessParty) : bool =
+        accessor.Assembly.FullName = target.Assembly.FullName
         || friendDeclares accessor.Friends.IgnoresAccessChecksTo target.Assembly
         || friendDeclares target.Friends.InternalsVisibleTo accessor.Assembly
 
@@ -83,20 +81,14 @@ module AccessCheck =
     /// nested flags raise <c>failwith</c>: porting them requires
     /// <c>CanAccessFamily</c>'s subclass-walk and chain-equality checks,
     /// and guessing would silently grant (or deny) access.
-    let private levelIsVisible
-        (sameAssembly : bool)
-        (accessor : AccessParty)
-        (target : AccessParty)
-        (level : AccessLevelInfo)
-        : bool
-        =
+    let private levelIsVisible (accessor : AccessParty) (target : AccessParty) (level : AccessLevelInfo) : bool =
         let vis = level.Visibility &&& TypeAttributes.VisibilityMask
 
         match vis with
         | TypeAttributes.Public
         | TypeAttributes.NestedPublic -> true
         | TypeAttributes.NotPublic
-        | TypeAttributes.NestedAssembly -> assemblyOrFriendAccessAllowed sameAssembly accessor target
+        | TypeAttributes.NestedAssembly -> assemblyOrFriendAccessAllowed accessor target
         | TypeAttributes.NestedPrivate ->
             failwithf
                 "AccessCheck: NestedPrivate visibility on type '%s' is not implemented in this slice (would require CanAccessFamily-style chain-equality check)"
@@ -117,8 +109,8 @@ module AccessCheck =
     /// argument visibility (<c>CanAccessClass</c>'s recursive walk over
     /// the target's generic arguments) is not modelled: the only caller
     /// asks about a non-generic custom attribute type.
-    let canAccessClass (sameAssembly : bool) (accessor : AccessParty) (target : AccessParty) : bool =
-        target.TypeChain |> List.forall (levelIsVisible sameAssembly accessor target)
+    let canAccessClass (accessor : AccessParty) (target : AccessParty) : bool =
+        target.TypeChain |> List.forall (levelIsVisible accessor target)
 
     /// Mirrors the visibility portion of <c>ClassLoader::CanAccess</c> /
     /// <c>CheckAccessMember</c> for a method member: access requires both
@@ -130,21 +122,15 @@ module AccessCheck =
     /// <c>Private</c> / <c>PrivateScope</c> raise <c>failwith</c>: they
     /// would require <c>CanAccessFamily</c> and chain-equality logic that
     /// is not ported.
-    let canAccessMethod
-        (sameAssembly : bool)
-        (accessor : AccessParty)
-        (target : AccessParty)
-        (targetMethodAttrs : MethodAttributes)
-        : bool
-        =
-        if not (canAccessClass sameAssembly accessor target) then
+    let canAccessMethod (accessor : AccessParty) (target : AccessParty) (targetMethodAttrs : MethodAttributes) : bool =
+        if not (canAccessClass accessor target) then
             false
         else
             let memberAccess = targetMethodAttrs &&& MethodAttributes.MemberAccessMask
 
             match memberAccess with
             | MethodAttributes.Public -> true
-            | MethodAttributes.Assembly -> assemblyOrFriendAccessAllowed sameAssembly accessor target
+            | MethodAttributes.Assembly -> assemblyOrFriendAccessAllowed accessor target
             | MethodAttributes.Private ->
                 failwith
                     "AccessCheck: Private member access is not implemented in this slice (would require CanAccessFamily-style chain-equality check)"
