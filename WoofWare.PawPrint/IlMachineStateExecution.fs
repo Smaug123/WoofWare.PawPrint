@@ -2611,12 +2611,20 @@ module IlMachineStateExecution =
             // class loading required.
             StateLoadResult.NothingToDo state
         | Some (TypeInitState.InProgress blocker) ->
-            // Another thread owns this type's .cctor lock. Surface the blocker so the caller can
-            // translate to `WhatWeDid.BlockedOnClassInit blocker`; the scheduler then parks this
-            // thread until `blocker` makes progress or its cctor fails. We deliberately do not
-            // touch `state` (no WithTypeBeginInit, no PC advance): on wake-up the caller retries
-            // the same opcode and re-enters loadClass to observe the new TypeInitTable entry.
-            StateLoadResult.Blocked (state, blocker)
+            if ThreadState.classInitWaitChainReaches currentThread blocker state.ThreadState then
+                // `blocker` is (transitively) waiting for a type whose initialisation this thread
+                // owns, so parking here would deadlock. ECMA-335 II.10.5.3.3 step 2.2.2: proceed
+                // and see the type as `blocker` has left it so far, exactly as for the
+                // same-thread re-entry above.
+                StateLoadResult.NothingToDo state
+            else
+                // Another thread owns this type's .cctor lock. Surface the blocker so the caller
+                // can translate to `WhatWeDid.BlockedOnClassInit blocker`; the scheduler then
+                // parks this thread until `blocker` makes progress or its cctor fails. We
+                // deliberately do not touch `state` (no WithTypeBeginInit, no PC advance): on
+                // wake-up the caller retries the same opcode and re-enters loadClass to observe
+                // the new TypeInitTable entry.
+                StateLoadResult.Blocked (state, blocker)
         | None ->
             // We have work to do!
 
@@ -2775,7 +2783,12 @@ module IlMachineStateExecution =
                     "Unhandled TypeInitializationException during ensureTypeInitialised; should have been caught by a handler"
         | Some (TypeInitState.InProgress threadId) ->
             if threadId = thread then
-                // II.10.5.3.2: avoid the deadlock by simply proceeding.
+                // II.10.5.3.3 step 2.2.2: this thread already holds the lock, so proceed.
+                state, WhatWeDid.Executed
+            elif ThreadState.classInitWaitChainReaches thread threadId state.ThreadState then
+                // The other half of the same step: the holder is (transitively) waiting for a
+                // type this thread is initialising, so blocking would deadlock. Proceed and see
+                // the type partially initialised.
                 state, WhatWeDid.Executed
             else
                 state, WhatWeDid.BlockedOnClassInit threadId
