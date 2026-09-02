@@ -47,6 +47,13 @@ type ThreadStatus =
     /// This thread tried to access a type whose .cctor is currently being run by another
     /// thread. Per ECMA-335 II.10.5.3.3 it must wait for that thread to finish initialising
     /// the type before it can proceed.
+    ///
+    /// A thread never parks here when doing so would close a cycle of such waits: if
+    /// `blocker` is itself parked `BlockedOnClassInit` on a thread that is parked on another,
+    /// and that chain leads back to this thread, II.10.5.3.3 step 2.2.2 says this thread must
+    /// proceed instead and see the type partially initialised. `ThreadState.classInitWaitChainReaches`
+    /// is that check, and `ensureTypeInitialised` / `loadClass` apply it before reporting
+    /// `WhatWeDid.BlockedOnClassInit`.
     | BlockedOnClassInit of blocker : ThreadId
     /// This thread called `SystemNative_LowLevelMonitor_Acquire` (or transitioned out
     /// of `BlockedOnMonitorWait` and is now waiting to reacquire) on a monitor whose
@@ -661,3 +668,61 @@ type ThreadState =
         | MethodBody.Abstract ->
             failwith
                 $"ThreadState.peekNextOp: reached abstract method %s{MethodOwner.describe frame.ExecutingMethod.Owner}.%s{frame.ExecutingMethod.Name}; virtual dispatch should have resolved to a concrete override."
+
+    /// Whether `thread` parking `BlockedOnClassInit holder` would close a cycle of
+    /// class-initialisation waits: `holder` is parked `BlockedOnClassInit` on some thread,
+    /// which is parked on another, and so on until the chain reaches `thread` itself.
+    ///
+    /// ECMA-335 II.10.5.3.3 step 2.2.1 tells a thread that finds a type's initialisation lock
+    /// held to check "whether this thread or any thread waiting for this thread to complete
+    /// already holds the lock", and step 2.2.2 that if so it must proceed rather than block,
+    /// seeing the type partially initialised; CoreCLR's `DeadlockAwareLock::TryBeginEnterLock`
+    /// is the same walk over holders and their blocking locks. This is the "any thread waiting
+    /// for this thread" half of that test; the caller handles `holder = thread` itself.
+    ///
+    /// Only `BlockedOnClassInit` links are followed, as in CoreCLR: a holder parked on a monitor,
+    /// a join or a syscall is "running free" as far as class initialisation is concerned, so the
+    /// chain stops there and the answer is `false` (this thread blocks, and if that wait never
+    /// ends the driver reports a deadlock). A holder that is `Runnable` also ends the chain: it
+    /// may have been speculatively woken and be about to re-park, but it will then run this same
+    /// check itself and find the cycle from its side.
+    ///
+    /// Fails if the walk revisits a thread other than `thread`, because a closed cycle of
+    /// `BlockedOnClassInit` statuses that excludes the thread asking cannot exist: the thread
+    /// which would have added its last link ran this check first and proceeded instead.
+    static member classInitWaitChainReaches
+        (thread : ThreadId)
+        (holder : ThreadId)
+        (threads : Map<ThreadId, ThreadState>)
+        : bool
+        =
+        let rec walk (current : ThreadId) (visited : Set<ThreadId>) : bool =
+            if current = thread then
+                true
+            elif visited.Contains current then
+                failwith
+                    $"ThreadState.classInitWaitChainReaches: threads %A{Set.toList visited} are parked BlockedOnClassInit in a cycle that does not include %O{thread}, which is asking whether to park behind %O{holder}. Such a cycle can never form, because whichever thread closed it should have proceeded instead of parking."
+            else
+
+            match Map.tryFind current threads with
+            | None ->
+                failwith
+                    $"ThreadState.classInitWaitChainReaches: %O{thread} would park BlockedOnClassInit behind %O{holder}, but following that chain reached %O{current}, which has no thread state"
+            | Some ts ->
+                match ts.Status with
+                | ThreadStatus.BlockedOnClassInit next -> walk next (visited.Add current)
+                | ThreadStatus.Runnable
+                | ThreadStatus.NotStarted
+                | ThreadStatus.Parked
+                | ThreadStatus.Terminated
+                | ThreadStatus.BlockedOnJoin _
+                | ThreadStatus.BlockedOnMonitorAcquire _
+                | ThreadStatus.BlockedOnMonitorWait _
+                | ThreadStatus.BlockedOnSyncBlockAcquire _
+                | ThreadStatus.BlockedOnSyncBlockWait _
+                | ThreadStatus.BlockedOnWaitHandle _
+                | ThreadStatus.BlockedOnWaitHandles _
+                | ThreadStatus.BlockedOnSleep _
+                | ThreadStatus.BlockedInSyscall -> false
+
+        walk holder Set.empty

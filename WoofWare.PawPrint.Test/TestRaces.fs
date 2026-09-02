@@ -261,3 +261,53 @@ module TestRaces =
         if blocked = 0 then
             failwith
                 "NewobjCctorRace.cs ran to completion under the default schedule without either thread ever blocking on the other's type initialiser, so it no longer exercises the contended `newobj` path. Lengthen SlowCctor's initialiser, or pick a seed that interleaves the two `newobj`s."
+
+    /// ECMA-335 II.10.5.3.3 step 2.2.2: when each of two threads holds a type initialiser the
+    /// other needs, the second to arrive proceeds and sees a partially-initialised type rather
+    /// than blocking. The guest asserts only what holds whichever thread that is, so the one
+    /// legal exit code is 0; anything else means a `.cctor` ran twice, a value was left
+    /// uninitialised, or both threads saw the other's partial state. A deadlock is not an exit
+    /// code at all and fails the sweep on its own.
+    let private cyclicCctorAcrossThreadsLegalOutcomes : Set<int> = Set.ofList [ 0 ]
+
+    [<Test>]
+    let ``CyclicCctorAcrossThreads under the real runtime produces a legal outcome`` () : unit =
+        let image = compileImage "CyclicCctorAcrossThreads.cs"
+        let exitCode = runRealRuntime "CyclicCctorAcrossThreads.cs" image
+
+        cyclicCctorAcrossThreadsLegalOutcomes
+        |> Set.contains exitCode
+        |> shouldEqual true
+
+    [<Test>]
+    let ``CyclicCctorAcrossThreads under PCT covers every legal outcome`` () : unit =
+        // The sweep is what turns "does not deadlock under round-robin" into "does not deadlock
+        // under any interleaving PCT reaches": which thread closes the wait cycle, and whether
+        // the other was speculatively woken in between, both depend on the schedule.
+        let image = compileImage "CyclicCctorAcrossThreads.cs"
+        let observed = sweepPctExitCodes "CyclicCctorAcrossThreads.cs" image
+
+        if observed <> cyclicCctorAcrossThreadsLegalOutcomes then
+            let missing = Set.difference cyclicCctorAcrossThreadsLegalOutcomes observed
+            let extra = Set.difference observed cyclicCctorAcrossThreadsLegalOutcomes
+
+            failwith
+                $"CyclicCctorAcrossThreads.cs PCT sweep over %d{List.length pctSeedSweep} seeds observed %A{Set.toList observed}; expected %A{Set.toList cyclicCctorAcrossThreadsLegalOutcomes}. Missing: %A{Set.toList missing}; Unexpected: %A{Set.toList extra}."
+
+    [<Test>]
+    let ``CyclicCctorAcrossThreads really does close a wait cycle`` () : unit =
+        // Each thread's `.cctor` touches the other type only from inside its own initialiser,
+        // so a thread that blocks does so while holding its own type's lock, and the holder it
+        // blocks on can finish only by reaching the blocked thread's type in turn. A run that
+        // both blocked at least once and terminated therefore went through the cycle rule; one
+        // that never blocked would pass the tests above while exercising nothing.
+        let image = compileImage "CyclicCctorAcrossThreads.cs"
+
+        let exitCode, blocked =
+            runCountingClassInitBlocks "CyclicCctorAcrossThreads.cs" image None
+
+        exitCode |> shouldEqual 0
+
+        if blocked = 0 then
+            failwith
+                "CyclicCctorAcrossThreads.cs ran to completion under the default schedule without either thread ever blocking on the other's type initialiser, so the wait cycle never formed. Lengthen the initialisers' counting loops, or pick a seed that interleaves them."
