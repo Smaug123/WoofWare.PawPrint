@@ -737,6 +737,33 @@ module IlMachineManagedByref =
         let targetSize = CliType.sizeOf targetTemplate
         let shape = ManagedHeap.getArrayShape arr state.ManagedHeap
 
+        // A read that starts before element 0 of a multi-dimensional array is a read of the
+        // bounds block CoreCLR lays out there (see `MultiDimArrayBounds`), reached by pointer
+        // arithmetic from `RawArrayData::Data`. The position is address arithmetic, so it is
+        // formed in int64 rather than wrapped. The block is present on an array with no
+        // elements too, so this precedes the empty-array refusal below.
+        let positionFromElementZero =
+            int64<int> index * int64<int> shape.ElementStride + int64<int> byteOffset
+
+        let boundsBlockRead : CliType voption =
+            if positionFromElementZero >= 0L then
+                ValueNone
+            else
+                match MultiDimArrayBounds.tryBytes shape with
+                | None -> ValueNone
+                | Some block ->
+                    let start = positionFromElementZero + int64<int> block.Length
+
+                    if start < 0L || start + int64<int> targetSize > int64<int> block.Length then
+                        failwith
+                            $"TODO: byte-view read of %d{targetSize} bytes at %d{positionFromElementZero} bytes before element 0 of multi-dimensional array %O{arr} does not fall within its %d{block.Length}-byte bounds block"
+
+                    ValueSome (CliType.ofBytesLike targetTemplate (Array.sub block (int32<int64> start) targetSize))
+
+        match boundsBlockRead with
+        | ValueSome value -> value
+        | ValueNone ->
+
         // Every byte-view read of an empty array is out of bounds anyway; refusing here keeps
         // a zero-width read from quietly succeeding against storage that has no bytes at all.
         if shape.Length = 0 then

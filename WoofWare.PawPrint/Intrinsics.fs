@@ -3247,11 +3247,11 @@ module Intrinsics =
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Array.cs#L763-L806
             // All three are `[Intrinsic]` and every upstream body bottoms out in
             // `this.GetMultiDimensionalArrayBounds()`, a raw walk over the inline bounds block
-            // CoreCLR lays out between the object header and the element data. PawPrint does not
-            // model that block at all (see the explicit failure in RawArrayDataProjection's
-            // sibling, `RuntimeFieldProjection`), so — as with `Array.Clone` above — the byte-level
-            // formulation is not the primitive available on our side of the boundary. The shape is
-            // held structurally instead, on `AllocatedArray.Lengths`.
+            // CoreCLR lays out between the object header and the element data. PawPrint renders
+            // that block only for byte-view reads through `RawArrayData::Data` (see
+            // `MultiDimArrayBounds`), and renders it *from* `AllocatedArray.Lengths`, so — as with
+            // `Array.Clone` above — the shape is answered from where it is held rather than by
+            // walking bytes that are themselves derived from it.
             //
             // Upstream's `rank` comes from the MethodTable's multi-dim rank field, which is 0 for a
             // szarray, hence its `rank == 0 && dimension == 0` special case. PawPrint stores a
