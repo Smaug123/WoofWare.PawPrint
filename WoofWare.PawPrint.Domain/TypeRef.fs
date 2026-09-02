@@ -15,8 +15,12 @@ type TypeRefResolutionScope =
     override this.Equals (other : obj) : bool =
         let other =
             match other with
-            | :? TypeRefResolutionScope as other -> other
-            | _ -> failwith "should never compare with non-TypeRefResolutionScope"
+            | :? TypeRefResolutionScope as other -> Ok other
+            | _ -> Error false
+
+        match other with
+        | Error e -> e
+        | Ok other ->
 
         match this, other with
         | TypeRefResolutionScope.Assembly a1, TypeRefResolutionScope.Assembly a2 -> a1 = a2
