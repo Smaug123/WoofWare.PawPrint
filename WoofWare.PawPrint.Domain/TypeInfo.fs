@@ -135,6 +135,10 @@ type TypeInfo<'generic, 'fieldGeneric> =
         /// </summary>
         TypeDefHandle : TypeDefinitionHandle
 
+        /// <summary>
+        /// The type this one is nested in, as named by its row in the NestedClass table
+        /// (ECMA-335 II.22.32); nil when it has no such row, i.e. when it is top-level.
+        /// </summary>
         DeclaringType : TypeDefinitionHandle
 
         /// <summary>
@@ -193,16 +197,13 @@ type TypeInfo<'generic, 'fieldGeneric> =
 
     member this.IsInterface = this.TypeAttributes.HasFlag TypeAttributes.Interface
 
-    member this.IsNested =
-        [
-            TypeAttributes.NestedPublic
-            TypeAttributes.NestedPrivate
-            TypeAttributes.NestedFamily
-            TypeAttributes.NestedAssembly
-            TypeAttributes.NestedFamANDAssem
-            TypeAttributes.NestedFamORAssem
-        ]
-        |> List.exists this.TypeAttributes.HasFlag
+    /// <summary>
+    /// Whether this type has a NestedClass row, so that <c>DeclaringType</c> names its encloser.
+    /// This is the fact CoreCLR resolves names by and enumerates nested types by; the
+    /// <c>NestedXxx</c> visibility bits of <c>TypeAttributes</c> are a separate claim, and a
+    /// <c>TypeInfo</c> read from metadata has been checked to make both claims agree.
+    /// </summary>
+    member this.IsNested : bool = not this.DeclaringType.IsNil
 
     member this.Identity : ResolvedTypeIdentity =
         ResolvedTypeIdentity.ofDefinitionInAssembly this.AssemblyFullName this.TypeDefHandle
@@ -549,6 +550,30 @@ module TypeInfo =
         let name = metadataReader.GetString typeDef.Name
         let ns = metadataReader.GetString typeDef.Namespace
         let typeAttrs = typeDef.Attributes
+
+        // A TypeDef claims to be nested in two independent places, and CoreCLR reads both: it
+        // resolves names and enumerates nested types by the NestedClass table, and it refuses to
+        // load a type whose visibility disagrees with that table
+        // (`ClassLoader::CreateTypeHandleForTypeDefThrowing`: a row under a non-nested visibility
+        // is `VLDTR_E_TD_ENCLNOTNESTED`, a nested visibility with no row is
+        // `IDS_CLASSLOAD_BADFORMAT`). So no such type ever loads there, and `IsNested` is free to
+        // read only the table. CoreCLR's refusal comes when the type is first loaded, whereas this
+        // one comes when the assembly is read, so an image is refused here even if the program
+        // would never have touched the malformed type.
+        let visibility = typeAttrs &&& TypeAttributes.VisibilityMask
+        let visibilityIsNested = int visibility >= int TypeAttributes.NestedPublic
+
+        if visibilityIsNested <> not declaringType.IsNil then
+            let row =
+                if declaringType.IsNil then
+                    "no NestedClass row"
+                else
+                    $"a NestedClass row naming TypeDef %i{System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                                                              TypeDefinitionHandle.op_Implicit declaringType : EntityHandle
+                                                          )} as its encloser"
+
+            failwith
+                $"Type %s{ns}.%s{name} in assembly %s{thisAssembly.FullName} has visibility %O{visibility} and %s{row}. ECMA-335 II.22.37 requires the two to agree, and CoreCLR refuses to load such a type, so this image is refused."
 
         let attrs =
             typeDef.GetCustomAttributes ()

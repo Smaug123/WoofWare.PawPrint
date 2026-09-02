@@ -238,7 +238,7 @@ type DumpedAssembly =
         /// "what is nested in this type", where <c>TypeInfo.DeclaringType</c> answers the
         /// converse. It exists because <c>MetadataImport_Enum</c> for <c>mdtTypeDef</c> is that
         /// question, and it is deliberately not <c>_NestedTypeDefsLookup</c>, which is keyed by
-        /// name and silently drops duplicates — legal in IL, and fatal to an enumeration.
+        /// name and silently drops duplicates: legal in IL, and fatal to an enumeration.
         /// </remarks>
         NestedTypeDefsByEnclosing :
             ImmutableDictionary<ComparableTypeDefinitionHandle, ImmutableArray<TypeDefinitionHandle>>
@@ -1157,8 +1157,7 @@ module Assembly =
             // preserves the order it is given straight into `Type.GetNestedTypes()`.
             for handle in metadataReader.TypeDefinitions do
                 // `DeclaringType` is the NestedClass table, which is exactly what the QCall
-                // enumerates. Deliberately not `IsNested`, which reads the visibility bits of
-                // `TypeAttributes`: that is a different fact, and hand-written IL can disagree.
+                // enumerates.
                 let declaring = typeDefs.[handle].DeclaringType
 
                 if not declaring.IsNil then
