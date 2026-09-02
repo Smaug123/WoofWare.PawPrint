@@ -68,14 +68,6 @@ type AssemblyRefRowDivergence =
 [<RequireQualifiedAccess>]
 module CrossAssemblyHarness =
 
-    let private getExitCode (terminalState : IlMachineState) (terminatingThread : ThreadId) : int =
-        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-        | [] -> failwith "expected program to return an int, but it returned void"
-        | head :: _ ->
-            match head with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-            | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
-
     let compileAssemblies (assemblies : CrossAssemblySpec list) : Map<string, byte[]> =
         (Map.empty, assemblies)
         ||> List.fold (fun built spec ->
@@ -119,7 +111,7 @@ module CrossAssemblyHarness =
         use peImage = new MemoryStream (entryBytes)
 
         try
-            let terminalState, terminatingThread =
+            let terminalState =
                 match Program.run loggerFactory (Some entryPath) peImage (HostConfig.Default dotnetRuntimeDirs) with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
@@ -127,10 +119,10 @@ module CrossAssemblyHarness =
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
-                | RunOutcome.NormalExit (state, thread) -> state, thread
-                | RunOutcome.ProcessExit (state, thread) -> state, thread
+                | RunOutcome.NormalExit (state, _) -> state
+                | RunOutcome.ProcessExit (state, _) -> state
 
-            getExitCode terminalState terminatingThread
+            terminalState.LatchedExitCode
         with _ ->
             for message in messages () do
                 Console.Error.WriteLine $"{message}"

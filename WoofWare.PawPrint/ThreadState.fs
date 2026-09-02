@@ -265,9 +265,8 @@ type ThreadStatus =
     /// The entry thread after `Main` has returned. CoreCLR's `RunMainPost` blocks the
     /// entry thread in `ThreadStore::WaitForOtherThreads` until no other foreground thread
     /// is alive, and only then does the process exit; this is that wait. The thread never
-    /// runs again — its final frame stays in place, with `Main`'s return value on the eval
-    /// stack for the driver to report as the exit code — but it is *not* dead: a `Join` on
-    /// it blocks for as long as the process lasts, exactly as on real .NET.
+    /// runs again — its final frame stays in place — but it is *not* dead: a `Join` on it
+    /// blocks for as long as the process lasts, exactly as on real .NET.
     ///
     /// `WaitForOtherThreads` makes the waiting thread background before it waits, so a
     /// thread in this status has `IsBackground = true` unless a worker has since set it

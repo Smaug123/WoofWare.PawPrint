@@ -89,10 +89,9 @@ module TestVariableSizeNewobj =
 
         try
             match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
-            | RunOutcome.NormalExit (state, terminatingThread) ->
-                match state.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | EvalStackValue.Int32 (Int32Source.Verbatim 0) :: _ -> ()
-                | other -> failwith $"%s{sourceName}: expected guest exit code 0, got %O{other}"
+            | RunOutcome.NormalExit (state, _) ->
+                if state.LatchedExitCode <> 0 then
+                    failwith $"%s{sourceName}: expected guest exit code 0, got %d{state.LatchedExitCode}"
 
                 state
             | other -> failwith $"%s{sourceName}: expected a normal exit, got %O{other}"

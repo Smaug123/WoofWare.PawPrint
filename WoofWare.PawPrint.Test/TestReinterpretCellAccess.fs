@@ -223,12 +223,8 @@ public class Probe
                 reraise ()
 
         match outcome with
-        | RunOutcome.NormalExit (terminalState, terminatingThread)
-        | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
-            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
-            | [] -> failwith $"%s{sourceName}: expected the program to return an int, but it returned void"
-            | ret :: _ -> failwith $"%s{sourceName}: expected the program to return an int, but it returned %O{ret}"
+        | RunOutcome.NormalExit (terminalState, _)
+        | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"%s{sourceName}: guest threw an unhandled exception: %O{exn.ExceptionObject}"
         | RunOutcome.Aborted (_, _, fatal) ->

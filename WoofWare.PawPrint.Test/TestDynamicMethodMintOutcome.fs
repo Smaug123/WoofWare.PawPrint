@@ -118,11 +118,8 @@ class CallsUnmintedCallee
             match Program.stepPrepared loggerFactory logger prepared with
             | Program.ProgramStepOutcome.Completed outcome ->
                 match outcome with
-                | RunOutcome.NormalExit (terminalState, terminatingThread)
-                | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> List.rev acc, exitCode
-                    | other -> failwith $"guest did not return an int exit code: %O{other}"
+                | RunOutcome.NormalExit (terminalState, _)
+                | RunOutcome.ProcessExit (terminalState, _) -> List.rev acc, terminalState.LatchedExitCode
                 | other -> failwith $"guest did not exit normally: %O{other}"
             | Program.ProgramStepOutcome.Deadlocked (_, stuck) -> failwith $"guest deadlocked: %s{stuck}"
             | Program.ProgramStepOutcome.WorkerTerminated (p, _) -> loop p acc

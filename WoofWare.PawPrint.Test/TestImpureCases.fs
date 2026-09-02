@@ -2890,7 +2890,7 @@ module TestImpureCases =
                     pawPrintResult
             | None -> ()
 
-            let terminalState, terminatingThread =
+            let terminalState =
                 match pawPrintResult with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
@@ -2898,18 +2898,10 @@ module TestImpureCases =
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
-                | RunOutcome.NormalExit (state, thread) -> state, thread
-                | RunOutcome.ProcessExit (state, thread) -> state, thread
+                | RunOutcome.NormalExit (state, _) -> state
+                | RunOutcome.ProcessExit (state, _) -> state
 
-            let exitCode =
-                match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                | [] -> failwith "expected program to return a value, but it returned void"
-                | head :: _ ->
-                    match head with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-                    | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
-
-            exitCode |> shouldEqual case.ExpectedReturnCode
+            terminalState.LatchedExitCode |> shouldEqual case.ExpectedReturnCode
 
             match case.AssertTerminalState with
             | None -> ()

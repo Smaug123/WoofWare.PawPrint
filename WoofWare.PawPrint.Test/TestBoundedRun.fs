@@ -105,10 +105,7 @@ class Terminates
 """
 
         match runSource BoundedRun.defaultMaxSteps "Terminates.cs" source with
-        | RunOutcome.NormalExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-            | other -> failwith $"expected an int exit code, got %O{other}"
+        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode |> shouldEqual 0
         | other -> failwith $"expected a normal exit, got %O{other}"
 
     let private spinsForEver =

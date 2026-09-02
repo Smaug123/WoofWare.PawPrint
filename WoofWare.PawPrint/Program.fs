@@ -9,6 +9,17 @@ open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module Program =
+    /// What `Main` returns, which decides whether its return writes the latched exit code:
+    /// CoreCLR's `RunMain` copies an `int Main`'s return value to `IlMachineState.LatchedExitCode`
+    /// the moment `Main` returns, and a `void Main` leaves the latch as the guest left it.
+    [<RequireQualifiedAccess>]
+    type MainReturn =
+        /// The exit code is whatever the guest last wrote to `Environment.ExitCode`, 0 if nothing did.
+        | Void
+        /// The return value becomes the latched exit code as `Main` returns, overwriting any
+        /// earlier `Environment.ExitCode` write and overwritten by any later one.
+        | Int32
+
     /// What the entry thread is running, which decides what its bottom frame returning means.
     [<RequireQualifiedAccess>]
     type EntryFrameKind =
@@ -16,11 +27,12 @@ module Program =
         /// initialiser, a class initialiser. Its return ends the pump with `NormalExit`, and the
         /// entry thread is left as it is for startup to give it its next frame.
         | StartupCall
-        /// `Main`. Its return does not end the run: the entry thread goes to
-        /// `ThreadStatus.WaitingForForegroundThreads` (and background), and the run ends with
-        /// `NormalExit` at the first tick at which no foreground thread is alive — CoreCLR's
-        /// `ThreadStore::WaitForOtherThreads`, which `RunMainPost` blocks in after `Main`.
-        | Main
+        /// `Main`. Its return latches the exit code if `Main` returns one, and does not end the
+        /// run: the entry thread goes to `ThreadStatus.WaitingForForegroundThreads` (and
+        /// background), and the run ends with `NormalExit` at the first tick at which no
+        /// foreground thread is alive — CoreCLR's `ThreadStore::WaitForOtherThreads`, which
+        /// `RunMainPost` blocks in after `Main`.
+        | Main of returns : MainReturn
 
     type PreparedProgram =
         {
@@ -700,6 +712,30 @@ module Program =
     let private holdsProcessOpen (thread : ThreadState) : bool =
         not thread.IsBackground && ThreadStatus.keepsProcessAlive thread.Status
 
+    /// `RunMain`'s `SetLatchedExitCode(*piRetVal)`: the moment an `int Main` returns, its return
+    /// value — which its `ret` left on top of the entry thread's eval stack — becomes the
+    /// latched exit code. A `void Main` latches nothing.
+    let private latchMainReturnValue
+        (returns : MainReturn)
+        (entry : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        match returns with
+        | MainReturn.Void -> state
+        | MainReturn.Int32 ->
+            match state.ThreadState.[entry].MethodState.EvaluationStack.Values with
+            | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ ->
+                { state with
+                    LatchedExitCode = code
+                }
+            | [] ->
+                failwith
+                    "logic error: an int Main returned without leaving its return value on the entry thread's eval stack"
+            | other :: _ ->
+                failwith
+                    $"an int Main returned %O{other}, which is not a verbatim int32; PawPrint cannot report it as an exit code"
+
     /// Once `Main` has returned, end the run at the first tick at which no thread holds the
     /// process open; until then, and before `Main` returns, hand back `continuing` unchanged.
     ///
@@ -726,7 +762,7 @@ module Program =
 
         match prepared.EntryFrame with
         | EntryFrameKind.StartupCall -> continuing
-        | EntryFrameKind.Main ->
+        | EntryFrameKind.Main _ ->
 
         match prepared.State.ThreadState.[prepared.EntryThread].Status with
         | ThreadStatus.WaitingForForegroundThreads ->
@@ -785,16 +821,19 @@ module Program =
                     match prepared.EntryFrame with
                     | EntryFrameKind.StartupCall ->
                         ProgramStepOutcome.Completed (RunOutcome.NormalExit (state, prepared.EntryThread))
-                    | EntryFrameKind.Main ->
-                        // `Main` has returned. The entry thread keeps its final frame — the
-                        // return value on its eval stack is the exit code — and waits for the
-                        // other foreground threads; the run ends below if there are none.
+                    | EntryFrameKind.Main returns ->
+                        // `Main` has returned. Its return value, if it has one, is latched as the
+                        // exit code now, and the entry thread keeps its final frame and waits for
+                        // the other foreground threads; the run ends below if there are none.
                         logger.LogDebug (
                             "Main returned on {Thread}; the process now waits for its other foreground threads",
                             prepared.EntryThread
                         )
 
-                        let state = Scheduler.onMainReturned prepared.EntryThread state
+                        let state =
+                            state
+                            |> latchMainReturnValue returns prepared.EntryThread
+                            |> Scheduler.onMainReturned prepared.EntryThread
 
                         // The `ret` retired a step, reported here as `WhatWeDid.Executed`, so it
                         // gets that outcome's consequences — as the dispatcher's final `ret`
@@ -943,13 +982,14 @@ module Program =
     ///     Terminated — startup is about to give it its next frame, ultimately `Main` — because
     ///     a worker that joined it during a `.cctor` must not observe a false end-of-thread and
     ///     proceed past its Join before `Main` has started.
-    ///   * `Main`: the entry thread goes to `WaitingForForegroundThreads` and becomes a
-    ///     background thread, as `WaitForOtherThreads` makes it, and the run goes on
-    ///     until no foreground thread is left alive, at which tick it reports `NormalExit` with
-    ///     `Main`'s return value still on the entry thread's eval stack as the exit code. A
-    ///     worker's `Environment.Exit` in the meantime is a `ProcessExit` like any other. If the
-    ///     foreground threads that remain can make no progress, the tick reports `Deadlocked`:
-    ///     real .NET would hang there.
+    ///   * `Main`: an `int Main`'s return value is latched as the exit code, the entry thread
+    ///     goes to `WaitingForForegroundThreads` and becomes a background thread, as
+    ///     `WaitForOtherThreads` makes it, and the run goes on until no foreground thread is
+    ///     left alive, at which tick it reports `NormalExit`; the exit code is whatever
+    ///     `IlMachineState.LatchedExitCode` holds by then, which a worker may have rewritten
+    ///     through `Environment.ExitCode`. A worker's `Environment.Exit` in the meantime is a
+    ///     `ProcessExit` like any other. If the foreground threads that remain can make no
+    ///     progress, the tick reports `Deadlocked`: real .NET would hang there.
     let stepPrepared
         (loggerFactory : ILoggerFactory)
         (logger : ILogger)
@@ -1023,9 +1063,14 @@ module Program =
                 failwith
                     "Main method must take no parameters or a single string[]; other signatures not yet implemented"
 
-        match mainMethodFromMetadata.Signature.ReturnType with
-        | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32) -> ()
-        | _ -> failwith "Main method must return int32; other types not currently supported"
+        let mainReturn =
+            match mainMethodFromMetadata.Signature.ReturnType with
+            | MethodReturnType.Void -> MainReturn.Void
+            | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32) -> MainReturn.Int32
+            | other ->
+                // CoreCLR's `ValidateMainMethod` also admits a `uint32` return, which no C# or
+                // F# source can declare.
+                failwith $"Main method returns %O{other}; only a void or int32 Main is supported"
 
         let state =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
@@ -1336,7 +1381,7 @@ module Program =
                     State = state
                     BaseClassTypes = baseClassTypes
                     EntryThread = mainThread
-                    EntryFrame = EntryFrameKind.Main
+                    EntryFrame = EntryFrameKind.Main mainReturn
                     LastRan = mainThread
                 }
 
@@ -1392,7 +1437,7 @@ module Program =
                 // `InitializeCommandLineArgs` returns the arguments `Main` is to be given,
                 // having just built `s_commandLineArgs` from the same input in the same
                 // pass. The entry thread has terminated, so its eval stack holds the return
-                // value the way it holds `Main`'s exit code.
+                // value the way it holds `Main`'s.
                 let returned =
                     match state.ThreadState.[mainThread].MethodState.EvaluationStack.Values with
                     | EvalStackValue.ObjectRef addr :: _ -> addr
