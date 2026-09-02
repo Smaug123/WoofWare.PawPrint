@@ -5749,9 +5749,13 @@ module NativeSystemNative =
             | ValueNone ->
                 // Darwin's 32. The shim's `default:` branch restores a
                 // handler that was never installed and calls
-                // `kill(g_pid, 32)`, which the kernel refuses with EINVAL
-                // and the shim does not check; the process carries on.
-                NativeHandlerResult.completed state |> Some
+                // `kill(g_pid, 32)`; the kernel refuses both with EINVAL,
+                // the shim checks neither, and the process carries on with
+                // that errno — which a guest hand-rolling the P/Invoke can
+                // read back.
+                withErrnoOnly ctx UnixError.EINVAL state
+                |> NativeHandlerResult.completed
+                |> Some
             | ValueSome signal when PosixSignalPal.handledWithoutRestoring numbering signal ->
                 // Nothing to do: the runtime cannot stop or continue
                 // itself, and the ignored ones are literally no-ops (the
@@ -5826,10 +5830,13 @@ module NativeSystemNative =
 
             match signalWithinShimRange operation numbering signo with
             | ValueNone ->
-                // Darwin's 32: nothing can have enabled it, and the
-                // `sigaction` the real shim calls to restore its prior
-                // disposition fails unchecked. Nothing to clear.
-                NativeHandlerResult.completed state |> Some
+                // Darwin's 32: nothing can have enabled it, so there is
+                // nothing to clear, but the `sigaction` the real shim calls
+                // to restore its prior disposition fails with EINVAL,
+                // unchecked, and that is what a guest reads back.
+                withErrnoOnly ctx UnixError.EINVAL state
+                |> NativeHandlerResult.completed
+                |> Some
             | ValueSome signal ->
                 state.MapKernel (fun kernel ->
                     { kernel with
