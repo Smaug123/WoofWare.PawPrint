@@ -585,6 +585,33 @@ module ExceptionDispatching =
         let threadState = state.ThreadState.[currentThread]
         let frame = ThreadState.getFrame search.Frame threadState
 
+        match activeFilterOf frame with
+        | Some continuation ->
+            // The frame is evaluating a filter, so this is an exception leaving that filter's
+            // body, and its dispatch ends here: ECMA-335 III.3.34 has it "intercepted and a value
+            // of exception_continue_search" returned, which CoreCLR implements as a catch-all
+            // around the filter funclet (`ExceptionHandling.cs`, "Prevent leaking any exception
+            // from the filter funclet").
+            //
+            // The frame's own clauses are not consulted. None can lie inside the filter body,
+            // because a filter may not enclose another exception-handling entry (I.12.4.2.7;
+            // the JIT rejects it as "Protected block appearing within filter block"), and the
+            // ones whose `try` encloses the filter belong to the frame, not to the funclet, so
+            // CoreCLR never offers them. Roslyn lays a `when` clause out inside the enclosing
+            // `try`, so consulting them here would let `catch (B)` around a `try { … } catch (A)
+            // when (ThrowsB())` catch B.
+            let filter = continuation.CurrentFilter
+
+            if
+                search.SearchPC < filter.FilterOffset
+                || search.SearchPC >= filter.HandlerOffset.HandlerOffset
+            then
+                failwith
+                    $"Logic error: the first pass of exception dispatch reached %s{frame.ExecutingMethod.Name} at IL offset %d{search.SearchPC} while that frame is evaluating the filter at IL offsets %d{filter.FilterOffset}..%d{filter.HandlerOffset.HandlerOffset}; a frame evaluating a filter can only be reached from inside the filter body"
+
+            state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.AbandonedAtFilter search.Frame)
+        | None ->
+
         let state, accepting =
             if hasNotStarted frame then
                 state, None
@@ -631,14 +658,6 @@ module ExceptionDispatching =
                 $"Logic error: the first pass of exception dispatch selected cleanup region %O{region} of %s{frame.ExecutingMethod.Name} as an accepting clause; only Catch and Filter can accept"
         | None ->
 
-        match activeFilterOf frame with
-        | Some _ ->
-            // No clause of this frame accepts, and the frame is mid-filter, so this is where the
-            // exception leaves that filter. The CLR catches an exception that escapes a filter
-            // at the filter boundary and reports the filter as false.
-            state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.AbandonedAtFilter search.Frame)
-        | None ->
-
         match frame.ReturnState with
         | None -> state, FirstPassResult.SearchConcluded (search, ExceptionSearchOutcome.NoHandler)
         | Some returnState ->
@@ -681,16 +700,12 @@ module ExceptionDispatching =
             failwith
                 $"Logic error: the first pass of exception dispatch concluded that cleanup region %O{region} of %s{frame.ExecutingMethod.Name} caught an exception; only Catch and Filter can catch"
         | ExceptionSearchOutcome.AbandonedAtFilter _ ->
-            // The exception dies at the filter's boundary, so cleanup inside the filter body runs
-            // and anything enclosing the filter clause does not.
-            //
-            // One shape this under-runs: a cleanup clause whose `try` begins at exactly
-            // `FilterOffset` covers that offset and so is excluded, though it too is being
-            // abandoned wholesale. It needs hand-written IL — C#'s `when` puts any `try` a filter
-            // contains in a *callee* frame — and unlike the other filter-internal EH corners here
-            // it fails quietly rather than loudly, because it is a clause not run rather than a
-            // state the code cannot describe. Recorded rather than handled: what the CLR does with
-            // it is unmeasured, and inventing an answer would be worse than naming the gap.
+            // The exception dies at the filter's boundary, and no cleanup clause of this frame
+            // lies between the throw point and it: a filter may not enclose another
+            // exception-handling entry (ECMA-335 I.12.4.2.7), so every clause whose `try` covers a
+            // point in the filter body encloses the whole filter, covers `FilterOffset` too, and
+            // is excluded. The boundary is nonetheless stated, rather than `None`, so that
+            // `cleanupRegionsBetween` cannot run those enclosing clauses.
             match activeFilterOf frame with
             | Some continuation -> Some continuation.CurrentFilter.FilterOffset
             | None ->

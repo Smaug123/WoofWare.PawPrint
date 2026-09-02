@@ -389,3 +389,198 @@ module TestFaultHandlers =
 
         popped |> Option.map _.Continuation |> shouldBeResumeAfterFinally 10
         methodState.ExceptionContinuation |> Option.isNone |> shouldEqual true
+
+    /// A `try { … } catch (A) when (…) { … }` nested inside a `try { … } catch (object) { … }`,
+    /// laid out as Roslyn lays such a construct out: the inner entry, filter body included, lies
+    /// within the outer `try`. The filter's body is `[FilterOffset, HandlerOffset)`.
+    type private EnclosedFilterLayout =
+        {
+            Filter : ExceptionFilterRegion
+            Enclosing : ExceptionOffset
+            /// An IL offset inside the filter body: where the escaping exception is raised.
+            RaisePC : int
+            /// An IL offset inside the inner `try`: where the original exception was raised.
+            OriginalPC : int
+        }
+
+    let private enclosedFilterLayouts : Gen<EnclosedFilterLayout> =
+        gen {
+            let! innerTryOffset = Gen.choose (0, 4)
+            let! innerTryLength = Gen.choose (1, 8)
+            let! gapBeforeFilter = Gen.choose (0, 3)
+            let! filterLength = Gen.choose (1, 8)
+            let! handlerLength = Gen.choose (1, 4)
+            let! outerTryOffset = Gen.choose (0, innerTryOffset)
+            let! slackAfterInner = Gen.choose (0, 4)
+            let! gapBeforeOuterHandler = Gen.choose (0, 3)
+            let! outerHandlerLength = Gen.choose (1, 3)
+
+            let filterOffset = innerTryOffset + innerTryLength + gapBeforeFilter
+            let handlerOffset = filterOffset + filterLength
+            let outerTryEnd = handlerOffset + handlerLength + slackAfterInner
+
+            let! raisePC = Gen.choose (filterOffset, handlerOffset - 1)
+            let! originalPC = Gen.choose (innerTryOffset, innerTryOffset + innerTryLength - 1)
+
+            return
+                {
+                    Filter =
+                        {
+                            FilterOffset = filterOffset
+                            HandlerOffset =
+                                {
+                                    TryOffset = innerTryOffset
+                                    TryLength = innerTryLength
+                                    HandlerOffset = handlerOffset
+                                    HandlerLength = handlerLength
+                                }
+                        }
+                    Enclosing =
+                        {
+                            TryOffset = outerTryOffset
+                            TryLength = outerTryEnd - outerTryOffset
+                            HandlerOffset = outerTryEnd + gapBeforeOuterHandler
+                            HandlerLength = outerHandlerLength
+                        }
+                    RaisePC = raisePC
+                    OriginalPC = originalPC
+                }
+        }
+
+    /// Whichever exception is raised inside a filter body dies at the filter's boundary: the
+    /// filter counts as rejecting, and the search parked for the *original* exception resumes.
+    /// No clause of the same frame may receive the escaping exception, however its `try` lies
+    /// (ECMA-335 III.3.34). Roslyn nests a `when` filter's IL inside any enclosing `try`, so the
+    /// shape to guard is an enclosing `catch` whose type accepts the escaping exception.
+    [<Test>]
+    let ``Exception raised inside a filter body is abandoned at the filter, not caught by an enclosing catch``
+        ()
+        : unit
+        =
+        let objectHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes bct.Object
+
+        let catchesEverything =
+            ExceptionCatchType.FromMetadata (MetadataToken.TypeDefinition bct.Object.TypeDefHandle)
+
+        let original = ManagedHeapAddress 42
+        let escaping = ManagedHeapAddress 43
+
+        let property (layout : EnclosedFilterLayout) : unit =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+
+            let state, thread =
+                stateWithMethod
+                    loggerFactory
+                    [
+                        ExceptionRegion.Filter (layout.Filter.FilterOffset, layout.Filter.HandlerOffset)
+                        ExceptionRegion.Catch (catchesEverything, layout.Enclosing)
+                    ]
+
+            let frameId = state.ThreadState.[thread].ActiveMethodState
+
+            // The frame as `enterFilterHandler` leaves it: the filter is under evaluation for
+            // `original`, whose first pass is parked on the continuation stack, and the frame has
+            // got as far as `RaisePC` into the filter body.
+            let parkedSearch : ExceptionSearchState<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> =
+                {
+                    Exception =
+                        {
+                            ExceptionObject = original
+                            StackTrace = []
+                        }
+                    ExceptionType = objectHandle
+                    StartFrame = frameId
+                    StartPC = layout.OriginalPC
+                    Frame = frameId
+                    SearchPC = layout.OriginalPC
+                    SkippedFilters = []
+                }
+
+            let methodState =
+                state.ThreadState.[thread].MethodState
+                |> MethodState.pushExceptionContinuation
+                    (ExceptionContinuationScope.FilterHandler layout.Filter)
+                    (ExceptionContinuation.ResumeAfterFilter
+                        {
+                            CurrentFilter = layout.Filter
+                            Search = parkedSearch
+                        })
+                |> MethodState.pushToEvalStack' (EvalStackValue.ObjectRef original)
+                |> MethodState.setProgramCounter layout.RaisePC
+
+            let threadState =
+                ThreadState.setFrame frameId methodState state.ThreadState.[thread]
+
+            let state =
+                { state with
+                    ThreadState = state.ThreadState |> Map.add thread threadState
+                }
+
+            let state =
+                match
+                    ExceptionDispatching.dispatchException
+                        loggerFactory
+                        bct
+                        state
+                        thread
+                        {
+                            ExceptionObject = escaping
+                            StackTrace = []
+                        }
+                        objectHandle
+                with
+                | ExceptionDispatchResult.Dispatched state -> state
+                | ExceptionDispatchResult.ExceptionUnhandled (_, exn) ->
+                    failwith $"Expected the escaping exception to end the filter, but it went unhandled: %O{exn}"
+
+            let frame = state.ThreadState.[thread].MethodState
+
+            // The escaping exception is gone and the filter is finished with: the enclosing
+            // `catch` receives the *original* exception, and the frame carries no trace of the
+            // filter evaluation, so a later exception in this frame is dispatched afresh.
+            frame.IlOpIndex |> shouldEqual layout.Enclosing.HandlerOffset
+
+            frame.EvaluationStack.Values
+            |> shouldEqual [ EvalStackValue.ObjectRef original ]
+
+            frame.ExceptionContinuations |> List.isEmpty |> shouldEqual true
+
+            match frame.CatchExceptions |> Map.tryFind layout.Enclosing with
+            | Some caught -> caught.ExceptionObject |> shouldEqual original
+            | None ->
+                failwith $"Expected the enclosing catch at %O{layout.Enclosing} to have received the original exception"
+
+        let config : Config = Config.QuickThrowOnFailure.WithMaxTest 100
+
+        Check.One (config, Prop.forAll (Arb.fromGen enclosedFilterLayouts) property)
+
+    /// Control enters a `finally` or `fault` block only through `leave` or exception dispatch
+    /// (ECMA-335 III.3.35), and both park a continuation first, so an `endfinally` that finds
+    /// none is corrupt interpreter state rather than a guest fault to model.
+    [<Test>]
+    let ``Endfinally without a continuation is refused rather than falling through`` () : unit =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+
+        let state, thread =
+            stateWithMethod loggerFactory [ ExceptionRegion.Finally faultOffset ]
+
+        let methodState =
+            state.ThreadState.[thread].MethodState
+            |> MethodState.setProgramCounter faultOffset.HandlerOffset
+
+        let threadState =
+            ThreadState.setFrame state.ThreadState.[thread].ActiveMethodState methodState state.ThreadState.[thread]
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add thread threadState
+            }
+
+        let exn =
+            Assert.Throws (fun () ->
+                NullaryIlOp.execute loggerFactory bct state thread NullaryIlOp.Endfinally
+                |> ignore<ExecutionResult>
+            )
+
+        exn.Message |> shouldContainText "without an exception continuation"
