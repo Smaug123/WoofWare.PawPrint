@@ -13,20 +13,18 @@ type TypeRefResolutionScope =
     | TypeRef of TypeReferenceHandle
 
     override this.Equals (other : obj) : bool =
-        let other =
-            match other with
-            | :? TypeRefResolutionScope as other -> other
-            | _ -> failwith "should never compare with non-TypeRefResolutionScope"
-
-        match this, other with
-        | TypeRefResolutionScope.Assembly a1, TypeRefResolutionScope.Assembly a2 -> a1 = a2
-        | TypeRefResolutionScope.Assembly _, _ -> false
-        | TypeRefResolutionScope.ModuleDef m1, TypeRefResolutionScope.ModuleDef m2 -> m1 = m2
-        | TypeRefResolutionScope.ModuleDef _, _ -> false
-        | TypeRefResolutionScope.ModuleRef m1, TypeRefResolutionScope.ModuleRef m2 -> m1 = m2
-        | TypeRefResolutionScope.ModuleRef _, _ -> false
-        | TypeRefResolutionScope.TypeRef t1, TypeRefResolutionScope.TypeRef t2 -> t1 = t2
-        | TypeRefResolutionScope.TypeRef _, _ -> false
+        match other with
+        | :? TypeRefResolutionScope as other ->
+            match this, other with
+            | TypeRefResolutionScope.Assembly a1, TypeRefResolutionScope.Assembly a2 -> a1 = a2
+            | TypeRefResolutionScope.Assembly _, _ -> false
+            | TypeRefResolutionScope.ModuleDef m1, TypeRefResolutionScope.ModuleDef m2 -> m1 = m2
+            | TypeRefResolutionScope.ModuleDef _, _ -> false
+            | TypeRefResolutionScope.ModuleRef m1, TypeRefResolutionScope.ModuleRef m2 -> m1 = m2
+            | TypeRefResolutionScope.ModuleRef _, _ -> false
+            | TypeRefResolutionScope.TypeRef t1, TypeRefResolutionScope.TypeRef t2 -> t1 = t2
+            | TypeRefResolutionScope.TypeRef _, _ -> false
+        | _ -> false
 
     override this.GetHashCode () : int =
         match this with
