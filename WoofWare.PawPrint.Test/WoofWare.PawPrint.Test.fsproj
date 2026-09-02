@@ -143,6 +143,7 @@
     <Compile Include="TestFunctionPointerConcretization.fs" />
     <Compile Include="Netstandard21FSharpCore.fs" />
     <Compile Include="TestZeroOfBaseAssemblies.fs" />
+    <Compile Include="TestConcretizeMethodArity.fs" />
     <Compile Include="TestTypeResolutionBaseAssemblies.fs" />
     <Compile Include="TestGenericEnvironmentCycles.fs" />
     <Compile Include="TestSharedTypeGraphResolution.fs" />

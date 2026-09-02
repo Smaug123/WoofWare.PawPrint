@@ -2322,7 +2322,12 @@ module Concretization =
                             )
                             (assemblies, concreteTypes)
 
-    /// Concretize a method's signature and body
+    /// Concretize a method's signature and body.
+    ///
+    /// `typeArgs` instantiates the declaring type and must have exactly one handle per generic
+    /// parameter it declares (counting those a nested type inherits from its declaring types);
+    /// `methodArgs` likewise must have exactly one handle per generic parameter of the method.
+    /// Any other length fails. A non-generic declaring type reads nothing from `typeArgs`.
     let concretizeMethod
         (ctx : AllConcreteTypes)
         (loadAssembly : IAssemblyLoad)
@@ -2358,6 +2363,14 @@ module Concretization =
                 TypeConcretization.ConcretizationContext.BaseTypes = baseTypes
             }
 
+        // Checked up front, before the signature is concretized against `methodArgs`: a short list
+        // would otherwise surface as "generic method parameter out of range" from whichever
+        // signature position first mentions the missing parameter, and a long one would not
+        // surface at all.
+        if method.Generics.Length <> methodArgs.Length then
+            failwith
+                $"Method %s{declaringType.Namespace}.%s{declaringType.Name}.%s{method.Name} in %s{declaringType.AssemblyFullName} declares %d{method.Generics.Length} generic parameter(s), but %d{methodArgs.Length} method argument(s) were supplied"
+
         // First, we need to create a TypeDefn for the declaring type with its generics instantiated
         let declaringTypeDefn =
             if declaringType._Generics.IsEmpty then
@@ -2381,15 +2394,15 @@ module Concretization =
 
                 let genericArgsLength = declaringType.Generics.Length
 
-                if genericArgsLength > typeArgs.Length then
-                    failwithf
-                        "Method declaring type expects %d generic arguments but only %d provided"
-                        genericArgsLength
-                        typeArgs.Length
+                // Exactly one argument per parameter. A longer list is refused rather than
+                // truncated: its prefix would be the wrong instantiation whenever the caller had a
+                // derived type's arguments in hand, and nothing downstream could tell.
+                if genericArgsLength <> typeArgs.Length then
+                    failwith
+                        $"Method %s{method.Name} is declared on %s{declaringType.Namespace}.%s{declaringType.Name} in %s{declaringType.AssemblyFullName}, which declares %d{genericArgsLength} generic parameter(s), but %d{typeArgs.Length} type argument(s) were supplied"
 
                 let genericArgs =
-                    typeArgs.Slice (0, genericArgsLength)
-                    |> Seq.mapi (fun i _ -> TypeDefn.GenericTypeParameter i)
+                    Array.init genericArgsLength TypeDefn.GenericTypeParameter
                     |> ImmutableArray.CreateRange
 
                 TypeDefn.GenericInstantiation (baseType, genericArgs)
