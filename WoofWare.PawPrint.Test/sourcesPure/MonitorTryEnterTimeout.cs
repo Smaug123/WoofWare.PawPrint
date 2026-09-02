@@ -57,11 +57,10 @@ namespace HelloWorldApp
             // deterministically.
             Thread worker = new Thread(Worker);
 
-            // Mark background so the real-runtime oracle doesn't hang on a
-            // leaked foreground thread once Main returns; the worker is
-            // permanently parked in Monitor.Wait. PawPrint's driver reports
-            // NormalExit as soon as the entry thread terminates and does
-            // not consult IsBackground.
+            // Background, or neither runtime would ever exit: the worker is
+            // permanently parked in Monitor.Wait, and the process ends only
+            // when the last foreground thread does. Real .NET would hang in
+            // WaitForOtherThreads; PawPrint reports that shape as a deadlock.
             worker.IsBackground = true;
 
             // Acquire `barrier` *before* starting the worker so the worker

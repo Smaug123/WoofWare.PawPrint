@@ -363,11 +363,12 @@ module NativeThreading =
           [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics)
             CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics) ],
           MethodReturnType.Void when threadHandleGenerics.IsEmpty && boolGenerics.IsEmpty ->
-            // .NET 10 QCall backing `Thread.IsBackground = value`. We don't yet model the
-            // "process terminates when the last foreground thread exits" semantics, so the
-            // flag is stored on `ThreadState.IsBackground` purely so the paired getter
-            // round-trips and guest code that reads `Thread.IsBackground` after writing it
-            // sees its own value.
+            // .NET 10 QCall backing `Thread.IsBackground = value`. Once `Main` has returned,
+            // `Program.stepPrepared` ends the run when no foreground thread is left alive, so
+            // the flag stored here is what decides whether the process waits for this thread.
+            // The driver re-checks after every step, so flipping the last foreground thread
+            // to background ends the process at once — CoreCLR's `Thread::SetBackground`
+            // calls `CheckForEEShutdown` for the same reason.
             //
             // The real CLR raises `ThreadStateException` when the target is dead — the BCL
             // does this in managed code via the `_isDead` check on `Thread.IsBackground`

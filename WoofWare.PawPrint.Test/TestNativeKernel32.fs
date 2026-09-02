@@ -11,11 +11,54 @@ open WoofWare.PawPrint
 module TestNativeKernel32 =
     let private errorEnvVarNotFound : int = 203
 
+    /// The bytes `value` occupies in the PAL's environment, which holds UTF-8.
+    ///
+    /// Spelled out from the encoding's width rule rather than taken from
+    /// `Encoding.UTF8.GetByteCount`, which is what `planGetEnvironmentVariableW`
+    /// itself uses: an oracle that shared the implementation's helper could not
+    /// tell whether it was counting bytes or code units.
+    ///
+    /// An unpaired surrogate counts three. `Encoding.UTF8` replaces one with
+    /// U+FFFD, which is three bytes, and its generalised-UTF-8 encoding is three
+    /// bytes too, so either reading of such a value gives the same count.
+    let private utf8ByteCount (value : string) : int =
+        let mutable count = 0
+        let mutable i = 0
+
+        while i < value.Length do
+            let c = value.[i]
+
+            if
+                System.Char.IsHighSurrogate c
+                && i + 1 < value.Length
+                && System.Char.IsLowSurrogate value.[i + 1]
+            then
+                count <- count + 4
+                i <- i + 2
+            else
+                count <-
+                    count
+                    + (if c < '\u0080' then 1
+                       elif c < '\u0800' then 2
+                       else 3)
+
+                i <- i + 1
+
+        count
+
     type private EnvironmentVariableCase =
         {
             BufferSize : int
             Value : string option
         }
+
+    /// Code units a generated value is built from, chosen so that a value's
+    /// UTF-8 byte length and its UTF-16 code-unit length come apart: one
+    /// byte, two, three, a surrogate pair (four bytes over two code units), and
+    /// an unpaired surrogate. An ASCII-only alphabet cannot tell the two
+    /// lengths apart, which is how a code-unit count passed for a byte count.
+    let private valueAlphabet : char list =
+        [ 'x' ; 'é' ; '中' ; char 0xD83D ; char 0xDC36 ; char 0xD800 ]
 
     let private genEnvironmentVariableCase : Gen<EnvironmentVariableCase> =
         let genValue =
@@ -23,14 +66,24 @@ module TestNativeKernel32 =
                 [
                     1, Gen.constant None
                     4,
-                    Gen.choose (0, 260)
-                    |> Gen.map (fun length -> Some (System.String ('x', length)))
+                    gen {
+                        let! length = Gen.choose (0, 260)
+                        let! chars = Gen.listOfLength length (Gen.elements valueAlphabet)
+                        return Some (System.String (List.toArray chars))
+                    }
                 ]
 
         gen {
             let! value = genValue
 
             let requiredSize =
+                value
+                |> Option.map (fun value -> utf8ByteCount value + 1)
+                |> Option.defaultValue 1
+
+            // The band a code-unit count gets wrong: buffers that would hold the
+            // code units but not the bytes.
+            let bandLow =
                 value |> Option.map (fun value -> value.Length + 1) |> Option.defaultValue 1
 
             let! bufferSize =
@@ -38,6 +91,7 @@ module TestNativeKernel32 =
                     [
                         1, Gen.constant 0
                         2, Gen.choose (0, max 0 (requiredSize - 1))
+                        2, Gen.choose (bandLow, max bandLow (requiredSize - 1))
                         2, Gen.choose (requiredSize, requiredSize + 32)
                     ]
 
@@ -73,9 +127,39 @@ module TestNativeKernel32 =
         assertPlan 4 (Some "abc") 3u 0 (Some "abc")
 
     [<Test>]
-    let ``GetEnvironmentVariableW plan matches Win32 buffer contract`` () : unit =
+    let ``GetEnvironmentVariableW plan reports the required size in UTF-8 bytes`` () : unit =
+        // Rows measured on the real runtime, through CoreLib's own
+        // `Interop.Kernel32.GetEnvironmentVariable` wrapper: the value fits when
+        // its UTF-8 byte length is below `nSize`, and then the return is its
+        // length in UTF-16 code units; otherwise the return is the byte length
+        // plus one, however many code units the value has.
+        let eAcute = System.String ('é', 100) // 100 code units, 200 bytes
+        assertPlan 128 (Some eAcute) 201u 0 None
+        assertPlan 200 (Some eAcute) 201u 0 None
+        assertPlan 201 (Some eAcute) 100u 0 (Some eAcute)
+
+        let cjk = System.String ('中', 4) // 4 code units, 12 bytes
+        assertPlan 12 (Some cjk) 13u 0 None
+        assertPlan 13 (Some cjk) 4u 0 (Some cjk)
+
+        let astral = System.String.Concat (Array.create 3 "\U0001F436") // 6 code units, 12 bytes
+        assertPlan 12 (Some astral) 13u 0 None
+        assertPlan 13 (Some astral) 6u 0 (Some astral)
+
+        // An unpaired surrogate has no measured row -- no real environment can
+        // hold one, since the PAL's environment is bytes -- but PawPrint's table
+        // can, and hands the code unit to a guest verbatim. It is counted as the
+        // three bytes both of its generalised-UTF-8 form and of the U+FFFD
+        // `Encoding.UTF8` would substitute, so the two readings agree.
+        let lone = System.String [| char 0xD800 |]
+        assertPlan 3 (Some lone) 4u 0 None
+        assertPlan 4 (Some lone) 1u 0 (Some lone)
+
+    [<Test>]
+    let ``GetEnvironmentVariableW plan matches the PAL's buffer contract`` () : unit =
         let mutable missing = 0
         let mutable tooSmall = 0
+        let mutable tooSmallForBytesOnly = 0
         let mutable fits = 0
 
         let property (case : EnvironmentVariableCase) : unit =
@@ -88,11 +172,15 @@ module TestNativeKernel32 =
                 actual.LastError |> shouldEqual errorEnvVarNotFound
                 actual.ValueToWrite |> shouldEqual None
             | Some value ->
-                let requiredSize = value.Length + 1
+                let byteLength = utf8ByteCount value
 
-                if case.BufferSize < requiredSize then
+                if byteLength >= case.BufferSize then
                     tooSmall <- tooSmall + 1
-                    actual.ReturnLength |> shouldEqual (uint32 requiredSize)
+
+                    if value.Length < case.BufferSize then
+                        tooSmallForBytesOnly <- tooSmallForBytesOnly + 1
+
+                    actual.ReturnLength |> shouldEqual (uint32 (byteLength + 1))
                     actual.LastError |> shouldEqual 0
                     actual.ValueToWrite |> shouldEqual None
                 else
@@ -105,6 +193,10 @@ module TestNativeKernel32 =
 
         missing > 20 |> shouldEqual true
         tooSmall > 50 |> shouldEqual true
+        // The cases only a byte count gets right: the buffer holds every code
+        // unit but not every byte. Without this the property could be satisfied
+        // by an ASCII-shaped generator.
+        tooSmallForBytesOnly > 50 |> shouldEqual true
         fits > 50 |> shouldEqual true
 
     /// The UTF-16 code units of an environment block, paired out of its bytes

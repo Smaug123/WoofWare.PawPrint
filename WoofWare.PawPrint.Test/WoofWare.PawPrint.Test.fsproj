@@ -36,6 +36,7 @@
     <Compile Include="DifferentialOracle.fs" />
     <Compile Include="TestDifferentialOracle.fs" />
     <Compile Include="TestBoundedRun.fs" />
+    <Compile Include="TestForegroundThreadsAtExit.fs" />
     <Compile Include="TestAbortChannel.fs" />
     <Compile Include="TestGuestLocation.fs" />
     <Compile Include="TestGuestFailure.fs" />
