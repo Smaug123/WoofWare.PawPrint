@@ -610,6 +610,14 @@ module Scheduler =
     /// So none of the checks `onThreadTerminated` makes apply — a monitor the entry thread still
     /// holds is held by a live thread, and a waiter on it is stuck exactly as it would be on
     /// real .NET.
+    ///
+    /// It also becomes a background thread. `WaitForOtherThreads` begins with
+    /// `SetBackground(TRUE)` on the calling thread ("this simplifies our rules for counting
+    /// non-background threads"), and the flip is guest-visible: a worker reading
+    /// `main.IsBackground` after `Main` has returned sees `true` (measured on real .NET 10). A
+    /// worker may set it back to `false`, and then the entry thread counts as a foreground
+    /// thread again — the process never exits — which is why `keepsProcessAlive` is true for
+    /// the waiting status and only this flag excludes it.
     let onMainReturned (entry : ThreadId) (state : IlMachineState) : IlMachineState =
         match state.ThreadState |> Map.tryFind entry with
         | None -> failwith $"Scheduler.onMainReturned: entry thread %O{entry} has no ThreadState."
@@ -621,7 +629,18 @@ module Scheduler =
                 failwith
                     $"logic error: entry thread %O{entry} returned from Main while in status %O{other}; only a Runnable thread can retire an instruction."
 
-        setThreadStatus entry ThreadStatus.WaitingForForegroundThreads state
+        { state with
+            ThreadState =
+                state.ThreadState
+                |> Map.change
+                    entry
+                    (Option.map (fun ts ->
+                        { ts with
+                            Status = ThreadStatus.WaitingForForegroundThreads
+                            IsBackground = true
+                        }
+                    ))
+        }
 
     /// Record that `terminated` has finished executing its final `ret`.
     /// - Flips its own status to Terminated.

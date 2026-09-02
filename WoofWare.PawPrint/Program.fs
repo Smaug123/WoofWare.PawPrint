@@ -17,8 +17,8 @@ module Program =
         /// entry thread is left as it is for startup to give it its next frame.
         | StartupCall
         /// `Main`. Its return does not end the run: the entry thread goes to
-        /// `ThreadStatus.WaitingForForegroundThreads`, and the run ends with `NormalExit` at
-        /// the first tick at which no foreground thread is alive — CoreCLR's
+        /// `ThreadStatus.WaitingForForegroundThreads` (and background), and the run ends with
+        /// `NormalExit` at the first tick at which no foreground thread is alive — CoreCLR's
         /// `ThreadStore::WaitForOtherThreads`, which `RunMainPost` blocks in after `Main`.
         | Main
 
@@ -943,7 +943,8 @@ module Program =
     ///     Terminated — startup is about to give it its next frame, ultimately `Main` — because
     ///     a worker that joined it during a `.cctor` must not observe a false end-of-thread and
     ///     proceed past its Join before `Main` has started.
-    ///   * `Main`: the entry thread goes to `WaitingForForegroundThreads`, and the run goes on
+    ///   * `Main`: the entry thread goes to `WaitingForForegroundThreads` and becomes a
+    ///     background thread, as `WaitForOtherThreads` makes it, and the run goes on
     ///     until no foreground thread is left alive, at which tick it reports `NormalExit` with
     ///     `Main`'s return value still on the entry thread's eval stack as the exit code. A
     ///     worker's `Environment.Exit` in the meantime is a `ProcessExit` like any other. If the

@@ -72,6 +72,8 @@ module TestPureCases =
             "ForegroundThreadExitsAfterMainReturns.cs", 7
             "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", 5
             "BackgroundWorkerJoinsMainThread.cs", 4
+            "EntryThreadIsBackgroundAfterMainReturns.cs", 11
+            "EntryThreadReforegroundedThenBackgroundAgain.cs", 3
         ]
         |> Map.ofList
 

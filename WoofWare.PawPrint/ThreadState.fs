@@ -269,6 +269,11 @@ type ThreadStatus =
     /// stack for the driver to report as the exit code — but it is *not* dead: a `Join` on
     /// it blocks for as long as the process lasts, exactly as on real .NET.
     ///
+    /// `WaitForOtherThreads` makes the waiting thread background before it waits, so a
+    /// thread in this status has `IsBackground = true` unless a worker has since set it
+    /// back — in which case it holds the process open again, as on real .NET, where that
+    /// is a hang.
+    ///
     /// Only the entry thread ever holds this status, and only `Program.stepPrepared` puts
     /// it there. Nothing takes it out again: the run ends with `NormalExit` at the first
     /// tick at which no foreground thread `keepsProcessAlive`.
@@ -363,8 +368,10 @@ module ThreadStatus =
     /// once `Main` has returned and no foreground thread answers true here.
     ///
     /// `Parked` is false because such a thread stands for a pthread the runtime owns rather
-    /// than a managed thread in the store; `WaitingForForegroundThreads` is false because it
-    /// is the entry thread doing the waiting, which does not wait for itself.
+    /// than a managed thread in the store. `WaitingForForegroundThreads` is true: the waiting
+    /// entry thread is in the store and is counted like any other, and what normally excludes
+    /// it is the background flag `WaitForOtherThreads` sets on it — which a worker can clear,
+    /// after which the process waits for a thread that will never finish, as on real .NET.
     let keepsProcessAlive (status : ThreadStatus) : bool =
         // Fully enumerated, like the two above, so a new `ThreadStatus` must say whether the
         // process waits for it.
@@ -372,7 +379,7 @@ module ThreadStatus =
         | ThreadStatus.NotStarted -> false
         | ThreadStatus.Terminated -> false
         | ThreadStatus.Parked -> false
-        | ThreadStatus.WaitingForForegroundThreads -> false
+        | ThreadStatus.WaitingForForegroundThreads -> true
         | ThreadStatus.Runnable -> true
         | ThreadStatus.BlockedOnJoin _ -> true
         | ThreadStatus.BlockedOnClassInit _ -> true

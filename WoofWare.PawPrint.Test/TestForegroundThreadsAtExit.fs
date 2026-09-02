@@ -140,6 +140,41 @@ class ForegroundWorkerJoinsMain
         exn.Message |> shouldContainText "WaitingForForegroundThreads"
         exn.Message |> shouldContainText "BlockedOnJoin"
 
+    /// The waiting entry thread is background — `WaitForOtherThreads` makes it so — and a worker
+    /// may set that back. Real .NET then counts the entry thread as a foreground thread again
+    /// and never exits (measured: still running three seconds after the worker finished, with
+    /// nothing left to run). Here that is a deadlock in which the only thread holding the
+    /// process open is the entry thread itself.
+    [<Test>]
+    let ``a worker re-foregrounding the entry thread after Main returns makes the process wait for ever`` () : unit =
+        let source =
+            """
+using System.Threading;
+
+class ReforegroundsMain
+{
+    static int Main()
+    {
+        Thread main = Thread.CurrentThread;
+        new Thread(() =>
+        {
+            Thread.Sleep(200);
+            main.IsBackground = false;
+        }).Start();
+        return 3;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () -> runSource "ReforegroundsMain.cs" source |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "ReforegroundsMain.cs"
+        exn.Message |> shouldContainText "deadlocked"
+        exn.Message |> shouldContainText "WaitingForForegroundThreads"
+        // The worker itself finished; it is the entry thread that is being waited for.
+        exn.Message |> shouldNotContainText "BlockedOnSleep"
+
     /// A worker that is running when `Main` returns finishes on its own and the process then
     /// ends with `Main`'s exit code; nothing the worker did in the meantime is lost. The
     /// worker here does enough after `Main` returns for the scheduler to interleave the two,
