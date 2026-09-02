@@ -16,20 +16,6 @@ type MemberReference<'parent> =
         Signature : MemberSignature
     }
 
-type MemberRefSigSwitch =
-    | Default
-    | Field
-    | VarArg
-    | Generic
-
-    static member Identify (b : byte) =
-        match b &&& 0xFuy with
-        | 0uy -> MemberRefSigSwitch.Default
-        | 5uy -> MemberRefSigSwitch.VarArg
-        | 6uy -> MemberRefSigSwitch.Field
-        | 0x10uy -> MemberRefSigSwitch.Generic
-        | n -> failwith $"Bad member ref sig: %i{n}"
-
 [<RequireQualifiedAccess>]
 module MemberReference =
     let make<'parent>
