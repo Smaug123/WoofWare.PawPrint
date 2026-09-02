@@ -7,10 +7,38 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module internal UnaryMetadataObjectOps =
+    /// The type test that ECMA-335 III.4.3 (`castclass`) and III.4.6 (`isinst`) share once the
+    /// operand is a non-null object: is an object of runtime type `objConcreteType` an instance of
+    /// `targetConcreteType`?
+    ///
+    /// Both instructions read a `Nullable<T>` token as a boxed `T`, because a `Nullable<T>` boxes
+    /// as a `T` or as null and never as itself. So a boxed `T` passes a `Nullable<T>` test even
+    /// though `T` is not assignable to `Nullable<T>` structurally, and the plain assignability
+    /// walk cannot answer this on its own. CoreCLR's `ObjIsInstanceOfCore` (`jithelpers.cpp`),
+    /// which `CastHelpers.ChkCastAny` and `CastHelpers.IsInstanceOfAny` reach for a value-type
+    /// token, asks `Nullable::IsNullableForType` before its structural walk for the same reason.
+    let private isObjectInstanceOf
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (objConcreteType : ConcreteTypeHandle)
+        (targetConcreteType : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        if IlMachineState.isNullableForType baseClassTypes state targetConcreteType objConcreteType then
+            state, true
+        else
+            IlMachineState.isConcreteTypeAssignableTo
+                loggerFactory
+                baseClassTypes
+                state
+                objConcreteType
+                targetConcreteType
+
     /// ECMA-335 III.4.3 (`castclass`) and III.4.33 (`unbox.any` whose type token denotes a
     /// reference type) specify identical behaviour once the operand and the target type are in
-    /// hand: a null operand passes through; an operand whose runtime type is assignable to the
-    /// target passes through unchanged; anything else raises InvalidCastException.
+    /// hand: a null operand passes through; an operand that is an instance of the target (per
+    /// `isObjectInstanceOf`) passes through unchanged; anything else raises InvalidCastException.
     ///
     /// `opName` appears only in the diagnostic for eval-stack shapes we do not model.
     let private castToReferenceType
@@ -39,15 +67,10 @@ module internal UnaryMetadataObjectOps =
             // interfaces, and the `System.Array` base chain).
             let objConcreteType = ManagedHeap.getObjectConcreteType addr state.ManagedHeap
 
-            let state, isAssignable =
-                IlMachineState.isConcreteTypeAssignableTo
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    objConcreteType
-                    targetConcreteType
+            let state, isInstance =
+                isObjectInstanceOf loggerFactory baseClassTypes state objConcreteType targetConcreteType
 
-            if isAssignable then
+            if isInstance then
                 let state =
                     state
                     |> IlMachineState.pushToEvalStack' actualObj thread
@@ -529,15 +552,10 @@ module internal UnaryMetadataObjectOps =
             (successValue : EvalStackValue)
             : IlMachineState * EvalStackValue
             =
-            let state, result =
-                IlMachineState.isConcreteTypeAssignableTo
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    objConcreteType
-                    targetConcreteType
+            let state, isInstance =
+                isObjectInstanceOf loggerFactory baseClassTypes state objConcreteType targetConcreteType
 
-            if result then
+            if isInstance then
                 state, successValue
             else
                 state, EvalStackValue.NullObjectRef
