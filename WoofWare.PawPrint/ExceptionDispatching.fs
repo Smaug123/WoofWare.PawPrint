@@ -1298,6 +1298,8 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.ArgumentNullException"
         elif id = baseClassTypes.NotSupportedException.Identity then
             ExceptionHResults.lookup "System.NotSupportedException"
+        elif id = baseClassTypes.InvalidOperationException.Identity then
+            ExceptionHResults.lookup "System.InvalidOperationException"
         elif id = baseClassTypes.DuplicateWaitObjectException.Identity then
             ExceptionHResults.lookup "System.DuplicateWaitObjectException"
         elif id = baseClassTypes.InvalidProgramException.Identity then
