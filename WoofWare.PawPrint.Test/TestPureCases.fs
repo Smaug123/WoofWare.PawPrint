@@ -376,13 +376,34 @@ module TestPureCases =
 
     let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
 
+    /// Guests that need a particular environment variable, with the overlay each
+    /// one wants.
+    ///
+    /// As with `seededCases`, one description drives both sides: PawPrint
+    /// overlays it on the kernel's default table, and `RealRuntime.executeWithSeed`
+    /// overlays it on the environment the oracle process inherits from the test
+    /// host. A guest here may assert only about the variables its overlay names;
+    /// the rest of the two tables have nothing to do with each other.
+    let environmentCases : Map<string, Map<string, string>> =
+        [
+            // 100 two-byte characters: 100 UTF-16 code units, 200 UTF-8 bytes,
+            // which is the gap between the two units the guest exists to see.
+            "EnvironmentVariableUtf8RequiredSize.cs",
+            Map.ofList [ "PAWPRINT_WIDE_VALUE", System.String ('\u00e9', 100) ]
+        ]
+        |> Map.ofList
+
+    let environmentCaseNames : string list =
+        environmentCases |> Map.toList |> List.map fst
+
     let simpleCases : string list =
         allPure
         |> Seq.filter (fun s ->
             (customExitCodes.ContainsKey s
              || unimplemented.Contains s
              || expectsUnhandledException.Contains s
-             || seededCases.ContainsKey s)
+             || seededCases.ContainsKey s
+             || environmentCases.ContainsKey s)
             |> not
         )
         |> Seq.toList
@@ -485,11 +506,12 @@ module TestPureCases =
             case.FileName
             source
             case.KernelConfig
-            // The case's own seed drives the oracle too, so both runtimes
-            // are looking at one description of a filesystem. An unseeded
-            // case passes `FileSystemSeed.empty`, which materialises
-            // nothing and leaves the oracle exactly as it was.
-            (RealRuntime.executeWithSeed case.KernelConfig.FileSystem [||])
+            // The case's own seed and environment overlay drive the oracle
+            // too, so both runtimes are looking at one description of a
+            // filesystem and of the variables the case names. An unseeded
+            // case passes `FileSystemSeed.empty` and an empty overlay, which
+            // materialise nothing and leave the oracle exactly as it was.
+            (RealRuntime.executeWithSeed case.KernelConfig.FileSystem case.KernelConfig.Environment [||])
             (fun realResult pawPrintResult ->
                 DifferentialOracle.compareOutcomes
                     case.FileName
@@ -976,6 +998,22 @@ class Program
             KernelConfig =
                 { KernelConfig.Default with
                     FileSystem = seededCases.[fileName]
+                }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Always
+            ExpectsUnhandledException = false
+            AssertTerminalState = None
+        }
+        |> runTest
+
+    [<TestCaseSource(nameof environmentCaseNames)>]
+    let ``Environment overlay tests`` (fileName : string) =
+        {
+            FileName = fileName
+            ExpectedReturnCode = 0
+            KernelConfig =
+                { KernelConfig.Default with
+                    Environment = environmentCases.[fileName]
                 }
             AppContext = AppContextProperties.empty
             Oracle = OraclePolicy.Always

@@ -13,6 +13,19 @@ module NativeKernel32 =
             ValueToWrite : string option
         }
 
+    /// What `GetEnvironmentVariableW` answers for `value`, the variable's value
+    /// if it exists, given a buffer of `bufferSize` UTF-16 code units.
+    ///
+    /// The Unix PAL (`pal/src/misc/environ.cpp`) holds the environment as UTF-8
+    /// and answers the W entry point through `GetEnvironmentVariableA`, passing
+    /// `nSize` through unchanged. So the value fits when its UTF-8 *byte* length
+    /// is strictly below `bufferSize`, and then the return is its length in
+    /// UTF-16 code units and the value is written with its terminator;
+    /// otherwise nothing is written and the return is that byte length plus
+    /// one. A value of N non-ASCII characters therefore does not fit a buffer
+    /// of N+1 code units, even though the code units would. Measured on the
+    /// real runtime: 100 `é`s against a 128-unit buffer answer 201, and against
+    /// a 201-unit buffer answer 100.
     let internal planGetEnvironmentVariableW (bufferSize : int) (value : string option) : GetEnvironmentVariableWPlan =
         match value with
         | None ->
@@ -22,19 +35,25 @@ module NativeKernel32 =
                 ValueToWrite = None
             }
         | Some value ->
-            let requiredSize = value.Length + 1
+            // `Encoding.UTF8` counts an unpaired surrogate as the three bytes of
+            // the U+FFFD it would substitute, which is also what the code unit's
+            // generalised-UTF-8 form occupies; so a table holding one (which
+            // `UnixProcessState.withEnvironment` permits, and which
+            // `writeNullTerminatedUtf16` hands to the guest verbatim) is sized
+            // the same under either reading.
+            let byteLength = System.Text.Encoding.UTF8.GetByteCount value
 
-            if bufferSize < requiredSize then
-                {
-                    ReturnLength = uint32 requiredSize
-                    LastError = 0
-                    ValueToWrite = None
-                }
-            else
+            if byteLength < bufferSize then
                 {
                     ReturnLength = uint32 value.Length
                     LastError = 0
                     ValueToWrite = Some value
+                }
+            else
+                {
+                    ReturnLength = uint32 (byteLength + 1)
+                    LastError = 0
+                    ValueToWrite = None
                 }
 
     /// Re-assert `UnixProcessState.environmentEntryProblem` at the point the map is
