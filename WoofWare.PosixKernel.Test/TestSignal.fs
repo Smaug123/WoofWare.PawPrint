@@ -323,6 +323,35 @@ module TestSignal =
 
                 Signal.defaultDispositionUnder numbering signal |> shouldEqual disposition
 
+    /// `Other` is public, so a client can spell a named signal as `Other`
+    /// carrying its number; both classifiers must answer for the signal that
+    /// number is under the numbering, not for "some unnamed signal".
+    [<Test>]
+    let ``classifiers read an Other carrying a named signal's number as that signal`` () : unit =
+        for numbering in everyNumbering do
+            for signal, signo in column numbering do
+                Signal.defaultDispositionUnder numbering (Signal.Other signo)
+                |> shouldEqual (Signal.defaultDispositionUnder numbering signal)
+
+                Signal.isUncatchableUnder numbering (Signal.Other signo)
+                |> shouldEqual (Signal.isUncatchableUnder numbering signal)
+
+        // The rows a Terminate fallback would get wrong.
+        Signal.defaultDispositionUnder SignalNumbering.Linux (Signal.Other 17)
+        |> shouldEqual DefaultDisposition.Ignore // SIGCHLD
+
+        Signal.defaultDispositionUnder SignalNumbering.Darwin (Signal.Other 20)
+        |> shouldEqual DefaultDisposition.Ignore // SIGCHLD
+
+        Signal.defaultDispositionUnder SignalNumbering.Linux (Signal.Other 18)
+        |> shouldEqual DefaultDisposition.Continue // SIGCONT
+
+        Signal.defaultDispositionUnder SignalNumbering.Darwin (Signal.Other 19)
+        |> shouldEqual DefaultDisposition.Continue // SIGCONT
+
+        Signal.defaultDispositionUnder SignalNumbering.Darwin (Signal.Other 18)
+        |> shouldEqual DefaultDisposition.Stop // SIGTSTP
+
     [<Test>]
     let ``defaultDispositionUnder routes every other unnamed signo to Terminate`` () : unit =
         // The POSIX default for an unrecognised signal is Terminate, and

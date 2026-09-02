@@ -189,6 +189,18 @@ module Signal =
             else
                 ValueNone
 
+    /// `Other` is public and enforces nothing, so a client can spell a named
+    /// signal as `Other` carrying its number. The classifiers below answer
+    /// for the signal a value *is* under the numbering, so they ask for that
+    /// spelling first; a number naming no case, or none at all, is unchanged.
+    let private canonical (numbering : SignalNumbering) (signal : Signal) : Signal =
+        match signal with
+        | Signal.Other rawSignal ->
+            match ofRawSignoUnder numbering rawSignal with
+            | ValueSome named -> named
+            | ValueNone -> signal
+        | _ -> signal
+
     /// <summary>
     /// Whether <c>sigaction(2)</c> refuses to install a handler for this
     /// signal, with <c>EINVAL</c>.
@@ -203,10 +215,11 @@ module Signal =
     /// number up to <c>NSIG + 1</c>; these were the only refusals below the
     /// ceiling. Neither <c>SIGKILL</c> nor <c>SIGSTOP</c> is a named case, so
     /// they only ever arrive as <c>Signal.Other</c>, and every named case is
-    /// catchable.
+    /// catchable — including one spelled as <c>Other</c> carrying its number,
+    /// which classifies as the signal it is.
     /// </remarks>
     let isUncatchableUnder (numbering : SignalNumbering) (signal : Signal) : bool =
-        match signal with
+        match canonical numbering signal with
         | Signal.Other rawSignal ->
             match numbering with
             | SignalNumbering.Linux -> rawSignal = 9 || rawSignal = 19 || rawSignal = 32 || rawSignal = 33
@@ -245,9 +258,12 @@ module Signal =
     /// than stop on when the process group is orphaned, as the probe's was —
     /// take POSIX's <c>Stop</c>. Anything else terminates, which is the POSIX
     /// default for a signal not otherwise specified.
+    ///
+    /// An <c>Other</c> carrying a named signal's number classifies as that
+    /// signal: <c>Other 17</c> under Linux is <c>SIGCHLD</c>, and is ignored.
     /// </remarks>
     let defaultDispositionUnder (numbering : SignalNumbering) (signal : Signal) : DefaultDisposition =
-        match signal with
+        match canonical numbering signal with
         | Signal.SIGCHLD
         | Signal.SIGWINCH -> DefaultDisposition.Ignore
         | Signal.SIGCONT -> DefaultDisposition.Continue
