@@ -1645,7 +1645,7 @@ module TestBinaryArithmetic =
 
         match outcome with
         | Choice1Of2 () -> failwith "expected cgt.un to refuse cross-root byref comparison"
-        | Choice2Of2 e when e.Message.Contains "common root" -> ()
+        | Choice2Of2 e when e.Message.Contains "no structural order" -> ()
         | Choice2Of2 e -> failwith $"unexpected exception from cgt.un: %s{e.Message}"
 
     [<Test>]
@@ -1678,7 +1678,7 @@ module TestBinaryArithmetic =
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.choose (0, System.Int32.MaxValue / 2))) property)
 
     [<Test>]
-    let ``tryByteAddressDeltaSign accepts canonical byrefs at distinct array indices`` () : unit =
+    let ``byteAddressDeltaSign accepts canonical byrefs at distinct array indices`` () : unit =
         let _, arr = stateWithIntArray (List.init 8 id)
 
         let extractByref (esv : EvalStackValue) : ManagedPointerSource =
@@ -1689,23 +1689,23 @@ module TestBinaryArithmetic =
         let p0 = extractByref (byteViewPointer arr 0 0)
         let p1Plus3 = extractByref (byteViewPointer arr 1 3)
 
-        match ManagedPointerSource.tryByteAddressDeltaSign p0 p1Plus3 with
-        | Some sign when sign > 0 -> ()
+        match ManagedPointerSource.byteAddressDeltaSign p0 p1Plus3 with
+        | ByteAddressDeltaSign.Decided sign when sign > 0 -> ()
         | other -> failwith $"expected positive sign for arr[0] -> arr[1]+3, got %O{other}"
 
-        match ManagedPointerSource.tryByteAddressDeltaSign p1Plus3 p0 with
-        | Some sign when sign < 0 -> ()
+        match ManagedPointerSource.byteAddressDeltaSign p1Plus3 p0 with
+        | ByteAddressDeltaSign.Decided sign when sign < 0 -> ()
         | other -> failwith $"expected negative sign for arr[1]+3 -> arr[0], got %O{other}"
 
     [<Test>]
-    let ``tryByteAddressDeltaSign throws on a non-canonical negative trailing byte cursor`` () : unit =
+    let ``byteAddressDeltaSign throws on a non-canonical negative trailing byte cursor`` () : unit =
         let _, arr = stateWithIntArray (List.init 4 id)
 
         let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
 
         // Manually construct a malformed pointer: the trailing ByteOffset
         // bypasses normaliseTrailingByteOffset's floor-division and is negative.
-        // tryByteAddressDeltaSign's array fallback's correctness depends on each
+        // byteAddressDeltaSign's array fallback's correctness depends on each
         // residual sitting in [0, cellSize); a negative residual indicates a
         // construction-site bug and must not silently degrade to a wrong sign.
         let malformed =
@@ -1716,18 +1716,18 @@ module TestBinaryArithmetic =
 
         let outcome =
             try
-                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                ManagedPointerSource.byteAddressDeltaSign canonical malformed |> ignore
                 Choice1Of2 ()
             with e ->
                 Choice2Of2 e
 
         match outcome with
-        | Choice1Of2 () -> failwith "expected tryByteAddressDeltaSign to throw on negative trailing byte cursor"
+        | Choice1Of2 () -> failwith "expected byteAddressDeltaSign to throw on negative trailing byte cursor"
         | Choice2Of2 e when e.Message.Contains "non-negative" -> ()
         | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
 
     [<Test>]
-    let ``tryByteAddressDeltaSign throws on a ByteOffset at a non-trailing position`` () : unit =
+    let ``byteAddressDeltaSign throws on a ByteOffset at a non-trailing position`` () : unit =
         let _, arr = stateWithIntArray (List.init 4 id)
 
         let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
@@ -1748,18 +1748,18 @@ module TestBinaryArithmetic =
 
         let outcome =
             try
-                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                ManagedPointerSource.byteAddressDeltaSign canonical malformed |> ignore
                 Choice1Of2 ()
             with e ->
                 Choice2Of2 e
 
         match outcome with
-        | Choice1Of2 () -> failwith "expected tryByteAddressDeltaSign to throw on non-trailing ByteOffset"
+        | Choice1Of2 () -> failwith "expected byteAddressDeltaSign to throw on non-trailing ByteOffset"
         | Choice2Of2 e when e.Message.Contains "non-trailing" -> ()
         | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
 
     [<Test>]
-    let ``tryByteAddressDeltaSign throws on a trailing ByteOffset without ReinterpretAs`` () : unit =
+    let ``byteAddressDeltaSign throws on a trailing ByteOffset without ReinterpretAs`` () : unit =
         let _, arr = stateWithIntArray (List.init 4 id)
 
         let canonical = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, 0), [])
@@ -1772,14 +1772,14 @@ module TestBinaryArithmetic =
 
         let outcome =
             try
-                ManagedPointerSource.tryByteAddressDeltaSign canonical malformed |> ignore
+                ManagedPointerSource.byteAddressDeltaSign canonical malformed |> ignore
                 Choice1Of2 ()
             with e ->
                 Choice2Of2 e
 
         match outcome with
         | Choice1Of2 () ->
-            failwith "expected tryByteAddressDeltaSign to throw on trailing ByteOffset without ReinterpretAs"
+            failwith "expected byteAddressDeltaSign to throw on trailing ByteOffset without ReinterpretAs"
         | Choice2Of2 e when e.Message.Contains "preceded by ReinterpretAs" -> ()
         | Choice2Of2 e -> failwith $"unexpected exception: %s{e.Message}"
 

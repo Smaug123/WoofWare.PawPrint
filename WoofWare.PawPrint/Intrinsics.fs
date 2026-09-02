@@ -2591,7 +2591,8 @@ module Intrinsics =
             // it with `ldarg.0; ldarg.1; clt.un; ret` (the commented-out body in CoreLib's
             // Unsafe.cs spells exactly that). So this delegates to the very function that services
             // the `Clt_un` opcode: whatever ordering `clt.un` gives two byrefs, this must agree,
-            // including the null-byref arms and the refusal to order byrefs with no common root.
+            // including the null-byref arms, the resolution by byte coordinates of a pair the
+            // byrefs' structure cannot order, and the refusal of a pair nothing can.
             match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
             | [ ConcreteByref _ ; ConcreteByref _ ], MethodReturnType.Returns (ConcreteBool state.ConcreteTypes) -> ()
             | _ ->
@@ -2601,7 +2602,9 @@ module Intrinsics =
             let right, state = IlMachineState.popEvalStack currentThread state
             let left, state = IlMachineState.popEvalStack currentThread state
 
-            let isLessThan = EvalStackValueComparisons.cltUn left right
+            let isLessThan =
+                EvalStackValueComparisons.cltUnDeferred left right
+                |> StorageLocation.resolveOrder baseClassTypes state
 
             state
             |> IlMachineState.pushToEvalStack (CliType.ofBool isLessThan) currentThread

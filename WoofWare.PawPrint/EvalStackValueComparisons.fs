@@ -1,5 +1,28 @@
 namespace WoofWare.PawPrint
 
+/// Which order an unsigned comparison of two byrefs asks about.
+[<RequireQualifiedAccess>]
+type ByrefOrderQuestion =
+    /// `cgt.un`: is the left operand's address strictly above the right's?
+    | LeftAbove
+    /// `clt.un`: is the left operand's address strictly below the right's?
+    | LeftBelow
+
+/// What `cgt.un` or `clt.un` concluded. `Decided` is an answer; `NeedsByteLocation` is the
+/// byref pair whose order structural comparison could not fix (see
+/// `ByteAddressDeltaSign`), together with the `question` asked of it, for a caller with
+/// `IlMachineState` to settle by byte coordinates (`StorageLocation.resolveOrder`). A caller
+/// that cannot fails with `diagnostic`.
+[<RequireQualifiedAccess>]
+[<NoComparison>]
+type UnsignedOrderOutcome =
+    | Decided of bool
+    | NeedsByteLocation of
+        left : ManagedPointerSource *
+        right : ManagedPointerSource *
+        question : ByrefOrderQuestion *
+        diagnostic : string
+
 [<RequireQualifiedAccess>]
 module EvalStackValueComparisons =
 
@@ -19,6 +42,41 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder bits)) ->
             EvalStackValue.NativeInt (NativeIntSource.Verbatim bits)
         | _ -> v
+
+    /// Ask `question` of two byrefs. Spec III.3.4: `cgt.un` and `clt.un` on managed pointers
+    /// are unsigned address comparison. We strengthen this to "must share a storage
+    /// container": within the same storage the address ordering is well-defined; across
+    /// distinct containers there is no defensible answer in our model. Structural comparison
+    /// gives the sign of `addr(p2) - addr(p1)` where the byrefs' structure fixes it, so
+    /// `LeftAbove` is a negative delta and `LeftBelow` a positive one; where it does not, the
+    /// pair is handed on for byte-coordinate resolution.
+    let private orderByrefs
+        (question : ByrefOrderQuestion)
+        (p1 : ManagedPointerSource)
+        (p2 : ManagedPointerSource)
+        : UnsignedOrderOutcome
+        =
+        match ManagedPointerSource.byteAddressDeltaSign p1 p2 with
+        | ByteAddressDeltaSign.Decided sign ->
+            match question with
+            | ByrefOrderQuestion.LeftAbove -> UnsignedOrderOutcome.Decided (sign < 0)
+            | ByrefOrderQuestion.LeftBelow -> UnsignedOrderOutcome.Decided (sign > 0)
+        | ByteAddressDeltaSign.NeedsByteLocation (left, right, diagnostic) ->
+            UnsignedOrderOutcome.NeedsByteLocation (left, right, question, diagnostic)
+
+    /// `orderByrefs` for the stateless comparisons, which have nothing to resolve a deferral
+    /// with and so refuse it.
+    let private orderByrefsOrFail
+        (opcode : string)
+        (question : ByrefOrderQuestion)
+        (p1 : ManagedPointerSource)
+        (p2 : ManagedPointerSource)
+        : bool
+        =
+        match orderByrefs question p1 p2 with
+        | UnsignedOrderOutcome.Decided answer -> answer
+        | UnsignedOrderOutcome.NeedsByteLocation (_, _, _, diagnostic) ->
+            failwith $"refusing %s{opcode}: %s{diagnostic}"
 
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         let var1 = unwrapPlaceholderForBitComparison var1
@@ -200,16 +258,7 @@ module EvalStackValueComparisons =
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> false
             | NativeIntSource.ManagedPointer _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> true
             | NativeIntSource.ManagedPointer p1, NativeIntSource.ManagedPointer p2 ->
-                // Spec III.3.4: cgt.un on managed pointers is unsigned address
-                // comparison. We strengthen this to "must share a storage
-                // container": within the same storage the address ordering is
-                // well-defined; across distinct containers there is no
-                // defensible answer in our model. The helper returns the
-                // sign of `addr(p2) - addr(p1)`, so `var1 > var2` corresponds
-                // to a negative delta.
-                match ManagedPointerSource.tryByteAddressDeltaSign p1 p2 with
-                | Some sign -> sign < 0
-                | None -> failwith $"refusing to cgt.un byrefs without a common root: %O{p1} vs %O{p2}"
+                orderByrefsOrFail "cgt.un" ByrefOrderQuestion.LeftAbove p1 p2
             // GC handle addresses are minted from 1 upwards (see
             // GcHandleRegistry.empty), so a GcHandlePtr is never zero. The
             // common idiom emitting cgt.un against zero is a non-null check on
@@ -305,12 +354,7 @@ module EvalStackValueComparisons =
             | NativeIntSource.ManagedPointer ManagedPointerSource.Null, NativeIntSource.ManagedPointer _ -> true
             | NativeIntSource.ManagedPointer _, NativeIntSource.ManagedPointer ManagedPointerSource.Null -> false
             | NativeIntSource.ManagedPointer p1, NativeIntSource.ManagedPointer p2 ->
-                // See cgt.un for rationale; this is the symmetric case.
-                // Helper returns sign of `addr(p2) - addr(p1)`; `var1 < var2`
-                // corresponds to a positive delta.
-                match ManagedPointerSource.tryByteAddressDeltaSign p1 p2 with
-                | Some sign -> sign > 0
-                | None -> failwith $"refusing to clt.un byrefs without a common root: %O{p1} vs %O{p2}"
+                orderByrefsOrFail "clt.un" ByrefOrderQuestion.LeftBelow p1 p2
             // Mirror of the cgt.un arms: GC handles are minted from 1 upwards,
             // so they are never zero. This makes `bge.un handle, 0`
             // (lowered through `cgeUn = not cltUn`) and direct `0 < handle`
@@ -509,3 +553,42 @@ module EvalStackValueComparisons =
                 (ManagedPointerSource.unsafeAssumeNormalisedForComparison p1)
                 (ManagedPointerSource.unsafeAssumeNormalisedForComparison p2)
         | _ -> CeqOutcome.Decided (ceq counters var1 var2)
+
+    /// The byref a comparison operand carries, if it carries one. A byref reaches `cgt.un` or
+    /// `clt.un` as itself, as the native int `conv.u` or `conv.i` made of it (the shape C#
+    /// pointer comparison produces), or as the int64 `conv.u8` or `conv.i8` made of that. These
+    /// are exactly the operands the comparisons route to `orderByrefs`; a bit-pattern
+    /// placeholder is not one, and the caller has already unwrapped it to its bits.
+    let private tryByrefOperand (v : EvalStackValue) : ManagedPointerSource option =
+        match v with
+        | EvalStackValue.ManagedPointer (ManagedPointerSource.Byref _ as p)
+        | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p))
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.Byref _ as p),
+                                                              _)) -> Some p
+        | _ -> None
+
+    /// `compare` (one of `cgtUn`, `cltUn`), but returning the byref pair's deferral rather than
+    /// failing on it, so a caller with `IlMachineState` can resolve it to byte coordinates
+    /// (`StorageLocation.resolveOrder`). Every other operand pair is decided by `compare`
+    /// exactly as before.
+    let private unsignedOrderDeferred
+        (question : ByrefOrderQuestion)
+        (compare : EvalStackValue -> EvalStackValue -> bool)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : UnsignedOrderOutcome
+        =
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
+
+        match tryByrefOperand var1, tryByrefOperand var2 with
+        | Some p1, Some p2 -> orderByrefs question p1 p2
+        | _ -> UnsignedOrderOutcome.Decided (compare var1 var2)
+
+    /// `cgtUn`, deferring a byref pair it cannot order structurally: see `unsignedOrderDeferred`.
+    let cgtUnDeferred (var1 : EvalStackValue) (var2 : EvalStackValue) : UnsignedOrderOutcome =
+        unsignedOrderDeferred ByrefOrderQuestion.LeftAbove cgtUn var1 var2
+
+    /// `cltUn`, deferring a byref pair it cannot order structurally: see `unsignedOrderDeferred`.
+    let cltUnDeferred (var1 : EvalStackValue) (var2 : EvalStackValue) : UnsignedOrderOutcome =
+        unsignedOrderDeferred ByrefOrderQuestion.LeftBelow cltUn var1 var2

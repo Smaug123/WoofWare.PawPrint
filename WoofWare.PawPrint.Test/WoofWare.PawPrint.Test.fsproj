@@ -80,6 +80,7 @@
     <Compile Include="TestNarrowByrefAccess.fs" />
     <Compile Include="TestNamedByteView.fs" />
     <Compile Include="TestByrefComparison.fs" />
+    <Compile Include="TestByrefOrdering.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
     <Compile Include="TestNullaryIlOp.fs" />

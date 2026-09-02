@@ -764,7 +764,7 @@ module TestEvalStack =
         // characters of one string sit at known, ordered addresses.
         //
         // The justification mirrors the `ArrayElement` arm of
-        // `tryByteAddressDeltaSign`: a char cell is two bytes — strictly positive —
+        // `byteAddressDeltaSign`: a char cell is two bytes — strictly positive —
         // and canonicalisation keeps each pointer's byte effect within its own cell,
         // so index order is address order.
         let str = ManagedHeapAddress.ManagedHeapAddress 105
@@ -816,12 +816,12 @@ module TestEvalStack =
         let lt =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cltUn first second |> ignore)
 
-        lt.Message |> shouldContainText "without a common root"
+        lt.Message |> shouldContainText "no structural order"
 
         let gt =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cgtUn first second |> ignore)
 
-        gt.Message |> shouldContainText "without a common root"
+        gt.Message |> shouldContainText "no structural order"
 
     [<Test>]
     let ``unsigned comparisons refuse two string byrefs whose projections differ`` () : unit =
@@ -852,12 +852,12 @@ module TestEvalStack =
         let lt =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cltUn projected bare |> ignore)
 
-        lt.Message |> shouldContainText "without a common root"
+        lt.Message |> shouldContainText "no structural order"
 
         let gt =
             Assert.Throws<System.Exception> (fun () -> EvalStackValueComparisons.cgtUn bare projected |> ignore)
 
-        gt.Message |> shouldContainText "without a common root"
+        gt.Message |> shouldContainText "no structural order"
 
         // Equal projections are fine, though: `d` cancels, whatever it is. This is the
         // generalisation the arm does allow, and it is why the check is equality rather
