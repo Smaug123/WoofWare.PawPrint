@@ -476,6 +476,7 @@ module DebuggerServer =
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
                 | WhatWeDid.Executed
                 | WhatWeDid.Aborted _
+                | WhatWeDid.UnhandledException _
                 | WhatWeDid.VoluntaryYield _
                 | WhatWeDid.SuspendedForClassInit
                 | WhatWeDid.SuspendedForManagedCall

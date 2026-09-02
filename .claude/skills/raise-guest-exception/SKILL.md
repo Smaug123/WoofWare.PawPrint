@@ -30,7 +30,7 @@ match
         exceptionAddr    // ManagedHeapAddress
         exceptionType    // ConcreteTypeHandle
 with
-| ExceptionDispatchResult.HandlerFound state ->
+| ExceptionDispatchResult.Dispatched state ->
     // The guest has a handler; execution will resume there.
     // Return `state` (and appropriate WhatWeDid/ExecutionResult).
 | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
@@ -63,8 +63,9 @@ Many common exception types are fields on `BaseClassTypes` (see `Corelib.fs`):
 Where you raise an exception affects what you return:
 
 - **In `Intrinsics.call`** (returns `IlMachineState option`): Return `Some state` after dispatch.
-- **In `NullaryIlOp.execute`** (returns `ExecutionResult`): Return `ExecutionResult.Stepped (state, WhatWeDid.Executed)` for `HandlerFound`, or `ExecutionResult.UnhandledException` for unhandled.
-- **In `UnaryMetadataIlOp.execute`** (returns `IlMachineState * WhatWeDid`): Return `(state, WhatWeDid.Executed)` for `HandlerFound`. For unhandled, the pattern isn't established yet — this would need plumbing.
+- **In `NullaryIlOp.execute`** (returns `ExecutionResult`): Return `ExecutionResult.Stepped (state, WhatWeDid.Executed)` for `Dispatched`, or `ExecutionResult.UnhandledException` for unhandled.
+- **In `UnaryMetadataIlOp.execute`** (returns `IlMachineState * WhatWeDid`): Return `(state, WhatWeDid.Executed)` for `Dispatched`, or `(state, WhatWeDid.UnhandledException exn)` for unhandled. `AbstractMachine.surfaceTerminatingStep` turns the latter into `ExecutionResult.UnhandledException` at the exit from `executeOneStep`, so the scheduler never sees it; the static-field opcodes rethrowing a cached `TypeInitializationException` are the worked example.
+- **In a native handler** (returns `NativeHandlerResult`): `NativeHandlerResult.tryEarlyReturn` already forwards `WhatWeDid.UnhandledException` from a managed sub-call as `NativeHandlerResult.Terminating`; if you match on the `WhatWeDid` yourself, `NativeHandlerResult.unhandledException` builds that value.
 
 ## Key files
 

@@ -71,6 +71,7 @@ module TestScheduleFork =
         | WhatWeDid.BlockedOnClassInit (ThreadId blocker) -> $"blockedOnClassInit(%d{blocker})"
         | WhatWeDid.ThrowingTypeInitializationException -> "throwingTypeInit"
         | WhatWeDid.Aborted fatal -> $"aborted(%O{fatal.Code})"
+        | WhatWeDid.UnhandledException exn -> $"unhandledException(%O{exn.ExceptionObject})"
 
     /// Collapse a terminal outcome to a string. Rendered rather than kept structurally because
     /// every `RunOutcome` carries an entire `IlMachineState`, which is neither comparable nor
