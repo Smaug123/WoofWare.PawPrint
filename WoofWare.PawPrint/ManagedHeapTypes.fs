@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Buffers.Binary
 open System.Collections.Immutable
 
 /// State carried when an object's monitor is `Held` by some thread.
@@ -143,6 +144,37 @@ type ArrayShape =
         /// array access.
         ElementZero : CliType
     }
+
+/// The `2 * rank` int32 block that CoreCLR lays out between a multi-dimensional array's
+/// length header and its element 0: the length of each dimension, then the lower bound of
+/// each. CoreLib reads it by pointer arithmetic from `Unsafe.As<RawArrayData>(array).Data`
+/// (`Array.Clear(Array, int, int)`, `Array.GetFlattenedIndex`), so a byte-view read that
+/// lands before element 0 of such an array is a read of this block.
+[<RequireQualifiedAccess>]
+module MultiDimArrayBounds =
+    /// The block's size in bytes on an array of the given rank.
+    let sizeInBytes (rank : int) : int = 2 * rank * sizeof<int32>
+
+    /// The block's bytes, little-endian, for a multi-dimensional array; `None` for a szarray,
+    /// which has no block. Every lower bound is zero: `Array.InternalCreate` refuses a non-zero
+    /// lower bound, and no other allocation path takes one (`Array.GetLowerBound` answers 0 for
+    /// the same reason).
+    let tryBytes (shape : ArrayShape) : byte[] option =
+        match shape.ConcreteType with
+        | ConcreteTypeHandle.Array (_, rank) ->
+            if shape.Lengths.Length <> rank then
+                failwith $"multi-dimensional array of rank %d{rank} records %d{shape.Lengths.Length} dimension lengths"
+
+            let block = Array.zeroCreate<byte> (sizeInBytes rank)
+
+            for i in 0 .. rank - 1 do
+                BinaryPrimitives.WriteInt32LittleEndian (
+                    System.Span<byte> (block, i * sizeof<int32>, sizeof<int32>),
+                    shape.Lengths.[i]
+                )
+
+            Some block
+        | _ -> None
 
 type AllocatedArray =
     {

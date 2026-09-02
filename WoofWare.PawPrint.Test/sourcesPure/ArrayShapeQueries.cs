@@ -1,6 +1,6 @@
 // `System.Array.GetLength` / `GetLowerBound` / `GetUpperBound` — the `[Intrinsic]` bound
-// accessors. Upstream reads a raw inline bounds block that PawPrint does not model; PawPrint
-// answers from `AllocatedArray.Lengths` instead.
+// accessors. Upstream reads a raw inline bounds block; PawPrint answers from
+// `AllocatedArray.Lengths` directly instead of walking its rendering of that block.
 //
 // `GetLongLength` is exercised too: it is not itself intrinsic, it just widens `GetLength`,
 // so it should start working for free.
