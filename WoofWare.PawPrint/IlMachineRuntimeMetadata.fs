@@ -2138,7 +2138,18 @@ module IlMachineRuntimeMetadata =
             =
             match arrayShape objType, arrayShape targetType with
             | Some (objElement, objShape), Some (targetElement, targetShape) ->
-                if objShape <> targetShape then
+                // CoreCLR `MethodTable::ArrayIsInstanceOf` (`methodtable.cpp`): an SZ-array
+                // target admits only an SZ-array source, and any other array target compares
+                // ranks, where an SZ array's rank is 1. So `int[]` is an `int[*]` (the rank-1
+                // ELEMENT_TYPE_ARRAY), but `int[*]` is not an `int[]`.
+                let ranksAgree =
+                    match objShape, targetShape with
+                    | None, None -> true
+                    | None, Some targetRank -> targetRank = 1
+                    | Some _, None -> false
+                    | Some objRank, Some targetRank -> objRank = targetRank
+
+                if not ranksAgree then
                     state, Some false
                 else
                     let state, compatible = elementCovariantlyCompatible state objElement targetElement
