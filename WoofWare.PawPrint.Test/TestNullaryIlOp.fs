@@ -2596,3 +2596,51 @@ module TestNullaryIlOp =
 
         // A zero size through a null destination is legal and writes nothing.
         initblkCompletes (EvalStackValue.ManagedPointer ManagedPointerSource.Null) (verbatim 0) (verbatim 0)
+
+    // --- ldlen ---
+
+    /// Run `ldlen` over a fresh `int32[len]` and return what it left on the stack.
+    let private ldlenOf (len : int) : EvalStackValue =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let op = NullaryIlOp.LdLen
+
+        let state, thread =
+            stateWithNullary loggerFactory op (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        // Drop the seed value `stateWithNullary` pushed; the operand has to be allocated on the
+        // heap first.
+        let _, state = IlMachineState.popEvalStack thread state
+
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Int32
+
+        let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+        let arr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) len state
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arr) thread state
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+            | [ actual ] -> actual
+            | other -> failwith $"Expected ldlen to leave one stack value, got %O{other}"
+        | other -> failwith $"Expected ldlen to step, got %O{other}"
+
+    [<Test>]
+    let ``ldlen pushes the length as a native int`` () : unit =
+        // ECMA-335 III.4.12: the result type is native unsigned int, so it belongs in the
+        // native-int stack slot. The int32 that `Array.Length` yields is the `conv.i4` Roslyn
+        // emits straight after, not the instruction's own result.
+        let property (len : int) : bool =
+            match ldlenOf len with
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim n) -> n = int64 len
+            | _ -> false
+
+        Check.One (config.WithMaxTest 50, Prop.forAll (Arb.fromGen (Gen.choose (0, 64))) property)

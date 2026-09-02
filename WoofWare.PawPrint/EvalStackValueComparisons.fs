@@ -20,6 +20,16 @@ module EvalStackValueComparisons =
             EvalStackValue.NativeInt (NativeIntSource.Verbatim bits)
         | _ -> v
 
+    // Table III.4 admits an int32 on one side of a comparison and a native int on the other.
+    // CoreCLR's importer (`CMP_2_OPs` in jit/importer.cpp) widens the int32 to native width by
+    // sign extension for every compare opcode, `cgt.un` and `clt.un` included, so the int32 is
+    // read as a signed number even when the comparison is unsigned. Roslyn reaches these arms
+    // through `ldlen` (`arr.Length == 0` is `ldlen; ldc.i4.0; ceq`; `arr.Length != 0` is
+    // `ldlen; ldc.i4.0; cgt.un`). The unsigned *branches* widen differently: see
+    // `unsignedBranch`.
+    let private signExtendInt32 (i : int32) : EvalStackValue =
+        EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 i))
+
     let clt (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         let var1 = unwrapPlaceholderForBitComparison var1
         let var2 = unwrapPlaceholderForBitComparison var2
@@ -51,11 +61,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             var1 < var2
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
-            failwith "TODO: Clt Int32 vs NativeInt comparison unimplemented"
+            NativeIntSource.isLess (NativeIntSource.Verbatim (int64 var1)) var2
         | EvalStackValue.Int32 (Int32Source.Verbatim i), other ->
             failwith $"invalid comparison, int32 %i{i} vs %O{other}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
-            failwith "TODO: Clt NativeInt vs Int32 comparison unimplemented"
+            NativeIntSource.isLess var1 (NativeIntSource.Verbatim (int64 var2))
         | other, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             failwith $"invalid comparison, {other} vs int32 {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var1 var2
@@ -104,11 +114,11 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             var1 > var2
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
-            failwith "TODO: Cgt Int32 vs NativeInt comparison unimplemented"
+            NativeIntSource.isLess var2 (NativeIntSource.Verbatim (int64 var1))
         | EvalStackValue.Int32 (Int32Source.Verbatim i), other ->
             failwith $"invalid comparison, int32 %i{i} vs %O{other}"
         | EvalStackValue.NativeInt var1, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
-            failwith "TODO: Cgt NativeInt vs Int32 comparison unimplemented"
+            NativeIntSource.isLess (NativeIntSource.Verbatim (int64 var2)) var1
         | other, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             failwith $"invalid comparison, {other} vs int32 {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 -> NativeIntSource.isLess var2 var1
@@ -159,8 +169,8 @@ module EvalStackValueComparisons =
         | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> cgtUn var1 (EvalStackValue.NativeInt src)
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             uint32 var1 > uint32 var2
-        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
-            failwith "TODO: comparison of unsigned int32 with nativeint"
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt _ ->
+            cgtUn (signExtendInt32 var1) var2
         | EvalStackValue.Int32 _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
             uint64 var1 > uint64 var2
@@ -236,8 +246,11 @@ module EvalStackValueComparisons =
             | _ -> failwith $"TODO: cgt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cgtUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            cgtUn var1 (signExtendInt32 var2)
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
-            failwith $"TODO: cgt.un comparing a native int with an int32: %O{var1} vs %O{var2}"
+            failwith
+                $"Cgt.un cannot order an int32 that has no numeric value against a native int: %O{var1} vs %O{var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
@@ -268,8 +281,8 @@ module EvalStackValueComparisons =
         | _, EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) -> cltUn var1 (EvalStackValue.NativeInt src)
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             uint32 var1 < uint32 var2
-        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
-            failwith "TODO: comparison of unsigned int32 with nativeint"
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt _ ->
+            cltUn (signExtendInt32 var1) var2
         | EvalStackValue.Int32 _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.Int64 (Int64Source.Verbatim var1), EvalStackValue.Int64 (Int64Source.Verbatim var2) ->
             uint64 var1 < uint64 var2
@@ -327,8 +340,11 @@ module EvalStackValueComparisons =
             | _, _ -> failwith $"TODO: clt.un on non-Verbatim nativeints: %O{var1} vs %O{var2}"
         | EvalStackValue.NativeInt _, EvalStackValue.ManagedPointer var2 ->
             cltUn var1 (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var2))
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            cltUn var1 (signExtendInt32 var2)
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
-            failwith $"TODO: clt.un comparing a native int with an int32: %O{var1} vs %O{var2}"
+            failwith
+                $"Clt.un cannot order an int32 that has no numeric value against a native int: %O{var1} vs %O{var2}"
         | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
         | EvalStackValue.Float _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
@@ -376,8 +392,8 @@ module EvalStackValueComparisons =
             failwith $"ceq is not specified for UserDefinedValueType: %O{u} vs %O{var2}"
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
             var1 = var2
-        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt var2 ->
-            failwith "TODO: int32 CEQ nativeint"
+        | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.NativeInt _ ->
+            ceq counters (signExtendInt32 var1) var2
         | EvalStackValue.Int32 _, _ -> failwith $"bad ceq: Int32 vs {var2}"
         // WidenedNativeInt × WidenedNativeInt: route both sides through the
         // NativeInt arms so pointer-identity (TypeHandlePtr, MethodTablePtr,
@@ -446,8 +462,8 @@ module EvalStackValueComparisons =
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             NativeIntSourceComparison.equalsForCli counters var1 var2
-        | EvalStackValue.NativeInt var1, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
-            failwith $"TODO (CEQ): nativeint vs int32"
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
+            ceq counters var1 (signExtendInt32 var2)
         | EvalStackValue.NativeInt var1, EvalStackValue.ManagedPointer var2 ->
             ceq
                 counters
@@ -509,3 +525,70 @@ module EvalStackValueComparisons =
                 (ManagedPointerSource.unsafeAssumeNormalisedForComparison p1)
                 (ManagedPointerSource.unsafeAssumeNormalisedForComparison p2)
         | _ -> CeqOutcome.Decided (ceq counters var1 var2)
+
+    /// The two native ints CoreCLR might read an int32 operand of an unsigned branch as, when
+    /// they differ: `(sign-extended pair, zero-extended pair)` for a negative int32 against a
+    /// native int, in the operands' order. `None` for every other pair, where the widenings agree.
+    let private unsignedBranchWidenings
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : ((EvalStackValue * EvalStackValue) * (EvalStackValue * EvalStackValue)) option
+        =
+        let var1 = unwrapPlaceholderForBitComparison var1
+        let var2 = unwrapPlaceholderForBitComparison var2
+
+        let zeroExtendInt32 (i : int32) : EvalStackValue =
+            EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 (uint32 i)))
+
+        match var1, var2 with
+        | EvalStackValue.Int32 (Int32Source.Verbatim i), EvalStackValue.NativeInt _ when i < 0 ->
+            Some ((signExtendInt32 i, var2), (zeroExtendInt32 i, var2))
+        | EvalStackValue.NativeInt _, EvalStackValue.Int32 (Int32Source.Verbatim i) when i < 0 ->
+            Some ((var1, signExtendInt32 i), (var1, zeroExtendInt32 i))
+        | _ -> None
+
+    /// `compare` as one of the unsigned branches (`bne.un`, `bgt.un`, `bge.un`, `blt.un`, `ble.un`)
+    /// applies it. ECMA-335 defines each of those as its compare opcode followed by `brtrue`, but
+    /// CoreCLR widens an int32 operand against a native int differently in the two: the compare
+    /// opcodes sign-extend it, and the unsigned branches zero-extend it unless it was pushed by
+    /// `ldc.i4`, in which case it is sign-extended after all (`CMP_2_OPs_AND_BR_ALL` in
+    /// jit/importer.cpp, versus `CMP_2_OPs`). The evaluation stack does not record which
+    /// instruction pushed an int32, so when the two widenings would give different answers this
+    /// refuses rather than pick one.
+    let private unsignedBranch
+        (opcode : string)
+        (compare : EvalStackValue -> EvalStackValue -> bool)
+        (var1 : EvalStackValue)
+        (var2 : EvalStackValue)
+        : bool
+        =
+        match unsignedBranchWidenings var1 var2 with
+        | None -> compare var1 var2
+        | Some ((signExtended1, signExtended2), (zeroExtended1, zeroExtended2)) ->
+            let underSignExtension = compare signExtended1 signExtended2
+            let underZeroExtension = compare zeroExtended1 zeroExtended2
+
+            if underSignExtension = underZeroExtension then
+                underSignExtension
+            else
+                failwith
+                    $"refusing %s{opcode} of %O{var1} against %O{var2}: CoreCLR sign-extends the int32 if `ldc.i4` pushed it and zero-extends it otherwise, the two answers differ here, and the evaluation stack does not say which instruction pushed it"
+
+    /// `bgt.un`: see `unsignedBranch` for how this differs from `cgtUn`.
+    let bgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool = unsignedBranch "bgt.un" cgtUn var1 var2
+
+    /// `bge.un`: see `unsignedBranch` for how this differs from `cgeUn`.
+    let bgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool = unsignedBranch "bge.un" cgeUn var1 var2
+
+    /// `blt.un`: see `unsignedBranch` for how this differs from `cltUn`.
+    let bltUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool = unsignedBranch "blt.un" cltUn var1 var2
+
+    /// `ble.un`: see `unsignedBranch` for how this differs from `cleUn`.
+    let bleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool = unsignedBranch "ble.un" cleUn var1 var2
+
+    /// The equality `bne.un` negates: `ceqDeferred`, except that an int32 against a native int
+    /// goes through `unsignedBranch` (which decides or refuses, and never defers).
+    let bneUnDeferred (counters : PointerHashState) (var1 : EvalStackValue) (var2 : EvalStackValue) : CeqOutcome =
+        match unsignedBranchWidenings var1 var2 with
+        | None -> ceqDeferred counters var1 var2
+        | Some _ -> CeqOutcome.Decided (unsignedBranch "bne.un" (ceq counters) var1 var2)
