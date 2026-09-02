@@ -227,6 +227,7 @@
     <Compile Include="TestFabricatedUnsignedDivision.fs" />
     <Compile Include="TestFabricatedEndfilter.fs" />
     <Compile Include="TestFabricatedCastclassNullable.fs" />
+    <Compile Include="TestFabricatedCallvirtMethodSpecMethodDef.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />

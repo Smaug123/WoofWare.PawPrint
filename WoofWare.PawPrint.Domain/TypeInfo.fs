@@ -361,6 +361,11 @@ type BaseClassTypes<'corelib> =
         FieldAccessException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Thrown by the runtime — not the BCL — when a call reaches a method whose declaring
+        /// type is a generic type's typical (uninstantiated) form, which is what a bare MethodDef
+        /// token names when its declaring type is generic: CoreCLR's prestub refuses to run a
+        /// method that still contains generic variables (`IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`).
+        InvalidOperationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Thrown by the runtime — not the BCL — when a wait-all names the same
         /// handle twice: CoreCLR's `Thread::DoAppropriateWait` turns the PAL's
         /// `WAIT_FAILED` + `ERROR_INVALID_PARAMETER` into this before the managed

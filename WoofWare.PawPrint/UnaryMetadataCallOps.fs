@@ -887,6 +887,36 @@ module internal UnaryMetadataCallOps =
 
         enterCallee ctx concretizedMethod state
 
+    /// The generic arguments the receiver's runtime type supplies for `declaring`, read off the
+    /// link of its class chain whose definition is `declaring`. `None` when no link is: the
+    /// receiver is not an instance of that type, or some link is not a registered nominal type.
+    let private receiverInstantiationOf
+        (ctx : UnaryMetadataIlOpContext)
+        (declaring : ResolvedTypeIdentity)
+        (receiver : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * ImmutableArray<ConcreteTypeHandle> option
+        =
+        let rec go
+            (state : IlMachineState)
+            (handle : ConcreteTypeHandle)
+            : IlMachineState * ImmutableArray<ConcreteTypeHandle> option
+            =
+            match IlMachineState.tryGetConcreteTypeInfo state handle with
+            | None -> state, None
+            | Some (ty, _) ->
+                if ty.Identity = declaring then
+                    state, Some ty.Generics
+                else
+                    let state, baseHandle =
+                        IlMachineState.resolveBaseConcreteType ctx.LoggerFactory ctx.BaseClassTypes state handle
+
+                    match baseHandle with
+                    | None -> state, None
+                    | Some baseHandle -> go state baseHandle
+
+        go state receiver
+
     let executeCallvirt (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -895,8 +925,91 @@ module internal UnaryMetadataCallOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
+        // A MethodSpec over a bare MethodDef binds the method's own generics and nothing about
+        // its declaring type's, so when that type is generic the token names the type's
+        // *typical* form -- `G<T>` itself rather than any `G<X>` -- just as it does under
+        // `ldtoken` (`resolveMethodSpecificationToken`). No compiler emits the shape: a generic
+        // type's method is referenced through a MemberReference with a TypeSpec parent, which
+        // carries the instantiation. Measured on .NET 10 for the hand-written IL that does:
+        //
+        //  * where the JIT would dispatch (the target is virtual, not final, not static, and its
+        //    declaring type is not sealed -- `CORINFO_FLG_FINAL` covers both of the last two),
+        //    the body that runs is the receiver's runtime type's override, under that type's own
+        //    instantiation of the declaring type; the typical form only names the slot, and the
+        //    frame the call is made from is irrelevant, so a non-generic caller works too;
+        //  * otherwise the call binds to the typical form directly, whose prestub refuses to run
+        //    a method that still contains generic variables: `InvalidOperationException`
+        //    (`IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`), raised after `callvirt`'s null check.
+        //
+        // Neither can be concretized without looking at the receiver, so both are settled here
+        // before the ordinary token resolution below, which reads the instantiation from the
+        // token or from the frame.
+        //
+        // The target, with the declaring type's parameters left as `GenericTypeParameter`s for
+        // the receiver's instantiation to fill, and the receiver itself.
+        let typicalInstantiationTarget
+            : (WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn> * EvalStackValue) option =
+            match metadataToken with
+            | MetadataToken.MethodSpecification h ->
+                match activeAssy.MethodSpecs.[h].Method with
+                | MetadataToken.MethodDef token ->
+                    let method =
+                        activeAssy.Methods.[token]
+                        |> MethodInfo.mapTypeGenerics (fun (par, _) -> TypeDefn.GenericTypeParameter par.SequenceNumber)
 
-        // TODO: this is presumably super incomplete
+                    if method.DeclaringTypeGenerics.IsEmpty then
+                        None
+                    else
+
+                    if activeAssy.TypeDefs.[method.RequiredDeclaringType.Definition.Get].IsInterface then
+                        // The receiver supplies an interface's instantiation through its interface
+                        // map rather than its class chain, and the real runtime's answer is not
+                        // the class one either. Measured on .NET 10 for `callvirt` of a MethodSpec
+                        // over `I`1::Foo<string>`'s MethodDef: a receiver implementing `I<int>`
+                        // (directly, or as `D<T> : I<T>`) gets `EntryPointNotFoundException`
+                        // ("Entry point was not found."), while a receiver that does not implement
+                        // `I` at all, and a null receiver, get `TypeLoadException` ("Could not
+                        // load type 'I' from assembly ..."). Neither is modelled.
+                        failwith
+                            $"TODO: callvirt of %s{method.Name} on generic interface %s{MethodOwner.describe method.Owner} through a MethodSpec over its MethodDef, which names the interface's typical instantiation; real .NET raises EntryPointNotFoundException for a receiver implementing the interface and TypeLoadException otherwise, and PawPrint models neither"
+
+                    if method.IsStatic then
+                        failwith
+                            $"TODO: callvirt of static method %s{method.Name} on generic type %s{MethodOwner.describe method.Owner} through a MethodSpec over its MethodDef; callvirt of a static method is not valid IL and has not been measured"
+
+                    if state.ThreadState.[thread].MethodState.PendingPrefix.Constrained.IsSome then
+                        failwith
+                            $"TODO: constrained. callvirt of %s{method.Name} on generic type %s{MethodOwner.describe method.Owner} through a MethodSpec over its MethodDef; the receiver is a managed pointer whose pointee's instantiation of the declaring type has not been measured"
+
+                    match
+                        state.ThreadState.[thread].MethodState.EvaluationStack
+                        |> EvalStack.PeekNthFromTop (MethodInfo.arity method)
+                    with
+                    | None ->
+                        failwith
+                            $"callvirt of %s{method.Name} with %d{MethodInfo.arity method} argument(s): no receiver beneath them on the evaluation stack"
+                    | Some receiver -> Some (method, receiver)
+                | _ -> None
+            | _ -> None
+
+        match typicalInstantiationTarget with
+        | Some (_, EvalStackValue.NullObjectRef) ->
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+        | Some (method, _) when
+            not method.DispatchesVirtually
+            || activeAssy.TypeDefs.[method.RequiredDeclaringType.Definition.Get].TypeAttributes.HasFlag
+                TypeAttributes.Sealed
+            ->
+            IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                loggerFactory
+                baseClassTypes
+                baseClassTypes.InvalidOperationException
+                (Some
+                    "Could not execute the method because either the method itself or the containing type is not fully instantiated.")
+                thread
+                state
+        | _ ->
+
         // For MethodSpec(MemberReference) the spec's method-generic args are caller-relative
         // and already concretized against the current frame; we surface them as
         // `preConcretizedMethodGenerics` so the concretization step uses them directly rather
@@ -927,11 +1040,44 @@ module internal UnaryMetadataCallOps =
 
                 match spec.Method with
                 | MetadataToken.MethodDef token ->
-                    let method =
-                        activeAssy.Methods.[token]
-                        |> MethodInfo.mapTypeGenerics (fun (p, _) -> spec.Signature.[p.SequenceNumber])
+                    match typicalInstantiationTarget with
+                    | None ->
+                        let method =
+                            activeAssy.Methods.[token]
+                            |> MethodInfo.mapTypeGenerics (fun (par, _) ->
+                                TypeDefn.GenericTypeParameter par.SequenceNumber
+                            )
 
-                    state, method, Some spec.Signature, None, None
+                        state, method, Some spec.Signature, None, None
+                    | Some (method, receiver) ->
+                        // The declaring type's instantiation is the receiver's, found by walking
+                        // its class chain up to that type; the spec's method generics were
+                        // concretized against the caller's frame above, and are handed over
+                        // as-is rather than re-read against the receiver's instantiation.
+                        let state, receiverHandle =
+                            IlMachineStateExecution.getTypeOfObj loggerFactory baseClassTypes state receiver
+
+                        let state, instantiation =
+                            receiverInstantiationOf ctx method.RequiredDeclaringType.Identity receiverHandle state
+
+                        match instantiation with
+                        | None ->
+                            failwith
+                                $"callvirt of %s{method.Name} through a MethodSpec over its MethodDef: the receiver's runtime type %O{receiverHandle} does not derive from the declaring type %s{MethodOwner.describe method.Owner}"
+                        | Some instantiation ->
+
+                        let typeArgs =
+                            instantiation
+                            |> Seq.map (fun handle ->
+                                Concretization.concreteHandleToTypeDefn
+                                    baseClassTypes
+                                    handle
+                                    state.ConcreteTypes
+                                    state._LoadedAssemblies
+                            )
+                            |> ImmutableArray.CreateRange
+
+                        state, method, None, Some typeArgs, Some methodGenerics
                 | MetadataToken.MemberReference ref ->
                     let state, _, method, extractedTypeArgs =
                         IlMachineState.resolveMember loggerFactory baseClassTypes thread activeAssy ref state
