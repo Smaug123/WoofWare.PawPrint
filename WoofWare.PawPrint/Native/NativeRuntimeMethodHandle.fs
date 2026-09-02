@@ -892,7 +892,17 @@ module NativeRuntimeMethodHandle =
 
             let sameAssembly = accessor.Assembly.FullName = target.Assembly.FullName
 
-            let visible = AccessCheck.canAccessMethod sameAssembly accessor target attrCtorAttrs
+            let visible =
+                match AccessCheck.canAccessMethod sameAssembly accessor target attrCtorAttrs with
+                | Ok visible -> visible
+                | Error e ->
+                    // CoreCLR parses and validates an assembly's friend declarations the first
+                    // time an access check consults them (`Assembly::GetFriendAssemblyInfo`) and
+                    // throws from there, so the guest would see an exception raised by this
+                    // QCall. PawPrint doesn't yet have a host helper to raise that from a QCall,
+                    // so surface the precise condition the same way the missing-constructor
+                    // case above does.
+                    failwith $"TODO: %s{operation}: %s{e}; CoreCLR throws here"
 
             // Interop.BOOL is int-backed with FALSE=0, TRUE=1.
             let state =

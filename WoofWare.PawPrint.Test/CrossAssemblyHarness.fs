@@ -95,13 +95,18 @@ module CrossAssemblyHarness =
             built |> Map.add spec.Name bytes
         )
 
-    let private writeAssemblies (tempDir : string) (assemblies : Map<string, byte[]>) : unit =
+    /// Write each compiled image to `<tempDir>/<assembly name>.dll`.
+    let writeAssemblies (tempDir : string) (assemblies : Map<string, byte[]>) : unit =
         assemblies
         |> Map.iter (fun assemblyName bytes ->
             File.WriteAllBytes (Path.Combine (tempDir, assemblyName + ".dll"), bytes)
         )
 
-    let private executeWithPawPrint (entryPath : string) (entryBytes : byte[]) : int =
+    /// Run the entry assembly under PawPrint, binding its sibling assemblies from `entryPath`'s
+    /// directory ahead of the framework, and return the guest's exit code. Any other outcome
+    /// (an unhandled guest exception, an abort, a signal, or a host failure inside the
+    /// interpreter) is raised, with the guest's log on stderr.
+    let executeWithPawPrint (entryPath : string) (entryBytes : byte[]) : int =
         let assy = typeof<RunResult>.Assembly
 
         let messages, loggerFactory =

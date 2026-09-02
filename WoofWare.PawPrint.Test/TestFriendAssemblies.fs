@@ -20,6 +20,13 @@ module TestFriendAssemblies =
         use stream = new MemoryStream (image)
         global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None stream
 
+    /// The scanned friend declarations of an assembly whose declarations are
+    /// expected to be valid.
+    let private friendsOf (assembly : DumpedAssembly) : FriendAssemblies =
+        match assembly.Friends with
+        | Ok friends -> friends
+        | Error e -> failwithf "expected valid friend declarations, got: %s" e
+
     /// A real, structurally-valid public-key blob borrowed from
     /// System.Private.CoreLib's AssemblyName. We use this for tests that
     /// need the BCL's AssemblyName.SetPublicKey / GetPublicKeyToken to
@@ -780,7 +787,7 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanNoIvtTestAssembly" source
-        let friends = assembly.Friends
+        let friends = friendsOf assembly
         friends.InternalsVisibleTo.Length |> shouldEqual 0
         friends.IgnoresAccessChecksTo.Length |> shouldEqual 0
 
@@ -794,7 +801,7 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanSingleIvtTestAssembly" source
-        let friends = assembly.Friends
+        let friends = friendsOf assembly
         friends.InternalsVisibleTo.Length |> shouldEqual 1
         friends.InternalsVisibleTo.[0].Name |> shouldEqual "FriendAsm"
         friends.IgnoresAccessChecksTo.Length |> shouldEqual 0
@@ -811,7 +818,7 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanMultipleIvtTestAssembly" source
-        let friends = assembly.Friends
+        let friends = friendsOf assembly
 
         let names = friends.InternalsVisibleTo |> Array.map (fun f -> f.Name) |> Array.sort
 
@@ -840,7 +847,35 @@ public class C { public static int F() => 1; }
 """
 
         let assembly = loadAssembly "ScanIgnoresAccessTestAssembly" source
-        let friends = assembly.Friends
+        let friends = friendsOf assembly
         friends.InternalsVisibleTo.Length |> shouldEqual 0
         friends.IgnoresAccessChecksTo.Length |> shouldEqual 1
         friends.IgnoresAccessChecksTo.[0].Name |> shouldEqual "Target"
+
+    [<Test>]
+    let ``scan: an InternalsVisibleTo with PublicKeyToken loads, and records the restriction failure`` () : unit =
+        // Roslyn accepts a PublicKeyToken= segment on an InternalsVisibleTo
+        // name, so assemblies carrying one exist. CoreCLR rejects the name
+        // (CheckFriendAssemblyName), but only when an access check first
+        // consults the assembly's friend list; loading the assembly and
+        // running code in it never touches the list, so the read must
+        // succeed and store the outcome for the consumer to report.
+        let source =
+            """
+using System.Runtime.CompilerServices;
+[assembly: InternalsVisibleTo("SomeFriend, PublicKeyToken=b77a5c561934e089")]
+public class C { public static int F() => 1; }
+"""
+
+        let assembly = loadAssembly "ScanTokenIvtTestAssembly" source
+
+        match assembly.Friends with
+        | Ok friends -> Assert.Fail (sprintf "expected the friend scan to fail, got %A" friends)
+        | Error e ->
+            e |> shouldContainText "PublicKeyToken"
+            e |> shouldContainText "SomeFriend"
+
+        // The rest of the assembly is intact and usable.
+        assembly.TypeDefs.Values
+        |> Seq.exists (fun t -> t.Name = "C")
+        |> shouldEqual true
