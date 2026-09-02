@@ -37,21 +37,43 @@ type AccessParty =
         /// declarations grant cross-assembly visibility.
         Assembly : AssemblyName
         /// The IVT / IgnoresAccessChecksTo declarations parsed from
-        /// assembly-level custom attributes on this party's assembly.
-        Friends : FriendAssemblies
+        /// assembly-level custom attributes on this party's assembly, or the
+        /// reason they could not be parsed (<c>DumpedAssembly.Friends</c>).
+        /// The <c>Error</c> is reported only by a check that actually
+        /// consults this party's declarations, which is when CoreCLR would
+        /// first parse them and throw.
+        Friends : Result<FriendAssemblies, string>
     }
 
 [<RequireQualifiedAccess>]
 module AccessCheck =
 
-    /// Run an IVT / IgnoresAccessChecksTo list against a candidate identity:
-    /// the match succeeds if any entry in the list is a friend-ref that
-    /// matches the candidate def (per CoreCLR's
+    /// Run one of a party's friend lists against a candidate identity: the
+    /// match succeeds if any entry in the list is a friend-ref that matches
+    /// the candidate def (per CoreCLR's
     /// <c>BaseAssemblySpec::RefMatchesDef</c>, ported as
-    /// <c>FriendAssemblyName.matchesDef</c>).
-    let private friendDeclares (friends : FriendAssemblyName array) (candidate : AssemblyName) : bool =
-        friends
-        |> Array.exists (fun friendRef -> FriendAssemblyName.matchesDef friendRef candidate)
+    /// <c>FriendAssemblyName.matchesDef</c>). This is the point at which
+    /// CoreCLR first parses the owner's declarations
+    /// (<c>Assembly::GetFriendAssemblyInfo</c>), so an owner whose
+    /// declarations are invalid yields <c>Error</c> here and nowhere earlier.
+    let private friendDeclares
+        (owner : AccessParty)
+        (list : FriendAssemblies -> FriendAssemblyName array)
+        (candidate : AssemblyName)
+        : Result<bool, string>
+        =
+        match owner.Friends with
+        | Error e ->
+            Error (
+                sprintf
+                    "friend-assembly declarations on %s are invalid, and this access check consults them: %s"
+                    owner.Assembly.FullName
+                    e
+            )
+        | Ok friends ->
+            list friends
+            |> Array.exists (fun friendRef -> FriendAssemblyName.matchesDef friendRef candidate)
+            |> Ok
 
     /// Mirrors CoreCLR's <c>ClassLoader::AssemblyOrFriendAccessAllowed</c>:
     /// <list type="number">
@@ -66,15 +88,23 @@ module AccessCheck =
     /// friend status to the accessor).</item>
     /// <item>Otherwise access is denied.</item>
     /// </list>
+    /// Each step consults one party's declarations, in that order, and stops
+    /// at the first that grants access; so <c>Error</c> names the accessor's
+    /// assembly if its declarations are invalid, and the target's only if the
+    /// accessor's were valid and did not grant access.
     let private assemblyOrFriendAccessAllowed
         (sameAssembly : bool)
         (accessor : AccessParty)
         (target : AccessParty)
-        : bool
+        : Result<bool, string>
         =
-        sameAssembly
-        || friendDeclares accessor.Friends.IgnoresAccessChecksTo target.Assembly
-        || friendDeclares target.Friends.InternalsVisibleTo accessor.Assembly
+        if sameAssembly then
+            Ok true
+        else
+            match friendDeclares accessor (fun f -> f.IgnoresAccessChecksTo) target.Assembly with
+            | Error e -> Error e
+            | Ok true -> Ok true
+            | Ok false -> friendDeclares target (fun f -> f.InternalsVisibleTo) accessor.Assembly
 
     /// Decide visibility of a single type-chain level. <c>Public</c> /
     /// <c>NestedPublic</c> is unconditional; <c>NotPublic</c> /
@@ -88,13 +118,13 @@ module AccessCheck =
         (accessor : AccessParty)
         (target : AccessParty)
         (level : AccessLevelInfo)
-        : bool
+        : Result<bool, string>
         =
         let vis = level.Visibility &&& TypeAttributes.VisibilityMask
 
         match vis with
         | TypeAttributes.Public
-        | TypeAttributes.NestedPublic -> true
+        | TypeAttributes.NestedPublic -> Ok true
         | TypeAttributes.NotPublic
         | TypeAttributes.NestedAssembly -> assemblyOrFriendAccessAllowed sameAssembly accessor target
         | TypeAttributes.NestedPrivate ->
@@ -117,8 +147,20 @@ module AccessCheck =
     /// argument visibility (<c>CanAccessClass</c>'s recursive walk over
     /// the target's generic arguments) is not modelled: the only caller
     /// asks about a non-generic custom attribute type.
-    let canAccessClass (sameAssembly : bool) (accessor : AccessParty) (target : AccessParty) : bool =
-        target.TypeChain |> List.forall (levelIsVisible sameAssembly accessor target)
+    /// <c>Error</c> means a level's decision needed a party's friend
+    /// declarations and they are invalid; CoreCLR throws at that point
+    /// rather than answering.
+    let canAccessClass (sameAssembly : bool) (accessor : AccessParty) (target : AccessParty) : Result<bool, string> =
+        let rec walk (levels : AccessLevelInfo list) : Result<bool, string> =
+            match levels with
+            | [] -> Ok true
+            | level :: outer ->
+                match levelIsVisible sameAssembly accessor target level with
+                | Ok true -> walk outer
+                | Ok false -> Ok false
+                | Error e -> Error e
+
+        walk target.TypeChain
 
     /// Mirrors the visibility portion of <c>ClassLoader::CanAccess</c> /
     /// <c>CheckAccessMember</c> for a method member: access requires both
@@ -129,21 +171,22 @@ module AccessCheck =
     /// <c>assemblyOrFriendAccessAllowed</c>. The family-style flags and
     /// <c>Private</c> / <c>PrivateScope</c> raise <c>failwith</c>: they
     /// would require <c>CanAccessFamily</c> and chain-equality logic that
-    /// is not ported.
+    /// is not ported. <c>Error</c> is as for <c>canAccessClass</c>.
     let canAccessMethod
         (sameAssembly : bool)
         (accessor : AccessParty)
         (target : AccessParty)
         (targetMethodAttrs : MethodAttributes)
-        : bool
+        : Result<bool, string>
         =
-        if not (canAccessClass sameAssembly accessor target) then
-            false
-        else
+        match canAccessClass sameAssembly accessor target with
+        | Error e -> Error e
+        | Ok false -> Ok false
+        | Ok true ->
             let memberAccess = targetMethodAttrs &&& MethodAttributes.MemberAccessMask
 
             match memberAccess with
-            | MethodAttributes.Public -> true
+            | MethodAttributes.Public -> Ok true
             | MethodAttributes.Assembly -> assemblyOrFriendAccessAllowed sameAssembly accessor target
             | MethodAttributes.Private ->
                 failwith

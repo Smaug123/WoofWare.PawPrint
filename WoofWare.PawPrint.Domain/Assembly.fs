@@ -276,9 +276,15 @@ type DumpedAssembly =
         /// <summary>
         /// Friend-assembly declarations parsed from assembly-level
         /// <c>InternalsVisibleTo</c> and <c>IgnoresAccessChecksTo</c> custom
-        /// attributes on this assembly.
+        /// attributes on this assembly, or the reason they could not be parsed.
+        /// An invalid declaration is not a load failure: CoreCLR parses and
+        /// validates these names only when an access check first consults
+        /// them (<c>Assembly::GetFriendAssemblyInfo</c>), so an assembly
+        /// carrying one loads and runs until something asks who its friends
+        /// are. The <c>Error</c> must therefore surface only from a consumer
+        /// that is consulting the list, never at load.
         /// </summary>
-        Friends : FriendAssemblies
+        Friends : Result<FriendAssemblies, string>
     }
 
     static member internal BuildTopLevelTypeDefsLookup
@@ -1298,10 +1304,11 @@ module Assembly =
         // this record's `Dispose` may close while the parsed assembly lives on.
         let sequencePoints = PortablePdb.readSequencePoints logger peReader originalPath
 
-        // Cached eagerly so visibility checks (e.g. CA filtering via
+        // Scanned eagerly so visibility checks (e.g. CA filtering via
         // `IsCAVisibleFromDecoratedType`) do not re-walk the assembly-level attribute list
-        // per call.
-        let friends =
+        // per call. The outcome is stored rather than unwrapped: see the `Friends` docstring
+        // for why an invalid friend name must not fail the load.
+        let friends : Result<FriendAssemblies, string> =
             let input : FriendAssembliesScanInput =
                 {
                     CustomAttributesByParentToken = customAttributesByParentToken
@@ -1312,9 +1319,7 @@ module Assembly =
                     Methods = methods
                 }
 
-            match FriendAssemblies.scan input with
-            | Ok f -> f
-            | Error e -> failwithf "FriendAssemblies.scan failed on %s: %s" assy.Name.Name e
+            FriendAssemblies.scan input
 
         {
             Logger = logger

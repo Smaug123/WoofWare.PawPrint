@@ -1,6 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
 open System.Reflection
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -35,11 +37,29 @@ module TestAccessCheck =
             TypeChain = chain
             Assembly = AssemblyName assemblyName
             Friends =
-                {
-                    InternalsVisibleTo = toFriends ivt
-                    IgnoresAccessChecksTo = toFriends ignoresAccessChecksTo
-                }
+                Ok
+                    {
+                        InternalsVisibleTo = toFriends ivt
+                        IgnoresAccessChecksTo = toFriends ignoresAccessChecksTo
+                    }
         }
+
+    /// A party whose assembly-level friend declarations failed to parse, as
+    /// `DumpedAssembly.Friends` records for an assembly carrying e.g. an
+    /// `InternalsVisibleTo` name with a `PublicKeyToken=` segment.
+    let private partyWithInvalidFriends (chain : AccessLevelInfo list) (assemblyName : string) : AccessParty =
+        {
+            TypeChain = chain
+            Assembly = AssemblyName assemblyName
+            Friends = Error (sprintf "test setup: %s declares an invalid friend" assemblyName)
+        }
+
+    let private expectInvalidFriendsOn (assemblyName : string) (result : Result<bool, string>) : unit =
+        match result with
+        | Ok visible -> failwithf "expected the invalid friend list to be reported, got Ok %b" visible
+        | Error e ->
+            e |> shouldContainText "invalid"
+            e |> shouldContainText assemblyName
 
     // ----- canAccessClass: top-level visibility -----
 
@@ -48,21 +68,21 @@ module TestAccessCheck =
         let target = party [ level TypeAttributes.Public "T" ] "TargetAsm" [] []
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual true
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessClass: NotPublic top-level type is visible same-assembly`` () : unit =
         let target = party [ level TypeAttributes.NotPublic "T" ] "Asm" [] []
         let accessor = party [ level TypeAttributes.Public "A" ] "Asm" [] []
 
-        AccessCheck.canAccessClass true accessor target |> shouldEqual true
+        AccessCheck.canAccessClass true accessor target |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessClass: NotPublic top-level type is not visible cross-assembly without friend`` () : unit =
         let target = party [ level TypeAttributes.NotPublic "T" ] "TargetAsm" [] []
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual false
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok false)
 
     [<Test>]
     let ``canAccessClass: NotPublic top-level type is visible via target's IVT`` () : unit =
@@ -71,7 +91,7 @@ module TestAccessCheck =
 
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual true
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessClass: NotPublic top-level type is visible via accessor's IgnoresAccessChecksTo`` () : unit =
@@ -80,7 +100,7 @@ module TestAccessCheck =
         let accessor =
             party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] [ "TargetAsm" ]
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual true
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessClass: NotPublic is not visible when IVT names a different assembly`` () : unit =
@@ -89,7 +109,7 @@ module TestAccessCheck =
 
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual false
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok false)
 
     // ----- canAccessClass: nested chains -----
 
@@ -107,7 +127,7 @@ module TestAccessCheck =
 
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual true
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessClass: NestedAssembly in Public outer is not visible cross-assembly`` () : unit =
@@ -123,7 +143,7 @@ module TestAccessCheck =
 
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual false
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok false)
 
     [<Test>]
     let ``canAccessClass: NestedAssembly in Public outer is visible cross-assembly with IVT`` () : unit =
@@ -139,7 +159,7 @@ module TestAccessCheck =
 
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual true
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessClass: NestedPublic in NotPublic outer is not visible cross-assembly`` () : unit =
@@ -158,7 +178,7 @@ module TestAccessCheck =
 
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual false
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok false)
 
     [<Test>]
     let ``canAccessClass: NestedPublic in NotPublic outer is visible cross-assembly via IVT`` () : unit =
@@ -174,7 +194,7 @@ module TestAccessCheck =
 
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
-        AccessCheck.canAccessClass false accessor target |> shouldEqual true
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
 
     // ----- canAccessClass: loud failures -----
 
@@ -250,7 +270,7 @@ module TestAccessCheck =
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
         AccessCheck.canAccessMethod false accessor target MethodAttributes.Public
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessMethod: Assembly method on Public class is visible same-assembly`` () : unit =
@@ -258,7 +278,7 @@ module TestAccessCheck =
         let accessor = party [ level TypeAttributes.Public "A" ] "Asm" [] []
 
         AccessCheck.canAccessMethod true accessor target MethodAttributes.Assembly
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessMethod: Assembly method on Public class is not visible cross-assembly without friend`` () : unit =
@@ -266,7 +286,7 @@ module TestAccessCheck =
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
         AccessCheck.canAccessMethod false accessor target MethodAttributes.Assembly
-        |> shouldEqual false
+        |> shouldEqual (Ok false)
 
     [<Test>]
     let ``canAccessMethod: Assembly method on Public class is visible cross-assembly via IVT`` () : unit =
@@ -276,7 +296,7 @@ module TestAccessCheck =
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
         AccessCheck.canAccessMethod false accessor target MethodAttributes.Assembly
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessMethod: Assembly method on Public class is visible via IgnoresAccessChecksTo`` () : unit =
@@ -286,7 +306,7 @@ module TestAccessCheck =
             party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] [ "TargetAsm" ]
 
         AccessCheck.canAccessMethod false accessor target MethodAttributes.Assembly
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     [<Test>]
     let ``canAccessMethod: Public method on NotPublic class without friend yields false`` () : unit =
@@ -296,7 +316,7 @@ module TestAccessCheck =
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
         AccessCheck.canAccessMethod false accessor target MethodAttributes.Public
-        |> shouldEqual false
+        |> shouldEqual (Ok false)
 
     [<Test>]
     let ``canAccessMethod: Public method on NotPublic class with IVT yields true`` () : unit =
@@ -306,7 +326,7 @@ module TestAccessCheck =
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
         AccessCheck.canAccessMethod false accessor target MethodAttributes.Public
-        |> shouldEqual true
+        |> shouldEqual (Ok true)
 
     // ----- canAccessMethod: loud failures -----
 
@@ -386,4 +406,128 @@ module TestAccessCheck =
         let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
 
         AccessCheck.canAccessMethod false accessor target MethodAttributes.Private
-        |> shouldEqual false
+        |> shouldEqual (Ok false)
+
+    // ----- invalid friend declarations surface only when consulted -----
+
+    [<Test>]
+    let ``invalid friends: Public target never consults either party`` () : unit =
+        let target = partyWithInvalidFriends [ level TypeAttributes.Public "T" ] "TargetAsm"
+
+        let accessor =
+            partyWithInvalidFriends [ level TypeAttributes.Public "A" ] "AccessorAsm"
+
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
+
+        AccessCheck.canAccessMethod false accessor target MethodAttributes.Public
+        |> shouldEqual (Ok true)
+
+    [<Test>]
+    let ``invalid friends: same assembly never consults either party`` () : unit =
+        let target = partyWithInvalidFriends [ level TypeAttributes.NotPublic "T" ] "Asm"
+        let accessor = partyWithInvalidFriends [ level TypeAttributes.Public "A" ] "Asm"
+
+        AccessCheck.canAccessClass true accessor target |> shouldEqual (Ok true)
+
+        AccessCheck.canAccessMethod true accessor target MethodAttributes.Assembly
+        |> shouldEqual (Ok true)
+
+    [<Test>]
+    let ``invalid friends: NotPublic target cross-assembly reports the accessor first`` () : unit =
+        // CoreCLR consults the accessor's IgnoresAccessChecksTo before the
+        // target's InternalsVisibleTo, so with both invalid it is the
+        // accessor's that throws.
+        let target =
+            partyWithInvalidFriends [ level TypeAttributes.NotPublic "T" ] "TargetAsm"
+
+        let accessor =
+            partyWithInvalidFriends [ level TypeAttributes.Public "A" ] "AccessorAsm"
+
+        AccessCheck.canAccessClass false accessor target
+        |> expectInvalidFriendsOn "AccessorAsm"
+
+    [<Test>]
+    let ``invalid friends: valid accessor that grants nothing reaches the invalid target`` () : unit =
+        let target =
+            partyWithInvalidFriends [ level TypeAttributes.NotPublic "T" ] "TargetAsm"
+
+        let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
+
+        AccessCheck.canAccessClass false accessor target
+        |> expectInvalidFriendsOn "TargetAsm"
+
+    [<Test>]
+    let ``invalid friends: accessor's IgnoresAccessChecksTo grant stops before the invalid target`` () : unit =
+        let target =
+            partyWithInvalidFriends [ level TypeAttributes.NotPublic "T" ] "TargetAsm"
+
+        let accessor =
+            party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] [ "TargetAsm" ]
+
+        AccessCheck.canAccessClass false accessor target |> shouldEqual (Ok true)
+
+    [<Test>]
+    let ``invalid friends: Assembly method on Public class consults the target`` () : unit =
+        let target = partyWithInvalidFriends [ level TypeAttributes.Public "T" ] "TargetAsm"
+        let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
+
+        AccessCheck.canAccessMethod false accessor target MethodAttributes.Assembly
+        |> expectInvalidFriendsOn "TargetAsm"
+
+    [<Test>]
+    let ``invalid friends: inaccessible outer level is decided before an invalid inner one is consulted`` () : unit =
+        // The walk runs innermost-first, so the NestedPublic inner level
+        // passes without consulting anyone, and the NotPublic outer level
+        // is what reaches the invalid declarations.
+        let target =
+            partyWithInvalidFriends
+                [
+                    level TypeAttributes.NestedPublic "Inner"
+                    level TypeAttributes.NotPublic "Outer"
+                ]
+                "TargetAsm"
+
+        let accessor = party [ level TypeAttributes.Public "A" ] "AccessorAsm" [] []
+
+        AccessCheck.canAccessClass false accessor target
+        |> expectInvalidFriendsOn "TargetAsm"
+
+    [<Test>]
+    let ``invalid friends: consulted iff some level needs friend access`` () : unit =
+        // Reference rule, for every chain drawn from the four visibilities
+        // this slice implements: with both parties' declarations invalid and
+        // nothing else to grant access, the check reports the invalid
+        // declarations exactly when it is not same-assembly and some level
+        // of the target's chain is assembly-scoped. Otherwise the answer is
+        // `Ok true`, because every level is public.
+        let visibilities =
+            [
+                TypeAttributes.Public
+                TypeAttributes.NestedPublic
+                TypeAttributes.NotPublic
+                TypeAttributes.NestedAssembly
+            ]
+
+        let chainGen : Gen<TypeAttributes list> =
+            Gen.listOf (Gen.elements visibilities) |> Gen.filter (fun c -> not c.IsEmpty)
+
+        let arb = Gen.zip chainGen (Gen.elements [ true ; false ]) |> Arb.fromGen
+
+        let property (chain : TypeAttributes list, sameAssembly : bool) : bool =
+            let levels = chain |> List.mapi (fun i vis -> level vis (sprintf "L%d" i))
+            let target = partyWithInvalidFriends levels "TargetAsm"
+
+            let accessor =
+                partyWithInvalidFriends [ level TypeAttributes.Public "A" ] "AccessorAsm"
+
+            let needsFriendAccess =
+                not sameAssembly
+                && chain
+                   |> List.exists (fun vis -> vis = TypeAttributes.NotPublic || vis = TypeAttributes.NestedAssembly)
+
+            match AccessCheck.canAccessClass sameAssembly accessor target with
+            | Ok true -> not needsFriendAccess
+            | Ok false -> false
+            | Error _ -> needsFriendAccess
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll arb property)
