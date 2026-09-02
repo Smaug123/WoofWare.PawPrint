@@ -1620,19 +1620,6 @@ module Assembly =
                     Console.WriteLine $"<runtime-provided: unclassified ({name})>"
                 | MethodBody.Abstract -> Console.WriteLine "<abstract: no IL>"
 
-    let private applyGenericArgs
-        (genericArgs : ImmutableArray<TypeDefn>)
-        (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        : TypeInfo<TypeDefn, TypeDefn>
-        =
-        ty
-        |> TypeInfo.mapGeneric (fun (param, _) ->
-            if param.SequenceNumber < genericArgs.Length then
-                genericArgs.[param.SequenceNumber]
-            else
-                TypeDefn.GenericTypeParameter param.SequenceNumber
-        )
-
     let private resolveDefinedType
         (genericArgs : ImmutableArray<TypeDefn>)
         (assy : DumpedAssembly)
@@ -1642,7 +1629,7 @@ module Assembly =
         TypeResolutionResult.Resolved (
             assy,
             ResolvedTypeIdentity.ofTypeDefinition assy.Name ty.TypeDefHandle,
-            applyGenericArgs genericArgs ty
+            TypeInfo.applyGenericArgs genericArgs ty
         )
 
     let resolveTypeIdentityDefinition
@@ -1769,7 +1756,8 @@ module Assembly =
         | ExportedTypeData.ParentExportedType parentExport ->
             let parent = fromAssembly.ExportedTypes.[parentExport]
 
-            match resolveTypeFromExport fromAssembly assemblies genericArgs parent with
+            // As with a TypeRef's declaring type, only the parent's identity is wanted.
+            match resolveTypeFromExport fromAssembly assemblies ImmutableArray.Empty parent with
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
             | TypeResolutionResult.NotFound miss -> TypeResolutionResult.NotFound miss
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->
@@ -1778,7 +1766,7 @@ module Assembly =
             | Error miss -> TypeResolutionResult.NotFound miss
             | Ok identity ->
                 let typeDef = resolveTypeIdentityDefinition targetAssembly identity
-                TypeResolutionResult.Resolved (targetAssembly, identity, applyGenericArgs genericArgs typeDef)
+                TypeResolutionResult.Resolved (targetAssembly, identity, TypeInfo.applyGenericArgs genericArgs typeDef)
         | ExportedTypeData.AssemblyFile _ ->
             failwithf
                 "AssemblyFile exported types are not yet supported while resolving %A from %s"
@@ -1807,7 +1795,9 @@ module Assembly =
             | None -> TypeResolutionResult.FirstLoadAssy assemblyRef
             | Some assy -> resolveTopLevelTypeInAssembly assemblies genericArgs assy (Some target.Namespace) target.Name
         | TypeRefResolutionScope.TypeRef parent ->
-            match resolveTypeRefInAssembly assemblies genericArgs referencedInAssembly parent with
+            // Only the declaring type's identity is wanted, so it is resolved open: the arguments
+            // belong to the nested type, whose parameter list includes the declaring type's.
+            match resolveTypeRefInAssembly assemblies ImmutableArray.Empty referencedInAssembly parent with
             | TypeResolutionResult.FirstLoadAssy assyRef -> TypeResolutionResult.FirstLoadAssy assyRef
             | TypeResolutionResult.NotFound miss -> TypeResolutionResult.NotFound miss
             | TypeResolutionResult.Resolved (targetAssembly, parentIdentity, _) ->

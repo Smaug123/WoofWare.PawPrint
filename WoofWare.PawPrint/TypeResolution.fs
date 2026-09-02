@@ -354,6 +354,35 @@ module TypeResolution =
             | ExpandingParam.Type i -> $"!%d{i}"
             | ExpandingParam.Method i -> $"!!%d{i}"
 
+    /// <summary>
+    /// The type a bare <c>FromDefinition</c> or <c>FromReference</c> spelling of
+    /// <paramref name="definition" /> names when read in the type environment
+    /// <paramref name="typeGenericArgs" />.
+    /// </summary>
+    /// <remarks>
+    /// A non-generic definition is the type itself; the environment belongs to whatever the
+    /// spelling sits inside and says nothing about this type. No signature can spell a generic
+    /// definition bare (an instantiation's head is resolved at the instantiation's own arguments,
+    /// not here), so for one the convention is that it names <c>T&lt;!0, ..., !(n-1)&gt;</c> read
+    /// in the environment: the environment's first <c>n</c> entries, copied as they stand. An
+    /// empty environment leaves the type open, and an environment with fewer than <c>n</c>
+    /// entries is refused rather than leaving some parameters unsubstituted.
+    /// </remarks>
+    let private instantiateBareSpelling
+        (typeGenericArgs : ImmutableArray<TypeDefn>)
+        (definition : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+        =
+        let arity = definition.Generics.Length
+
+        if arity = 0 || typeGenericArgs.IsEmpty then
+            TypeInfo.applyGenericArgs ImmutableArray.Empty definition
+        elif typeGenericArgs.Length < arity then
+            failwith
+                $"Type %s{definition.Namespace}.%s{definition.Name} in %s{definition.AssemblyFullName} is spelled bare in a generic environment of %d{typeGenericArgs.Length} argument(s), fewer than its %d{arity} generic parameter(s)"
+        else
+            TypeInfo.applyGenericArgs (ImmutableArray.CreateRange (Seq.truncate arity typeGenericArgs)) definition
+
     /// A cyclic environment is not something metadata can express: environments are built by the
     /// interpreter, and every live path builds them out of `concreteHandleToTypeDefn`, which emits
     /// closed types only. So this is an invariant violation in the caller, not bad guest input —
@@ -843,15 +872,19 @@ module TypeResolution =
             let assy = assemblies.ByDefinitionName identity.AssemblyFullName
 
             let defn =
-                assy.TypeDefs.[identity.TypeDefinition.Get]
-                |> TypeInfo.mapGeneric (fun (param, _) -> typeGenericArgs.[param.SequenceNumber])
+                instantiateBareSpelling typeGenericArgs assy.TypeDefs.[identity.TypeDefinition.Get]
 
             assemblies, assy, defn
         | TypeDefn.FromReference (ref, _typeKind) ->
-            let assemblies, assy, ty =
-                resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref typeGenericArgs assemblies
+            let assemblies, resolvedIn, resolved =
+                resolveTypeFromRef loggerFactory dotnetRuntimeDirs assy ref ImmutableArray.Empty assemblies
 
-            assemblies, assy, ty
+            if resolved.Generics.IsEmpty then
+                assemblies, resolvedIn, resolved
+            else
+                assemblies,
+                resolvedIn,
+                instantiateBareSpelling typeGenericArgs resolvedIn.TypeDefs.[resolved.TypeDefHandle]
         | TypeDefn.PrimitiveType prim ->
             let ty =
                 match prim with
