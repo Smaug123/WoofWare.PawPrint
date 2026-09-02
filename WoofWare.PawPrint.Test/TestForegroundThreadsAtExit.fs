@@ -175,6 +175,37 @@ class ReforegroundsMain
         // The worker itself finished; it is the entry thread that is being waited for.
         exn.Message |> shouldNotContainText "BlockedOnSleep"
 
+    /// The other side of `MainBackgroundBeforeStartingForegroundWorker.cs`: with the worker
+    /// started *before* `Main` goes background, there is never a moment with no foreground
+    /// thread alive, so CoreCLR's termination event is never set and the process waits for the
+    /// worker. On real .NET that is a hang (measured: still running after three seconds); here
+    /// it is a deadlock. This is what keeps the latch honest — going background is not by
+    /// itself a shutdown signal.
+    [<Test>]
+    let ``Main going background after a foreground worker exists does not abandon the worker`` () : unit =
+        let source =
+            """
+using System.Threading;
+
+class WorkerThenMainBackground
+{
+    static int Main()
+    {
+        new Thread(() => Thread.Sleep(Timeout.Infinite)).Start();
+        Thread.CurrentThread.IsBackground = true;
+        return 3;
+    }
+}
+"""
+
+        let exn =
+            Assert.Throws (fun () -> runSource "WorkerThenMainBackground.cs" source |> ignore<RunOutcome>)
+
+        exn.Message |> shouldContainText "WorkerThenMainBackground.cs"
+        exn.Message |> shouldContainText "deadlocked"
+        exn.Message |> shouldContainText "WaitingForForegroundThreads"
+        exn.Message |> shouldContainText "BlockedOnSleep"
+
     /// A worker that is running when `Main` returns finishes on its own and the process then
     /// ends with `Main`'s exit code; nothing the worker did in the meantime is lost. The
     /// worker here does enough after `Main` returns for the scheduler to interleave the two,
