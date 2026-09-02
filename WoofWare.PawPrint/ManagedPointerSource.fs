@@ -508,6 +508,19 @@ type CeqOutcome =
     | Decided of bool
     | NeedsByteLocation of left : ManagedPointerSource * right : ManagedPointerSource * diagnostic : string
 
+/// What structural byref *ordering* concluded, the counterpart of `CeqOutcome` for `cgt.un` and
+/// `clt.un`. `Decided` carries the sign of `addr(right) - addr(left)`: negative when `right`
+/// sits at the lower address, positive when at the higher, zero when the two coincide.
+/// `NeedsByteLocation` is the statement that the structure of the two chains does not fix their
+/// order — they share no root, or diverge under one by steps whose byte displacement only layout
+/// can supply — and only their byte coordinates within one container can; the caller with
+/// `IlMachineState` resolves it (`StorageLocation.resolveOrder`), or fails with `diagnostic`.
+[<RequireQualifiedAccess>]
+[<NoComparison>]
+type ByteAddressDeltaSign =
+    | Decided of sign : int
+    | NeedsByteLocation of left : ManagedPointerSource * right : ManagedPointerSource * diagnostic : string
+
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
     /// A *bit-pattern byref* is one that carries a raw native-int value rather
@@ -569,7 +582,7 @@ module ManagedPointerSource =
         | _ -> None
 
     /// Validate the byref-projection list invariant for a byref reaching
-    /// `tryByteAddressDeltaSign`'s array and string-char arms: `ByteOffset` only appears
+    /// `byteAddressDeltaSign`'s array and string-char arms: `ByteOffset` only appears
     /// as the final element preceded by `ReinterpretAs`, and is non-negative
     /// (the construction-site canonicaliser establishes this via
     /// floor-division in `normaliseTrailingByteOffset`). Throws on violation —
@@ -598,25 +611,43 @@ module ManagedPointerSource =
 
         walk None projs
 
-    /// Returns the sign of `addr(src2) - addr(src1)` — i.e. negative when
-    /// src2 sits at a lower byte address than src1, positive when higher,
-    /// zero when equal. The convention matches `tryByteOffsetWithinSameRoot`,
-    /// which returns the same delta byte-accurately.
+    /// Whether a projection chain keeps a byref inside the cell its array root names, so that
+    /// the byref's address is the cell's start plus a displacement in `[0, cellSize)`.
     ///
-    /// Strictly weaker than `tryByteOffsetWithinSameRoot`: the magnitude is
-    /// not meaningful, only the sign. Use this for pointer comparisons
-    /// (`cgt.un`, `clt.un`) where only order matters; use
-    /// `tryByteOffsetWithinSameRoot` whenever the actual byte delta is
-    /// required.
+    /// A `Field` selected under the cell's own type lies inside the cell, because a field lies
+    /// inside its container; a `ReinterpretAs` moves nothing; and a byte cursor that no `Field`
+    /// precedes has had every whole stride folded into the index by
+    /// `normaliseTrailingByteOffset`, leaving a residual below the stride. Two shapes escape
+    /// that bound: a `Field` selected under a `ReinterpretAs`, whose offset is measured in a
+    /// type the cell need not contain; and a cursor after a `Field`, which is bounded relative
+    /// to the field rather than the cell — `&a[0].Y` viewed as bytes and advanced 4 is `&a[1]`
+    /// for `struct Pair { int X; int Y; }`.
+    let private staysWithinCell (projs : ByrefProjection list) : bool =
+        let rec walk (reinterpreted : bool) (throughField : bool) (rest : ByrefProjection list) : bool =
+            match rest with
+            | [] -> true
+            | ByrefProjection.Field _ :: rest -> not reinterpreted && walk reinterpreted true rest
+            | ByrefProjection.ReinterpretAs _ :: rest -> walk true throughField rest
+            | ByrefProjection.ByteOffset _ :: rest -> not throughField && walk reinterpreted throughField rest
+
+        walk false false projs
+
+    /// The sign of `addr(src2) - addr(src1)` — negative when `src2` sits at a lower byte
+    /// address than `src1`, positive when higher, zero when equal — where the structure of
+    /// the two byrefs fixes it, and `NeedsByteLocation` where it does not. The convention
+    /// matches `tryByteOffsetWithinSameRoot`, which returns the same delta byte-accurately.
     ///
-    /// Precondition: byrefs reaching the array-index fallback path must be
-    /// in canonical projection-list form — `ByteOffset` only as the trailing
-    /// element under `ReinterpretAs`, and non-negative. Throws on violation
-    /// rather than silently returning a wrong sign. The `< cellSize` half of
-    /// the canonical bound (which we cannot verify here without heap access)
-    /// is established at construction by floor-division in
+    /// Strictly weaker than `tryByteOffsetWithinSameRoot`: the magnitude is not meaningful,
+    /// only the sign. Use this for pointer comparisons (`cgt.un`, `clt.un`) where only order
+    /// matters; use `tryByteOffsetWithinSameRoot` whenever the actual byte delta is required.
+    ///
+    /// Precondition: byrefs reaching the array-index fallback path must be in canonical
+    /// projection-list form — `ByteOffset` only as the trailing element under `ReinterpretAs`,
+    /// and non-negative. Throws on violation rather than silently returning a wrong sign. The
+    /// `< cellSize` half of the canonical bound (which we cannot verify here without heap
+    /// access) is established at construction by floor-division in
     /// `normaliseTrailingByteOffset`.
-    let tryByteAddressDeltaSign (src1 : ManagedPointerSource) (src2 : ManagedPointerSource) : int option =
+    let byteAddressDeltaSign (src1 : ManagedPointerSource) (src2 : ManagedPointerSource) : ByteAddressDeltaSign =
         let splitTrailingByteCursor (projs : ByrefProjection list) : (ByrefProjection list * int64) option =
             // Mirrors `tryByteOffsetWithinSameRoot.splitTrailingByteCursor`:
             // returns (prefix, trailing byte cursor) when projections are a
@@ -630,23 +661,38 @@ module ManagedPointerSource =
             | [] -> Some ([], 0L)
             | _ -> None
 
+        let noStructuralOrder () : ByteAddressDeltaSign =
+            ByteAddressDeltaSign.NeedsByteLocation (
+                src1,
+                src2,
+                $"no structural order between byrefs %O{src1} and %O{src2}: they share no root, or diverge under one by steps whose byte displacement structural comparison does not carry; only their byte coordinates within one container can place them"
+            )
+
         match tryByteOffsetWithinSameRoot src1 src2 with
-        | Some n -> Some (compare n 0L)
+        | Some n -> ByteAddressDeltaSign.Decided (compare n 0L)
         | None ->
-            // Same array, possibly different element index: element size is
-            // strictly positive and each pointer's byte effect relative to
-            // its cell start lies in `[0, cellSize)` (residuals via
-            // floor-division; field offsets by layout). Hence
-            // `compare idx2 idx1` agrees with the sign of the byte address
-            // delta `addr(src2) - addr(src1)` whenever the indices differ.
-            // When the indices match, `tryByteOffsetWithinSameRoot` would
-            // already have answered.
             match src1, src2 with
+            // Same array. Element size is strictly positive, so when each pointer's byte
+            // effect relative to its cell start lies in `[0, cellSize)` — which is what
+            // `staysWithinCell` establishes — `compare idx2 idx1` agrees with the sign of the
+            // byte address delta `addr(src2) - addr(src1)` whenever the indices differ.
+            // Otherwise the order turns on field offsets within the element type, which this
+            // comparison does not carry: a chain that may have left its cell, or two chains
+            // into one cell that differ by more than a byte cursor (equal indices reach here
+            // only for those, `tryByteOffsetWithinSameRoot` having answered for the rest).
             | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr1, idx1), projs1),
-              ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr2, idx2), projs2) when arr1 = arr2 && idx1 <> idx2 ->
+              ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr2, idx2), projs2) when arr1 = arr2 ->
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
-                Some (compare idx2 idx1)
+
+                if idx1 <> idx2 && staysWithinCell projs1 && staysWithinCell projs2 then
+                    ByteAddressDeltaSign.Decided (compare idx2 idx1)
+                else
+                    ByteAddressDeltaSign.NeedsByteLocation (
+                        src1,
+                        src2,
+                        $"no structural order between byrefs %O{src1} and %O{src2}: both are into one array, but their order turns on field offsets within the element type, which structural comparison does not carry — a byte cursor after a field, a field under a reinterpret, or two chains into one element that differ by more than a byte cursor; only their byte coordinates within the array can place them"
+                    )
             // Same string, different character index, same projections. Writing
             // the address of a char byref as `base + 2*index + d`, where `d` is
             // the byte effect of the projections, `compare idx2 idx1` has the
@@ -655,18 +701,15 @@ module ManagedPointerSource =
             // indices are already answered by `tryByteOffsetWithinSameRoot`,
             // which sees identical roots.
             //
-            // Hence equality of the projection lists rather than mere
-            // canonicality, which is the weaker property the array arm above
-            // relies on. That arm can afford it: a field offset there is bounded
-            // by the element type's own layout, so `d` stays within the cell and
-            // cannot overtake the next index. A char cell is two bytes and holds
-            // a primitive, so there is no such bound to appeal to — a reinterpret
-            // to a wider type with a byte cursor past those two bytes is
-            // canonical, and would put char 0 above char 1. Refusing that is the
-            // honest answer.
+            // Hence equality of the projection lists rather than the in-cell bound the array
+            // arm above relies on. That arm can afford it: a field offset there is bounded by
+            // the element type's own layout. A char cell is two bytes and holds a primitive,
+            // so there is no such bound to appeal to — a reinterpret to a wider type with a
+            // byte cursor past those two bytes is canonical, and would put char 0 above
+            // char 1. Refusing that is the honest answer.
             //
             // Keyed on the string object too, so two separately allocated strings
-            // still fall through to `None`: those have no defensible ordering,
+            // still fall through to the deferral: those have no defensible ordering,
             // and refusing loudly beats inventing one. This arm exists because
             // `EventSource`'s manifest handling compares a byref to the start of
             // a name against one part-way into that same string.
@@ -676,7 +719,7 @@ module ManagedPointerSource =
                 ->
                 validateByrefProjectionsAreCanonical src1 projs1
                 validateByrefProjectionsAreCanonical src2 projs2
-                Some (compare idx2 idx1)
+                ByteAddressDeltaSign.Decided (compare idx2 idx1)
             // Same native-memory block, different root byte offsets:
             // `tryByteOffsetWithinSameRoot` only catches identical roots,
             // but `NativeMemoryByte (block, n)` produced by pointer
@@ -685,17 +728,17 @@ module ManagedPointerSource =
             // cursor`, so once the prefix projections match (so the prefix
             // contributes equally on both sides) the sign of
             // `(rootOffset2 + cursor2) - (rootOffset1 + cursor1)` is the
-            // sign of the byte address delta. Cross-block comparisons stay
-            // None — those have no defensible ordering.
+            // sign of the byte address delta. Cross-block comparisons fall through
+            // to the deferral — those have no defensible ordering.
             | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block1, rootOffset1), projs1),
               ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block2, rootOffset2), projs2) when block1 = block2 ->
                 match splitTrailingByteCursor projs1, splitTrailingByteCursor projs2 with
                 | Some (prefix1, cursor1), Some (prefix2, cursor2) when prefix1 = prefix2 ->
                     let addr1 = int64 rootOffset1 + cursor1
                     let addr2 = int64 rootOffset2 + cursor2
-                    Some (compare addr2 addr1)
-                | _ -> None
-            | _ -> None
+                    ByteAddressDeltaSign.Decided (compare addr2 addr1)
+                | _ -> noStructuralOrder ()
+            | _ -> noStructuralOrder ()
 
     /// Returns deterministic low address bits for byrefs that have a stable
     /// synthetic address model. For PE byte ranges this is `RVA + byteOffset`,

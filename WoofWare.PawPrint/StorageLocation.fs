@@ -361,3 +361,30 @@ module internal StorageLocation =
                 // comparison lacked.
                 leftOffset = rightOffset
             | _ -> failwith diagnostic
+
+    /// Answer a byref ordering (`cgt.un`, `clt.un`) that structural comparison deferred, by
+    /// resolving both sides to flat byte coordinates.
+    ///
+    /// As with `resolveCeq`, this decides only what one container's coordinate system proves:
+    /// two byrefs with a precise coordinate in the same storage are ordered by those
+    /// coordinates, which fold the field offsets the structural comparison lacked. Everything
+    /// else is refused with the deferral's own diagnostic — two byrefs into different
+    /// containers have no relative placement in the model (one local against another, one
+    /// array against another), and a byref without a precise coordinate cannot be placed
+    /// within its own.
+    let resolveOrder
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (outcome : UnsignedOrderOutcome)
+        : bool
+        =
+        match outcome with
+        | UnsignedOrderOutcome.Decided answer -> answer
+        | UnsignedOrderOutcome.NeedsByteLocation (left, right, question, diagnostic) ->
+            match resolve baseClassTypes state left, resolve baseClassTypes state right with
+            | LocationResolution.Located (_, Some (leftStorage, leftOffset)),
+              LocationResolution.Located (_, Some (rightStorage, rightOffset)) when leftStorage = rightStorage ->
+                match question with
+                | ByrefOrderQuestion.LeftAbove -> leftOffset > rightOffset
+                | ByrefOrderQuestion.LeftBelow -> leftOffset < rightOffset
+            | _ -> failwith diagnostic

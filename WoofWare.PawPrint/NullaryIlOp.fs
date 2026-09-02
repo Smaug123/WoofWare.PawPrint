@@ -1897,7 +1897,14 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.cgtUn var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.cgtUnDeferred var1 var2
+                    |> StorageLocation.resolveOrder corelib state
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack'
@@ -1923,7 +1930,14 @@ module NullaryIlOp =
             let var2, state = state |> IlMachineState.popEvalStack currentThread
             let var1, state = state |> IlMachineState.popEvalStack currentThread
 
-            let comparisonResult = if EvalStackValueComparisons.cltUn var1 var2 then 1 else 0
+            let comparisonResult =
+                if
+                    EvalStackValueComparisons.cltUnDeferred var1 var2
+                    |> StorageLocation.resolveOrder corelib state
+                then
+                    1
+                else
+                    0
 
             state
             |> IlMachineState.pushToEvalStack'
