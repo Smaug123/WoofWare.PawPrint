@@ -145,6 +145,33 @@ module MemoryBlock =
     /// Return the cell that begins at exactly `offset`, if any.
     let tryReadCell (offset : int) (block : MemoryBlock) : CliType option = Map.tryFind offset block.Cells
 
+    /// Fail unless `block` satisfies the invariants stated on its fields: every cell and
+    /// overlay byte lies within the block, cells are pairwise disjoint, and no overlay byte
+    /// lies inside a cell.
+    let checkInvariants (containerDesc : string) (block : MemoryBlock) : unit =
+        let cells =
+            block.Cells
+            |> Map.toList
+            |> List.map (fun (offset, cell) -> offset, CliType.sizeOf cell)
+
+        for offset, size in cells do
+            checkRange "MemoryBlock.checkInvariants (cell)" containerDesc block.Size offset size
+
+        // `Map.toList` is in key order, so each cell need only be checked against its successor.
+        for (offset, size), (nextOffset, _) in List.pairwise cells do
+            if offset + size > nextOffset then
+                failwith
+                    $"MemoryBlock.checkInvariants: cells at %d{offset} (size %d{size}) and %d{nextOffset} overlap in %s{containerDesc}"
+
+        for KeyValue (byteOffset, _) in block.Bytes do
+            checkRange "MemoryBlock.checkInvariants (overlay byte)" containerDesc block.Size byteOffset 1
+
+            match tryFindCellCoveringRaw byteOffset block with
+            | Some (cellOffset, cell) ->
+                failwith
+                    $"MemoryBlock.checkInvariants: overlay byte at %d{byteOffset} lies inside the cell at %d{cellOffset} (size %d{CliType.sizeOf cell}) in %s{containerDesc}"
+            | None -> ()
+
     /// Classify a single byte position. Callers walking byte ranges use the
     /// `Cell` arm to dispatch through the existing typed-cell byte helpers.
     let private readByteSource (containerDesc : string) (offset : int) (block : MemoryBlock) : MemoryByteSource =
@@ -160,22 +187,29 @@ module MemoryBlock =
                 | MemoryBlockInitialization.ZeroInitialized -> MemoryByteSource.DefaultZero
                 | MemoryBlockInitialization.Uninitialized -> MemoryByteSource.Uninitialized
 
-    /// Remove any cells or byte-overlay entries intersecting
-    /// `[offset, offset + count)`. Cells are removed wholesale even if they
-    /// only partially overlap the requested range.
-    let private evictRange (offset : int) (count : int) (block : MemoryBlock) : MemoryBlock =
+    /// Remove the cells and overlay bytes intersecting `[offset, offset + count)`.
+    ///
+    /// A cell only partly inside the range keeps the bytes of it that lie outside: they move
+    /// to the byte overlay, so a later read of them sees the cell's old bytes rather than the
+    /// block's default. That needs the cell to have a byte image, so a partly-intersected
+    /// cell without one (a tagged pointer, say) is refused; the alternative is to discard
+    /// those bytes silently. A cell wholly inside the range is removed whatever its
+    /// addressability, since nothing of it survives.
+    let private evictRange (containerDesc : string) (offset : int) (count : int) (block : MemoryBlock) : MemoryBlock =
         if count <= 0 then
             block
         else
+            let rangeEnd = offset + count
+
             let cells =
                 block.Cells
                 |> Map.filter (fun cellOffset cell ->
                     not (rangesIntersect cellOffset (CliType.sizeOf cell) offset count)
                 )
 
-            let bytes =
+            let mutable bytes =
                 block.Bytes
-                |> Map.filter (fun byteOffset _ -> byteOffset < offset || byteOffset >= offset + count)
+                |> Map.filter (fun byteOffset _ -> byteOffset < offset || byteOffset >= rangeEnd)
 
             if
                 Map.count cells = Map.count block.Cells
@@ -183,20 +217,53 @@ module MemoryBlock =
             then
                 block
             else
-                { block with
-                    Cells = cells
-                    Bytes = bytes
-                }
 
-    /// Insert a typed cell at `offset`, evicting any cells/bytes whose range
-    /// intersects the new cell. The caller is responsible for ensuring the
-    /// value is the intended typed view; provenance carried by the value
-    /// (such as `NativeIntSource.FieldHandlePtr`) is preserved.
+            // The kept bytes of a partly-intersected cell. They lie outside the range and
+            // inside the cell being removed, so they land on no surviving cell and on no
+            // surviving overlay byte: the overlay never held a key inside a cell.
+            for KeyValue (cellOffset, cell) in block.Cells do
+                let cellSize = CliType.sizeOf cell
+                let cellEnd = cellOffset + cellSize
+
+                if rangesIntersect cellOffset cellSize offset count then
+                    let headCount = max 0 (offset - cellOffset)
+                    let tailCount = max 0 (cellEnd - rangeEnd)
+
+                    if headCount > 0 || tailCount > 0 then
+                        match CliType.ByteAddressability cell with
+                        | CliByteAddressability.ByteAddressable ->
+                            if headCount > 0 then
+                                let head = CliType.BytesAt 0 headCount cell
+
+                                for i in 0 .. headCount - 1 do
+                                    bytes <- Map.add (cellOffset + i) head.[i] bytes
+
+                            if tailCount > 0 then
+                                let tail = CliType.BytesAt (rangeEnd - cellOffset) tailCount cell
+
+                                for i in 0 .. tailCount - 1 do
+                                    bytes <- Map.add (rangeEnd + i) tail.[i] bytes
+                        | CliByteAddressability.SymbolicallyAddressable rejection
+                        | CliByteAddressability.Rejected rejection ->
+                            failwith
+                                $"MemoryBlock.evictRange: byte range [%d{offset}, %d{rangeEnd}) covers only part of the cell at %d{cellOffset} (size %d{cellSize}) in %s{containerDesc}, and the rest of that cell has no byte image to keep: %s{rejection.Description}"
+
+            { block with
+                Cells = cells
+                Bytes = bytes
+            }
+
+    /// Insert a typed cell at `offset`, evicting whatever the new cell's byte range
+    /// intersects: every overlay byte within it, and every intersecting cell. A cell the new
+    /// one only partly covers keeps its uncovered bytes in the overlay, which is only possible
+    /// for a cell with a byte image; partly covering a cell without one fails. The caller is
+    /// responsible for ensuring the value is the intended typed view; provenance carried by
+    /// the value (such as `NativeIntSource.FieldHandlePtr`) is preserved.
     let writeCell (containerDesc : string) (offset : int) (value : CliType) (block : MemoryBlock) : MemoryBlock =
         let size = CliType.sizeOf value
         checkRange "MemoryBlock.writeCell" containerDesc block.Size offset size
 
-        let evicted = evictRange offset size block
+        let evicted = evictRange containerDesc offset size block
 
         { evicted with
             Cells = evicted.Cells |> Map.add offset value
@@ -433,6 +500,9 @@ module StackMemoryPool =
     let tryReadCell (blockId : StackMemoryBlockId) (offset : int) (pool : StackMemoryPool) : CliType option =
         MemoryBlock.tryReadCell offset (getBlock blockId pool)
 
+    let internal checkInvariants (blockId : StackMemoryBlockId) (pool : StackMemoryPool) : unit =
+        MemoryBlock.checkInvariants (string blockId) (getBlock blockId pool)
+
     let writeCell
         (blockId : StackMemoryBlockId)
         (offset : int)
@@ -555,6 +625,9 @@ module NativeMemoryPool =
 
     let tryReadCell (blockId : NativeMemoryBlockId) (offset : int) (pool : NativeMemoryPool) : CliType option =
         MemoryBlock.tryReadCell offset (getBlock blockId pool)
+
+    let internal checkInvariants (blockId : NativeMemoryBlockId) (pool : NativeMemoryPool) : unit =
+        MemoryBlock.checkInvariants (string blockId) (getBlock blockId pool)
 
     let writeCell
         (blockId : NativeMemoryBlockId)
