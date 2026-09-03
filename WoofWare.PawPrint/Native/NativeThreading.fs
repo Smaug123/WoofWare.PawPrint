@@ -4,22 +4,6 @@ open WoofWare.PosixKernel
 
 [<RequireQualifiedAccess>]
 module NativeThreading =
-    let private objectOwnFieldId
-        (state : IlMachineState)
-        (heapObj : AllocatedNonArrayObject)
-        (fieldName : string)
-        : FieldId
-        =
-        IlMachineState.requiredOwnInstanceFieldId state heapObj.ConcreteType fieldName
-
-    let private delegateFieldId
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (fieldName : string)
-        : FieldId
-        =
-        FieldIdentity.requiredNonGenericInstanceFieldId state.ConcreteTypes baseClassTypes.DelegateType fieldName
-
     /// Recover the heap address stored inside a `ThreadHandle` QCall argument.
     /// `ThreadHandle` is `internal readonly struct ThreadHandle { IntPtr _ptr }`
     /// in CoreCLR; the QCall marshaller may flatten it to a bare `nativeint`
@@ -817,10 +801,18 @@ module NativeThreading =
             NativeHandlerResult.completed state |> Some
         | "System.Private.CoreLib", "System.Threading", "Thread", "StartInternal", _, MethodReturnType.Void ->
             // StartInternal (ThreadHandle t, int stackSize, int priority, Interop.BOOL isThreadPool, char* pThreadName) -> void
-            // We don't yet model stack size / priority / thread-pool / native name; we recover the
-            // Thread heap object from the handle and spawn a new interpreter thread that begins
-            // executing the user-supplied delegate directly, bypassing the BCL StartCallback
-            // path (which otherwise pulls in ExecutionContext/culture/autorelease machinery).
+            // Stack size, priority, thread-pool membership and the native thread name are not
+            // modelled; only the Thread heap object is recovered from the handle.
+            //
+            // The worker's bottom frame is the managed `Thread.StartCallback`, which is what
+            // CoreCLR enters on the new OS thread. Everything a started thread can observe about
+            // its own start therefore comes from CoreLib rather than from here: the `_startHelper`
+            // reset, `ExecutionContext.RunInternal` over the context `Start()` captured, the
+            // culture parked on an unstarted thread, and the ThreadStart/ParameterizedThreadStart
+            // dispatch. The delegate itself is invoked by an ordinary `callvirt` from
+            // `StartHelper.RunWorker`, so its target's class initialiser and the
+            // `[UnmanagedCallersOnly]` refusal are applied there, on the worker, exactly as for
+            // any other call.
             let threadAddr =
                 threadAddrFromThreadHandle state "Thread.StartInternal" instruction.Arguments.[0]
 
@@ -828,146 +820,32 @@ module NativeThreading =
             // ThreadId from `Thread.Initialize`; recover that slot here and fill in
             // its bottom frame below. Double-Start detection rides on the slot's
             // status: anything other than `NotStarted` means `Start` has already
-            // succeeded (Runnable / blocked / Terminated) — the real runtime nulls
-            // `_startHelper` on a successful Start so the second call would observe
-            // `ThreadStateException`, and `startUnstartedThread` surfaces the same
-            // condition via its status assert. When exception synthesis lands,
-            // replace that loud failure with the ThreadStateException raise plus
-            // the `_startHelper` nulling.
+            // succeeded (Runnable / blocked / Terminated). The real runtime's
+            // `ThreadNative_Start` raises `ThreadStateException` for that, and
+            // `startUnstartedThread` surfaces the same condition via its status
+            // assert. When exception synthesis lands, replace that loud failure
+            // with the ThreadStateException raise.
             let newThreadId = threadIdFromThreadAddr state "Thread.StartInternal" threadAddr
 
-            let threadObj = ManagedHeap.get threadAddr state.ManagedHeap
+            let purpose = "enter a thread the guest has just started"
 
-            let startHelperAddr =
-                match
-                    AllocatedNonArrayObject.DereferenceFieldById
-                        (objectOwnFieldId state threadObj "_startHelper")
-                        threadObj
-                with
-                | CliType.ObjectRef (Some a) -> a
-                | other ->
-                    failwith $"Thread.StartInternal: expected non-null _startHelper on Thread object, got %O{other}"
+            let startCallback =
+                HostStartupCall.findCorelibInstanceMethod
+                    ctx.BaseClassTypes
+                    "System.Threading"
+                    "Thread"
+                    "StartCallback"
+                    0
+                    purpose
 
-            let startHelperObj = ManagedHeap.get startHelperAddr state.ManagedHeap
-
-            let delegateAddr =
-                match
-                    AllocatedNonArrayObject.DereferenceFieldById
-                        (objectOwnFieldId state startHelperObj "_start")
-                        startHelperObj
-                with
-                | CliType.ObjectRef (Some a) -> a
-                | other ->
-                    failwith $"Thread.StartInternal: expected non-null StartHelper._start delegate, got %O{other}"
-
-            let delegateObj = ManagedHeap.get delegateAddr state.ManagedHeap
-
-            let target =
-                match
-                    AllocatedNonArrayObject.DereferenceFieldById
-                        (delegateFieldId ctx.BaseClassTypes state "_target")
-                        delegateObj
-                with
-                | CliType.ObjectRef addr -> addr
-                | other -> failwith $"Thread.StartInternal: expected ObjectRef for delegate _target, got %O{other}"
-
-            let targetMethod =
-                // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
-                match
-                    AllocatedNonArrayObject.DereferenceFieldById
-                        (delegateFieldId ctx.BaseClassTypes state "_methodPtr")
-                        delegateObj
-                    |> CliType.unwrapPrimitiveLike
-                with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) ->
-                    FunctionPointerTarget.requireManaged "Thread.StartInternal" target
-                | other ->
-                    failwith $"Thread.StartInternal: expected FunctionPointer in delegate _methodPtr, got %O{other}"
-
-            let containingAssembly =
-                state.LoadedAssembly targetMethod.DeclaringAssemblyFullName
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"Thread.StartInternal: assembly {AssemblyDefinitionName.simpleName targetMethod.DeclaringAssemblyFullName} not loaded"
-                )
-
-            // A thread's entry point is *entered* without any call instruction being executed, so
-            // the refusal `callMethodWithCommitment` applies to a call has to be applied here too;
-            // the rule itself lives in one place. Starting a thread is a managed entry -- the new
-            // thread begins in cooperative mode exactly as its starter is -- so it can never be the
-            // native transition that such a method admits.
-            //
-            // Ahead of the frame and of `ensureTypeInitialised` below, for the same reason the call
-            // gate sits ahead of class initialisation: real .NET refuses before the declaring
-            // type's static constructor runs.
-            //
-            // Attributed to the *new* thread, which is the one whose entry was refused, matching
-            // where CoreCLR's prologue fails. It exists already (minted `NotStarted` at
-            // `Thread.Initialize`); it simply never becomes runnable.
-            match
-                IlMachineStateExecution.unmanagedCallersOnlyRefusal
-                    IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                    targetMethod
-            with
-            | Some fatal -> NativeHandlerResult.aborted newThreadId fatal state |> Some
-            | None ->
-
-            let thisArgs =
-                if targetMethod.IsStatic then
-                    System.Collections.Immutable.ImmutableArray.Empty
-                else
-                    match target with
-                    | Some t ->
-                        // For delegates bound to value-type instance methods, the receiver
-                        // must be a managed pointer into the boxed heap object's value
-                        // data, matching `callMethod`'s coercion in IlMachineStateExecution.
-                        let declaringTypeDef =
-                            containingAssembly.TypeDefs.[targetMethod.RequiredDeclaringType.Definition.Get]
-
-                        let receiver =
-                            if
-                                DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies declaringTypeDef
-                            then
-                                CliType.RuntimePointer (
-                                    CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.HeapValue t, []))
-                                )
-                            else
-                                CliType.ObjectRef (Some t)
-
-                        System.Collections.Immutable.ImmutableArray.Create receiver
-                    | None -> failwith "Thread.StartInternal: instance-method delegate has null _target"
-
-            // ParameterizedThreadStart passes StartHelper._startArg as the single
-            // declared parameter; plain ThreadStart takes none. `this` is not counted
-            // in Signature.ParameterTypes.
-            let args =
-                match targetMethod.Signature.ParameterTypes.Length with
-                | 0 -> thisArgs
-                | 1 ->
-                    let startArg =
-                        AllocatedNonArrayObject.DereferenceFieldById
-                            (objectOwnFieldId state startHelperObj "_startArg")
-                            startHelperObj
-
-                    thisArgs.Add startArg
-                | other ->
-                    failwith
-                        $"Thread.StartInternal: target method %s{targetMethod.Name} declares %d{other} parameters; only ThreadStart/ParameterizedThreadStart are supported"
-
-            let newMethodState =
-                match
-                    MethodState.Empty
-                        state.ConcreteTypes
-                        ctx.BaseClassTypes
-                        state._LoadedAssemblies
-                        containingAssembly
-                        targetMethod
-                        targetMethod.Generics
-                        args
-                        None
-                with
-                | Ok ms -> ms
-                | Error _ -> failwith "Thread.StartInternal: failed to build MethodState for thread delegate target"
+            let state, newMethodState, threadType =
+                HostStartupCall.buildFrame
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    startCallback
+                    (System.Collections.Immutable.ImmutableArray.Create (CliType.ObjectRef (Some threadAddr)))
+                    purpose
+                    state
 
             // The ThreadId slot was minted at `Thread.Initialize` time and bound to
             // `threadAddr` in `ManagedThreadObjects`; promote it from `NotStarted`
@@ -977,51 +855,32 @@ module NativeThreading =
             // mutation it protects.
             let state = IlMachineState.startUnstartedThread newThreadId newMethodState state
 
-            // ECMA-335: a type's .cctor must run before any of its static methods
-            // or before the first instance is touched. For delegates bound to a
-            // method on a not-yet-initialised type, the normal call path would
-            // trigger initialisation, but we bypass that by building the worker's
-            // initial frame directly. Route the worker through
-            // ensureTypeInitialised so all four cctor states are handled: already
-            // initialised (no-op), fresh load (cctor frame pushed on the worker,
-            // runs before the target method), another thread is mid-init (worker
-            // marked BlockedOnClassInit so the scheduler stalls it), or the cctor
-            // already failed (cached TypeInitializationException dispatched onto
-            // the worker's frames).
-            let declaringTypeHandle =
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    targetMethod.RequiredDeclaringType.Identity
-                    targetMethod.DeclaringTypeGenerics
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"Thread.StartInternal: declaring type %s{MethodOwner.describe targetMethod.Owner} of delegate target is not registered in ConcreteTypes"
-                )
-
+            // A method reached by a call has its declaring type's initialiser armed by
+            // `callMethodWithCommitment`; the bottom frame is entered without a call, so the
+            // same rule is applied here, on the worker. `Thread` has already been initialised
+            // by the starter's `newobj` of this very object, so in practice this is always
+            // `Executed`; routing through `ensureTypeInitialised` anyway keeps the four
+            // initialisation states handled in one place rather than assuming one of them.
             let state, workerInitOutcome =
                 IlMachineStateExecution.ensureTypeInitialised
                     ctx.LoggerFactory
                     ctx.BaseClassTypes
                     newThreadId
-                    declaringTypeHandle
+                    threadType
                     state
 
-            // The worker's bottom frame is the target method itself, not a
-            // `call` of the target. That matters for BlockedOnClassInit: the
-            // speculative wake in Scheduler.onStepOutcome would flip the worker
-            // back to Runnable on the blocker's next step, but unlike every
-            // other call site we can't re-run ensureTypeInitialised when the
-            // worker resumes — it would just start executing the target's
-            // first IL op before the cctor has actually finished. Fail loud
-            // for now; every other cross-thread-InProgress path in the
-            // interpreter also fails loud (see loadClass and UnaryMetadataIlOp
-            // Call/Newobj). Fixing this properly requires either a synthetic
-            // caller frame that issues the call or first-class class-init
-            // re-entry, both of which are out of scope for this change.
+            // The worker's bottom frame is `StartCallback` itself, not a `call` of
+            // it. That matters for BlockedOnClassInit: the speculative wake in
+            // Scheduler.onStepOutcome would flip the worker back to Runnable on the
+            // blocker's next step, but unlike every other call site we can't re-run
+            // ensureTypeInitialised when the worker resumes — it would just start
+            // executing the frame's first IL op before the cctor has actually
+            // finished. Fail loud, as every other cross-thread-InProgress path in
+            // the interpreter does (see loadClass and UnaryMetadataIlOp Call/Newobj).
             match workerInitOutcome with
             | WhatWeDid.BlockedOnClassInit _ ->
                 failwith
-                    $"Thread.StartInternal: target type %s{MethodOwner.describe targetMethod.Owner} is being initialised on another thread. Cross-thread class-init synchronisation for workers is not yet implemented."
+                    "Thread.StartInternal: System.Threading.Thread is being initialised on another thread. Cross-thread class-init synchronisation for workers is not yet implemented."
             | WhatWeDid.Aborted fatal ->
                 // Initialising the worker's declaring type tore the process down. Attributed to the
                 // worker, which is the thread `ensureTypeInitialised` was asked to initialise on;

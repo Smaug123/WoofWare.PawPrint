@@ -3,15 +3,16 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open Microsoft.Extensions.Logging
 
-/// Shared machinery for the CoreLib entry points a runtime host calls during startup:
-/// `System.AppContext::Setup` and `System.Environment::InitializeCommandLineArgs`.
+/// Shared machinery for the CoreLib entry points the VM calls itself rather than any guest:
+/// `System.AppContext::Setup` and `System.Environment::InitializeCommandLineArgs` during
+/// startup, and `System.Threading.Thread::StartCallback` at the bottom of every started thread.
 ///
-/// Both are ordinary managed IL that PawPrint interprets, and both are called by the VM
-/// rather than by any guest. What the VM contributes, and the only thing PawPrint has to
-/// synthesise, is native-heap argument buffers — `char*` and `char**` over NUL-terminated
-/// UTF-16 — plus the lookup that finds the method. Those are here so the two callers cannot
-/// drift on the pointer-cell conventions below, which are not locally obvious and which fail
-/// in ways that look like a corrupt guest rather than a wrong buffer.
+/// All are ordinary managed IL that PawPrint interprets. What the VM contributes, and the only
+/// thing PawPrint has to synthesise, is the lookup that finds the method and, for the startup
+/// pair, native-heap argument buffers — `char*` and `char**` over NUL-terminated UTF-16. Those
+/// are here so the callers cannot drift on the pointer-cell conventions below, which are not
+/// locally obvious and which fail in ways that look like a corrupt guest rather than a wrong
+/// buffer.
 [<RequireQualifiedAccess>]
 module HostStartupCall =
 
@@ -93,17 +94,8 @@ module HostStartupCall =
 
         ptr, IlMachineState.setNativeMemoryPool pool state
 
-    /// The unique static `methodName` of arity `arity` on the CoreLib type
-    /// `typeNamespace.typeName`.
-    ///
-    /// `purpose` completes the sentence "… ; PawPrint calls it to <purpose>", and appears in
-    /// every rejection: these are the VM's own private entry points, so a lookup that finds
-    /// none or several means CoreLib's shape has changed under us, and the report has to say
-    /// what PawPrint wanted it for.
-    ///
-    /// Arity is matched as well as the name so that failure stays loud, and correctly
-    /// attributed, if a future CoreLib keeps the name but changes the signature.
-    let findCorelibStaticMethod
+    let private findCorelibMethod
+        (isStatic : bool)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (typeNamespace : string)
         (typeName : string)
@@ -113,6 +105,7 @@ module HostStartupCall =
         : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
         let corelib = baseClassTypes.Corelib
+        let staticness = if isStatic then "static" else "instance"
 
         let candidateTypes =
             corelib.TypeDefs
@@ -135,19 +128,57 @@ module HostStartupCall =
 
         let candidates =
             declaringType.Methods
-            |> List.filter (fun m -> m.Name = methodName && m.IsStatic && MethodInfo.arity m = arity)
+            |> List.filter (fun m -> m.Name = methodName && m.IsStatic = isStatic && MethodInfo.arity m = arity)
 
         match candidates with
         | [ single ] -> single
         | [] ->
             failwith
-                $"Could not find the static %i{arity}-argument %s{typeNamespace}.%s{typeName}::%s{methodName} in CoreLib; PawPrint calls it to %s{purpose}. If its signature has changed, the caller needs updating to match."
+                $"Could not find the %s{staticness} %i{arity}-argument %s{typeNamespace}.%s{typeName}::%s{methodName} in CoreLib; PawPrint calls it to %s{purpose}. If its signature has changed, the caller needs updating to match."
         | _ :: _ :: _ ->
             failwith
-                $"Found several static %i{arity}-argument %s{typeNamespace}.%s{typeName}::%s{methodName} methods in CoreLib; expected exactly one. PawPrint calls it to %s{purpose}."
+                $"Found several %s{staticness} %i{arity}-argument %s{typeNamespace}.%s{typeName}::%s{methodName} methods in CoreLib; expected exactly one. PawPrint calls it to %s{purpose}."
+
+    /// The unique static `methodName` of arity `arity` on the CoreLib type
+    /// `typeNamespace.typeName`.
+    ///
+    /// `purpose` completes the sentence "… ; PawPrint calls it to <purpose>", and appears in
+    /// every rejection: these are the VM's own private entry points, so a lookup that finds
+    /// none or several means CoreLib's shape has changed under us, and the report has to say
+    /// what PawPrint wanted it for.
+    ///
+    /// Arity is matched as well as the name so that failure stays loud, and correctly
+    /// attributed, if a future CoreLib keeps the name but changes the signature.
+    let findCorelibStaticMethod
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeNamespace : string)
+        (typeName : string)
+        (methodName : string)
+        (arity : int)
+        (purpose : string)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        findCorelibMethod true baseClassTypes typeNamespace typeName methodName arity purpose
+
+    /// The unique instance `methodName` with `arity` declared parameters (`this` not counted)
+    /// on the CoreLib type `typeNamespace.typeName`. `purpose` is as for
+    /// `findCorelibStaticMethod`.
+    let findCorelibInstanceMethod
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeNamespace : string)
+        (typeName : string)
+        (methodName : string)
+        (arity : int)
+        (purpose : string)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        findCorelibMethod false baseClassTypes typeNamespace typeName methodName arity purpose
 
     /// Concretize `method` — which must be non-generic, on a non-generic type — and build the
-    /// frame that calls it with `args`.
+    /// frame that calls it with `args`, which for an instance method begin with `this`.
+    /// Also returns the handle of the method's declaring type, so that a caller installing the
+    /// frame as a thread's bottom frame can arm that type's class initialiser the way a call
+    /// would.
     ///
     /// `purpose` completes the same sentence as in `findCorelibStaticMethod`, and appears if
     /// the frame cannot be built.
@@ -158,9 +189,9 @@ module HostStartupCall =
         (args : ImmutableArray<CliType>)
         (purpose : string)
         (state : IlMachineState)
-        : IlMachineState * MethodState
+        : IlMachineState * MethodState * ConcreteTypeHandle
         =
-        let state, concretized, _ =
+        let state, concretized, declaringType =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
@@ -182,6 +213,6 @@ module HostStartupCall =
                 args
                 None
         with
-        | Ok methodState -> state, methodState
+        | Ok methodState -> state, methodState, declaringType
         | Error e ->
             failwith $"Failed to build a call frame for %s{method.Name}, which PawPrint calls to %s{purpose}: %O{e}"

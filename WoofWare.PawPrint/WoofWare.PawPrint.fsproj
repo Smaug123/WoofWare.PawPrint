@@ -119,6 +119,7 @@
     <Compile Include="WaitHandle.fs" />
     <Compile Include="SyncBlockMonitor.fs" />
     <Compile Include="ExternImplementations\System.Threading.Monitor.fs" />
+    <Compile Include="HostStartupCall.fs" />
     <Compile Include="Native\UnixErrorPal.fs" />
     <Compile Include="Native\SocketEventsPal.fs" />
     <Compile Include="Native\SocketArgumentsPal.fs" />
@@ -180,7 +181,6 @@
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />
-    <Compile Include="HostStartupCall.fs" />
     <Compile Include="AppContextSeed.fs" />
     <Compile Include="CommandLineArgsInit.fs" />
     <Compile Include="Program.fs" />
