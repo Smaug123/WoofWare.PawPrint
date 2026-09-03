@@ -468,21 +468,22 @@ module internal IntrinsicHelpers =
 
     // PawPrint emulates a deterministic scalar virtual CPU: every hardware-intrinsic
     // family reports IsSupported = false so the BCL falls through to its scalar/portable
-    // path. Most of the IL bodies are a recursive `return IsSupported;` stub that the JIT
+    // path. The IL bodies are a recursive `return IsSupported;` stub that the JIT
     // replaces with a constant; without an explicit fold here it would recurse forever.
-    // A few entries (e.g. `System.Numerics.Vector\`1`) have honest terminating bodies that
-    // would return `true` for primitive `T` — we still fold them to `false` here because the
-    // scalar profile has no implementation of the SIMD ops a `true` answer would commit us to.
     // New ISAs landing in CoreLib must be added to this set.
     //
-    // The fixed-width wrappers `System.Runtime.Intrinsics.Vector{64,128,256,512}\`1` must NOT
-    // be listed here: their `IsSupported` is an element-type query, not a capability query,
-    // and `ThrowHelper.ThrowForUnsupportedIntrinsicsVectorNNNBaseType` raises
-    // NotSupportedException on paths that are live under a scalar profile whenever it is
-    // false. Their honest IL bodies are allowlisted in `safeIntrinsics` instead.
+    // The vector wrappers `System.Runtime.Intrinsics.Vector{64,128,256,512}\`1` and
+    // `System.Numerics.Vector\`1` must NOT be listed here: their `IsSupported` is an
+    // element-type query, not a capability query — real .NET answers true for the twelve
+    // primitive element types whatever the hardware can do — and
+    // `ThrowHelper.ThrowForUnsupportedIntrinsicsVectorNNNBaseType` /
+    // `ThrowForUnsupportedNumericsVectorBaseType` raise NotSupportedException on paths that
+    // are live under a scalar profile whenever it is false. Their honest IL bodies are
+    // allowlisted in `safeIntrinsics` instead. Hardware capability for those types is the
+    // separate `IsHardwareAccelerated` query, answered by `vectorAccelerationAvailable`.
     //
     // Coverage source: src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics
-    // (and System/Numerics for `Vector\`1`) in the dotnet/runtime tree. Listing
+    // in the dotnet/runtime tree. Listing
     // harmless-but-unmatched names is fine; the lookup is keyed off the fully qualified
     // declaring type name, so types absent from the running CoreLib simply never trigger a
     // match.
@@ -494,8 +495,6 @@ module internal IntrinsicHelpers =
     let scalarOnlyFalseIsSupportedIntrinsics =
         set
             [
-                // System.Numerics
-                "System.Numerics.Vector`1"
                 // System.Runtime.Intrinsics.Arm
                 "System.Runtime.Intrinsics.Arm.AdvSimd"
                 "System.Runtime.Intrinsics.Arm.AdvSimd+Arm64"
