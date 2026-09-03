@@ -65,6 +65,21 @@ type AssemblyRefRowDivergence =
         ForeignAssembly : string
     }
 
+/// <summary>
+/// What the test expects of PawPrint, once the real runtime has answered.
+/// </summary>
+/// <remarks>
+/// <c>Refuses</c> is for behaviour PawPrint deliberately declines to reproduce, where answering
+/// would mean guessing. The real runtime's answer is still asserted, so the case records the
+/// ground truth it is declining to match rather than quietly forgetting it.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type PawPrintExpectation =
+    /// PawPrint must terminate with the same exit code the real runtime did.
+    | Agrees
+    /// PawPrint must refuse the guest, with a message containing each of these fragments.
+    | Refuses of messageContains : string list
+
 [<RequireQualifiedAccess>]
 module CrossAssemblyHarness =
 
@@ -223,6 +238,7 @@ module CrossAssemblyHarness =
         (divergences : AssemblyRefRowDivergence list)
         (omitFromDisk : string list)
         (replacements : CrossAssemblySpec list)
+        (expectation : PawPrintExpectation)
         (case : CrossAssemblyEndToEndTestCase)
         : unit
         =
@@ -283,8 +299,30 @@ module CrossAssemblyHarness =
             let realResult = executeWithRealRuntime entryPath
             realResult |> shouldEqual case.ExpectedReturnCode
 
-            let pawPrintResult = executeWithPawPrint entryPath entryBytes
-            pawPrintResult |> shouldEqual realResult
+            match expectation with
+            | PawPrintExpectation.Agrees ->
+                let pawPrintResult = executeWithPawPrint entryPath entryBytes
+                pawPrintResult |> shouldEqual realResult
+            | PawPrintExpectation.Refuses required ->
+                let refusal =
+                    try
+                        let ran = executeWithPawPrint entryPath entryBytes
+
+                        failwithf
+                            "Expected PawPrint to refuse this guest, but it ran it and returned %d. If PawPrint has learned to answer, this case should become a plain differential one."
+                            ran
+                    with e ->
+                        // The whole chain: a refusal deep in the interpreter arrives wrapped.
+                        let rec messages (e : exn) =
+                            if isNull e.InnerException then
+                                [ e.Message ]
+                            else
+                                e.Message :: messages e.InnerException
+
+                        messages e |> String.concat "\n"
+
+                for fragment in required do
+                    refusal |> shouldContainText fragment
         finally
             try
                 if Directory.Exists tempDir then
@@ -293,7 +331,8 @@ module CrossAssemblyHarness =
             | :? IOException
             | :? UnauthorizedAccessException -> ()
 
-    let runTest (case : CrossAssemblyEndToEndTestCase) : unit = runTestWith [] [] [] case
+    let runTest (case : CrossAssemblyEndToEndTestCase) : unit =
+        runTestWith [] [] [] PawPrintExpectation.Agrees case
 
     /// <summary>
     /// As <c>runTest</c>, but the named assemblies are compiled — so the others can reference them
@@ -308,7 +347,7 @@ module CrossAssemblyHarness =
         if List.isEmpty omitFromDisk then
             failwith "runTestWithout was given nothing to omit; use runTest if every assembly is meant to be present."
 
-        runTestWith [] omitFromDisk [] case
+        runTestWith [] omitFromDisk [] PawPrintExpectation.Agrees case
 
     /// <summary>
     /// As <c>runTest</c>, but each replacement is compiled under a name the case already uses, and
@@ -325,7 +364,29 @@ module CrossAssemblyHarness =
             failwith
                 "runTestReplacing was given no replacements; use runTest if every assembly runs as it was compiled."
 
-        runTestWith [] [] replacements case
+        runTestWith [] [] replacements PawPrintExpectation.Agrees case
+
+    /// <summary>
+    /// Run the case on the real runtime, assert its exit code, and then assert that PawPrint
+    /// *refuses* the guest rather than answering.
+    /// </summary>
+    /// <remarks>
+    /// For behaviour PawPrint deliberately declines to reproduce. Asserting the real runtime's
+    /// answer as well keeps the case honest about what is being declined, and makes it fail loudly
+    /// if PawPrint ever learns to answer — at which point it should become a plain differential
+    /// case.
+    /// </remarks>
+    let runTestExpectingRefusal
+        (messageContains : string list)
+        (replacements : CrossAssemblySpec list)
+        (case : CrossAssemblyEndToEndTestCase)
+        : unit
+        =
+        if List.isEmpty messageContains then
+            failwith
+                "runTestExpectingRefusal was given nothing to match in the refusal; a bare \"something threw\" assertion would pass for any bug."
+
+        runTestWith [] [] replacements (PawPrintExpectation.Refuses messageContains) case
 
     /// As `runTest`, but first assert that each stated `AssemblyRefRowDivergence` actually holds of
     /// the compiled images. Use this for any test whose point is that a type reference is resolved
@@ -335,4 +396,4 @@ module CrossAssemblyHarness =
             failwith
                 "runTestRequiring was given no divergence requirements; use runTest if the test does not depend on AssemblyRef row layout."
 
-        runTestWith divergences [] [] case
+        runTestWith divergences [] [] PawPrintExpectation.Agrees case

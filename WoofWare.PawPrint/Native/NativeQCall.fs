@@ -137,6 +137,8 @@ module NativeQCall =
             "AssemblyNative_GetSimpleName", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetSimpleName"
             "AssemblyNative_GetFullName", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetFullName"
             "AssemblyNative_GetTypeCore", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCore"
+            "AssemblyNative_GetTypeCoreIgnoreCase",
+            NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetTypeCoreIgnoreCase"
             "AssemblyNative_GetVersion", NativeRuntimeAssembly.tryExecuteQCall "AssemblyNative_GetVersion"
             "AssemblyNative_IsApplyUpdateSupported",
             NativeMetadataUpdater.tryExecuteQCall "AssemblyNative_IsApplyUpdateSupported"

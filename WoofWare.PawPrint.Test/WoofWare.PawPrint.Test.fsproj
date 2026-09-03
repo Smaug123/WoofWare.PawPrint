@@ -152,6 +152,7 @@
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestForwarderResolutionOutcomes.fs" />
+    <Compile Include="TestCaseInsensitiveTypeLookup.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
