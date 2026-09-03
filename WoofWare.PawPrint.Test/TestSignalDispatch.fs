@@ -363,9 +363,12 @@ module TestSignalDispatch =
         state'.Kernel.Signals |> SignalState.pending |> shouldEqual []
 
     [<Test>]
-    let ``trySpawnHandler passes the Linux signo and PosixSignal enum as int args`` () : unit =
+    let ``trySpawnHandler passes the signo and PosixSignal enum as int args`` () : unit =
         // The handler's bottom frame should have its Arguments populated with
-        // `(linuxSigno, posixSignalEnum)`, both as `CliType.Numeric Int32`.
+        // `(signo, posixSignalEnum)`, both as `CliType.Numeric Int32`. The
+        // signo is read under the state's platform, which `baseState` leaves
+        // at the default Linux; for SIGINT it is 2 either way, and the
+        // Darwin row below is what shows the platform is consulted.
         // For SIGINT: signo = 2, enum value = -2.
         let state, dispatcher, _ = preparedState ()
         let runnableSibling = ThreadId 99
@@ -402,6 +405,53 @@ module TestSignalDispatch =
         frame.Arguments.Length |> shouldEqual 2
         frame.Arguments.[0] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 2))
         frame.Arguments.[1] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 -2))
+
+    [<Test>]
+    let ``trySpawnHandler numbers the signo under the state's platform`` () : unit =
+        // SIGCHLD is 17 on Linux and 20 on Darwin. A dispatcher that numbered
+        // the signal under a fixed table would hand a Darwin guest's
+        // `OnPosixSignal` a signo it never registered, and the BCL would find
+        // no tokens for it and run nothing.
+        let state, dispatcher, _ = preparedState ()
+        let runnableSibling = ThreadId 99
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add runnableSibling (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enable Signal.SIGCHLD
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGCHLD
+                                        Target = ValueNone
+                                    }
+                        }
+                }
+                |> EmulatedKernel.mapMachine (
+                    UnixMachineState.withUnixPlatformAndFileSystemType SimulatedUnixPlatform.macOsArm64 None
+                )
+            )
+
+        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+
+        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
+        let frame = dispatcherTs.MethodStates |> Map.find dispatcherTs.ActiveMethodState
+
+        frame.Arguments.Length |> shouldEqual 2
+        frame.Arguments.[0] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 20))
+
+        frame.Arguments.[1]
+        |> shouldEqual (CliType.Numeric (CliNumericType.Int32 (int System.Runtime.InteropServices.PosixSignal.SIGCHLD)))
 
     [<Test>]
     let ``trySpawnHandler does not pick the dispatcher itself as the signal receiver`` () : unit =
@@ -585,7 +635,7 @@ module TestSignalDispatch =
         let frame = dispatcherTs.MethodStates |> Map.find dispatcherTs.ActiveMethodState
 
         frame.Arguments.Length |> shouldEqual 2
-        // signo: SIGABRT's Linux signo is 6.
+        // signo: SIGABRT is 6 under both numberings.
         frame.Arguments.[0] |> shouldEqual (CliType.Numeric (CliNumericType.Int32 6))
         // posix enum: SIGABRT has no `PosixSignal` enum identity, so the
         // dispatcher must pass `PosixSignalInvalid` (0).

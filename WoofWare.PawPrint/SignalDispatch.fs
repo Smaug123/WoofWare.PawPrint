@@ -92,15 +92,16 @@ module SignalDispatch =
     /// shape is `static int OnPosixSignal(int signo, PosixSignal signal)`.
     /// `PosixSignal` is a managed enum and crosses the IL boundary as its
     /// underlying `int`, so both arguments are plain `CliType.Numeric Int32`.
-    /// `signo` is the Linux signal number from `Signal.toLinuxSigno`;
+    /// `signo` is the signal's number under the simulated platform's
+    /// numbering, from `Signal.toRawSignoUnder`;
     /// `posixSignalEnumValue` is the negative enum identity from
     /// `PosixSignalPal.toEnum` for the modelled cross-platform signals or
     /// `PosixSignalInvalid` (0) for signals with no managed enum value
     /// (matching real CoreCLR `pal_signal.c`, which overwrites the
     /// out-parameter with `PosixSignalInvalid` when
     /// `TryConvertSignalCodeToPosixSignal` returns `false`).
-    let private buildArgs (signal : Signal) : ImmutableArray<CliType> =
-        let signo = Signal.toLinuxSigno signal
+    let private buildArgs (numbering : SignalNumbering) (signal : Signal) : ImmutableArray<CliType> =
+        let signo = Signal.toRawSignoUnder numbering signal
         let posixEnum = PosixSignalPal.toEnum signal
 
         ImmutableArray.CreateRange (
@@ -213,7 +214,8 @@ module SignalDispatch =
                     $"SignalDispatch.trySpawnHandler: assembly %s{AssemblyDefinitionName.simpleName mi.DeclaringAssemblyFullName} for handler %s{mi.Name} is not loaded; the SetPosixSignalHandler QCall should have loaded it."
             )
 
-        let args = buildArgs entry.Signal
+        let args =
+            buildArgs (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) entry.Signal
 
         // `MethodState.Empty` enforces an arity check against
         // `MethodInfo.arity mi` (plus 1 if non-static). The handler is

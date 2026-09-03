@@ -6,22 +6,39 @@ open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `PosixSignalPal` is a transcription of a managed enum, so its oracle is that
-/// enum: every row below reads `System.Runtime.InteropServices.PosixSignal`
-/// from the BCL this test host runs rather than restating its values.
+/// `PosixSignalPal` is a transcription of a managed enum and of one rule in
+/// `pal_signal.c`, so its oracles are those: every row below reads
+/// `System.Runtime.InteropServices.PosixSignal` from the BCL this test host
+/// runs rather than restating its values, and the numbering rows call the
+/// host's own `SystemNative_GetPlatformSignalNumber`.
 ///
 /// That is a better position than the other three `*Pal` modules are in.
 /// `Interop.Error`, the `SocketEvents` bits and the `AF_*` numbering are all
 /// internal to the runtime, so their tests have to parse pinned source;
 /// `PosixSignal` is public, so the real thing is callable here.
-///
-/// The tests marked as moved came from `WoofWare.PosixKernel.Test/TestSignal.fs`
-/// with the functions they exercise. `ofEnum` composed with the library's
-/// `toLinuxSigno` is exactly the `SystemNative_GetPlatformSignalNumber` arm, so
-/// the rows that check that composition belong on this side of the boundary too.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestPosixSignalPal =
+
+    /// The real export, in the shim this test host runs against. Pure: it reads
+    /// the shim's compiled-in `<signal.h>` constants and installs nothing, which
+    /// is why it is safe to call in-process where the enable/disable entry
+    /// points are not.
+    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_GetPlatformSignalNumber")>]
+    extern int private hostGetPlatformSignalNumber(int posixSignal)
+
+    let private everyNumbering : SignalNumbering list =
+        [ SignalNumbering.Linux ; SignalNumbering.Darwin ]
+
+    /// The numbering the shim this test host runs against was compiled with,
+    /// or `None` on a host PawPrint does not model.
+    let private hostNumbering () : SignalNumbering option =
+        if RuntimeInformation.IsOSPlatform OSPlatform.OSX then
+            Some SignalNumbering.Darwin
+        elif RuntimeInformation.IsOSPlatform OSPlatform.Linux then
+            Some SignalNumbering.Linux
+        else
+            None
 
     /// Every member of the enum, read from the BCL, paired with the `Signal`
     /// this repo says it names. The *values* are the oracle; the pairing is
@@ -44,13 +61,19 @@ module TestPosixSignalPal =
     /// Signals this repo models that the enum has no member for. They reach a
     /// guest handler as `PosixSignalInvalid`.
     let private withoutEnumMember : Signal list =
-        [ Signal.SIGPIPE ; Signal.SIGABRT ; Signal.SIGUSR1 ; Signal.SIGUSR2 ]
+        [
+            Signal.SIGPIPE
+            Signal.SIGABRT
+            Signal.SIGUSR1
+            Signal.SIGUSR2
+            Signal.SIGURG
+        ]
 
     /// A new member appearing upstream is a real divergence rather than a
-    /// curiosity: `ofEnum` would send it to `ofPlatformSigno`, which refuses
-    /// every non-positive number, so PawPrint would answer 0 and
-    /// `PosixSignalRegistration.Register` would throw where real .NET
-    /// registered the signal happily.
+    /// curiosity: `platformSignalNumber` would treat its negative value as an
+    /// unknown number and answer 0, so `PosixSignalRegistration.Register`
+    /// would throw `PlatformNotSupportedException` where real .NET registered
+    /// the signal happily.
     [<Test>]
     let ``the enum has exactly the members this maps`` () : unit =
         System.Enum.GetValues<PosixSignal> ()
@@ -58,80 +81,170 @@ module TestPosixSignalPal =
         |> shouldEqual (enumMembers |> List.map fst |> Set.ofList)
 
     // ---------------------------------------------------------------------
-    // `ofEnum`.
+    // `signalMax`.
     // ---------------------------------------------------------------------
 
-    /// Moved. The oracle is the enum's own value rather than a written-out -1.
+    /// The values, which nothing else pins: `GetSignalMax()` is `SIGRTMAX`
+    /// where the header defines it (glibc: 64) and `NSIG` otherwise (Darwin:
+    /// 32). The Darwin number is one past the last signal Darwin has, and the
+    /// host-equality test below is what shows the shim really does admit it.
     [<Test>]
-    let ``ofEnum maps every member of the enum to the right case`` () : unit =
-        for value, signal in enumMembers do
-            PosixSignalPal.ofEnum (int value) |> shouldEqual (ValueSome signal)
+    let ``signalMax is SIGRTMAX on Linux and NSIG on Darwin`` () : unit =
+        PosixSignalPal.signalMax SignalNumbering.Linux |> shouldEqual 64
+        PosixSignalPal.signalMax SignalNumbering.Darwin |> shouldEqual 32
 
-    /// Moved. The BCL allows a guest to construct a `PosixSignal` from a raw
-    /// native signo (`(PosixSignal)signo`). When that happens the value arrives
-    /// at `GetPlatformSignalNumber` as a positive int; the real native code
-    /// accepts it iff it is a recognised host signal, and PawPrint accepts it
-    /// iff it is a modelled Linux signo.
     [<Test>]
-    let ``ofEnum treats positives as Linux signos`` () : unit =
-        PosixSignalPal.ofEnum 1 |> shouldEqual (ValueSome Signal.SIGHUP)
-        PosixSignalPal.ofEnum 6 |> shouldEqual (ValueSome Signal.SIGABRT)
-        PosixSignalPal.ofEnum 13 |> shouldEqual (ValueSome Signal.SIGPIPE)
-        PosixSignalPal.ofEnum 28 |> shouldEqual (ValueSome Signal.SIGWINCH)
-
-    /// Moved. Values outside the enum's range with no positive interpretation
-    /// must produce `ValueNone`, so the arm returns 0 and the BCL raises
-    /// `ArgumentOutOfRangeException`.
-    [<Test>]
-    let ``ofEnum returns ValueNone for 0 and unrecognised values`` () : unit =
-        PosixSignalPal.ofEnum 0 |> shouldEqual ValueNone // PosixSignalInvalid sentinel
-        PosixSignalPal.ofEnum -11 |> shouldEqual ValueNone
-        PosixSignalPal.ofEnum -100 |> shouldEqual ValueNone
-        PosixSignalPal.ofEnum System.Int32.MinValue |> shouldEqual ValueNone
-        // Positive signos beyond `linuxSignalMax` (Linux's SIGRTMAX = 64) sit
-        // outside any kernel's table and fail the same way real native code
-        // does — the `if (signal > 0 && signal <= GetSignalMax()) return signal;`
-        // branch falls through to `return 0;`.
-        PosixSignalPal.ofEnum 65 |> shouldEqual ValueNone
-        PosixSignalPal.ofEnum 100 |> shouldEqual ValueNone
-        PosixSignalPal.ofEnum System.Int32.MaxValue |> shouldEqual ValueNone
-
-    /// Moved. When a guest casts an arbitrary native signo to `PosixSignal`,
-    /// `SystemNative_GetPlatformSignalNumber` returns the raw value unchanged
-    /// if it sits within `GetSignalMax()`. Identity is preserved through
-    /// `Signal.Other`, so the value round-trips and
-    /// `PosixSignalRegistration.Register` accepts the registration.
-    [<Test>]
-    let ``ofEnum preserves raw identity for valid unmodelled positives`` () : unit =
-        PosixSignalPal.ofEnum 4 |> shouldEqual (ValueSome (Signal.Other 4)) // SIGILL
-        PosixSignalPal.ofEnum 5 |> shouldEqual (ValueSome (Signal.Other 5)) // SIGTRAP
-        PosixSignalPal.ofEnum 7 |> shouldEqual (ValueSome (Signal.Other 7)) // SIGBUS
-        PosixSignalPal.ofEnum 11 |> shouldEqual (ValueSome (Signal.Other 11)) // SIGSEGV
-
-        PosixSignalPal.ofEnum Signal.linuxSignalMax
-        |> shouldEqual (ValueSome (Signal.Other Signal.linuxSignalMax))
-
-    /// Moved, and it is the boundary itself: `ofPlatformSigno` is what the
-    /// enable/disable arms use for a signo arriving from
-    /// `GetPlatformSignalNumber`, and it must produce the same `Signal` the
-    /// enum path would, or the enable bit keys on a different case from the
-    /// registration request.
-    [<Test>]
-    let ``the library's signo path agrees with the enum path on positives`` () : unit =
-        for signo in 1 .. Signal.linuxSignalMax do
-            Signal.ofPlatformSigno signo |> shouldEqual (PosixSignalPal.ofEnum signo)
+    let ``signalMax is never below the kernel's own ceiling`` () : unit =
+        // The shim asserts `signalCode <= GetSignalMax()` on every signo it
+        // is handed, so a ceiling below the kernel's would refuse real
+        // signals.
+        for numbering in everyNumbering do
+            (PosixSignalPal.signalMax numbering >= Signal.highestSignoUnder numbering)
+            |> shouldEqual true
 
     // ---------------------------------------------------------------------
-    // `toEnum`, which had no test of any kind before this fixture.
+    // `platformSignalNumber`.
     // ---------------------------------------------------------------------
 
     [<Test>]
-    let ``toEnum is the inverse of ofEnum on every member`` () : unit =
+    let ``platformSignalNumber maps every member of the enum to its signo under each numbering`` () : unit =
+        for numbering in everyNumbering do
+            for value, signal in enumMembers do
+                PosixSignalPal.platformSignalNumber numbering (int value)
+                |> shouldEqual (Signal.toRawSignoUnder numbering signal)
+
+    /// The three members whose number differs are asserted as literals too,
+    /// so that this fixture sees a transposed table without going through the
+    /// library's own function.
+    [<Test>]
+    let ``platformSignalNumber answers the divergent rows per numbering`` () : unit =
+        PosixSignalPal.platformSignalNumber SignalNumbering.Linux (int PosixSignal.SIGCHLD)
+        |> shouldEqual 17
+
+        PosixSignalPal.platformSignalNumber SignalNumbering.Darwin (int PosixSignal.SIGCHLD)
+        |> shouldEqual 20
+
+        PosixSignalPal.platformSignalNumber SignalNumbering.Linux (int PosixSignal.SIGCONT)
+        |> shouldEqual 18
+
+        PosixSignalPal.platformSignalNumber SignalNumbering.Darwin (int PosixSignal.SIGCONT)
+        |> shouldEqual 19
+
+        PosixSignalPal.platformSignalNumber SignalNumbering.Linux (int PosixSignal.SIGTSTP)
+        |> shouldEqual 20
+
+        PosixSignalPal.platformSignalNumber SignalNumbering.Darwin (int PosixSignal.SIGTSTP)
+        |> shouldEqual 18
+
+    /// The BCL allows a guest to construct a `PosixSignal` from a raw native
+    /// signo (`(PosixSignal)signo`). The real native code echoes it back iff
+    /// `signal > 0 && signal <= GetSignalMax()`, without asking whether it is
+    /// a signal it knows — so Darwin's 32 comes back as 32.
+    [<Test>]
+    let ``platformSignalNumber echoes every positive within signalMax and nothing beyond`` () : unit =
+        for numbering in everyNumbering do
+            let signalMax = PosixSignalPal.signalMax numbering
+
+            for signo in 1..signalMax do
+                PosixSignalPal.platformSignalNumber numbering signo |> shouldEqual signo
+
+            PosixSignalPal.platformSignalNumber numbering (signalMax + 1) |> shouldEqual 0
+            PosixSignalPal.platformSignalNumber numbering 100 |> shouldEqual 0
+
+            PosixSignalPal.platformSignalNumber numbering System.Int32.MaxValue
+            |> shouldEqual 0
+
+    /// Values outside the enum's range with no positive interpretation must
+    /// produce 0, so the BCL raises `PlatformNotSupportedException`.
+    [<Test>]
+    let ``platformSignalNumber answers 0 for PosixSignalInvalid and unrecognised negatives`` () : unit =
+        for numbering in everyNumbering do
+            PosixSignalPal.platformSignalNumber numbering 0 |> shouldEqual 0
+            PosixSignalPal.platformSignalNumber numbering -11 |> shouldEqual 0
+            PosixSignalPal.platformSignalNumber numbering -100 |> shouldEqual 0
+
+            PosixSignalPal.platformSignalNumber numbering System.Int32.MinValue
+            |> shouldEqual 0
+
+    /// The host-equality row, and the one that can falsify a column rather
+    /// than restate it: the shim this test host runs against was compiled
+    /// against one platform's `<signal.h>`, so its answer for every input is
+    /// what PawPrint must answer under that platform's numbering. macOS
+    /// locally and Linux in CI each check one column.
+    [<Test>]
+    let ``platformSignalNumber agrees with this host's SystemNative_GetPlatformSignalNumber`` () : unit =
+        match hostNumbering () with
+        | None -> Assert.Ignore $"no Unix host to measure (%s{RuntimeInformation.OSDescription})"
+        | Some numbering ->
+
+        let inputs : int list =
+            [ System.Int32.MinValue ; System.Int32.MaxValue ] @ [ -100 .. 100 ]
+
+        for raw in inputs do
+            let host = hostGetPlatformSignalNumber raw
+            let modelled = PosixSignalPal.platformSignalNumber numbering raw
+
+            if host <> modelled then
+                failwith
+                    $"%O{numbering}: for input %d{raw} PawPrint answers %d{modelled} but this host's SystemNative_GetPlatformSignalNumber answers %d{host}"
+
+    // ---------------------------------------------------------------------
+    // `handledWithoutRestoring`.
+    // ---------------------------------------------------------------------
+
+    /// Transcribed from the `switch` in `SystemNative_HandleNonCanceledPosixSignal`
+    /// in the pinned `pal_signal.c`: the seven signals with an explicit arm.
+    /// Every other case, named or not, takes `default:`.
+    [<Test>]
+    let ``handledWithoutRestoring names exactly the seven signals with an explicit arm`` () : unit =
+        let explicitArms : Signal list =
+            [
+                Signal.SIGCONT
+                Signal.SIGTSTP
+                Signal.SIGTTIN
+                Signal.SIGTTOU
+                Signal.SIGCHLD
+                Signal.SIGURG
+                Signal.SIGWINCH
+            ]
+
+        for numbering in everyNumbering do
+            for signo in 1 .. Signal.highestSignoUnder numbering do
+                match Signal.ofRawSignoUnder numbering signo with
+                | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
+                | ValueSome signal ->
+                    PosixSignalPal.handledWithoutRestoring numbering signal
+                    |> shouldEqual (List.contains signal explicitArms)
+
+                    // And spelled as `Other`, which is how a hand-rolled
+                    // P/Invoke's number arrives.
+                    PosixSignalPal.handledWithoutRestoring numbering (Signal.Other signo)
+                    |> shouldEqual (List.contains signal explicitArms)
+
+    /// The row that motivates the function: SIGURG and Darwin's SIGIO are
+    /// both discarded by the kernel, and only one of them has an arm.
+    [<Test>]
+    let ``handledWithoutRestoring splits the ignored-by-default signals by the shim's switch`` () : unit =
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Darwin Signal.SIGURG
+        |> shouldEqual true
+
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Darwin (Signal.Other 23)
+        |> shouldEqual false // SIGIO
+
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Darwin (Signal.Other 29)
+        |> shouldEqual false // SIGINFO
+
+        PosixSignalPal.handledWithoutRestoring SignalNumbering.Linux (Signal.Other 23)
+        |> shouldEqual true // SIGURG spelled by number
+
+    // ---------------------------------------------------------------------
+    // `toEnum`.
+    // ---------------------------------------------------------------------
+
+    [<Test>]
+    let ``toEnum names every member of the enum`` () : unit =
         for value, signal in enumMembers do
             PosixSignalPal.toEnum signal |> shouldEqual (int value)
-
-            PosixSignalPal.ofEnum (PosixSignalPal.toEnum signal)
-            |> shouldEqual (ValueSome signal)
 
     /// `PosixSignalInvalid` is 0, and it is what real CoreCLR passes a handler
     /// for a signal the enum cannot name — `pal_signal.c` overwrites the
@@ -145,7 +258,7 @@ module TestPosixSignalPal =
 
         PosixSignalPal.toEnum (Signal.Other 4) |> shouldEqual 0 // SIGILL
         PosixSignalPal.toEnum (Signal.Other 9) |> shouldEqual 0 // SIGKILL
-        PosixSignalPal.toEnum (Signal.Other Signal.linuxSignalMax) |> shouldEqual 0
+        PosixSignalPal.toEnum (Signal.Other 64) |> shouldEqual 0
 
     /// And nothing else answers 0, which is what stops the row above passing
     /// for a `toEnum` that had simply stopped working.
@@ -154,32 +267,12 @@ module TestPosixSignalPal =
         for _, signal in enumMembers do
             PosixSignalPal.toEnum signal |> shouldNotEqual 0
 
-    // ---------------------------------------------------------------------
-    // The whole arm.
-    // ---------------------------------------------------------------------
-
-    /// Moved. Simulates `SystemNative_GetPlatformSignalNumber` end to end:
-    /// `raw -> ofEnum -> toLinuxSigno -> signo`. Non-zero means the BCL can
-    /// call `Enable/DisablePosixSignalHandling` with this signo and PawPrint
-    /// will accept it; zero means `Register` throws.
+    /// The round trip the dispatcher relies on: the enum value it hands a
+    /// handler, fed back through the registration arm under any numbering,
+    /// names the signal the handler was registered for.
     [<Test>]
-    let ``the GetPlatformSignalNumber arm round-trips every accepted signal`` () : unit =
-        let armBehaviour (raw : int) : int =
-            match PosixSignalPal.ofEnum raw with
-            | ValueSome s -> Signal.toLinuxSigno s
-            | ValueNone -> 0
-
-        for value, _ in enumMembers do
-            armBehaviour (int value) |> shouldNotEqual 0
-
-        // Unmodelled-but-valid positive signos round-trip via `Signal.Other`:
-        // the guest casts `(PosixSignal)4` (SIGILL), the arm returns 4, and the
-        // BCL forwards 4 unchanged to `EnablePosixSignalHandling`.
-        armBehaviour 4 |> shouldEqual 4
-        armBehaviour 11 |> shouldEqual 11
-        armBehaviour Signal.linuxSignalMax |> shouldEqual Signal.linuxSignalMax
-
-        armBehaviour 0 |> shouldEqual 0
-        armBehaviour -11 |> shouldEqual 0
-        armBehaviour (Signal.linuxSignalMax + 1) |> shouldEqual 0
-        armBehaviour 100 |> shouldEqual 0
+    let ``platformSignalNumber inverts toEnum on every member under each numbering`` () : unit =
+        for numbering in everyNumbering do
+            for _, signal in enumMembers do
+                PosixSignalPal.platformSignalNumber numbering (PosixSignalPal.toEnum signal)
+                |> shouldEqual (Signal.toRawSignoUnder numbering signal)

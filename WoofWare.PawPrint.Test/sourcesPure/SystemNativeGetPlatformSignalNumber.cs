@@ -8,10 +8,10 @@ using System.Runtime.InteropServices;
 // install sigaction handlers in the host process.
 //
 // The test asserts only signal numbers where Linux and macOS agree, because
-// PawPrint always reports Linux signos for determinism while the real CLR
-// reports whichever native value the host header file defines. Disagreement
-// would surface as a failure on one platform but not the other; the cases
-// below all match on both.
+// the real CLR reports whichever native value the host header file defines
+// while PawPrint reports the configured platform's, which here is the
+// default Linux. The rows on which the two disagree are pinned per flavour by
+// sourcesImpure/SystemNativeGetPlatformSignalNumber{Linux,Darwin}.cs.
 //
 // PosixSignal enum values (negative for cross-platform identities) from the
 // managed BCL:

@@ -401,11 +401,16 @@ module DebuggerServer =
             match fatal.Message with
             | Some m -> writer.WriteString ("message", m)
             | None -> writer.WriteNull "message"
-        | RunOutcome.SignalTerminated (_state, signal) ->
+        | RunOutcome.SignalTerminated (state, signal) ->
+            // The signo is read under the platform the guest simulated, since
+            // that is what its own shell would have reported.
+            let signo =
+                Signal.toRawSignoUnder (SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform) signal
+
             writer.WriteString ("kind", "signalTerminated")
             writer.WriteString ("signal", sprintf "%O" signal)
-            writer.WriteNumber ("signo", Signal.toLinuxSigno signal)
-            writer.WriteNumber ("exitCode", 128 + Signal.toLinuxSigno signal)
+            writer.WriteNumber ("signo", signo)
+            writer.WriteNumber ("exitCode", 128 + signo)
         | RunOutcome.GuestUnhandledException (_, thread, exn) ->
             writer.WriteString ("kind", "guestUnhandledException")
             writer.WriteNumber ("thread", threadIdValue thread)
