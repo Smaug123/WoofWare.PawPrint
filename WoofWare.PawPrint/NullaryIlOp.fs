@@ -1785,7 +1785,7 @@ module NullaryIlOp =
                 let state =
                     (state, fields)
                     ||> List.fold (fun state field ->
-                        IlMachineState.setRuntimeExceptionStringField loggerFactory corelib exnAddr field state
+                        IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
                     )
 
                 match

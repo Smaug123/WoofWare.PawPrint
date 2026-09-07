@@ -55,13 +55,11 @@ type ConstructionState =
     /// that address (or, for value types, the object's now-complete contents).
     | Constructing of ManagedHeapAddress
 
-/// What `returnStackFrame` should do with a frame's product — the object it was constructing if
-/// `Constructing`, otherwise the value its signature says it returns — once it returns.
-/// A string field on a runtime-synthesised exception that CoreCLR's `EEException::CreateThrowable`
-/// would have populated through a constructor overload PawPrint does not run. Each case names one
-/// field of one exception type; `IlMachineState.setRuntimeExceptionStringField` writes it.
+/// A field on a runtime-synthesised exception that CoreCLR's `EEException::CreateThrowable` would
+/// have populated through a constructor overload PawPrint does not run. Each case names one field
+/// of one exception type; `IlMachineState.setRuntimeExceptionField` writes it.
 [<RequireQualifiedAccess>]
-type RuntimeExceptionStringField =
+type RuntimeExceptionField =
     /// `System.Exception._message`: what a message-taking constructor overload would have stored.
     | Message of string
     /// `System.TypeLoadException._className`, which `TypeLoadException.TypeName` reports.
@@ -69,7 +67,14 @@ type RuntimeExceptionStringField =
     /// `System.TypeLoadException._assemblyName`: the display name of the assembly the failing
     /// type key belongs to, as `ClassLoader::ThrowTypeLoadException` records it.
     | TypeLoadAssemblyName of string
+    /// `System.TypeLoadException._resourceId`: the `mscorrc` resource id of the message's format
+    /// string (`src/coreclr/dlls/mscorrc/resource.h`), which the four-argument constructor stores
+    /// and `GetObjectData` serialises as `TypeLoadResourceID`. The `Message` case must carry what
+    /// that format string renders.
+    | TypeLoadResourceId of int
 
+/// What `returnStackFrame` should do with a frame's product — the object it was constructing if
+/// `Constructing`, otherwise the value its signature says it returns — once it returns.
 [<RequireQualifiedAccess>]
 type ReturnValueDisposition =
     /// The ordinary convention: push the returned value, or under `newobj` the constructed
@@ -87,7 +92,7 @@ type ReturnValueDisposition =
     /// or the four-argument `TypeLoadException` constructor the EE uses); leave the list empty
     /// to accept the parameterless ctor's defaults, which is what the CLR produces when it
     /// throws the exception with no argument.
-    | DispatchAsException of fields : RuntimeExceptionStringField list
+    | DispatchAsException of fields : RuntimeExceptionField list
     /// Throw the returned value away rather than pushing it. The interpreter pushed this frame
     /// itself, on top of a caller that is mid-instruction, to run something the CLR would have
     /// run inside that instruction; the caller wants the frame's *effect*, not its value, and

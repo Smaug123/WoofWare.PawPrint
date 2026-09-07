@@ -96,6 +96,12 @@ static class Program
                 Console.Error.WriteLine($"TypeName: {e.TypeName}");
                 return 26;
             }
+
+            // The EE's four-argument constructor also stores the mscorrc resource id of the
+            // message's format string (6063 here) and a null message argument. No guest can read
+            // them yet: `GetObjectData` also reports `TargetSite`, which needs
+            // `ExceptionNative_GetMethodFromStackTrace`, and `FieldInfo.GetValue` on the private
+            // fields needs `RuntimeFieldHandle_GetValue`; PawPrint implements neither.
         }
 
         return null;

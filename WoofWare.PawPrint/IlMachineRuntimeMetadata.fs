@@ -943,7 +943,7 @@ module IlMachineRuntimeMetadata =
         )
         |> String.concat Environment.NewLine
 
-    /// Write one string field on an already-allocated exception object.
+    /// Write one field on an already-allocated exception object.
     ///
     /// `ExceptionDispatching.allocateRuntimeException` only zero-initialises the object and does
     /// not run any constructor, so runtime-synthesised exceptions otherwise carry a null `_message`
@@ -952,35 +952,41 @@ module IlMachineRuntimeMetadata =
     /// value to a constructor overload, call this so a guest that catches the exception sees what
     /// it would really see. The declaring type of the field is part of the case, so a
     /// `TypeLoadException` field on an exception of another type fails loudly.
-    let setRuntimeExceptionStringField
+    let setRuntimeExceptionField
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionAddr : ManagedHeapAddress)
-        (field : RuntimeExceptionStringField)
+        (field : RuntimeExceptionField)
         (state : IlMachineState)
         : IlMachineState
         =
         let declaringType, fieldName, value =
             match field with
-            | RuntimeExceptionStringField.Message message -> baseClassTypes.Exception, "_message", message
-            | RuntimeExceptionStringField.TypeLoadClassName className ->
-                baseClassTypes.TypeLoadException, "_className", className
-            | RuntimeExceptionStringField.TypeLoadAssemblyName assemblyName ->
-                baseClassTypes.TypeLoadException, "_assemblyName", assemblyName
+            | RuntimeExceptionField.Message message -> baseClassTypes.Exception, "_message", Choice1Of2 message
+            | RuntimeExceptionField.TypeLoadClassName className ->
+                baseClassTypes.TypeLoadException, "_className", Choice1Of2 className
+            | RuntimeExceptionField.TypeLoadAssemblyName assemblyName ->
+                baseClassTypes.TypeLoadException, "_assemblyName", Choice1Of2 assemblyName
+            | RuntimeExceptionField.TypeLoadResourceId resourceId ->
+                baseClassTypes.TypeLoadException, "_resourceId", Choice2Of2 resourceId
 
         match
             ManagedHeap.tryGet exceptionAddr state.ManagedHeap,
             AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes declaringType.Identity
         with
         | Some _, Some declaringTypeHandle ->
-            let valueAddr, state =
-                allocateManagedString loggerFactory baseClassTypes value state
+            let value, state =
+                match value with
+                | Choice1Of2 (str : string) ->
+                    let valueAddr, state = allocateManagedString loggerFactory baseClassTypes str state
+                    CliType.ObjectRef (Some valueAddr), state
+                | Choice2Of2 (i : int) -> CliType.Numeric (CliNumericType.Int32 i), state
 
             let fieldId =
                 FieldIdentity.requiredOwnInstanceField declaringType fieldName
                 |> FieldIdentity.fieldId declaringTypeHandle
 
-            IlMachineThreadState.setInstanceFieldById exceptionAddr fieldId (CliType.ObjectRef (Some valueAddr)) state
+            IlMachineThreadState.setInstanceFieldById exceptionAddr fieldId value state
         // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
         // lack either piece, and there is nothing to project into in that case.
         | None, _

@@ -233,14 +233,16 @@ module NativeRuntimeTypeQCall =
             | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
                 RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _) ->
-                // `ClassLoader::ThrowTypeLoadException` renders the wrapped byref with
-                // `TypeString::AppendTypeKey` under `FormatNamespace` alone — nested types as
-                // `Outer+Inner`, instantiations as `List`1[System.String]`, function pointers as
-                // their signature — and names the assembly of the key's module, which for a byref
-                // key is its element's; `typeAssemblyFullName` peels the wrappers the same way. The
-                // EE then constructs the exception from those two strings, which is where
-                // `TypeLoadException.TypeName` comes from. Measured on .NET 10 for a nested type, a
-                // nested generic instantiation, `int[,]`, `int*`, two function pointers and `void`.
+                // `ClassLoader::ThrowTypeLoadException` (clsload.cpp:2724) renders the wrapped
+                // byref with `TypeString::AppendTypeKey` under `FormatNamespace` alone — nested
+                // types as `Outer+Inner`, instantiations as `List`1[System.String]`, function
+                // pointers as their signature — and names the assembly of the key's module, which
+                // for a byref key is its element's; `typeAssemblyFullName` peels the wrappers the
+                // same way. The EE then constructs the exception from those two strings and the
+                // resource id `IDS_CLASSLOAD_BYREF_OF_BYREF` (resource.h:160), which is where
+                // `TypeLoadException.TypeName` and the serialised `TypeLoadResourceID` come from.
+                // Measured on .NET 10 for a nested type, a nested generic instantiation, `int[,]`,
+                // `int*`, two function pointers and `void`; the id serialises as 6063.
                 let typeName =
                     NativeRuntimeTypeHelpers.runtimeTypeHandleName
                         operation
@@ -254,10 +256,11 @@ module NativeRuntimeTypeQCall =
                 NativeHandlerResult.raiseExceptionWithFields
                     ctx.BaseClassTypes.TypeLoadException
                     [
-                        RuntimeExceptionStringField.Message
+                        RuntimeExceptionField.Message
                             $"Could not create a ByRef of a ByRef. Type: '%s{typeName}'. Assembly: '%s{assemblyName}'."
-                        RuntimeExceptionStringField.TypeLoadClassName typeName
-                        RuntimeExceptionStringField.TypeLoadAssemblyName assemblyName
+                        RuntimeExceptionField.TypeLoadClassName typeName
+                        RuntimeExceptionField.TypeLoadAssemblyName assemblyName
+                        RuntimeExceptionField.TypeLoadResourceId 0x17af
                     ]
                     state
                 |> Some

@@ -2799,7 +2799,7 @@ module IlMachineStateExecution =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (fields : RuntimeExceptionStringField list)
+        (fields : RuntimeExceptionField list)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
@@ -2918,7 +2918,7 @@ module IlMachineStateExecution =
             loggerFactory
             baseClassTypes
             exceptionTypeInfo
-            (message |> Option.toList |> List.map RuntimeExceptionStringField.Message)
+            (message |> Option.toList |> List.map RuntimeExceptionField.Message)
             currentThread
             state
 

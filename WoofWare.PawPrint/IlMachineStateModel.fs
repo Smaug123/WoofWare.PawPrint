@@ -547,7 +547,7 @@ type NativeHandlerResult =
     | RaiseException of
         IlMachineState *
         exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
-        fields : RuntimeExceptionStringField list *
+        fields : RuntimeExceptionField list *
         StepEffect
     /// A type's `.cctor` has been pushed on top of the native frame (typically because a
     /// sub-call into managed code needed to initialise an uninitialised type). Dispatcher
@@ -615,7 +615,7 @@ type ReturnFrameResult =
         IlMachineState *
         exceptionAddr : ManagedHeapAddress *
         exceptionType : ConcreteTypeHandle *
-        fields : RuntimeExceptionStringField list
+        fields : RuntimeExceptionField list
 
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
@@ -767,7 +767,7 @@ module NativeHandlerResult =
     /// `TypeLoadException` the type and assembly names its `TypeName` and message report.
     let raiseExceptionWithFields
         (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (fields : RuntimeExceptionStringField list)
+        (fields : RuntimeExceptionField list)
         (state : IlMachineState)
         : NativeHandlerResult
         =
@@ -787,10 +787,7 @@ module NativeHandlerResult =
         (state : IlMachineState)
         : NativeHandlerResult
         =
-        raiseExceptionWithFields
-            exnType
-            (message |> Option.toList |> List.map RuntimeExceptionStringField.Message)
-            state
+        raiseExceptionWithFields exnType (message |> Option.toList |> List.map RuntimeExceptionField.Message) state
 
     /// Forward a `WhatWeDid.SuspendedForClassInit` outcome from a sub-call. Use this
     /// at the leaf of a passthrough branch when the dispatcher should keep the native
