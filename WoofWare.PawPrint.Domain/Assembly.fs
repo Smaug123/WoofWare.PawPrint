@@ -1110,13 +1110,20 @@ module Assembly =
             failwith
                 $"Image has CorFlags.NativeEntryPoint set, so its entry-point field 0x%08x{field} is an RVA into native code rather than a MethodDef token; this runtime never executes native code"
 
-        // Throws ArgumentException on a table tag outside the entity tables (a user-string or
-        // junk tag); that is a malformed image too.
-        let handle = MetadataTokens.EntityHandle field
-
-        if handle.IsNil then
+        // CoreCLR's IsNilToken looks only at the row bits, so a row-zero token is "no entry
+        // point" whatever its table tag, including tags no entity table has. Decoding the tag
+        // first would refuse such a token instead.
+        if field &&& 0x00FFFFFF = 0 then
             None
         else
+
+        let handle =
+            try
+                MetadataTokens.EntityHandle field
+            with :? ArgumentException ->
+                // A user-string tag, or a tag no table has.
+                failwith
+                    $"Entry-point token 0x%08x{field} has table tag 0x%02x{(field >>> 24) &&& 0xFF}, which is not a metadata table; ECMA-335 II.25.3.3 allows only a MethodDef or File token here"
 
         match handle.Kind with
         | HandleKind.MethodDefinition ->

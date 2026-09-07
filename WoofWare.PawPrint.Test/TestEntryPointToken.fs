@@ -132,6 +132,17 @@ public static class Entry
         (read image).MainMethod |> shouldEqual None
         hostEntryPoint image |> shouldEqual null
 
+    /// `IsNilToken` never looks at the table tag, so a row-zero token is "no entry point" even
+    /// when its tag is one the entity-handle decoder would refuse for a nonzero row: a
+    /// UserString tag, or one no table has.
+    [<TestCase(0x70000000)>]
+    [<TestCase(0x71000000)>]
+    [<TestCase(0xFF000000)>]
+    let ``A row-zero token of any tag means no entry point`` (token : int) : unit =
+        let image = compile OutputKind.ConsoleApplication |> withEntryPointToken token
+        (read image).MainMethod |> shouldEqual None
+        hostEntryPoint image |> shouldEqual null
+
     [<Test>]
     let ``A MethodDef row beyond the table is refused`` () : unit =
         let image = compile OutputKind.ConsoleApplication
@@ -158,6 +169,17 @@ public static class Entry
         exn.Message |> shouldContainText "TypeDefinition"
         exn.Message |> shouldContainText "0x02000001"
         hostEntryPoint patched |> shouldEqual null
+
+    /// A tag no entity table has is refused once the row is nonzero, and the refusal names the
+    /// token rather than being the metadata reader's bare "Invalid token".
+    [<TestCase(0x70000001)>]
+    [<TestCase(0xFF000001)>]
+    let ``A nonzero-row token of a non-table tag is refused`` (token : int) : unit =
+        let image = compile OutputKind.ConsoleApplication |> withEntryPointToken token
+
+        let exn = Assert.Throws<System.Exception> (fun () -> read image |> ignore)
+        exn.Message |> shouldContainText $"0x%08x{token}"
+        exn.Message |> shouldContainText "not a metadata table"
 
     /// ECMA-335 II.25.3.3 allows a File token here, naming the module of a multi-module
     /// assembly that holds the entry point. PawPrint has no multi-module support, so this is
