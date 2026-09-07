@@ -116,7 +116,13 @@ module PosixSignalPal =
     /// `PosixSignalInvalid` before invoking the handler. The raw signo that
     /// conversion helper writes for unmapped codes is dropped by that
     /// overwrite; only the *first* argument carries the signal number.
-    let toEnum (signal : Signal) : int =
+    ///
+    /// Answers for the signal the value *is* under the numbering, so an
+    /// `Other` carrying SIGCONT's number names `PosixSignal.SIGCONT`, as the
+    /// real conversion — which only ever sees the number — does.
+    let toEnum (numbering : SignalNumbering) (signal : Signal) : int =
+        let signal = Signal.canonicalUnder numbering signal
+
         match List.tryFind (fun (_, candidate) -> candidate = signal) enumIdentities with
         | Some (value, _) -> value
         | None -> 0

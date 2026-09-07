@@ -99,10 +99,13 @@ module SignalDispatch =
     /// `PosixSignalInvalid` (0) for signals with no managed enum value
     /// (matching real CoreCLR `pal_signal.c`, which overwrites the
     /// out-parameter with `PosixSignalInvalid` when
-    /// `TryConvertSignalCodeToPosixSignal` returns `false`).
+    /// `TryConvertSignalCodeToPosixSignal` returns `false`). Both are read
+    /// under the same numbering, so an entry spelled `Signal.Other 19` in a
+    /// Darwin process is handed to the handler as `(19, PosixSignal.SIGCONT)`,
+    /// exactly as the entry spelled `Signal.SIGCONT` is.
     let private buildArgs (numbering : SignalNumbering) (signal : Signal) : ImmutableArray<CliType> =
         let signo = Signal.toRawSignoUnder numbering signal
-        let posixEnum = PosixSignalPal.toEnum signal
+        let posixEnum = PosixSignalPal.toEnum numbering signal
 
         ImmutableArray.CreateRange (
             [

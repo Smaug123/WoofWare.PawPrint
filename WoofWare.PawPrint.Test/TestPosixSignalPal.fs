@@ -243,8 +243,9 @@ module TestPosixSignalPal =
 
     [<Test>]
     let ``toEnum names every member of the enum`` () : unit =
-        for value, signal in enumMembers do
-            PosixSignalPal.toEnum signal |> shouldEqual (int value)
+        for numbering in everyNumbering do
+            for value, signal in enumMembers do
+                PosixSignalPal.toEnum numbering signal |> shouldEqual (int value)
 
     /// `PosixSignalInvalid` is 0, and it is what real CoreCLR passes a handler
     /// for a signal the enum cannot name — `pal_signal.c` overwrites the
@@ -253,19 +254,47 @@ module TestPosixSignalPal =
     /// one arm cannot be caught by a test of another.
     [<Test>]
     let ``toEnum answers PosixSignalInvalid for signals the enum cannot name`` () : unit =
-        for signal in withoutEnumMember do
-            PosixSignalPal.toEnum signal |> shouldEqual 0
+        for numbering in everyNumbering do
+            for signal in withoutEnumMember do
+                PosixSignalPal.toEnum numbering signal |> shouldEqual 0
 
-        PosixSignalPal.toEnum (Signal.Other 4) |> shouldEqual 0 // SIGILL
-        PosixSignalPal.toEnum (Signal.Other 9) |> shouldEqual 0 // SIGKILL
-        PosixSignalPal.toEnum (Signal.Other 64) |> shouldEqual 0
+            PosixSignalPal.toEnum numbering (Signal.Other 4) |> shouldEqual 0 // SIGILL
+            PosixSignalPal.toEnum numbering (Signal.Other 9) |> shouldEqual 0 // SIGKILL
+            PosixSignalPal.toEnum numbering (Signal.Other 64) |> shouldEqual 0
 
     /// And nothing else answers 0, which is what stops the row above passing
     /// for a `toEnum` that had simply stopped working.
     [<Test>]
     let ``toEnum answers 0 only for signals the enum cannot name`` () : unit =
-        for _, signal in enumMembers do
-            PosixSignalPal.toEnum signal |> shouldNotEqual 0
+        for numbering in everyNumbering do
+            for _, signal in enumMembers do
+                PosixSignalPal.toEnum numbering signal |> shouldNotEqual 0
+
+    /// An `Other` is read for the signal its number names under the
+    /// numbering, as `handledWithoutRestoring` reads it: the dispatcher
+    /// renders the first argument from the number, and a handler registered
+    /// for `PosixSignal.SIGCONT` must see the two agree.
+    [<Test>]
+    let ``toEnum reads an Other under the numbering`` () : unit =
+        for numbering in everyNumbering do
+            for signo in 1 .. Signal.highestSignoUnder numbering do
+                match Signal.ofRawSignoUnder numbering signo with
+                | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
+                | ValueSome signal ->
+                    PosixSignalPal.toEnum numbering (Signal.Other signo)
+                    |> shouldEqual (PosixSignalPal.toEnum numbering signal)
+
+    /// The row that tells the numberings apart: 19 is SIGCONT on Darwin and
+    /// SIGSTOP on Linux, where SIGCONT is 18.
+    [<Test>]
+    let ``toEnum reads 19 as SIGCONT under Darwin only`` () : unit =
+        PosixSignalPal.toEnum SignalNumbering.Darwin (Signal.Other 19)
+        |> shouldEqual (int PosixSignal.SIGCONT)
+
+        PosixSignalPal.toEnum SignalNumbering.Linux (Signal.Other 19) |> shouldEqual 0
+
+        PosixSignalPal.toEnum SignalNumbering.Linux (Signal.Other 18)
+        |> shouldEqual (int PosixSignal.SIGCONT)
 
     /// The round trip the dispatcher relies on: the enum value it hands a
     /// handler, fed back through the registration arm under any numbering,
@@ -274,5 +303,5 @@ module TestPosixSignalPal =
     let ``platformSignalNumber inverts toEnum on every member under each numbering`` () : unit =
         for numbering in everyNumbering do
             for _, signal in enumMembers do
-                PosixSignalPal.platformSignalNumber numbering (PosixSignalPal.toEnum signal)
+                PosixSignalPal.platformSignalNumber numbering (PosixSignalPal.toEnum numbering signal)
                 |> shouldEqual (Signal.toRawSignoUnder numbering signal)
