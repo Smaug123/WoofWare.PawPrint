@@ -191,10 +191,12 @@ module MemoryBlock =
     ///
     /// A cell only partly inside the range keeps the bytes of it that lie outside: they move
     /// to the byte overlay, so a later read of them sees the cell's old bytes rather than the
-    /// block's default. That needs the cell to have a byte image, so a partly-intersected
-    /// cell without one (a tagged pointer, say) is refused; the alternative is to discard
-    /// those bytes silently. A cell wholly inside the range is removed whatever its
-    /// addressability, since nothing of it survives.
+    /// block's default. That needs each kept byte to have a value, so a partly-intersected
+    /// cell is refused when the part of it outside the range has none (a tagged pointer, or a
+    /// live reference, say); the alternative is to discard those bytes silently. Only the
+    /// kept bytes are asked, so a cell may be partly evicted whenever the part left behind has
+    /// bytes, whatever the rest of it holds. A cell wholly inside the range is removed
+    /// whatever it holds, since nothing of it survives.
     let private evictRange (containerDesc : string) (offset : int) (count : int) (block : MemoryBlock) : MemoryBlock =
         if count <= 0 then
             block
@@ -229,24 +231,21 @@ module MemoryBlock =
                     let headCount = max 0 (offset - cellOffset)
                     let tailCount = max 0 (cellEnd - rangeEnd)
 
-                    if headCount > 0 || tailCount > 0 then
-                        match CliType.ByteAddressability cell with
-                        | CliByteAddressability.ByteAddressable ->
-                            if headCount > 0 then
-                                let head = CliType.BytesAt 0 headCount cell
-
-                                for i in 0 .. headCount - 1 do
-                                    bytes <- Map.add (cellOffset + i) head.[i] bytes
-
-                            if tailCount > 0 then
-                                let tail = CliType.BytesAt (rangeEnd - cellOffset) tailCount cell
-
-                                for i in 0 .. tailCount - 1 do
-                                    bytes <- Map.add (rangeEnd + i) tail.[i] bytes
-                        | CliByteAddressability.SymbolicallyAddressable rejection
-                        | CliByteAddressability.Rejected rejection ->
+                    // Keep the `keptCount` bytes of the cell starting at block offset `keptStart`.
+                    let keep (keptStart : int) (keptCount : int) : unit =
+                        match CliType.TryBytesAt (keptStart - cellOffset) keptCount cell with
+                        | Ok kept ->
+                            for i in 0 .. keptCount - 1 do
+                                bytes <- Map.add (keptStart + i) kept.[i] bytes
+                        | Error rejection ->
                             failwith
-                                $"MemoryBlock.evictRange: byte range [%d{offset}, %d{rangeEnd}) covers only part of the cell at %d{cellOffset} (size %d{cellSize}) in %s{containerDesc}, and the rest of that cell has no byte image to keep: %s{rejection.Description}"
+                                $"MemoryBlock.evictRange: byte range [%d{offset}, %d{rangeEnd}) covers only part of the cell at %d{cellOffset} (size %d{cellSize}) in %s{containerDesc}, and the bytes [%d{keptStart}, %d{keptStart + keptCount}) of that cell have no byte image to keep: %s{rejection.Description}"
+
+                    if headCount > 0 then
+                        keep cellOffset headCount
+
+                    if tailCount > 0 then
+                        keep rangeEnd tailCount
 
             { block with
                 Cells = cells
@@ -256,9 +255,10 @@ module MemoryBlock =
     /// Insert a typed cell at `offset`, evicting whatever the new cell's byte range
     /// intersects: every overlay byte within it, and every intersecting cell. A cell the new
     /// one only partly covers keeps its uncovered bytes in the overlay, which is only possible
-    /// for a cell with a byte image; partly covering a cell without one fails. The caller is
-    /// responsible for ensuring the value is the intended typed view; provenance carried by
-    /// the value (such as `NativeIntSource.FieldHandlePtr`) is preserved.
+    /// when those bytes have values; leaving uncovered a byte with none (of a tagged pointer,
+    /// or of a live reference) fails. The caller is responsible for ensuring the value is the
+    /// intended typed view; provenance carried by the value (such as
+    /// `NativeIntSource.FieldHandlePtr`) is preserved.
     let writeCell (containerDesc : string) (offset : int) (value : CliType) (block : MemoryBlock) : MemoryBlock =
         let size = CliType.sizeOf value
         checkRange "MemoryBlock.writeCell" containerDesc block.Size offset size

@@ -215,3 +215,21 @@ module TestNativeMemoryPool =
         |> shouldEqual [| 0x44uy ; 0x33uy ; 0x22uy ; 0x11uy ; 0uy ; 0uy ; 0uy ; 0uy |]
 
         NativeMemoryPool.tryReadCell block 4 pool |> shouldEqual None
+
+    [<Test>]
+    let ``writeCell keeps the zero bytes of a null reference cell it overlaps`` () : unit =
+        let block, pool = allocateZeroInitialized 16 NativeMemoryPool.empty
+        let pool = NativeMemoryPool.writeCell block 4 (CliType.ObjectRef None) pool
+
+        let pool =
+            NativeMemoryPool.writeCell
+                block
+                0
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x0102030405060708L)))
+                pool
+
+        NativeMemoryPool.readBytes block 8 4 pool
+        |> shouldEqual [| 0uy ; 0uy ; 0uy ; 0uy |]
+
+        NativeMemoryPool.tryReadCell block 4 pool |> shouldEqual None
+        NativeMemoryPool.checkInvariants block pool

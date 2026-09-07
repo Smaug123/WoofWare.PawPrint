@@ -28,6 +28,51 @@ module TestStackMemoryPool =
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
+    // Factory intentionally undisposed: corelib.Logger outlives this scope.
+    let private corelib : DumpedAssembly =
+        let corelibPath = typeof<obj>.Assembly.Location
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        Assembly.readFile loggerFactory corelibPath
+
+    let private bct : BaseClassTypes<DumpedAssembly> = Corelib.getBaseTypes corelib
+
+    let private allCt : AllConcreteTypes =
+        Corelib.concretizeAll (LoadedAssemblies.ofAssemblies [ corelib ]) bct AllConcreteTypes.Empty
+
+    let private handleOf (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
+        AllConcreteTypes.getRequiredNonGenericHandle allCt ty
+
+    let private cliField
+        (name : string)
+        (contents : CliType)
+        (offset : int)
+        (fieldType : ConcreteTypeHandle)
+        : CliField
+        =
+        {
+            Id = FieldId.named name
+            Name = name
+            Contents = contents
+            Offset = Some offset
+            Type = fieldType
+            MarshallingDescriptor = None
+        }
+
+    /// `struct { long N; object B; }` with explicit layout, 16 bytes: `N` at [0, 8) and `B`
+    /// at [8, 16).
+    let private longThenReferenceCell (n : int64) (b : ManagedHeapAddress option) : CliType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            (handleOf bct.TypedReference)
+            (Layout.Custom (size = 16, packingSize = 0))
+            System.Runtime.InteropServices.CharSet.Ansi
+            [
+                cliField "N" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim n))) 0 (handleOf bct.Int64)
+                cliField "B" (CliType.ObjectRef b) 8 (handleOf bct.Object)
+            ]
+        |> CliType.ValueType
+
     let private allocateZeroInitialized
         (byteCount : int)
         (pool : StackMemoryPool)
@@ -534,6 +579,145 @@ module TestStackMemoryPool =
             StackMemoryPool.writeCell block 8 (int64Cell 0x0102030405060708L) pool |> ignore
         )
         |> ignore
+
+    [<Test>]
+    let ``writeCell keeps the zero bytes of a null reference cell it overlaps`` () : unit =
+        // A null reference has a byte image, all zero, so the bytes of it the new cell does
+        // not cover are kept as zeros, and that holds whatever the block's default is: in an
+        // uninitialised block the kept zeros are readable while the byte after them is not.
+        for allocate in [ allocateZeroInitialized ; allocateUninitialized ] do
+            let block, pool = allocate 16 StackMemoryPool.empty
+            let pool = StackMemoryPool.writeCell block 4 (CliType.ObjectRef None) pool
+            let pool = StackMemoryPool.writeCell block 0 (int64Cell 0x0102030405060708L) pool
+
+            StackMemoryPool.readBytes block 0 12 pool
+            |> shouldEqual
+                [|
+                    0x08uy
+                    0x07uy
+                    0x06uy
+                    0x05uy
+                    0x04uy
+                    0x03uy
+                    0x02uy
+                    0x01uy
+                    0uy
+                    0uy
+                    0uy
+                    0uy
+                |]
+
+            StackMemoryPool.tryReadCell block 4 pool |> shouldEqual None
+            StackMemoryPool.checkInvariants block pool
+
+        let block, pool = allocateUninitialized 16 StackMemoryPool.empty
+        let pool = StackMemoryPool.writeCell block 4 (CliType.ObjectRef None) pool
+        let pool = StackMemoryPool.writeCell block 0 (int64Cell 0x0102030405060708L) pool
+
+        Assert.Throws<System.Exception> (fun () -> StackMemoryPool.readBytes block 12 1 pool |> ignore)
+        |> ignore
+
+        // The head of a null reference is kept the same way.
+        let block, pool = allocateUninitialized 16 StackMemoryPool.empty
+        let pool = StackMemoryPool.writeCell block 0 (CliType.ObjectRef None) pool
+        let pool = StackMemoryPool.writeCell block 4 (int64Cell 0x0102030405060708L) pool
+
+        StackMemoryPool.readBytes block 0 4 pool
+        |> shouldEqual [| 0uy ; 0uy ; 0uy ; 0uy |]
+
+        StackMemoryPool.checkInvariants block pool
+
+    [<Test>]
+    let ``writeCell refuses to overlap part of a live reference cell`` () : unit =
+        // A live reference is an opaque handle with no byte image, so the bytes of it the new
+        // cell does not cover cannot be kept.
+        let block, pool = allocateZeroInitialized 16 StackMemoryPool.empty
+
+        let pool =
+            StackMemoryPool.writeCell block 4 (CliType.ObjectRef (Some (ManagedHeapAddress 11))) pool
+
+        for newOffset in [ 0 ; 8 ] do
+            let ex =
+                Assert.Throws<System.Exception> (fun () ->
+                    StackMemoryPool.writeCell block newOffset (int64Cell 0x0102030405060708L) pool
+                    |> ignore
+                )
+
+            ex.Message |> shouldContainText "no byte image to keep: object reference"
+
+    [<Test>]
+    let ``writeCell keeps the uncovered bytes of a struct whose live reference it covers`` () : unit =
+        // Whether the uncovered bytes can be kept is a question about those bytes, not about
+        // the whole cell: the struct as a whole has no byte image, but the half the new cell
+        // leaves alone does.
+        let block, pool = allocateUninitialized 16 StackMemoryPool.empty
+
+        let pool =
+            StackMemoryPool.writeCell
+                block
+                0
+                (longThenReferenceCell 0x1122334455667788L (Some (ManagedHeapAddress 11)))
+                pool
+
+        let pool = StackMemoryPool.writeCell block 8 (int64Cell 0x0102030405060708L) pool
+
+        StackMemoryPool.readBytes block 0 16 pool
+        |> shouldEqual
+            [|
+                0x88uy
+                0x77uy
+                0x66uy
+                0x55uy
+                0x44uy
+                0x33uy
+                0x22uy
+                0x11uy
+                0x08uy
+                0x07uy
+                0x06uy
+                0x05uy
+                0x04uy
+                0x03uy
+                0x02uy
+                0x01uy
+            |]
+
+        StackMemoryPool.tryReadCell block 0 pool |> shouldEqual None
+        StackMemoryPool.checkInvariants block pool
+
+        // Leaving any byte of the live reference uncovered is refused.
+        let block, pool = allocateUninitialized 20 StackMemoryPool.empty
+
+        let pool =
+            StackMemoryPool.writeCell
+                block
+                0
+                (longThenReferenceCell 0x1122334455667788L (Some (ManagedHeapAddress 11)))
+                pool
+
+        let ex =
+            Assert.Throws<System.Exception> (fun () ->
+                StackMemoryPool.writeCell block 12 (int64Cell 0x0102030405060708L) pool
+                |> ignore
+            )
+
+        ex.Message
+        |> shouldContainText "bytes [0, 12) of that cell have no byte image to keep"
+
+        ex.Message |> shouldContainText "object reference"
+
+        // With the reference null, the same write keeps its bytes as zeros.
+        let block, pool = allocateUninitialized 20 StackMemoryPool.empty
+
+        let pool =
+            StackMemoryPool.writeCell block 0 (longThenReferenceCell 0x1122334455667788L None) pool
+
+        let pool = StackMemoryPool.writeCell block 12 (int64Cell 0x0102030405060708L) pool
+
+        StackMemoryPool.readBytes block 8 4 pool
+        |> shouldEqual [| 0uy ; 0uy ; 0uy ; 0uy |]
+
+        StackMemoryPool.checkInvariants block pool
 
     [<Test>]
     let ``writeCell replaces a tagged pointer cell it covers entirely`` () : unit =

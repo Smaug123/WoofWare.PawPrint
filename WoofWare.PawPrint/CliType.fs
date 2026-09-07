@@ -471,6 +471,45 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
+    /// The bytes of `[offset, offset + count)`, if every byte in that range has a value.
+    ///
+    /// Slice-precise, where <see cref="BytesAt" /> refuses the whole value on the strength of
+    /// `ByteAddressability`: a range that misses every byte without a value is answered, and
+    /// the two agree byte for byte wherever `BytesAt` succeeds. A null reference has the
+    /// all-zero image `ToBytes` gives it, so a range over one is answered too. A byte that is
+    /// only nameable (see <see cref="SymbolicBytesAt" />) has no value, and nor does one
+    /// inside a non-null reference or a runtime pointer, so a range reaching any of those is
+    /// refused with the obstruction. A range outside the value is a caller bug and fails.
+    static member TryBytesAt
+        (offset : int)
+        (count : int)
+        (value : CliType)
+        : Result<byte[], CliByteAddressabilityRejection>
+        =
+        let checkRange (size : int) : unit =
+            CliType.CheckByteRange "CliType.TryBytesAt" offset count size $"CLI value %O{value}"
+
+        match value with
+        | CliType.ValueType vt -> CliValueType.TryBytesAt offset count vt
+        | CliType.ObjectRef None ->
+            checkRange NATIVE_INT_SIZE
+            Ok (Array.zeroCreate count)
+        | CliType.ObjectRef (Some _) ->
+            checkRange NATIVE_INT_SIZE
+            Error CliByteAddressabilityRejection.ObjectReference
+        | CliType.RuntimePointer _ ->
+            checkRange (CliType.SizeOf(value).Size)
+            Error CliByteAddressabilityRejection.RuntimePointer
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _ ->
+            checkRange (CliType.SizeOf(value).Size)
+
+            match CliType.ByteAddressability value with
+            | CliByteAddressability.ByteAddressable -> Ok (CliType.BytesAt offset count value)
+            | CliByteAddressability.SymbolicallyAddressable rejection
+            | CliByteAddressability.Rejected rejection -> Error rejection
+
     /// The bytes of `[offset, offset + count)`, where a byte covered by a native int PawPrint
     /// models as an identity rather than as an address is *named* rather than materialised.
     ///
@@ -2139,6 +2178,59 @@ and CliValueType =
             )
 
             result
+
+    /// The bytes of `[offset, offset + count)`, if every byte in that range has a value, per
+    /// `CliType.TryBytesAt`. Agrees with <see cref="BytesAt" /> byte for byte wherever `BytesAt`
+    /// succeeds, and answers a range `BytesAt` cannot when the fields it reaches have values
+    /// over the part of them it reaches: a field is asked only for the bytes inside the range.
+    static member TryBytesAt
+        (offset : int)
+        (count : int)
+        (cvt : CliValueType)
+        : Result<byte[], CliByteAddressabilityRejection>
+        =
+        match cvt._Storage with
+        | CliValueTypeStorage.RawBytes _ -> Ok (CliValueType.BytesAt offset count cvt)
+        | CliValueTypeStorage.Fields storage ->
+            let expectedSize = CliValueType.SizeOf(cvt).Size
+
+            if storage.PreservedBytes.Length <> expectedSize then
+                failwith
+                    $"CliValueType.TryBytesAt: preserved byte image length %i{storage.PreservedBytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+
+            CliValueType.CheckByteRange "CliValueType.TryBytesAt" offset count expectedSize cvt._Declared
+
+            let endExclusive = offset + count
+
+            let result : byte[] = Array.zeroCreate count
+            Array.blit storage.PreservedBytes offset result 0 count
+
+            // Same filter and same `EditedAtTime` replay order as `BytesAt`, so the two agree
+            // wherever both answer.
+            let rec replay (fields : CliConcreteField list) : Result<byte[], CliByteAddressabilityRejection> =
+                match fields with
+                | [] -> Ok result
+                | field :: rest ->
+                    let first = max field.Offset offset
+                    let endInField = min (field.Offset + field.Size) endExclusive
+
+                    match CliType.TryBytesAt (first - field.Offset) (endInField - first) field.Contents with
+                    | Error rejection ->
+                        Error (
+                            CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
+                                cvt._Declared,
+                                field.Id,
+                                rejection
+                            )
+                        )
+                    | Ok fieldBytes ->
+                        Array.blit fieldBytes 0 result (first - offset) fieldBytes.Length
+                        replay rest
+
+            storage.Fields
+            |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
+            |> List.sortBy _.EditedAtTime
+            |> replay
 
     /// The counterpart of <see cref="BytesAt" /> for a value whose bytes are only nameable: a
     /// byte covered by a native int PawPrint models as an identity comes back naming that native

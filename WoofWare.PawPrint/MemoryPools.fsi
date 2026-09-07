@@ -73,11 +73,11 @@ module StackMemoryPool =
     /// Store `value` as a typed cell at `offset`, evicting whatever the new cell's byte range
     /// overlaps: every overlay byte within the range, and every intersecting cell. A cell the
     /// new one only partly covers keeps its uncovered bytes, so the block reads back as if the
-    /// new cell's bytes had simply been written over the old ones; that needs the old cell to
-    /// have a byte image, and partly covering a cell without one (a tagged pointer, say) fails
-    /// rather than dropping the rest of it. The eviction is what keeps the non-overlap
-    /// invariant true, and it is why a stale byte cannot resurface once a covering cell is
-    /// later displaced.
+    /// new cell's bytes had simply been written over the old ones; that needs each uncovered
+    /// byte to have a value (a null reference's are zero), and leaving uncovered a byte with
+    /// none (of a tagged pointer, or of a live reference) fails rather than dropping it. The
+    /// eviction is what keeps the non-overlap invariant true, and it is why a stale byte
+    /// cannot resurface once a covering cell is later displaced.
     val writeCell :
         blockId : StackMemoryBlockId -> offset : int -> value : CliType -> pool : StackMemoryPool -> StackMemoryPool
 
@@ -156,7 +156,7 @@ module NativeMemoryPool =
 
     /// Store `value` as a typed cell at `offset`, evicting whatever the new cell's byte range
     /// overlaps, as for the stack pool: a partly covered cell keeps its uncovered bytes, and
-    /// partly covering a cell with no byte image fails.
+    /// leaving uncovered a byte with no value fails.
     val writeCell :
         blockId : NativeMemoryBlockId -> offset : int -> value : CliType -> pool : NativeMemoryPool -> NativeMemoryPool
 
