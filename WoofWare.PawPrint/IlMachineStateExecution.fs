@@ -2473,6 +2473,16 @@ module IlMachineStateExecution =
                         $"calling %s{MethodOwner.describe methodToCall.Owner}::%s{methodToCall.Name}: the resolved method's declaring type is not registered in AllConcreteTypes, so its initialiser cannot be scheduled"
 
             let initialises =
+                match methodToCall.Body with
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor _)
+                | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind _) ->
+                    // CoreCLR binds an accessor's target while compiling its stub, which is before
+                    // the method's prologue, so a declaration that fails to bind raises without
+                    // its declaring type having been initialised. `UnsafeAccessorDispatch.execute`
+                    // therefore runs this frame's initialisation itself, after binding.
+                    false
+                | _ ->
+
                 if methodToCall.IsStatic then
                     true
                 elif methodToCall.Name = ".ctor" then
