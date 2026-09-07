@@ -154,12 +154,18 @@ module SignatureComparison =
         | TypeDefn.OneDimensionalArrayLowerBoundZero l, TypeDefn.OneDimensionalArrayLowerBoundZero r ->
             recurse assemblies l r
         | TypeDefn.Array (lElt, lRank), TypeDefn.Array (rElt, rRank) ->
-            // Rank alone decides the shape: the decoder refuses a non-canonical `ArrayShape`, and
-            // canonical shapes of one rank carry identical sizes and lower bounds.
-            if lRank <> rRank then
+            // Element before rank, in the order `CompareElementType` reads the blob: the element is
+            // resolved even when the ranks then differ, so the assemblies this loads, or fails to
+            // bind, are the ones CoreCLR's comparison touches.
+            //
+            // Rank alone then decides the shape: the decoder refuses a non-canonical `ArrayShape`,
+            // and canonical shapes of one rank carry identical sizes and lower bounds.
+            let assemblies, elementsMatch = recurse assemblies lElt rElt
+
+            if not elementsMatch then
                 assemblies, false
             else
-                recurse assemblies lElt rElt
+                assemblies, lRank = rRank
         | TypeDefn.Modified l, TypeDefn.Modified r ->
             // A modreq never equals a modopt, and the modifier itself is compared nominally.
             // Nesting order is preserved by the decoder, so recursing through `Unmodified`
@@ -175,21 +181,24 @@ module SignatureComparison =
                 else
                     recurse assemblies l.Unmodified r.Unmodified
         | TypeDefn.GenericInstantiation (lGeneric, lArgs), TypeDefn.GenericInstantiation (rGeneric, rArgs) ->
-            if lArgs.Length <> rArgs.Length then
+            // The generic definition before the argument count, as `CompareElementType` reads
+            // the blob, for the same reason as the array arm above. Well-formed metadata cannot
+            // reach a count mismatch with one definition, since the arity is part of its name,
+            // but the order is kept so that a malformed pair loads what CoreCLR would load.
+            let assemblies, genericMatches = recurse assemblies lGeneric rGeneric
+
+            if not genericMatches then
+                assemblies, false
+            elif lArgs.Length <> rArgs.Length then
                 assemblies, false
             else
-                let assemblies, genericMatches = recurse assemblies lGeneric rGeneric
-
-                if not genericMatches then
-                    assemblies, false
-                else
-                    ((assemblies, true), Seq.zip lArgs rArgs)
-                    ||> Seq.fold (fun (assemblies, soFar) (l, r) ->
-                        if not soFar then
-                            (assemblies, false)
-                        else
-                            recurse assemblies l r
-                    )
+                ((assemblies, true), Seq.zip lArgs rArgs)
+                ||> Seq.fold (fun (assemblies, soFar) (l, r) ->
+                    if not soFar then
+                        (assemblies, false)
+                    else
+                        recurse assemblies l r
+                )
         | TypeDefn.FunctionPointer l, TypeDefn.FunctionPointer r ->
             if l.Header.Get.RawValue <> r.Header.Get.RawValue then
                 assemblies, false

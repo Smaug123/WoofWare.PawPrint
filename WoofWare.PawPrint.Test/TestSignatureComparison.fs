@@ -999,6 +999,141 @@ public class Holder
         |> snd
         |> shouldEqual false
 
+    [<Test>]
+    let ``an array's element is compared before its rank`` () : unit =
+        // `CompareElementType` reads an ARRAY's element before its rank, so the element is
+        // resolved even when the ranks then differ — and an element from an assembly that cannot
+        // be bound throws there rather than answering FALSE. Comparing the rank first would answer
+        // FALSE without the resolution, loading fewer assemblies than CoreCLR does.
+        //
+        // Cross-module, so the same-token shortcut cannot answer the element. Both arrays are
+        // multidimensional: `Mid[]` is SZARRAY, a different element type from ARRAY, which CoreCLR
+        // separates on the byte alone.
+        let definingImage =
+            Roslyn.compileAssembly
+                "SignatureArrayOrderDef"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class Mid { }" ]
+
+        let compileUser (name : string) (arrayType : string) : DumpedAssembly =
+            Roslyn.compileAssembly
+                name
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage definingImage ]
+                [ $"public class Holder {{ public %s{arrayType} P {{ get; set; }} }}" ]
+            |> read
+
+        let left = compileUser "SignatureArrayOrderLeft" "Mid[,]"
+        let right = compileUser "SignatureArrayOrderRight" "Mid[,,]"
+        let leftSig = holderProperty left "P"
+        let rightSig = holderProperty right "P"
+
+        // The premise: two ARRAYs of differing rank over one nominal element.
+        match leftSig.ReturnType, rightSig.ReturnType with
+        | TypeDefn.Array (TypeDefn.FromReference _, 2), TypeDefn.Array (TypeDefn.FromReference _, 3) -> ()
+        | l, r -> failwith $"expected rank-2 and rank-3 arrays of a TypeRef, got %O{l} and %O{r}"
+
+        let compareUnder (assemblies : LoadedAssemblies) : bool =
+            SignatureComparison.compareDecodedSignatures
+                fixture.LoggerFactory
+                noRuntimeDirs
+                "test"
+                assemblies
+                left
+                leftSig
+                right
+                rightSig
+            |> snd
+
+        // The control: with the element's assembly loaded, the elements agree and the ranks
+        // decide.
+        let loadable =
+            LoadedAssemblies.empty
+                .WithLoadedAssembly(left)
+                .WithLoadedAssembly(right)
+                .WithLoadedAssembly (read definingImage)
+
+        compareUnder loadable |> shouldEqual false
+
+        // Without it, the element's resolution fails before the ranks are ever read.
+        let unloadable =
+            LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly right
+
+        let exn = Assert.Throws<exn> (fun () -> compareUnder unloadable |> ignore)
+        exn.Message |> shouldContainText "SignatureArrayOrderDef"
+
+    [<Test>]
+    let ``a generic instantiation's definition is compared before its argument count`` () : unit =
+        // `CompareElementType` reads a GENERICINST's definition before its argument count. A
+        // count mismatch over one definition needs malformed metadata, since the arity is part of
+        // a generic type's name, so the second operand is built by hand; the order still decides
+        // whether an unbindable definition throws, as in CoreCLR, or is never looked at.
+        let definingImage =
+            Roslyn.compileAssembly
+                "SignatureGenericOrderDef"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class Gen<T> { }" ]
+
+        let compileUser (name : string) : DumpedAssembly =
+            Roslyn.compileAssembly
+                name
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage definingImage ]
+                [ "public class Holder { public Gen<int> P { get; set; } }" ]
+            |> read
+
+        let left = compileUser "SignatureGenericOrderLeft"
+        let right = compileUser "SignatureGenericOrderRight"
+        let leftSig = holderProperty left "P"
+        let original = holderProperty right "P"
+
+        // `Gen<int, int>` spelled with `Gen`1`'s own row.
+        let rightSig =
+            let doubled =
+                match original.ReturnType with
+                | TypeDefn.GenericInstantiation (generic, args) ->
+                    TypeDefn.GenericInstantiation (generic, args.AddRange args)
+                | other -> failwith $"expected a generic instantiation, got %O{other}"
+
+            MethodSignature<TypeDefn> (
+                original.Header,
+                doubled,
+                original.RequiredParameterCount,
+                original.GenericParameterCount,
+                original.ParameterTypes
+            )
+
+        let compareUnder (assemblies : LoadedAssemblies) : bool =
+            SignatureComparison.compareDecodedSignatures
+                fixture.LoggerFactory
+                noRuntimeDirs
+                "test"
+                assemblies
+                left
+                leftSig
+                right
+                rightSig
+            |> snd
+
+        // The control: with the definition's assembly loaded, the definitions agree and the counts
+        // decide.
+        let loadable =
+            LoadedAssemblies.empty
+                .WithLoadedAssembly(left)
+                .WithLoadedAssembly(right)
+                .WithLoadedAssembly (read definingImage)
+
+        compareUnder loadable |> shouldEqual false
+
+        // Without it, the definition's resolution fails before the counts are ever compared.
+        let unloadable =
+            LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly right
+
+        let exn = Assert.Throws<exn> (fun () -> compareUnder unloadable |> ignore)
+        exn.Message |> shouldContainText "SignatureGenericOrderDef"
+
     // ----- function pointers ---------------------------------------------------------------------
 
     /// A property whose type is the given function pointer. Built from a real decoded signature so
