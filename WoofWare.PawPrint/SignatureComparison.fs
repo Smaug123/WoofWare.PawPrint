@@ -23,42 +23,34 @@ module SignatureComparison =
     /// malformed metadata could make cyclic, and a cycle would otherwise hang the interpreter.
     let private maxNestingDepth : int = 256
 
-    /// The name a nominal `TypeDefn` leaf carries in its *own* metadata, outermost enclosing type
-    /// first, without resolving it. `CompareTypeTokens` (siginfo.cpp) compares these strings before
-    /// it resolves anything, so a comparison that resolved eagerly would fail on images CoreCLR
-    /// answers cleanly.
-    let private nominalName
+    /// One nominal type as `CompareTypeTokens` sees it: a token in a module. A reference is a row
+    /// of the module that spells it; a definition is a row of the module that declares it.
+    [<RequireQualifiedAccess>]
+    type private NominalToken =
+        | Reference of TypeRef
+        | Definition of TypeInfo<GenericParamFromMetadata, TypeDefn>
+
+    type private Nominal =
+        {
+            Module : DumpedAssembly
+            Token : NominalToken
+        }
+
+    /// The nominal leaf of a decoded signature, as a token in the module that holds it. For a
+    /// reference that is the module the blob came from; a definition is looked up in its own.
+    let private nominalOfLeaf
         (operation : string)
         (assemblies : LoadedAssemblies)
-        (assembly : DumpedAssembly)
+        (blobModule : DumpedAssembly)
         (defn : TypeDefn)
-        : (string * string) list option
+        : Nominal
         =
         match defn with
         | TypeDefn.FromReference (typeRef, _) ->
-            // A nested type's row carries an empty namespace and only its own leaf name, with its
-            // enclosing type in the resolution scope, so the leaf alone does not tell `A+X` from
-            // `B+X`. Walk out to the enclosing type that names an assembly or module, innermost
-            // first, then reverse.
-            let rec walk (depth : int) (acc : (string * string) list) (current : TypeRef) =
-                if depth > maxNestingDepth then
-                    failwith
-                        $"%s{operation}: type reference %s{current.Name} in %s{assembly.Name.FullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
-
-                let acc = (current.Namespace, current.Name) :: acc
-
-                match current.ResolutionScope with
-                | TypeRefResolutionScope.TypeRef enclosing ->
-                    match assembly.TypeRefs.TryGetValue enclosing with
-                    | true, enclosing -> walk (depth + 1) acc enclosing
-                    | false, _ ->
-                        failwith
-                            $"%s{operation}: type reference %s{current.Name} in %s{assembly.Name.FullName} is scoped to a TypeRef row that assembly does not contain"
-                | TypeRefResolutionScope.Assembly _
-                | TypeRefResolutionScope.ModuleDef _
-                | TypeRefResolutionScope.ModuleRef _ -> acc
-
-            Some (walk 0 [] typeRef)
+            {
+                Module = blobModule
+                Token = NominalToken.Reference typeRef
+            }
         | TypeDefn.FromDefinition (identity, _) ->
             let definingAssembly =
                 assemblies.TryByDefinitionName identity.AssemblyFullName
@@ -67,34 +59,54 @@ module SignatureComparison =
                         $"%s{operation}: type definition %O{identity.TypeDefinition.Get} names unloaded assembly %s{identity.AssemblyFullName}"
                 )
 
-            let rec walk
-                (depth : int)
-                (acc : (string * string) list)
-                (current : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-                =
-                if depth > maxNestingDepth then
+            {
+                Module = definingAssembly
+                Token = NominalToken.Definition definingAssembly.TypeDefs.[identity.TypeDefinition.Get]
+            }
+        | other -> failwith $"%s{operation}: %O{other} is not a nominal type reference"
+
+    /// The namespace and name the token's own row carries. A nested type's row has an empty
+    /// namespace and only its own leaf name, with its enclosing type reachable separately.
+    let private nameOf (nominal : Nominal) : string * string =
+        match nominal.Token with
+        | NominalToken.Reference typeRef -> typeRef.Namespace, typeRef.Name
+        | NominalToken.Definition typeDef -> typeDef.Namespace, typeDef.Name
+
+    /// The enclosing type's token in the same module, or None for a top-level type.
+    let private enclosingOf (operation : string) (nominal : Nominal) : Nominal option =
+        match nominal.Token with
+        | NominalToken.Reference typeRef ->
+            match typeRef.ResolutionScope with
+            | TypeRefResolutionScope.TypeRef enclosing ->
+                match nominal.Module.TypeRefs.TryGetValue enclosing with
+                | true, enclosing ->
+                    Some
+                        { nominal with
+                            Token = NominalToken.Reference enclosing
+                        }
+                | false, _ ->
                     failwith
-                        $"%s{operation}: type definition %s{current.Name} in %s{identity.AssemblyFullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+                        $"%s{operation}: type reference %s{typeRef.Name} in %s{nominal.Module.Name.FullName} is scoped to a TypeRef row that assembly does not contain"
+            | TypeRefResolutionScope.Assembly _
+            | TypeRefResolutionScope.ModuleDef _
+            | TypeRefResolutionScope.ModuleRef _ -> None
+        | NominalToken.Definition typeDef ->
+            if typeDef.IsNested then
+                match nominal.Module.TypeDefs.TryGetValue typeDef.DeclaringType with
+                | true, enclosing ->
+                    Some
+                        { nominal with
+                            Token = NominalToken.Definition enclosing
+                        }
+                | false, _ ->
+                    failwith
+                        $"%s{operation}: type definition %s{typeDef.Name} in %s{nominal.Module.Name.FullName} names an enclosing type that assembly does not contain"
+            else
+                None
 
-                let acc = (current.Namespace, current.Name) :: acc
-
-                if current.IsNested then
-                    match definingAssembly.TypeDefs.TryGetValue current.DeclaringType with
-                    | true, enclosing -> walk (depth + 1) acc enclosing
-                    | false, _ ->
-                        failwith
-                            $"%s{operation}: type definition %s{current.Name} in %s{identity.AssemblyFullName} names an enclosing type that assembly does not contain"
-                else
-                    acc
-
-            Some (walk 0 [] definingAssembly.TypeDefs.[identity.TypeDefinition.Get])
-        | _ ->
-            ignore<DumpedAssembly> assembly
-            None
-
-    /// Resolve a nominal `TypeDefn` leaf to the TypeDef that defines it, which is the identity
-    /// `CompareTypeTokens` ultimately compares. Following a reference can load the assembly it
-    /// names, hence the assemblies in and out.
+    /// Resolve a token to the TypeDef that defines it, which is the identity `CompareTypeTokens`
+    /// ultimately compares. Following a reference can load the assembly it names, hence the
+    /// assemblies in and out.
     ///
     /// Deliberately the identity-only resolver: this comparison never looks at the resolved type
     /// beyond its identity, and priming a base chain would let an assembly reachable only from
@@ -105,20 +117,95 @@ module SignatureComparison =
     /// for that and `CompareTypeTokens` answers FALSE, so the miss is handed back for the caller
     /// to answer the same way. An assembly that cannot be bound at all fails loudly in the loader,
     /// as CoreCLR throws from its own.
-    let private resolveNominalIdentity
+    let private resolveNominal
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (assemblies : LoadedAssemblies)
+        (nominal : Nominal)
+        : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
+        =
+        match nominal.Token with
+        | NominalToken.Definition typeDef -> assemblies, Ok typeDef.Identity
+        | NominalToken.Reference typeRef ->
+            TypeResolution.resolveTypeRefIdentity loggerFactory dotnetRuntimeDirs nominal.Module typeRef assemblies
+
+    /// `CompareTypeTokens` (siginfo.cpp), step for step: the same row of one module, then names,
+    /// then the enclosing types by the same steps, then each side resolved in turn. The order is
+    /// the point, not a saving: it decides which assemblies are loaded, or fail to bind, before an
+    /// answer is reached, and PawPrint fails loudly where CoreCLR throws.
+    let rec private compareNominal
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (operation : string)
+        (depth : int)
         (assemblies : LoadedAssemblies)
-        (assembly : DumpedAssembly)
-        (defn : TypeDefn)
-        : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
+        (left : Nominal)
+        (right : Nominal)
+        : LoadedAssemblies * bool
         =
-        match defn with
-        | TypeDefn.FromDefinition (identity, _) -> assemblies, Ok identity
-        | TypeDefn.FromReference (typeRef, _) ->
-            TypeResolution.resolveTypeRefIdentity loggerFactory dotnetRuntimeDirs assembly typeRef assemblies
-        | other -> failwith $"%s{operation}: %O{other} is not a nominal type reference"
+        if depth > maxNestingDepth then
+            failwith
+                $"%s{operation}: %O{nameOf left} in %s{left.Module.Name.FullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+
+        match left.Token, right.Token with
+        | NominalToken.Reference lRef, NominalToken.Reference rRef when
+            left.Module.Name.FullName = right.Module.Name.FullName
+            && lRef.Handle = rRef.Handle
+            ->
+            // `tk1 == tk2` within one module, answered before anything is resolved. That step
+            // earns its place rather than merely saving work — `Signature_Init` strips custom
+            // modifiers without loading their types, so two signatures can carry the same
+            // modifier naming an assembly nothing has loaded, and resolving it would fail where
+            // CoreCLR answers.
+            //
+            // The row, not the description: two rows of one module may describe the same type,
+            // and CoreCLR does not take this shortcut for them. The module check is what makes
+            // the comparison meaningful, since a handle indexes its own module's tables.
+            assemblies, true
+        | NominalToken.Definition lDef, NominalToken.Definition rDef ->
+            // Two definitions are the same type only if they are the same definition. CoreCLR has
+            // one escape from that — CLR type equivalence, which makes separately embedded
+            // `[TypeIdentifier]` interop types compare equal — but `CompareTypeTokens` reaches it
+            // only under `FEATURE_TYPEEQUIVALENCE`, and `clrfeatures.cmake` sets that solely for
+            // `CLR_CMAKE_TARGET_WIN32`. Everywhere else the arm reads `return FALSE`, commented
+            // "two type defs can't be the same unless they are identical". PawPrint models a
+            // Linux guest (`SimulatedUnixPlatform`), so equivalence is not a behaviour it should
+            // reproduce; a build for a Windows guest would have to revisit it.
+            assemblies, lDef.Identity = rDef.Identity
+        | _, _ ->
+
+        if nameOf left <> nameOf right then
+            assemblies, false
+        else
+
+        // A nested type's row carries an empty namespace and only its own leaf name, so the
+        // enclosing types are what tell `A+X` from `B+X` — compared by these same steps, so their
+        // resolution happens, on both sides, before either leaf's.
+        let assemblies, enclosingMatch =
+            match enclosingOf operation left, enclosingOf operation right with
+            | Some lEnclosing, Some rEnclosing ->
+                compareNominal loggerFactory dotnetRuntimeDirs operation (depth + 1) assemblies lEnclosing rEnclosing
+            | None, None -> assemblies, true
+            | Some _, None
+            | None, Some _ -> assemblies, false
+
+        if not enclosingMatch then
+            assemblies, false
+        else
+
+        let assemblies, lIdentity =
+            resolveNominal loggerFactory dotnetRuntimeDirs assemblies left
+
+        match lIdentity with
+        | Error _ -> assemblies, false
+        | Ok lIdentity ->
+
+        let assemblies, rIdentity =
+            resolveNominal loggerFactory dotnetRuntimeDirs assemblies right
+
+        match rIdentity with
+        | Error _ -> assemblies, false
+        | Ok rIdentity -> assemblies, lIdentity = rIdentity
 
     /// Compare two decoded signature types the way `MetaSig::CompareElementType` compares two
     /// blobs with both `Substitution`s null.
@@ -248,23 +335,6 @@ module SignatureComparison =
                         else
                             recurse assemblies l r
                     )
-        | TypeDefn.FromReference (lRef, lKind), TypeDefn.FromReference (rRef, rKind) when
-            leftAssembly.Name.FullName = rightAssembly.Name.FullName
-            && lRef.Handle = rRef.Handle
-            ->
-            // `CompareTypeTokens`'s first step, `tk1 == tk2` within one module, answered before
-            // anything is resolved. That step earns its place rather than merely saving work —
-            // `Signature_Init` strips custom modifiers without loading their types, so two
-            // signatures can carry the same modifier naming an assembly nothing has loaded, and
-            // resolving it would fail where CoreCLR answers.
-            //
-            // The row, not the description: two rows of one module may describe the same type, and
-            // CoreCLR does not take this shortcut for them. The assembly check is what makes the
-            // comparison meaningful, since a handle indexes its own module's tables.
-            //
-            // The kind still has to agree: `CompareElementType` compares the element-type byte
-            // before it reads either token.
-            assemblies, lKind = rKind
         | (TypeDefn.FromDefinition (_, lKind) | TypeDefn.FromReference (_, lKind)),
           (TypeDefn.FromDefinition (_, rKind) | TypeDefn.FromReference (_, rKind)) ->
             // CoreCLR fails a CLASS against a VALUETYPE on the element-type byte alone, before it
@@ -272,45 +342,14 @@ module SignatureComparison =
             if lKind <> rKind then
                 assemblies, false
             else
-
-            // Names before resolution, as `CompareTypeTokens` does — and enclosing names too,
-            // which it compares by recursing on the scope. This is not an optimisation: an
-            // assembly that cannot be bound makes PawPrint fail loudly, so every pair separated
-            // here is a pair whose comparison cannot be decided by whether some assembly happens
-            // to be loadable. Comparing only the leaf would leave every nested type to
-            // resolution, since a nested row carries an empty namespace and its own name alone.
-            let lName = nominalName operation assemblies leftAssembly left
-            let rName = nominalName operation assemblies rightAssembly right
-
-            if lName <> rName then
-                assemblies, false
-            else
-
-            // Resolved one side at a time, answering as soon as one misses, so that no assembly
-            // is loaded which CoreCLR would not have loaded either.
-            let assemblies, lIdentity =
-                resolveNominalIdentity loggerFactory dotnetRuntimeDirs operation assemblies leftAssembly left
-
-            match lIdentity with
-            | Error _ -> assemblies, false
-            | Ok lIdentity ->
-
-            let assemblies, rIdentity =
-                resolveNominalIdentity loggerFactory dotnetRuntimeDirs operation assemblies rightAssembly right
-
-            match rIdentity with
-            | Error _ -> assemblies, false
-            | Ok rIdentity ->
-
-            // Two definitions are the same type only if they are the same definition. CoreCLR has
-            // one escape from that — CLR type equivalence, which makes separately embedded
-            // `[TypeIdentifier]` interop types compare equal — but `CompareTypeTokens` reaches it
-            // only under `FEATURE_TYPEEQUIVALENCE`, and `clrfeatures.cmake` sets that solely for
-            // `CLR_CMAKE_TARGET_WIN32`. Everywhere else the arm reads `return FALSE`, commented
-            // "two type defs can't be the same unless they are identical". PawPrint models a
-            // Linux guest (`SimulatedUnixPlatform`), so equivalence is not a behaviour it should
-            // reproduce; a build for a Windows guest would have to revisit it.
-            assemblies, lIdentity = rIdentity
+                compareNominal
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    operation
+                    0
+                    assemblies
+                    (nominalOfLeaf operation assemblies leftAssembly left)
+                    (nominalOfLeaf operation assemblies rightAssembly right)
         | _, _ -> assemblies, false
 
     /// Compare two decoded signatures as `MetaSig::CompareMethodSigs` does once its same-module

@@ -1134,6 +1134,88 @@ public class Holder
         let exn = Assert.Throws<exn> (fun () -> compareUnder unloadable |> ignore)
         exn.Message |> shouldContainText "SignatureGenericOrderDef"
 
+    [<Test>]
+    let ``enclosing types are resolved on both sides before either nested leaf`` () : unit =
+        // `CompareTypeTokens` recurses on the enclosing tokens, and that recursion resolves the
+        // enclosing type on *both* sides, before either leaf is resolved. So when two `Outer+Inner`
+        // references bind `Outer` to different assemblies, the right-hand assembly is bound — or
+        // fails to bind, which throws — even if the left-hand one turns out not to declare `Inner`
+        // at all. Resolving the whole left leaf first would answer FALSE on that miss without ever
+        // touching the right-hand assembly.
+        let nested = "public class Outer { public class Inner { } }"
+
+        let compileDefinition (name : string) (source : string) : byte[] =
+            Roslyn.compileAssembly name Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary [] [ source ]
+
+        let x = compileDefinition "SignatureNestedOrderX" nested
+        let y = compileDefinition "SignatureNestedOrderY" nested
+        // The same identity as `x`, but `Outer` has no `Inner`.
+        let xStandIn = compileDefinition "SignatureNestedOrderX" "public class Outer { }"
+
+        let compileUser (name : string) (definition : byte[]) : DumpedAssembly =
+            Roslyn.compileAssembly
+                name
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage definition ]
+                [ "public class Holder { public Outer.Inner P { get; set; } }" ]
+            |> read
+
+        let left = compileUser "SignatureNestedOrderLeft" x
+        let right = compileUser "SignatureNestedOrderRight" y
+        let leftSig = holderProperty left "P"
+        let rightSig = holderProperty right "P"
+
+        let compareUnder (assemblies : LoadedAssemblies) : bool =
+            SignatureComparison.compareDecodedSignatures
+                fixture.LoggerFactory
+                noRuntimeDirs
+                "test"
+                assemblies
+                left
+                leftSig
+                right
+                rightSig
+            |> snd
+
+        // The control: both bound, the two `Outer`s are different definitions, and that decides.
+        let both =
+            LoadedAssemblies.empty
+                .WithLoadedAssembly(left)
+                .WithLoadedAssembly(right)
+                .WithLoadedAssembly(read x)
+                .WithLoadedAssembly (read y)
+
+        compareUnder both |> shouldEqual false
+
+        // And the same reference resolved from two users of one `Outer+Inner` is equal, so the
+        // recursion over the enclosing chain does reach the leaf when the enclosers agree.
+        let leftOfX = compileUser "SignatureNestedOrderLeftOfX" x
+
+        let sameDefinition =
+            LoadedAssemblies.empty.WithLoadedAssembly(leftOfX).WithLoadedAssembly(right).WithLoadedAssembly (read x)
+
+        SignatureComparison.compareDecodedSignatures
+            fixture.LoggerFactory
+            noRuntimeDirs
+            "test"
+            sameDefinition
+            leftOfX
+            (holderProperty leftOfX "P")
+            left
+            leftSig
+        |> snd
+        |> shouldEqual true
+
+        // The order: the left `Outer` binds to the stand-in, which does declare `Outer`, so the
+        // enclosing comparison goes on to bind the right `Outer` — and `SignatureNestedOrderY` is
+        // neither loaded nor findable. That failure must come before the left `Inner` is looked
+        // for and found missing.
+        let standInOnly =
+            LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly(right).WithLoadedAssembly (read xStandIn)
+
+        let exn = Assert.Throws<exn> (fun () -> compareUnder standInOnly |> ignore)
+        exn.Message |> shouldContainText "SignatureNestedOrderY"
+
     // ----- function pointers ---------------------------------------------------------------------
 
     /// A property whose type is the given function pointer. Built from a real decoded signature so
