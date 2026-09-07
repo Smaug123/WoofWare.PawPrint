@@ -332,6 +332,9 @@ module TypeResolution =
     /// would otherwise make an unrelated assembly's availability decide whether it succeeds.
     /// CoreCLR draws the same line: <c>ClassLoader::ResolveTokenToTypeDefThrowing</c>, which its
     /// signature comparison uses, reads metadata and loads no types.
+    ///
+    /// <c>Error</c> is a plain absence: every assembly on the way was bound, and the last one does
+    /// not declare the name. An assembly that cannot be bound fails loudly instead.
     /// </remarks>
     let rec internal resolveTypeRefIdentity
         (loggerFactory : ILoggerFactory)
@@ -339,10 +342,11 @@ module TypeResolution =
         (referencedInAssembly : DumpedAssembly)
         (target : TypeRef)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * ResolvedTypeIdentity
+        : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
         =
         match Assembly.resolveTypeRef assemblies referencedInAssembly ImmutableArray.Empty target with
-        | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, identity
+        | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok identity
+        | TypeResolutionResult.NotFound miss -> assemblies, Error miss
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let assemblies, _, _ =
                 loadAssembly

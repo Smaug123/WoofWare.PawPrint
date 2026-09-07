@@ -85,7 +85,7 @@ public class Generic2<T, U>
             LoggerFactory : Microsoft.Extensions.Logging.ILoggerFactory
             Assembly : DumpedAssembly
             Corelib : DumpedAssembly
-            State : IlMachineState
+            Assemblies : LoadedAssemblies
         }
 
     let private makeFixture () : Fixture =
@@ -106,14 +106,11 @@ public class Generic2<T, U>
         let assembly =
             global.WoofWare.PawPrint.AssemblyApi.read loggerFactory None assemblyStream
 
-        let state =
-            (IlMachineState.initial loggerFactory ImmutableArray.Empty assembly).WithLoadedAssembly corelib
-
         {
             LoggerFactory = loggerFactory
             Assembly = assembly
             Corelib = corelib
-            State = state
+            Assemblies = LoadedAssemblies.empty.WithLoadedAssembly(assembly).WithLoadedAssembly corelib
         }
 
     let private fixture : Fixture = makeFixture ()
@@ -167,11 +164,16 @@ public class Generic2<T, U>
         )
         |> Seq.toList
 
+    /// No runtime directories: an assembly a test wants resolvable is loaded up front, and any
+    /// attempt to load one that is not fails outright.
+    let private noRuntimeDirs : string seq = Seq.empty
+
     let private compare (left : MethodSignature<TypeDefn>) (right : MethodSignature<TypeDefn>) : bool =
-        NativeSignature.compareDecodedSignatures
+        SignatureComparison.compareDecodedSignatures
             fixture.LoggerFactory
+            noRuntimeDirs
             "test"
-            fixture.State
+            fixture.Assemblies
             fixture.Assembly
             left
             fixture.Assembly
@@ -372,16 +374,17 @@ public class Holder
         leftBytes |> shouldEqual rightBytes
         leftAssembly.Name.FullName |> shouldNotEqual rightAssembly.Name.FullName
 
-        let state =
-            fixture.State.WithLoadedAssembly(leftAssembly).WithLoadedAssembly rightAssembly
+        let assemblies =
+            fixture.Assemblies.WithLoadedAssembly(leftAssembly).WithLoadedAssembly rightAssembly
 
         // Each `Payload` is a TypeDef in its own assembly, so these are different types despite the
         // identical bytes. A fast path that compared bytes without checking the assembly would say
         // they are equal.
-        NativeSignature.signaturesAreEqual
+        SignatureComparison.signaturesAreEqual
             fixture.LoggerFactory
+            noRuntimeDirs
             "test"
-            state
+            assemblies
             leftAssembly
             leftBytes
             left
@@ -397,12 +400,13 @@ public class Holder
         // fast path's answer is the one the structural comparison would reach anyway.
         let assembly, bytes, decoded = collisionOperand "SignatureCollisionSame"
 
-        let state = fixture.State.WithLoadedAssembly assembly
+        let assemblies = fixture.Assemblies.WithLoadedAssembly assembly
 
-        NativeSignature.signaturesAreEqual
+        SignatureComparison.signaturesAreEqual
             fixture.LoggerFactory
+            noRuntimeDirs
             "test"
-            state
+            assemblies
             assembly
             bytes
             decoded
@@ -516,15 +520,16 @@ public class Holder
         | other -> failwith $"expected `Mid` to be spelled as a TypeRef in the user assembly, got %O{other}"
 
         // No runtime dirs, and `SignatureBaseChainBase` never loaded: `TheBase` is unreachable.
-        let state =
-            (IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user).WithLoadedAssembly mid
+        let assemblies =
+            LoadedAssemblies.empty.WithLoadedAssembly(user).WithLoadedAssembly mid
 
         // Distinct Property rows of the same type, so this is a real comparison rather than an
         // identity check, and both sides resolve the same reference.
-        NativeSignature.compareDecodedSignatures
+        SignatureComparison.compareDecodedSignatures
             fixture.LoggerFactory
+            noRuntimeDirs
             "test"
-            state
+            assemblies
             user
             (signatureNamed "P")
             user
@@ -591,14 +596,23 @@ public class Holder
 
         // Both defining assemblies loaded, so each reference resolves to its own `Shared.Thing` and
         // the two identities are what separate them.
-        let state =
-            (IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty left)
+        let assemblies =
+            LoadedAssemblies.empty
+                .WithLoadedAssembly(left)
                 .WithLoadedAssembly(right)
                 .WithLoadedAssembly(leftDefining)
                 .WithLoadedAssembly
                 rightDefining
 
-        NativeSignature.compareDecodedSignatures fixture.LoggerFactory "test" state left leftSig right rightSig
+        SignatureComparison.compareDecodedSignatures
+            fixture.LoggerFactory
+            noRuntimeDirs
+            "test"
+            assemblies
+            left
+            leftSig
+            right
+            rightSig
         |> snd
         |> shouldEqual false
 
@@ -648,12 +662,13 @@ public class Holder
 
         // `SignatureSameTokenMid` is neither loaded nor on the (empty) runtime-dir list, so any
         // attempt to resolve this reference fails outright.
-        let state = IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user
+        let assemblies = LoadedAssemblies.empty.WithLoadedAssembly user
 
-        NativeSignature.compareDecodedSignatures
+        SignatureComparison.compareDecodedSignatures
             fixture.LoggerFactory
+            noRuntimeDirs
             "test"
-            state
+            assemblies
             user
             (signatureNamed "P")
             user
@@ -732,17 +747,18 @@ public class Holder
             moved.Handle |> shouldNotEqual typeRef.Handle
         | other -> failwith $"expected a TypeRef, got %O{other}"
 
-        let state = IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user
+        let assemblies = LoadedAssemblies.empty.WithLoadedAssembly user
 
         // Falling through to resolution is the point, and resolution cannot succeed here:
         // `SignatureTwoRowsMid` is neither loaded nor findable. Taking the shortcut would instead
         // answer "equal" without ever looking.
         let exn =
             Assert.Throws<exn> (fun () ->
-                NativeSignature.compareDecodedSignatures
+                SignatureComparison.compareDecodedSignatures
                     fixture.LoggerFactory
+                    noRuntimeDirs
                     "test"
-                    state
+                    assemblies
                     user
                     duplicateRow
                     user
@@ -808,16 +824,178 @@ public class Holder
 
         // `SignatureNestedMid` is neither loaded nor findable, so anything that reached resolution
         // would abort rather than answer.
-        let state = IlMachineState.initial fixture.LoggerFactory ImmutableArray.Empty user
+        let assemblies = LoadedAssemblies.empty.WithLoadedAssembly user
 
-        NativeSignature.compareDecodedSignatures
+        SignatureComparison.compareDecodedSignatures
             fixture.LoggerFactory
+            noRuntimeDirs
             "test"
-            state
+            assemblies
             user
             (signatureNamed "P")
             user
             (signatureNamed "Q")
+        |> snd
+        |> shouldEqual false
+
+    /// The decoded PropertySig of the single property named on `Holder` in the given assembly.
+    let private holderProperty (assembly : DumpedAssembly) (name : string) : MethodSignature<TypeDefn> =
+        let metadataReader = assembly.PeReader.GetMetadataReader ()
+        let holder = assembly.TypeDefs.Values |> Seq.find (fun td -> td.Name = "Holder")
+
+        let handle =
+            (metadataReader.GetTypeDefinition holder.TypeDefHandle).GetProperties ()
+            |> Seq.find (fun handle ->
+                metadataReader.GetString (metadataReader.GetPropertyDefinition handle).Name = name
+            )
+
+        PropertySignatureDecoding.decode
+            assembly.Name
+            metadataReader
+            (metadataReader.GetPropertyDefinition handle).Signature
+
+    let private read (image : byte[]) : DumpedAssembly =
+        use stream = new MemoryStream (image)
+        global.WoofWare.PawPrint.AssemblyApi.read fixture.LoggerFactory None stream
+
+    [<Test>]
+    let ``a reference whose bound assembly does not declare the type compares unequal`` () : unit =
+        // `CompareTypeTokens` resolves each side with `ClassLoader::ResolveTokenToTypeDefThrowing`,
+        // which returns FALSE when the assembly it binds does not declare the name, and the
+        // comparison then answers FALSE. That is a different fact from an assembly that cannot be
+        // bound at all, which throws there and fails loudly here.
+        //
+        // Two user assemblies compiled against a `SignatureMissingTypeDef` that declares `Mid`,
+        // then compared with a build of that same assembly identity which does not. Cross-module,
+        // so the same-token shortcut cannot answer and resolution is reached.
+        let realDefinition =
+            Roslyn.compileAssembly
+                "SignatureMissingTypeDef"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class Mid { }" ]
+
+        let standIn =
+            Roslyn.compileAssembly
+                "SignatureMissingTypeDef"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [ "public class Other { }" ]
+
+        let compileUser (name : string) : DumpedAssembly =
+            Roslyn.compileAssembly
+                name
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage realDefinition ]
+                [ "public class Holder { public Mid P { get; set; } }" ]
+            |> read
+
+        let left = compileUser "SignatureMissingTypeLeft"
+        let right = compileUser "SignatureMissingTypeRight"
+        let leftSig = holderProperty left "P"
+        let rightSig = holderProperty right "P"
+
+        let compareUnder (definition : DumpedAssembly) : bool =
+            let assemblies =
+                LoadedAssemblies.empty.WithLoadedAssembly(left).WithLoadedAssembly(right).WithLoadedAssembly definition
+
+            SignatureComparison.compareDecodedSignatures
+                fixture.LoggerFactory
+                noRuntimeDirs
+                "test"
+                assemblies
+                left
+                leftSig
+                right
+                rightSig
+            |> snd
+
+        // The control: with the assembly that does declare `Mid`, the two references resolve to
+        // one definition. So what the stand-in changes below is the resolution's answer alone.
+        compareUnder (read realDefinition) |> shouldEqual true
+
+        // The stand-in carries the same definition identity, so the reference binds to it, and
+        // then finds no `Mid` there.
+        compareUnder (read standIn) |> shouldEqual false
+
+    [<Test>]
+    let ``one type spelled with different kinds is unequal`` () : unit =
+        // `CompareElementType` compares the element-type byte before it reads a token, so a
+        // CLASS-encoded and a VALUETYPE-encoded spelling of one type are unequal however the
+        // tokens compare. Well-formed metadata spells a type with one kind everywhere, so the
+        // other spelling is built here, and checked on both routes to an answer: the same-token
+        // shortcut, and the resolution that a TypeRef against a TypeDef needs.
+        let definingImage =
+            Roslyn.compileAssembly
+                "SignatureKindDef"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                []
+                [
+                    "public struct Thing { } public class Holder { public Thing R { get; set; } }"
+                ]
+
+        let user =
+            Roslyn.compileAssembly
+                "SignatureKindUser"
+                Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+                [ Microsoft.CodeAnalysis.MetadataReference.CreateFromImage definingImage ]
+                [ "public class Holder { public Thing P { get; set; } }" ]
+            |> read
+
+        let defining = read definingImage
+
+        let byReference = holderProperty user "P"
+        let byDefinition = holderProperty defining "R"
+
+        let respell (original : MethodSignature<TypeDefn>) : MethodSignature<TypeDefn> =
+            let flipped =
+                match original.ReturnType with
+                | TypeDefn.FromReference (typeRef, SignatureTypeKind.ValueType) ->
+                    TypeDefn.FromReference (typeRef, SignatureTypeKind.Class)
+                | TypeDefn.FromDefinition (identity, SignatureTypeKind.ValueType) ->
+                    TypeDefn.FromDefinition (identity, SignatureTypeKind.Class)
+                | other -> failwith $"expected a VALUETYPE spelling of `Thing`, got %O{other}"
+
+            MethodSignature<TypeDefn> (
+                original.Header,
+                flipped,
+                original.RequiredParameterCount,
+                original.GenericParameterCount,
+                original.ParameterTypes
+            )
+
+        let assemblies =
+            LoadedAssemblies.empty.WithLoadedAssembly(user).WithLoadedAssembly defining
+
+        let compareAcross (left : MethodSignature<TypeDefn>) (right : MethodSignature<TypeDefn>) : bool =
+            SignatureComparison.compareDecodedSignatures
+                fixture.LoggerFactory
+                noRuntimeDirs
+                "test"
+                assemblies
+                user
+                left
+                defining
+                right
+            |> snd
+
+        // The premise: a TypeRef in one module and a TypeDef in another, naming one type with one
+        // kind, are equal. Nothing but the kind separates the cases below from this one.
+        compareAcross byReference byDefinition |> shouldEqual true
+
+        // Resolution route: the TypeRef against a respelled TypeDef.
+        compareAcross byReference (respell byDefinition) |> shouldEqual false
+
+        // Shortcut route: the same TypeRef row in one module, respelled on one side.
+        SignatureComparison.compareDecodedSignatures
+            fixture.LoggerFactory
+            noRuntimeDirs
+            "test"
+            assemblies
+            user
+            byReference
+            user
+            (respell byReference)
         |> snd
         |> shouldEqual false
 
