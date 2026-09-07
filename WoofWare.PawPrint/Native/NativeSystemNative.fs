@@ -5820,10 +5820,15 @@ module NativeSystemNative =
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
             // Mirror image of `SystemNative_EnablePosixSignalHandling`: clear
-            // the per-signo enable bit. Real native code also conditionally
-            // restores the prior `sigaction` disposition; PawPrint has no
-            // installed disposition to restore, so the only kernel-visible
-            // effect is the cleared bit.
+            // the per-signo enable bit. Real native code then restores the
+            // prior `sigaction` disposition (unless the console or terminal
+            // machinery still needs the signal, which PawPrint has neither
+            // of); PawPrint has no installed disposition to restore, so the
+            // only kernel-visible effect of a successful restore is the
+            // cleared bit. The restore is unchecked, though, so where
+            // `sigaction` refuses it — a number the kernel has no signal
+            // for, or a signal nobody may catch — the shim carries on with
+            // EINVAL in errno, and that is what a guest reads back.
             let operation = "SystemNative_DisablePosixSignalHandling"
             let signo = NativeCall.int32Argument operation instruction.Arguments.[0]
             let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
@@ -5831,9 +5836,14 @@ module NativeSystemNative =
             match signalWithinShimRange operation numbering signo with
             | ValueNone ->
                 // Darwin's 32: nothing can have enabled it, so there is
-                // nothing to clear, but the `sigaction` the real shim calls
-                // to restore its prior disposition fails with EINVAL,
-                // unchecked, and that is what a guest reads back.
+                // nothing to clear.
+                withErrnoOnly ctx UnixError.EINVAL state
+                |> NativeHandlerResult.completed
+                |> Some
+            | ValueSome signal when Signal.isUncatchableUnder numbering signal ->
+                // SIGKILL and SIGSTOP, and glibc's reserved 32 and 33: the
+                // same refusals `EnablePosixSignalHandling` met, so nothing
+                // can have enabled these either.
                 withErrnoOnly ctx UnixError.EINVAL state
                 |> NativeHandlerResult.completed
                 |> Some

@@ -57,8 +57,24 @@ class Program
         Marshal.SetLastSystemError(0);
         Disable(32);
         if (Marshal.GetLastSystemError() != EINVAL) return 10;
+
+        // Same for the signals Darwin has but refuses to let anyone catch:
+        // 17 (SIGSTOP) and 9 (SIGKILL) could never have been enabled, but
+        // the PAL restores their prior disposition regardless, and
+        // sigaction(2) refuses that with EINVAL, unchecked.
+        Marshal.SetLastSystemError(0);
+        Disable(17);
+        if (Marshal.GetLastSystemError() != EINVAL) return 12;
+        Marshal.SetLastSystemError(0);
+        Disable(9);
+        if (Marshal.GetLastSystemError() != EINVAL) return 13;
+
+        // Disabling a catchable signal restores its disposition without
+        // incident, so errno is left as it was.
+        Marshal.SetLastSystemError(0);
         Disable(19);
         Disable(30);
+        if (Marshal.GetLastSystemError() != 0) return 14;
 
         // Kernel-default dispositions that do not end the process. 29 is
         // SIGINFO here and 23 is SIGIO, both discarded by default; under

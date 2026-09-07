@@ -51,8 +51,29 @@ class Program
         // SIGRTMAX itself is an ordinary catchable signal.
         if (Enable(64) != 1) return 8;
 
+        // Disabling a signal that could never have been enabled still has
+        // the PAL restore its prior disposition, and sigaction(2) refuses
+        // that with EINVAL, unchecked: for 9 (SIGKILL) and 19 (SIGSTOP) in
+        // the kernel, and for 32 and 33 in glibc's wrapper. Reset errno
+        // first so the value read back was written by the Disable.
+        Marshal.SetLastSystemError(0);
+        Disable(19);
+        if (Marshal.GetLastSystemError() != EINVAL) return 10;
+        Marshal.SetLastSystemError(0);
+        Disable(9);
+        if (Marshal.GetLastSystemError() != EINVAL) return 11;
+        Marshal.SetLastSystemError(0);
         Disable(32);
+        if (Marshal.GetLastSystemError() != EINVAL) return 12;
+        Marshal.SetLastSystemError(0);
+        Disable(33);
+        if (Marshal.GetLastSystemError() != EINVAL) return 13;
+
+        // Disabling a catchable signal restores its disposition without
+        // incident, so errno is left as it was.
+        Marshal.SetLastSystemError(0);
         Disable(64);
+        if (Marshal.GetLastSystemError() != 0) return 14;
 
         // Kernel-default dispositions that do not end the process: 17 is
         // SIGCHLD and 23 is SIGURG, both discarded, and both named by the
