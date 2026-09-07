@@ -471,6 +471,40 @@ type CliType =
                 Array.blit bytes offset result 0 count
                 result
 
+    /// The per-byte image of `[offset, offset + count)`: for each byte, its value or the
+    /// obstruction that denies it one. The primitive behind <see cref="TryBytesAt" />, kept
+    /// per byte so that a struct can overlay a field's image on another's byte for byte.
+    /// A range outside the value is a caller bug and fails.
+    static member internal ByteImageAt
+        (offset : int)
+        (count : int)
+        (value : CliType)
+        : Result<byte, CliByteAddressabilityRejection>[]
+        =
+        let checkRange (size : int) : unit =
+            CliType.CheckByteRange "CliType.ByteImageAt" offset count size $"CLI value %O{value}"
+
+        match value with
+        | CliType.ValueType vt -> CliValueType.ByteImageAt offset count vt
+        | CliType.ObjectRef None ->
+            checkRange NATIVE_INT_SIZE
+            Array.create count (Ok 0uy)
+        | CliType.ObjectRef (Some _) ->
+            checkRange NATIVE_INT_SIZE
+            Array.create count (Error CliByteAddressabilityRejection.ObjectReference)
+        | CliType.RuntimePointer _ ->
+            checkRange (CliType.SizeOf(value).Size)
+            Array.create count (Error CliByteAddressabilityRejection.RuntimePointer)
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _ ->
+            checkRange (CliType.SizeOf(value).Size)
+
+            match CliType.ByteAddressability value with
+            | CliByteAddressability.ByteAddressable -> CliType.BytesAt offset count value |> Array.map Ok
+            | CliByteAddressability.SymbolicallyAddressable rejection
+            | CliByteAddressability.Rejected rejection -> Array.create count (Error rejection)
+
     /// The bytes of `[offset, offset + count)`, if every byte in that range has a value.
     ///
     /// Slice-precise, where <see cref="BytesAt" /> refuses the whole value on the strength of
@@ -479,44 +513,32 @@ type CliType =
     /// all-zero image `ToBytes` gives it, so a range over one is answered too. A byte that is
     /// only nameable (see <see cref="SymbolicBytesAt" />) has no value, and nor does one
     /// inside a non-null reference or a runtime pointer, so a range reaching any of those is
-    /// refused with the obstruction. Each byte is judged by the field that last wrote it, so
-    /// in an explicit-layout union a byte-valued field written over a reference gives the
-    /// bytes it covers values. A range outside the value is a caller bug and fails.
+    /// refused with the obstruction on the first such byte. Each byte is judged by the field
+    /// that last wrote it, however deeply nested, so in an explicit-layout union a byte-valued
+    /// field written over a reference gives the bytes it covers values. A range outside the
+    /// value is a caller bug and fails.
     static member TryBytesAt
         (offset : int)
         (count : int)
         (value : CliType)
         : Result<byte[], CliByteAddressabilityRejection>
         =
-        let checkRange (size : int) : unit =
-            CliType.CheckByteRange "CliType.TryBytesAt" offset count size $"CLI value %O{value}"
+        let image = CliType.ByteImageAt offset count value
+        let bytes : byte[] = Array.zeroCreate count
+        let mutable firstObstruction : CliByteAddressabilityRejection option = None
 
-        if count = 0 then
-            // An empty range reaches no byte, so nothing in the value can obstruct it.
-            checkRange (CliType.SizeOf(value).Size)
-            Ok [||]
-        else
+        image
+        |> Array.iteri (fun i byte ->
+            match byte with
+            | Ok b -> bytes.[i] <- b
+            | Error rejection ->
+                if firstObstruction.IsNone then
+                    firstObstruction <- Some rejection
+        )
 
-        match value with
-        | CliType.ValueType vt -> CliValueType.TryBytesAt offset count vt
-        | CliType.ObjectRef None ->
-            checkRange NATIVE_INT_SIZE
-            Ok (Array.zeroCreate count)
-        | CliType.ObjectRef (Some _) ->
-            checkRange NATIVE_INT_SIZE
-            Error CliByteAddressabilityRejection.ObjectReference
-        | CliType.RuntimePointer _ ->
-            checkRange (CliType.SizeOf(value).Size)
-            Error CliByteAddressabilityRejection.RuntimePointer
-        | CliType.Numeric _
-        | CliType.Bool _
-        | CliType.Char _ ->
-            checkRange (CliType.SizeOf(value).Size)
-
-            match CliType.ByteAddressability value with
-            | CliByteAddressability.ByteAddressable -> Ok (CliType.BytesAt offset count value)
-            | CliByteAddressability.SymbolicallyAddressable rejection
-            | CliByteAddressability.Rejected rejection -> Error rejection
+        match firstObstruction with
+        | Some rejection -> Error rejection
+        | None -> Ok bytes
 
     /// The bytes of `[offset, offset + count)`, where a byte covered by a native int PawPrint
     /// models as an identity rather than as an address is *named* rather than materialised.
@@ -2187,39 +2209,35 @@ and CliValueType =
 
             result
 
-    /// The bytes of `[offset, offset + count)`, if every byte in that range has a value, per
-    /// `CliType.TryBytesAt`. Agrees with <see cref="BytesAt" /> byte for byte wherever `BytesAt`
-    /// succeeds, and answers a range `BytesAt` cannot when the fields it reaches have values
-    /// over the part of them it reaches: a field is asked only for the bytes inside the range.
-    static member TryBytesAt
+    /// The per-byte image of `[offset, offset + count)`, per `CliType.ByteImageAt`: each byte's
+    /// value, or the obstruction denying it one, wrapped as a field of this type.
+    static member internal ByteImageAt
         (offset : int)
         (count : int)
         (cvt : CliValueType)
-        : Result<byte[], CliByteAddressabilityRejection>
+        : Result<byte, CliByteAddressabilityRejection>[]
         =
         match cvt._Storage with
-        | CliValueTypeStorage.RawBytes _ -> Ok (CliValueType.BytesAt offset count cvt)
+        | CliValueTypeStorage.RawBytes _ -> CliValueType.BytesAt offset count cvt |> Array.map Ok
         | CliValueTypeStorage.Fields storage ->
             let expectedSize = CliValueType.SizeOf(cvt).Size
 
             if storage.PreservedBytes.Length <> expectedSize then
                 failwith
-                    $"CliValueType.TryBytesAt: preserved byte image length %i{storage.PreservedBytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
+                    $"CliValueType.ByteImageAt: preserved byte image length %i{storage.PreservedBytes.Length} does not match value type size %i{expectedSize} for %O{cvt._Declared}"
 
-            CliValueType.CheckByteRange "CliValueType.TryBytesAt" offset count expectedSize cvt._Declared
+            CliValueType.CheckByteRange "CliValueType.ByteImageAt" offset count expectedSize cvt._Declared
 
             let endExclusive = offset + count
 
             // Bytes no field covers are padding, with values from the preserved image. Each
-            // field then replays over the bytes it covers, in the same `EditedAtTime` order as
-            // `BytesAt`, so the two agree wherever both answer; a field without values for
-            // those bytes leaves its obstruction on them instead. Fields overlap only in an
-            // explicit-layout union, where the last-written one owns the shared bytes: a
-            // later field's values displace an earlier obstruction, and an earlier field's
-            // values are displaced by a later obstruction.
-            let result : byte[] = Array.zeroCreate count
-            Array.blit storage.PreservedBytes offset result 0 count
-            let obstructions : CliByteAddressabilityRejection option[] = Array.create count None
+            // field then overlays its own image on the bytes it covers, in the same
+            // `EditedAtTime` order as `BytesAt`, so the two agree wherever both answer. Fields
+            // overlap only in an explicit-layout union, where the last-written one owns the
+            // shared bytes: a later field's values displace an earlier obstruction, and an
+            // earlier field's values are displaced by a later obstruction, byte by byte.
+            let image : Result<byte, CliByteAddressabilityRejection>[] =
+                Array.init count (fun i -> Ok storage.PreservedBytes.[offset + i])
 
             storage.Fields
             |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
@@ -2228,24 +2246,35 @@ and CliValueType =
                 let first = max field.Offset offset
                 let endInField = min (field.Offset + field.Size) endExclusive
 
-                match CliType.TryBytesAt (first - field.Offset) (endInField - first) field.Contents with
-                | Ok fieldBytes ->
-                    Array.blit fieldBytes 0 result (first - offset) fieldBytes.Length
-                    Array.fill obstructions (first - offset) fieldBytes.Length None
-                | Error rejection ->
-                    let obstruction =
-                        CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
-                            cvt._Declared,
-                            field.Id,
-                            rejection
-                        )
-
-                    Array.fill obstructions (first - offset) (endInField - first) (Some obstruction)
+                CliType.ByteImageAt (first - field.Offset) (endInField - first) field.Contents
+                |> Array.iteri (fun i byte ->
+                    image.[first - offset + i] <-
+                        match byte with
+                        | Ok b -> Ok b
+                        | Error rejection ->
+                            Error (
+                                CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
+                                    cvt._Declared,
+                                    field.Id,
+                                    rejection
+                                )
+                            )
+                )
             )
 
-            match Array.tryPick id obstructions with
-            | Some obstruction -> Error obstruction
-            | None -> Ok result
+            image
+
+    /// The bytes of `[offset, offset + count)`, if every byte in that range has a value, per
+    /// `CliType.TryBytesAt`. Agrees with <see cref="BytesAt" /> byte for byte wherever `BytesAt`
+    /// succeeds, and answers a range `BytesAt` cannot when every byte it reaches has a value,
+    /// judging each byte by the field that last wrote it.
+    static member TryBytesAt
+        (offset : int)
+        (count : int)
+        (cvt : CliValueType)
+        : Result<byte[], CliByteAddressabilityRejection>
+        =
+        CliType.TryBytesAt offset count (CliType.ValueType cvt)
 
     /// The counterpart of <see cref="BytesAt" /> for a value whose bytes are only nameable: a
     /// byte covered by a native int PawPrint models as an identity comes back naming that native

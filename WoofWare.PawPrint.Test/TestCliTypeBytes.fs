@@ -957,6 +957,55 @@ module TestCliTypeBytes =
         |> shouldEqual (Array.zeroCreate 8)
 
     [<Test>]
+    let ``TryBytesAt keeps per-byte precision through a nested struct`` () : unit =
+        // `struct { Inner I; long L; }`, both at offset 0, where `Inner` is `{ IntPtr Handle;
+        // int N; }` with the handle tagged. A slice over the whole of `I` has bytes with values
+        // and bytes without; when `L` is written after `I`, its values displace the tagged
+        // bytes and the slice [0, 12) is `L` followed by `N`.
+        let inner () : CliValueType = taggedNativeIntThenIntValueType ()
+
+        let outer () : CliValueType =
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField "I" (inner () |> CliType.ValueType) (Some 0) declaredHandle
+                    cliField "L" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0) int64Handle
+                ]
+
+        let longNewer =
+            outer ()
+            |> CliValueType.WithFieldSet
+                "L"
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x0102030405060708L)))
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 0 12 longNewer
+        |> expectBytes
+        |> shouldEqual (
+            Array.append (System.BitConverter.GetBytes 0x0102030405060708L) (System.BitConverter.GetBytes 0x11223344)
+        )
+
+        let innerNewer =
+            outer ()
+            |> CliValueType.WithFieldSet
+                "L"
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x0102030405060708L)))
+            |> CliValueType.WithFieldSet "I" (inner () |> CliType.ValueType)
+            |> CliType.ValueType
+
+        // With the inner struct written last its tagged bytes are back, but its `N` still has
+        // values, so a slice that misses the tagged bytes is answered.
+        CliType.TryBytesAt 0 12 innerNewer |> expectRefusal |> ignore
+
+        CliType.TryBytesAt 8 4 innerNewer
+        |> expectBytes
+        |> shouldEqual (System.BitConverter.GetBytes 0x11223344)
+
+    [<Test>]
     let ``TryBytesAt answers an empty slice of anything in range`` () : unit =
         // An empty slice reaches no byte, so it has no byte without a value.
         CliType.TryBytesAt 8 0 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
