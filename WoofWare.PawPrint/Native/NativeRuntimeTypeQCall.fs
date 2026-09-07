@@ -233,18 +233,32 @@ module NativeRuntimeTypeQCall =
             | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
                 RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _) ->
-                // `TypeHandle::GetName` renders the wrapped byref (`System.Int32&`) and
-                // `typeAssemblyFullName` peels the wrappers to the element's assembly, as
-                // `TypeKey::GetModule` does for a byref key.
+                // `ClassLoader::ThrowTypeLoadException` renders the wrapped byref with
+                // `TypeString::AppendTypeKey` under `FormatNamespace` alone — nested types as
+                // `Outer+Inner`, instantiations as `List`1[System.String]`, function pointers as
+                // their signature — and names the assembly of the key's module, which for a byref
+                // key is its element's; `typeAssemblyFullName` peels the wrappers the same way. The
+                // EE then constructs the exception from those two strings, which is where
+                // `TypeLoadException.TypeName` comes from. Measured on .NET 10 for a nested type, a
+                // nested generic instantiation, `int[,]`, `int*`, two function pointers and `void`.
                 let typeName =
-                    NativeRuntimeTypeHelpers.typeHandleGetName operation state typeHandleTarget
+                    NativeRuntimeTypeHelpers.runtimeTypeHandleName
+                        operation
+                        state
+                        NativeRuntimeTypeHelpers.formatNamespaceFlag
+                        typeHandleTarget
 
                 let assemblyName =
                     NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
 
-                NativeHandlerResult.raiseExceptionWithMessage
+                NativeHandlerResult.raiseExceptionWithFields
                     ctx.BaseClassTypes.TypeLoadException
-                    (Some $"Could not create a ByRef of a ByRef. Type: '%s{typeName}'. Assembly: '%s{assemblyName}'.")
+                    [
+                        RuntimeExceptionStringField.Message
+                            $"Could not create a ByRef of a ByRef. Type: '%s{typeName}'. Assembly: '%s{assemblyName}'."
+                        RuntimeExceptionStringField.TypeLoadClassName typeName
+                        RuntimeExceptionStringField.TypeLoadAssemblyName assemblyName
+                    ]
                     state
                 |> Some
             | RuntimeTypeHandleTarget.Closed element ->

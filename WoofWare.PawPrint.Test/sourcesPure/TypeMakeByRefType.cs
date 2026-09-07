@@ -5,6 +5,10 @@ using System.Reflection;
 class Sample
 {
     public void ByRef(ref int value, ref List<int> list) => value++;
+
+    public class Nested<T>
+    {
+    }
 }
 
 static class Program
@@ -54,17 +58,46 @@ static class Program
         if (voidRef.GetElementType() != typeof(void)) return 23;
 
         // The one input the type loader refuses: a byref of a byref. The message names the type
-        // being wrapped and the assembly that declares its element.
+        // being wrapped -- rendered as reflection renders a type key, so a nested type carries its
+        // `+` and a function pointer its signature -- and the assembly that declares its element;
+        // `TypeName` carries the same type string.
+        string coreLib = typeof(int).Assembly.FullName;
+        string here = typeof(Sample).Assembly.FullName;
+        if (ByRefOfByRef(intRef, "System.Int32&", coreLib) is int r1) return r1;
+        if (ByRefOfByRef(typeof(Sample.Nested<int>).MakeByRefType(), "Sample+Nested`1[System.Int32]&", here) is int r2) return 100 + r2;
+        if (ByRefOfByRef(typeof(int[,]).MakeByRefType(), "System.Int32[,]&", coreLib) is int r3) return 200 + r3;
+        if (ByRefOfByRef(voidRef, "System.Void&", coreLib) is int r4) return 300 + r4;
+        unsafe
+        {
+            if (ByRefOfByRef(typeof(delegate*<int, string>).MakeByRefType(), "System.String(System.Int32)&", coreLib) is int r5) return 400 + r5;
+        }
+
+        return 0;
+    }
+
+    // Null when the call behaves as CoreCLR does; otherwise a small code saying which check failed.
+    static int? ByRefOfByRef(Type byRef, string expectedTypeName, string expectedAssembly)
+    {
         try
         {
-            intRef.MakeByRefType();
+            byRef.MakeByRefType();
             return 24;
         }
         catch (TypeLoadException e)
         {
-            if (!e.Message.StartsWith("Could not create a ByRef of a ByRef. Type: 'System.Int32&'. Assembly: 'System.Private.CoreLib, Version=", StringComparison.Ordinal)) return 25;
+            string expected = $"Could not create a ByRef of a ByRef. Type: '{expectedTypeName}'. Assembly: '{expectedAssembly}'.";
+            if (e.Message != expected)
+            {
+                Console.Error.WriteLine($"message: {e.Message}");
+                return 25;
+            }
+            if (e.TypeName != expectedTypeName)
+            {
+                Console.Error.WriteLine($"TypeName: {e.TypeName}");
+                return 26;
+            }
         }
 
-        return 0;
+        return null;
     }
 }

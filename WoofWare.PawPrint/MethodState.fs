@@ -57,6 +57,19 @@ type ConstructionState =
 
 /// What `returnStackFrame` should do with a frame's product — the object it was constructing if
 /// `Constructing`, otherwise the value its signature says it returns — once it returns.
+/// A string field on a runtime-synthesised exception that CoreCLR's `EEException::CreateThrowable`
+/// would have populated through a constructor overload PawPrint does not run. Each case names one
+/// field of one exception type; `IlMachineState.setRuntimeExceptionStringField` writes it.
+[<RequireQualifiedAccess>]
+type RuntimeExceptionStringField =
+    /// `System.Exception._message`: what a message-taking constructor overload would have stored.
+    | Message of string
+    /// `System.TypeLoadException._className`, which `TypeLoadException.TypeName` reports.
+    | TypeLoadClassName of string
+    /// `System.TypeLoadException._assemblyName`: the display name of the assembly the failing
+    /// type key belongs to, as `ClassLoader::ThrowTypeLoadException` records it.
+    | TypeLoadAssemblyName of string
+
 [<RequireQualifiedAccess>]
 type ReturnValueDisposition =
     /// The ordinary convention: push the returned value, or under `newobj` the constructed
@@ -67,14 +80,14 @@ type ReturnValueDisposition =
     /// `IlMachineStateExecution.raiseRuntimeException`). Dispatch the constructed object as
     /// a managed exception instead of pushing it.
     ///
-    /// `message`, when present, overwrites `_message` *after* the ctor has run — it must be
-    /// applied post-ctor, because the parameterless ctor sets `_message` to the type's
-    /// default resource string and would otherwise clobber it. Use it where the CLR would
-    /// have called a message-taking ctor overload that PawPrint cannot yet invoke (e.g.
-    /// `IndexOutOfRangeException(SR.IndexOutOfRange_ArrayRankIndex)`); leave it `None` to
-    /// accept the parameterless ctor's default, which is what the CLR produces when it
+    /// `fields` are written *after* the ctor has run — they must be applied post-ctor, because
+    /// the parameterless ctor sets `_message` to the type's default resource string and would
+    /// otherwise clobber it. Use them where the CLR would have called a constructor overload
+    /// that PawPrint cannot yet invoke (e.g. `IndexOutOfRangeException(SR.IndexOutOfRange_ArrayRankIndex)`,
+    /// or the four-argument `TypeLoadException` constructor the EE uses); leave the list empty
+    /// to accept the parameterless ctor's defaults, which is what the CLR produces when it
     /// throws the exception with no argument.
-    | DispatchAsException of message : string option
+    | DispatchAsException of fields : RuntimeExceptionStringField list
     /// Throw the returned value away rather than pushing it. The interpreter pushed this frame
     /// itself, on top of a caller that is mid-instruction, to run something the CLR would have
     /// run inside that instruction; the caller wants the frame's *effect*, not its value, and
