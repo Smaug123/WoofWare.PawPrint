@@ -2732,3 +2732,51 @@ module TestNullaryIlOp =
 
         // A zero size through a null destination is legal and writes nothing.
         initblkCompletes (EvalStackValue.ManagedPointer ManagedPointerSource.Null) (verbatim 0) (verbatim 0)
+
+    // --- ldlen ---
+
+    /// Run `ldlen` over a fresh `int32[len]` and return what it left on the stack.
+    let private ldlenOf (len : int) : EvalStackValue =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let op = NullaryIlOp.LdLen
+
+        let state, thread =
+            stateWithNullary loggerFactory op (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        // Drop the seed value `stateWithNullary` pushed; the operand has to be allocated on the
+        // heap first.
+        let _, state = IlMachineState.popEvalStack thread state
+
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes baseClassTypes.Int32
+
+        let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+
+        let arr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) len state
+
+        let state =
+            IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef arr) thread state
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread op with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+            | [ actual ] -> actual
+            | other -> failwith $"Expected ldlen to leave one stack value, got %O{other}"
+        | other -> failwith $"Expected ldlen to step, got %O{other}"
+
+    [<Test>]
+    let ``ldlen pushes the length as an int32`` () : unit =
+        // ECMA-335 III.4.12 says native unsigned int, but CoreCLR's importer types the result
+        // TYP_INT (`CEE_LDLEN` in jit/importer.cpp), so arithmetic on the raw result wraps at 32
+        // bits; the int32 slot is the one that reproduces that.
+        let property (len : int) : bool =
+            match ldlenOf len with
+            | EvalStackValue.Int32 (Int32Source.Verbatim n) -> n = len
+            | _ -> false
+
+        Check.One (config.WithMaxTest 50, Prop.forAll (Arb.fromGen (Gen.choose (0, 64))) property)

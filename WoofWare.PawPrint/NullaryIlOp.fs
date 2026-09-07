@@ -2520,10 +2520,18 @@ module NullaryIlOp =
                 | EvalStackValue.ObjectRef addr -> addr
                 | _ -> failwith $"can't get len of {popped}"
 
-            let popped = ManagedHeap.getArrayShape popped state.ManagedHeap
+            let shape = ManagedHeap.getArrayShape popped state.ManagedHeap
 
+            // ECMA-335 III.4.12 types the result native unsigned int, but CoreCLR's importer
+            // types it TYP_INT (`CEE_LDLEN` in jit/importer.cpp), so arithmetic on the raw result
+            // wraps at 32 bits: `ldlen; ldc.i4 0x7fffffff; add; conv.i` on a one-element array
+            // yields 0xffffffff80000000 there. The int32 slot reproduces that. A consumer that
+            // takes the value as a native int (a `nint` local, a `nuint` return, a call argument)
+            // widens it at `EvalStackValue.toCliTypeCoerced`, and a comparison against a native
+            // int widens it in `EvalStackValueComparisons`, as CoreCLR's `impImplicitIorI4Cast`
+            // does at each of those sinks.
             IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim popped.Length))
+                (EvalStackValue.Int32 (Int32Source.Verbatim shape.Length))
                 currentThread
                 state
             |> IlMachineState.advanceProgramCounter currentThread
