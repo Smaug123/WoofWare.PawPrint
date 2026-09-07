@@ -1071,14 +1071,21 @@ module Program =
                 failwith
                     "Main method must take no parameters or a single string[]; other signatures not yet implemented"
 
+        // CoreCLR's `ValidateMainMethod` reads the return column through
+        // `MetaSig::GetReturnType`, which skips custom modifiers, so `void modreq(X) Main()` is a
+        // `void Main` there. The decoded signature mirrors the blob and spells that as
+        // `Returns (Modified ...)`, so the modifiers are looked through here before classifying.
         let mainReturn =
             match mainMethodFromMetadata.Signature.ReturnType with
             | MethodReturnType.Void -> MainReturn.Void
-            | MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Int32) -> MainReturn.Int32
-            | other ->
-                // CoreCLR's `ValidateMainMethod` also admits a `uint32` return, which no C# or
-                // F# source can declare.
-                failwith $"Main method returns %O{other}; only a void or int32 Main is supported"
+            | MethodReturnType.Returns returns ->
+                match TypeDefn.stripCustomModifiers returns with
+                | TypeDefn.Void -> MainReturn.Void
+                | TypeDefn.PrimitiveType PrimitiveType.Int32 -> MainReturn.Int32
+                | _ ->
+                    // CoreCLR's `ValidateMainMethod` also admits a `uint32` return, which no C# or
+                    // F# source can declare.
+                    failwith $"Main method returns %O{returns}; only a void or int32 Main is supported"
 
         let state =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped

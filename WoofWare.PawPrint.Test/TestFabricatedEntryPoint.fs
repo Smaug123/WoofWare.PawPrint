@@ -26,12 +26,37 @@ open WoofWare.PawPrint
 /// The two valid rows are the control: a fabricated executable loads and runs on both runtimes,
 /// and the interpreter reads its exit code, so a refusal of the invalid rows is a refusal of the
 /// IL and not of the fabrication.
+///
+/// Two further valid rows put a custom modifier on `Main`'s return column. CoreCLR's
+/// `ValidateMainMethod` reads the return through `MetaSig::GetReturnType`, which skips custom
+/// modifiers, so `void modreq(X) Main()` is a `void Main` and `int32 modopt(X) Main()` is an
+/// `int Main`; the classifier that decides whether `Main`'s return latches the exit code must
+/// look through them too.
 [<TestFixture>]
 module TestFabricatedEntryPoint =
 
-    /// A console application whose only method is `static Main()` with the given return type
-    /// and body.
-    let private fabricateExe (name : string) (returnType : Type) (body : ILGenerator -> unit) : byte[] =
+    /// The custom modifiers on a fabricated `Main`'s return column.
+    type private ReturnModifiers =
+        {
+            Required : Type list
+            Optional : Type list
+        }
+
+        static member None : ReturnModifiers =
+            {
+                Required = []
+                Optional = []
+            }
+
+    /// A console application whose only method is `static Main()` with the given return type,
+    /// return custom modifiers, and body.
+    let private fabricateExeWithModifiers
+        (name : string)
+        (returnType : Type)
+        (modifiers : ReturnModifiers)
+        (body : ILGenerator -> unit)
+        : byte[]
+        =
         let builder = PersistedAssemblyBuilder (AssemblyName name, typeof<obj>.Assembly)
         let modul = builder.DefineDynamicModule name
 
@@ -39,7 +64,17 @@ module TestFabricatedEntryPoint =
             modul.DefineType ("Program", TypeAttributes.Public ||| TypeAttributes.Abstract ||| TypeAttributes.Sealed)
 
         let main =
-            program.DefineMethod ("Main", MethodAttributes.Public ||| MethodAttributes.Static, returnType, [||])
+            program.DefineMethod (
+                "Main",
+                MethodAttributes.Public ||| MethodAttributes.Static,
+                CallingConventions.Standard,
+                returnType,
+                Array.ofList modifiers.Required,
+                Array.ofList modifiers.Optional,
+                Type.EmptyTypes,
+                null,
+                null
+            )
 
         body (main.GetILGenerator ())
         program.CreateType () |> ignore<Type>
@@ -58,6 +93,32 @@ module TestFabricatedEntryPoint =
         let blob = BlobBuilder ()
         pe.Serialize blob |> ignore<BlobContentId>
         blob.ToArray ()
+
+    /// A console application whose only method is `static Main()` with the given return type
+    /// and body.
+    let private fabricateExe (name : string) (returnType : Type) (body : ILGenerator -> unit) : byte[] =
+        fabricateExeWithModifiers name returnType ReturnModifiers.None body
+
+    /// Vacuity guard for the modified-return rows: the modifier really is on `Main`'s return
+    /// column in the emitted metadata, where the classifier under test reads it. Without this a
+    /// builder that dropped the modifier would leave the row indistinguishable from its
+    /// unmodified control.
+    let private assertMainReturnIsModified (name : string) (image : byte[]) : unit =
+        let _messages, loggerFactory =
+            LoggerFactory.makeTestWithProperties [ "source_file", name ]
+
+        use _loggerFactoryResource = loggerFactory
+        use peImage = new MemoryStream (image)
+        let dumped = Assembly.read loggerFactory (Some name) peImage
+
+        let entryPoint =
+            match dumped.MainMethod with
+            | None -> failwith $"%s{name}: fabricated image has no entry point"
+            | Some d -> d
+
+        match dumped.Methods.[entryPoint].Signature.ReturnType with
+        | MethodReturnType.Returns (TypeDefn.Modified _) -> ()
+        | other -> failwith $"%s{name}: Main's return column carries no custom modifier: %O{other}"
 
     let private runOnPawPrint (name : string) (image : byte[]) : RunOutcome =
         let _messages, loggerFactory =
@@ -112,6 +173,39 @@ module TestFabricatedEntryPoint =
                 )
 
         expectExit "IntMain" image 5
+
+    [<Test>]
+    let ``a fabricated void Main whose return carries a modreq exits 0 on both runtimes`` () : unit =
+        let image =
+            fabricateExeWithModifiers
+                "VoidModreqMain"
+                typeof<Void>
+                {
+                    Required = [ typeof<System.Runtime.CompilerServices.IsExternalInit> ]
+                    Optional = []
+                }
+                (fun il -> il.Emit OpCodes.Ret)
+
+        assertMainReturnIsModified "VoidModreqMain" image
+        expectExit "VoidModreqMain" image 0
+
+    [<Test>]
+    let ``a fabricated int Main whose return carries a modopt exits with its return value on both runtimes`` () : unit =
+        let image =
+            fabricateExeWithModifiers
+                "IntModoptMain"
+                typeof<int>
+                {
+                    Required = []
+                    Optional = [ typeof<System.Runtime.CompilerServices.IsConst> ]
+                }
+                (fun il ->
+                    il.Emit (OpCodes.Ldc_I4, 7)
+                    il.Emit OpCodes.Ret
+                )
+
+        assertMainReturnIsModified "IntModoptMain" image
+        expectExit "IntModoptMain" image 7
 
     [<Test>]
     let ``a void Main that leaves a value on the stack is refused, not reported as a clean exit`` () : unit =
