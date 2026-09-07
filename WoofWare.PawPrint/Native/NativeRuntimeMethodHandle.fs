@@ -890,10 +890,8 @@ module NativeRuntimeMethodHandle =
                     Friends = attrAssembly.Friends
                 }
 
-            let sameAssembly = accessor.Assembly.FullName = target.Assembly.FullName
-
             let visible =
-                match AccessCheck.canAccessMethod sameAssembly accessor target attrCtorAttrs with
+                match AccessCheck.canAccessMethod accessor target attrCtorAttrs with
                 | Ok visible -> visible
                 | Error e ->
                     // CoreCLR parses and validates an assembly's friend declarations the first
