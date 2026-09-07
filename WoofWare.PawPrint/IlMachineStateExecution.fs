@@ -1773,26 +1773,26 @@ module IlMachineStateExecution =
     /// so there is no answer to be faithful to and none is invented.
     ///
     /// This is a rule about *entering a method*, not about calling one, which is why it lives here
-    /// rather than inside `callMethodWithCommitment`: a thread's entry point is entered without any
-    /// call instruction, and `sourcesImpure/UnmanagedCallersOnlyThreadStart.cs` is that route.
-    /// Every caller must apply it before anything the callee could observe — real .NET refuses the
-    /// entry *without* running the declaring type's static constructor, which
-    /// `sourcesImpure/UnmanagedCallersOnlyCctorNotRun.cs` pins.
+    /// rather than inside `callMethodWithCommitment`: a frame the VM installs directly is entered
+    /// without any call instruction. Every caller must apply it before anything the callee could
+    /// observe — real .NET refuses the entry *without* running the declaring type's static
+    /// constructor, which `sourcesImpure/UnmanagedCallersOnlyCctorNotRun.cs` pins.
     ///
     /// The places a method gets entered, and what each does with this:
     /// <list type="bullet">
     /// <item><c>callMethodWithCommitment</c>, which every call instruction, delegate dispatch and
-    /// reflective invoke passes through — applies it;</item>
-    /// <item><c>Thread.StartInternal</c>, which builds a worker's bottom frame directly — applies
-    /// it;</item>
+    /// reflective invoke passes through — applies it. A thread's delegate arrives this way too: the
+    /// worker's bottom frame is CoreLib's <c>Thread.StartCallback</c>, whose
+    /// <c>StartHelper.RunWorker</c> invokes the delegate with an ordinary <c>callvirt</c>, and
+    /// <c>sourcesImpure/UnmanagedCallersOnlyThreadStart.cs</c> is that route;</item>
     /// <item>the guest's entry point, installed by <c>Program</c> — does not. Roslyn refuses to
     /// attribute one (CS8899), so no guest compiled from C# can present the shape; an image handed
     /// to PawPrint directly could, and what CoreCLR does with it is unmeasured. See
     /// docs/divergences.md;</item>
-    /// <item><c>AppContextSeed</c> and <c>SignalDispatch</c>, which likewise build frames directly
-    /// — do not, because neither lets the guest choose the method: the first names BCL methods, and
-    /// a signal handler takes a <c>PosixSignalContext</c>, whose non-blittability makes the
-    /// attribute illegal on it (CS8894).</item>
+    /// <item><c>AppContextSeed</c>, <c>Thread.StartInternal</c> and <c>SignalDispatch</c>, which
+    /// build frames directly — do not, because none lets the guest choose the method: the first two
+    /// name BCL methods, and a signal handler takes a <c>PosixSignalContext</c>, whose
+    /// non-blittability makes the attribute illegal on it (CS8894).</item>
     /// </list>
     let unmanagedCallersOnlyRefusal
         (transition : CallSiteTransition)
@@ -2611,12 +2611,20 @@ module IlMachineStateExecution =
             // class loading required.
             StateLoadResult.NothingToDo state
         | Some (TypeInitState.InProgress blocker) ->
-            // Another thread owns this type's .cctor lock. Surface the blocker so the caller can
-            // translate to `WhatWeDid.BlockedOnClassInit blocker`; the scheduler then parks this
-            // thread until `blocker` makes progress or its cctor fails. We deliberately do not
-            // touch `state` (no WithTypeBeginInit, no PC advance): on wake-up the caller retries
-            // the same opcode and re-enters loadClass to observe the new TypeInitTable entry.
-            StateLoadResult.Blocked (state, blocker)
+            if ThreadState.classInitWaitChainReaches currentThread blocker state.ThreadState then
+                // `blocker` is (transitively) waiting for a type whose initialisation this thread
+                // owns, so parking here would deadlock. ECMA-335 II.10.5.3.3 step 2.2.2: proceed
+                // and see the type as `blocker` has left it so far, exactly as for the
+                // same-thread re-entry above.
+                StateLoadResult.NothingToDo state
+            else
+                // Another thread owns this type's .cctor lock. Surface the blocker so the caller
+                // can translate to `WhatWeDid.BlockedOnClassInit blocker`; the scheduler then
+                // parks this thread until `blocker` makes progress or its cctor fails. We
+                // deliberately do not touch `state` (no WithTypeBeginInit, no PC advance): on
+                // wake-up the caller retries the same opcode and re-enters loadClass to observe
+                // the new TypeInitTable entry.
+                StateLoadResult.Blocked (state, blocker)
         | None ->
             // We have work to do!
 
