@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
+open System
+open System.Reflection.Emit
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -529,6 +531,91 @@ module TestEvalStack =
 
         if not (EvalStackValueComparisons.cltUn verbatimZero ptr) then
             failwith "clt.un should report Verbatim 0L as strictly less than a non-null ManagedPointer"
+
+    /// `ldarg.0; stloc.0; ldloc.0; ret` with a `nint` local and an int32 argument: the host CLR's
+    /// widening of an int32 that lands in a native-int slot.
+    let private hostWidenInt32ToNativeInt : Func<int32, nativeint> =
+        let dm =
+            DynamicMethod ("widenInt32ToNativeInt", typeof<nativeint>, [| typeof<int32> |])
+
+        let il = dm.GetILGenerator ()
+        il.DeclareLocal typeof<nativeint> |> ignore<LocalBuilder>
+        il.Emit OpCodes.Ldarg_0
+        il.Emit OpCodes.Stloc_0
+        il.Emit OpCodes.Ldloc_0
+        il.Emit OpCodes.Ret
+        dm.CreateDelegate typeof<Func<int32, nativeint>> :?> Func<int32, nativeint>
+
+    [<Test>]
+    let ``toCliTypeCoerced NativeInt target widens an int32 the way the host does`` () : unit =
+        let target =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+        let property (i : int32) : bool =
+            let expected = hostWidenInt32ToNativeInt.Invoke i |> int64
+
+            EvalStackValue.toCliTypeCoerced target (EvalStackValue.Int32 (Int32Source.Verbatim i)) = CliType.Numeric (
+                CliNumericType.NativeInt (NativeIntSource.Verbatim expected)
+            )
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 500,
+            Prop.forAll (Arb.fromGen (Gen.choose (Int32.MinValue, Int32.MaxValue))) property
+        )
+
+    [<Test>]
+    let ``toCliTypeCoerced NativeInt target refuses a narrowed managed pointer`` () : unit =
+        let target =
+            CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+
+        let popped =
+            EvalStackValue.Int32 (
+                Int32Source.NarrowedManagedPointer (
+                    ManagedPointerSource.Byref (ByrefRoot.HeapValue (ManagedHeapAddress.ManagedHeapAddress 42), [])
+                )
+            )
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () -> EvalStackValue.toCliTypeCoerced target popped |> ignore<CliType>)
+
+        exn.Message |> shouldContainText "refusing to use managed pointer"
+
+    [<Test>]
+    let ``signed comparisons treat ManagedPointer Null as zero against an int32 and a Verbatim`` () : unit =
+        // A zero-initialised `nint` local, field or `IntPtr.Zero` is planted as
+        // `NativeIntSource.ManagedPointer ManagedPointerSource.Null` (see `CliType.zeroOfPrimitive`),
+        // so `ldloc` of an untouched `nint` local reaches `clt`/`cgt`/`ceq` in that shape rather
+        // than as `Verbatim 0L`. It is the value 0 under signed comparison too.
+        let nullPtr =
+            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+
+        let property (i : int32) : bool =
+            let asInt32 = EvalStackValue.Int32 (Int32Source.Verbatim i)
+            let asNativeInt = EvalStackValue.NativeInt (NativeIntSource.Verbatim (int64 i))
+            let counters = PointerHashState.empty
+
+            EvalStackValueComparisons.clt asInt32 nullPtr = (i < 0)
+            && EvalStackValueComparisons.clt nullPtr asInt32 = (0 < i)
+            && EvalStackValueComparisons.cgt asInt32 nullPtr = (i > 0)
+            && EvalStackValueComparisons.cgt nullPtr asInt32 = (0 > i)
+            && EvalStackValueComparisons.ceq counters asInt32 nullPtr = (i = 0)
+            && EvalStackValueComparisons.ceq counters nullPtr asInt32 = (i = 0)
+            && EvalStackValueComparisons.clt asNativeInt nullPtr = (i < 0)
+            && EvalStackValueComparisons.clt nullPtr asNativeInt = (0 < i)
+            && EvalStackValueComparisons.cgt asNativeInt nullPtr = (i > 0)
+            && EvalStackValueComparisons.cgt nullPtr asNativeInt = (0 > i)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 500,
+            Prop.forAll (Arb.fromGen (Gen.choose (Int32.MinValue, Int32.MaxValue))) property
+        )
+
+        // Null against itself is 0 against 0.
+        if EvalStackValueComparisons.clt nullPtr nullPtr then
+            failwith "clt should report ManagedPointer Null as not strictly less than itself"
+
+        if EvalStackValueComparisons.cgt nullPtr nullPtr then
+            failwith "cgt should report ManagedPointer Null as not strictly greater than itself"
 
     [<Test>]
     let ``toCliTypeCoerced Int64 target preserves SyntheticCrossArrayOffset provenance`` () : unit =
