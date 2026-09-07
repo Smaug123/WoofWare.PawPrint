@@ -1,16 +1,101 @@
 using System.Numerics;
 
-class Program
+internal static class Program
 {
-    static bool Check<T>() where T : struct => Vector<T>.IsSupported;
-
-    static int Main(string[] args)
+    private struct Pair
     {
-        // We don't assert a particular value; Check<int>() is `true` on real .NET
-        // (int is a primitive supported by Vector) and `false` on PawPrint's
-        // scalar-only virtual CPU. The test exists to make sure the call does
-        // not crash on PawPrint via the unimplemented-JIT-intrinsic path.
-        bool _ = Check<int>();
+        public int X;
+        public int Y;
+    }
+
+    private static int Main()
+    {
+        // Vector<T>.IsSupported asks whether T is a valid vector element type. It is
+        // independent of hardware acceleration: real .NET answers true for the twelve
+        // primitive element types whatever the hardware can do, and
+        // ThrowHelper.ThrowForUnsupportedNumericsVectorBaseType relies on that to no-op.
+        if (!Vector<byte>.IsSupported)
+        {
+            return 1;
+        }
+
+        if (!Vector<sbyte>.IsSupported)
+        {
+            return 2;
+        }
+
+        if (!Vector<short>.IsSupported)
+        {
+            return 3;
+        }
+
+        if (!Vector<ushort>.IsSupported)
+        {
+            return 4;
+        }
+
+        if (!Vector<int>.IsSupported)
+        {
+            return 5;
+        }
+
+        if (!Vector<uint>.IsSupported)
+        {
+            return 6;
+        }
+
+        if (!Vector<long>.IsSupported)
+        {
+            return 7;
+        }
+
+        if (!Vector<ulong>.IsSupported)
+        {
+            return 8;
+        }
+
+        if (!Vector<nint>.IsSupported)
+        {
+            return 9;
+        }
+
+        if (!Vector<nuint>.IsSupported)
+        {
+            return 10;
+        }
+
+        if (!Vector<float>.IsSupported)
+        {
+            return 11;
+        }
+
+        if (!Vector<double>.IsSupported)
+        {
+            return 12;
+        }
+
+        // Every other element type answers false, including the primitives that are
+        // not numeric and structs of the right size.
+        if (Vector<bool>.IsSupported)
+        {
+            return 13;
+        }
+
+        if (Vector<char>.IsSupported)
+        {
+            return 14;
+        }
+
+        if (Vector<decimal>.IsSupported)
+        {
+            return 15;
+        }
+
+        if (Vector<Pair>.IsSupported)
+        {
+            return 16;
+        }
+
         return 0;
     }
 }
