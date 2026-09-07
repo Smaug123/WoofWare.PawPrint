@@ -479,7 +479,9 @@ type CliType =
     /// all-zero image `ToBytes` gives it, so a range over one is answered too. A byte that is
     /// only nameable (see <see cref="SymbolicBytesAt" />) has no value, and nor does one
     /// inside a non-null reference or a runtime pointer, so a range reaching any of those is
-    /// refused with the obstruction. A range outside the value is a caller bug and fails.
+    /// refused with the obstruction. Each byte is judged by the field that last wrote it, so
+    /// in an explicit-layout union a byte-valued field written over a reference gives the
+    /// bytes it covers values. A range outside the value is a caller bug and fails.
     static member TryBytesAt
         (offset : int)
         (count : int)
@@ -488,6 +490,12 @@ type CliType =
         =
         let checkRange (size : int) : unit =
             CliType.CheckByteRange "CliType.TryBytesAt" offset count size $"CLI value %O{value}"
+
+        if count = 0 then
+            // An empty range reaches no byte, so nothing in the value can obstruct it.
+            checkRange (CliType.SizeOf(value).Size)
+            Ok [||]
+        else
 
         match value with
         | CliType.ValueType vt -> CliValueType.TryBytesAt offset count vt
@@ -2202,35 +2210,42 @@ and CliValueType =
 
             let endExclusive = offset + count
 
+            // Bytes no field covers are padding, with values from the preserved image. Each
+            // field then replays over the bytes it covers, in the same `EditedAtTime` order as
+            // `BytesAt`, so the two agree wherever both answer; a field without values for
+            // those bytes leaves its obstruction on them instead. Fields overlap only in an
+            // explicit-layout union, where the last-written one owns the shared bytes: a
+            // later field's values displace an earlier obstruction, and an earlier field's
+            // values are displaced by a later obstruction.
             let result : byte[] = Array.zeroCreate count
             Array.blit storage.PreservedBytes offset result 0 count
-
-            // Same filter and same `EditedAtTime` replay order as `BytesAt`, so the two agree
-            // wherever both answer.
-            let rec replay (fields : CliConcreteField list) : Result<byte[], CliByteAddressabilityRejection> =
-                match fields with
-                | [] -> Ok result
-                | field :: rest ->
-                    let first = max field.Offset offset
-                    let endInField = min (field.Offset + field.Size) endExclusive
-
-                    match CliType.TryBytesAt (first - field.Offset) (endInField - first) field.Contents with
-                    | Error rejection ->
-                        Error (
-                            CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
-                                cvt._Declared,
-                                field.Id,
-                                rejection
-                            )
-                        )
-                    | Ok fieldBytes ->
-                        Array.blit fieldBytes 0 result (first - offset) fieldBytes.Length
-                        replay rest
+            let obstructions : CliByteAddressabilityRejection option[] = Array.create count None
 
             storage.Fields
             |> List.filter (fun f -> f.Offset < endExclusive && offset < f.Offset + f.Size)
             |> List.sortBy _.EditedAtTime
-            |> replay
+            |> List.iter (fun field ->
+                let first = max field.Offset offset
+                let endInField = min (field.Offset + field.Size) endExclusive
+
+                match CliType.TryBytesAt (first - field.Offset) (endInField - first) field.Contents with
+                | Ok fieldBytes ->
+                    Array.blit fieldBytes 0 result (first - offset) fieldBytes.Length
+                    Array.fill obstructions (first - offset) fieldBytes.Length None
+                | Error rejection ->
+                    let obstruction =
+                        CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (
+                            cvt._Declared,
+                            field.Id,
+                            rejection
+                        )
+
+                    Array.fill obstructions (first - offset) (endInField - first) (Some obstruction)
+            )
+
+            match Array.tryPick id obstructions with
+            | Some obstruction -> Error obstruction
+            | None -> Ok result
 
     /// The counterpart of <see cref="BytesAt" /> for a value whose bytes are only nameable: a
     /// byte covered by a native int PawPrint models as an identity comes back naming that native

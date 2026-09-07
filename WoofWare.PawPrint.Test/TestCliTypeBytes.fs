@@ -901,6 +901,88 @@ module TestCliTypeBytes =
         )
 
     [<Test>]
+    let ``TryBytesAt judges each byte by the field that last wrote it`` () : unit =
+        // An explicit-layout union: `Obj` is a live reference at [0, 8), and `Alias` an int at
+        // [4, 8) over its upper half. Whichever was written last owns the bytes they share, so
+        // a slice of those bytes has values exactly when the alias is the newer of the two.
+        let union () : CliValueType =
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField "Obj" (CliType.ObjectRef (Some (ManagedHeapAddress 11))) (Some 0) objectHandle
+                    cliField "Alias" (CliType.Numeric (CliNumericType.Int32 0)) (Some 4) int32Handle
+                ]
+
+        let aliasNewer =
+            union ()
+            |> CliValueType.WithFieldSet "Alias" (CliType.Numeric (CliNumericType.Int32 0x11223344))
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 4 4 aliasNewer
+        |> expectBytes
+        |> shouldEqual (System.BitConverter.GetBytes 0x11223344)
+
+        CliType.TryBytesAt 6 1 aliasNewer |> expectBytes |> shouldEqual [| 0x22uy |]
+
+        // The reference still owns [0, 4), so a slice reaching it is refused.
+        for offset, count in [ 0, 8 ; 0, 4 ; 3, 2 ] do
+            match CliType.TryBytesAt offset count aliasNewer |> expectRefusal with
+            | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_,
+                                                                                       field,
+                                                                                       CliByteAddressabilityRejection.ObjectReference) ->
+                field |> shouldEqual (FieldId.named "Obj")
+            | other -> failwith $"slice [%d{offset}, %d{offset + count}) refused for the wrong reason: %O{other}"
+
+        let referenceNewer =
+            union ()
+            |> CliValueType.WithFieldSet "Alias" (CliType.Numeric (CliNumericType.Int32 0x11223344))
+            |> CliValueType.WithFieldSet "Obj" (CliType.ObjectRef (Some (ManagedHeapAddress 12)))
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 4 4 referenceNewer |> expectRefusal |> ignore
+
+        // A null reference written last gives the shared bytes its zeros.
+        let nullNewer =
+            union ()
+            |> CliValueType.WithFieldSet "Alias" (CliType.Numeric (CliNumericType.Int32 0x11223344))
+            |> CliValueType.WithFieldSet "Obj" (CliType.ObjectRef None)
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 0 8 nullNewer
+        |> expectBytes
+        |> shouldEqual (Array.zeroCreate 8)
+
+    [<Test>]
+    let ``TryBytesAt answers an empty slice of anything in range`` () : unit =
+        // An empty slice reaches no byte, so it has no byte without a value.
+        CliType.TryBytesAt 8 0 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+        |> expectBytes
+        |> shouldEqual [||]
+
+        CliType.TryBytesAt 0 0 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+        |> expectBytes
+        |> shouldEqual [||]
+
+        CliType.TryBytesAt 0 0 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+        |> expectBytes
+        |> shouldEqual [||]
+
+        // Inside the live reference of the struct, where a one-byte slice is refused.
+        let value = liveReferenceHighSlotValueType () |> CliType.ValueType
+        CliType.TryBytesAt 12 0 value |> expectBytes |> shouldEqual [||]
+        CliType.TryBytesAt 12 1 value |> expectRefusal |> ignore
+
+        (fun () ->
+            CliType.TryBytesAt 9 0 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+    [<Test>]
     let ``TryBytesAt fails on a range outside the value`` () : unit =
         // An out-of-range slice is a caller bug rather than a value without bytes, so it is an
         // exception and not a refusal, as for `BytesAt`.
