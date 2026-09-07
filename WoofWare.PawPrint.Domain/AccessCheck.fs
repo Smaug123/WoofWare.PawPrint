@@ -77,7 +77,10 @@ module AccessCheck =
 
     /// Mirrors CoreCLR's <c>ClassLoader::AssemblyOrFriendAccessAllowed</c>:
     /// <list type="number">
-    /// <item>If the two parties are the same assembly, access is granted.</item>
+    /// <item>If the two parties are the same assembly, access is granted.
+    /// CoreCLR compares <c>Assembly*</c> identity; PawPrint's assembly
+    /// identity is the definition display string, which is what
+    /// <c>AssemblyName.FullName</c> renders for a metadata-derived name.</item>
     /// <item>If the accessor's <c>IgnoresAccessChecksTo</c> list names the
     /// target's assembly, access is granted (the accessor has opted out of
     /// the target's visibility checks; this is the standard mechanism the
@@ -92,13 +95,8 @@ module AccessCheck =
     /// at the first that grants access; so <c>Error</c> names the accessor's
     /// assembly if its declarations are invalid, and the target's only if the
     /// accessor's were valid and did not grant access.
-    let private assemblyOrFriendAccessAllowed
-        (sameAssembly : bool)
-        (accessor : AccessParty)
-        (target : AccessParty)
-        : Result<bool, string>
-        =
-        if sameAssembly then
+    let private assemblyOrFriendAccessAllowed (accessor : AccessParty) (target : AccessParty) : Result<bool, string> =
+        if accessor.Assembly.FullName = target.Assembly.FullName then
             Ok true
         else
             match friendDeclares accessor (fun f -> f.IgnoresAccessChecksTo) target.Assembly with
@@ -114,7 +112,6 @@ module AccessCheck =
     /// <c>CanAccessFamily</c>'s subclass-walk and chain-equality checks,
     /// and guessing would silently grant (or deny) access.
     let private levelIsVisible
-        (sameAssembly : bool)
         (accessor : AccessParty)
         (target : AccessParty)
         (level : AccessLevelInfo)
@@ -126,7 +123,7 @@ module AccessCheck =
         | TypeAttributes.Public
         | TypeAttributes.NestedPublic -> Ok true
         | TypeAttributes.NotPublic
-        | TypeAttributes.NestedAssembly -> assemblyOrFriendAccessAllowed sameAssembly accessor target
+        | TypeAttributes.NestedAssembly -> assemblyOrFriendAccessAllowed accessor target
         | TypeAttributes.NestedPrivate ->
             failwithf
                 "AccessCheck: NestedPrivate visibility on type '%s' is not implemented in this slice (would require CanAccessFamily-style chain-equality check)"
@@ -150,12 +147,12 @@ module AccessCheck =
     /// <c>Error</c> means a level's decision needed a party's friend
     /// declarations and they are invalid; CoreCLR throws at that point
     /// rather than answering.
-    let canAccessClass (sameAssembly : bool) (accessor : AccessParty) (target : AccessParty) : Result<bool, string> =
+    let canAccessClass (accessor : AccessParty) (target : AccessParty) : Result<bool, string> =
         let rec walk (levels : AccessLevelInfo list) : Result<bool, string> =
             match levels with
             | [] -> Ok true
             | level :: outer ->
-                match levelIsVisible sameAssembly accessor target level with
+                match levelIsVisible accessor target level with
                 | Ok true -> walk outer
                 | Ok false -> Ok false
                 | Error e -> Error e
@@ -173,13 +170,12 @@ module AccessCheck =
     /// would require <c>CanAccessFamily</c> and chain-equality logic that
     /// is not ported. <c>Error</c> is as for <c>canAccessClass</c>.
     let canAccessMethod
-        (sameAssembly : bool)
         (accessor : AccessParty)
         (target : AccessParty)
         (targetMethodAttrs : MethodAttributes)
         : Result<bool, string>
         =
-        match canAccessClass sameAssembly accessor target with
+        match canAccessClass accessor target with
         | Error e -> Error e
         | Ok false -> Ok false
         | Ok true ->
@@ -187,7 +183,7 @@ module AccessCheck =
 
             match memberAccess with
             | MethodAttributes.Public -> Ok true
-            | MethodAttributes.Assembly -> assemblyOrFriendAccessAllowed sameAssembly accessor target
+            | MethodAttributes.Assembly -> assemblyOrFriendAccessAllowed accessor target
             | MethodAttributes.Private ->
                 failwith
                     "AccessCheck: Private member access is not implemented in this slice (would require CanAccessFamily-style chain-equality check)"
