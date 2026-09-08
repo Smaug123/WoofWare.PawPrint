@@ -338,15 +338,16 @@ module ArithmeticOperation =
             ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
             |> Choice1Of2
         | ArithmeticTarget.ArrayTarget (arr, index) ->
-            // ECMA-335 III.1.5 makes `&` +/- `int` byte arithmetic, whatever the byref's
-            // pointee is, so `v` is a byte count and has to be divided by the element stride
-            // before it can move a cell index. The three sibling arms above and below already
-            // read it that way. Measured against the real runtime (`TestFabricatedArrayByrefAdd`)
-            // that `ldelema char; ldc.i4.4; add; ldind.u2` reads element 2, not element 4.
-            // Dividing `v` by the stride here would duplicate what the byte-view normalisation
-            // does anyway, floor semantics included, so the offset goes on as bytes and the cell
-            // index is recovered from the result. The index is still checked separately for the
-            // int32 overflow this model has no room for.
+            // ECMA-335 III.1.5 makes `&` +/- `int` byte arithmetic, whatever the byref's pointee
+            // is, so `v` is a byte count and a cell index cannot simply absorb it. The three
+            // sibling arms above and below already read it that way. Measured against the real
+            // runtime (`TestFabricatedArrayByrefAdd`) that `ldelema char; ldc.i4.4; add;
+            // ldind.u2` reads element 2, not element 4.
+            //
+            // Converting the count into cells is left to the byte-view normalisation below,
+            // which does it — floor semantics and all — for every byte cursor anyway. Only the
+            // int32 overflow of the cell index is checked here, because that is the one part
+            // normalisation does not.
             let elementSize = ManagedPointerByteView.arrayElementSize state arr
             checkedAddInt32 "array index" index (v / elementSize) |> ignore<int>
 
