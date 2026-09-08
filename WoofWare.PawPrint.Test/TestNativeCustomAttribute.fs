@@ -34,6 +34,16 @@ public sealed class CctorAttribute : System.Attribute
 }
 """
 
+    /// Variant attribute with a `System.Type` parameter, whose value the QCall resolves by calling
+    /// into CoreLib's `TypeNameResolver` and resuming when that returns.
+    let private typeAttributeSource =
+        """
+public sealed class TypeAttribute : System.Attribute
+{
+    public TypeAttribute(System.Type t, int x) { }
+}
+"""
+
     type private Fixture =
         {
             LoggerFactory : ILoggerFactory
@@ -112,36 +122,6 @@ public sealed class CctorAttribute : System.Attribute
 
         value, state
 
-    /// Constructs a `QCallModule` value with the `_module` field set to the guest assembly's
-    /// `ModuleHandle` tag and `_ptr` left at its zero value. Mirrors the CoreCLR layout
-    /// `struct QCallModule { void* _ptr; IntPtr _module; }`.
-    let private qCallModuleValue (fixture : Fixture) (state : IlMachineState) : CliType * IlMachineState =
-        let qCallModuleType =
-            requiredTopLevelType fixture.Corelib "System.Runtime.CompilerServices" "QCallModule"
-
-        let state, qCallModuleHandle =
-            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state qCallModuleType
-
-        let zero, state =
-            IlMachineState.cliTypeZeroOfHandle state fixture.BaseClassTypes qCallModuleHandle
-
-        let value =
-            match zero with
-            | CliType.ValueType vt ->
-                let moduleField =
-                    IlMachineState.requiredOwnInstanceFieldId state qCallModuleHandle "_module"
-
-                CliValueType.WithFieldSetById
-                    moduleField
-                    (CliType.Numeric (
-                        CliNumericType.NativeInt (NativeIntSource.ModuleHandle fixture.GuestAssembly.Name.FullName)
-                    ))
-                    vt
-                |> CliType.ValueType
-            | other -> failwith $"QCallModule zero value was not a value type: %O{other}"
-
-        value, state
-
     /// Allocates a single-element object[] holding `value` and returns a managed pointer
     /// source targeting cell 0. Suitable for backing an `ObjectHandleOnStack._ptr`.
     let private allocateObjectRefSlot
@@ -157,6 +137,57 @@ public sealed class CctorAttribute : System.Attribute
             IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero objectHandle) (fun () -> value) 1 state
 
         arrayAddr, ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    /// Constructs a `QCallModule` value for the guest assembly's manifest module, as
+    /// `QCallModule(ref RuntimeModule)` would: `_module` is the module's `ModuleHandle` tag and
+    /// `_ptr` points at a slot holding the `RuntimeModule` object, which is also returned. Mirrors
+    /// the CoreCLR layout `struct QCallModule { void* _ptr; IntPtr _module; }`.
+    let private qCallModuleValue
+        (fixture : Fixture)
+        (state : IlMachineState)
+        : CliType * ManagedHeapAddress * IlMachineState
+        =
+        let qCallModuleType =
+            requiredTopLevelType fixture.Corelib "System.Runtime.CompilerServices" "QCallModule"
+
+        let state, qCallModuleHandle =
+            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state qCallModuleType
+
+        let moduleAddr, state =
+            NativeRuntimeTypeHelpers.getOrAllocateRuntimeModule
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.GuestAssembly.Name.FullName
+                state
+
+        let _moduleSlotArr, moduleSlot, state =
+            allocateObjectRefSlot fixture (CliType.ObjectRef (Some moduleAddr)) state
+
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state fixture.BaseClassTypes qCallModuleHandle
+
+        let value =
+            match zero with
+            | CliType.ValueType vt ->
+                let moduleField =
+                    IlMachineState.requiredOwnInstanceFieldId state qCallModuleHandle "_module"
+
+                let ptrField =
+                    IlMachineState.requiredOwnInstanceFieldId state qCallModuleHandle "_ptr"
+
+                vt
+                |> CliValueType.WithFieldSetById
+                    moduleField
+                    (CliType.Numeric (
+                        CliNumericType.NativeInt (NativeIntSource.ModuleHandle fixture.GuestAssembly.Name.FullName)
+                    ))
+                |> CliValueType.WithFieldSetById
+                    ptrField
+                    (CliType.RuntimePointer (CliRuntimePointer.Managed moduleSlot))
+                |> CliType.ValueType
+            | other -> failwith $"QCallModule zero value was not a value type: %O{other}"
+
+        value, moduleAddr, state
 
     /// Build the CustomAttrib blob for `MyAttribute(42, "hello")` plus a zero named-arg count.
     /// Layout (14 bytes total) follows ECMA-335 II.23.3:
@@ -181,6 +212,23 @@ public sealed class CctorAttribute : System.Attribute
             0x00uy
             0x00uy
         |]
+
+    /// The blob for `TypeAttribute(typeof(int), 42)` plus a zero named-arg count, as Roslyn
+    /// writes it: a `System.Type` argument is the SerString of the type's name, and `System.Int32`
+    /// is left unqualified. Layout (21 bytes total), ECMA-335 II.23.3:
+    ///   prolog                    0x01 0x00                (2 bytes)
+    ///   SerString "System.Int32"  0x0C + 12 UTF-8 bytes    (13 bytes)
+    ///   I4 value 42               0x2A 0x00 0x00 0x00      (4 bytes)
+    ///   named-arg count           0x00 0x00                (2 bytes)
+    let private typeBlobBytes : byte array =
+        Array.concat
+            [
+                [| 0x01uy ; 0x00uy |]
+                [| 0x0Cuy |]
+                System.Text.Encoding.UTF8.GetBytes "System.Int32"
+                [| 0x2Auy ; 0x00uy ; 0x00uy ; 0x00uy |]
+                [| 0x00uy ; 0x00uy |]
+            ]
 
     /// Allocates a byte[] holding `bytes`, plus a one-cell IntPtr[] holding the current cursor
     /// (a byref into the blob's cell `cursorIdx`). Returns the blob array address and the IntPtr[]
@@ -401,22 +449,24 @@ public sealed class CctorAttribute : System.Attribute
     let private makeFixture () : Fixture =
         makeFixtureWith attributeSource "MyAttribute"
 
-    /// Build the seven-argument frame the QCall expects, install it on a fresh thread,
-    /// and return the slot addresses the test will inspect after invocation.
-    let private prepareInvocation
+    /// Build the seven-argument frame the QCall expects around `blob`, install it on a fresh
+    /// thread, and return the slot addresses the test will inspect after invocation.
+    let private prepareInvocationWith
         (fixture : Fixture)
+        (blob : byte array)
         : {|
               BlobArr : ManagedHeapAddress
               IntPtrArr : ManagedHeapAddress
               NamedArgsArr : ManagedHeapAddress
               InstanceArr : ManagedHeapAddress
+              ModuleAddr : ManagedHeapAddress
               Thread : ThreadId
               State : IlMachineState
           |}
         =
         let state = fixture.State
 
-        let qCallModule, state = qCallModuleValue fixture state
+        let qCallModule, moduleAddr, state = qCallModuleValue fixture state
 
         // pCaType points at a slot holding the RuntimeType for MyAttribute.
         let _typeArr, typeSlot, state =
@@ -430,7 +480,7 @@ public sealed class CctorAttribute : System.Attribute
 
         let pCtor, state = objectHandleOnStackValue fixture ctorSlot state
 
-        let blobArr, intPtrArr, state = allocateBlobArrays fixture state
+        let blobArr, intPtrArr, state = allocateBlobArraysFrom fixture blob 0 state
 
         let ppBlob =
             CliType.RuntimePointer (
@@ -440,7 +490,7 @@ public sealed class CctorAttribute : System.Attribute
         let pEndBlob =
             CliType.RuntimePointer (
                 CliRuntimePointer.Managed (
-                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, blobBytes.Length), [])
+                    ManagedPointerSource.Byref (ByrefRoot.ArrayElement (blobArr, blob.Length), [])
                 )
             )
 
@@ -487,9 +537,12 @@ public sealed class CctorAttribute : System.Attribute
             IntPtrArr = intPtrArr
             NamedArgsArr = namedArgsArr
             InstanceArr = instanceArr
+            ModuleAddr = moduleAddr
             Thread = thread
             State = state
         |}
+
+    let private prepareInvocation (fixture : Fixture) = prepareInvocationWith fixture blobBytes
 
     let private invokeHandler (fixture : Fixture) (thread : ThreadId) (state : IlMachineState) : NativeHandlerResult =
         let ctx : NativeCallContext =
@@ -655,6 +708,164 @@ public sealed class CctorAttribute : System.Attribute
         | CliType.ObjectRef None -> ()
         | other -> failwithf "Expected instance slot to remain null after suspension, got %A" other
 
+    /// The cursor cell, named-arg cell and instance cell as they were before any entry: the shape
+    /// every entry that can still suspend or re-enter must leave behind.
+    let private assertNothingWrittenBack
+        (prep :
+            {|
+                BlobArr : ManagedHeapAddress
+                IntPtrArr : ManagedHeapAddress
+                NamedArgsArr : ManagedHeapAddress
+                InstanceArr : ManagedHeapAddress
+                ModuleAddr : ManagedHeapAddress
+                Thread : ThreadId
+                State : IlMachineState
+            |})
+        (state : IlMachineState)
+        : unit
+        =
+        match IlMachineState.getArrayValue prep.IntPtrArr 0 state with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr,
+                                                                                                                 idx),
+                                                                                         []))) ->
+            arr |> shouldEqual prep.BlobArr
+            idx |> shouldEqual 0
+        | other -> failwithf "Expected ppBlob cell to still point at blob[0], got %A" other
+
+        match IlMachineState.getArrayValue prep.NamedArgsArr 0 state with
+        | CliType.Numeric (CliNumericType.Int32 n) -> n |> shouldEqual 0
+        | other -> failwithf "Expected pcNamedArgs cell to still hold its initial zero, got %A" other
+
+        match IlMachineState.getArrayValue prep.InstanceArr 0 state with
+        | CliType.ObjectRef None -> ()
+        | other -> failwithf "Expected instance slot to remain null, got %A" other
+
+    /// The QCall's own frame, found by its method rather than assumed to be active: after a
+    /// managed call it sits beneath the callee.
+    let private qCallFrame (fixture : Fixture) (threadState : ThreadState) : MethodState =
+        threadState.MethodStates
+        |> Map.toList
+        |> List.find (fun (_, ms) ->
+            ms.ExecutingMethod.RequiredDeclaringType.Identity = fixture.CustomAttributeType.Identity
+            && ms.ExecutingMethod.Name = fixture.QCallMethod.Name
+        )
+        |> snd
+
+    [<Test>]
+    let ``TYPE fixed arg: first entry calls TypeNameResolver with the name and the decorated module, writing nothing``
+        ()
+        : unit
+        =
+        let fixture = makeFixtureWith typeAttributeSource "TypeAttribute"
+        let prep = prepareInvocationWith fixture typeBlobBytes
+
+        let result = invokeHandler fixture prep.Thread prep.State
+
+        let state =
+            match result with
+            | NativeHandlerResult.PushedManagedCallee (state, _) -> state
+            | other -> failwithf "Expected PushedManagedCallee to the resolver, got %A" other
+
+        // The blob is re-parsed from `*ppBlob` on the next entry, so nothing may have moved.
+        assertNothingWrittenBack prep state
+
+        let threadState = state.ThreadState.[prep.Thread]
+
+        // The callee is CoreLib's own resolver -- the method CoreCLR's `GetTypeHelper` calls
+        // into -- given the name as a managed string and the decorated module as its scope.
+        let activeFrame = threadState.MethodState
+
+        activeFrame.ExecutingMethod.Name
+        |> shouldEqual "GetTypeReferencedByCustomAttribute"
+
+        activeFrame.ExecutingMethod.RequiredDeclaringType.Namespace
+        |> shouldEqual "System.Reflection"
+
+        activeFrame.ExecutingMethod.RequiredDeclaringType.Name
+        |> shouldEqual "TypeNameResolver"
+
+        activeFrame.Arguments.Length |> shouldEqual 2
+
+        match activeFrame.Arguments.[0] with
+        | CliType.ObjectRef (Some nameAddr) ->
+            ManagedHeap.getStringContents nameAddr state.ManagedHeap
+            |> shouldEqual (Some "System.Int32")
+        | other -> failwithf "Expected resolver arg 0 to be the type name, got %A" other
+
+        match activeFrame.Arguments.[1] with
+        | CliType.ObjectRef (Some moduleAddr) -> moduleAddr |> shouldEqual prep.ModuleAddr
+        | other -> failwithf "Expected resolver arg 1 to be the decorated RuntimeModule, got %A" other
+
+        // Beneath it, this frame holds only the sentinel: the answer lands above it on return.
+        (qCallFrame fixture threadState).EvaluationStack.Values
+        |> shouldEqual [ EvalStackValue.NullObjectRef ]
+
+    [<Test>]
+    let ``TYPE fixed arg: once every name is answered, the ctor receives the answer and the cursor advances``
+        ()
+        : unit
+        =
+        let fixture = makeFixtureWith typeAttributeSource "TypeAttribute"
+        let prep = prepareInvocationWith fixture typeBlobBytes
+
+        // The state the resolver's return leaves behind: the sentinel the first entry pushed, and
+        // the RuntimeType it answered with above it. Any heap object stands in for the answer; the
+        // attribute's own RuntimeType is one that is already allocated.
+        let answer = fixture.AttributeRuntimeTypeAddr
+
+        let state =
+            prep.State
+            |> IlMachineState.pushToEvalStack' EvalStackValue.NullObjectRef prep.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.ObjectRef answer) prep.Thread
+
+        let result = invokeHandler fixture prep.Thread state
+
+        let state =
+            match result with
+            | NativeHandlerResult.PushedManagedCallee (state, _) -> state
+            | other -> failwithf "Expected PushedManagedCallee to the ctor, got %A" other
+
+        // Committed: the cursor is past the whole blob and the named-arg count is written.
+        match IlMachineState.getArrayValue prep.IntPtrArr 0 state with
+        | CliType.RuntimePointer (CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr,
+                                                                                                                 idx),
+                                                                                         []))) ->
+            arr |> shouldEqual prep.BlobArr
+            idx |> shouldEqual typeBlobBytes.Length
+        | other -> failwithf "Expected ppBlob cell to hold an advanced ArrayElement byref, got %A" other
+
+        match IlMachineState.getArrayValue prep.NamedArgsArr 0 state with
+        | CliType.Numeric (CliNumericType.Int32 n) -> n |> shouldEqual 0
+        | other -> failwithf "Expected pcNamedArgs cell to hold an Int32, got %A" other
+
+        let threadState = state.ThreadState.[prep.Thread]
+
+        // The sentinel and the answer are gone; only the allocated instance remains as the marker.
+        let markerAddr =
+            match (qCallFrame fixture threadState).EvaluationStack.Values with
+            | [ EvalStackValue.ObjectRef addr ] -> addr
+            | other -> failwithf "Expected QCall frame eval stack to be [ObjectRef marker], got %A" other
+
+        (ManagedHeap.get markerAddr state.ManagedHeap).ConcreteType
+        |> shouldEqual fixture.AttributeTypeHandle
+
+        // The ctor gets `this`, the answered RuntimeType where the name was, and the int after it.
+        let activeFrame = threadState.MethodState
+        activeFrame.ExecutingMethod.Name |> shouldEqual ".ctor"
+
+        activeFrame.ExecutingMethod.RequiredDeclaringType.Identity
+        |> shouldEqual fixture.AttributeType.Identity
+
+        activeFrame.Arguments.Length |> shouldEqual 3
+
+        match activeFrame.Arguments.[1] with
+        | CliType.ObjectRef (Some a) -> a |> shouldEqual answer
+        | other -> failwithf "Expected ctor arg 1 to be the resolved type, got %A" other
+
+        match activeFrame.Arguments.[2] with
+        | CliType.Numeric (CliNumericType.Int32 n) -> n |> shouldEqual 42
+        | other -> failwithf "Expected ctor arg 2 to be Int32 42, got %A" other
+
     // ------------------------------------------------------------------
     // CustomAttribute_CreatePropertyOrFieldData
     // ------------------------------------------------------------------
@@ -715,7 +926,7 @@ public sealed class CctorAttribute : System.Attribute
         =
         let state = fixture.State
 
-        let qCallModule, state = qCallModuleValue fixture state
+        let qCallModule, _moduleAddr, state = qCallModuleValue fixture state
 
         let blobArr, intPtrArr, state = allocateBlobArraysFrom fixture blob cursorIdx state
 

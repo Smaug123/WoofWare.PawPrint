@@ -98,6 +98,7 @@ module NativeCall =
             | other -> failwith $"%s{operation}: expected ModuleHandle in QCallModule._module, got %O{other}"
         | other -> failwith $"%s{operation}: expected QCallModule value type, got %O{other}"
 
+
     let qCallTypeHandleToConcreteTypeHandle
         (operation : string)
         (state : IlMachineState)
@@ -769,6 +770,30 @@ module NativeCall =
             let ptrValue = CliValueType.DereferenceFieldById ptrField vt
             managedPointerOfPointerArgument operation $"{argName}._ptr" ptrValue
         | other -> failwith $"%s{operation}: expected %s{argName} to be ObjectHandleOnStack, got %O{other}"
+
+    /// The `RuntimeModule` object a `QCallModule` argument wraps. `QCallModule(ref RuntimeModule)`
+    /// stores `Unsafe.AsPointer(ref module)` in `_ptr`, so the object is one dereference behind
+    /// that pointer, exactly as an `ObjectHandleOnStack`'s is.
+    let qCallModuleRuntimeModule
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (arg : CliType)
+        : ManagedHeapAddress
+        =
+        match arg with
+        | CliType.ValueType vt ->
+            let ptrField = IlMachineState.requiredOwnInstanceFieldId state vt.Declared "_ptr"
+
+            let ptr =
+                CliValueType.DereferenceFieldById ptrField vt
+                |> managedPointerOfPointerArgument operation "QCallModule._ptr"
+
+            match IlMachineState.readManagedByref baseClassTypes state ptr with
+            | CliType.ObjectRef (Some addr) -> addr
+            | CliType.ObjectRef None -> failwith $"%s{operation}: QCallModule._ptr pointed at a null RuntimeModule"
+            | other -> failwith $"%s{operation}: expected an object reference behind QCallModule._ptr, got %O{other}"
+        | other -> failwith $"%s{operation}: expected QCallModule value type, got %O{other}"
 
     let methodTableOfEvalStackValue (operation : string) (arg : EvalStackValue) : ConcreteTypeHandle =
         EvalStackValue.requireMethodTable operation arg

@@ -71,6 +71,22 @@ module TestCustomAttribValueLowering =
 
         handle, CustomAttribArgPlan.SzArray (handle, CustomAttribArgPlan.Enum EnumUnderlyingType.Byte), state
 
+    /// `toCliType` for a value that names no `System.Type`: nothing is supplied to resolve, and
+    /// nothing may be left over.
+    let private lower
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (plan : CustomAttribArgPlan)
+        (arg : CustomAttribFixedArg)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let cli, unconsumed, state =
+            CustomAttribValueLowering.toCliType loggerFactory baseClassTypes plan arg [] state
+
+        unconsumed |> shouldEqual []
+        cli, state
+
     let private arrayAddress (result : CliType) : ManagedHeapAddress =
         match result with
         | CliType.ObjectRef (Some addr) -> addr
@@ -185,7 +201,7 @@ module TestCustomAttribValueLowering =
         let loggerFactory, state = freshState ()
 
         let result, stateAfter =
-            CustomAttribValueLowering.toCliType loggerFactory bct stringPlan (CustomAttribFixedArg.String None) state
+            lower loggerFactory bct stringPlan (CustomAttribFixedArg.String None) state
 
         result |> shouldEqual (CliType.ObjectRef None)
         System.Object.ReferenceEquals (stateAfter, state) |> shouldEqual true
@@ -195,12 +211,7 @@ module TestCustomAttribValueLowering =
         let loggerFactory, state = freshState ()
 
         let result, stateAfter =
-            CustomAttribValueLowering.toCliType
-                loggerFactory
-                bct
-                stringPlan
-                (CustomAttribFixedArg.String (Some "hello"))
-                state
+            lower loggerFactory bct stringPlan (CustomAttribFixedArg.String (Some "hello")) state
 
         match result with
         | CliType.ObjectRef (Some addr) ->
@@ -212,16 +223,11 @@ module TestCustomAttribValueLowering =
     let ``toCliType: String (Some "") routes through canonical empty string`` () : unit =
         // CoreCLR's StringObject::NewString(0) returns GetEmptyString(); we mirror that
         // so attribute consumers comparing against `string.Empty` / `ldstr ""` get the
-        // expected reference identity. See CustomAttribValueLowering.toCliType docs.
+        // expected reference identity. See lower docs.
         let loggerFactory, state = freshState ()
 
         let result, stateAfter =
-            CustomAttribValueLowering.toCliType
-                loggerFactory
-                bct
-                stringPlan
-                (CustomAttribFixedArg.String (Some ""))
-                state
+            lower loggerFactory bct stringPlan (CustomAttribFixedArg.String (Some "")) state
 
         let canonicalAddr, _ =
             IlMachineState.internCanonicalEmptyString loggerFactory bct stateAfter
@@ -239,20 +245,10 @@ module TestCustomAttribValueLowering =
         let loggerFactory, state = freshState ()
 
         let r1, state =
-            CustomAttribValueLowering.toCliType
-                loggerFactory
-                bct
-                stringPlan
-                (CustomAttribFixedArg.String (Some ""))
-                state
+            lower loggerFactory bct stringPlan (CustomAttribFixedArg.String (Some "")) state
 
         let r2, _ =
-            CustomAttribValueLowering.toCliType
-                loggerFactory
-                bct
-                stringPlan
-                (CustomAttribFixedArg.String (Some ""))
-                state
+            lower loggerFactory bct stringPlan (CustomAttribFixedArg.String (Some "")) state
 
         match r1, r2 with
         | CliType.ObjectRef (Some a1), CliType.ObjectRef (Some a2) -> a1 |> shouldEqual a2
@@ -265,20 +261,10 @@ module TestCustomAttribValueLowering =
         let loggerFactory, state = freshState ()
 
         let r1, state =
-            CustomAttribValueLowering.toCliType
-                loggerFactory
-                bct
-                stringPlan
-                (CustomAttribFixedArg.String (Some "dup"))
-                state
+            lower loggerFactory bct stringPlan (CustomAttribFixedArg.String (Some "dup")) state
 
         let r2, _ =
-            CustomAttribValueLowering.toCliType
-                loggerFactory
-                bct
-                stringPlan
-                (CustomAttribFixedArg.String (Some "dup"))
-                state
+            lower loggerFactory bct stringPlan (CustomAttribFixedArg.String (Some "dup")) state
 
         match r1, r2 with
         | CliType.ObjectRef (Some a1), CliType.ObjectRef (Some a2) -> a1 |> shouldNotEqual a2
@@ -308,6 +294,8 @@ module TestCustomAttribValueLowering =
                 |> ArbMap.generate<NormalFloat>
                 |> Gen.map (fun (NormalFloat f) -> CustomAttribFixedArg.R8 f)
                 Gen.constant (CustomAttribFixedArg.String None)
+                // A null System.Type is a null reference, resolved against nothing.
+                Gen.constant (CustomAttribFixedArg.Type None)
                 // An enum lowers to its bare underlying integer — no enum wrapper is built here —
                 // so it must land in exactly the slot its underlying type would.
                 ArbMap.defaults
@@ -339,6 +327,7 @@ module TestCustomAttribValueLowering =
         | CustomAttribFixedArg.R4 _ -> 4
         | CustomAttribFixedArg.R8 _ -> 8
         | CustomAttribFixedArg.String _ -> 8
+        | CustomAttribFixedArg.Type _ -> 8
         | CustomAttribFixedArg.Array _ ->
             failwith "expectedSize: Array is outside genPrimitiveArg's range and has no defined slot size here"
 
@@ -351,6 +340,195 @@ module TestCustomAttribValueLowering =
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen genPrimitiveArg) property)
 
+    // --- TYPE ---------------------------------------------------------------
+
+    /// A heap object to stand in for a resolved `RuntimeType`. The lowering passes the address
+    /// through without inspecting the object, so any allocation will do; a string is the cheapest.
+    let private standIn
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (label : string)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        IlMachineState.allocateManagedString loggerFactory bct label state
+
+    let private typeHandle : ConcreteTypeHandle = handleFor bct.RuntimeType
+
+    let private typeArrayPlan : CustomAttribArgPlan =
+        CustomAttribArgPlan.SzArray (typeHandle, CustomAttribArgPlan.Type)
+
+    [<Test>]
+    let ``toCliType: a null System.Type lowers to a null reference and consumes nothing`` () : unit =
+        let loggerFactory, state = freshState ()
+        use _loggerFactory = loggerFactory
+        let spare, state = standIn loggerFactory "spare" state
+
+        let result, unconsumed, _ =
+            CustomAttribValueLowering.toCliType
+                loggerFactory
+                bct
+                CustomAttribArgPlan.Type
+                (CustomAttribFixedArg.Type None)
+                [ spare ]
+                state
+
+        result |> shouldEqual (CliType.ObjectRef None)
+        unconsumed |> shouldEqual [ spare ]
+
+    [<Test>]
+    let ``toCliType: a named System.Type is the head of the resolved list, and the tail is returned`` () : unit =
+        let loggerFactory, state = freshState ()
+        use _loggerFactory = loggerFactory
+        let first, state = standIn loggerFactory "first" state
+        let second, state = standIn loggerFactory "second" state
+
+        let result, unconsumed, _ =
+            CustomAttribValueLowering.toCliType
+                loggerFactory
+                bct
+                CustomAttribArgPlan.Type
+                (CustomAttribFixedArg.Type (Some "Any.Name"))
+                [ first ; second ]
+                state
+
+        result |> shouldEqual (CliType.ObjectRef (Some first))
+        unconsumed |> shouldEqual [ second ]
+
+    [<Test>]
+    let ``toCliType: a named System.Type with nothing left to consume fails loudly`` () : unit =
+        let loggerFactory, state = freshState ()
+        use _loggerFactory = loggerFactory
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                CustomAttribValueLowering.toCliType
+                    loggerFactory
+                    bct
+                    CustomAttribArgPlan.Type
+                    (CustomAttribFixedArg.Type (Some "Any.Name"))
+                    []
+                    state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "Any.Name"
+
+    [<Test>]
+    let ``toCliType: a System.Type[] consumes one resolved type per non-null element, in order`` () : unit =
+        // Order-sensitive by construction: the three stand-ins are distinct, and the null element
+        // in the middle must consume nothing, so a lowering that skipped or reversed would put the
+        // wrong address in some cell.
+        let loggerFactory, state = freshState ()
+        use _loggerFactory = loggerFactory
+        let a, state = standIn loggerFactory "a" state
+        let b, state = standIn loggerFactory "b" state
+        let spare, state = standIn loggerFactory "spare" state
+
+        let arg =
+            CustomAttribFixedArg.Array (
+                Some
+                    [
+                        CustomAttribFixedArg.Type (Some "A")
+                        CustomAttribFixedArg.Type None
+                        CustomAttribFixedArg.Type (Some "B")
+                    ]
+            )
+
+        let result, unconsumed, state =
+            CustomAttribValueLowering.toCliType loggerFactory bct typeArrayPlan arg [ a ; b ; spare ] state
+
+        unconsumed |> shouldEqual [ spare ]
+
+        cells (arrayAddress result) state
+        |> shouldEqual
+            [
+                CliType.ObjectRef (Some a)
+                CliType.ObjectRef None
+                CliType.ObjectRef (Some b)
+            ]
+
+        (ManagedHeap.getArrayShape (arrayAddress result) state.ManagedHeap).ConcreteType
+        |> shouldEqual (ConcreteTypeHandle.OneDimArrayZero typeHandle)
+
+    [<Test>]
+    let ``toCliType: resolved types are consumed in the order typeNamesToResolve lists them`` () : unit =
+        // The property the handler relies on: lowering a whole argument list against the objects
+        // resolved for `typeNamesToResolve` of that list consumes exactly those objects, and puts
+        // the i-th object where the i-th name was.
+        let property (shapes : (bool * bool) list) : bool =
+            let loggerFactory, state = freshState ()
+            use _loggerFactory = loggerFactory
+
+            let args =
+                shapes
+                |> List.mapi (fun i (isArray, isNull) ->
+                    let element (j : int) =
+                        if isNull then
+                            CustomAttribFixedArg.Type None
+                        else
+                            CustomAttribFixedArg.Type (Some $"N%d{i}_%d{j}")
+
+                    if isArray then
+                        CustomAttribFixedArg.Array (Some [ element 0 ; element 1 ])
+                    else
+                        element 0
+                )
+
+            let plans =
+                shapes
+                |> List.map (fun (isArray, _) -> if isArray then typeArrayPlan else CustomAttribArgPlan.Type)
+
+            let names = CustomAttribute.typeNamesToResolve args
+
+            // One stand-in per name, labelled with the name, so a cell can be read back as the
+            // name it was supposed to hold.
+            let resolved, state =
+                ((([] : ManagedHeapAddress list), state), names)
+                ||> List.fold (fun (acc, state) name ->
+                    let addr, state = standIn loggerFactory name state
+                    acc @ [ addr ], state
+                )
+
+            let lowered, unconsumed, state =
+                ((([] : CliType list), resolved, state), List.zip plans args)
+                ||> List.fold (fun (acc, resolved, state) (plan, arg) ->
+                    let cli, resolved, state =
+                        CustomAttribValueLowering.toCliType loggerFactory bct plan arg resolved state
+
+                    acc @ [ cli ], resolved, state
+                )
+
+            let labelOf (cell : CliType) : string option =
+                match cell with
+                | CliType.ObjectRef (Some addr) -> ManagedHeap.getStringContents addr state.ManagedHeap
+                | CliType.ObjectRef None -> None
+                | other -> failwithf "unexpected cell %A" other
+
+            let observed =
+                List.zip args lowered
+                |> List.collect (fun (arg, cell) ->
+                    match arg with
+                    | CustomAttribFixedArg.Array (Some _) -> cells (arrayAddress cell) state |> List.map labelOf
+                    | _ -> [ labelOf cell ]
+                )
+
+            let expected =
+                args
+                |> List.collect (fun arg ->
+                    match arg with
+                    | CustomAttribFixedArg.Array (Some elements) -> elements
+                    | other -> [ other ]
+                )
+                |> List.map (fun element ->
+                    match element with
+                    | CustomAttribFixedArg.Type name -> name
+                    | other -> failwithf "unexpected element %A" other
+                )
+
+            unconsumed.IsEmpty && observed = expected
+
+        Check.One (propertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<(bool * bool) list>) property)
+
     // --- SZARRAY ------------------------------------------------------------
 
     [<Test>]
@@ -360,7 +538,7 @@ module TestCustomAttribValueLowering =
         let loggerFactory, state = freshState ()
 
         let result, stateAfter =
-            CustomAttribValueLowering.toCliType loggerFactory bct bytePlan (CustomAttribFixedArg.Array None) state
+            lower loggerFactory bct bytePlan (CustomAttribFixedArg.Array None) state
 
         result |> shouldEqual (CliType.ObjectRef None)
         System.Object.ReferenceEquals (stateAfter, state) |> shouldEqual true
@@ -372,8 +550,7 @@ module TestCustomAttribValueLowering =
         let arg =
             CustomAttribFixedArg.Array (Some [ CustomAttribFixedArg.U1 2uy ; CustomAttribFixedArg.U1 1uy ])
 
-        let result, state =
-            CustomAttribValueLowering.toCliType loggerFactory bct bytePlan arg state
+        let result, state = lower loggerFactory bct bytePlan arg state
 
         let addr = arrayAddress result
 
@@ -399,7 +576,7 @@ module TestCustomAttribValueLowering =
         let loggerFactory, state = freshState ()
 
         let result, state =
-            CustomAttribValueLowering.toCliType loggerFactory bct bytePlan (CustomAttribFixedArg.Array (Some [])) state
+            lower loggerFactory bct bytePlan (CustomAttribFixedArg.Array (Some [])) state
 
         let addr = arrayAddress result
         let shape = ManagedHeap.getArrayShape addr state.ManagedHeap
@@ -427,8 +604,7 @@ module TestCustomAttribValueLowering =
                     ]
             )
 
-        let result, state =
-            CustomAttribValueLowering.toCliType loggerFactory bct stringArrayPlan arg state
+        let result, state = lower loggerFactory bct stringArrayPlan arg state
 
         let addr = arrayAddress result
 
@@ -456,8 +632,7 @@ module TestCustomAttribValueLowering =
                     ]
             )
 
-        let result, state =
-            CustomAttribValueLowering.toCliType loggerFactory bct plan arg state
+        let result, state = lower loggerFactory bct plan arg state
 
         let addr = arrayAddress result
 
@@ -501,8 +676,7 @@ module TestCustomAttribValueLowering =
                     ]
             )
 
-        let result, state =
-            CustomAttribValueLowering.toCliType loggerFactory bct plan arg state
+        let result, state = lower loggerFactory bct plan arg state
 
         let addr = arrayAddress result
 
@@ -527,10 +701,7 @@ module TestCustomAttribValueLowering =
         let arg = CustomAttribFixedArg.Array (Some [ CustomAttribFixedArg.U1 1uy ])
 
         let exn =
-            Assert.Throws (fun () ->
-                CustomAttribValueLowering.toCliType loggerFactory bct stringPlan arg state
-                |> ignore
-            )
+            Assert.Throws (fun () -> lower loggerFactory bct stringPlan arg state |> ignore)
 
         exn.Message |> shouldContainText "scalar plan"
 
@@ -539,10 +710,7 @@ module TestCustomAttribValueLowering =
         let loggerFactory, state = freshState ()
 
         let exn =
-            Assert.Throws (fun () ->
-                CustomAttribValueLowering.toCliType loggerFactory bct bytePlan (CustomAttribFixedArg.U1 1uy) state
-                |> ignore
-            )
+            Assert.Throws (fun () -> lower loggerFactory bct bytePlan (CustomAttribFixedArg.U1 1uy) state |> ignore)
 
         exn.Message |> shouldContainText "SZARRAY plan"
 
@@ -557,12 +725,7 @@ module TestCustomAttribValueLowering =
             let elements = values |> List.map CustomAttribFixedArg.I4
 
             let result, state =
-                CustomAttribValueLowering.toCliType
-                    loggerFactory
-                    bct
-                    int32ArrayPlan
-                    (CustomAttribFixedArg.Array (Some elements))
-                    state
+                lower loggerFactory bct int32ArrayPlan (CustomAttribFixedArg.Array (Some elements)) state
 
             let expected =
                 elements

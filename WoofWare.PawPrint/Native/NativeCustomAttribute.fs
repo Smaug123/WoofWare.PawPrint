@@ -130,17 +130,26 @@ module NativeCustomAttribute =
                 methodGenerics
                 paramType
 
+        match handle with
+        | CorelibType state.ConcreteTypes ("System", "Type", typeGenerics) when typeGenerics.IsEmpty ->
+            // CoreCLR's fixed-arg loop classifies the parameter by its signature element type and
+            // maps `ELEMENT_TYPE_CLASS` on `CLASS__TYPE` to `SERIALIZATION_TYPE_TYPE`
+            // (customattribute.cpp:757); a subclass of `System.Type` is not that class and falls
+            // through to `badBlob`, so only the exact type is admitted here too.
+            state, CustomAttribArgPlan.Type
+        | _ ->
+
         let state, isEnum =
             IlMachineRuntimeMetadata.isEnumValueType ctx.LoggerFactory ctx.BaseClassTypes state handle
 
         if not isEnum then
             // What is left here is every parameter type the fixed-args grammar has no encoding
-            // for. `System.Type` (TYPE, 0x50) and `object` (TAGGED_OBJECT, 0x51) are the two that
-            // real metadata carries and that PawPrint does not yet decode; a multidimensional or
-            // non-SZ array parameter also lands here, and CoreCLR refuses that one too, since
-            // `GetDataFromBlob` has no `ELEMENT_TYPE_ARRAY` case and falls through to `badBlob`.
+            // for. `object` (TAGGED_OBJECT, 0x51) is the one that real metadata carries and that
+            // PawPrint does not yet decode; a multidimensional or non-SZ array parameter also
+            // lands here, and CoreCLR refuses that one too, since `GetDataFromBlob` has no
+            // `ELEMENT_TYPE_ARRAY` case and falls through to `badBlob`.
             failwith
-                $"TODO: %s{operation}: ctor parameter of type %O{paramType} is neither a primitive, an SZARRAY, nor an enum, so the fixed-args grammar cannot decode it; TYPE (0x50) and TAGGED_OBJECT (0x51) fixed args in particular are not yet supported"
+                $"TODO: %s{operation}: ctor parameter of type %O{paramType} is neither a primitive, an SZARRAY, System.Type, nor an enum, so the fixed-args grammar cannot decode it; TAGGED_OBJECT (0x51) fixed args in particular are not yet supported"
 
         let state, underlyingHandle =
             IlMachineRuntimeMetadata.enumUnderlyingHandle ctx.LoggerFactory ctx.BaseClassTypes state handle
@@ -199,10 +208,10 @@ module NativeCustomAttribute =
                 $"TODO: %s{operation}: named argument has SZARRAY type (element %s{describeElem elt}); resolving a named arg's element type from the blob, and reporting the array type for a null value, are not implemented"
         | CustomAttribFieldOrPropType.Scalar (CustomAttribSerializationType.Enum _ as elem) ->
             failwith
-                $"TODO: %s{operation}: named argument has %s{describe elem} type; resolving a custom-attribute type name needs the reflection type-name parser (CoreCLR's TypeName::GetTypeReferencedByCustomAttribute), which PawPrint does not have"
+                $"TODO: %s{operation}: named argument has %s{describe elem} type; CoreCLR resolves the name by calling into CoreLib's TypeNameResolver.GetTypeReferencedByCustomAttribute, which is a managed call this single-phase handler has no re-entry protocol for (CreateCustomAttributeInstance has one for its TYPE fixed args)"
         | CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.Type ->
             failwith
-                $"TODO: %s{operation}: named argument has TYPE (0x50) type; its value is a reflection type name, so it needs the same type-name parser as the ENUM case"
+                $"TODO: %s{operation}: named argument has TYPE (0x50) type; its value is a reflection type name, which needs the same managed TypeNameResolver call as the ENUM case"
         | CustomAttribFieldOrPropType.Scalar CustomAttribSerializationType.TaggedObject ->
             failwith
                 $"TODO: %s{operation}: named argument has TAGGED_OBJECT (0x51) type; its value carries its own FieldOrPropType in front of the value, so it depends on the SZARRAY and TYPE cases first"
@@ -253,27 +262,34 @@ module NativeCustomAttribute =
             if instruction.Arguments.Length <> 7 then
                 failwith $"%s{operation}: expected seven native arguments, got %d{instruction.Arguments.Length}"
 
-            // The handler runs in two phases, sharing the marker discipline used by
-            // `RuntimeTypeHandle_CreateInstanceForAnotherGenericParameter` (NativeRuntimeType.fs:
-            // around line 2347): phase 1 allocates the attribute instance, writes the cursor /
-            // named-arg-count out-slots, pushes the allocated address as a re-entry marker, then
-            // hands control to the ctor; phase 2 sees the marker on re-entry and copies it into
-            // the `instance` ObjectHandleOnStack. We defer the `result.Set` write to phase 2
-            // rather than match CoreCLR's pre-ctor placement: in CoreCLR the caller GC-protects
-            // through `pInstance`, but PawPrint's caller (RuntimeCustomAttributeData) treats a
-            // ctor-thrown exception as fatal anyway, so the observable difference is nil.
+            // This native frame's eval stack is the state machine, and its shapes are told apart
+            // by the bottom slot (`EvalStack.Values` is top-first):
+            //
+            //   []                              first entry
+            //   [tK; ...; t1; NullObjectRef]    resolving: K of the blob's System.Type names have
+            //                                   been answered, in blob order from the bottom up
+            //   [ObjectRef instance]            the ctor has returned
+            //
+            // Every entry below the last shape re-parses the blob from `*ppBlob`, which is why the
+            // cursor and named-arg-count out-slots are written only once nothing can suspend any
+            // more. The sentinel exists because with exactly one name to resolve, `[t1]` and
+            // `[instance]` would be the same shape.
+            //
+            // The last phase copies the marker into the `instance` ObjectHandleOnStack. We defer
+            // that `result.Set` write rather than match CoreCLR's pre-ctor placement: in CoreCLR
+            // the caller GC-protects through `pInstance`, but PawPrint's caller
+            // (RuntimeCustomAttributeData) treats a ctor-thrown exception as fatal anyway, so the
+            // observable difference is nil.
             let resultHandle =
                 NativeCall.objectHandleOnStackTarget operation state "instance" instruction.Arguments.[6]
 
-            match instruction.EvaluationStack.Values with
-            | [ marker ] ->
-                let addr =
-                    match marker with
-                    | EvalStackValue.ObjectRef a -> a
-                    | other ->
-                        failwith
-                            $"%s{operation}: expected re-entry marker (object ref to allocated attribute instance) on eval stack, got %O{other}"
+            let isSentinel (value : EvalStackValue) : bool =
+                match value with
+                | EvalStackValue.NullObjectRef -> true
+                | _ -> false
 
+            match instruction.EvaluationStack.Values with
+            | [ EvalStackValue.ObjectRef addr ] ->
                 let _, state = IlMachineState.popEvalStack ctx.Thread state
 
                 let state =
@@ -284,16 +300,23 @@ module NativeCustomAttribute =
                         (CliType.ObjectRef (Some addr))
 
                 NativeHandlerResult.completed state |> Some
-            | [] ->
-                // QCallModule is not consulted on the success path; CoreCLR threads it through
-                // `GetDataFromBlob` for SERIALIZATION_TYPE_TYPE / TAGGED_OBJECT, which the
-                // Phase A blob reader does not yet emit. Decode and ignore for now so that
-                // refactoring the wiring later doesn't require reshuffling argument positions.
-                let _moduleAssemblyFullName =
-                    NativeCall.qCallModuleToAssemblyFullName
-                        operation
-                        state
-                        (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+            | stack when stack.IsEmpty || isSentinel (List.last stack) ->
+                // `None` before the sentinel is pushed; `Some` the answers above it, in blob order.
+                let answered : ManagedHeapAddress list option =
+                    if stack.IsEmpty then
+                        None
+                    else
+                        stack
+                        |> List.take (stack.Length - 1)
+                        |> List.rev
+                        |> List.map (fun value ->
+                            match value with
+                            | EvalStackValue.ObjectRef addr -> addr
+                            | other ->
+                                failwith
+                                    $"%s{operation}: expected a resolved RuntimeType above the re-entry sentinel, got %O{other}; TypeNameResolver.GetTypeReferencedByCustomAttribute throws rather than answering null"
+                        )
+                        |> Some
 
                 let attrTypeAddr =
                     dereferenceObjectHandle operation ctx.BaseClassTypes state "pCaType" instruction.Arguments.[1]
@@ -472,6 +495,113 @@ module NativeCustomAttribute =
                     | Ok (args, next) -> args, next
                     | Error msg -> failwith $"%s{operation}: failed to parse fixed args from CustomAttrib blob: %s{msg}"
 
+                // A System.Type argument is a name, and CoreCLR resolves it by calling back into
+                // CoreLib (typeparse.cpp:10 `GetTypeHelper` invokes `TypeNameResolver`), so this
+                // does the same: one managed call per name, in blob order, each answered on the
+                // next entry. The scope is the *decorated* module — CoreCLR passes
+                // `pModule->GetAssembly()`, the `QCallModule` argument, not the ctor's assembly —
+                // which is what lets an unqualified name in the blob mean a type of the decorated
+                // assembly.
+                let namesToResolve = CustomAttribute.typeNamesToResolve fixedArgs
+
+                let resolved : ManagedHeapAddress list =
+                    match answered with
+                    | None -> []
+                    | Some answers -> answers
+
+                if resolved.Length > namesToResolve.Length then
+                    failwith
+                        $"%s{operation}: %d{resolved.Length} resolved type(s) on the eval stack but the blob names only %d{namesToResolve.Length}"
+
+                if resolved.Length < namesToResolve.Length then
+                    let nextName = namesToResolve.[resolved.Length]
+
+                    // `GetTypeHandleFromBlob` rejects the empty name before any resolution
+                    // (customattribute.cpp:443, `size + 1 <= 1`), and this handler reports
+                    // malformed blobs as failures rather than raising into the guest.
+                    if nextName = "" then
+                        failwith
+                            $"TODO: %s{operation}: a System.Type fixed arg is the empty string, which CoreCLR rejects with CustomAttributeFormatException; only hand-crafted metadata can produce it"
+
+                    let resolverType =
+                        ctx.BaseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Reflection" "TypeNameResolver"
+                        |> Option.defaultWith (fun () ->
+                            failwith $"%s{operation}: System.Reflection.TypeNameResolver not found in corelib"
+                        )
+
+                    let resolverMethod =
+                        resolverType.Methods
+                        |> List.filter (fun m ->
+                            m.Name = "GetTypeReferencedByCustomAttribute"
+                            && m.IsStatic
+                            && (
+                                match m.Signature.ParameterTypes with
+                                | [ TypeDefn.PrimitiveType PrimitiveType.String ; _ ] -> true
+                                | _ -> false
+                            )
+                        )
+                        |> function
+                            | [ m ] -> m
+                            | [] ->
+                                failwith
+                                    $"%s{operation}: TypeNameResolver.GetTypeReferencedByCustomAttribute(string, RuntimeModule) not found in corelib"
+                            | ms ->
+                                failwith
+                                    $"%s{operation}: TypeNameResolver.GetTypeReferencedByCustomAttribute(string, _) is ambiguous in corelib: %d{ms.Length} overloads"
+
+                    let state, concretizedResolver, _declaringType =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            ImmutableArray.Empty
+                            resolverMethod
+                            ImmutableArray.Empty
+                            state
+
+                    let moduleAddr =
+                        NativeCall.qCallModuleRuntimeModule operation ctx.BaseClassTypes state instruction.Arguments.[0]
+
+                    let nameAddr, state =
+                        IlMachineState.allocateManagedString ctx.LoggerFactory ctx.BaseClassTypes nextName state
+
+                    // The sentinel goes on first, once. `callMethod` pops exactly the two
+                    // arguments, so the answers accumulate above it.
+                    let state =
+                        match answered with
+                        | Some _ -> state
+                        | None -> IlMachineState.pushToEvalStack (CliType.ObjectRef None) ctx.Thread state
+
+                    let state =
+                        state
+                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some nameAddr)) ctx.Thread
+                        |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some moduleAddr)) ctx.Thread
+
+                    let threadState = state.ThreadState.[ctx.Thread]
+
+                    // advanceProgramCounterOfCaller = false: the native QCall frame has no IL.
+                    // ReturnValueDisposition.PushToCaller: the RuntimeType lands on this frame's
+                    // eval stack, above the sentinel, for the next entry to count.
+                    let state =
+                        IlMachineStateExecution.callMethod
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            None
+                            ConstructionState.NotConstructing
+                            false
+                            false
+                            false
+                            concretizedResolver.Generics
+                            concretizedResolver
+                            ctx.Thread
+                            threadState
+                            None
+                            ReturnValueDisposition.PushToCaller
+                            false // wrapExceptionInTargetInvocation
+                            state
+
+                    NativeHandlerResult.pushedManagedCallee state |> Some
+                else
+
                 // ECMA-335 II.23.3: the named-arg count is a uint16 that follows the fixed args.
                 // If the blob is exhausted at this point the BCL convention is "zero named args";
                 // CoreCLR's `pBlob != pEndBlob` check guards the read. Mirror that here.
@@ -495,11 +625,13 @@ module NativeCustomAttribute =
 
                 // Run type initialisation *before* writing back the blob cursor and named-arg
                 // count. If `ensureTypeInitialised` suspends for a static ctor (or a chain of
-                // them), the QCall frame is re-entered with an empty eval stack and the handler
-                // has to re-parse the blob from `*ppBlob`. Advancing the cursor first would mean
-                // the re-entered handler reads zero bytes (or the wrong bytes), so the writes
-                // must wait until we've committed to allocating the instance and calling the
-                // ctor.
+                // them), the QCall frame is re-entered with its eval stack as it is now — empty,
+                // or the sentinel and every answer — and the handler has to re-parse the blob
+                // from `*ppBlob`. Advancing the cursor first would mean the re-entered handler
+                // reads zero bytes (or the wrong bytes), so the writes must wait until we've
+                // committed to allocating the instance and calling the ctor. The answers stay on
+                // the stack across the suspension for the same reason: popped now, the re-entry
+                // would resolve every name a second time.
                 let state, typeInit =
                     IlMachineStateExecution.ensureTypeInitialised
                         ctx.LoggerFactory
@@ -522,6 +654,15 @@ module NativeCustomAttribute =
                 | WhatWeDid.VoluntaryYield _ ->
                     failwith "logic error: ensureTypeInitialised cannot produce a VoluntaryYield"
                 | WhatWeDid.Executed ->
+
+                // Nothing below can suspend, so the answers have served their purpose as state and
+                // are consumed as values from here on.
+                let state =
+                    match answered with
+                    | None -> state
+                    | Some answers ->
+                        (state, [ 0 .. answers.Length ])
+                        ||> List.fold (fun state _ -> IlMachineState.popEvalStack ctx.Thread state |> snd)
 
                 let updatedCursor =
                     ManagedPointerSource.Byref (
@@ -572,14 +713,24 @@ module NativeCustomAttribute =
                 let state =
                     IlMachineState.pushToEvalStack (CliType.ObjectRef (Some instanceAddr)) ctx.Thread state
 
-                let state =
-                    (state, List.zip paramPlans fixedArgs)
-                    ||> List.fold (fun state (plan, arg) ->
-                        let cliValue, state =
-                            CustomAttribValueLowering.toCliType ctx.LoggerFactory ctx.BaseClassTypes plan arg state
+                let state, unconsumed =
+                    ((state, resolved), List.zip paramPlans fixedArgs)
+                    ||> List.fold (fun (state, resolved) (plan, arg) ->
+                        let cliValue, resolved, state =
+                            CustomAttribValueLowering.toCliType
+                                ctx.LoggerFactory
+                                ctx.BaseClassTypes
+                                plan
+                                arg
+                                resolved
+                                state
 
-                        IlMachineState.pushToEvalStack cliValue ctx.Thread state
+                        IlMachineState.pushToEvalStack cliValue ctx.Thread state, resolved
                     )
+
+                if not unconsumed.IsEmpty then
+                    failwith
+                        $"logic error: %s{operation}: %d{unconsumed.Length} resolved type(s) were not consumed by lowering; typeNamesToResolve and toCliType must walk the arguments in the same order"
 
                 let threadState = state.ThreadState.[ctx.Thread]
 
@@ -608,7 +759,7 @@ module NativeCustomAttribute =
                 NativeHandlerResult.pushedManagedCallee state |> Some
             | other ->
                 failwith
-                    $"%s{operation}: expected at most one re-entry marker on the eval stack, got %d{other.Length} value(s): %A{other}"
+                    $"%s{operation}: expected an empty eval stack, a re-entry sentinel beneath resolved types, or the allocated instance as a re-entry marker, got %d{other.Length} value(s): %A{other}"
         | "CustomAttribute_CreatePropertyOrFieldData",
           "System.Private.CoreLib",
           "System.Reflection",
@@ -767,12 +918,14 @@ module NativeCustomAttribute =
 
                     state, CliType.ObjectRef None, CliType.ObjectRef (Some typeAddr)
                 | CustomAttribFixedArg.String (Some _) ->
-                    let value, state =
+                    // No resolved types: `resolveNamedArgPrimitive` admits no plan that reads one.
+                    let value, _, state =
                         CustomAttribValueLowering.toCliType
                             ctx.LoggerFactory
                             ctx.BaseClassTypes
                             (CustomAttribArgPlan.Primitive valuePrimitive)
                             decoded
+                            []
                             state
 
                     state, value, CliType.ObjectRef None
@@ -792,12 +945,13 @@ module NativeCustomAttribute =
                         ImmutableArray.Empty
                         (TypeDefn.PrimitiveType valuePrimitive)
 
-                let payload, state =
+                let payload, _, state =
                     CustomAttribValueLowering.toCliType
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
                         (CustomAttribArgPlan.Primitive valuePrimitive)
                         decoded
+                        []
                         state
 
                 let boxAddr, state =

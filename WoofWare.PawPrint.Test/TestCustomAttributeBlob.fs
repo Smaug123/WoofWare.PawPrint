@@ -183,6 +183,9 @@ module TestCustomAttributeBlob =
         | CustomAttribFixedArg.String (Some s) ->
             let utf8 = Encoding.UTF8.GetBytes (s : string)
             Array.append (encodePackedLen utf8.Length) utf8
+        // ECMA-335 II.23.3: a System.Type is encoded as the SerString of its name, byte-for-byte
+        // as a string argument would be.
+        | CustomAttribFixedArg.Type name -> encodeFixedArg (CustomAttribFixedArg.String name)
         | CustomAttribFixedArg.Array None -> System.BitConverter.GetBytes (0xFFFFFFFFu)
         | CustomAttribFixedArg.Array (Some elts) ->
             let count = System.BitConverter.GetBytes (uint32 (List.length elts))
@@ -211,6 +214,7 @@ module TestCustomAttributeBlob =
         | CustomAttribFixedArg.R4 _ -> CustomAttribArgShape.Primitive PrimitiveType.Single
         | CustomAttribFixedArg.R8 _ -> CustomAttribArgShape.Primitive PrimitiveType.Double
         | CustomAttribFixedArg.String _ -> CustomAttribArgShape.Primitive PrimitiveType.String
+        | CustomAttribFixedArg.Type _ -> CustomAttribArgShape.Type
         | CustomAttribFixedArg.Array (Some (head :: _)) -> CustomAttribArgShape.SzArray (shapeOfArg head)
         | CustomAttribFixedArg.Enum underlying ->
             match shapeOfArg underlying with
@@ -360,6 +364,7 @@ module TestCustomAttributeBlob =
                 |> ArbMap.generate<NormalFloat>
                 |> Gen.map (fun (NormalFloat f) -> CustomAttribFixedArg.R8 f)
                 serString |> Gen.map CustomAttribFixedArg.String
+                serString |> Gen.map CustomAttribFixedArg.Type
             ]
 
     [<Test>]
@@ -375,6 +380,149 @@ module TestCustomAttributeBlob =
         let argsGen : Gen<CustomAttribFixedArg list> = Gen.listOf genFixedArg
         let argsArb : Arbitrary<CustomAttribFixedArg list> = Arb.fromGen argsGen
         Check.One (propertyConfig, Prop.forAll argsArb property)
+
+    // ----- TYPE (0x50) decoding --------------------------------------------
+
+    [<Test>]
+    let ``readFixedArgs decodes a System.Type argument as its name`` () : unit =
+        // What Roslyn writes for `typeof(Outer.Inner)` in the decorated assembly, followed by an
+        // int32 so a wrong-length read shows up in the next argument.
+        let args =
+            [ CustomAttribFixedArg.Type (Some "Outer+Inner") ; CustomAttribFixedArg.I4 7 ]
+
+        let blob = buildFixedArgsBlob args [||]
+
+        match
+            CustomAttribute.readFixedArgs
+                [
+                    CustomAttribArgShape.Type
+                    CustomAttribArgShape.Primitive PrimitiveType.Int32
+                ]
+                blob
+        with
+        | Ok (decoded, offset) ->
+            decoded |> shouldEqual args
+            offset |> shouldEqual blob.Length
+        | Error e -> failwithf "expected Ok, got Error %s" e
+
+    [<Test>]
+    let ``readFixedArgs decodes the System.Type null sentinel and the empty name apart`` () : unit =
+        // `0xFF` is a null Type (CoreCLR: `GetStringSize` answers -1 and the ctor receives null);
+        // a zero-length SerString is a name, one CoreCLR rejects, and the decoder must not fold
+        // the two together or the handler could not tell them apart.
+        for arg in [ CustomAttribFixedArg.Type None ; CustomAttribFixedArg.Type (Some "") ] do
+            let blob = buildFixedArgsBlob [ arg ] [||]
+
+            match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Type ] blob with
+            | Ok ([ decoded ], offset) ->
+                decoded |> shouldEqual arg
+                offset |> shouldEqual blob.Length
+            | other -> failwithf "expected Ok [%A], got %A" arg other
+
+    [<Test>]
+    let ``readFixedArgs decodes a System.Type[] element by element`` () : unit =
+        let arg =
+            CustomAttribFixedArg.Array (
+                Some
+                    [
+                        CustomAttribFixedArg.Type (Some "System.String")
+                        CustomAttribFixedArg.Type None
+                        CustomAttribFixedArg.Type (Some "Decorated")
+                    ]
+            )
+
+        let blob = buildFixedArgsBlob [ arg ] [||]
+
+        match CustomAttribute.readFixedArgs [ CustomAttribArgShape.SzArray CustomAttribArgShape.Type ] blob with
+        | Ok ([ decoded ], offset) ->
+            decoded |> shouldEqual arg
+            offset |> shouldEqual blob.Length
+        | other -> failwithf "expected Ok [array of Type], got %A" other
+
+    [<Test>]
+    let ``readFixedArgs rejects a truncated System.Type name`` () : unit =
+        // Prolog, then a SerString declaring 5 bytes with only 2 present.
+        let blob =
+            ImmutableArray.Create<byte> ([| 0x01uy ; 0x00uy ; 0x05uy ; byte 'a' ; byte 'b' |])
+
+        match CustomAttribute.readFixedArgs [ CustomAttribArgShape.Type ] blob with
+        | Error msg -> msg |> shouldContainText "truncated"
+        | Ok r -> failwithf "expected Error, got Ok %A" r
+
+    [<Test>]
+    let ``typeNamesToResolve lists every non-null name, nested ones included, and no other`` () : unit =
+        let args =
+            [
+                CustomAttribFixedArg.I4 1
+                CustomAttribFixedArg.Type (Some "A")
+                CustomAttribFixedArg.Type None
+                CustomAttribFixedArg.String (Some "not a type")
+                CustomAttribFixedArg.Array (
+                    Some
+                        [
+                            CustomAttribFixedArg.Type (Some "B")
+                            CustomAttribFixedArg.Type None
+                            CustomAttribFixedArg.Type (Some "A")
+                        ]
+                )
+                CustomAttribFixedArg.Array None
+                CustomAttribFixedArg.Enum (CustomAttribFixedArg.U1 3uy)
+                CustomAttribFixedArg.Type (Some "C")
+            ]
+
+        // Per occurrence, so "A" appears twice.
+        CustomAttribute.typeNamesToResolve args |> shouldEqual [ "A" ; "B" ; "A" ; "C" ]
+
+    [<Test>]
+    let ``typeNamesToResolve follows blob order`` () : unit =
+        // The decoder's blob is the ground truth for order. Give every name a distinct tag, encode
+        // the arguments, and check that each listed name's bytes sit later in the blob than the
+        // previous one's — an oracle that shares no traversal with `typeNamesToResolve`. Tags are
+        // distinct and unpaddable, so a name's bytes occur in the blob exactly once.
+        let property (shapes : (bool * bool) list) : bool =
+            // One argument per entry: (isArray, isNullType). A non-null Type gets a unique name.
+            let counter = ref 0
+
+            let nextName () =
+                let n = counter.Value
+                counter.Value <- n + 1
+                $"TypeName%04d{n}Q"
+
+            let args =
+                shapes
+                |> List.map (fun (isArray, isNull) ->
+                    let element () =
+                        if isNull then
+                            CustomAttribFixedArg.Type None
+                        else
+                            CustomAttribFixedArg.Type (Some (nextName ()))
+
+                    if isArray then
+                        CustomAttribFixedArg.Array (Some [ element () ; element () ])
+                    else
+                        element ()
+                )
+
+            let blob = buildFixedArgsBlob args [||]
+            let text = Encoding.Latin1.GetString (blob.AsSpan ())
+            let names = CustomAttribute.typeNamesToResolve args
+
+            let positions = names |> List.map (fun name -> text.IndexOf (name : string))
+
+            let expectedCount =
+                shapes
+                |> List.sumBy (fun (isArray, isNull) ->
+                    if isNull then 0
+                    elif isArray then 2
+                    else 1
+                )
+
+            names.Length = expectedCount
+            && positions |> List.forall (fun p -> p >= 0)
+            && positions = List.sort positions
+            && (positions |> List.distinct |> List.length) = positions.Length
+
+        Check.One (propertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<(bool * bool) list>) property)
 
     // ----- SZARRAY decoding ------------------------------------------------
 
