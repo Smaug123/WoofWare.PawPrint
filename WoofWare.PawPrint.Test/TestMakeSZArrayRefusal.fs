@@ -34,6 +34,13 @@ public ref struct RefStruct { public int Field; }
 public ref struct GenericRefStruct<T> { public int Field; }
 
 public class AllowsRef<T> where T : allows ref struct { }
+
+public unsafe class FnPtrHolder<T>
+{
+    public static void Open(delegate*<T, void> p) { }
+
+    public static void Closed(delegate*<int, string> p) { }
+}
 """
 
     let private image : byte[] =
@@ -119,6 +126,31 @@ public class AllowsRef<T> where T : allows ref struct { }
 
     let private int32Defn : TypeDefn = TypeDefn.PrimitiveType PrimitiveType.Int32
 
+    /// The `delegate*<T, void>` in `FnPtrHolder<T>.Open`'s signature, as PawPrint spells it: a
+    /// function pointer one of whose types is a type variable, so `functionPointer` keeps it open
+    /// rather than collapsing it to a closed handle.
+    let private openFunctionPointer (parameter : RuntimeTypeHandleTarget) : RuntimeTypeHandleTarget =
+        RuntimeTypeHandleTarget.functionPointer
+            {
+                Header =
+                    ComparableSignatureHeader.Make (
+                        Reflection.Metadata.SignatureHeader (
+                            Reflection.Metadata.SignatureKind.Method,
+                            Reflection.Metadata.SignatureCallingConvention.Default,
+                            Reflection.Metadata.SignatureAttributes.None
+                        )
+                    )
+                ParameterTypes = [ parameter ]
+                GenericParameterCount = 0
+                RequiredParameterCount = 1
+                ReturnType = MethodReturnType.Void
+            }
+
+    /// The same function pointer as the host sees it: the declared parameter type of
+    /// `FnPtrHolder<T>.<name>`.
+    let private hostFunctionPointer (name : string) : Type =
+        (hostType "FnPtrHolder`1").GetMethod(name).GetParameters().[0].ParameterType
+
     /// The element pool, as (display name, PawPrint target, host Type). The two sides are built by
     /// different routes but must denote the same types; the display name is only for assertion
     /// messages.
@@ -137,6 +169,29 @@ public class AllowsRef<T> where T : allows ref struct { }
 
         let allowsRefVariable =
             RuntimeTypeHandleTarget.GenericParameter (allowsRef.Identity, 0)
+
+        let fnPtrHolder = guestType "FnPtrHolder`1"
+
+        let fnPtrVariable =
+            RuntimeTypeHandleTarget.GenericParameter (fnPtrHolder.Identity, 0)
+
+        let hostOpenFunctionPointer = hostFunctionPointer "Open"
+
+        let closedFunctionPointerSignature : TypeMethodSignature<TypeDefn> =
+            {
+                Header =
+                    ComparableSignatureHeader.Make (
+                        Reflection.Metadata.SignatureHeader (
+                            Reflection.Metadata.SignatureKind.Method,
+                            Reflection.Metadata.SignatureCallingConvention.Default,
+                            Reflection.Metadata.SignatureAttributes.None
+                        )
+                    )
+                ParameterTypes = [ int32Defn ]
+                GenericParameterCount = 0
+                RequiredParameterCount = 1
+                ReturnType = MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.String)
+            }
 
         let spanOfInt = closedGeneric span int32Defn
         let hostSpanOfInt = hostSpan.MakeGenericType typeof<int>
@@ -203,6 +258,16 @@ public class AllowsRef<T> where T : allows ref struct { }
             "Generic<T of AllowsRef<>>",
             openTarget (RuntimeTypeHandleTarget.openConstructed generic.Identity [ allowsRefVariable ]),
             hostGeneric.MakeGenericType hostAllowsRefVariable
+            // A function pointer over a type variable is a TypeDesc that is not `Closed`, so it is
+            // the one element whose *rendering* has to recurse through open targets: the byref row
+            // below is what asks for a name at all.
+            "System.Void(T)", openTarget (openFunctionPointer fnPtrVariable), hostOpenFunctionPointer
+            "System.Void(T)&",
+            openTarget (RuntimeTypeHandleTarget.composite CompositeShape.Byref (openFunctionPointer fnPtrVariable)),
+            hostOpenFunctionPointer.MakeByRefType ()
+            "System.String(System.Int32)&",
+            closed (TypeDefn.Byref (TypeDefn.FunctionPointer closedFunctionPointerSignature)),
+            (hostFunctionPointer "Closed").MakeByRefType ()
         ]
 
     /// The host's verdict: `None` if the array type loads, else the refusal and the type string

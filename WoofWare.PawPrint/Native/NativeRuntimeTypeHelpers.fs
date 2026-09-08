@@ -2404,7 +2404,33 @@ module NativeRuntimeTypeHelpers =
                 | CompositeShape.Array rank ->
                     let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
                     $"%s{elementName}[%s{dims}]"
-            | RuntimeTypeHandleTarget.FunctionPointer _ -> RuntimeTypeHandleTarget.refuseComposite operation target
+            // The same rendering as the closed function pointer in `concreteTypeHandleName`; the
+            // parameter or return types that are not closed simply print as themselves, so
+            // `delegate*<T, void>` reflected from a generic method is "System.Void(T)" and its
+            // `Name` is "" (both measured on .NET 10).
+            | RuntimeTypeHandleTarget.FunctionPointer signature ->
+                if not includeNamespace then
+                    ""
+                else
+
+                let args = signature.ParameterTypes |> List.map targetName
+
+                let args =
+                    if
+                        signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
+                    then
+                        args @ [ "..." ]
+                    else
+                        args
+
+                let argStr = args |> String.concat ", "
+
+                let retStr =
+                    match signature.ReturnType with
+                    | MethodReturnType.Void -> "System.Void"
+                    | MethodReturnType.Returns ret -> targetName ret
+
+                $"%s{retStr}(%s{argStr})"
 
         and nonConstructedName (typeHandleTarget : RuntimeTypeHandleTarget) : string =
             match typeHandleTarget with

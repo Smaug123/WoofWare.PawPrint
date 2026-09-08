@@ -260,9 +260,9 @@ module NativeRuntimeTypeQCall =
             // pointer, a generic parameter and an open definition all succeed, and only
             // `typeof(int).MakeByRefType().MakeByRefType()` throws, with the message below naming
             // the byref being wrapped and the assembly of its element.
+            // The dynamic-methods class is not refused here either, for the reason MakeSZArray
+            // gives below: `typeof(hidden).MakeByRefType()` answers `(dynamicClass)&` on .NET 10.
             match typeHandleTarget with
-            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
-                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
             | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) ->
                 // `ClassLoader::ThrowTypeLoadException` (clsload.cpp:2724) renders the wrapped
@@ -302,6 +302,7 @@ module NativeRuntimeTypeQCall =
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _
             | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _
             | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 // The type-handle registry keys on the whole target, and `composite` spells a
                 // byref over a closed element as the closed byref, so this is the same
@@ -351,11 +352,10 @@ module NativeRuntimeTypeQCall =
             // own are the three element refusals `szArrayElementRefusal` classifies. This is also
             // where `Type.GetType("Foo[]")` and a `typeof(Foo[])` attribute argument end up, via
             // `TypeNameResolver`.
-            match typeHandleTarget with
-            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
-                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-            | _ ->
-
+            // The dynamic-methods class is *not* refused: constructing an array is a type-key
+            // operation that reads no metadata, and CoreCLR builds one over a minimal MethodTable
+            // like any other (measured on .NET 10: the hidden type reached through
+            // `RuntimeMethodHandle.GetDeclaringType` answers `(dynamicClass)[]`).
             match szArrayElementRefusal ctx.BaseClassTypes state typeHandleTarget with
             | Some refusal ->
                 // `ClassLoader::ThrowTypeLoadException(pKey, ...)` names the assembly of the
