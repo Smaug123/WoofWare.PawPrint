@@ -302,9 +302,10 @@ type FlockMode =
 /// conditions are still *reported*, which is `ReadinessLevel.reportedUnder`'s
 /// business rather than this record's.
 ///
-/// Edge-triggering is likewise absent: a client that sets `EPOLLET` on every
-/// registration, as .NET's shim does, has made it a constant rather than
-/// state.
+/// Edge-triggering is likewise absent from the *interest*, because the port
+/// models edge-triggered registrations only: `SocketEventRegistrationChange`
+/// carries the trigger a caller asked for, and a level-triggered request is
+/// refused rather than reinterpreted.
 type SocketEventInterest =
     {
         /// Report `EPOLLIN` when it is present.
@@ -739,6 +740,17 @@ type FlockRequest =
     /// `LOCK_UN`. Succeeds whether or not a lock was held, as `flock(2)` does.
     | Release
 
+/// How a registration reports: once per readiness *edge* (`EPOLLET`), or
+/// again on every wait while the readiness *level* holds (epoll's default).
+/// This port models the first only, since `drain` consumes every entry it
+/// walks and never re-arms a still-ready one; a level-triggered request is
+/// refused at registration (`SocketEventRegistrationRefusal.LevelTriggered`)
+/// rather than silently served as edge-triggered.
+[<RequireQualifiedAccess>]
+type SocketEventTrigger =
+    | EdgeTriggered
+    | LevelTriggered
+
 /// What `SystemNative_TryChangeSocketEventRegistration` asked a port to do,
 /// once the wrapper has derived the op from the caller's *claims* — ADD when
 /// the claimed current set is NONE, DEL when the new set is NONE, MOD
@@ -748,10 +760,10 @@ type FlockRequest =
 [<RequireQualifiedAccess>]
 type SocketEventRegistrationChange =
     /// `EPOLL_CTL_ADD`: record a fresh registration.
-    | Add of interest : SocketEventInterest * data : uint64
+    | Add of trigger : SocketEventTrigger * interest : SocketEventInterest * data : uint64
     /// `EPOLL_CTL_MOD`: replace an existing registration's interest *and*
     /// data — the kernel rebuilds the whole `epoll_event` from the new call.
-    | Modify of interest : SocketEventInterest * data : uint64
+    | Modify of trigger : SocketEventTrigger * interest : SocketEventInterest * data : uint64
     /// `EPOLL_CTL_DEL`: remove a registration. Carries no payload; the real
     /// wrapper's `data` is never consulted on this path.
     | Remove
@@ -1533,7 +1545,14 @@ module FileDescriptorRegistry =
             }
 
         match change with
-        | SocketEventRegistrationChange.Add (interest, data) ->
+        | SocketEventRegistrationChange.Add (SocketEventTrigger.LevelTriggered, _, _)
+        | SocketEventRegistrationChange.Modify (SocketEventTrigger.LevelTriggered, _, _) ->
+            // The table records edge-triggered registrations only, and has no
+            // refusal to answer with: `UnixPoll.changeSocketEventRegistration`
+            // refuses a level-triggered request before it reaches here.
+            failwith
+                $"changeSocketEventRegistration: a level-triggered registration reached the table, which records edge-triggered ones only. UnixPoll.changeSocketEventRegistration refuses the request with SocketEventRegistrationRefusal.LevelTriggered before it gets here (this is a bug in the caller)."
+        | SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interest, data) ->
             match targetDescription.Target with
             | OpenFileTarget.SocketEventPort _ ->
                 failwith
@@ -1559,7 +1578,7 @@ module FileDescriptorRegistry =
                                     portState.Registrations
                         }
                 )
-        | SocketEventRegistrationChange.Modify (interest, data) ->
+        | SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, interest, data) ->
             match Map.tryFind key portState.Registrations with
             | Some existing ->
                 // `RegisteredAt` survives: same-signal tie order comes from

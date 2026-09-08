@@ -1904,7 +1904,11 @@ module TestFileDescriptorRegistry =
             | None -> failwith "socket fd not live"
 
         let registry =
-            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 0xABCDUL)) registry
+            change
+                portFd
+                sockFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 0xABCDUL))
+                registry
 
         registrationsOf portFd registry
         |> shouldEqual (
@@ -1925,7 +1929,11 @@ module TestFileDescriptorRegistry =
             }
 
         let registry =
-            change portFd sockFd (SocketEventRegistrationChange.Modify (readOnly, 77UL)) registry
+            change
+                portFd
+                sockFd
+                (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, readOnly, 77UL))
+                registry
 
         registrationsOf portFd registry
         |> shouldEqual (
@@ -1960,10 +1968,18 @@ module TestFileDescriptorRegistry =
             | Error error -> failwith $"dup failed: %O{error}"
 
         let registry =
-            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 1UL)) registry
+            change
+                portFd
+                sockFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 1UL))
+                registry
 
         let registry =
-            change portFd dupFd (SocketEventRegistrationChange.Add (readWrite, 2UL)) registry
+            change
+                portFd
+                dupFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 2UL))
+                registry
 
         (registrationsOf portFd registry).Count |> shouldEqual 2
 
@@ -1979,7 +1995,7 @@ module TestFileDescriptorRegistry =
             dupPortFd
             sockFd
             0L
-            (SocketEventRegistrationChange.Add (readWrite, 3UL))
+            (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 3UL))
             registry
         |> shouldEqual (Error SocketEventRegistrationError.AlreadyRegistered)
 
@@ -2004,7 +2020,11 @@ module TestFileDescriptorRegistry =
             | Error error -> failwith $"dup failed: %O{error}"
 
         let registry =
-            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 1UL)) registry
+            change
+                portFd
+                sockFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 1UL))
+                registry
 
         // Closing `sockFd` leaves the description alive through the dup, so
         // the registration — keyed on the now-dead fd number — survives, which
@@ -2086,7 +2106,11 @@ module TestFileDescriptorRegistry =
             | None -> failwith "port fd not live"
 
         let registry =
-            change portFd sockFd (SocketEventRegistrationChange.Add (readWrite, 1UL)) registry
+            change
+                portFd
+                sockFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readWrite, 1UL))
+                registry
 
         let withReady (ready : (int * OpenFileDescriptionId) list) : FileDescriptorRegistry =
             FileDescriptorRegistry.Unchecked.mapDescription
