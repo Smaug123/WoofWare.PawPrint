@@ -372,15 +372,14 @@ module PathArgument =
         // kernel would have copied in, so no rule about that string applies.
         let nulOffset = bytes.IndexOf 0uy
 
+        // The limit counts the NUL byte, but the caller has not passed that; hence `- 1`.
+        // Length is checked next: PATH_MAX is enforced by getname()/copyinstr
+        // when the kernel copies the string in, before anything looks at what it says.
+        let overPathMax = bytes.Length > PathLimits.pathMaxBytes limits - 1
+
         if nulOffset >= 0 then
             Error (PathArgumentRefusal.InteriorNul nulOffset)
-        else if
-
-            // The limit counts the NUL byte, but the caller has not passed that; hence `- 1`.
-            // Length is checked first: PATH_MAX is enforced by getname()/copyinstr
-            // when the kernel copies the string in, before anything looks at what it says.
-            bytes.Length > PathLimits.pathMaxBytes limits - 1
-        then
+        elif overPathMax then
             Ok (PathArgument.Failed UnixError.ENAMETOOLONG)
         else
 
