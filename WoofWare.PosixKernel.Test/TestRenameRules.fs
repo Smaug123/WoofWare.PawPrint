@@ -306,6 +306,27 @@ module TestRenameRules =
         for platform in [ linux ; darwin ] do
             refuses platform UnixError.EINVAL [ "a", "a/b" ; "a", "a/b/c" ; "a", "a/b/nx" ]
 
+    /// The trap's other direction: a destination that is the source's own
+    /// parent, or an ancestor of it. Linux refuses it with ENOTEMPTY straight
+    /// after the EINVAL arm, so it beats the type rule and every EACCES; Darwin
+    /// has no such arm, so its ordinary ordering answers. Every row is measured
+    /// on both (`docs/probes/rename/ancestor-trap.py`).
+    [<Test>]
+    let ``a destination that is the source's parent or its ancestor is ENOTEMPTY only on Linux`` () : unit =
+        // A file onto its parent: the type rule would say EISDIR.
+        refuses linux UnixError.ENOTEMPTY [ "a/b/file", "a/b" ]
+        refuses darwin UnixError.EISDIR [ "a/b/file", "a/b" ]
+
+        // A directory onto its unwritable parent: the permission arm would say
+        // EACCES.
+        refuses linux UnixError.ENOTEMPTY [ "p/pd", "p" ]
+        refuses darwin UnixError.EACCES [ "p/pd", "p" ]
+
+        // A directory onto its grandparent, with everything writable: the
+        // ordinary ENOTEMPTY on both, since the grandparent is not empty.
+        for platform in [ linux ; darwin ] do
+            refuses platform UnixError.ENOTEMPTY [ "a/b/c", "a" ; "a/b/c", "a/b" ]
+
     [<Test>]
     let ``a name with the source as a string prefix is not an ancestor`` () : unit =
         // `isWithinSubtree` is on inodes rather than on path text, and this is
