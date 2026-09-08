@@ -322,6 +322,30 @@ module TestPoll =
         UnixPoll.poll [ entry 0 all ; entry portFd all ] 0 system
         |> shouldEqual (Error (PollRefusal.UnmeasuredTarget portFd))
 
+    /// A real `poll` inspects its entries in order, so the entry a refusal
+    /// names is the first one it could not answer: a client bisecting its
+    /// array is told the right one whichever way round it filled it.
+    [<Test>]
+    let ``the refusal names the first unmeasured entry in list order`` () : unit =
+        let firstPort, registry =
+            FileDescriptorRegistry.createSocketEventPort linux.Process.FileDescriptors
+
+        let secondPort, registry = FileDescriptorRegistry.createSocketEventPort registry
+
+        let system =
+            { linux with
+                Process =
+                    { linux.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        UnixPoll.poll [ entry firstPort all ; entry secondPort all ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmeasuredTarget firstPort))
+
+        UnixPoll.poll [ entry secondPort all ; entry 0 all ; entry firstPort all ] 0 system
+        |> shouldEqual (Error (PollRefusal.UnmeasuredTarget secondPort))
+
     /// Nothing ready and a non-zero timeout is the only case that needs a park.
     /// A timeout of zero is answerable, which is what stops this from being "any
     /// poll that reports nothing".
