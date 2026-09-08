@@ -384,3 +384,267 @@ module TestUnixSystemInvariants =
         }
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.CurrentDirectoryIsNotADirectory absent ]
+
+    // ------------------------------------------------------------------
+    // Tasks against the descriptor table
+    // ------------------------------------------------------------------
+
+    let private task : int = 1
+
+    /// `system` with one registered task, parked as `parked` says.
+    let private withTask (parked : ParkedSyscall option) (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        { system with
+            Tasks =
+                UnixTaskTable.register task (CpuId 0) (OsThreadId 1u) Map.empty
+                |> UnixTaskTable.withParked task parked
+        }
+
+    /// A description id nothing in `system` holds.
+    let private absentDescription : OpenFileDescriptionId = OpenFileDescriptionId 999L
+
+    [<Test>]
+    let ``a task parked on an flock of an absent description is a defect`` () : unit =
+        system
+        |> withTask (
+            Some (
+                ParkedSyscall.Flock
+                    {
+                        Requester = absentDescription
+                        Mode = FlockMode.Exclusive
+                    }
+            )
+        )
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (task, absentDescription) ]
+
+    [<Test>]
+    let ``a task parked in a socket wait on an absent description is a defect`` () : unit =
+        system
+        |> withTask (
+            Some (
+                ParkedSyscall.SocketWait
+                    {
+                        Port = absentDescription
+                        MaxEvents = 1
+                    }
+            )
+        )
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.ParkedOnAbsentDescription (task, absentDescription) ]
+
+    [<Test>]
+    let ``a task parked in a socket wait on a description that is not a port is a defect`` () : unit =
+        // stdout, which every system holds and which is not a port.
+        let stdoutDescription, target =
+            match FileDescriptorRegistry.tryFindWithId 1 system.Process.FileDescriptors with
+            | Some (id, description) -> id, description.Target
+            | None -> failwith "the fixture has no stdout"
+
+        system
+        |> withTask (
+            Some (
+                ParkedSyscall.SocketWait
+                    {
+                        Port = stdoutDescription
+                        MaxEvents = 1
+                    }
+            )
+        )
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.ParkedSocketWaitOnNonPort (task, stdoutDescription, target) ]
+
+    /// The control for the three rows above: a park onto a live object of the
+    /// right kind is sound, so those rows are not passing because every park
+    /// is reported.
+    [<Test>]
+    let ``a task parked on a live port or file is sound`` () : unit =
+        let portFd, registry =
+            FileDescriptorRegistry.createSocketEventPort system.Process.FileDescriptors
+
+        let port =
+            match FileDescriptorRegistry.tryFindWithId portFd registry with
+            | Some (id, _) -> id
+            | None -> failwith "the port just created is not in the table"
+
+        let stdoutDescription =
+            match FileDescriptorRegistry.tryFindWithId 1 registry with
+            | Some (id, _) -> id
+            | None -> failwith "the fixture has no stdout"
+
+        let withPort =
+            { system with
+                Process =
+                    { system.Process with
+                        FileDescriptors = registry
+                    }
+            }
+
+        withPort
+        |> withTask (
+            Some (
+                ParkedSyscall.SocketWait
+                    {
+                        Port = port
+                        MaxEvents = 1
+                    }
+            )
+        )
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+        withPort
+        |> withTask (
+            Some (
+                ParkedSyscall.Flock
+                    {
+                        Requester = stdoutDescription
+                        Mode = FlockMode.Shared
+                    }
+            )
+        )
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    // ------------------------------------------------------------------
+    // Sockets whose binding cannot have come from bind or listen
+    // ------------------------------------------------------------------
+
+    let private streamSocket (binding : SocketBinding option) (phase : SocketPhase) : SocketDescription =
+        {
+            Domain = SocketDomain.InterNetwork
+            Kind = SocketKind.Stream
+            Protocol = SocketProtocol.Tcp
+            Binding = binding
+            ReuseAddress = false
+            Phase = phase
+        }
+
+    /// `system` holding one socket, open on a descriptor so that the socket
+    /// table's own rules are satisfied.
+    let private withSocket (socket : SocketDescription) : SocketId * UnixSystem<int, string> =
+        let socketId = system.Machine.NextSocketId
+        let (SocketId raw) = socketId
+
+        let _, registry =
+            FileDescriptorRegistry.createSocket socketId system.Process.FileDescriptors
+
+        socketId,
+        { system with
+            Machine =
+                { system.Machine with
+                    Sockets = Map.add socketId socket system.Machine.Sockets
+                    NextSocketId = SocketId (raw + 1L)
+                }
+            Process =
+                { system.Process with
+                    FileDescriptors = registry
+                }
+        }
+
+    let private boundAt (port : uint16) : SocketBinding option =
+        Some
+            {
+                Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
+                LockedAddress = None
+            }
+
+    let private listening : SocketPhase =
+        SocketPhase.Listening
+            {
+                Backlog = 8
+                Queue = []
+            }
+
+    [<Test>]
+    let ``a listener without a binding is a defect`` () : unit =
+        let socketId, faulty = withSocket (streamSocket None listening)
+
+        UnixSystem.checkInvariants faulty
+        |> shouldEqual [ UnixSystemDefect.ListenerWithoutBinding socketId ]
+
+        // The control: a bound listener is sound.
+        let _, sound = withSocket (streamSocket (boundAt 5000us) listening)
+        UnixSystem.checkInvariants sound |> shouldEqual []
+
+    [<Test>]
+    let ``a socket bound to port 0 is a defect`` () : unit =
+        let socketId, faulty = withSocket (streamSocket (boundAt 0us) SocketPhase.Idle)
+
+        UnixSystem.checkInvariants faulty
+        |> shouldEqual [ UnixSystemDefect.BoundToPortZero socketId ]
+
+        let _, sound = withSocket (streamSocket (boundAt 1us) SocketPhase.Idle)
+        UnixSystem.checkInvariants sound |> shouldEqual []
+
+    // ------------------------------------------------------------------
+    // Signals against the task table
+    // ------------------------------------------------------------------
+
+    let private withSignals
+        (signals : SignalState<int, string>)
+        (system : UnixSystem<int, string>)
+        : UnixSystem<int, string>
+        =
+        { system with
+            Process =
+                { system.Process with
+                    Signals = signals
+                }
+        }
+
+    [<Test>]
+    let ``a dispatcher that is not a task is a defect`` () : unit =
+        system
+        |> withTask None
+        |> withSignals (SignalState.empty |> SignalState.markInitialized 77)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.SignalDispatcherWithoutTask 77 ]
+
+        system
+        |> withTask None
+        |> withSignals (SignalState.empty |> SignalState.markInitialized task)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a signal mask for a task the table does not hold is a defect`` () : unit =
+        system
+        |> withTask None
+        |> withSignals (SignalState.empty |> SignalState.block 42 Signal.SIGINT)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.SignalMaskWithoutTask 42 ]
+
+        system
+        |> withTask None
+        |> withSignals (SignalState.empty |> SignalState.block task Signal.SIGINT)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a pending signal directed at a task the table does not hold is a defect`` () : unit =
+        let directedAt (target : int voption) : SignalState<int, string> =
+            SignalState.empty
+            |> SignalState.enqueue
+                {
+                    Signal = Signal.SIGCHLD
+                    Target = target
+                }
+
+        system
+        |> withTask None
+        |> withSignals (directedAt (ValueSome 43))
+        |> UnixSystem.checkInvariants
+        |> shouldEqual [ UnixSystemDefect.PendingSignalTargetWithoutTask (43, Signal.SIGCHLD) ]
+
+        // Directed at a live task, or at the process: sound.
+        system
+        |> withTask None
+        |> withSignals (directedAt (ValueSome task))
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+        system
+        |> withTask None
+        |> withSignals (directedAt ValueNone)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
