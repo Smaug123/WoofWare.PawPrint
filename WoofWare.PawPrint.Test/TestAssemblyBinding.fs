@@ -2,6 +2,9 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.IO
+open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
+open System.Reflection.PortableExecutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -861,5 +864,57 @@ module TestAssemblyBinding =
                         true
 
                 refused |> shouldEqual true
+        finally
+            Directory.Delete (root, true)
+
+    /// A copy of the test assembly whose manifest row carries the given `Flags` word, written
+    /// under the given name. The `Assembly` table has one row: `HashAlgId` (4), the four
+    /// version columns (2 each), then `Flags` (4), so the word sits twelve bytes into the row.
+    let private writeImageWithManifestFlags (root : string) (fileName : string) (flags : uint32) : unit =
+        let bytes = File.ReadAllBytes typeof<BindingTestMarker>.Assembly.Location
+
+        let rowFileOffset =
+            use pe = new PEReader (new MemoryStream (bytes))
+            let reader = pe.GetMetadataReader ()
+
+            pe.PEHeaders.MetadataStartOffset
+            + reader.GetTableMetadataOffset TableIndex.Assembly
+
+        BitConverter.GetBytes flags
+        |> Array.iteri (fun i b -> bytes.[rowFileOffset + 12 + i] <- b)
+
+        File.WriteAllBytes (Path.Combine (root, fileName), bytes)
+
+    /// CoreCLR refuses any manifest that sets a content-type bit, the reserved values as well as
+    /// WindowsRuntime; `AssemblyName.ContentType` folds the reserved ones back to `Default`, so
+    /// the check must read the row.
+    [<TestCase(0x200u)>]
+    [<TestCase(0x400u)>]
+    [<TestCase(0x800u)>]
+    let ``a manifest with a content-type bit is refused`` (contentType : uint32) =
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            writeImageWithManifestFlags root (testAssemblySimpleName + ".dll") contentType
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+            let refused =
+                try
+                    AssemblyBinding.tryBind
+                        loggerFactory
+                        [ root ]
+                        (plainRequest testAssemblySimpleName)
+                        LoadedAssemblies.empty
+                        AssemblyBindCache.empty
+                    |> ignore<AssemblyBindCache * AssemblyBindResult>
+
+                    false
+                with e when e.Message.Contains "set a content type" ->
+                    true
+
+            refused |> shouldEqual true
         finally
             Directory.Delete (root, true)

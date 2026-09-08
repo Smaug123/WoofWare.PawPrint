@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System
 open System.IO
 open System.Reflection
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
 
 /// <summary>
@@ -487,13 +488,18 @@ module AssemblyBinding =
             | Some "" -> String.IsNullOrEmpty candidate.Name.CultureName
             | Some culture -> String.Equals (candidate.Name.CultureName, culture, StringComparison.OrdinalIgnoreCase)
 
-        // CoreCLR refuses to load a WindowsRuntime assembly at all ("The given assembly name
-        // was invalid"), whatever the request asked for; that is not an outcome this binder
-        // reports.
+        // CoreCLR refuses to load an assembly whose manifest sets any bit of
+        // `afContentType_Mask` (0xE00): the WindowsRuntime value and every reserved one alike
+        // ("The given assembly name was invalid"), whatever the request asked for. Read off
+        // the row's own flags word: `AssemblyName.ContentType` folds the reserved values back
+        // to `Default`.
         let requireDefaultContentType (candidate : DumpedAssembly) : unit =
-            if candidate.Name.ContentType <> AssemblyContentType.Default then
+            let rawFlags =
+                int (candidate.PeReader.GetMetadataReader().GetAssemblyDefinition().Flags)
+
+            if rawFlags &&& 0xE00 <> 0 then
                 failwith
-                    $"TODO: %s{describe} found %s{candidate.Name.FullName}, whose manifest declares ContentType=%O{candidate.Name.ContentType}; CoreCLR refuses to load such an image (FileLoadException, 'The given assembly name was invalid'), which is not an outcome this binder reports"
+                    $"TODO: %s{describe} found %s{candidate.Name.FullName}, whose manifest flags 0x%08X{rawFlags} set a content type; CoreCLR refuses to load such an image (FileLoadException, 'The given assembly name was invalid'), which is not an outcome this binder reports"
 
         let foundVersion (candidate : DumpedAssembly) : Version =
             match candidate.Name.Version with
