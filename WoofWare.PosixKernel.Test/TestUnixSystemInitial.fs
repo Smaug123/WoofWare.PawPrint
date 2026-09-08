@@ -95,12 +95,11 @@ module TestUnixSystemInitial =
     // ------------------------------------------------------------------
 
     /// `UserAddressLimit` is a property of the machine's paging depth rather
-    /// than of its kernel, and the ephemeral range is a sysctl either flavour
-    /// can be set to anything. Both are documented as configuration rather than
-    /// derivations, so this row exists to catch a later "helpful" derivation
+    /// than of its kernel, and is documented as configuration rather than a
+    /// derivation, so this row exists to catch a later "helpful" derivation
     /// that would quietly change what a caller gets.
     [<Test>]
-    let ``the machine-shaped and sysctl fields do not vary by flavour`` () : unit =
+    let ``the machine-shaped fields do not vary by flavour`` () : unit =
         let linux : UnixSystem<int, string> =
             UnixSystem.initial SimulatedUnixPlatform.linuxX64
 
@@ -109,10 +108,28 @@ module TestUnixSystemInitial =
 
         darwin.Machine.UserAddressLimit |> shouldEqual linux.Machine.UserAddressLimit
 
-        darwin.Machine.EphemeralPortRange
-        |> shouldEqual linux.Machine.EphemeralPortRange
+    /// The ephemeral range and the process identity are each flavour's shipped
+    /// defaults, stated as literals rather than by calling the derivation the
+    /// constructor calls: Linux's `ip_local_port_range` and first user, and
+    /// Darwin's `net.inet.ip.portrange.first`/`last` and first user (uid 501,
+    /// primary group `staff`), both measured.
+    [<TestCase("linux", 32768, 60999, 1000, 1000)>]
+    [<TestCase("darwin", 49152, 65535, 501, 20)>]
+    let ``the ephemeral range and the process identity are the flavour's``
+        (flavour : string, low : int, high : int, uid : int, gid : int)
+        : unit
+        =
+        let platform =
+            match flavour with
+            | "linux" -> SimulatedUnixPlatform.linuxX64
+            | "darwin" -> SimulatedUnixPlatform.macOsArm64
+            | other -> failwith $"unknown flavour %s{other}"
 
-        darwin.Machine.NextEphemeralPort |> shouldEqual linux.Machine.NextEphemeralPort
+        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        system.Machine.EphemeralPortRange |> shouldEqual (uint16 low, uint16 high)
+        system.Machine.NextEphemeralPort |> shouldEqual (uint16 low)
+        system.Process.UserId |> shouldEqual (uint32 uid)
+        system.Process.GroupId |> shouldEqual (uint32 gid)
 
     /// Both clocks belong to the simulation rather than to the machine it
     /// claims to be, so a recorded trace's timestamps must not depend on which
@@ -165,9 +182,10 @@ module TestUnixSystemInitial =
         with
         | None -> failwith "a fresh machine could allocate no ephemeral port at all"
         | Some (bound, machine) ->
-            bound.Endpoint.Port |> shouldEqual 32768us
+            bound.Endpoint.Port |> shouldEqual (fst system.Machine.EphemeralPortRange)
             // ...and the cursor advances by one, so the next draw is not the same port.
-            machine.NextEphemeralPort |> shouldEqual 32769us
+            machine.NextEphemeralPort
+            |> shouldEqual (fst system.Machine.EphemeralPortRange + 1us)
 
     // ------------------------------------------------------------------
     // The pairs that must start consistent

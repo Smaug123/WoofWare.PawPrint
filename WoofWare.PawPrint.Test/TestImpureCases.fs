@@ -42,8 +42,8 @@ module TestImpureCases =
             ExpectedReturnCode = 0
             KernelConfig =
                 { KernelConfig.Default with
-                    UserId = uid
-                    GroupId = gid
+                    UserId = Some uid
+                    GroupId = Some gid
                     // One file, for the guest's `st_uid == GetEUid()` check.
                     FileSystem =
                         Map.ofList
@@ -825,8 +825,8 @@ module TestImpureCases =
                         // millisecond count also forces the seconds/nanoseconds
                         // split to be done rather than guessed.
                         WallClockEpochMs = 1_700_000_123L
-                        UserId = 1000u
-                        GroupId = 2000u
+                        UserId = Some 1000u
+                        GroupId = Some 2000u
                         FileSystem =
                             let name (s : string) =
                                 DirectoryEntryName.parseOrFail "test seed" s
@@ -1500,7 +1500,7 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         Umask = PermissionBits.parseOrFail "test" 0o027
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = mkDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1518,7 +1518,7 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                         Umask = PermissionBits.parseOrFail "test" 0o027
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = mkDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1540,7 +1540,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = unlinkWiringSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1558,7 +1558,7 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = unlinkWiringSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1590,7 +1590,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = enumerateClosedFdSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1609,7 +1609,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = enumerateWiringSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1624,7 +1624,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = enumerateWiringSeed
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                     }
@@ -1643,7 +1643,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = rmDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1661,7 +1661,7 @@ module TestImpureCases =
                 KernelConfig =
                     { KernelConfig.Default with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = rmDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1711,7 +1711,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 1000u
+                        UserId = Some 1000u
                         FileSystem = searchPermissionSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1724,7 +1724,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 0u
+                        UserId = Some 0u
                         FileSystem = searchPermissionSeed
                     }
                 AppContext = AppContextProperties.empty
@@ -1741,7 +1741,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 1000u
+                        UserId = Some 1000u
                         CurrentDirectory = AbsoluteUnixPath.parseOrFail "test" "/outer/inner"
                         FileSystem = searchPermissionCwdSeed
                     }
@@ -1759,7 +1759,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        UserId = 0u
+                        UserId = Some 0u
                         FileSystem = mkDirWiringSeed
                     }
                 AppContext = AppContextProperties.empty
