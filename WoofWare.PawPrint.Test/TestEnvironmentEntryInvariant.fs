@@ -116,8 +116,8 @@ module TestEnvironmentEntryInvariant =
         // where real .NET answers null, while `GetEnvironmentVariables` would
         // abort in the block writer. One silently wrong path, one loud one.
         //
-        // `KernelConfig.applyTo` is the path every host takes, so this is where
-        // the rejection has to fire. A future `applyTo` that assigned
+        // `KernelConfig.toKernel` is the path every host takes, so this is where
+        // the rejection has to fire. A future `toKernel` that assigned
         // `Environment` by record-copy instead of through
         // `UnixProcessState.withEnvironment` would bypass the rule, and nothing
         // in this repository would notice: the rule itself belongs to the
@@ -133,9 +133,7 @@ module TestEnvironmentEntryInvariant =
                 }
 
             let exn =
-                Assert.Throws<System.Exception> (fun () ->
-                    EmulatedKernel.initial |> KernelConfig.applyTo config |> ignore<EmulatedKernel>
-                )
+                Assert.Throws<System.Exception> (fun () -> KernelConfig.toKernel config |> ignore<EmulatedKernel>)
 
             exn.Message |> shouldContainText "KernelConfig.Environment"
             description |> shouldNotEqual ""
@@ -145,7 +143,7 @@ module TestEnvironmentEntryInvariant =
         // The control for the config-path test above: `KernelConfig.Default` and
         // `defaultEnvironment` must themselves satisfy the rule, or every run
         // would fail.
-        let kernel = EmulatedKernel.initial |> KernelConfig.applyTo KernelConfig.Default
+        let kernel = KernelConfig.toKernel KernelConfig.Default
 
         for KeyValue (name, value) in kernel.Environment do
             match UnixProcessState.environmentEntryProblem name value with

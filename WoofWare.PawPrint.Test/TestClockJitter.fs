@@ -646,8 +646,7 @@ module TestClockJitter =
         let strategy = ClockJitterStrategy.EagerDeadlines (42UL, 0.25, 0L)
 
         let configured =
-            EmulatedKernel.initial
-            |> KernelConfig.applyTo
+            KernelConfig.toKernel
                 { KernelConfig.Default with
                     ClockJitter = strategy
                 }

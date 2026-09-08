@@ -114,7 +114,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// the truth about a PawPrint guest by default, because PawPrint models
         /// no `exec(2)`: nothing started this process from a file, and the
         /// emulated filesystem contains no image of it. Contrast
-        /// `FileSystemType`, whose `None` *does* mean "derive one in `applyTo`".
+        /// `FileSystemType`, whose `None` *does* mean "derive one from the flavour".
         ///
         /// Not resolved against `FileSystem`. Real `realpath` succeeds only if
         /// every component resolves, so a host that wants

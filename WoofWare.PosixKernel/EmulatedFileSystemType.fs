@@ -122,12 +122,12 @@ module EmulatedFileSystemType =
         // The two arguments are a *pair*: a file's answer comes from the mount
         // and every other descriptor's from the flavour, so a caller supplying
         // one of each would get a machine that is Linux for its pipes and macOS
-        // for its files. `withUnixPlatformAndFileSystemType` writes both fields
-        // A client is expected to write both together for that reason, but no
-        // client can be made to: a state record assembled field by field
-        // bypasses whatever setter it provides. Checking here rather than
-        // trusting the caller is what keeps this function's contract true
-        // wherever it is reached.
+        // for its files. `UnixSystem.initial` derives the type from the
+        // flavour and `UnixMachineState.withFileSystemType` refuses one the
+        // flavour cannot mount, but no client can be made to go through
+        // either: a state record assembled field by field bypasses both.
+        // Checking here rather than trusting the caller is what keeps this
+        // function's contract true wherever it is reached.
         if not (isReportableUnder flavour mount) then
             failwith
                 $"EmulatedFileSystemType.reportedFor: asked what a %O{flavour} kernel reports for a %O{mount} mount, which %O{flavour} cannot have. The flavour and the mount type have come apart; they constrain each other (see EmulatedFileSystemType.isReportableUnder) and must be chosen together rather than set one at a time."

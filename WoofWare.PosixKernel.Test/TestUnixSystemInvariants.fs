@@ -334,7 +334,6 @@ module TestUnixSystemInvariants =
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
             |> UnixSystem.withFileSystemAndCurrentDirectory
-                SimulatedUnixPlatform.linuxX64
                 epoch
                 seed
                 (AbsoluteUnixPath.parseOrFail context "/outer/inner")
@@ -646,5 +645,37 @@ module TestUnixSystemInvariants =
         system
         |> withTask None
         |> withSignals (directedAt ValueNone)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a mount the flavour cannot report is a defect`` () : unit =
+        // Reachable only by assembling the record by hand: `UnixSystem.initial`
+        // derives the type from the flavour, and
+        // `UnixMachineState.withFileSystemType` refuses one the machine's
+        // flavour cannot mount.
+        let linux = UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+
+        { linux with
+            Machine =
+                { linux.Machine with
+                    FileSystemType = EmulatedFileSystemType.Apfs
+                }
+        }
+        |> UnixSystem.checkInvariants
+        |> shouldEqual
+            [
+                UnixSystemDefect.FileSystemTypeNotReportable (SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Apfs)
+            ]
+
+        // A hand-built machine whose pair does describe one system is sound.
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+        |> fun darwin ->
+            { darwin with
+                Machine =
+                    { darwin.Machine with
+                        FileSystemType = EmulatedFileSystemType.Nfs
+                    }
+            }
         |> UnixSystem.checkInvariants
         |> shouldEqual []
