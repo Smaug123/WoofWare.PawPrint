@@ -60,6 +60,8 @@
     <Compile Include="ThreadState.fs" />
     <Compile Include="StackFrameCapture.fs" />
     <Compile Include="StackCrawlMark.fs" />
+    <Compile Include="PEImageKind.fs" />
+    <Compile Include="AssemblyBinding.fs" />
     <Compile Include="TypeResolution.fs" />
     <Compile Include="SignatureComparison.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />

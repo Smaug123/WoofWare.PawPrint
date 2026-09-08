@@ -346,6 +346,7 @@ module IlMachineThreadState =
                 HardwareIntrinsics = HardwareIntrinsicsProfile.ScalarOnly
                 Debugger = DebuggerState.Detached
                 RuntimeAssemblyObjects = ImmutableDictionary.Empty
+                AssemblyBindCache = AssemblyBindCache.empty
                 RuntimeModuleObjects = ImmutableDictionary.Empty
                 ManagedThreadObjects = Map.empty
                 NextManagedThreadId = 2

@@ -824,7 +824,9 @@ type LoadedAssemblies =
             /// AssemblyDefinition FullName -> the assembly bearing that identity.
             ByDefinition : ImmutableDictionary<string, DumpedAssembly>
             /// AssemblyReference FullName -> the AssemblyDefinition FullName it bound to.
-            Bindings : ImmutableDictionary<string, string>
+            /// Reference identity, to the reference as its metadata spells it and the definition
+            /// identity it bound to.
+            Bindings : ImmutableDictionary<string, AssemblyName * string>
             /// The keys of <c>ByDefinition</c>, in the order each was first registered.
             LoadOrder : ImmutableArray<string>
         }
@@ -882,6 +884,24 @@ type LoadedAssemblies =
         this.ByDefinition.ContainsKey name.FullName
 
     /// <summary>
+    /// Every reference binding recorded so far, as (reference as its metadata spells it,
+    /// definition identity) pairs, sorted by the reference's display name.
+    /// </summary>
+    /// <remarks>
+    /// The reference's own <c>AssemblyName</c> rather than its display name, because the
+    /// display name derives a token from a reference that carries a full key, and a consumer
+    /// comparing specs needs to know which it was. Sorted because the underlying dictionary's
+    /// order is not reproducible (see <c>DefinitionNames</c>), and a caller that picks the first
+    /// match must pick the same one on every run.
+    /// </remarks>
+    member this.ReferenceBindings : (AssemblyName * string) list =
+        this.Bindings
+        |> Seq.map (fun kv -> kv.Key, kv.Value)
+        |> Seq.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal (a, b))
+        |> Seq.map snd
+        |> List.ofSeq
+
+    /// <summary>
     /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
     /// </summary>
     /// <remarks>
@@ -896,7 +916,7 @@ type LoadedAssemblies =
         let refFullName = reference.Name.FullName
 
         match this.Bindings.TryGetValue refFullName with
-        | true, definitionName -> this.TryByDefinitionName definitionName
+        | true, (_, definitionName) -> this.TryByDefinitionName definitionName
         | false, _ -> this.TryByDefinitionName refFullName
 
     /// <summary>
@@ -976,7 +996,7 @@ type LoadedAssemblies =
         let result =
             {
                 ByDefinition = this.ByDefinition.SetItem (definitionName, canonical)
-                Bindings = this.Bindings.SetItem (reference.Name.FullName, definitionName)
+                Bindings = this.Bindings.SetItem (reference.Name.FullName, (reference.Name, definitionName))
                 LoadOrder = this.LoadOrderWith definitionName
             }
 

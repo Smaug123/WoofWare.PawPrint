@@ -72,6 +72,12 @@ type RuntimeExceptionField =
     /// and `GetObjectData` serialises as `TypeLoadResourceID`. The `Message` case must carry what
     /// that format string renders.
     | TypeLoadResourceId of int
+    /// `System.IO.FileNotFoundException.FileName`, which the two-argument constructor stores
+    /// and `ToString` reports; for a failed assembly bind it is the requested display name.
+    | FileNotFoundFileName of string
+    /// `System.Exception._HResult`, for an exception the runtime raises for a specific
+    /// `HRESULT` rather than with the type's default.
+    | HResult of int
 
 /// What `returnStackFrame` should do with a frame's product — the object it was constructing if
 /// `Constructing`, otherwise the value its signature says it returns — once it returns.
