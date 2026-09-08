@@ -18,6 +18,26 @@ module NativeRuntimeFieldHandle =
             | Some fieldHandle -> Some fieldHandle
             | None -> failwith $"%s{operation}: field-registry handle %d{fieldHandleId} is not allocated"
 
+    /// The token CoreCLR's `RuntimeFieldHandle::GetToken` FCall (runtimehandles.cpp:2205)
+    /// returns: `pField->GetMemberDef()`, which reads a value stored on the FieldDesc at
+    /// construction rather than looking anything up.
+    ///
+    /// This is a function of the FieldDef row identity alone. In particular the declaring type
+    /// the handle was minted against does not affect it: CoreCLR keeps a generic type's
+    /// FieldDescs on the canonical (`__Canon`) MethodTable, so every instantiation shares them.
+    /// Measured on real .NET: `Gen&lt;&gt;.Value`, `Gen&lt;int&gt;.Value` and
+    /// `Gen&lt;string&gt;.Value` all report one token, even though PawPrint gives those three
+    /// handles distinct registry ids.
+    ///
+    /// There is no nil answer to give. CoreCLR's assertion allows `mdFieldDefNil` for a FieldDesc
+    /// that no metadata row names, but `FieldHandle` carries a `ComparableFieldDefinitionHandle`,
+    /// so PawPrint cannot be holding such a field.
+    let fieldDefinitionToken (handle : FieldHandle) : int32 =
+        let definitionHandle : System.Reflection.Metadata.EntityHandle =
+            System.Reflection.Metadata.FieldDefinitionHandle.op_Implicit (handle.GetFieldDefinitionHandle().Get)
+
+        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken definitionHandle
+
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -82,6 +102,30 @@ module NativeRuntimeFieldHandle =
             let state =
                 IlMachineState.pushToEvalStack
                     (CliType.Numeric (CliNumericType.Int32 (int32 fieldInfo.Attributes)))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeFieldHandle",
+          "GetToken",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `RtFieldInfo.MetadataToken` (RtFieldInfo.cs:62) is this call and nothing else, and
+            // it is what `CustomAttribute.GetCustomAttributes` keys the CustomAttribute table on
+            // when it looks for a field's attributes.
+            let operation = "RuntimeFieldHandle.GetToken"
+
+            let fieldHandle =
+                // The FCall's PRECONDITION is `pField != NULL`; a null handle faults there, so
+                // fault loudly here too, as the GetAttributes sibling above does.
+                fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 (fieldDefinitionToken fieldHandle)))
                     ctx.Thread
                     state
 
