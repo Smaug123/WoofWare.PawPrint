@@ -596,6 +596,7 @@ module UnixSocket =
                     // reverts a later connect's source resolution back to
                     // exactly this.
                     LockedAddress = Some endpoint.Address
+                    LockedPort = endpoint.Port <> 0us
                 }
             )
 
@@ -620,15 +621,14 @@ module UnixSocket =
         let conflictsWith (binding : SocketBinding) : bool =
             UnixMachineState.bindingConflicts socketId socket binding system.Machine
 
-        // A request for port 0 needs no special case here, and had one until a
-        // mutation showed nothing could falsify it: `bindConflict` answers
-        // `false` outright when the ports differ, and no bound socket holds port
-        // 0 -- every port-0 request allocates a real one. So a port-0 candidate
-        // conflicts with nothing, and the allocator's own search below is what
-        // keeps it that way.
+        // A request for port 0 conflicts with nothing here: the allocator's
+        // own search is what keeps the port it picks free, and a socket a
+        // Linux dissolve left half-bound at `address:0` reserves no port, so
+        // comparing two zero ports would refuse a bind that succeeds.
         let addressInUseFault =
             match candidate with
-            | Some binding -> conflictsWith binding
+            | Some binding when binding.Endpoint.Port <> 0us -> conflictsWith binding
+            | Some _
             | None -> false
 
         let faults =
@@ -637,7 +637,11 @@ module UnixSocket =
                 BindFault.Family, familyFault
                 BindFault.AddressNotLocal, addressNotLocalFault
                 BindFault.PrivilegedPort, privilegedPortFault
-                BindFault.AlreadyBound, socket.Binding.IsSome
+                // Linux's `inet_bind` refuses on `inet_num`, the port, not on
+                // the address: a datagram socket whose dissolve left it
+                // half-bound (`127.0.0.1:0`) rebinds -- measured, on both
+                // addresses and both kinds of port.
+                BindFault.AlreadyBound, (socket.Binding |> Option.exists (fun binding -> binding.Endpoint.Port <> 0us))
                 BindFault.AddressInUse, addressInUseFault
             ]
             |> List.choose (fun (fault, holds) -> if holds then Some fault else None)
@@ -788,6 +792,7 @@ module UnixSocket =
                          // This implicit bind runs no `bind(2)`, so nothing is
                          // locked.
                          LockedAddress = None
+                         LockedPort = false
                      }
 
                  UnixMachineState.allocateEphemeralPort

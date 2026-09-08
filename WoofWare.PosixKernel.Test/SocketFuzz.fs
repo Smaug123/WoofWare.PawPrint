@@ -275,6 +275,7 @@ module SocketFuzz =
                                                     Endpoint =
                                                         InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
                                                     LockedAddress = None
+                                                    LockedPort = false
                                                 }
                                         Phase =
                                             SocketPhase.Listening

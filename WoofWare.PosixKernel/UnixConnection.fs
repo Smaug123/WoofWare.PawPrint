@@ -131,11 +131,6 @@ type ConnectRefusal =
     | DarwinUnspecOnListener of socket : SocketId
     /// `AF_UNSPEC` with a declared length other than the measured one.
     | UnspecDeclaredLength of flavour : SimulatedUnixFlavour * kind : SocketKind * declaredLength : int * measured : int
-    /// `AF_UNSPEC` dissolving a Linux datagram peer whose `bind(2)` locked a
-    /// concrete address and chose the port, which is unmeasured.
-    | UnspecOnLockedAddress of socket : SocketId * endpoint : InternetEndpoint
-    /// `AF_UNSPEC` on a bound but unconnected Linux datagram socket, unmeasured.
-    | LinuxUnspecOnBoundDatagram of socket : SocketId
     /// A datagram connect to the wildcard address, whose remapping is unmeasured.
     | DatagramConnectToWildcard of socket : SocketId
 
@@ -185,10 +180,6 @@ module ConnectRefusal =
                 | _ -> $"only %d{measured} is"
 
             $"AF_UNSPEC with a declared length of %d{declaredLength} on a %O{flavour} %O{kind} socket is unmeasured (%s{extent}), so measure it rather than guessing."
-        | ConnectRefusal.UnspecOnLockedAddress (socket, endpoint) ->
-            $"AF_UNSPEC on datagram socket %O{socket}, whose bind(2) locked %s{InternetEndpoint.toString endpoint}'s address, is only measured for a kernel-chosen port (the address survives, the port zeroes); what survives a bind(2)-chosen port, and how the half-bound socket rebinds, is unmeasured. Measure it rather than guessing."
-        | ConnectRefusal.LinuxUnspecOnBoundDatagram socket ->
-            $"AF_UNSPEC on bound but unconnected Linux datagram socket %O{socket} is unmeasured (whether the dissolve drops the binding as it does for a connected one), so measure it rather than guessing."
         | ConnectRefusal.DatagramConnectToWildcard socket ->
             $"a datagram connect from socket %O{socket} to 0.0.0.0 is unmeasured (the kernels remap it, but which address the peer filter then holds was not probed), so measure it rather than guessing."
 
@@ -332,6 +323,36 @@ module UnixConnection =
             : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
             match sock.Binding with
+            | Some binding when binding.Endpoint.Port = 0us ->
+                // Half-bound: a datagram dissolve kept the locked address and
+                // dropped the port. Linux's `inet_autobind` gives it a port and
+                // keeps the address -- measured, `127.0.0.1:0` connects from
+                // `127.0.0.1:<ephemeral>`. Only a concrete locked address is
+                // ever left half-bound, so the wildcard case does not arise.
+                let candidate (port : uint16) : SocketBinding =
+                    { binding with
+                        Endpoint =
+                            { binding.Endpoint with
+                                Port = port
+                            }
+                    }
+
+                match
+                    UnixMachineState.allocateEphemeralPort
+                        (EphemeralPortUse.ConnectTo dest)
+                        socketId
+                        sock
+                        candidate
+                        system.Machine
+                with
+                | Some (binding, machine) ->
+                    Ok (
+                        binding,
+                        { system with
+                            Machine = machine
+                        }
+                    )
+                | None -> Error (ConnectRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
             | Some binding when binding.Endpoint.Address <> InternetEndpoint.WildcardAddress -> Ok (binding, system)
             | Some binding ->
                 // A client bound to the wildcard gets a concrete source
@@ -367,6 +388,7 @@ module UnixConnection =
                     // No bind(2) ran: a Linux refusal delivery reverts the
                     // address all the way to the wildcard.
                     LockedAddress = None
+                    LockedPort = false
                 }
 
             match
@@ -876,34 +898,47 @@ module UnixConnection =
                         )
                     else
 
-                    // Measured with and without a peer set: dissolves the
-                    // filter and answers SUCCESS. The dissolve also unbinds
-                    // what connect resolved — unlike TCP's reset, the *port*
-                    // is dropped too (probe8: getsockname reads 0.0.0.0:0
-                    // afterwards for an implicitly bound socket and for one
-                    // whose bind(2) gave the wildcard), so a socket with no
-                    // locked concrete address ends up fully unbound and the
-                    // next connect binds afresh. A locked concrete address
-                    // was measured to survive with the port zeroed —
-                    // 127.0.0.1:0 — but whether a bind(2)-chosen port would
-                    // also drop, and how such a half-bound socket rebinds,
-                    // is unmeasured, so that provenance is refused.
-                    match sock.Phase with
-                    | SocketPhase.DatagramPeer _ ->
-                        let binding =
-                            match sock.Binding with
-                            | None ->
-                                failwith
-                                    "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is an interpreter bug."
-                            | Some binding ->
-                                match binding.LockedAddress with
-                                | None -> Ok None
-                                | Some locked when locked = InternetEndpoint.WildcardAddress -> Ok None
-                                | Some _ -> Error (ConnectRefusal.UnspecOnLockedAddress (socketId, binding.Endpoint))
+                    // Linux's `udp_disconnect`, connected or not (measured
+                    // both ways, `docs/probes/udp-connect/dissolve.py`): the
+                    // peer filter goes; the address reverts to the wildcard
+                    // unless `bind(2)` locked a concrete one; the port is
+                    // dropped unless `bind(2)` chose it. So `0.0.0.0:5555`
+                    // dissolves to itself, `127.0.0.1:0`-bound-then-connected
+                    // to `127.0.0.1:0` (half-bound: it rebinds freely, and a
+                    // later connect keeps the address), and an implicit or
+                    // `0.0.0.0:0` binding to nothing at all.
+                    match sock.Phase, sock.Binding with
+                    | SocketPhase.DatagramPeer _, None ->
+                        failwith
+                            "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is an interpreter bug."
+                    | _, None ->
+                        // Nothing to dissolve and nothing bound: the accepted
+                        // no-op (measured).
+                        completed system
+                    | _, Some binding ->
+                        let address =
+                            match binding.LockedAddress with
+                            | Some locked when locked <> InternetEndpoint.WildcardAddress -> Some locked
+                            | Some _
+                            | None -> None
 
-                        match binding with
-                        | Error refusal -> Error refusal
-                        | Ok binding ->
+                        let port =
+                            if binding.LockedPort then
+                                Some binding.Endpoint.Port
+                            else
+                                None
+
+                        let dissolved =
+                            match address, port with
+                            | None, None -> None
+                            | _ ->
+                                Some
+                                    { binding with
+                                        Endpoint =
+                                            InternetEndpoint.ofParts
+                                                (address |> Option.defaultValue InternetEndpoint.WildcardAddress)
+                                                (port |> Option.defaultValue 0us)
+                                    }
 
                         completed
                             { system with
@@ -913,20 +948,12 @@ module UnixConnection =
                                             Map.add
                                                 socketId
                                                 { sock with
-                                                    Binding = binding
+                                                    Binding = dissolved
                                                     Phase = SocketPhase.Idle
                                                 }
                                                 system.Machine.Sockets
                                     }
                             }
-                    | _ ->
-
-                    match sock.Binding with
-                    | None ->
-                        // No peer to dissolve and nothing bound: the
-                        // accepted no-op (measured).
-                        completed system
-                    | Some _ -> Error (ConnectRefusal.LinuxUnspecOnBoundDatagram socketId)
                 | SimulatedUnixFlavour.Darwin ->
                     if declaredLength <> exactSize then
                         Error (
@@ -938,8 +965,41 @@ module UnixConnection =
                             )
                         )
                     else
-                        // Measured with and without a peer set.
-                        fail UnixError.EAFNOSUPPORT
+
+                    // EAFNOSUPPORT with and without a peer set (measured), but
+                    // not before the disconnect has happened: a connected
+                    // socket loses its peer and its local address reverts to
+                    // the wildcard, port kept, whatever `bind(2)` locked --
+                    // `127.0.0.1:5556` reads back `0.0.0.0:5556`. An
+                    // unconnected one is left as it was.
+                    match sock.Phase, sock.Binding with
+                    | SocketPhase.DatagramPeer _, Some binding ->
+                        failed
+                            UnixError.EAFNOSUPPORT
+                            { system with
+                                Machine =
+                                    { system.Machine with
+                                        Sockets =
+                                            Map.add
+                                                socketId
+                                                { sock with
+                                                    Binding =
+                                                        Some
+                                                            { binding with
+                                                                Endpoint =
+                                                                    { binding.Endpoint with
+                                                                        Address = InternetEndpoint.WildcardAddress
+                                                                    }
+                                                            }
+                                                    Phase = SocketPhase.Idle
+                                                }
+                                                system.Machine.Sockets
+                                    }
+                            }
+                    | SocketPhase.DatagramPeer _, None ->
+                        failwith
+                            "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is an interpreter bug."
+                    | _, _ -> fail UnixError.EAFNOSUPPORT
             else
 
             match lengthVerdict with
@@ -1089,6 +1149,7 @@ module UnixConnection =
                                 // its phase is Established for life, so no
                                 // refusal delivery can ever revert it.
                                 LockedAddress = None
+                                LockedPort = false
                             }
                     // Both kernels copy the listener's socket options onto
                     // the accepted socket (inet_csk_clone_lock; sonewconn),

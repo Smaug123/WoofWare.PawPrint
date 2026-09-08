@@ -1,0 +1,25 @@
+Darwin 25.6.0
+after unspec from bind(127.0.0.1:0): ('0.0.0.0', 54184); connect ok -> ('127.0.0.1', 54184)
+   rebind ('127.0.0.1', 0): EINVAL
+   rebind ('0.0.0.0', 0): EINVAL
+   rebind ('127.0.0.1', 7777): EINVAL
+   rebind ('0.0.0.0', 7778): EINVAL
+   sendto ok -> ('0.0.0.0', 51094)
+after unspec from bind(0.0.0.0:0): ('0.0.0.0', 53659); connect ok -> ('127.0.0.1', 53659)
+   rebind ('127.0.0.1', 0): EINVAL
+   rebind ('0.0.0.0', 0): EINVAL
+   rebind ('127.0.0.1', 7777): EINVAL
+   rebind ('0.0.0.0', 7778): EINVAL
+   sendto ok -> ('0.0.0.0', 54409)
+after unspec from bind(0.0.0.0:5555): ('0.0.0.0', 5555); connect ok -> ('127.0.0.1', 5555)
+   rebind ('127.0.0.1', 0): EINVAL
+   rebind ('0.0.0.0', 0): EINVAL
+   rebind ('127.0.0.1', 7777): EINVAL
+   rebind ('0.0.0.0', 7778): EINVAL
+   sendto ok -> ('0.0.0.0', 5555)
+after unspec from bind(127.0.0.1:5556): ('0.0.0.0', 5556); connect ok -> ('127.0.0.1', 5556)
+   rebind ('127.0.0.1', 0): EINVAL
+   rebind ('0.0.0.0', 0): EINVAL
+   rebind ('127.0.0.1', 7777): EINVAL
+   rebind ('0.0.0.0', 7778): EINVAL
+   sendto ok -> ('0.0.0.0', 5556)
