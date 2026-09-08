@@ -166,6 +166,45 @@ module NativeModuleHandle =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 packed)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "ModuleHandle_GetToken",
+          "System.Private.CoreLib",
+          "System",
+          "ModuleHandle",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallModule", qCallModuleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            qCallModuleGenerics.IsEmpty
+            ->
+            let operation = "ModuleHandle_GetToken"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let assemblyFullName =
+                NativeCall.qCallModuleToAssemblyFullName
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            // The handle must name a module PawPrint has read; as for `GetMDStreamVersion`, that
+            // is the assembly, since PawPrint models one module per assembly.
+            if (state.LoadedAssembly assemblyFullName).IsNone then
+                failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded"
+
+            // CoreCLR returns `pModule->GetMDImport()->GetModuleFromScope()` (runtimehandles.cpp:2321),
+            // which is `TokenFromRid(1, mdtModule)` (mdinternalro.cpp:3142): the Module table has
+            // exactly one row (ECMA-335 II.22.30), so every module's own token is the first row of
+            // table 0x00. `EntityHandle.ModuleDefinition` is that same handle in SRM's encoding.
+            let token =
+                let handle : System.Reflection.Metadata.EntityHandle =
+                    System.Reflection.Metadata.ModuleDefinitionHandle.op_Implicit
+                        System.Reflection.Metadata.EntityHandle.ModuleDefinition
+
+                System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken handle
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 token)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
         | "ModuleHandle_GetPEKind",
           "System.Private.CoreLib",
           "System",
