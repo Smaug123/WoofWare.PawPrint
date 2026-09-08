@@ -341,6 +341,7 @@ module IlMachineThreadState =
                 DotnetRuntimeDirs = dotnetRuntimeDirs
                 TypeHandles = TypeHandleRegistry.empty ()
                 GcHandles = GcHandleRegistry.empty ()
+                EvpDigests = EvpDigestRegistry.empty ()
                 FieldHandles = FieldHandleRegistry.empty ()
                 MethodHandles = MethodHandleRegistry.empty ()
                 HardwareIntrinsics = HardwareIntrinsicsProfile.ScalarOnly

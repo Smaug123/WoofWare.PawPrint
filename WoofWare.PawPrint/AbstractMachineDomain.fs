@@ -77,3 +77,26 @@ type WaitHandleId =
     override this.ToString () =
         match this with
         | WaitHandleId.WaitHandleId i -> $"<wait handle #%i{i}>"
+
+/// A digest algorithm the emulated OpenSSL shim can run: what a `const EVP_MD*` names.
+/// Round-trips through guest code as an `IntPtr` (see `NativeIntSource.EvpMdPtr`), which
+/// `Interop.Crypto` caches in a static and hands back to every other EVP entry point.
+[<RequireQualifiedAccess>]
+type EvpDigestAlgorithm =
+    | Sha256
+
+    override this.ToString () =
+        match this with
+        | EvpDigestAlgorithm.Sha256 -> "SHA-256"
+
+/// Opaque handle for one `EVP_MD_CTX` minted by `CryptoNative_EvpMdCtxCreate` or
+/// `CryptoNative_EvpMdCtxCopyEx`. Round-trips through guest code as an `IntPtr` (see
+/// `NativeIntSource.EvpMdCtxPtr`), wrapped by the BCL in a `SafeEvpMdCtxHandle`. Globally
+/// scoped within the `IlMachineState`; never reused after `CryptoNative_EvpMdCtxDestroy` so
+/// that use-after-free is caught at the use site.
+type EvpMdCtxHandle =
+    | EvpMdCtxHandle of int64
+
+    override this.ToString () =
+        match this with
+        | EvpMdCtxHandle.EvpMdCtxHandle i -> $"<EVP_MD_CTX #%i{i}>"

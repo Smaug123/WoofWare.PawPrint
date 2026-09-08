@@ -40,6 +40,8 @@
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="GcHandleRegistry.fs" />
+    <Compile Include="Sha256.fs" />
+    <Compile Include="EvpDigestRegistry.fs" />
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
@@ -182,6 +184,7 @@
     <Compile Include="Native\NativeString.fs" />
     <Compile Include="Native\NativeSystemNative.fs" />
     <Compile Include="Native\NativeLowLevelMonitor.fs" />
+    <Compile Include="Native\NativeCryptoNative.fs" />
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="AbstractMachine.fs" />

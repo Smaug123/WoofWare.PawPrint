@@ -7,6 +7,7 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
+open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 
 /// PawPrint interprets whichever CoreLib it is pointed at, and CoreLib is `#if`-split per
 /// target: `System.Threading.Lock.ThreadId.InitializeForCurrentThread` calls
@@ -21,29 +22,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestLinuxCoreLibFlavour =
-
-    let private assy = typeof<RunResult>.Assembly
-
-    let private linuxFrameworkDir : string option =
-        match Environment.GetEnvironmentVariable "DOTNET_LINUX_FRAMEWORK_DIR" with
-        | null
-        | "" -> None
-        | dir -> Some dir
-
-    /// The pinned framework only exists inside the Nix devshell, so a plain `dotnet test` in a
-    /// non-Nix checkout skips rather than fails. Everything these tests assert is about a
-    /// foreign CoreLib flavour, so there is nothing meaningful to fall back to.
-    let private requireLinuxFramework () : string =
-        match linuxFrameworkDir with
-        | Some dir -> dir
-        | None ->
-            Assert.Ignore
-                "DOTNET_LINUX_FRAMEWORK_DIR is unset; run under `nix develop` to exercise the linux-x64 CoreLib."
-            // Assert.Ignore throws, so this is unreachable; it exists to satisfy the type checker.
-            failwith "unreachable: Assert.Ignore did not throw"
-
-    let private corelibPath (frameworkDir : string) : string =
-        Path.Combine (frameworkDir, "System.Private.CoreLib.dll")
 
     /// Every native entry point the assembly imports, by entry-point name. Whole-assembly
     /// rather than navigated to: the declaring types here (`Interop+Sys` and friends) are
@@ -74,53 +52,6 @@ module TestLinuxCoreLibFlavour =
         |> shouldEqual true
 
         imports |> Set.contains "SystemNative_GetUInt64OSThreadId" |> shouldEqual false
-
-    /// Runtime dirs with the pinned linux-x64 framework first. Assembly binding takes the first
-    /// directory that has a `<simple name>.dll`, so every framework assembly resolves from the
-    /// pack; the host's dirs stay on the list only to bind anything the pack does not carry.
-    let private runtimeDirsPreferringLinux (frameworkDir : string) : ImmutableArray<string> =
-        seq {
-            yield frameworkDir
-            yield! DotnetRuntime.SelectForDll assy.Location
-        }
-        |> ImmutableArray.CreateRange
-
-    let private runOnLinuxFramework (frameworkDir : string) (source : string) : IlMachineState =
-        let image = Roslyn.compile [ source ]
-        let _, loggerFactory = LoggerFactory.makeTest ()
-        use _loggerFactoryResource = loggerFactory
-        use peImage = new MemoryStream (image)
-
-        let outcome =
-            Program.run
-                loggerFactory
-                (Some "LinuxCoreLibFlavour.cs")
-                peImage
-                (HostConfig.Default (runtimeDirsPreferringLinux frameworkDir))
-
-        match outcome with
-        | RunOutcome.NormalExit (terminalState, _) -> terminalState
-        | other -> failwith $"Expected the guest to exit normally on the linux-x64 CoreLib, got %O{other}"
-
-    let private loadedCorelibPath (terminalState : IlMachineState) : string =
-        let corelibs =
-            terminalState._LoadedAssemblies.DefinitionNames
-            |> Seq.choose terminalState._LoadedAssemblies.TryByDefinitionName
-            |> Seq.filter (fun loaded -> loaded.Name.Name = "System.Private.CoreLib")
-            |> Seq.toList
-
-        match corelibs with
-        | [ corelib ] ->
-            corelib.OriginalPath
-            |> Option.defaultWith (fun () ->
-                failwith "Loaded CoreLib has no OriginalPath; cannot tell where it came from"
-            )
-        | [] -> failwith "No System.Private.CoreLib was loaded"
-        | many ->
-            let paths = many |> List.map (fun c -> string<string option> c.OriginalPath)
-
-            failwith
-                $"""Expected exactly one loaded System.Private.CoreLib, got %d{many.Length}: %s{String.Join (", ", paths)}"""
 
     /// Not just that we passed a directory: the interpreter
     /// really bound CoreLib out of it and ran a guest to completion against that image.
@@ -181,7 +112,7 @@ public class Program
 }
 """
 
-        let terminalState = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework "LinuxCoreLibFlavour.cs" frameworkDir source
 
         terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
@@ -248,7 +179,7 @@ public class Program
 }
 """
 
-        let terminalState = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework "LinuxCoreLibFlavour.cs" frameworkDir source
 
         terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
@@ -301,7 +232,7 @@ public class Program
 }
 """
 
-        let terminalState = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework "LinuxCoreLibFlavour.cs" frameworkDir source
 
         terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
@@ -359,7 +290,7 @@ public class Program
 }
 """
 
-        let terminalState = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework "LinuxCoreLibFlavour.cs" frameworkDir source
 
         terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
@@ -420,7 +351,7 @@ public class Program
 }
 """
 
-        let terminalState = runOnLinuxFramework frameworkDir source
+        let terminalState = runOnLinuxFramework "LinuxCoreLibFlavour.cs" frameworkDir source
 
         terminalState.LatchedExitCode |> shouldEqual 0
         loadedCorelibPath terminalState |> shouldEqual (corelibPath frameworkDir)
