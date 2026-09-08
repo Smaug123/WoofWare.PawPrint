@@ -86,6 +86,48 @@ module TestKernelConfig =
 
             Assert.Throws<Exception> (TestDelegate apply) |> ignore<Exception>
 
+    /// The platform is the one field of `KernelConfig` that others are
+    /// derived from, so a Darwin configuration must yield a kernel that is
+    /// Darwin in every derived field, not one re-flavoured after the fact.
+    /// Stated as the measured literals: a row that asked each derivation
+    /// what to expect would agree with any derivation at all.
+    [<Test>]
+    let ``a Darwin configuration yields a kernel that is Darwin throughout`` () : unit =
+        let kernel =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                }
+
+        kernel.UnixPlatform |> shouldEqual SimulatedUnixPlatform.macOsArm64
+        kernel.FileSystemType |> shouldEqual EmulatedFileSystemType.Apfs
+        kernel.SoMaxConn |> shouldEqual 128
+        kernel.EphemeralPortRange |> shouldEqual (49152us, 65535us)
+        kernel.UserId |> shouldEqual 501u
+        kernel.GroupId |> shouldEqual 20u
+        EmulatedKernel.checkInvariants kernel |> shouldEqual []
+
+        // ...and a configured value is carried as given, on either flavour.
+        let configured =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    EphemeralPortRange = Some (40000us, 40010us)
+                    UserId = Some 1000u
+                    GroupId = Some 1000u
+                }
+
+        configured.EphemeralPortRange |> shouldEqual (40000us, 40010us)
+        configured.UserId |> shouldEqual 1000u
+        configured.GroupId |> shouldEqual 1000u
+
+        // The default configuration is Linux's, in every one of those fields.
+        let linux = KernelConfig.toKernel KernelConfig.Default
+        linux.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
+        linux.EphemeralPortRange |> shouldEqual (32768us, 60999us)
+        linux.UserId |> shouldEqual 1000u
+        linux.GroupId |> shouldEqual 1000u
+
     [<Test>]
     let ``KernelConfig applies the current directory whatever else it sets`` () : unit =
         let config =
