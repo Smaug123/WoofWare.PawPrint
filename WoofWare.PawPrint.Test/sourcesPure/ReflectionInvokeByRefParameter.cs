@@ -87,6 +87,16 @@ public class Program
         return x * 3;
     }
 
+    // A byref to an array: a reference-type element with no nominal type of its own, so the
+    // byref can only be handed over viewed as `System.Object`.
+    private static void Grow (ref int[] a)
+    {
+        int[] grown = new int[a.Length + 1];
+        Array.Copy (a, grown, a.Length);
+        grown[a.Length] = 4;
+        a = grown;
+    }
+
     private static MethodInfo Get (string name)
     {
         MethodInfo m = typeof (Program).GetMethod (name, BindingFlags.Static | BindingFlags.NonPublic);
@@ -214,6 +224,13 @@ public class Program
 
         if (!(inRet is int inValue) || inValue != 12)
             return 9;
+
+        // 10: a byref to an array, read (its length) and replaced by the callee.
+        object[] growArgs = new object[] { new int[] { 1, 2, 3 } };
+        Get ("Grow").Invoke (null, growArgs);
+
+        if (!(growArgs[0] is int[] grown) || grown.Length != 4 || grown[3] != 4 || grown[0] != 1)
+            return 10;
 
         return 0;
     }
