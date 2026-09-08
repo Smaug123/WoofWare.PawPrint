@@ -372,17 +372,18 @@ module TestManagedHeap =
 
     [<Test>]
     let ``allocateMultiDimArray: final product exceeding Int32 is rejected even if it fits in UInt32`` () : unit =
-        // Int32.MaxValue * 2 = UInt32.MaxValue - 1, which fits in UInt32 (the per-step
-        // multiply check passes: Int32.MaxValue == UInt32.MaxValue / 2, not strictly
-        // greater). But the final product exceeds Int32.MaxValue, so it can't index our
-        // backing store; the post-loop guard must catch it.
+        // MaxArrayLength * 2 = 4294967182, which fits in UInt32 (the per-step multiply check
+        // passes, since MaxArrayLength < UInt32.MaxValue / 2). But the final product exceeds
+        // Int32.MaxValue, so it can't index our backing store; the post-loop guard must catch
+        // it. Each dimension is at the per-dimension cap rather than above it, so that this
+        // reaches the rule it names rather than the cap.
         let _, loggerFactory = LoggerFactory.makeTest ()
         let state = state loggerFactory
 
         let elementHandle = ConcreteTypeHandle.Concrete 1
         let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
         let zero = CliType.Numeric (CliNumericType.Int32 0)
-        let lengths = ImmutableArray.CreateRange [ System.Int32.MaxValue ; 2 ]
+        let lengths = ImmutableArray.CreateRange [ SzArrayAllocation.maxLength ; 2 ]
 
         let exn =
             Assert.Throws<System.Exception> (fun () ->
@@ -391,6 +392,30 @@ module TestManagedHeap =
             )
 
         exn.Message |> shouldContainText "exceeds Int32.MaxValue"
+
+    [<Test>]
+    let ``allocateMultiDimArray: a dimension above MaxArrayLength is rejected even when a later dimension is zero``
+        ()
+        : unit
+        =
+        // The per-dimension cap is independent of the product: CoreCLR records the violation
+        // and raises it after the whole walk, so a zero dimension that empties the array does
+        // not rescue it. Before this rule was modelled, this allocated an empty array.
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        let state = state loggerFactory
+
+        let elementHandle = ConcreteTypeHandle.Concrete 1
+        let arrayHandle = ConcreteTypeHandle.Array (elementHandle, 2)
+        let zero = CliType.Numeric (CliNumericType.Int32 0)
+        let lengths = ImmutableArray.CreateRange [ SzArrayAllocation.maxLength + 1 ; 0 ]
+
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.allocateMultiDimArray arrayHandle (fun () -> zero) lengths state
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "above MaxArrayLength()"
 
     [<Test>]
     let ``allocateMultiDimArray: negative length is rejected`` () : unit =
