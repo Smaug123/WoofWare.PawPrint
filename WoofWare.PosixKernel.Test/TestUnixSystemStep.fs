@@ -4490,6 +4490,7 @@ module TestUnixSystemStep =
                         {
                             Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 8080us
                             LockedAddress = Some InternetEndpoint.LoopbackAddress
+                            LockedPort = true
                         }
             }
 

@@ -147,6 +147,7 @@ module TestSocketEventDelivery =
                                             {
                                                 Endpoint = loopback port
                                                 LockedAddress = None
+                                                LockedPort = false
                                             }
                                     Phase =
                                         SocketPhase.Listening

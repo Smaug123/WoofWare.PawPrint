@@ -781,6 +781,7 @@ module TestSocketTable =
                                 {
                                     Endpoint = loopback port
                                     LockedAddress = None
+                                    LockedPort = false
                                 }
                         Phase =
                             SocketPhase.Listening
@@ -981,6 +982,7 @@ module TestSocketTable =
                                             {
                                                 Endpoint = loopback 4444us
                                                 LockedAddress = None
+                                                LockedPort = false
                                             }
                                 }
                                 kernel.Machine.Sockets
@@ -1071,6 +1073,7 @@ module TestSocketTable =
                                 {
                                     Endpoint = loopback 5000us
                                     LockedAddress = None
+                                    LockedPort = false
                                 }
                         Phase =
                             SocketPhase.Listening
@@ -1163,6 +1166,7 @@ module TestSocketTable =
                 {
                     Endpoint = loopback 5000us
                     LockedAddress = None
+                    LockedPort = false
                 }
         )
 
@@ -1339,6 +1343,7 @@ module TestSocketTable =
                                 {
                                     Endpoint = loopback 2us
                                     LockedAddress = None
+                                    LockedPort = false
                                 }
                         Phase =
                             SocketPhase.Listening
@@ -1419,6 +1424,7 @@ module TestSocketTable =
                                 {
                                     Endpoint = loopback 2us
                                     LockedAddress = None
+                                    LockedPort = false
                                 }
                         Phase =
                             SocketPhase.Listening
@@ -1471,6 +1477,7 @@ module TestSocketTable =
                                                 Endpoint =
                                                     InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
                                                 LockedAddress = None
+                                                LockedPort = false
                                             }
                                 }
                                 kernel.Machine.Sockets
@@ -1570,6 +1577,7 @@ module TestSocketTable =
                                                 Endpoint =
                                                     InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
                                                 LockedAddress = None
+                                                LockedPort = false
                                             }
                                 }
                                 kernel.Machine.Sockets
@@ -1587,6 +1595,7 @@ module TestSocketTable =
                 {
                     Endpoint = loopback 4444us
                     LockedAddress = None
+                    LockedPort = false
                 }
         )
 
@@ -1631,12 +1640,14 @@ module TestSocketTable =
                     {
                         Endpoint = loopback 4444us
                         LockedAddress = Some InternetEndpoint.LoopbackAddress
+                        LockedPort = true
                     },
                 InternetEndpoint.LoopbackAddress
                 Some
                     {
                         Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 4444us
                         LockedAddress = Some InternetEndpoint.WildcardAddress
+                        LockedPort = true
                     },
                 InternetEndpoint.WildcardAddress
             ]
@@ -1719,6 +1730,7 @@ module TestSocketTable =
                                     {
                                         Endpoint = loopback 5000us
                                         LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                        LockedPort = true
                                     }
                             Phase = phase
                         }
@@ -1793,6 +1805,7 @@ module TestSocketTable =
                                                 Endpoint =
                                                     InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us
                                                 LockedAddress = Some InternetEndpoint.WildcardAddress
+                                                LockedPort = true
                                             }
                                 }
                             |> Map.add
@@ -1803,6 +1816,7 @@ module TestSocketTable =
                                             {
                                                 Endpoint = loopback 5000us
                                                 LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                LockedPort = true
                                             }
                                 }
                     }
@@ -1830,6 +1844,7 @@ module TestSocketTable =
                                             {
                                                 Endpoint = loopback 4444us
                                                 LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                LockedPort = true
                                             }
                                 }
                                 kernel.Machine.Sockets
@@ -1914,6 +1929,7 @@ module TestSocketTable =
                                             {
                                                 Endpoint = loopback 4444us
                                                 LockedAddress = Some InternetEndpoint.LoopbackAddress
+                                                LockedPort = true
                                             }
                                 }
                                 kernel.Machine.Sockets
