@@ -345,12 +345,11 @@ module ArithmeticOperation =
             // ldind.u2` reads element 2, not element 4.
             //
             // Converting the count into cells is left to the byte-view normalisation below,
-            // which does it — floor semantics and all — for every byte cursor anyway. Only the
-            // int32 overflow of the cell index is checked here, because that is the one part
-            // normalisation does not.
-            let elementSize = ManagedPointerByteView.arrayElementSize state arr
-            checkedAddInt32 "array index" index (v / elementSize) |> ignore<int>
-
+            // which does it — floor semantics and all — for every byte cursor anyway, and which
+            // traps on the int32 overflow of the resulting cell index because its file is
+            // `Checked`. Predicting that overflow here would need a second copy of the stride
+            // arithmetic that could disagree with the one that matters, so the trap is caught
+            // and named instead.
             let plain = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
 
             // The byte cursor is anchored on the *element's* shape rather than on `System.Byte`,
@@ -368,7 +367,14 @@ module ArithmeticOperation =
                     ManagedPointerByteView.addByteOffset state byteType 0 plain
                 | anchored -> anchored
 
-            let advanced = ManagedPointerByteView.addByteOffsetToByteView state v anchored
+            let advanced =
+                try
+                    ManagedPointerByteView.addByteOffsetToByteView state v anchored
+                with :? System.OverflowException ->
+                    // The only arithmetic in there is this pointer's own, so an overflow can
+                    // mean nothing else.
+                    failwith
+                        $"managed pointer arithmetic (array index) overflowed int32 offset model: element %d{index} of %O{arr} advanced by %d{v} bytes"
 
             match advanced with
             | ManagedPointerSource.Byref (root, [ ByrefProjection.ReinterpretAs _ ]) ->
