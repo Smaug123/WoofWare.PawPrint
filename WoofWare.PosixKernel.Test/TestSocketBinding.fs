@@ -298,6 +298,46 @@ module TestSocketBinding =
             false
         |> shouldEqual true
 
+    /// An idle stream socket with no address yet, for the allocator to act
+    /// on behalf of.
+    let private unboundStream : SocketDescription =
+        {
+            Domain = SocketDomain.InterNetwork
+            Kind = SocketKind.Stream
+            Protocol = SocketProtocol.Tcp
+            Binding = None
+            ReuseAddress = false
+            Phase = SocketPhase.Idle
+        }
+
+    let private requester : SocketId = SocketId 0L
+
+    /// `unboundStream` bound to the wildcard at `port`, which every later
+    /// wildcard bind of the same port conflicts with on both flavours.
+    let private occupant (port : uint16) : SocketDescription =
+        { unboundStream with
+            Binding = Some (binding wildcard port)
+        }
+
+    /// A machine on which every port in `taken` is held by a socket.
+    let private withTaken (taken : uint16 seq) (machine : UnixMachineState) : UnixMachineState =
+        (machine, Seq.indexed taken)
+        ||> Seq.fold (fun machine (i, port) ->
+            { machine with
+                Sockets = Map.add (SocketId (int64 i + 1L)) (occupant port) machine.Sockets
+            }
+        )
+
+    /// A `bind(0.0.0.0:0)` on behalf of `unboundStream`, as `bind(2)` asks.
+    let private reserve (machine : UnixMachineState) : (uint16 * UnixMachineState) option =
+        UnixMachineState.allocateEphemeralPort
+            EphemeralPortUse.Reserve
+            requester
+            unboundStream
+            (binding wildcard)
+            machine
+        |> Option.map (fun (bound, machine) -> bound.Endpoint.Port, machine)
+
     [<Test>]
     let ``an ephemeral port is in range, free, and a function of the kernel alone`` () : unit =
         let property (NonNegativeInt seed : NonNegativeInt) : bool =
@@ -305,30 +345,29 @@ module TestSocketBinding =
             let low = uint16 (1024 + rng.Next 1000)
             let high = low + uint16 (rng.Next 50)
 
-            let machine =
-                UnixMachineState.withEphemeralPortRange (low, high) initialSystem.Machine
-
             // An arbitrary subset of the range is already taken.
             let taken = [ low..high ] |> List.filter (fun _ -> rng.Next 3 = 0) |> Set.ofList
 
-            let acceptable (port : uint16) : bool = not (Set.contains port taken)
+            let machine =
+                UnixMachineState.withEphemeralPortRange (low, high) initialSystem.Machine
+                |> withTaken taken
 
-            match UnixMachineState.allocateEphemeralPort acceptable machine with
+            match reserve machine with
             | Some (port, machine') ->
                 // In range, free, and the cursor moved on.
                 port >= low
                 && port <= high
-                && acceptable port
+                && not (Set.contains port taken)
                 && machine'.EphemeralPortRange = (low, high)
                 // Deterministic: the same machine answers the same way.
                 && (
-                    match UnixMachineState.allocateEphemeralPort acceptable machine with
+                    match reserve machine with
                     | Some (again, _) -> again = port
                     | None -> false
                 )
             | None ->
                 // Only when the range really is exhausted.
-                [ low..high ] |> List.forall (fun port -> not (acceptable port))
+                [ low..high ] |> List.forall (fun port -> Set.contains port taken)
 
         Check.One (propertyConfig, property)
 
@@ -344,7 +383,7 @@ module TestSocketBinding =
                 List.rev acc
             else
 
-            match UnixMachineState.allocateEphemeralPort (fun _ -> true) machine with
+            match reserve machine with
             | Some (port, machine) -> take (n - 1) machine (port :: acc)
             | None -> failwith "the range is not exhausted here"
 
@@ -357,22 +396,36 @@ module TestSocketBinding =
         let machine =
             UnixMachineState.withEphemeralPortRange (40000us, 40001us) initialSystem.Machine
 
-        let _, machine =
-            (UnixMachineState.allocateEphemeralPort (fun _ -> true) machine).Value
-
-        let _, machine =
-            (UnixMachineState.allocateEphemeralPort (fun _ -> true) machine).Value
-
-        let port, _ = (UnixMachineState.allocateEphemeralPort (fun _ -> true) machine).Value
+        let _, machine = (reserve machine).Value
+        let _, machine = (reserve machine).Value
+        let port, _ = (reserve machine).Value
         port |> shouldEqual 40000us
 
     [<Test>]
     let ``an exhausted range is refused rather than looping`` () : unit =
         let machine =
             UnixMachineState.withEphemeralPortRange (40000us, 40010us) initialSystem.Machine
+            |> withTaken [ 40000us .. 40010us ]
 
-        UnixMachineState.allocateEphemeralPort (fun _ -> false) machine
-        |> shouldEqual None
+        reserve machine |> shouldEqual None
+
+    /// The allocator holds the candidate to the port it asked about, since a
+    /// candidate that ignores its argument would silently hand every caller
+    /// one port.
+    [<Test>]
+    let ``a candidate naming another port is a library bug`` () : unit =
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                UnixMachineState.allocateEphemeralPort
+                    EphemeralPortUse.Reserve
+                    requester
+                    unboundStream
+                    (fun _ -> binding wildcard 1us)
+                    initialSystem.Machine
+                |> ignore<(SocketBinding * UnixMachineState) option>
+            )
+
+        exn.Message |> shouldContainText "names port 1 instead"
 
     [<Test>]
     let ``an empty or zero-based ephemeral range is refused`` () : unit =

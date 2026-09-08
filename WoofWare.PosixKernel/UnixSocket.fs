@@ -482,41 +482,6 @@ module UnixSocket =
         FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors
         |> Option.map (fun description -> description.NonBlocking)
 
-    /// Whether any *other* socket's binding conflicts with `candidate`, taken on
-    /// behalf of `socket`.
-    ///
-    /// The relation `bind(2)` decides admission with, and `listen(2)` asks
-    /// again -- on the flavour whose `listen` re-runs it, and for the implicit
-    /// bind an unbound `listen` performs. One definition because it is one
-    /// kernel rule; the callers differ only in *when* they ask.
-    let private bindingConflicts<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (socketId : SocketId)
-        (socket : SocketDescription)
-        (candidate : SocketBinding)
-        (system : UnixSystem<'Task, 'Handler>)
-        : bool
-        =
-        system.Machine.Sockets
-        |> Map.exists (fun otherId (other : SocketDescription) ->
-            if otherId = socketId then
-                false
-            else
-
-            match other.Binding with
-            | None -> false
-            | Some existing ->
-                // Separate port namespaces per transport, measured: a UDP socket
-                // takes a port a listening TCP socket holds.
-                other.Kind = socket.Kind
-                && SimulatedUnixPlatform.bindConflict
-                    system.Machine.UnixPlatform
-                    existing
-                    other.ReuseAddress
-                    other.Phase
-                    candidate
-                    socket.ReuseAddress
-        )
-
     /// `bind(2)`: give `fd` a local address.
     ///
     /// `family` and `endpoint` are what the caller read out of its sockaddr, and
@@ -653,7 +618,7 @@ module UnixSocket =
                 && system.Process.UserId <> 0u
 
         let conflictsWith (binding : SocketBinding) : bool =
-            bindingConflicts socketId socket binding system
+            UnixMachineState.bindingConflicts socketId socket binding system.Machine
 
         // A request for port 0 needs no special case here, and had one until a
         // mutation showed nothing could falsify it: `bindConflict` answers
@@ -712,27 +677,20 @@ module UnixSocket =
             (if binding.Endpoint.Port > 0us then
                  Some (binding, system.Machine)
              else
-                 let acceptable (port : uint16) : bool =
-                     not (
-                         conflictsWith
-                             { binding with
-                                 Endpoint =
-                                     { binding.Endpoint with
-                                         Port = port
-                                     }
-                             }
-                     )
-
-                 UnixMachineState.allocateEphemeralPort acceptable system.Machine
-                 |> Option.map (fun (port, machine) ->
+                 let candidate (port : uint16) : SocketBinding =
                      { binding with
                          Endpoint =
                              { binding.Endpoint with
                                  Port = port
                              }
-                     },
-                     machine
-                 ))
+                     }
+
+                 UnixMachineState.allocateEphemeralPort
+                     EphemeralPortUse.Reserve
+                     socketId
+                     socket
+                     candidate
+                     system.Machine)
         with
         | None -> Error (BindRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
         | Some (bound, machine) ->
@@ -811,7 +769,7 @@ module UnixSocket =
         match socket.Binding with
         | Some binding when
             SimulatedUnixPlatform.listenRescreensBinding system.Machine.UnixPlatform
-            && bindingConflicts socketId socket binding system
+            && UnixMachineState.bindingConflicts socketId socket binding system.Machine
             ->
             Ok (ListenAnswer.Failed UnixError.EADDRINUSE, system)
         | _ ->
@@ -832,11 +790,12 @@ module UnixSocket =
                          LockedAddress = None
                      }
 
-                 let acceptable (port : uint16) : bool =
-                     not (bindingConflicts socketId socket (candidate port) system)
-
-                 UnixMachineState.allocateEphemeralPort acceptable system.Machine
-                 |> Option.map (fun (port, machine) -> candidate port, machine))
+                 UnixMachineState.allocateEphemeralPort
+                     EphemeralPortUse.Reserve
+                     socketId
+                     socket
+                     candidate
+                     system.Machine)
         with
         | None -> Error (ListenRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
         | Some (bound, machine) ->
