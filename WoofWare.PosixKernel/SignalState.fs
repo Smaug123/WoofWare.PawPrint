@@ -178,6 +178,10 @@ module SignalState =
         | None -> false
         | Some set -> Set.contains signal set
 
+    /// Every task with a non-empty signal mask.
+    let blockedTasks (state : SignalState<'Task, 'Handler>) : Set<'Task> =
+        state.Blocked |> Map.toSeq |> Seq.map fst |> Set.ofSeq
+
     let blockedFor (thread : 'Task) (state : SignalState<'Task, 'Handler>) : Set<Signal> =
         match Map.tryFind thread state.Blocked with
         | None -> Set.empty

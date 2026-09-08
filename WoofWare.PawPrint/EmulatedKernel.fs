@@ -762,7 +762,7 @@ type EmulatedKernel =
 type EmulatedKernelDefect =
     /// A way the POSIX system this kernel runs is itself unsound: see
     /// `UnixSystemDefect`.
-    | System of defect : UnixSystemDefect
+    | System of defect : UnixSystemDefect<ThreadId>
     /// A guest-held `DIR*` names a stream the stream table does not hold, so the
     /// next `readdir` through it would crash rather than enumerate.
     | DirectoryStreamBlockDangling of block : NativeMemoryBlockId * stream : DirectoryStreamId

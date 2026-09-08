@@ -45,7 +45,7 @@ type SyscallRefusal<'Task> =
 /// of those modules can see the other's: each is defined in a file that
 /// compiles before this one.
 [<RequireQualifiedAccess>]
-type UnixSystemDefect =
+type UnixSystemDefect<'Task> =
     /// A live open file description names a socket the socket table does not
     /// hold, so resolving that descriptor would fail.
     | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
@@ -121,6 +121,32 @@ type UnixSystemDefect =
     /// were stamped with one mint — and a same-signal tie between the pair
     /// would have no measured order.
     | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
+    /// A task is parked on an open file description the table does not hold,
+    /// so its wait can never be satisfied, and asking `WakeCondition.isSatisfied`
+    /// about it crashes. `close` refuses to destroy a description a task is
+    /// parked on, so this is a park recorded without one or a close made
+    /// around it.
+    | ParkedOnAbsentDescription of task : 'Task * description : OpenFileDescriptionId
+    /// A task is parked in a socket-event wait on a description that is not a
+    /// socket event port, which no wait could have produced and which
+    /// `SocketEventPort.hasDeliverableEvent` crashes on.
+    | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A listening socket has no address: `listen(2)` binds an unbound socket
+    /// before it listens, and a connect looks listeners up by their binding,
+    /// so this one can never be reached.
+    | ListenerWithoutBinding of socket : SocketId
+    /// A bound socket holds port 0, which is how a guest *asks* for a port and
+    /// never one it is given; `bind`'s port-0 path relies on no socket holding
+    /// it.
+    | BoundToPortZero of socket : SocketId
+    /// The signal dispatcher is not a task in the table, so no delivery can
+    /// wake it.
+    | SignalDispatcherWithoutTask of task : 'Task
+    /// A per-task signal mask names a task the table does not hold.
+    | SignalMaskWithoutTask of task : 'Task
+    /// A pending signal is directed at a task the table does not hold, so it
+    /// can never be delivered and sits in the queue for the rest of the run.
+    | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -227,8 +253,9 @@ module UnixSystem =
 
     /// Every way this system's tables disagree with each other: the socket table
     /// against the descriptor table, the connection table against the sockets
-    /// that reference it, the descriptor table against the filesystem, and the
-    /// current directory against both.
+    /// that reference it, the descriptor table against the filesystem, the
+    /// current directory against both, each task's park against the descriptor
+    /// table, and the signal state against the task table.
     ///
     /// Each table's own rules are elsewhere and are not repeated here:
     /// `FileDescriptorRegistry.checkInvariants` for the descriptor table, and
@@ -242,7 +269,7 @@ module UnixSystem =
     /// example, and `EmulatedKernel.checkInvariants` is where they live.
     let checkInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystemDefect list
+        : UnixSystemDefect<'Task> list
         =
         let named =
             FileDescriptorRegistry.descriptions system.Process.FileDescriptors
@@ -432,6 +459,86 @@ module UnixSystem =
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fun (registeredAt, _) -> UnixSystemDefect.DuplicateSocketEventRegistrationOrdinal registeredAt)
 
+        // Each task's park against the descriptor table. A park names what the
+        // task waits on, and the wake reads the description back; `close`
+        // refuses to destroy one a task is parked on, so an absent one was
+        // parked on without going through the syscall or closed around it.
+        let parks =
+            let descriptions =
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+
+            system.Tasks
+            |> Map.toList
+            |> List.collect (fun (task, state) ->
+                match state.Parked with
+                | None -> []
+                | Some (ParkedSyscall.Flock parked) ->
+                    if Map.containsKey parked.Requester descriptions then
+                        []
+                    else
+                        [ UnixSystemDefect.ParkedOnAbsentDescription (task, parked.Requester) ]
+                | Some (ParkedSyscall.SocketWait wait) ->
+                    match Map.tryFind wait.Port descriptions with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, wait.Port) ]
+                    | Some description ->
+                        match description.Target with
+                        | OpenFileTarget.SocketEventPort _ -> []
+                        | OpenFileTarget.StandardStream _
+                        | OpenFileTarget.File _
+                        | OpenFileTarget.Socket _ ->
+                            [
+                                UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
+                            ]
+            )
+
+        // Bindings no bind or listen could have produced.
+        let bindings =
+            system.Machine.Sockets
+            |> Map.toList
+            |> List.collect (fun (socketId, socket) ->
+                let unboundListener =
+                    match socket.Phase, socket.Binding with
+                    | SocketPhase.Listening _, None -> [ UnixSystemDefect.ListenerWithoutBinding socketId ]
+                    | _ -> []
+
+                let portZero =
+                    match socket.Binding with
+                    | Some binding when binding.Endpoint.Port = 0us -> [ UnixSystemDefect.BoundToPortZero socketId ]
+                    | _ -> []
+
+                unboundListener @ portZero
+            )
+
+        // The signal state against the task table: every task it names must
+        // be one, or the delivery that reads it has nowhere to go.
+        let signals =
+            let signals = system.Process.Signals
+
+            let dispatcher =
+                match SignalState.signalThread signals with
+                | Some task when not (Map.containsKey task system.Tasks) ->
+                    [ UnixSystemDefect.SignalDispatcherWithoutTask task ]
+                | Some _
+                | None -> []
+
+            let masks =
+                SignalState.blockedTasks signals
+                |> Set.toList
+                |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
+                |> List.map UnixSystemDefect.SignalMaskWithoutTask
+
+            let targets =
+                SignalState.pending signals
+                |> List.choose (fun entry ->
+                    match entry.Target with
+                    | ValueSome task when not (Map.containsKey task system.Tasks) ->
+                        Some (UnixSystemDefect.PendingSignalTargetWithoutTask (task, entry.Signal))
+                    | ValueSome _
+                    | ValueNone -> None
+                )
+
+            dispatcher @ masks @ targets
+
         dangling
         @ unreferenced
         @ freshness
@@ -446,6 +553,9 @@ module UnixSystem =
         @ connectionFreshness
         @ ordinalFreshness
         @ ordinalDuplicates
+        @ parks
+        @ bindings
+        @ signals
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised

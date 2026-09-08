@@ -108,6 +108,8 @@
     <Compile Include="BoxedValue.fs" />
     <Compile Include="UnaryMetadataObjectOps.fs" />
     <Compile Include="UnaryMetadataFieldOps.fs" />
+    <!-- After the field and object ops, whose `ldflda`/`ldsflda`/`newobj` bodies it shares. -->
+    <Compile Include="UnsafeAccessorDispatch.fs" />
     <Compile Include="UnaryMetadataArrayOps.fs" />
     <Compile Include="UnaryMetadataMemoryOps.fs" />
     <Compile Include="UnaryMetadataTokenOps.fs" />
