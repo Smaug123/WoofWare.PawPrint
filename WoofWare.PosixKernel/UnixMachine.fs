@@ -16,11 +16,13 @@ type UnixMachineState =
         ///
         /// Separate from `FileDescriptors` because a socket's lifetime is not
         /// a descriptor's: an `OpenFileTarget.Socket` holds only the
-        /// `SocketId`, and this is what it names. Every entry does have
-        /// exactly one description naming it, and
-        /// `UnixSystem.checkInvariants` enforces that — a connection
-        /// awaiting `accept(2)` is a `TcpConnection` in `Connections`, not a
-        /// socket, precisely so this rule can stay strict.
+        /// `SocketId`, and this is what it names. Every entry has a
+        /// description naming it, and `UnixSystem.checkInvariants` enforces
+        /// that (`UnreferencedSocket`); nothing mints a second description
+        /// for a socket, since `dup(2)` shares the one, but no rule checks
+        /// it. A connection awaiting `accept(2)` is a `TcpConnection` in
+        /// `Connections`, not a socket, precisely so this rule can stay
+        /// strict.
         Sockets : Map<SocketId, SocketDescription>
         /// Every TCP connection the simulated kernel holds: established ends
         /// referenced from a socket's `SocketPhase`, and completed

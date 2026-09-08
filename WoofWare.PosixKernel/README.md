@@ -41,11 +41,11 @@ readiness conditions, the set of sockets it will create, and a signo, and each c
 A flake check (`scripts/check-pal-residue.py`) keeps it that way.
 
 The simulation is incomplete and expected to change wildly during development.
-The syscall request/response layer has started: `UnixSystem` exposes nine syscalls
-(`geteuid`, `dup`, `lseek`, `flock`, `ftruncate`, `close`, `mkdir`, `unlink`, `rmdir`)
+The syscall request/response layer has started: `UnixSystem` exposes ten syscalls
+(`geteuid`, `dup`, `lseek`, `flock`, `ftruncate`, `close`, `mkdir`, `unlink`, `rmdir`, `chdir`)
 both individually and through a `step` dispatcher.
 Everything else is still reached through the state modules directly.
-There is also no constructor for a fresh `UnixSystem` yet, so a client must assemble one field by field.
+`UnixSystem.initial` builds a fresh system on a given platform; the other fields are set by record update.
 
 A syscall that would block does not block: `step`, which takes the calling task, answers
 `SyscallOutcome.WouldBlock` carrying a `WakeCondition`, and the state that comes back records the task

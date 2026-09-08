@@ -638,8 +638,10 @@ module UnixReadWrite =
         // EDESTADDRREQ for a datagram one), which is what this kernel cannot
         // give.
         //
-        // And the no-op does *not* precede it: measured on both,
-        // `write(socket, buf, 0)` is the socket's own error rather than 0.
+        // And the no-op does *not* precede it: measured on both for an
+        // unconnected socket, `write(socket, buf, 0)` is the socket's own
+        // error rather than 0. (A connected stream socket's zero-length write
+        // is unmeasured here; the refusal below covers it either way.)
         match target with
         | WriteTarget.Socket socketId ->
             let socket = UnixMachineState.socket socketId system.Machine

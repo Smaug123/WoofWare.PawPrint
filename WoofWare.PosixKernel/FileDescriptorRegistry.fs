@@ -998,8 +998,8 @@ module FileDescriptorRegistry =
     /// intact — true of everything PawPrint models, though not of POSIX in
     /// general (see the record-lock note on `FileDescriptorRegistry`).
     ///
-    /// Wired into the interpreter via the `SystemNative_Close` handler in
-    /// `NativeSystemNative.fs`; the in-house property tests drive close+dup
+    /// The descriptor-table half of `close(2)`, called by `UnixDescriptor.close`,
+    /// which is the syscall; the in-house property tests drive close+dup
     /// cycles directly against this function to exercise the `lowestFree`
     /// invariant against the gap structure that close produces.
     ///

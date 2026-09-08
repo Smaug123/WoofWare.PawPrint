@@ -48,8 +48,9 @@ type AcceptRefusal =
     ///
     /// Not `SyscallOutcome.WouldBlock`, and the difference is the point:
     /// blocking is an outcome only where there is a `WakeCondition` to hand
-    /// back, and this kernel has none for the accept side. Nothing wakes such a
-    /// sleeper, so parking one would be a deadlock rather than a park.
+    /// back, and this library has none for the accept side. A kernel wakes such
+    /// a sleeper when a connection arrives; nothing here would, so parking one
+    /// would be a deadlock rather than a park.
     | WouldPark of listener : SocketId
     /// The accept would succeed and copy the peer address out, but the
     /// destination is one this library has no answer for: its bytes cannot be

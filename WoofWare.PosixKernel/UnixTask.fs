@@ -37,9 +37,10 @@ type OsThreadId =
 /// One thread's in-flight `SystemNative_WaitForSocketEvents` call: the state
 /// the syscall captured when it was entered, which outlives anything the
 /// guest does to its arguments afterwards. The port is held by *description
-/// identity*, exactly as the real syscall holds a file reference — closing
-/// the fd the wait was called through changes nothing, because the fd is
-/// never consulted again.
+/// identity*, exactly as the real syscall holds a file reference: the fd the
+/// wait was called through is never consulted again, and `UnixDescriptor.close`
+/// refuses the close that would destroy the description under a waiter (on
+/// Linux the last descriptor's, on Darwin any descriptor's).
 type ParkedSocketWait =
     {
         /// <summary>
