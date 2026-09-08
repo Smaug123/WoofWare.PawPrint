@@ -195,9 +195,6 @@ module TestSocketEventRegistration =
     // The flavour
     // ------------------------------------------------------------------
 
-    /// Ahead of everything, including the descriptor lookups: kqueue's model is
-    /// structurally different rather than differently numbered, so there is no
-    /// row of it to answer even for inputs epoll would refuse.
     /// The port models edge-triggered registrations only, and says so at the
     /// registration rather than serving a level-triggered request as an
     /// edge-triggered one: a wait after a partly drained level would sleep
@@ -233,6 +230,9 @@ module TestSocketEventRegistration =
         | SocketEventRegistrationAnswer.Changed, _ -> ()
         | other -> failwith $"expected the removal to apply, got %A{other}"
 
+    /// Ahead of everything, including the descriptor lookups: kqueue's model is
+    /// structurally different rather than differently numbered, so there is no
+    /// row of it to answer even for inputs epoll would refuse.
     [<Test>]
     let ``a Darwin-flavoured kernel refuses every registration change`` () : unit =
         let portFd, socketFd, darwin =

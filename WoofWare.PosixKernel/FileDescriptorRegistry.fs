@@ -740,12 +740,6 @@ type FlockRequest =
     /// `LOCK_UN`. Succeeds whether or not a lock was held, as `flock(2)` does.
     | Release
 
-/// What `SystemNative_TryChangeSocketEventRegistration` asked a port to do,
-/// once the wrapper has derived the op from the caller's *claims* — ADD when
-/// the claimed current set is NONE, DEL when the new set is NONE, MOD
-/// otherwise. The claims are never checked against the table; the table's own
-/// answers (`AlreadyRegistered`, `NotRegistered`) are what happens when a
-/// caller lies.
 /// How a registration reports: once per readiness *edge* (`EPOLLET`), or
 /// again on every wait while the readiness *level* holds (epoll's default).
 /// This port models the first only, since `drain` consumes every entry it
@@ -757,6 +751,12 @@ type SocketEventTrigger =
     | EdgeTriggered
     | LevelTriggered
 
+/// What `SystemNative_TryChangeSocketEventRegistration` asked a port to do,
+/// once the wrapper has derived the op from the caller's *claims* — ADD when
+/// the claimed current set is NONE, DEL when the new set is NONE, MOD
+/// otherwise. The claims are never checked against the table; the table's own
+/// answers (`AlreadyRegistered`, `NotRegistered`) are what happens when a
+/// caller lies.
 [<RequireQualifiedAccess>]
 type SocketEventRegistrationChange =
     /// `EPOLL_CTL_ADD`: record a fresh registration.
@@ -1545,7 +1545,14 @@ module FileDescriptorRegistry =
             }
 
         match change with
-        | SocketEventRegistrationChange.Add (_, interest, data) ->
+        | SocketEventRegistrationChange.Add (SocketEventTrigger.LevelTriggered, _, _)
+        | SocketEventRegistrationChange.Modify (SocketEventTrigger.LevelTriggered, _, _) ->
+            // The table records edge-triggered registrations only, and has no
+            // refusal to answer with: `UnixPoll.changeSocketEventRegistration`
+            // refuses a level-triggered request before it reaches here.
+            failwith
+                $"changeSocketEventRegistration: a level-triggered registration reached the table, which records edge-triggered ones only. UnixPoll.changeSocketEventRegistration refuses the request with SocketEventRegistrationRefusal.LevelTriggered before it gets here (this is a bug in the caller)."
+        | SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interest, data) ->
             match targetDescription.Target with
             | OpenFileTarget.SocketEventPort _ ->
                 failwith
@@ -1571,7 +1578,7 @@ module FileDescriptorRegistry =
                                     portState.Registrations
                         }
                 )
-        | SocketEventRegistrationChange.Modify (_, interest, data) ->
+        | SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, interest, data) ->
             match Map.tryFind key portState.Registrations with
             | Some existing ->
                 // `RegisteredAt` survives: same-signal tie order comes from
