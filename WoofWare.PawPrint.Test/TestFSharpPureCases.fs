@@ -195,18 +195,9 @@ module TestFSharpPureCases =
                     )
 
             match realResult, pawPrintResult with
-            | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, terminatingThread) ->
+            | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _) ->
                 exitCode |> shouldEqual expectedExitCode
-
-                let pawPrintExitCode =
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | [] -> failwith "expected program to return a value, but it returned void"
-                    | head :: _ ->
-                        match head with
-                        | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-                        | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
-
-                pawPrintExitCode |> shouldEqual exitCode
+                terminalState.LatchedExitCode |> shouldEqual exitCode
             | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
                 if not (expectsUnhandledException.Contains testCaseName) then
                     failwith
@@ -217,15 +208,9 @@ module TestFSharpPureCases =
             | RealRuntimeResult.Aborted (_code, report), _ ->
                 failwith
                     $"Real runtime called Environment.FailFast for %s{testCaseName}; this fixture does not exercise FailFast:\n%s{report}"
-            | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                let pawPrintExitCode =
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | [] -> None
-                    | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> Some i
-                    | _ -> None
-
+            | RealRuntimeResult.UnhandledException realExn, RunOutcome.NormalExit (terminalState, _) ->
                 failwith
-                    $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %O{pawPrintExitCode}):\n%s{realExn}"
+                    $"Real runtime terminated with an unhandled exception, but PawPrint exited normally (code: %d{terminalState.LatchedExitCode}):\n%s{realExn}"
             | _, RunOutcome.Aborted (_, _, fatal) ->
                 failwith
                     $"PawPrint aborted (%O{fatal.Code}); the real runtime can't have done so or the test harness would be gone"

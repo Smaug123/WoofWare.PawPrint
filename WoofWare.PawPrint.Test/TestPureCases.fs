@@ -72,6 +72,10 @@ module TestPureCases =
     let customExitCodes =
         [
             "ExceptionWithNoOpFinally.cs", 3
+            "ForegroundThreadExitsAfterMainReturns.cs", 7
+            "IntMainReturnOverridesExitCode.cs", 3
+            "VoidMainSetsExitCode.cs", 9
+            "ExitOverridesExitCode.cs", 2
             "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", 5
             "BackgroundWorkerJoinsMainThread.cs", 4
             "EntryThreadIsBackgroundAfterMainReturns.cs", 11
@@ -564,11 +568,7 @@ public class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | outcome ->
                     failwith
                         $"Expected the guest to catch a NullReferenceException from the null calli, got %O{outcome}"
@@ -754,11 +754,7 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -819,11 +815,7 @@ class Program
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -878,11 +870,7 @@ class Program
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -924,11 +912,7 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -1088,13 +1072,9 @@ class Program
     /// with the code the guest actually chose.
     let private expectExitCode (expected : int) (outcome : RunOutcome) : IlMachineState =
         match outcome with
-        | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ ->
-                exitCode |> shouldEqual expected
-                terminalState
-            | [] -> failwith "expected program to return an int, but it returned void"
-            | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+        | RunOutcome.NormalExit (terminalState, _) ->
+            terminalState.LatchedExitCode |> shouldEqual expected
+            terminalState
         | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
         | RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"

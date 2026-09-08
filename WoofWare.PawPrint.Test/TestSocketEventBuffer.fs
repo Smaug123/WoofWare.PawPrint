@@ -91,13 +91,11 @@ class Program
             }
 
         match Program.run loggerFactory (Some "SocketEventBufferProbe.cs") peImage hostConfig with
-        | RunOutcome.NormalExit (state, thread)
-        | RunOutcome.ProcessExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim 0) :: _ -> state
-            | EvalStackValue.Int32 (Int32Source.Verbatim other) :: _ ->
-                failwith $"guest failed its own check %d{other}, so it never reached the state these tests read"
-            | other -> failwith $"guest did not return an int exit code: %O{other}"
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) ->
+            match state.LatchedExitCode with
+            | 0 -> state
+            | other -> failwith $"guest failed its own check %d{other}, so it never reached the state these tests read"
         | other -> failwith $"guest did not exit normally: %O{other}"
 
     /// The native-heap block `Probe.Buffer` points at.

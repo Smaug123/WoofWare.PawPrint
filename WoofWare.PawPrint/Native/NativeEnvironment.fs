@@ -80,6 +80,41 @@ module NativeEnvironment =
         | "System.Private.CoreLib",
           "System",
           "Environment",
+          "get_ExitCode",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `SystemNative::GetExitCode` (classlibnative/bcltype/system.cpp): whatever has
+            // been latched so far, 0 until something writes it.
+            let state =
+                state
+                |> IlMachineState.pushToEvalStack'
+                    (EvalStackValue.Int32 (Int32Source.Verbatim state.LatchedExitCode))
+                    ctx.Thread
+
+            NativeHandlerResult.Completed (state, StepEffect.NoEffect) |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "Environment",
+          "set_ExitCode",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Void ->
+            // `SystemNative::SetExitCode`: `SetLatchedExitCode(exitcode)` and nothing else. The
+            // write is process-wide, so a worker that makes it after `Main` has returned still
+            // decides the exit code (see `IlMachineState.LatchedExitCode`).
+            let operation = "Environment.set_ExitCode"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let state =
+                { state with
+                    LatchedExitCode = NativeCall.int32Argument operation instruction.Arguments.[0]
+                }
+
+            NativeHandlerResult.Completed (state, StepEffect.NoEffect) |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "Environment",
           "_Exit",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
@@ -97,10 +132,18 @@ module NativeEnvironment =
             // silently reduce `Environment.Exit` on a worker to "that worker
             // finished" and let the process keep running.
             //
-            // Push the exit code (arg 0) onto the eval stack first: both
-            // `RunOutcome.ProcessExit` and `RunOutcome.NormalExit` read the exit
-            // code off the reporting thread's eval stack.
-            let state = state |> IlMachineState.loadArgument ctx.Thread 0
+            // `Environment_Exit` is `SetLatchedExitCode(exitcode)` then
+            // `ForceEEShutdown()`, so the exit code reaches the host the same way
+            // a returned-from-`Main` one does: through the latch.
+            let operation = "Environment._Exit"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let state =
+                { state with
+                    LatchedExitCode = NativeCall.int32Argument operation instruction.Arguments.[0]
+                }
 
             ExecutionResult.ProcessExit (state, ctx.Thread)
             |> NativeHandlerResult.Terminating
