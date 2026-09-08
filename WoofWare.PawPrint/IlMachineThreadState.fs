@@ -219,12 +219,12 @@ module IlMachineThreadState =
         match returnState.Constructing with
         | ConstructionState.Constructing constructing ->
             match returnState.ReturnValueDisposition with
-            | ReturnValueDisposition.DispatchAsException message ->
+            | ReturnValueDisposition.DispatchAsException fields ->
                 // This ctor was constructing a runtime-synthesised exception object.
                 // Don't push it onto the eval stack; signal to the caller that exception
                 // dispatch should occur.
                 let constructed = ManagedHeap.get constructing state.ManagedHeap
-                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, message)
+                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, fields)
             | ReturnValueDisposition.Discard ->
                 // A constructor's product is the object, and it is already allocated and reachable
                 // from `Constructing` — there is nothing here to throw away, and the caller
