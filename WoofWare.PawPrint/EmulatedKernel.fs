@@ -762,7 +762,7 @@ type EmulatedKernel =
 type EmulatedKernelDefect =
     /// A way the POSIX system this kernel runs is itself unsound: see
     /// `UnixSystemDefect`.
-    | System of defect : UnixSystemDefect
+    | System of defect : UnixSystemDefect<ThreadId>
     /// A guest-held `DIR*` names a stream the stream table does not hold, so the
     /// next `readdir` through it would crash rather than enumerate.
     | DirectoryStreamBlockDangling of block : NativeMemoryBlockId * stream : DirectoryStreamId
@@ -950,7 +950,10 @@ module EmulatedKernel =
 
 
 
-    /// A freshly-minted simulated process, as PawPrint starts one.
+    /// A freshly-minted simulated process on a machine of the given platform,
+    /// as PawPrint starts one. The platform is fixed here for the kernel's
+    /// life: every field derived from it is derived once, by this constructor
+    /// and the setters that read it back.
     ///
     /// The POSIX half is `UnixSystem.initial`'s; what is added here is the
     /// CoreCLR-shaped state no POSIX kernel has, and the three values PawPrint
@@ -958,9 +961,8 @@ module EmulatedKernel =
     /// library because each is part of PawPrint's replay contract: a change to
     /// the library's default must not silently change what a recorded trace
     /// observes.
-    let initial : EmulatedKernel =
-        let system : UnixSystem<ThreadId, SignalHandler> =
-            UnixSystem.initial UnixSystem.defaultUnixPlatform
+    let create (platform : SimulatedUnixPlatform) : EmulatedKernel =
+        let system : UnixSystem<ThreadId, SignalHandler> = UnixSystem.initial platform
 
         {
             InstructionCostTicks = defaultInstructionCostTicks
@@ -991,6 +993,10 @@ module EmulatedKernel =
         }
 
 
+    /// `create` on `UnixSystem.defaultUnixPlatform`, the platform a host that
+    /// configures nothing gets.
+    let initial : EmulatedKernel = create UnixSystem.defaultUnixPlatform
+
     /// Apply an operation to the simulated process's own state. Those operations
     /// live in `UnixProcessState`, which takes that state rather than the kernel.
     let mapProcess
@@ -1015,19 +1021,15 @@ module EmulatedKernel =
     /// would blame a guest path that does not exist yet — and there is nothing
     /// for the run to go on and do.
     let withFileSystemAndCurrentDirectory
-        (platform : SimulatedUnixPlatform)
         (createdAt : UnixTimestamp)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (kernel : EmulatedKernel)
         : EmulatedKernel
         =
-        // Named for this kernel's own knobs before the library sees them, so a
+        // Named for this kernel's own knob before the library sees it, so a
         // host that forged one is told which field it set rather than which
         // library function received it.
-        let platform =
-            SimulatedUnixPlatform.assertValid "EmulatedKernel.UnixPlatform" platform
-
         let directory =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
@@ -1035,7 +1037,7 @@ module EmulatedKernel =
 
         match
             unix kernel
-            |> UnixSystem.withFileSystemAndCurrentDirectory platform createdAt seed directory
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt seed directory
         with
         | Ok system -> withUnix system kernel
         | Error (CurrentDirectoryFault.DoesNotResolve error) ->
@@ -1116,7 +1118,7 @@ module EmulatedKernel =
         let ticks = kernel.VirtualClockTicks + kernel.InstructionCostTicks
 
         // Through the same validation rather than trusting the arithmetic. `withInstructionCostTicks`
-        // rejects a cost below 1, and `KernelConfig.applyTo` is the only production path that sets
+        // rejects a cost below 1, and `KernelConfig.toKernel` is the only production path that sets
         // the field, so a legally-assembled kernel cannot reach here with one — but a kernel built
         // by record-copy bypasses that setter entirely, which is the same hole the monotonicity
         // check below already exists to cover. Revalidating keeps this path's guarantee independent
@@ -1697,7 +1699,7 @@ type KernelConfig =
         /// reports that this process has no executable path, which is what
         /// PawPrint modelling no `exec(2)` actually means, and which both Unix
         /// flavours express as a null return with errno `ENOENT`. Contrast
-        /// `FileSystemType` above, whose `None` asks `applyTo` to pick a value.
+        /// `FileSystemType` above, whose `None` asks `toKernel` to pick a value.
         ///
         /// Not resolved against `FileSystem`: a host that wants
         /// `File.Exists(Environment.ProcessPath)` to hold — which is true on
@@ -1791,12 +1793,23 @@ type KernelConfig =
 
 [<RequireQualifiedAccess>]
 module KernelConfig =
-    /// Apply a host configuration to a freshly-minted kernel. Each field is
-    /// applied through its own `EmulatedKernel` setter, so the validation those
-    /// setters perform (e.g. rejecting a non-positive processor count) also
-    /// guards the configuration path.
-    let applyTo (config : KernelConfig) (kernel : EmulatedKernel) : EmulatedKernel =
-        kernel
+    /// The kernel a host configuration describes: a fresh kernel on the
+    /// configured platform, with every other field applied through its own
+    /// `EmulatedKernel` setter, so the validation those setters perform (e.g.
+    /// rejecting a non-positive processor count) also guards the
+    /// configuration path.
+    ///
+    /// The platform is the constructor's argument rather than a setter's,
+    /// because the fields it fixes (`SoMaxConn`'s and `FileSystemType`'s
+    /// defaults, the limits the current directory is admitted under) would
+    /// otherwise be stale for whichever platform was set last.
+    let toKernel (config : KernelConfig) : EmulatedKernel =
+        // Rejected here so a host that forged the platform is told which knob
+        // it set rather than which library function received it.
+        let platform =
+            SimulatedUnixPlatform.assertValid "KernelConfig.UnixPlatform" config.UnixPlatform
+
+        EmulatedKernel.create platform
         |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "KernelConfig.Environment" config.Environment)
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
         |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit config.UserAddressLimit)
@@ -1804,17 +1817,14 @@ module KernelConfig =
         |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
         |> EmulatedKernel.mapMachine (UnixMachineState.withWallClockEpochMs config.WallClockEpochMs)
-        |> EmulatedKernel.mapMachine (
-            UnixMachineState.withUnixPlatformAndFileSystemType config.UnixPlatform config.FileSystemType
-        )
+        |> EmulatedKernel.mapMachine (UnixMachineState.withFileSystemType config.FileSystemType)
         |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
         |> EmulatedKernel.withFileSystemAndCurrentDirectory
-            config.UnixPlatform
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem
             config.CurrentDirectory
         |> EmulatedKernel.mapProcess (UnixProcessState.withUserAndGroupId config.UserId config.GroupId)
         |> EmulatedKernel.mapMachine (UnixMachineState.withEphemeralPortRange config.EphemeralPortRange)
-        |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.UnixPlatform config.SoMaxConn)
+        |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
         |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> EmulatedKernel.mapProcess (UnixProcessState.withUmask "KernelConfig.Umask" config.Umask)

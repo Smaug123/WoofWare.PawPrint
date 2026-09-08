@@ -45,7 +45,7 @@ type SyscallRefusal<'Task> =
 /// of those modules can see the other's: each is defined in a file that
 /// compiles before this one.
 [<RequireQualifiedAccess>]
-type UnixSystemDefect =
+type UnixSystemDefect<'Task> =
     /// A live open file description names a socket the socket table does not
     /// hold, so resolving that descriptor would fail.
     | DanglingSocket of description : OpenFileDescriptionId * socket : SocketId
@@ -121,6 +121,35 @@ type UnixSystemDefect =
     /// were stamped with one mint — and a same-signal tie between the pair
     /// would have no measured order.
     | DuplicateSocketEventRegistrationOrdinal of registeredAt : int64
+    /// A task is parked on an open file description the table does not hold,
+    /// so its wait can never be satisfied, and asking `WakeCondition.isSatisfied`
+    /// about it crashes. `close` refuses to destroy a description a task is
+    /// parked on, so this is a park recorded without one or a close made
+    /// around it.
+    | ParkedOnAbsentDescription of task : 'Task * description : OpenFileDescriptionId
+    /// A task is parked in a socket-event wait on a description that is not a
+    /// socket event port, which no wait could have produced and which
+    /// `SocketEventPort.hasDeliverableEvent` crashes on.
+    | ParkedSocketWaitOnNonPort of task : 'Task * description : OpenFileDescriptionId * target : OpenFileTarget
+    /// A listening socket has no address: `listen(2)` binds an unbound socket
+    /// before it listens, and a connect looks listeners up by their binding,
+    /// so this one can never be reached.
+    | ListenerWithoutBinding of socket : SocketId
+    /// A bound socket holds port 0, which is how a guest *asks* for a port and
+    /// never one it is given; `bind`'s port-0 path relies on no socket holding
+    /// it.
+    | BoundToPortZero of socket : SocketId
+    /// The signal dispatcher is not a task in the table, so no delivery can
+    /// wake it.
+    | SignalDispatcherWithoutTask of task : 'Task
+    /// A per-task signal mask names a task the table does not hold.
+    | SignalMaskWithoutTask of task : 'Task
+    /// A pending signal is directed at a task the table does not hold, so it
+    /// can never be delivered and sits in the queue for the rest of the run.
+    | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
+    /// The machine's mount claims a filesystem type its flavour cannot report,
+    /// so `fstatfs` on a file would answer a fact no such machine could tell.
+    | FileSystemTypeNotReportable of flavour : SimulatedUnixFlavour * fileSystemType : EmulatedFileSystemType
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -166,7 +195,10 @@ type CurrentDirectoryFault =
 [<RequireQualifiedAccess>]
 module UnixSystem =
 
-    /// Answer one syscall.
+    /// Answer one syscall, made by `task`.
+    ///
+    /// The task is what a blocking answer is recorded against: `FLock` that
+    /// would block parks it, and the returned system carries that park.
     ///
     /// Sugar over the per-syscall functions above, for a client that wants one
     /// surface — to log every syscall, to replay a recorded sequence, or to
@@ -183,6 +215,7 @@ module UnixSystem =
     /// a buffer-carrying syscall gets to choose it. Until then those syscalls
     /// are reached through their own functions, which lose nothing.
     let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (call : Syscall)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, SyscallRefusal<'Task>>
@@ -211,7 +244,8 @@ module UnixSystem =
             |> answered
             |> Result.mapError SyscallRefusal.LSeek
         | Syscall.FLock (fd, operation) ->
-            UnixDescriptor.flock fd operation system |> Result.mapError SyscallRefusal.FLock
+            UnixDescriptor.flock task fd operation system
+            |> Result.mapError SyscallRefusal.FLock
         | Syscall.FTruncate (fd, length) ->
             UnixDescriptor.ftruncate fd length system
             |> answered
@@ -227,8 +261,9 @@ module UnixSystem =
 
     /// Every way this system's tables disagree with each other: the socket table
     /// against the descriptor table, the connection table against the sockets
-    /// that reference it, the descriptor table against the filesystem, and the
-    /// current directory against both.
+    /// that reference it, the descriptor table against the filesystem, the
+    /// current directory against both, each task's park against the descriptor
+    /// table, and the signal state against the task table.
     ///
     /// Each table's own rules are elsewhere and are not repeated here:
     /// `FileDescriptorRegistry.checkInvariants` for the descriptor table, and
@@ -242,7 +277,7 @@ module UnixSystem =
     /// example, and `EmulatedKernel.checkInvariants` is where they live.
     let checkInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystemDefect list
+        : UnixSystemDefect<'Task> list
         =
         let named =
             FileDescriptorRegistry.descriptions system.Process.FileDescriptors
@@ -432,6 +467,96 @@ module UnixSystem =
             |> List.filter (fun (_, count) -> count > 1)
             |> List.map (fun (registeredAt, _) -> UnixSystemDefect.DuplicateSocketEventRegistrationOrdinal registeredAt)
 
+        // Each task's park against the descriptor table. A park names what the
+        // task waits on, and the wake reads the description back; `close`
+        // refuses to destroy one a task is parked on, so an absent one was
+        // parked on without going through the syscall or closed around it.
+        let parks =
+            let descriptions =
+                FileDescriptorRegistry.descriptions system.Process.FileDescriptors
+
+            system.Tasks
+            |> Map.toList
+            |> List.collect (fun (task, state) ->
+                match state.Parked with
+                | None -> []
+                | Some (ParkedSyscall.Flock parked) ->
+                    if Map.containsKey parked.Requester descriptions then
+                        []
+                    else
+                        [ UnixSystemDefect.ParkedOnAbsentDescription (task, parked.Requester) ]
+                | Some (ParkedSyscall.SocketWait wait) ->
+                    match Map.tryFind wait.Port descriptions with
+                    | None -> [ UnixSystemDefect.ParkedOnAbsentDescription (task, wait.Port) ]
+                    | Some description ->
+                        match description.Target with
+                        | OpenFileTarget.SocketEventPort _ -> []
+                        | OpenFileTarget.StandardStream _
+                        | OpenFileTarget.File _
+                        | OpenFileTarget.Socket _ ->
+                            [
+                                UnixSystemDefect.ParkedSocketWaitOnNonPort (task, wait.Port, description.Target)
+                            ]
+            )
+
+        // Bindings no bind or listen could have produced.
+        let bindings =
+            system.Machine.Sockets
+            |> Map.toList
+            |> List.collect (fun (socketId, socket) ->
+                let unboundListener =
+                    match socket.Phase, socket.Binding with
+                    | SocketPhase.Listening _, None -> [ UnixSystemDefect.ListenerWithoutBinding socketId ]
+                    | _ -> []
+
+                let portZero =
+                    match socket.Binding with
+                    | Some binding when binding.Endpoint.Port = 0us -> [ UnixSystemDefect.BoundToPortZero socketId ]
+                    | _ -> []
+
+                unboundListener @ portZero
+            )
+
+        // The signal state against the task table: every task it names must
+        // be one, or the delivery that reads it has nowhere to go.
+        let signals =
+            let signals = system.Process.Signals
+
+            let dispatcher =
+                match SignalState.signalThread signals with
+                | Some task when not (Map.containsKey task system.Tasks) ->
+                    [ UnixSystemDefect.SignalDispatcherWithoutTask task ]
+                | Some _
+                | None -> []
+
+            let masks =
+                SignalState.blockedTasks signals
+                |> Set.toList
+                |> List.filter (fun task -> not (Map.containsKey task system.Tasks))
+                |> List.map UnixSystemDefect.SignalMaskWithoutTask
+
+            let targets =
+                SignalState.pending signals
+                |> List.choose (fun entry ->
+                    match entry.Target with
+                    | ValueSome task when not (Map.containsKey task system.Tasks) ->
+                        Some (UnixSystemDefect.PendingSignalTargetWithoutTask (task, entry.Signal))
+                    | ValueSome _
+                    | ValueNone -> None
+                )
+
+            dispatcher @ masks @ targets
+
+        let fileSystemType =
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+            if EmulatedFileSystemType.isReportableUnder flavour system.Machine.FileSystemType then
+                []
+            else
+                [
+                    UnixSystemDefect.FileSystemTypeNotReportable (flavour, system.Machine.FileSystemType)
+                ]
+
         dangling
         @ unreferenced
         @ freshness
@@ -446,6 +571,10 @@ module UnixSystem =
         @ connectionFreshness
         @ ordinalFreshness
         @ ordinalDuplicates
+        @ parks
+        @ bindings
+        @ signals
+        @ fileSystemType
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised
@@ -583,6 +712,11 @@ module UnixSystem =
         (platform : SimulatedUnixPlatform)
         : UnixSystem<'Task, 'Handler>
         =
+        // `SimulatedUnixPlatform.create` validates at construction, so a value
+        // of the type is already a platform some Unix could be; this catches
+        // the one value that bypasses that, the forged `Unchecked.defaultof`,
+        // whose null release would otherwise reach a guest as its `uname -r`.
+        let platform = SimulatedUnixPlatform.assertValid "UnixSystem.initial" platform
         let flavour = SimulatedUnixPlatform.flavour platform
 
         // Bound once so that `CurrentDirectoryInode` is the root of *this*
@@ -638,22 +772,21 @@ module UnixSystem =
     /// One operation rather than two because neither answer is well-formed
     /// without the other: a current directory is an inode of *this* filesystem,
     /// and a filesystem replaces every inode number the previous one handed
-    /// out. The same reason `withUnixPlatformAndFileSystemType` is one setter.
+    /// out.
     ///
-    /// Takes the moment and the platform explicitly rather than reading
-    /// `system.Machine.WallClockEpochMs` and `system.Machine.UnixPlatform`, so
-    /// that the result does not depend on whether the caller happened to set
-    /// the clock or the flavour before or after the filesystem — an ordering
-    /// dependence between two `with` functions is exactly the kind of thing
-    /// that works until someone reorders the calls.
+    /// Takes the moment explicitly rather than reading
+    /// `system.Machine.WallClockEpochMs`, so that the result does not depend
+    /// on whether the caller happened to set the clock before or after the
+    /// filesystem — an ordering dependence between two `with` functions is
+    /// exactly the kind of thing that works until someone reorders the calls.
     ///
-    /// The platform is here because its `NAME_MAX` decides whether the *path
-    /// the caller wrote* is one a process on that flavour could name at all:
-    /// 255 CJK characters is a legal directory name on Darwin and too long on
-    /// Linux. It is a check on that path and not on the graph — the seed itself
-    /// is realised without consulting any limit, so a filesystem may perfectly
-    /// well contain a directory whose name the current directory could not
-    /// spell.
+    /// The system's own platform decides whether the *path the caller wrote*
+    /// is one a process on that flavour could name at all, through its
+    /// `NAME_MAX`: 255 CJK characters is a legal directory name on Darwin and
+    /// too long on Linux. It is a check on that path and not on the graph —
+    /// the seed itself is realised without consulting any limit, so a
+    /// filesystem may perfectly well contain a directory whose name the
+    /// current directory could not spell.
     ///
     /// A **boot-time** operation: it crashes if the process still holds any
     /// handle onto the filesystem being replaced — an open descriptor or a
@@ -673,19 +806,21 @@ module UnixSystem =
     /// resolved away — measured on both kernels, `chdir("outer/lnk")` with
     /// `lnk -> inner` is followed by `getcwd() == ".../outer/inner"`.
     let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (platform : SimulatedUnixPlatform)
         (createdAt : UnixTimestamp)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, CurrentDirectoryFault>
         =
-        // Asserted here as well as by any caller that names its own knob: this
-        // is a package boundary, so the preconditions cannot be left to the one
-        // client that happens to check them today.
-        let platform =
-            SimulatedUnixPlatform.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" platform
+        // The directory is admitted under the platform the process will run
+        // on, which is the system's own: `NAME_MAX` counts bytes on Linux and
+        // UTF-16 code units on Darwin, so a name one flavour admits is one the
+        // other refuses.
+        let platform = system.Machine.UnixPlatform
 
+        // Asserted here as well as by any caller that names its own knob: this
+        // is a package boundary, so the precondition cannot be left to the one
+        // client that happens to check it today.
         let directory =
             AbsoluteUnixPath.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" directory
 

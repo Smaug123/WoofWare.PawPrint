@@ -72,7 +72,7 @@ module TestWithFileSystemAndCurrentDirectory =
         : Result<UnixSystem<int, string>, CurrentDirectoryFault>
         =
         UnixSystem.initial<int, string> platform
-        |> UnixSystem.withFileSystemAndCurrentDirectory platform createdAt entries (absolute dir)
+        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute dir)
 
     /// A system booted on `seed`, standing at `dir`.
     let private booted (dir : string) : UnixSystem<int, string> =
@@ -138,11 +138,7 @@ module TestWithFileSystemAndCurrentDirectory =
         let replaced =
             match
                 system
-                |> UnixSystem.withFileSystemAndCurrentDirectory
-                    SimulatedUnixPlatform.linuxX64
-                    createdAt
-                    deeper
-                    (absolute "/outer/inner")
+                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt deeper (absolute "/outer/inner")
             with
             | Ok replaced -> replaced
             | Error fault -> failwith $"the deeper seed did not boot: %O{fault}."
@@ -191,27 +187,23 @@ module TestWithFileSystemAndCurrentDirectory =
         | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."
 
     [<Test>]
-    let ``the platform argument decides, not the one the system carries`` () : unit =
-        // The two are separable, and a reading of the system's own field would
-        // pass every row above: they all boot the system on the flavour they
-        // then pass. Here the two disagree, and the argument must win.
+    let ``the system's own platform decides, and is unchanged`` () : unit =
+        // The name is admitted or refused under the flavour the process will
+        // then run on, so the only platform in play is the one the system was
+        // built on; nothing here can install another.
         let wide = String.replicate 255 "中"
         let entries = Map.ofList [ name wide, SeedEntry.directory FileSystemSeed.empty ]
         let path = "/" + wide
 
-        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
-        |> UnixSystem.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt entries (absolute path)
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute path)
         |> shouldEqual (Error (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Linux))
 
         // And the accepting direction, which a guard that simply refused
-        // whenever the two disagreed would pass the row above without.
+        // every wide name would pass the row above without.
         match
-            UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-            |> UnixSystem.withFileSystemAndCurrentDirectory
-                SimulatedUnixPlatform.macOsArm64
-                createdAt
-                entries
-                (absolute path)
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute path)
         with
         | Error fault -> failwith $"Darwin's NAME_MAX admits this name, but it answered %O{fault}."
         | Ok system ->
@@ -219,10 +211,8 @@ module TestWithFileSystemAndCurrentDirectory =
         UnixPathResolution.currentDirectoryPath system
         |> shouldEqual (Some (absolute path))
 
-        // The argument is consulted and *not* written: the system still carries
-        // the flavour it was booted on. Nothing else here would notice a
-        // function that helpfully stored the platform it was handed.
-        system.Machine.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
+        system.Machine.UnixPlatform |> shouldEqual SimulatedUnixPlatform.macOsArm64
+        UnixSystem.checkInvariants system |> shouldEqual []
 
     [<Test>]
     let ``every fault case is reachable`` () : unit =
@@ -297,7 +287,6 @@ module TestWithFileSystemAndCurrentDirectory =
         match
             system
             |> UnixSystem.withFileSystemAndCurrentDirectory
-                SimulatedUnixPlatform.linuxX64
                 createdAt
                 (Map.ofList [ name "other", SeedEntry.directory FileSystemSeed.empty ])
                 (absolute "/")

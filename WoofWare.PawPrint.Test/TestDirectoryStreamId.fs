@@ -32,7 +32,7 @@ module TestDirectoryStreamId =
 
     let private kernel () : EmulatedKernel =
         EmulatedKernel.initial
-        |> EmulatedKernel.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt seed (absolute "/")
+        |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/")
 
     let private dirInode (kernel : EmulatedKernel) : InodeNumber =
         match
