@@ -54,6 +54,7 @@ module NativeQCall =
             "RuntimeTypeHandle_RegisterCollectibleTypeDependency",
             NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_RegisterCollectibleTypeDependency"
             "RuntimeTypeHandle_MakeByRef", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_MakeByRef"
+            "RuntimeTypeHandle_MakeSZArray", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_MakeSZArray"
             "RuntimeTypeHandle_Instantiate", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_Instantiate"
             "ModuleHandle_GetMDStreamVersion", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetMDStreamVersion"
             "ModuleHandle_GetPEKind", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetPEKind"

@@ -950,39 +950,14 @@ module internal MethodTableProjection =
         // (`allowByRefLike: true`). Leaving the flag clear lets that guard pass and hands the
         // guest a boxed ref struct, which is not a legal heap representation.
         //
-        // `DumpedAssembly.isByRefLike` is the classification (attribute presence, gated on the
-        // type being a value class as CoreCLR gates it); this is only its projection onto the
-        // MethodTable.
-        //
-        // An open generic definition carries the flag too: `typeof(R<>).IsByRefLike` is true for
-        // a `ref struct R<T>` (measured against .NET 10). A generic *parameter* does not, because
-        // `RuntimeType.IsByRefLike` short-circuits on `IsTypeDesc` before reaching a MethodTable
-        // at all.
+        // `RuntimeTypeHandleTarget.isByRefLike` is the classification; this is only its
+        // projection onto the MethodTable.
         let isByRefLike =
-            let identity =
-                match methodTableFor with
-                // No declaring identity to consult, and a minimal MethodTable is never ref-like.
-                | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> None
-                | RuntimeTypeHandleTarget.Closed handle ->
-                    AllConcreteTypes.lookup handle state.ConcreteTypes
-                    |> Option.map (fun concreteType -> concreteType.Identity)
-                // A `ref struct R<T>` keeps the flag when instantiated, just as the bare
-                // definition does; the attribute lives on the definition either way.
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
-                | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> Some identity
-                | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _
-                // No declaring identity: a shape carries no attribute of its own.
-                | RuntimeTypeHandleTarget.Composite _
-                | RuntimeTypeHandleTarget.FunctionPointer _ -> None
-
-            match identity with
-            | None -> false
-            | Some identity ->
+            RuntimeTypeHandleTarget.isByRefLike
+                baseClassTypes
                 state._LoadedAssemblies
-                    .ByDefinitionName(identity.AssemblyFullName)
-                    .TypeDefs.[identity.TypeDefinition.Get]
-                |> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies
+                state.ConcreteTypes
+                methodTableFor
 
         let containsGcPointers, state =
             containsGcPointersForRuntimeTypeHandleTarget loggerFactory baseClassTypes state methodTableFor

@@ -4,6 +4,14 @@ open System.Collections.Immutable
 open System.Reflection
 open Microsoft.Extensions.Logging
 
+/// The reason CoreCLR's type loader refuses to construct an szarray over an element type. Each
+/// case is one `IDS_CLASSLOAD_*ARRAY` resource (mscorrc/resource.h:108-110).
+[<RequireQualifiedAccess>]
+type SzArrayElementRefusal =
+    | ByRef
+    | ByRefLike
+    | Void
+
 module NativeRuntimeTypeHelpers =
     let primitiveCorElementType (primitive : PrimitiveType) : int32 =
         match primitive with
@@ -1847,18 +1855,45 @@ module NativeRuntimeTypeHelpers =
                 |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0 && m.IsPublic)
 
     /// True iff `arg` is a byref-like type (a C# `ref struct`), which may not be used as a generic
-    /// argument unless the parameter carries `allows ref struct`. CoreCLR's `TypeHandle::IsByRefLike`
-    /// (typehandle.cpp:1061) answers `false` for every TypeDesc, so a structural shape — for which
-    /// `nominalTypeInfoOfArgument` returns `None` — is never byref-like whatever its element type is.
+    /// argument unless the parameter carries `allows ref struct`. A structural shape is never
+    /// byref-like whatever its element type is; see `RuntimeTypeHandleTarget.isByRefLike`.
     let argumentIsByRefLike
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (arg : ConcreteTypeHandle)
         : bool
         =
-        match nominalTypeInfoOfArgument state arg with
-        | None -> false
-        | Some typeInfo -> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
+        RuntimeTypeHandleTarget.isByRefLike
+            baseClassTypes
+            state._LoadedAssemblies
+            state.ConcreteTypes
+            (RuntimeTypeHandleTarget.Closed arg)
+
+    /// Why CoreCLR's type loader will not construct an szarray over `element`, if it will not.
+    /// The three refusals are checked in this order (`ClassLoader::CreateTypeHandleForTypeKey`,
+    /// clsload.cpp:2693-2708), so a byref over a byref-like type is refused as a byref. Every
+    /// other element is legal, including `void*`, a function pointer, an open definition, a type
+    /// variable (whatever its constraints) and a shape over one.
+    let szArrayElementRefusal
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (element : RuntimeTypeHandleTarget)
+        : SzArrayElementRefusal option
+        =
+        match element with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+        | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) -> Some SzArrayElementRefusal.ByRef
+        | _ ->
+
+        if RuntimeTypeHandleTarget.isByRefLike baseClassTypes state._LoadedAssemblies state.ConcreteTypes element then
+            Some SzArrayElementRefusal.ByRefLike
+        else
+
+        match element with
+        // `TypeHandle::GetSignatureCorElementType() == ELEMENT_TYPE_VOID`: only the `System.Void`
+        // MethodTable itself, never a shape over it.
+        | RuntimeTypeHandleTarget.Closed (ConcreteVoid state.ConcreteTypes) -> Some SzArrayElementRefusal.Void
+        | _ -> None
 
     /// A display name for a constraint type, for the diagnostic message only.
     let private constraintDisplayName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
@@ -2456,6 +2491,26 @@ module NativeRuntimeTypeHelpers =
                 parameter.Name
 
         targetName typeHandleTarget
+
+
+    /// The type string CoreCLR's `ClassLoader::ThrowTypeLoadException` puts in the
+    /// `TypeLoadException` for `refusal` of an szarray over `element`: the array key rendered under
+    /// `FormatNamespace` alone, except that for a byref element it is the byref alone, because the
+    /// type-name builder will not append `[]` after `&`. Measured on .NET 10 for each refusal.
+    let szArrayRefusalTypeName
+        (operation : string)
+        (state : IlMachineState)
+        (element : RuntimeTypeHandleTarget)
+        (refusal : SzArrayElementRefusal)
+        : string
+        =
+        let rendered =
+            match refusal with
+            | SzArrayElementRefusal.ByRef -> element
+            | SzArrayElementRefusal.ByRefLike
+            | SzArrayElementRefusal.Void -> RuntimeTypeHandleTarget.composite CompositeShape.OneDimArrayZero element
+
+        runtimeTypeHandleName operation state formatNamespaceFlag rendered
 
     /// CoreCLR's `TypeHandle::GetName` (`vm/typehandle.cpp:659`) — a *different* renderer from
     /// `runtimeTypeHandleName` above, which models `TypeString::AppendType` (the reflection
