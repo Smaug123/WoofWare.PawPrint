@@ -1880,6 +1880,7 @@ module NativeRuntimeTypeHelpers =
     /// element is legal, including `void*`, a function pointer, an open definition, a type
     /// variable (whatever its constraints) and a shape over one.
     let szArrayElementRefusal
+        (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (element : RuntimeTypeHandleTarget)
@@ -1898,6 +1899,22 @@ module NativeRuntimeTypeHelpers =
         // `TypeHandle::GetSignatureCorElementType() == ELEMENT_TYPE_VOID`: only the `System.Void`
         // MethodTable itself, never a shape over it.
         | RuntimeTypeHandleTarget.Closed (ConcreteVoid state.ConcreteTypes) -> state, Some SzArrayElementRefusal.Void
+        | (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity | RuntimeTypeHandleTarget.OpenConstructed (identity,
+                                                                                                                 _)) when
+            state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
+            |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
+            ->
+            // Real .NET applies the size limit to an open value type too, sizing its canonical
+            // form: measured on .NET 10, `BigWrapper<>[]` and `BigWrapper<T>[]` throw where
+            // `SmallWrapper<>[]` loads. PawPrint cannot size an open generic at all
+            // (`MethodTableProjection.openArrayComponentSize` refuses one outright), so it cannot
+            // tell those apart. Answering `None` would silently hand the guest an array type that
+            // real .NET refuses, so refuse to answer instead.
+            //
+            // Only *non*-byref-like open value types reach here; a `ref struct` definition is
+            // already refused above, which is why `Span<>` does not land in this hole.
+            failwith
+                $"TODO: %s{operation}: cannot decide whether an array over the open value type %O{identity.TypeDefinition.Get} is legal, because PawPrint cannot size an open generic; real .NET refuses one whose canonical form exceeds %d{MethodTableProjection.maxValueClassSizeInArray} bytes and loads any other"
         | RuntimeTypeHandleTarget.Closed handle when argumentIsValueType baseClassTypes state handle ->
             // Only a value type can be big enough to matter: every other element occupies one
             // pointer. Real .NET refuses an *open* value type by the same rule (measured:
@@ -2537,29 +2554,6 @@ module NativeRuntimeTypeHelpers =
         targetName typeHandleTarget
 
 
-    /// The type string CoreCLR puts in the `TypeLoadException` for `refusal` of an szarray over
-    /// `element`, rendered under `FormatNamespace` alone. Usually the array key; for a byref
-    /// element it is the byref alone, because the type-name builder will not append `[]` after
-    /// `&`, and for an oversized value type it is the element. Measured on .NET 10 for each.
-    let szArrayRefusalTypeName
-        (operation : string)
-        (state : IlMachineState)
-        (element : RuntimeTypeHandleTarget)
-        (refusal : SzArrayElementRefusal)
-        : string
-        =
-        let rendered =
-            match refusal with
-            // The byref refusal renders the byref alone rather than the array over it, and the
-            // oversized-value-type one names the element because CoreCLR passes
-            // `elemTypeHnd.GetName` rather than the type key (array.cpp:362).
-            | SzArrayElementRefusal.ByRef
-            | SzArrayElementRefusal.ValueClassTooLarge -> element
-            | SzArrayElementRefusal.ByRefLike
-            | SzArrayElementRefusal.Void -> RuntimeTypeHandleTarget.composite CompositeShape.OneDimArrayZero element
-
-        runtimeTypeHandleName operation state formatNamespaceFlag rendered
-
     /// CoreCLR's `TypeHandle::GetName` (`vm/typehandle.cpp:659`) — a *different* renderer from
     /// `runtimeTypeHandleName` above, which models `TypeString::AppendType` (the reflection
     /// `ConstructName` path). Use this one only where the EE itself formats a diagnostic,
@@ -2670,6 +2664,29 @@ module NativeRuntimeTypeHelpers =
                         |> String.concat ","
 
                     $"%s{name}[%s{args}]"
+
+    /// The type string CoreCLR puts in the `TypeLoadException` for `refusal` of an szarray over
+    /// `element`. Which of the two type renderers applies is part of the answer: the three
+    /// type-key refusals are formatted by `ClassLoader::ThrowTypeLoadException` from the array
+    /// key, and the oversized-value-type one by `array.cpp:362` from the element's own
+    /// `TypeHandle::GetName`. So a nested `Outer.Big` is `Outer+Big` in the first three and bare
+    /// `Big` in the fourth. Measured on .NET 10 for each refusal, nested and not.
+    let szArrayRefusalTypeName
+        (operation : string)
+        (state : IlMachineState)
+        (element : RuntimeTypeHandleTarget)
+        (refusal : SzArrayElementRefusal)
+        : string
+        =
+        match refusal with
+        | SzArrayElementRefusal.ValueClassTooLarge -> typeHandleGetName operation state element
+        // The byref refusal renders the byref alone rather than the array over it: the type-name
+        // builder will not append `[]` after `&`.
+        | SzArrayElementRefusal.ByRef -> runtimeTypeHandleName operation state formatNamespaceFlag element
+        | SzArrayElementRefusal.ByRefLike
+        | SzArrayElementRefusal.Void ->
+            RuntimeTypeHandleTarget.composite CompositeShape.OneDimArrayZero element
+            |> runtimeTypeHandleName operation state formatNamespaceFlag
 
     /// PawPrint's rendering of CoreCLR's `CopyRuntimeTypeHandles` (runtimehandles.cpp:561), the
     /// single helper behind every QCall that hands a type list back through an

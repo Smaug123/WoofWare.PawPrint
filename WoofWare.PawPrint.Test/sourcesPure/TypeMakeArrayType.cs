@@ -14,6 +14,12 @@ public struct GenericStruct<T> { public T Field; }
 
 public class BigFieldClass { public OverLimit Field; }
 
+public class Enclosing
+{
+    [StructLayout(LayoutKind.Sequential, Size = 65536)]
+    public struct NestedOver { }
+}
+
 class Sample
 {
     public void Arrays(int[] ints, List<int>[] lists, int[][] jagged) { }
@@ -169,6 +175,13 @@ static class Program
 
         if (TooLarge(typeof(OverLimit), "OverLimit", here) is int r16) return 260 + r16;
         if (TooLarge(typeof(GenericStruct<OverLimit>), "GenericStruct`1[OverLimit]", here) is int r17) return 270 + r17;
+
+        // The two refusals name a *nested* element differently, and this pair is the whole reason
+        // that matters: the size refusal is formatted from the element's own TypeDef row, which
+        // for a nested type carries no namespace and no outer name, while the type-key refusals
+        // render the nesting chain.
+        if (TooLarge(typeof(Enclosing.NestedOver), "NestedOver", here) is int r18) return 280 + r18;
+        if (Refused(typeof(Enclosing.NestedOver).MakeByRefType(), "Enclosing+NestedOver&", here, "ByRef") is int r19) return 290 + r19;
 
         return 0;
     }

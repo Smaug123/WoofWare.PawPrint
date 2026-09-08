@@ -356,7 +356,7 @@ module NativeRuntimeTypeQCall =
             // operation that reads no metadata, and CoreCLR builds one over a minimal MethodTable
             // like any other (measured on .NET 10: the hidden type reached through
             // `RuntimeMethodHandle.GetDeclaringType` answers `(dynamicClass)[]`).
-            match szArrayElementRefusal ctx.BaseClassTypes state typeHandleTarget with
+            match szArrayElementRefusal operation ctx.BaseClassTypes state typeHandleTarget with
             | state, Some refusal ->
                 // `ClassLoader::ThrowTypeLoadException(pKey, ...)` names the assembly of the
                 // key's module, which for an array key is its element's; `typeAssemblyFullName`

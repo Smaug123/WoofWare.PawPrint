@@ -48,6 +48,27 @@ public struct WayOverLimit { }
 
 public struct NaturallyOversized { public AtLimit Pad; public int Tail; }
 
+public class Outer
+{
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Size = 65536)]
+    public struct NestedOver { }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Size = 65536)]
+    public struct NestedGenericOver<T> { public int Field; }
+}
+
+namespace Namespaced
+{
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Size = 65536)]
+    public struct TopLevelOver { }
+
+    public class NsOuter
+    {
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Size = 65536)]
+        public struct NestedOver { }
+    }
+}
+
 public class OversizedHolder { public OverLimit Field; }
 
 public unsafe class FnPtrHolder<T>
@@ -89,10 +110,27 @@ public unsafe class FnPtrHolder<T>
             ConcreteTypes = Corelib.concretizeAll withAssemblies._LoadedAssemblies bct AllConcreteTypes.Empty
         }
 
+    /// Corpus types are looked up by simple name, except that the two `NestedOver` structs share
+    /// one -- being nested in different types is the whole point of that pair -- so the nested one
+    /// under `NsOuter` is spelled `NsOuter+NestedOver` and matched through its declaring type.
     let private guestType (name : string) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+        let matches (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>) : bool =
+            let declaringName () = guest.TypeDefs.[ty.DeclaringType].Name
+
+            match name.Split '+' with
+            | [| simple |] -> ty.Name = simple && (not ty.IsNested || declaringName () <> "NsOuter")
+            | [| outer ; simple |] -> ty.Name = simple && ty.IsNested && declaringName () = outer
+            | _ -> failwith $"corpus type name %s{name} names more than one level of nesting"
+
         guest.TypeDefs.Values
-        |> Seq.tryFind (fun ty -> ty.Name = name)
-        |> Option.defaultWith (fun () -> failwith $"corpus type %s{name} not found in the PawPrint-read image")
+        |> Seq.filter matches
+        |> List.ofSeq
+        |> function
+            | [ ty ] -> ty
+            | [] -> failwith $"corpus type %s{name} not found in the PawPrint-read image"
+            | several ->
+                let rendered = several |> List.map (fun ty -> ty.Name) |> String.concat ", "
+                failwith $"corpus type %s{name} is ambiguous in the PawPrint-read image: %s{rendered}"
 
     let private hostType (name : string) : Type =
         match hostAssembly.GetType name with
@@ -304,6 +342,20 @@ public unsafe class FnPtrHolder<T>
             "GenericStruct<AtLimit>",
             closed (closedGeneric genericStruct (definitionDefn (guestType "AtLimit"))),
             hostGenericStruct.MakeGenericType (hostType "AtLimit")
+            // The oversized refusal names the element through `TypeHandle::GetName`, which reads
+            // the TypeDef row's own namespace and name: a nested row has neither an outer name nor
+            // a namespace, so `Outer.NestedOver` is bare `NestedOver` where the three type-key
+            // refusals would say `Outer+NestedOver`. These four rows are what pin that apart.
+            "Outer.NestedOver (nested)", closed (definitionDefn (guestType "NestedOver")), hostType "Outer+NestedOver"
+            "Outer.NestedGenericOver<int>",
+            closed (closedGeneric (guestType "NestedGenericOver`1") int32Defn),
+            (hostType "Outer+NestedGenericOver`1").MakeGenericType typeof<int>
+            "Namespaced.TopLevelOver",
+            closed (definitionDefn (guestType "TopLevelOver")),
+            hostType "Namespaced.TopLevelOver"
+            "Namespaced.NsOuter.NestedOver",
+            closed (definitionDefn (guestType "NsOuter+NestedOver")),
+            hostType "Namespaced.NsOuter+NestedOver"
             "OversizedHolder (a class)",
             closed (definitionDefn (guestType "OversizedHolder")),
             hostType "OversizedHolder"
@@ -343,7 +395,7 @@ public unsafe class FnPtrHolder<T>
         : IlMachineState * (SzArrayElementRefusal * string) option
         =
         let state, refusal =
-            NativeRuntimeTypeHelpers.szArrayElementRefusal bct state element
+            NativeRuntimeTypeHelpers.szArrayElementRefusal "test" bct state element
 
         let rendered =
             refusal
