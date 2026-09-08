@@ -519,14 +519,18 @@ module UnixSystem =
                     match socket.Binding with
                     | Some binding when binding.Endpoint.Port = 0us ->
                         let halfBound =
-                            socket.Kind = SocketKind.Datagram
+                            // Only Linux's `connect(AF_UNSPEC)` produces this,
+                            // and it always leaves the socket idle.
+                            SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
+                            && socket.Kind = SocketKind.Datagram
+                            && socket.Phase = SocketPhase.Idle
                             && not binding.LockedPort
                             && (
                                 match binding.LockedAddress with
-                                | Some locked -> locked <> InternetEndpoint.WildcardAddress
+                                | Some locked ->
+                                    locked <> InternetEndpoint.WildcardAddress && locked = binding.Endpoint.Address
                                 | None -> false
                             )
-                            && binding.Endpoint.Address = binding.LockedAddress.Value
 
                         if halfBound then
                             []

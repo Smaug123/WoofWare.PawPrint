@@ -209,3 +209,50 @@ module TestDatagramDissolve =
             match UnixSocket.bind fd UserBuffer.Mapped 16 false inetFamily (Some (endpoint wildcard 0us)) after with
             | Ok (BindAnswer.Failed UnixError.EINVAL, _) -> ()
             | other -> failwith $"rebind after dissolve on %O{platform}: %A{other}"
+
+    /// The port-0 invariant admits exactly the half-bound socket Linux's
+    /// dissolve leaves: the same binding forged onto a Darwin system, or onto
+    /// a socket still holding a peer, is the defect it always was.
+    [<Test>]
+    let ``the port-0 exception is exactly Linux's idle half-bound datagram`` () : unit =
+        let halfBound : SocketBinding =
+            {
+                Endpoint = endpoint loopback 0us
+                LockedAddress = Some loopback
+                LockedPort = false
+            }
+
+        let forge (platform : SimulatedUnixPlatform) (phase : SocketPhase) : UnixSystem<int, string> =
+            let fd, system =
+                UnixSocket.createSocket
+                    SocketDomain.InterNetwork
+                    SocketKind.Datagram
+                    SocketProtocol.Udp
+                    (systemOn platform)
+
+            let socketId = socketOf fd system
+
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets =
+                            system.Machine.Sockets
+                            |> Map.add
+                                socketId
+                                { UnixMachineState.socket socketId system.Machine with
+                                    Binding = Some halfBound
+                                    Phase = phase
+                                }
+                    }
+            }
+
+        UnixSystem.checkInvariants (forge SimulatedUnixPlatform.linuxX64 SocketPhase.Idle)
+        |> shouldEqual []
+
+        UnixSystem.checkInvariants (forge SimulatedUnixPlatform.macOsArm64 SocketPhase.Idle)
+        |> shouldEqual [ UnixSystemDefect.BoundToPortZero (SocketId 0L) ]
+
+        UnixSystem.checkInvariants (
+            forge SimulatedUnixPlatform.linuxX64 (SocketPhase.DatagramPeer (endpoint loopback 9000us))
+        )
+        |> shouldEqual [ UnixSystemDefect.BoundToPortZero (SocketId 0L) ]
