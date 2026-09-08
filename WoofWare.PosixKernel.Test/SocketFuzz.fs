@@ -35,11 +35,12 @@ type FuzzOp =
 type EmulatedRun =
     /// Every op answered; the transcript is comparable with the harness's.
     | Transcript of string
-    /// The kernel refused an op with a modelled `failwith` — the sequence is
-    /// outside the modelled envelope, and the comparison skips it.
+    /// The kernel refused an op with one of its typed refusals — the sequence
+    /// is outside the modelled envelope, and the comparison skips it.
     | Refused of opIndex : int * message : string
-    /// An "interpreter bug" refusal, or a `checkInvariants` defect: reaching
-    /// either through the public surface is a finding, never a skip.
+    /// An exception out of the kernel or this driver, or a `checkInvariants`
+    /// defect: reaching either through the public surface is a finding, never
+    /// a skip.
     | Defect of opIndex : int * message : string
 
 [<RequireQualifiedAccess>]
@@ -74,11 +75,16 @@ module SocketFuzz =
         }
 
 
-    /// `close(2)`. A refusal crashes, as it does in the handlers that serve a
-    /// guest; an errno comes back, because that is an answer.
+    /// The model refused an op, by its own refusal type rather than by a
+    /// message: raised inside `execOp` so that `executeEmulated` can tell a
+    /// refusal from a defect without reading text.
+    exception private ModelRefusal of string
+
+    /// `close(2)`. A refusal is the model's, and is reported as one; an errno
+    /// comes back, because that is an answer.
     let private closeFd (fd : int) (system : UnixSystem<int, string>) : Result<UnixSystem<int, string>, UnixError> =
         match UnixDescriptor.close fd system with
-        | Error refusal -> failwith $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}"
+        | Error refusal -> raise (ModelRefusal $"close of fd %d{fd} refused: %s{CloseRefusal.describe refusal}")
         | Ok (SyscallAnswer.Failed error, _) -> Error error
         | Ok (SyscallAnswer.Completed _, system) -> Ok system
 
@@ -188,11 +194,6 @@ module SocketFuzz =
     /// Fixed and below `UnixSystem.defaultEphemeralPortRange` (32768+),
     /// so a client's implicit bind can never collide with one. The harness
     /// uses real ephemeral ports instead; port numbers are never compared.
-    /// The model refused an op, by its own refusal type rather than by a
-    /// message: raised inside `execOp` so that `executeEmulated` can tell a
-    /// refusal from a defect without reading text.
-    exception private ModelRefusal of ConnectRefusal
-
     let private listenerPortBase : uint16 = 20000us
 
     let private inetFamily : int option =
@@ -305,7 +306,7 @@ module SocketFuzz =
             let outcome, kernel =
                 match UnixConnection.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel with
                 | Ok answer -> answer
-                | Error refusal -> raise (ModelRefusal refusal)
+                | Error refusal -> raise (ModelRefusal (ConnectRefusal.describe refusal))
 
             let token =
                 match outcome with
@@ -332,7 +333,7 @@ module SocketFuzz =
                         state.Kernel
                 with
                 | Ok answer -> answer
-                | Error refusal -> raise (ModelRefusal refusal)
+                | Error refusal -> raise (ModelRefusal (ConnectRefusal.describe refusal))
 
             let token =
                 match outcome with
@@ -531,7 +532,7 @@ module SocketFuzz =
                     try
                         Ok (execOp op state)
                     with
-                    | ModelRefusal refusal -> Error (EmulatedRun.Refused (index, ConnectRefusal.describe refusal))
+                    | ModelRefusal message -> Error (EmulatedRun.Refused (index, message))
                     | Failure message -> Error (EmulatedRun.Defect (index, message))
 
                 match outcome with
