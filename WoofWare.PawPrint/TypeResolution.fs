@@ -318,6 +318,49 @@ module TypeResolution =
 
             resolveTypeFromRef loggerFactory dotnetRuntimeDirs referencedInAssembly target typeGenericArgs assemblies
 
+    /// <summary>
+    /// Resolve a TypeRef to the identity of the TypeDef it names, following AssemblyRefs and type
+    /// forwarders, but <i>without</i> priming the resolved type's base chain.
+    /// </summary>
+    /// <remarks>
+    /// The result therefore does *not* satisfy the base-chain closure invariant described on
+    /// <c>primeBaseChain</c>, which is why this hands back an identity rather than a
+    /// <c>TypeInfo</c>: the pure walks that invariant exists for have nothing to run against.
+    ///
+    /// Prefer this wherever the question is only *which* type a reference names. Priming a base
+    /// chain loads every assembly reachable from it, so a caller that never looks at the base type
+    /// would otherwise make an unrelated assembly's availability decide whether it succeeds.
+    /// CoreCLR draws the same line: <c>ClassLoader::ResolveTokenToTypeDefThrowing</c>, which its
+    /// signature comparison uses, reads metadata and loads no types.
+    ///
+    /// <c>Error</c> is a plain absence: every assembly on the way was bound, and the last one does
+    /// not declare the name. An assembly that cannot be bound fails loudly instead.
+    /// </remarks>
+    let rec internal resolveTypeRefIdentity
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (referencedInAssembly : DumpedAssembly)
+        (target : TypeRef)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * Result<ResolvedTypeIdentity, TypeResolutionMiss>
+        =
+        match Assembly.resolveTypeRef assemblies referencedInAssembly ImmutableArray.Empty target with
+        | TypeResolutionResult.Resolved (_, identity, _) -> assemblies, Ok identity
+        | TypeResolutionResult.NotFound miss -> assemblies, Error miss
+        | TypeResolutionResult.FirstLoadAssy loadFirst ->
+            let assemblies, _, _ =
+                loadAssembly
+                    loggerFactory
+                    dotnetRuntimeDirs
+                    assemblies.[snd loadFirst.Handle]
+                    (fst loadFirst.Handle)
+                    assemblies
+
+            let assemblies =
+                LoadedAssemblies.assertReferenceBound $"type reference %s{target.Name}" loadFirst assemblies
+
+            resolveTypeRefIdentity loggerFactory dotnetRuntimeDirs referencedInAssembly target assemblies
+
     let internal resolveType
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
