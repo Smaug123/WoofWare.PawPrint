@@ -986,6 +986,10 @@ module IlMachineRuntimeMetadata =
                 baseClassTypes.TypeLoadException, "_assemblyName", Choice1Of2 assemblyName
             | RuntimeExceptionField.TypeLoadResourceId resourceId ->
                 baseClassTypes.TypeLoadException, "_resourceId", Choice2Of2 resourceId
+            | RuntimeExceptionField.FileNotFoundFileName fileName ->
+                // An auto-property, so the field is the compiler's backing field.
+                baseClassTypes.FileNotFoundException, "<FileName>k__BackingField", Choice1Of2 fileName
+            | RuntimeExceptionField.HResult hresult -> baseClassTypes.Exception, "_HResult", Choice2Of2 hresult
 
         match
             ManagedHeap.tryGet exceptionAddr state.ManagedHeap,

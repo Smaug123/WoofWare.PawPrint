@@ -65,27 +65,9 @@ module TypeResolution =
         match assemblies.TryResolveReference assemblyRef with
         | Some v -> Some (assemblies, v, v.Name)
         | None ->
-            let assemblyName = assemblyRef.Name
-            let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
-
-            // `tryPick`, not `choose |> tryHead`: the first hit is the binding, so every
-            // later dir must go unread. Reading them anyway is not merely wasted parsing
-            // (though it is that too, and a runtime dir list often holds a whole second
-            // framework) — it lets a directory we were never going to bind against fail
-            // the load, because anything but FileNotFoundException escapes.
-            let assy =
-                dotnetRuntimeDirs
-                |> Seq.tryPick (fun dir ->
-                    let file = Path.Combine (dir, assemblyName.Name + ".dll")
-
-                    try
-                        logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
-                        Assembly.readFile loggerFactory file |> Some
-                    with :? FileNotFoundException ->
-                        None
-                )
-
-            match assy with
+            // A reference names a culture only for a satellite assembly, and no reference
+            // PawPrint has met names one; the probe looks beside the referencing framework.
+            match AssemblyBinding.tryReadFromRuntimeDirs loggerFactory dotnetRuntimeDirs None assemblyRef.Name.Name with
             | None -> None
             | Some assy ->
                 // Record both the assembly (under its own definition identity) and the binding
@@ -149,12 +131,12 @@ module TypeResolution =
     /// loading its base type, and so has the same closure property for free.
     /// </para>
     /// </remarks>
-    let private tryPrimeBaseChain
+    let internal tryPrimeBaseChain
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (assemblies : LoadedAssemblies)
         (definedIn : DumpedAssembly)
-        (ty : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
+        (ty : WoofWare.PawPrint.TypeInfo<'generic, TypeDefn>)
         : LoadedAssemblies * BaseChainFailure option
         =
         Concretization.tryEnsureTypeDefinitionBaseAssembliesLoaded
