@@ -28,6 +28,25 @@ public struct Pair
     public int N;
 }
 
+public enum Colour : short
+{
+    Red = 1,
+    Blue = 2,
+}
+
+public sealed class Counter
+{
+    public int Count;
+
+    // A constructor with a `ref` parameter: the QCall allocates the instance itself
+    // (`isConstructor`) and still passes the byref through.
+    public Counter (ref int seed)
+    {
+        seed = seed + 3;
+        Count = seed;
+    }
+}
+
 public class Program
 {
     private static void Increment (ref int x)
@@ -95,6 +114,28 @@ public class Program
         Array.Copy (a, grown, a.Length);
         grown[a.Length] = 4;
         a = grown;
+    }
+
+    // A whole-struct store (`stobj`) through the byref, rather than field by field.
+    private static void ReplacePair (ref Pair p)
+    {
+        p = new Pair
+        {
+            A = 7,
+            N = 8,
+        };
+    }
+
+    private static void Promote (ref Colour c)
+    {
+        c = Colour.Blue;
+    }
+
+    // A byref whose element is a method type parameter, instantiated at a reference type with
+    // no nominal type of its own.
+    private static void Assign<T> (ref T x, T y)
+    {
+        x = y;
     }
 
     private static MethodInfo Get (string name)
@@ -231,6 +272,40 @@ public class Program
 
         if (!(growArgs[0] is int[] grown) || grown.Length != 4 || grown[3] != 4 || grown[0] != 1)
             return 10;
+
+        // 11: a whole-struct store through the byref.
+        object[] replaceArgs = new object[] { new Pair { A = 1, N = 2 } };
+        Get ("ReplacePair").Invoke (null, replaceArgs);
+
+        if (!(replaceArgs[0] is Pair replaced) || replaced.A != 7 || replaced.N != 8)
+            return 11;
+
+        // 12: an enum element, whose box payload is two bytes wide.
+        object[] colourArgs = new object[] { Colour.Red };
+        Get ("Promote").Invoke (null, colourArgs);
+
+        if (!(colourArgs[0] is Colour promoted) || promoted != Colour.Blue)
+            return 12;
+
+        // 13: a constructor with a `ref` parameter, through the allocating `ConstructorInfo.Invoke`.
+        ConstructorInfo counterCtor = typeof (Counter).GetConstructor (new[] { typeof (int).MakeByRefType () });
+
+        if (counterCtor == null)
+            return 13;
+
+        object[] ctorArgs = new object[] { 4 };
+        object counter = counterCtor.Invoke (ctorArgs);
+
+        if (!(counter is Counter built) || built.Count != 7 || !(ctorArgs[0] is int seeded) || seeded != 7)
+            return 13;
+
+        // 14: `ref T` instantiated at an array type.
+        MethodInfo assignArrays = Get ("Assign").MakeGenericMethod (typeof (int[]));
+        object[] assignArgs = new object[] { new int[] { 1 }, new int[] { 2, 3 } };
+        assignArrays.Invoke (null, assignArgs);
+
+        if (!(assignArgs[0] is int[] assigned) || assigned.Length != 2 || assigned[1] != 3)
+            return 14;
 
         return 0;
     }
