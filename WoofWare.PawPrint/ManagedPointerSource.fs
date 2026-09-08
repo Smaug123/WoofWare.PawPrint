@@ -276,6 +276,42 @@ module RuntimeTypeHandleTarget =
         failwith
             $"%s{operation}: refusing a metadata query against the dynamic-methods class of %s{scopeAssemblyFullName}. CoreCLR's DynamicMethodTable MethodTable (CreateMinimalMethodTable, methodtable.cpp:663) carries no metadata to answer from -- no token, no name, no members -- so there is nothing to read here rather than something PawPrint has not implemented"
 
+    /// CoreCLR's `TypeHandle::IsByRefLike` (typehandle.cpp:1061): true iff the target is a
+    /// MethodTable whose definition is a byref-like value type (a C# `ref struct`).
+    ///
+    /// `DumpedAssembly.isByRefLike` is the classification of a *definition*; this is that
+    /// classification applied to whichever definition the target has. An instantiation, open or
+    /// closed, is byref-like exactly when its definition is (`typeof(R&lt;&gt;).IsByRefLike` is true for
+    /// a `ref struct R&lt;T&gt;`, measured against .NET 10). Every TypeDesc answers false: a type
+    /// variable, a byref, pointer or array over anything, and a function pointer, whatever their
+    /// element or the variable's constraints say. The dynamic-methods class is a minimal
+    /// MethodTable with no definition behind it, and is never byref-like.
+    let isByRefLike
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (loadedAssemblies : LoadedAssemblies)
+        (concreteTypes : AllConcreteTypes)
+        (target : RuntimeTypeHandleTarget)
+        : bool
+        =
+        let identity =
+            match target with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> None
+            | RuntimeTypeHandleTarget.Closed handle ->
+                AllConcreteTypes.lookup handle concreteTypes
+                |> Option.map (fun concreteType -> concreteType.Identity)
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+            | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> Some identity
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> None
+
+        match identity with
+        | None -> false
+        | Some identity ->
+            loadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
+            |> DumpedAssembly.isByRefLike baseClassTypes loadedAssemblies
+
     /// Is this target the definition <paramref name="definition"/> applied to exactly its own
     /// formal parameters, in declaration order? CoreCLR calls that the *typical instantiation*,
     /// and represents it as the generic type definition itself rather than as a distinct

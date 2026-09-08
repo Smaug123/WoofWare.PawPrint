@@ -260,9 +260,9 @@ module NativeRuntimeTypeQCall =
             // pointer, a generic parameter and an open definition all succeed, and only
             // `typeof(int).MakeByRefType().MakeByRefType()` throws, with the message below naming
             // the byref being wrapped and the assembly of its element.
+            // The dynamic-methods class is not refused here either, for the reason MakeSZArray
+            // gives below: `typeof(hidden).MakeByRefType()` answers `(dynamicClass)&` on .NET 10.
             match typeHandleTarget with
-            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
-                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
             | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) ->
                 // `ClassLoader::ThrowTypeLoadException` (clsload.cpp:2724) renders the wrapped
@@ -302,6 +302,7 @@ module NativeRuntimeTypeQCall =
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _
             | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _
             | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 // The type-handle registry keys on the whole target, and `composite` spells a
                 // byref over a closed element as the closed byref, so this is the same
@@ -320,6 +321,98 @@ module NativeRuntimeTypeQCall =
                         state
                         retType
                         (CliType.ObjectRef (Some byrefAddr))
+
+                NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_MakeSZArray",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "MakeSZArray",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.MakeSZArray"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "retType" instruction.Arguments.[1]
+
+            // CoreCLR (runtimehandles.cpp:1049) is `TypeHandle::MakeSZArray`, i.e.
+            // `ClassLoader::LoadArrayTypeThrowing(elem)`: a type-key load whose only rules of its
+            // own are the three element refusals `szArrayElementRefusal` classifies. This is also
+            // where `Type.GetType("Foo[]")` and a `typeof(Foo[])` attribute argument end up, via
+            // `TypeNameResolver`.
+            // The dynamic-methods class is *not* refused: constructing an array is a type-key
+            // operation that reads no metadata, and CoreCLR builds one over a minimal MethodTable
+            // like any other (measured on .NET 10: the hidden type reached through
+            // `RuntimeMethodHandle.GetDeclaringType` answers `(dynamicClass)[]`).
+            match szArrayElementRefusal operation ctx.BaseClassTypes state typeHandleTarget with
+            | state, Some refusal ->
+                // `ClassLoader::ThrowTypeLoadException(pKey, ...)` names the assembly of the
+                // key's module, which for an array key is its element's; `typeAssemblyFullName`
+                // peels the shapes the same way.
+                let typeName =
+                    NativeRuntimeTypeHelpers.szArrayRefusalTypeName operation state typeHandleTarget refusal
+
+                let assemblyName =
+                    NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
+
+                // The EE constructs the exception from the two strings and the resource id, which
+                // is where `TypeLoadException.TypeName` and the serialised `TypeLoadResourceID`
+                // come from (mscorrc/resource.h:108-110; the format strings are mscorrc.rc:326-328).
+                let message, resourceId =
+                    match refusal with
+                    | SzArrayElementRefusal.ByRef ->
+                        $"Could not create array type '%s{typeName}' from assembly '%s{assemblyName}' because the element type is ByRef.",
+                        0x1775
+                    | SzArrayElementRefusal.ByRefLike ->
+                        $"Could not create array type '%s{typeName}' from assembly '%s{assemblyName}' because the element type is ByRef-like.",
+                        0x1776
+                    | SzArrayElementRefusal.Void ->
+                        $"Could not create array type '%s{typeName}' from assembly '%s{assemblyName}' because the element type is System.Void.",
+                        0x1777
+                    | SzArrayElementRefusal.ValueClassTooLarge ->
+                        $"Array of type '%s{typeName}' from assembly '%s{assemblyName}' cannot be created because base value type is too large.",
+                        0x177b
+
+                NativeHandlerResult.raiseExceptionWithFields
+                    ctx.BaseClassTypes.TypeLoadException
+                    [
+                        RuntimeExceptionField.Message message
+                        RuntimeExceptionField.TypeLoadClassName typeName
+                        RuntimeExceptionField.TypeLoadAssemblyName assemblyName
+                        RuntimeExceptionField.TypeLoadResourceId resourceId
+                    ]
+                    state
+                |> Some
+            | state, None ->
+                // The type-handle registry keys on the whole target, and `composite` spells an
+                // szarray over a closed element as the closed array, so this is the same
+                // `RuntimeType` object `typeof(int[])`, a reflected `int[]` parameter and
+                // `Type.GetType("System.Int32[]")` all yield.
+                let arrayAddr, state =
+                    IlMachineState.getOrAllocateType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        (RuntimeTypeHandleTarget.composite CompositeShape.OneDimArrayZero typeHandleTarget)
+                        state
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        retType
+                        (CliType.ObjectRef (Some arrayAddr))
 
                 NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_Instantiate",

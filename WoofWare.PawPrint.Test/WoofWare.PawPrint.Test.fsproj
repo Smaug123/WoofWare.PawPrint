@@ -164,6 +164,7 @@
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
+    <Compile Include="TestMakeSZArrayRefusal.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
