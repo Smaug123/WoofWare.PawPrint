@@ -88,6 +88,110 @@ module AcceptRefusal =
         | AcceptRefusal.UnmeasuredCopyOutFault listener ->
             $"socket %O{listener} has a connection to hand over, so this call succeeds and copies the peer address out -- but the destination is unmapped, so that copy faults. Whether a real kernel loses the connection when it faults, having already taken it off the queue, is unmeasured, so EFAULT is not available here as it is for `getsockname`."
 
+/// Why this kernel will not answer a `connect(2)` at all: the call reached an
+/// input whose real answer is unmeasured, or a state this library does not
+/// model. The client decides what a refusal means for it; nothing here is
+/// recoverable by retrying the same call.
+[<RequireQualifiedAccess>]
+type ConnectRefusal =
+    /// The sockaddr copy could not be admitted.
+    | Copy of SockaddrCopyRefusal
+    /// A raw or seqpacket socket, whose `connect(2)` is unmeasured.
+    | UnmeasuredKind of socket : SocketId * kind : SocketKind
+    /// The socket has no concrete source address and the destination is not
+    /// loopback, and which source a kernel resolves for it is unmeasured.
+    /// `boundToWildcard` says whether the socket was bound to the wildcard or
+    /// not bound at all.
+    | SourceForNonLoopbackDestination of socket : SocketId * destination : InternetEndpoint * boundToWildcard : bool
+    /// The implicit bind found every port in the ephemeral range taken, and
+    /// what a kernel answers then is unmeasured.
+    | EphemeralPortsExhausted of range : uint16 * uint16
+    /// The destination is not an address of this machine, and this library
+    /// models no network to carry a packet anywhere else.
+    | DestinationNotLocal of destination : InternetEndpoint * kind : SocketKind
+    /// The listener's accept queue is at its measured capacity: a real kernel
+    /// leaves the SYN unanswered and the client retries on a timer.
+    | AcceptQueueFull of listener : SocketId * destination : InternetEndpoint * queued : int
+    /// The resolved source equals the destination while a listener matched,
+    /// which only a reuse-bound client can engineer; unmeasured.
+    | SelfTuple of endpoint : InternetEndpoint
+    /// A connection between this source and destination already exists, and
+    /// how a kernel refuses the duplicate four-tuple is unmeasured.
+    | DuplicateFourTuple of source : InternetEndpoint * destination : InternetEndpoint
+    /// The destination is the socket's own bound address with nothing
+    /// listening: TCP simultaneous open, which is unmodelled.
+    | SimultaneousOpen of destination : InternetEndpoint
+    /// Darwin drops the SYN to a bound but unlistened port, and the connect
+    /// pends on a retransmission schedule this library cannot honour.
+    | DarwinSynDropped of destination : InternetEndpoint
+    /// `AF_UNSPEC` on a Linux stream socket in a phase other than idle, whose
+    /// `tcp_disconnect` consequences are unmeasured.
+    | LinuxUnspecOnPhase of socket : SocketId * phase : SocketPhase
+    /// `AF_UNSPEC` on a listening Darwin stream socket, unmeasured.
+    | DarwinUnspecOnListener of socket : SocketId
+    /// `AF_UNSPEC` with a declared length other than the measured one.
+    | UnspecDeclaredLength of flavour : SimulatedUnixFlavour * kind : SocketKind * declaredLength : int * measured : int
+    /// `AF_UNSPEC` dissolving a Linux datagram peer whose `bind(2)` locked a
+    /// concrete address and chose the port, which is unmeasured.
+    | UnspecOnLockedAddress of socket : SocketId * endpoint : InternetEndpoint
+    /// `AF_UNSPEC` on a bound but unconnected Linux datagram socket, unmeasured.
+    | LinuxUnspecOnBoundDatagram of socket : SocketId
+    /// A datagram connect to the wildcard address, whose remapping is unmeasured.
+    | DatagramConnectToWildcard of socket : SocketId
+
+[<RequireQualifiedAccess>]
+module ConnectRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half -- which entry point, and which caller could have asked.
+    let describe (refusal : ConnectRefusal) : string =
+        match refusal with
+        | ConnectRefusal.Copy refusal -> SockaddrCopyRefusal.describe refusal
+        | ConnectRefusal.UnmeasuredKind (socket, kind) ->
+            $"socket %O{socket} is a %O{kind} socket, and what connect(2) does for one is unmeasured, so measure it rather than guessing."
+        | ConnectRefusal.SourceForNonLoopbackDestination (socket, destination, boundToWildcard) ->
+            if boundToWildcard then
+                $"socket %O{socket} is bound to the wildcard and is connecting to %s{InternetEndpoint.toString destination}, and which source address a kernel resolves the wildcard to for a destination other than 127.0.0.1 is unmeasured. Bind to a concrete address first, or connect to 127.0.0.1."
+            else
+                $"socket %O{socket} is unbound and is connecting to %s{InternetEndpoint.toString destination}, and which source address a kernel picks for a destination other than 127.0.0.1 is unmeasured. Bind the socket first, or connect to 127.0.0.1."
+        | ConnectRefusal.EphemeralPortsExhausted (low, high) ->
+            $"every port in the ephemeral range %d{low}-%d{high} is taken, so this implicit bind has no answer. Widen the machine's EphemeralPortRange, or measure what a real kernel says here."
+        | ConnectRefusal.DestinationNotLocal (destination, kind) ->
+            let carried =
+                match kind with
+                | SocketKind.Stream -> "a SYN"
+                | SocketKind.Datagram -> "a datagram"
+                | SocketKind.Raw
+                | SocketKind.SeqPacket -> "a packet"
+
+            $"destination %s{InternetEndpoint.toString destination} is not a local address of this simulated machine, and this library models no network to carry %s{carried} anywhere else. Add the address to the kernel's LocalAddresses/LocalRoutes if it should be local, or connect to loopback."
+        | ConnectRefusal.AcceptQueueFull (listener, destination, queued) ->
+            $"the accept queue of listener %O{listener} at %s{InternetEndpoint.toString destination} already holds %d{queued} connections, its measured capacity. A real kernel leaves this SYN unanswered and the client retries on a timer -- timing this library cannot honour deterministically -- so this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
+        | ConnectRefusal.SelfTuple endpoint ->
+            $"the resolved source %s{InternetEndpoint.toString endpoint} equals the destination, with a listener present. What a real kernel does with this self-tuple (plausibly EINVAL on Darwin, a completed self-connect on Linux) is unmeasured, so measure it rather than guessing."
+        | ConnectRefusal.DuplicateFourTuple (source, destination) ->
+            $"a connection from %s{InternetEndpoint.toString source} to %s{InternetEndpoint.toString destination} already exists, and a real kernel refuses a duplicate four-tuple in ways that are unmeasured (plausibly EADDRINUSE at connect time). Measure it rather than guessing."
+        | ConnectRefusal.SimultaneousOpen destination ->
+            $"destination %s{InternetEndpoint.toString destination} is this socket's own bound address and nothing is listening there. A real kernel can complete this as a TCP simultaneous open -- connecting the socket to itself -- which this library does not model."
+        | ConnectRefusal.DarwinSynDropped destination ->
+            $"destination %s{InternetEndpoint.toString destination} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which this library cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
+        | ConnectRefusal.LinuxUnspecOnPhase (socket, phase) ->
+            $"AF_UNSPEC on stream socket %O{socket} in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
+        | ConnectRefusal.DarwinUnspecOnListener socket ->
+            $"AF_UNSPEC on listening stream socket %O{socket} under Darwin is unmeasured (the measured EOPNOTSUPP row used an AF_INET destination), so measure it rather than extrapolating."
+        | ConnectRefusal.UnspecDeclaredLength (flavour, kind, declaredLength, measured) ->
+            let extent =
+                match flavour, kind with
+                | SimulatedUnixFlavour.Linux, SocketKind.Datagram -> $"only %d{measured} and above are"
+                | _ -> $"only %d{measured} is"
+
+            $"AF_UNSPEC with a declared length of %d{declaredLength} on a %O{flavour} %O{kind} socket is unmeasured (%s{extent}), so measure it rather than guessing."
+        | ConnectRefusal.UnspecOnLockedAddress (socket, endpoint) ->
+            $"AF_UNSPEC on datagram socket %O{socket}, whose bind(2) locked %s{InternetEndpoint.toString endpoint}'s address, is only measured for a kernel-chosen port (the address survives, the port zeroes); what survives a bind(2)-chosen port, and how the half-bound socket rebinds, is unmeasured. Measure it rather than guessing."
+        | ConnectRefusal.LinuxUnspecOnBoundDatagram socket ->
+            $"AF_UNSPEC on bound but unconnected Linux datagram socket %O{socket} is unmeasured (whether the dissolve drops the binding as it does for a connected one), so measure it rather than guessing."
+        | ConnectRefusal.DatagramConnectToWildcard socket ->
+            $"a datagram connect from socket %O{socket} to 0.0.0.0 is unmeasured (the kernels remap it, but which address the peer filter then holds was not probed), so measure it rather than guessing."
+
 [<RequireQualifiedAccess>]
 module UnixConnection =
 
@@ -141,7 +245,8 @@ module UnixConnection =
     ///
     /// Every answered row is measured (`connect_probe.c` and successors,
     /// 2026-08-21; docs/plans/2026-08-21-socket-connect.md holds the table);
-    /// the failwiths name the unmeasured or unmodellable inputs.
+    /// a `ConnectRefusal` names an unmeasured or unmodellable input, and a
+    /// throw is a bug in this library or in the caller's state construction.
     let connectSocket<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (nonBlocking : bool)
@@ -149,7 +254,7 @@ module UnixConnection =
         (family : int option)
         (destination : InternetEndpoint option)
         (system : UnixSystem<'Task, 'Handler>)
-        : ConnectOutcome * UnixSystem<'Task, 'Handler>
+        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         let sock = UnixMachineState.socket socketId system.Machine
         let platform = system.Machine.UnixPlatform
@@ -165,8 +270,21 @@ module UnixConnection =
         let lengthVerdict =
             SimulatedUnixPlatform.bindAddressLength platform exactSize declaredLength
 
-        let fail (error : UnixError) : ConnectOutcome * UnixSystem<'Task, 'Handler> =
-            ConnectOutcome.Failed error, system
+        let fail (error : UnixError) : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal> =
+            Ok (ConnectOutcome.Failed error, system)
+
+        let failed
+            (error : UnixError)
+            (system : UnixSystem<'Task, 'Handler>)
+            : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            =
+            Ok (ConnectOutcome.Failed error, system)
+
+        let completed
+            (system : UnixSystem<'Task, 'Handler>)
+            : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            =
+            Ok (ConnectOutcome.Completed, system)
 
         let withPhase (phase : SocketPhase) (system : UnixSystem<'Task, 'Handler>) : UnixSystem<'Task, 'Handler> =
             { system with
@@ -211,10 +329,10 @@ module UnixConnection =
         let ensureBound
             (dest : InternetEndpoint)
             (system : UnixSystem<'Task, 'Handler>)
-            : SocketBinding * UnixSystem<'Task, 'Handler>
+            : Result<SocketBinding * UnixSystem<'Task, 'Handler>, ConnectRefusal>
             =
             match sock.Binding with
-            | Some binding when binding.Endpoint.Address <> InternetEndpoint.WildcardAddress -> binding, system
+            | Some binding when binding.Endpoint.Address <> InternetEndpoint.WildcardAddress -> Ok (binding, system)
             | Some binding ->
                 // A client bound to the wildcard gets a concrete source
                 // address at connect — measured on both kernels, TCP and UDP
@@ -225,21 +343,23 @@ module UnixConnection =
                 // source a kernel picks for any other destination is
                 // unmeasured.
                 if dest.Address <> InternetEndpoint.LoopbackAddress then
-                    failwith
-                        $"UnixConnection.connectSocket: a socket bound to the wildcard is connecting to %s{InternetEndpoint.toString dest}, and which source address a kernel resolves the wildcard to for a destination other than 127.0.0.1 is unmeasured. Bind to a concrete address first, or connect to 127.0.0.1."
+                    Error (ConnectRefusal.SourceForNonLoopbackDestination (socketId, dest, true))
+                else
 
-                { binding with
-                    Endpoint =
-                        { binding.Endpoint with
-                            Address = InternetEndpoint.LoopbackAddress
-                        }
-                },
-                system
+                Ok (
+                    { binding with
+                        Endpoint =
+                            { binding.Endpoint with
+                                Address = InternetEndpoint.LoopbackAddress
+                            }
+                    },
+                    system
+                )
             | None ->
 
             if dest.Address <> InternetEndpoint.LoopbackAddress then
-                failwith
-                    $"UnixConnection.connectSocket: an unbound socket is connecting to %s{InternetEndpoint.toString dest}, and which source address a kernel picks for a destination other than 127.0.0.1 is unmeasured. Bind the socket first, or connect to 127.0.0.1."
+                Error (ConnectRefusal.SourceForNonLoopbackDestination (socketId, dest, false))
+            else
 
             let candidate (port : uint16) : SocketBinding =
                 {
@@ -258,19 +378,20 @@ module UnixConnection =
                     system.Machine
             with
             | Some (binding, machine) ->
-                binding,
-                { system with
-                    Machine = machine
-                }
-            | None ->
-                let low, high = system.Machine.EphemeralPortRange
-
-                failwith
-                    $"UnixConnection.connectSocket: every port in the ephemeral range %d{low}-%d{high} is taken, so this implicit bind has no answer. Widen the machine's EphemeralPortRange, or measure what a real kernel says here."
+                Ok (
+                    binding,
+                    { system with
+                        Machine = machine
+                    }
+                )
+            | None -> Error (ConnectRefusal.EphemeralPortsExhausted system.Machine.EphemeralPortRange)
 
         // The established/refused attempt, shared by both flavours once the
         // per-flavour screens have let an idle stream socket through.
-        let attemptStream (dest : InternetEndpoint) : ConnectOutcome * UnixSystem<'Task, 'Handler> =
+        let attemptStream
+            (dest : InternetEndpoint)
+            : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
+            =
             // A wildcard destination means loopback: measured on both,
             // connect to 0.0.0.0:port reaches a loopback listener.
             let dest =
@@ -282,8 +403,8 @@ module UnixConnection =
                     dest
 
             if not (destinationIsLocal dest.Address) then
-                failwith
-                    $"UnixConnection.connectSocket: destination %s{InternetEndpoint.toString dest} is not a local address of this simulated machine, and PawPrint models no network to carry a SYN anywhere else. Add the address to the kernel's LocalAddresses/LocalRoutes if it should be local, or connect to loopback."
+                Error (ConnectRefusal.DestinationNotLocal (dest, SocketKind.Stream))
+            else
 
             let listeners =
                 system.Machine.Sockets
@@ -353,10 +474,12 @@ module UnixConnection =
                             int64 listenState.Backlog
 
                 if int64 (List.length listenState.Queue) >= capacity then
-                    failwith
-                        $"UnixConnection.connectSocket: the accept queue of the listener at %s{InternetEndpoint.toString dest} already holds %d{List.length listenState.Queue} connections, its measured capacity. A real kernel leaves this SYN unanswered and the client retries on a timer — timing PawPrint cannot honour deterministically — so this connect has no faithful answer. Accept from the listener before connecting again, or listen with a larger backlog."
+                    Error (ConnectRefusal.AcceptQueueFull (listenerId, dest, List.length listenState.Queue))
+                else
 
-                let clientBinding, system = ensureBound dest system
+                match ensureBound dest system with
+                | Error refusal -> Error refusal
+                | Ok (clientBinding, system) ->
 
                 // Two corners a REUSEADDR-bound client can engineer, each
                 // refused because the real answer is unmeasured (no managed
@@ -366,10 +489,8 @@ module UnixConnection =
                     // A wildcard listener at P beside a reuse-bound client at
                     // 127.0.0.1:P, connecting to 127.0.0.1:P: source equals
                     // destination even though a listener matched.
-                    failwith
-                        $"UnixConnection.connectSocket: the resolved source %s{InternetEndpoint.toString clientBinding.Endpoint} equals the destination, with a listener present. What a real kernel does with this self-tuple (plausibly EINVAL on Darwin, a completed self-connect on Linux) is unmeasured, so measure it rather than guessing."
-
-                if
+                    Error (ConnectRefusal.SelfTuple clientBinding.Endpoint)
+                elif
                     system.Machine.Connections
                     |> Map.exists (fun _ connection ->
                         // In either orientation: a connection's endpoint
@@ -385,8 +506,8 @@ module UnixConnection =
                     // reuse-bound to one source endpoint, connecting to one
                     // listener — is refused there (plausibly EADDRINUSE),
                     // which is unmeasured.
-                    failwith
-                        $"UnixConnection.connectSocket: a connection from %s{InternetEndpoint.toString clientBinding.Endpoint} to %s{InternetEndpoint.toString dest} already exists, and a real kernel refuses a duplicate four-tuple in ways that are unmeasured (plausibly EADDRINUSE at connect time). Measure it rather than guessing."
+                    Error (ConnectRefusal.DuplicateFourTuple (clientBinding.Endpoint, dest))
+                else
 
                 let connectionId = system.Machine.NextConnectionId
                 let (ConnectionId rawConnectionId) = connectionId
@@ -456,9 +577,9 @@ module UnixConnection =
                     // The syscall itself still answers EINPROGRESS —
                     // measured on both kernels, even on loopback — and the
                     // completion is what the phase above latches.
-                    ConnectOutcome.Failed UnixError.EINPROGRESS, system
+                    failed UnixError.EINPROGRESS system
                 else
-                    ConnectOutcome.Completed, system
+                    completed system
             | None ->
                 // The client's own endpoint with no listener behind it is
                 // TCP simultaneous open: a real kernel can complete it,
@@ -468,8 +589,7 @@ module UnixConnection =
                     binding.Endpoint.Port = dest.Port
                     && InternetEndpoint.addressesOverlap binding.Endpoint dest
                     ->
-                    failwith
-                        $"UnixConnection.connectSocket: destination %s{InternetEndpoint.toString dest} is this socket's own bound address and nothing is listening there. A real kernel can complete this as a TCP simultaneous open — connecting the socket to itself — which PawPrint does not model."
+                    Error (ConnectRefusal.SimultaneousOpen dest)
                 | _ ->
 
                 match flavour with
@@ -497,15 +617,16 @@ module UnixConnection =
                         )
                     )
                     ->
-                    failwith
-                        $"UnixConnection.connectSocket: destination %s{InternetEndpoint.toString dest} is bound but nothing is listening there, and Darwin *drops* such a SYN rather than answering RST: the connect pends on the client's retransmission schedule (a blocking one was measured to stall into ETIMEDOUT), which PawPrint cannot honour deterministically. Listen on the destination socket, or connect to a fully closed port."
+                    Error (ConnectRefusal.DarwinSynDropped dest)
                 | _ ->
 
                 // The implicit bind happens before the SYN, so a refused
                 // socket has a concrete local endpoint too — measured,
                 // getsockname reports 127.0.0.1 and a nonzero port while the
                 // refusal is pending, on both kernels.
-                let binding, system = ensureBound dest system
+                match ensureBound dest system with
+                | Error refusal -> Error refusal
+                | Ok (binding, system) ->
 
                 if not nonBlocking then
                     // The refusal is delivered inline, and the socket's fate
@@ -538,7 +659,7 @@ module UnixConnection =
                     // state change, so one signal carries both.
                     let system = mapProcess (UnixProcessState.signalSocketStateChange socketId) system
 
-                    ConnectOutcome.Failed UnixError.ECONNREFUSED, system
+                    failed UnixError.ECONNREFUSED system
                 else
                     // EINPROGRESS now; the first later connect delivers
                     // ECONNREFUSED. Measured on both — with no SO_ERROR read
@@ -564,13 +685,11 @@ module UnixConnection =
                     // `order3.c` row M: the 0x201d edge).
                     let system = mapProcess (UnixProcessState.signalSocketStateChange socketId) system
 
-                    ConnectOutcome.Failed UnixError.EINPROGRESS, system
+                    failed UnixError.EINPROGRESS system
 
         match sock.Kind with
         | SocketKind.Raw
-        | SocketKind.SeqPacket ->
-            failwith
-                $"UnixConnection.connectSocket: socket %O{socketId} is a %O{sock.Kind} socket, and what connect(2) does for one is unmeasured, so measure it rather than guessing."
+        | SocketKind.SeqPacket -> Error (ConnectRefusal.UnmeasuredKind (socketId, sock.Kind))
         | SocketKind.Stream ->
             // The copy layer answers before any socket state on both
             // flavours: Linux's move_addr_to_kernel rejects an oversized
@@ -599,17 +718,15 @@ module UnixConnection =
                     | SocketPhase.Idle ->
                         // Measured: an accepted no-op, and the socket stays
                         // usable.
-                        ConnectOutcome.Completed, system
-                    | phase ->
-                        failwith
-                            $"UnixConnection.connectSocket: AF_UNSPEC on a stream socket in %A{phase} under Linux runs tcp_disconnect, whose consequences for this phase (a connected socket's peer, a listener's queue) are unmeasured and unmodelled."
+                        completed system
+                    | phase -> Error (ConnectRefusal.LinuxUnspecOnPhase (socketId, phase))
                 else
 
                 match sock.Phase with
                 | SocketPhase.EstablishedPendingReport connectionId ->
                     // The one completion-reporting SUCCESS (measured). The
                     // destination is ignored, as the state transition is.
-                    ConnectOutcome.Completed, withPhase (SocketPhase.Established connectionId) system
+                    completed (withPhase (SocketPhase.Established connectionId) system)
                 | SocketPhase.RefusedPendingDelivery ->
                     // Deliver the latched refusal once, then reset: the next
                     // connect is a fresh attempt, and the source address the
@@ -639,7 +756,7 @@ module UnixConnection =
                     // the delivering connect (measured, `order3.c` row M).
                     let system = mapProcess (UnixProcessState.signalSocketStateChange socketId) system
 
-                    ConnectOutcome.Failed UnixError.ECONNREFUSED, system
+                    failed UnixError.ECONNREFUSED system
                 | SocketPhase.Dead ->
                     failwith
                         "UnixConnection.connectSocket: a stream socket is in SocketPhase.Dead under the Linux flavour, which only Darwin's refusal delivery produces. This is an interpreter bug."
@@ -679,7 +796,7 @@ module UnixConnection =
                         "UnixConnection.connectSocket: a stream socket is in SocketPhase.EstablishedPendingReport under the Darwin flavour, which never constructs it (its retry answers EISCONN directly). This is an interpreter bug."
                 | SocketPhase.RefusedPendingDelivery ->
                     // Deliver once; the socket is then dead (measured).
-                    ConnectOutcome.Failed UnixError.ECONNREFUSED, withPhase SocketPhase.Dead system
+                    failed UnixError.ECONNREFUSED (withPhase SocketPhase.Dead system)
                 | SocketPhase.Dead ->
                     // Measured, whatever the destination.
                     fail UnixError.EINVAL
@@ -688,8 +805,7 @@ module UnixConnection =
                     fail UnixError.EISCONN
                 | SocketPhase.Listening _ ->
                     if family = 0 then
-                        failwith
-                            "UnixConnection.connectSocket: AF_UNSPEC on a listening stream socket under Darwin is unmeasured (the measured EOPNOTSUPP row used an AF_INET destination), so measure it rather than extrapolating."
+                        Error (ConnectRefusal.DarwinUnspecOnListener socketId)
                     else
                         // Measured: EOPNOTSUPP, where Linux answers EISCONN.
                         fail UnixError.EOPNOTSUPP
@@ -703,8 +819,14 @@ module UnixConnection =
                     // EADDRNOTAVAIL, and the socket stays usable. Other
                     // lengths are unmeasured.
                     if declaredLength <> exactSize then
-                        failwith
-                            $"UnixConnection.connectSocket: AF_UNSPEC with a declared length of %d{declaredLength} on an idle Darwin stream socket is unmeasured (only %d{exactSize} is), so measure it rather than guessing."
+                        Error (
+                            ConnectRefusal.UnspecDeclaredLength (
+                                SimulatedUnixFlavour.Darwin,
+                                SocketKind.Stream,
+                                declaredLength,
+                                exactSize
+                            )
+                        )
                     else
                         fail UnixError.EADDRNOTAVAIL
                 else
@@ -744,8 +866,14 @@ module UnixConnection =
                 match flavour with
                 | SimulatedUnixFlavour.Linux ->
                     if declaredLength < exactSize then
-                        failwith
-                            $"UnixConnection.connectSocket: AF_UNSPEC with a declared length of %d{declaredLength} on a Linux datagram socket is unmeasured (only %d{exactSize} and above are), so measure it rather than guessing."
+                        Error (
+                            ConnectRefusal.UnspecDeclaredLength (
+                                SimulatedUnixFlavour.Linux,
+                                SocketKind.Datagram,
+                                declaredLength,
+                                exactSize
+                            )
+                        )
                     else
 
                     // Measured with and without a peer set: dissolves the
@@ -769,40 +897,46 @@ module UnixConnection =
                                     "UnixConnection.connectSocket: a datagram socket holds a peer but no binding; connect binds before it records the peer, so this is an interpreter bug."
                             | Some binding ->
                                 match binding.LockedAddress with
-                                | None -> None
-                                | Some locked when locked = InternetEndpoint.WildcardAddress -> None
-                                | Some _ ->
-                                    failwith
-                                        $"UnixConnection.connectSocket: AF_UNSPEC on a datagram socket whose bind(2) locked %s{InternetEndpoint.toString binding.Endpoint}'s address is only measured for a kernel-chosen port (the address survives, the port zeroes); what survives a bind(2)-chosen port, and how the half-bound socket rebinds, is unmeasured. Measure it rather than guessing."
+                                | None -> Ok None
+                                | Some locked when locked = InternetEndpoint.WildcardAddress -> Ok None
+                                | Some _ -> Error (ConnectRefusal.UnspecOnLockedAddress (socketId, binding.Endpoint))
 
-                        ConnectOutcome.Completed,
-                        { system with
-                            Machine =
-                                { system.Machine with
-                                    Sockets =
-                                        Map.add
-                                            socketId
-                                            { sock with
-                                                Binding = binding
-                                                Phase = SocketPhase.Idle
-                                            }
-                                            system.Machine.Sockets
-                                }
-                        }
+                        match binding with
+                        | Error refusal -> Error refusal
+                        | Ok binding ->
+
+                        completed
+                            { system with
+                                Machine =
+                                    { system.Machine with
+                                        Sockets =
+                                            Map.add
+                                                socketId
+                                                { sock with
+                                                    Binding = binding
+                                                    Phase = SocketPhase.Idle
+                                                }
+                                                system.Machine.Sockets
+                                    }
+                            }
                     | _ ->
 
                     match sock.Binding with
                     | None ->
                         // No peer to dissolve and nothing bound: the
                         // accepted no-op (measured).
-                        ConnectOutcome.Completed, system
-                    | Some _ ->
-                        failwith
-                            "UnixConnection.connectSocket: AF_UNSPEC on a bound but unconnected Linux datagram socket is unmeasured (whether the dissolve drops the binding as it does for a connected one), so measure it rather than guessing."
+                        completed system
+                    | Some _ -> Error (ConnectRefusal.LinuxUnspecOnBoundDatagram socketId)
                 | SimulatedUnixFlavour.Darwin ->
                     if declaredLength <> exactSize then
-                        failwith
-                            $"UnixConnection.connectSocket: AF_UNSPEC with a declared length of %d{declaredLength} on a Darwin datagram socket is unmeasured (only %d{exactSize} is), so measure it rather than guessing."
+                        Error (
+                            ConnectRefusal.UnspecDeclaredLength (
+                                SimulatedUnixFlavour.Darwin,
+                                SocketKind.Datagram,
+                                declaredLength,
+                                exactSize
+                            )
+                        )
                     else
                         // Measured with and without a peer set.
                         fail UnixError.EAFNOSUPPORT
@@ -824,18 +958,18 @@ module UnixConnection =
             | Some dest ->
 
             if dest.Address = InternetEndpoint.WildcardAddress then
-                failwith
-                    "UnixConnection.connectSocket: a datagram connect to 0.0.0.0 is unmeasured (the kernels remap it, but which address the peer filter then holds was not probed), so measure it rather than guessing."
+                Error (ConnectRefusal.DatagramConnectToWildcard socketId)
             elif not (destinationIsLocal dest.Address) then
-                failwith
-                    $"UnixConnection.connectSocket: destination %s{InternetEndpoint.toString dest} is not a local address of this simulated machine, and PawPrint models no network to carry a datagram anywhere else. Add the address to the kernel's LocalAddresses/LocalRoutes if it should be local, or connect to loopback."
+                Error (ConnectRefusal.DestinationNotLocal (dest, SocketKind.Datagram))
             else
 
             // A datagram connect is a peer filter, not a handshake: it
             // succeeds with nothing at the destination and a re-connect
             // re-targets, both measured. It binds implicitly just as a
             // stream connect does.
-            let binding, system = ensureBound dest system
+            match ensureBound dest system with
+            | Error refusal -> Error refusal
+            | Ok (binding, system) ->
 
             let system =
                 { system with
@@ -852,7 +986,7 @@ module UnixConnection =
                         }
                 }
 
-            ConnectOutcome.Completed, system
+            completed system
 
     /// `connect(2)`: point `fd` at `endpoint`, or ask what pointing it there
     /// would answer.
@@ -875,10 +1009,10 @@ module UnixConnection =
         (family : int option)
         (endpoint : InternetEndpoint option)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, SockaddrCopyRefusal>
+        : Result<ConnectOutcome * UnixSystem<'Task, 'Handler>, ConnectRefusal>
         =
         match UnixSocket.admitSockaddrCopy fd destination declaredLength system with
-        | Error refusal -> Error refusal
+        | Error refusal -> Error (ConnectRefusal.Copy refusal)
         | Ok (SockaddrCopyAdmission.Answered error) -> Ok (ConnectOutcome.Failed error, system)
         | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
 
@@ -903,7 +1037,7 @@ module UnixConnection =
                 failwith
                     $"UnixConnection.connect: fd %d{fd} resolved to a socket a line above and nothing here closes it (this is an interpreter bug)."
 
-        Ok (connectSocket socketId nonBlocking declaredLength family endpoint system)
+        connectSocket socketId nonBlocking declaredLength family endpoint system
 
     /// Dequeue the oldest completed connection from `socketId`'s accept queue
     /// and materialise the server-side socket onto it: a fresh socket, bound at

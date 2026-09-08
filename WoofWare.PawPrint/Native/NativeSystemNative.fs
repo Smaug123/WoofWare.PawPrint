@@ -4385,7 +4385,13 @@ module NativeSystemNative =
                     destination
                     (EmulatedKernel.unix state.Kernel)
             with
-            | Error refusal -> refuse refusal
+            | Error (ConnectRefusal.Copy refusal) -> refuse refusal
+            | Error refusal ->
+                // The library says which unmeasured or unmodelled input it
+                // will not answer across; a guest reached it through the
+                // ordinary `Socket.Connect`, so there is no managed caller to
+                // exclude.
+                failwith $"%s{operation}: fd %d{fd}: %s{ConnectRefusal.describe refusal}"
             | Ok (outcome, unix) ->
                 // The system comes back on the failing arms too: several of
                 // connect's failures latch a phase change first.

@@ -188,6 +188,11 @@ module SocketFuzz =
     /// Fixed and below `UnixSystem.defaultEphemeralPortRange` (32768+),
     /// so a client's implicit bind can never collide with one. The harness
     /// uses real ephemeral ports instead; port numbers are never compared.
+    /// The model refused an op, by its own refusal type rather than by a
+    /// message: raised inside `execOp` so that `executeEmulated` can tell a
+    /// refusal from a defect without reading text.
+    exception private ModelRefusal of ConnectRefusal
+
     let private listenerPortBase : uint16 = 20000us
 
     let private inetFamily : int option =
@@ -298,7 +303,9 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                UnixConnection.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel
+                match UnixConnection.connectSocket socketId true 16 inetFamily (Some endpoint) state.Kernel with
+                | Ok answer -> answer
+                | Error refusal -> raise (ModelRefusal refusal)
 
             let token =
                 match outcome with
@@ -315,13 +322,17 @@ module SocketFuzz =
             let socketId = socketIdOfSlot client state
 
             let outcome, kernel =
-                UnixConnection.connectSocket
-                    socketId
-                    true
-                    16
-                    inetFamily
-                    (Some (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
-                    state.Kernel
+                match
+                    UnixConnection.connectSocket
+                        socketId
+                        true
+                        16
+                        inetFamily
+                        (Some (InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress 1us))
+                        state.Kernel
+                with
+                | Ok answer -> answer
+                | Error refusal -> raise (ModelRefusal refusal)
 
             let token =
                 match outcome with
@@ -513,18 +524,18 @@ module SocketFuzz =
 
         for op in ops do
             if Option.isNone result then
+                // A refusal is the model saying, in its own type, that the
+                // input is outside what it answers; any exception is a bug
+                // in the model or in this driver.
                 let outcome =
                     try
                         Ok (execOp op state)
-                    with Failure message ->
-                        Error message
+                    with
+                    | ModelRefusal refusal -> Error (EmulatedRun.Refused (index, ConnectRefusal.describe refusal))
+                    | Failure message -> Error (EmulatedRun.Defect (index, message))
 
                 match outcome with
-                | Error message ->
-                    if message.Contains "interpreter bug" || message.Contains "INTERPRETER-DRIVER BUG" then
-                        result <- Some (EmulatedRun.Defect (index, message))
-                    else
-                        result <- Some (EmulatedRun.Refused (index, message))
+                | Error classified -> result <- Some classified
                 | Ok (token, next) ->
                     let defects =
                         (UnixSystem.checkInvariants next.Kernel |> List.map (sprintf "%A"))
