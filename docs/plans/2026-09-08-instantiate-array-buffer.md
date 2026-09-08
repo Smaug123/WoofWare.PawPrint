@@ -132,8 +132,18 @@ refuses.
 
 ## Ladder
 
-Rung J's next stop is measured after this lands, not predicted.
+Measured on a throwaway merge of this branch with #1415 (rung J needs both). The converter
+type instantiates, and rung J stops 39 frames out at the unimplemented InternalCall
+`RuntimeFieldHandle::GetToken(IntPtr) -> int`: a field's metadata token, asked by
+`RtFieldInfo.MetadataToken` from `CustomAttribute.GetCustomAttributes` on a field, while
+System.Text.Json's `DefaultJsonTypeInfoResolver.AddMembersDeclaredBySuperType` looks for
+attributes on the result type's fields. That is the next feature.
 
 ## Outcome
 
-(filled in after review)
+Option C held and the fallback was not needed: with the enumeration replaced by
+`addByteOffset` under the `IntPtr` view, the new guest passes and so does every guest through
+the other users of the classifier (`GetFields`, `CreateInstanceForAnotherGenericParameter`, the
+constraint-checking `MakeGenericType` guests), so the fold does reach a cell for every shape
+that had an arm. The three mutants were all killed by the new guest. Codex was clean on the
+first round.
