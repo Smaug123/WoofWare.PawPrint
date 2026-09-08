@@ -464,6 +464,17 @@ module TypeHandleTag =
         // before dereferencing a non-existent MethodTable; honour that contract.
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 2L
+        // The shape decides, not the element: `CreateTypeHandleForTypeKey` (clsload.cpp:2715)
+        // builds an array MethodTable whatever the element is, and a `ParamTypeDesc` or
+        // `FnPtrTypeDesc` for the rest, so `T[]` is untagged and `T&` is tagged exactly as `int[]`
+        // and `int&` are.
+        | RuntimeTypeHandleTarget.Composite (shape, _) ->
+            match shape with
+            | CompositeShape.Byref
+            | CompositeShape.Pointer -> 2L
+            | CompositeShape.OneDimArrayZero
+            | CompositeShape.Array _ -> 0L
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> 2L
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteTypeHandle.Byref _

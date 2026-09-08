@@ -232,7 +232,8 @@ module NativeRuntimeTypeQCall =
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
                 RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _) ->
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+            | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) ->
                 // `ClassLoader::ThrowTypeLoadException` (clsload.cpp:2724) renders the wrapped
                 // byref with `TypeString::AppendTypeKey` under `FormatNamespace` alone — nested
                 // types as `Outer+Inner`, instantiations as `List`1[System.String]`, function
@@ -264,15 +265,22 @@ module NativeRuntimeTypeQCall =
                     ]
                     state
                 |> Some
-            | RuntimeTypeHandleTarget.Closed element ->
-                // The type-handle registry keys on the whole target, so this is the same
-                // `RuntimeType` object a reflected `ref int` parameter yields -- which is what makes
-                // `typeof(int).MakeByRefType() == parameter.ParameterType` true.
+            | RuntimeTypeHandleTarget.Closed _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.OpenConstructed _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                // The type-handle registry keys on the whole target, and `composite` spells a
+                // byref over a closed element as the closed byref, so this is the same
+                // `RuntimeType` object a reflected `ref int` (or `ref T`) parameter yields --
+                // which is what makes `typeof(int).MakeByRefType() == parameter.ParameterType` true.
                 let byrefAddr, state =
                     IlMachineState.getOrAllocateType
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
-                        (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref element))
+                        (RuntimeTypeHandleTarget.composite CompositeShape.Byref typeHandleTarget)
                         state
 
                 let state =
@@ -283,15 +291,6 @@ module NativeRuntimeTypeQCall =
                         (CliType.ObjectRef (Some byrefAddr))
 
                 NativeHandlerResult.completed state |> Some
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-            | RuntimeTypeHandleTarget.OpenConstructed _
-            | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
-                // CoreCLR answers `T&` and `List<>&` here; `RuntimeTypeHandleTarget` can spell a
-                // byref only over a `ConcreteTypeHandle`, so there is no target to mint. Refuse
-                // rather than answer with the element or a closed stand-in.
-                failwith
-                    $"TODO: %s{operation}: a byref over %O{typeHandleTarget} is not representable, because RuntimeTypeHandleTarget has no byref-over-a-generic-variable case; CoreCLR answers it"
         | "RuntimeTypeHandle_Instantiate",
           "System.Private.CoreLib",
           "System",
@@ -432,6 +431,8 @@ module NativeRuntimeTypeQCall =
                         // before reaching this QCall, but be defensive: these wrappers carry
                         // no generic instantiation of their own.
                         []
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ -> []
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                     // Real .NET returns Type[] { typeof(T), ... } where each T is a generic
                     // type parameter. We surface each parameter as a RuntimeType backed by a
@@ -541,7 +542,9 @@ module NativeRuntimeTypeQCall =
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith
                         $"%s{operation}: BCL contract violation: QCall reached for target %O{typeHandleTarget}, which reports IsGenericType=false; the managed wrapper throws InvalidOperationException without invoking this QCall"
 
@@ -586,7 +589,9 @@ module NativeRuntimeTypeQCall =
                 failwith
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeQCall.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.Closed _
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 // CoreCLR's QCall throws ArgumentException for non-generic-variable arguments,
                 // but the only managed caller (RuntimeType.GetGenericParameterConstraints) gates
                 // on IsGenericParameter, so we should never reach this branch in practice. Fail
@@ -867,6 +872,14 @@ module NativeRuntimeTypeQCall =
                 | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                     failwith
                         $"%s{operation}: BCL contract violation: QCall reached for generic-parameter target %O{target}; the managed wrapper should have routed this to RuntimeTypeHandle_GetDeclaringTypeHandleForGenericVariable"
+                // As for the closed shapes above: an array has no declaring type, and a TypeDesc
+                // never reaches this QCall.
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    None
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    failwith
+                        $"%s{operation}: BCL contract violation: QCall reached for TypeDesc target %O{target}; the managed wrapper should have returned null without invoking this QCall"
 
             let declaringTarget, state =
                 match typeInfo with
@@ -952,7 +965,9 @@ module NativeRuntimeTypeQCall =
                     else
                         RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringType, state
                 | RuntimeTypeHandleTarget.Closed _
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith
                         $"%s{operation}: BCL contract violation: QCall reached for non-generic-variable target %O{target}; the managed wrapper should have routed this to RuntimeTypeHandle_GetDeclaringTypeHandle"
 
@@ -1008,7 +1023,9 @@ module NativeRuntimeTypeQCall =
                 failwith
                     $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; need to allocate and return an IRuntimeMethodInfo for the declaring method (same gap as the RuntimeTypeHandle.GetDeclaringMethod InternalCall)"
             | RuntimeTypeHandleTarget.Closed _
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 failwith
                     $"%s{operation}: BCL contract violation: QCall reached for non-generic-variable target %O{typeHandleTarget}; the managed wrapper guards with Debug.Assert(IsGenericVariable(type))"
         | "ModuleHandle_ResolveType",
@@ -1488,6 +1505,12 @@ module NativeRuntimeTypeQCall =
                 | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                     failwith
                         $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper should have asserted before this point"
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    failwith
+                        $"%s{operation}: TypeDesc target %O{typeHandleTarget} reached the QCall; the managed wrapper should have asserted before this point"
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    RuntimeTypeHandleTarget.refuseComposite operation typeHandleTarget
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
                     walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
 
@@ -1566,6 +1589,12 @@ module NativeRuntimeTypeQCall =
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 failwith
                     $"%s{operation}: method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get} reached the QCall; the managed wrapper short-circuits IsTypeDesc to `[]` before this point"
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                failwith
+                    $"%s{operation}: TypeDesc target %O{typeHandleTarget} reached the QCall; the managed wrapper short-circuits IsTypeDesc to `[]` before this point"
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                RuntimeTypeHandleTarget.refuseComposite operation typeHandleTarget
             // An array's MethodTable interface map is *inherited verbatim* from
             // `System.Array` — CoreCLR copies it row for row in `CreateArrayMethodTable`
             // ("Because of array method table persisting, we need to copy the map",
@@ -1627,7 +1656,9 @@ module NativeRuntimeTypeQCall =
                     | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
                     | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
                     | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
-                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) -> state, seen, ordered
+                    | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
+                    | RuntimeTypeHandleTarget.Composite _
+                    | RuntimeTypeHandleTarget.FunctionPointer _ -> state, seen, ordered
                     | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as currentHandle) ->
                         match IlMachineState.tryGetConcreteTypeInfo state currentHandle with
                         // A `Concrete` handle names a type with a TypeDef row, so its type

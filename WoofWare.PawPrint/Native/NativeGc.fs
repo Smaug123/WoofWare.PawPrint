@@ -73,6 +73,9 @@ module NativeGc =
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
             failwith
                 $"%s{operation}: expected a closed SZ array type handle, got method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            failwith $"%s{operation}: expected a closed SZ array type handle, got %O{target}"
 
     let private zeroInt64 : CliType =
         CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))

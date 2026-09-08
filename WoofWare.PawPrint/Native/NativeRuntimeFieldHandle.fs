@@ -163,7 +163,9 @@ module NativeRuntimeFieldHandle =
                 | RuntimeTypeHandleTarget.GenericParameter _
                 | RuntimeTypeHandleTarget.MethodGenericParameter _
                 | RuntimeTypeHandleTarget.OpenConstructed _
-                | RuntimeTypeHandleTarget.DynamicMethodsClass _ as other ->
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ as other ->
                     // `FieldHandleRegistry.getOrAllocate` refuses these, so no handle can carry one.
                     failwith
                         $"BUG: %s{operation}: field-registry handle has declaring type %O{other}, which FieldHandleRegistry.getOrAllocate is supposed to have refused"

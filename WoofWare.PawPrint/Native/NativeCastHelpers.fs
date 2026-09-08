@@ -27,6 +27,11 @@ module NativeCastHelpers =
         | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
         | RuntimeTypeHandleTarget.OpenConstructed _ -> false
+        // The shape decides, as for a closed one: `T&` is a ParamTypeDesc and `T[]` an array
+        // MethodTable (`CreateTypeHandleForTypeKey`, clsload.cpp:2715).
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> true
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) -> false
         | RuntimeTypeHandleTarget.Closed handle ->
             match handle with
             | ConcreteTypeHandle.Byref _
@@ -54,7 +59,9 @@ module NativeCastHelpers =
             | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> Some identity
             | RuntimeTypeHandleTarget.Closed _
             | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> None
 
         match identity with
         | None -> false
@@ -137,7 +144,9 @@ module NativeCastHelpers =
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.OpenConstructed _
             | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> false
 
         if nullableMatches then
             state, true

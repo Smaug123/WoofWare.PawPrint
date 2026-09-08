@@ -1101,6 +1101,9 @@ public class OpenBox<T> { }
         | RuntimeTypeHandleTarget.OpenConstructed _ ->
             failwith
                 "TypeSpec-like token was incorrectly classified as an open constructed type; its argument is closed, so it must be a Closed handle"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            failwith "TypeSpec-like token was incorrectly classified as a shape over a generic variable"
         | RuntimeTypeHandleTarget.Closed handle ->
             let constructed =
                 AllConcreteTypes.lookup handle state.ConcreteTypes

@@ -44,6 +44,8 @@ module NativeArray =
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
             failwith
                 $"TODO: %s{operation} for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> RuntimeTypeHandleTarget.refuseComposite operation target
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             if fromArrayType then
                 match typeHandle with

@@ -328,6 +328,11 @@ module MethodHandleRegistry =
             // A generic parameter is a TypeVarTypeDesc: methods live on the type that mentions
             // the parameter, never on the parameter itself.
             failwith $"%s{operation}: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            // A byref, pointer or function pointer is a TypeDesc with no methods, and an array's
+            // methods are synthesised rather than declared, so no MethodDef row is theirs.
+            failwith $"%s{operation}: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
 
     /// Construct the `MethodHandle` identifying `method` as declared by `declaringType`, with no
     /// method-generic arguments bound.

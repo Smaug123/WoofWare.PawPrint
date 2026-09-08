@@ -224,6 +224,10 @@ module NativeSignature =
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             failwith
                 $"%s{operation}: declaring type %O{declaringTarget} is a generic parameter; the field-backed slice expects a real declaring type"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            failwith
+                $"%s{operation}: declaring type %O{declaringTarget} is a shape over a generic variable; the field-backed slice expects a real declaring type"
 
     let private runtimeTypeForField
         (ctx : NativeCallContext)

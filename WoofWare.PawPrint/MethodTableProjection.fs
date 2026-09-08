@@ -313,6 +313,11 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
             failwith
                 $"TODO: categoryFlagsForRuntimeTypeHandleTarget for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+        // The shape decides, as in `categoryFlags` for a closed one.
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+            categoryArray
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> 0
 
     let private componentSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -740,6 +745,78 @@ module internal MethodTableProjection =
             typeInfo.BaseType
             typeInfo.Fields
 
+    /// Whether an array MethodTable over the open element <paramref name="element"/> carries
+    /// `ContainsGCPointers`, as `CreateArrayMethodTable` (array.cpp:518-539) sets it: for an
+    /// element whose signature element type is an object reference (`CorTypeInfo::IsObjRef`,
+    /// sigparser.h:874), or for a value-type element that itself contains GC pointers. A bare
+    /// type variable is neither -- `ELEMENT_TYPE_VAR`/`MVAR` are `TYPE_GC_OTHER` in
+    /// cortypeinfo.h, not `TYPE_GC_REF` -- so `T[]` does not carry the flag.
+    let private openArrayContainsGcPointers
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (element : RuntimeTypeHandleTarget)
+        : bool * IlMachineState
+        =
+        match element with
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false, state
+        // SZARRAY and ARRAY are `TYPE_GC_REF`; PTR and FNPTR are `TYPE_GC_NONE`.
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+            true, state
+        | RuntimeTypeHandleTarget.Composite (CompositeShape.Pointer, _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> false, state
+        | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) ->
+            failwith
+                $"MethodTable::Flags: an array over the byref %O{element} cannot exist; the class loader refuses it (IDS_CLASSLOAD_BYREFARRAY, clsload.cpp:2694)"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
+            let _, typeInfo = typeInfoForIdentityOrFail state identity
+
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                openGenericContainsGcPointers loggerFactory baseClassTypes state identity
+            else
+                true, state
+        | RuntimeTypeHandleTarget.Closed _ ->
+            failwith
+                $"MethodTable::Flags: %O{element} is closed, so `RuntimeTypeHandleTarget.composite` would have spelled the array as a closed handle; a Composite over it is not canonical"
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery "MethodTable::Flags" scopeAssembly
+
+    /// The component size of an array MethodTable over the open element
+    /// <paramref name="element"/>: `CreateArrayMethodTable` (array.cpp:354) uses 0 for a bare
+    /// type variable, since no instance of `T[]` is ever created, and the element's size
+    /// otherwise. A reference-shaped element is a pointer wide; a value-type element that is
+    /// itself open has no size to give without an instantiation, so that is refused.
+    let private openArrayComponentSize
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (element : RuntimeTypeHandleTarget)
+        : uint16
+        =
+        match element with
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 0us
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _ | CompositeShape.Pointer),
+                                             _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> uint16 NATIVE_INT_SIZE
+        | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) ->
+            failwith
+                $"MethodTable::ComponentSize: an array over the byref %O{element} cannot exist; the class loader refuses it (IDS_CLASSLOAD_BYREFARRAY, clsload.cpp:2694)"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
+            let _, typeInfo = typeInfoForIdentityOrFail state identity
+
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                RuntimeTypeHandleTarget.refuseComposite "MethodTable::ComponentSize" element
+            else
+                uint16 NATIVE_INT_SIZE
+        | RuntimeTypeHandleTarget.Closed _ ->
+            failwith
+                $"MethodTable::ComponentSize: %O{element} is closed, so `RuntimeTypeHandleTarget.composite` would have spelled the array as a closed handle; a Composite over it is not canonical"
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery "MethodTable::ComponentSize" scopeAssembly
+
     let private containsGcPointersForRuntimeTypeHandleTarget
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -767,6 +844,12 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
             failwith
                 $"TODO: containsGcPointersForRuntimeTypeHandleTarget for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), element) ->
+            openArrayContainsGcPointers loggerFactory baseClassTypes state element
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            failwith
+                $"MethodTable::Flags projection refused for TypeDesc target %O{methodTableFor}: byrefs, pointers and function pointers have no MethodTable in CoreCLR"
 
     let private genericsFlags (state : IlMachineState) (methodTableFor : RuntimeTypeHandleTarget) : int32 =
         match methodTableFor with
@@ -783,6 +866,9 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
             failwith
                 $"TODO: genericsFlags for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+        // Parameterised without being a generic instantiation, as a closed array is.
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> genericsMaskNonGeneric
         | RuntimeTypeHandleTarget.Closed handle ->
             match tryArrayElement handle with
             | Some _ -> genericsMaskNonGeneric
@@ -820,6 +906,10 @@ module internal MethodTableProjection =
             // A generic parameter T is itself an unbound variable, so its MethodTable contains
             // generic variables.
             true
+        // The element is not closed, by construction (`RuntimeTypeHandleTarget.composite` and
+        // `functionPointer` collapse the closed case), so the shape contains a variable.
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> true
 
     let private containsGenericVariablesFlags
         (state : IlMachineState)
@@ -846,10 +936,13 @@ module internal MethodTableProjection =
                 Option.isSome (tryArrayElement handle)
                 || isStringType baseClassTypes state handle
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-            // Neither a string nor an array: only `Closed` can name those shapes.
+            // Neither a string nor an array: only `Closed` and `Composite` can name those shapes.
             | RuntimeTypeHandleTarget.OpenConstructed _ -> false
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) -> true
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> false
 
         // Managed code consults this through `RuntimeType.IsByRefLike`:
         // `RuntimeType.CreateInstanceDefaultCtor` throws `NotSupportedException` for a ref
@@ -878,7 +971,10 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
                 | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> Some identity
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                // No declaring identity: a shape carries no attribute of its own.
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ -> None
 
             match identity with
             | None -> false
@@ -903,6 +999,10 @@ module internal MethodTableProjection =
             | RuntimeTypeHandleTarget.OpenConstructed _ -> 0, state
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> 0, state
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> 0, state
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), element) ->
+                int32<uint16> (openArrayComponentSize baseClassTypes state element), state
 
         let flags =
             categoryFlagsForRuntimeTypeHandleTarget baseClassTypes state methodTableFor
@@ -984,6 +1084,10 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
             failwith
                 $"MethodTable::InstantiationArg0 refused for %O{methodTableFor}: the dynamic-methods class is not generic, so it has no instantiation"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            failwith
+                $"MethodTable::InstantiationArg0 refused for %O{methodTableFor}: only a generic instantiation has an instantiation to index"
 
     let tryProjectFieldForRuntimeTypeHandleTarget
         (loggerFactory : ILoggerFactory)
@@ -1013,7 +1117,9 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     failwith $"TODO: MethodTable::BaseSize projection for %O{methodTableFor}"
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith $"TODO: MethodTable::BaseSize projection for %O{methodTableFor}"
             | "ComponentSize" ->
                 match methodTableFor with
@@ -1022,11 +1128,18 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.Closed handle ->
                     let componentSize, state = componentSize baseClassTypes state handle
                     Some (CliType.Numeric (CliNumericType.UInt16 componentSize), state)
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), element) ->
+                    Some (
+                        CliType.Numeric (CliNumericType.UInt16 (openArrayComponentSize baseClassTypes state element)),
+                        state
+                    )
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     failwith $"TODO: MethodTable::ComponentSize projection for %O{methodTableFor}"
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith $"TODO: MethodTable::ComponentSize projection for %O{methodTableFor}"
             | "ElementType" ->
                 match methodTableFor with
@@ -1047,7 +1160,9 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith $"TODO: MethodTable::ElementType projection for %O{methodTableFor}"
             | "AuxiliaryData" ->
                 // CoreCLR represents generic parameters (TypeVarTypeDesc) as TypeDesc handles, which
@@ -1060,10 +1175,15 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                 | RuntimeTypeHandleTarget.OpenConstructed _ ->
                     Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr methodTableFor), state)
+                // An array over a variable is a MethodTable too (`TypeHandleTag.forTarget`).
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    Some (CliType.RuntimePointer (CliRuntimePointer.MethodTableAuxiliaryDataPtr methodTableFor), state)
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith
-                        $"MethodTable::AuxiliaryData projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
+                        $"MethodTable::AuxiliaryData projection refused for TypeDesc target %O{methodTableFor}: generic parameters, byrefs, pointers and function pointers have no MethodTable in CoreCLR"
             | "ParentMethodTable" ->
                 match methodTableFor with
                 // `CreateMinimalMethodTable` calls `SetParentMethodTable(NULL)` explicitly
@@ -1075,7 +1195,8 @@ module internal MethodTableProjection =
                 // `Comparer<T>` from `where T : Comparer<T>`) reads this.
                 | RuntimeTypeHandleTarget.Closed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-                | RuntimeTypeHandleTarget.OpenConstructed _ ->
+                | RuntimeTypeHandleTarget.OpenConstructed _
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
                     let state, parent =
                         IlMachineState.resolveBaseRuntimeTypeHandleTarget
                             loggerFactory
@@ -1094,9 +1215,11 @@ module internal MethodTableProjection =
 
                     Some (result, state)
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith
-                        $"MethodTable::ParentMethodTable projection refused for TypeDesc target %O{methodTableFor}: generic parameters have no MethodTable in CoreCLR"
+                        $"MethodTable::ParentMethodTable projection refused for TypeDesc target %O{methodTableFor}: generic parameters, byrefs, pointers and function pointers have no MethodTable in CoreCLR"
             | "PerInstInfo" ->
                 // ElementType and PerInstInfo share a FieldOffset on the
                 // CoreCLR struct: only one is meaningful per MethodTable.
@@ -1118,6 +1241,10 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
                     failwith
                         $"TODO: MethodTable::PerInstInfo projection for open constructed %O{definition.TypeDefinition.Get}: the projection is deliberately gated to System.Nullable`1 (see above)"
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    failwith
+                        $"MethodTable::PerInstInfo projection refused for %O{methodTableFor}: a shape over a variable is not a generic instantiation, so it has no per-instantiation info"
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Concrete _ ->
@@ -1245,10 +1372,11 @@ module internal MethodTableProjection =
                 | RuntimeTypeHandleTarget.DynamicMethodsClass _
                 | RuntimeTypeHandleTarget.Closed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-                | RuntimeTypeHandleTarget.OpenConstructed _ ->
-                    // Closed instantiations, open generic type definitions and open constructed
-                    // types all have a real MethodTable in CoreCLR, so this auxiliary cell is
-                    // well-defined. Pre-allocate the canonical RuntimeType so the
+                | RuntimeTypeHandleTarget.OpenConstructed _
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    // Closed instantiations, open generic type definitions, open constructed
+                    // types and arrays over a variable all have a real MethodTable in CoreCLR, so
+                    // this auxiliary cell is well-defined. Pre-allocate the canonical RuntimeType so the
                     // read through the byref is a pure registry lookup.
                     let _addr, state =
                         IlMachineRuntimeMetadata.getOrAllocateType loggerFactory baseClassTypes methodTableFor state
@@ -1258,7 +1386,9 @@ module internal MethodTableProjection =
 
                     Some (ptr, state)
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     // Generic-parameter handles are TypeDescs in CoreCLR; the BCL
                     // reads `h.AsTypeDesc()->ExposedClassObject` (a different field
                     // on a different runtime structure) rather than going through

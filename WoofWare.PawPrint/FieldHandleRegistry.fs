@@ -131,6 +131,12 @@ module FieldHandleRegistry =
             // type that mentions the parameter, not on the parameter itself.
             failwith
                 $"FieldHandleRegistry.getOrAllocate: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            // A byref, pointer or function pointer is a TypeDesc with no fields, and an array's
+            // fields are synthesised rather than declared, so no FieldDefinitionHandle names one.
+            failwith
+                $"FieldHandleRegistry.getOrAllocate: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
 
         let runtimeFieldHandle (runtimeFieldInfoStub : ManagedHeapAddress) =
             // RuntimeFieldHandle is a struct; it contains one field, an IRuntimeFieldInfo

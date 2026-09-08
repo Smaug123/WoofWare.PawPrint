@@ -60,9 +60,56 @@ type PeByteRangePointer =
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 
+/// The ways one type is built over exactly one element type: the shapes ECMA-335 II.23.2.12
+/// spells as `BYREF Type`, `PTR Type`, `SZARRAY Type` and `ARRAY Type ArrayShape`, and CoreCLR
+/// represents as a `ParamTypeDesc` over a `TypeHandle`. A function pointer is not one of these,
+/// because it is built over a whole signature rather than one element.
+///
+/// `ConcreteTypeHandle` spells the same four shapes over a *closed* element as its own cases;
+/// `CompositeShape.applyConcrete` and `CompositeShape.ofConcrete` are the two directions of that
+/// correspondence, so a consumer can treat a closed byref and an open one alike.
+[<RequireQualifiedAccess>]
+type CompositeShape =
+    | Byref
+    | Pointer
+    /// A zero-lower-bound single-dimensional array (szarray in IL), e.g. `int[]`.
+    | OneDimArrayZero
+    /// A general array with explicit rank, e.g. `int[,]` (rank 2). Rank is tracked so that `int[,]`
+    /// and `int[,,]` are distinct types, exactly as on `ConcreteTypeHandle.Array`.
+    | Array of rank : int
+
+    override this.ToString () : string =
+        match this with
+        | CompositeShape.Byref -> "byref"
+        | CompositeShape.Pointer -> "pointer"
+        | CompositeShape.OneDimArrayZero -> "szarray"
+        | CompositeShape.Array rank -> $"array of rank %d{rank}"
+
+[<RequireQualifiedAccess>]
+module CompositeShape =
+    /// The closed type of this shape over <paramref name="element"/>.
+    let applyConcrete (shape : CompositeShape) (element : ConcreteTypeHandle) : ConcreteTypeHandle =
+        match shape with
+        | CompositeShape.Byref -> ConcreteTypeHandle.Byref element
+        | CompositeShape.Pointer -> ConcreteTypeHandle.Pointer element
+        | CompositeShape.OneDimArrayZero -> ConcreteTypeHandle.OneDimArrayZero element
+        | CompositeShape.Array rank -> ConcreteTypeHandle.Array (element, rank)
+
+    /// Decompose a closed handle into its shape and element, if it has one. A `Concrete` handle
+    /// and a function pointer have no single element, so they come back `None`.
+    let ofConcrete (handle : ConcreteTypeHandle) : (CompositeShape * ConcreteTypeHandle) option =
+        match handle with
+        | ConcreteTypeHandle.Byref element -> Some (CompositeShape.Byref, element)
+        | ConcreteTypeHandle.Pointer element -> Some (CompositeShape.Pointer, element)
+        | ConcreteTypeHandle.OneDimArrayZero element -> Some (CompositeShape.OneDimArrayZero, element)
+        | ConcreteTypeHandle.Array (element, rank) -> Some (CompositeShape.Array rank, element)
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
+
 /// Identity of the target of a `RuntimeTypeHandle`. The target may be a fully
-/// closed concrete type, an open generic type definition (e.g. `Box<>`), or a
-/// generic parameter (`T` / `U`) belonging to a type or method.
+/// closed concrete type, an open generic type definition (e.g. `Box<>`), a
+/// generic parameter (`T` / `U`) belonging to a type or method, or a shape built
+/// over one of those.
 [<RequireQualifiedAccess>]
 type RuntimeTypeHandleTarget =
     | Closed of ConcreteTypeHandle
@@ -118,6 +165,23 @@ type RuntimeTypeHandleTarget =
     /// no row to read. That is faithful rather than incomplete — CoreCLR's minimal MethodTable has
     /// no EEClass metadata either.
     | DynamicMethodsClass of scopeAssemblyFullName : string
+    /// A byref, pointer or array whose element is *not* closed: `T[]`, `ref T`, `T*`, or the same
+    /// over an open construction such as `List&lt;T&gt;[]`. CoreCLR represents these as a
+    /// `ParamTypeDesc` over the element's `TypeHandle` (typedesc.h), and reflection reports the
+    /// element itself from `GetElementType()`, so `typeof(G&lt;&gt;).GetMethod("M").GetParameters()[0]
+    /// .ParameterType.GetElementType()` is reference-equal to the definition's own type variable.
+    ///
+    /// The element is never `Closed`: a shape over a closed element is the closed type
+    /// `Closed (CompositeShape.applyConcrete shape element)`, and spelling it here too would give
+    /// one type two identities in `TypeHandleRegistry`. Construct via
+    /// <c>RuntimeTypeHandleTarget.composite</c>, which performs that collapse, never directly.
+    | Composite of shape : CompositeShape * element : RuntimeTypeHandleTarget
+    /// A function pointer at least one of whose parameter or return types is not closed, e.g.
+    /// `delegate*&lt;T, void&gt;` in a generic method's signature. CoreCLR's `FnPtrTypeDesc`.
+    ///
+    /// Never every-type-closed: that is `Closed (ConcreteTypeHandle.FunctionPointer _)`.
+    /// Construct via <c>RuntimeTypeHandleTarget.functionPointer</c>, which performs that collapse.
+    | FunctionPointer of signature : TypeMethodSignature<RuntimeTypeHandleTarget>
 
     override this.ToString () : string =
         match this with
@@ -134,9 +198,69 @@ type RuntimeTypeHandleTarget =
             $"open constructed %s{AssemblyDefinitionName.simpleName definition.AssemblyFullName}/%O{definition.TypeDefinition.Get}[%s{args}]"
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssemblyFullName ->
             $"dynamic methods class of %s{scopeAssemblyFullName}"
+        | RuntimeTypeHandleTarget.Composite (shape, element) -> $"%O{shape} over (%O{element})"
+        | RuntimeTypeHandleTarget.FunctionPointer signature ->
+            let args = signature.ParameterTypes |> List.map string |> String.concat ", "
+
+            let ret =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> "void"
+                | MethodReturnType.Returns ty -> string ty
+
+            $"open function pointer (%s{args}) -> %s{ret}"
 
 [<RequireQualifiedAccess>]
 module RuntimeTypeHandleTarget =
+    /// Refuse a query about a byref, pointer, array or function pointer over a type variable that
+    /// no consumer has yet been taught to answer. Unlike `refuseMetadataQuery` this names a gap in
+    /// PawPrint rather than an absence in CoreCLR: real .NET answers every reflection query about
+    /// such a type, and the arm that raised this is where the answer belongs.
+    let refuseComposite (operation : string) (target : RuntimeTypeHandleTarget) : 'a =
+        failwith
+            $"TODO: %s{operation}: %O{target} is a byref, pointer, array or function pointer over a generic variable, and this query has not been taught to answer for one; real .NET reflects it with the variable beneath the shape"
+
+    let private isClosed (target : RuntimeTypeHandleTarget) : bool =
+        match target with
+        | RuntimeTypeHandleTarget.Closed _ -> true
+        | _ -> false
+
+    /// The target for <paramref name="shape"/> over <paramref name="element"/>, canonicalised. Use
+    /// this rather than the `Composite` case directly: `TypeHandleRegistry` keys guest `Type`
+    /// object identity on the target, and a shape over a closed element is the closed type, so
+    /// `Composite (Byref, Closed int)` and `Closed (Byref int)` would be two `Type` objects for `int&`.
+    let composite (shape : CompositeShape) (element : RuntimeTypeHandleTarget) : RuntimeTypeHandleTarget =
+        match element with
+        | RuntimeTypeHandleTarget.Closed handle ->
+            RuntimeTypeHandleTarget.Closed (CompositeShape.applyConcrete shape handle)
+        | _ -> RuntimeTypeHandleTarget.Composite (shape, element)
+
+    /// The function-pointer target with <paramref name="signature"/>, canonicalised: every type
+    /// closed means the whole thing is the closed `ConcreteTypeHandle.FunctionPointer`, for the same
+    /// identity reason as <c>composite</c>.
+    let functionPointer (signature : TypeMethodSignature<RuntimeTypeHandleTarget>) : RuntimeTypeHandleTarget =
+        let allClosed =
+            List.forall isClosed signature.ParameterTypes
+            && (
+                match signature.ReturnType with
+                | MethodReturnType.Void -> true
+                | MethodReturnType.Returns ty -> isClosed ty
+            )
+
+        if allClosed then
+            let (), closedSignature =
+                TypeMethodSignature.map
+                    ()
+                    (fun () target ->
+                        match target with
+                        | RuntimeTypeHandleTarget.Closed handle -> (), handle
+                        | other -> failwith $"unreachable: %O{other} is not closed, but every type was checked closed"
+                    )
+                    signature
+
+            RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer closedSignature)
+        else
+            RuntimeTypeHandleTarget.FunctionPointer signature
+
     /// Refuse a query that only metadata can answer, asked of the dynamic-methods class.
     ///
     /// CoreCLR's `CreateMinimalMethodTable` builds a MethodTable with no metadata behind it at all:
@@ -206,11 +330,6 @@ module RuntimeTypeHandleTarget =
         // as an argument of `IWrap<>`. Real .NET agrees — that constraint's argument is
         // `typeof(INested<>)` — and `TypeGetGenericParameterConstraintsSelfReferential.cs`
         // pins it.
-        let isClosed (arg : RuntimeTypeHandleTarget) : bool =
-            match arg with
-            | RuntimeTypeHandleTarget.Closed _ -> true
-            | _ -> false
-
         if arguments |> List.forall isClosed then
             failwith
                 $"RuntimeTypeHandleTarget.openConstructed: every argument to %O{definition.TypeDefinition.Get} is closed, so this is a closed type and must be concretized into a `Closed` handle rather than represented as `OpenConstructed`"
@@ -233,6 +352,26 @@ module RuntimeTypeHandleTarget =
                     $"RuntimeTypeHandleTarget: %O{target} is not canonical; it should have been built as %O{collapsed}"
 
             arguments |> List.iter assertWellFormed
+        | RuntimeTypeHandleTarget.Composite (shape, element) ->
+            match composite shape element with
+            | RuntimeTypeHandleTarget.Composite _ -> ()
+            | collapsed ->
+                failwith
+                    $"RuntimeTypeHandleTarget: %O{target} is not canonical; it should have been built as %O{collapsed}"
+
+            assertWellFormed element
+        | RuntimeTypeHandleTarget.FunctionPointer signature ->
+            match functionPointer signature with
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> ()
+            | collapsed ->
+                failwith
+                    $"RuntimeTypeHandleTarget: %O{target} is not canonical; it should have been built as %O{collapsed}"
+
+            signature.ParameterTypes |> List.iter assertWellFormed
+
+            match signature.ReturnType with
+            | MethodReturnType.Void -> ()
+            | MethodReturnType.Returns ty -> assertWellFormed ty
         | RuntimeTypeHandleTarget.Closed _
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
         | RuntimeTypeHandleTarget.GenericParameter _

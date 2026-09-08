@@ -40,6 +40,10 @@ module NativeRuntimeHelpers =
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
                 failwith $"TODO: RuntimeHelpers.RunClassConstructor for generic parameter %O{typeHandleTarget}"
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                // No .cctor, for the same reason as the closed shapes below.
+                NativeHandlerResult.completed state |> Some
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Byref _

@@ -58,6 +58,7 @@
     <Compile Include="TestTaggedPointerBits.fs" />
     <Compile Include="TestNativeIntSource.fs" />
     <Compile Include="TestPointerHashSynthesis.fs" />
+    <Compile Include="TestRuntimeTypeHandleTarget.fs" />
     <Compile Include="TestCliTypeBytes.fs" />
     <Compile Include="TestCliTypeCellPaths.fs" />
     <Compile Include="TestFieldIdDiagnostics.fs" />

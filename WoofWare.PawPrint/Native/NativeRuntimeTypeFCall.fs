@@ -176,6 +176,11 @@ module NativeRuntimeTypeFCall =
                     // own — it's a TypeVarTypeDesc in CoreCLR, not a field-bearing type. CoreCLR's
                     // RuntimeTypeHandle.GetFields returns an empty array for typeof(T).GetFields().
                     state, []
+                // A byref, pointer or function pointer over a variable is a TypeDesc too.
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ -> state, []
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    RuntimeTypeHandleTarget.refuseComposite operation typeHandleTarget
                 | RuntimeTypeHandleTarget.Closed typeHandle ->
                     walkClosedTypeHandleFields ctx.LoggerFactory ctx.BaseClassTypes operation typeHandle state
 
@@ -278,6 +283,13 @@ module NativeRuntimeTypeFCall =
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _ as typeHandle) ->
                     failwith
                         $"%s{operation}: TypeDesc handle %O{typeHandle} reached the FCall; the managed wrapper throws ArgumentException for `IsTypeDesc` before this point"
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    failwith
+                        $"%s{operation}: array type %O{typeHandleTarget} reached the FCall; arrays have no TypeDef row, and the managed wrapper throws ArgumentException for them before this point"
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    failwith
+                        $"%s{operation}: TypeDesc handle %O{typeHandleTarget} reached the FCall; the managed wrapper throws ArgumentException for `IsTypeDesc` before this point"
                 | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
                     failwith
                         $"%s{operation}: generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get} reached the FCall; the managed wrapper throws ArgumentException for `IsTypeDesc` before this point"
@@ -340,6 +352,57 @@ module NativeRuntimeTypeFCall =
         | "System.Private.CoreLib",
           "System",
           "RuntimeTypeHandle",
+          "GetArrayRank",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            runtimeTypeGenerics.IsEmpty
+            ->
+            // `TypeHandle::GetRank` (runtimehandles.cpp:332), under a PRECONDITION that the type is
+            // an array; the managed `RuntimeType.GetArrayRank` throws ArgumentException for anything
+            // else before calling. The rank is a fact about the shape alone, so an array over a type
+            // variable answers exactly as a closed one.
+            let operation = "RuntimeTypeHandle.GetArrayRank"
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let runtimeTypeRef, state = IlMachineState.popEvalStack ctx.Thread state
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
+
+            let rankOfShape (shape : CompositeShape) : int =
+                match shape with
+                | CompositeShape.OneDimArrayZero -> 1
+                | CompositeShape.Array rank -> rank
+                | CompositeShape.Byref
+                | CompositeShape.Pointer ->
+                    failwith
+                        $"%s{operation}: %O{target} is not an array; the managed wrapper throws ArgumentException before this point"
+
+            let rank =
+                match target with
+                | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                    RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
+                | RuntimeTypeHandleTarget.Composite (shape, _) -> rankOfShape shape
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    match CompositeShape.ofConcrete handle with
+                    | Some (shape, _) -> rankOfShape shape
+                    | None ->
+                        failwith
+                            $"%s{operation}: %O{target} is not an array; the managed wrapper throws ArgumentException before this point"
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    failwith
+                        $"%s{operation}: %O{target} is not an array; the managed wrapper throws ArgumentException before this point"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 rank)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
           "IsGenericVariable",
           [ CorelibType state.ConcreteTypes ("System", "RuntimeType", runtimeTypeGenerics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when
@@ -363,7 +426,11 @@ module NativeRuntimeTypeFCall =
                 // to walk constraints at all.
                 | RuntimeTypeHandleTarget.OpenConstructed _
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-                | RuntimeTypeHandleTarget.Closed _ -> false
+                | RuntimeTypeHandleTarget.Closed _
+                // A shape over a variable contains one but is not one, just as an open
+                // constructed type is not.
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ -> false
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.ofBool isGenericVariable) ctx.Thread state
@@ -398,7 +465,9 @@ module NativeRuntimeTypeFCall =
                 | RuntimeTypeHandleTarget.GenericParameter (_, position)
                 | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> position
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-                | RuntimeTypeHandleTarget.Closed _ ->
+                | RuntimeTypeHandleTarget.Closed _
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
                     failwith
                         $"%s{operation} called on non-parameter target %O{target}: managed wrapper should have rejected this"
 
@@ -432,7 +501,9 @@ module NativeRuntimeTypeFCall =
                     $"TODO: open constructed types are not handled at Native/NativeRuntimeTypeFCall.fs:%s{__LINE__}; got %O{openConstructed}"
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-            | RuntimeTypeHandleTarget.Closed _ ->
+            | RuntimeTypeHandleTarget.Closed _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 // Type-level generic parameters and non-parameter targets return null.
                 let state = NativeCall.pushObjectTarget None ctx.Thread state
                 NativeHandlerResult.completed state |> Some
@@ -661,6 +732,11 @@ module NativeRuntimeTypeFCall =
                     // constructed type is a generic instantiation, so it has no element type
                     // any more than its definition does.
                     NativeIntSource.Verbatim 0L
+                | RuntimeTypeHandleTarget.FunctionPointer _ -> NativeIntSource.Verbatim 0L
+                // The element beneath the shape, which is the variable itself for `T[]` and
+                // `ref T`: `ReflectionOpenGenericDefinitionElementTypes.cs` pins that it comes
+                // back reference-equal to the definition's own type parameter.
+                | RuntimeTypeHandleTarget.Composite (_, element) -> NativeIntSource.TypeHandlePtr element
                 | RuntimeTypeHandleTarget.Closed handle ->
                     match handle with
                     | ConcreteTypeHandle.Concrete _
@@ -717,6 +793,9 @@ module NativeRuntimeTypeFCall =
                 | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                     failwith
                         $"TODO: %s{operation} for method generic parameter source #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    RuntimeTypeHandleTarget.refuseComposite $"%s{operation} (source)" sourceTarget
 
             let targetHandle =
                 match targetTarget with
@@ -735,6 +814,9 @@ module NativeRuntimeTypeFCall =
                 | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                     failwith
                         $"TODO: %s{operation} for method generic parameter target #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+                | RuntimeTypeHandleTarget.Composite _
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    RuntimeTypeHandleTarget.refuseComposite $"%s{operation} (target)" targetTarget
 
             // Reflection-only rule from CanCastToWorker(nullableCast: true): T is assignable
             // to Nullable<T> when queried via reflection, even though the runtime IL cast
@@ -788,7 +870,17 @@ module NativeRuntimeTypeFCall =
                 | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
                     RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
                 | RuntimeTypeHandleTarget.GenericParameter _
-                | RuntimeTypeHandleTarget.MethodGenericParameter _ -> int System.Reflection.TypeAttributes.Public
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ -> int System.Reflection.TypeAttributes.Public
+                // An array MethodTable is synthesised the same way whatever its element; see the
+                // closed array arm below for the bits.
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    int (
+                        System.Reflection.TypeAttributes.Public
+                        ||| System.Reflection.TypeAttributes.Sealed
+                    )
+                    ||| 0x2000
                 // An instantiation's attributes are its definition's: instantiating an interface
                 // leaves it an interface, which is what `Type.IsInterface` reads here.
                 | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
