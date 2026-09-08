@@ -1314,6 +1314,12 @@ module TestSocketTable =
                 [
                     0L,
                     { someSocket with
+                        Binding =
+                            Some
+                                {
+                                    Endpoint = loopback 2us
+                                    LockedAddress = None
+                                }
                         Phase =
                             SocketPhase.Listening
                                 {
@@ -1388,6 +1394,12 @@ module TestSocketTable =
                 [
                     0L,
                     { someSocket with
+                        Binding =
+                            Some
+                                {
+                                    Endpoint = loopback 2us
+                                    LockedAddress = None
+                                }
                         Phase =
                             SocketPhase.Listening
                                 {
