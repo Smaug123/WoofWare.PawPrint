@@ -1632,6 +1632,38 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int128"
                     IntrinsicParameterPattern.Exact "System.Int128"
                 ]
+            // The two strict orderings, which `TimeSpan.FromMicroseconds(Int128)` reaches in its
+            // bound check. `op_LessThan` is
+            // `ldarg.0; ldfld _upper; ldarg.1; ldfld _upper; blt TRUE; ldarg.0; ldfld _upper;
+            // ldarg.1; ldfld _upper; bne.un FALSE; ldarg.0; ldfld _lower; ldarg.1; ldfld _lower;
+            // clt.un; ret; FALSE: ldc.i4.0; ret; TRUE: ldc.i4.1; ret`, and `op_GreaterThan` is
+            // that with `bgt` and `cgt.un`. So the high halves are compared *signed* -- in two's
+            // complement the high half carries the sign of the whole value -- and the low halves
+            // *unsigned*, and the low halves are consulted only when the high halves are equal.
+            // Every boundary is already modelled: `ldfld` of a `ulong` field on a by-value struct
+            // argument, and int64 `blt`/`bgt`/`bne.un`/`clt.un`/`cgt.un`.
+            //
+            // `op_LessThanOrEqual` and `op_GreaterThanOrEqual` are the same body with the last
+            // comparison inverted (`cgt.un; ldc.i4.0; ceq`) and the branch target shifted, but
+            // nothing exercises them, so they are left off; `Int128Comparison.cs` therefore may
+            // not spell `<=` or `>=` between two `Int128`s.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L1008-L1036
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_LessThan"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_GreaterThan"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
