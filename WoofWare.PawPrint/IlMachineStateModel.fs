@@ -552,15 +552,16 @@ type NativeHandlerResult =
     /// on the stack so exception dispatch can unwind it on the ctor's `Ret`; the handler
     /// is never re-entered. Reports `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
     ///
-    /// `message` names the string the CLR would have passed to a message-taking ctor
-    /// overload — for a native handler that typically means one of the `mscorrc` resource
-    /// strings CoreCLR's `EEMessageException` carries (e.g. `IDS_EE_CANNOTCAST`, which
-    /// `ObjIsInstanceOfCore` throws). `None` accepts the parameterless ctor's default, which
-    /// is correct wherever CoreCLR itself throws with no message.
+    /// `fields` are the strings the CLR would have passed to a constructor overload — for a
+    /// native handler that typically means one of the `mscorrc` resource strings CoreCLR's
+    /// `EEMessageException` carries (e.g. `IDS_EE_CANNOTCAST`, which `ObjIsInstanceOfCore`
+    /// throws), or the type and assembly names an `EETypeLoadException` records. An empty list
+    /// accepts the parameterless ctor's defaults, which is correct wherever CoreCLR itself
+    /// throws with no argument.
     | RaiseException of
         IlMachineState *
         exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
-        message : string option *
+        fields : RuntimeExceptionField list *
         StepEffect
     /// A type's `.cctor` has been pushed on top of the native frame (typically because a
     /// sub-call into managed code needed to initialise an uninitialised type). Dispatcher
@@ -621,14 +622,14 @@ type ReturnFrameResult =
     /// The caller should dispatch this object as a managed exception instead of pushing it
     /// onto the eval stack.  Before dispatching, the caller MUST call
     /// ExceptionDispatching.overwriteHResultPostCtor to apply the CLR's post-ctor
-    /// SetHResult(GetHR()) step, and then, when `message` is `Some`, overwrite `_message`
-    /// with it (see `ReturnValueDisposition.DispatchAsException` for why that has to
-    /// happen after the ctor rather than before it).
+    /// SetHResult(GetHR()) step, and then write each of `fields` (see
+    /// `ReturnValueDisposition.DispatchAsException` for why that has to happen after the ctor
+    /// rather than before it).
     | DispatchException of
         IlMachineState *
         exceptionAddr : ManagedHeapAddress *
         exceptionType : ConcreteTypeHandle *
-        message : string option
+        fields : RuntimeExceptionField list
 
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
@@ -775,7 +776,18 @@ module NativeHandlerResult =
         (state : IlMachineState)
         : NativeHandlerResult
         =
-        NativeHandlerResult.RaiseException (state, exnType, None, StepEffect.NoEffect)
+        NativeHandlerResult.RaiseException (state, exnType, [], StepEffect.NoEffect)
+
+    /// `raiseException`, but populating the string fields CoreCLR's `EEException::CreateThrowable`
+    /// would have set through a constructor overload: the message, and for a
+    /// `TypeLoadException` the type and assembly names its `TypeName` and message report.
+    let raiseExceptionWithFields
+        (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (fields : RuntimeExceptionField list)
+        (state : IlMachineState)
+        : NativeHandlerResult
+        =
+        NativeHandlerResult.RaiseException (state, exnType, fields, StepEffect.NoEffect)
 
     /// `raiseException`, but with the message CoreCLR would have attached. Pass `Some` only
     /// where CoreCLR throws with an explicit message (typically an `EEMessageException`
@@ -791,7 +803,7 @@ module NativeHandlerResult =
         (state : IlMachineState)
         : NativeHandlerResult
         =
-        NativeHandlerResult.RaiseException (state, exnType, message, StepEffect.NoEffect)
+        raiseExceptionWithFields exnType (message |> Option.toList |> List.map RuntimeExceptionField.Message) state
 
     /// Forward a `WhatWeDid.SuspendedForClassInit` outcome from a sub-call. Use this
     /// at the leaf of a passthrough branch when the dispatcher should keep the native
