@@ -235,6 +235,24 @@ type UnixMachineState =
         FileSystemType : EmulatedFileSystemType
     }
 
+/// What a socket is taking an ephemeral port for, which decides what stands
+/// in a candidate port's way.
+[<RequireQualifiedAccess>]
+type EphemeralPortUse =
+    /// `bind(2)` with port 0, and the implicit bind `listen(2)` performs on an
+    /// unbound socket: the port is reserved outright. Another socket's binding
+    /// stands in the way as `bind(2)` decides, and so does an endpoint of any
+    /// TCP connection whose socket has closed, because a real kernel keeps a
+    /// closing socket in its bind table until its connection is gone.
+    | Reserve
+    /// The implicit bind `connect(2)` performs on an unbound socket, towards
+    /// `destination`. Another socket's binding stands in the way as for
+    /// `Reserve`, but a connection does so only when it occupies the
+    /// four-tuple to `destination`: a real kernel selects a connect-time port
+    /// from its connection table, so a port held towards another destination
+    /// is free.
+    | ConnectTo of destination : InternetEndpoint
+
 [<RequireQualifiedAccess>]
 module UnixMachineState =
 
@@ -556,39 +574,137 @@ module UnixMachineState =
             failwith
                 $"UnixMachineState.socketReadinessLevel: socket %O{socketId} is in the Darwin-only Dead phase. Both doors into this function refuse the Darwin flavour before any level is computed — `SystemNative_TryChangeSocketEventRegistration` because kqueue is structurally different, and `SystemNative_Poll` because its Darwin rows are measured but unmodelled — so reaching here is an interpreter bug. Darwin polls this phase IN|PRI|HUP (docs/plans/2026-08-23-socket-poll/pollmulti.c) if that changes."
 
-    /// Hands out the lowest free port at or after the cursor, sweeping the range
-    /// once and wrapping. `isAcceptable` decides freedom, and must be the same
-    /// conflict test `bind(2)` itself applies — a port a TCP socket holds is free
-    /// to a UDP one, so a naive "is this port taken" set would refuse a legal
-    /// bind.
+    /// Whether any *other* socket's binding conflicts with `candidate`, taken
+    /// on behalf of `socket`.
+    ///
+    /// The relation `bind(2)` decides admission with, `listen(2)` asks again
+    /// on the flavour that re-screens an already-bound socket, and every
+    /// ephemeral-port choice asks of each port it considers.
+    let bindingConflicts
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        (candidate : SocketBinding)
+        (machine : UnixMachineState)
+        : bool
+        =
+        machine.Sockets
+        |> Map.exists (fun otherId (other : SocketDescription) ->
+            if otherId = socketId then
+                false
+            else
+
+            match other.Binding with
+            | None -> false
+            | Some existing ->
+                // Separate port namespaces per transport, measured: a UDP socket
+                // takes a port a listening TCP socket holds.
+                other.Kind = socket.Kind
+                && SimulatedUnixPlatform.bindConflict
+                    machine.UnixPlatform
+                    existing
+                    other.ReuseAddress
+                    other.Phase
+                    candidate
+                    socket.ReuseAddress
+        )
+
+    /// Whether `first` and `second` name a common address: equal, or either
+    /// the wildcard.
+    let private addressesOverlap (first : InternetEndpoint) (second : InternetEndpoint) : bool =
+        first.Address = second.Address
+        || first.Address = InternetEndpoint.WildcardAddress
+        || second.Address = InternetEndpoint.WildcardAddress
+
+    /// Whether a TCP connection endpoint no stream socket is bound at still
+    /// occupies `endpoint`'s port.
+    let private orphanedConnectionOccupies (endpoint : InternetEndpoint) (machine : UnixMachineState) : bool =
+        let heldByStreamSocket (held : InternetEndpoint) : bool =
+            machine.Sockets
+            |> Map.exists (fun _ socket ->
+                socket.Kind = SocketKind.Stream
+                && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))
+            )
+
+        machine.Connections
+        |> Map.exists (fun _ connection ->
+            [ connection.ClientAddress ; connection.ServerAddress ]
+            |> List.exists (fun held ->
+                held.Port = endpoint.Port
+                && addressesOverlap held endpoint
+                && not (heldByStreamSocket held)
+            )
+        )
+
+    /// Whether a TCP connection occupies the four-tuple between `source` and
+    /// `destination`, in either orientation.
+    let private connectionOccupiesTuple
+        (source : InternetEndpoint)
+        (destination : InternetEndpoint)
+        (machine : UnixMachineState)
+        : bool
+        =
+        machine.Connections
+        |> Map.exists (fun _ connection ->
+            (connection.ClientAddress = source && connection.ServerAddress = destination)
+            || (connection.ClientAddress = destination && connection.ServerAddress = source)
+        )
+
+    /// Hands out the lowest free port at or after the cursor, sweeping the
+    /// range once and wrapping, as the binding `candidate` makes of it, on
+    /// behalf of `socket`. `purpose` decides what makes a port free.
     ///
     /// `None` when a full sweep finds nothing. The caller decides what to do:
-    /// there is no measured answer for an exhausted range, so inventing an errno
-    /// here would be a guess.
+    /// there is no measured answer for an exhausted range, so inventing an
+    /// errno here would be a guess.
     let allocateEphemeralPort
-        (isAcceptable : uint16 -> bool)
+        (purpose : EphemeralPortUse)
+        (socketId : SocketId)
+        (socket : SocketDescription)
+        (candidate : uint16 -> SocketBinding)
         (machine : UnixMachineState)
-        : (uint16 * UnixMachineState) option
+        : (SocketBinding * UnixMachineState) option
         =
         let low, high = machine.EphemeralPortRange
         let width = int high - int low + 1
 
-        let rec sweep (remaining : int) (candidate : uint16) =
+        let acceptable (port : uint16) : SocketBinding option =
+            let binding = candidate port
+
+            if binding.Endpoint.Port <> port then
+                failwith
+                    $"UnixMachineState.allocateEphemeralPort: the candidate binding for port %d{port} names port %d{binding.Endpoint.Port} instead (this is a bug in this library)."
+
+            let free =
+                not (bindingConflicts socketId socket binding machine)
+                && (
+                    match purpose with
+                    | EphemeralPortUse.Reserve ->
+                        // Only a stream socket shares a namespace with the
+                        // TCP connections.
+                        socket.Kind <> SocketKind.Stream
+                        || not (orphanedConnectionOccupies binding.Endpoint machine)
+                    | EphemeralPortUse.ConnectTo destination ->
+                        not (connectionOccupiesTuple binding.Endpoint destination machine)
+                )
+
+            if free then Some binding else None
+
+        let rec sweep (remaining : int) (port : uint16) : (SocketBinding * UnixMachineState) option =
             if remaining = 0 then
                 None
             else
 
-            let next = if candidate = high then low else candidate + 1us
+            let next = if port = high then low else port + 1us
 
-            if isAcceptable candidate then
+            match acceptable port with
+            | Some binding ->
                 Some (
-                    candidate,
+                    binding,
                     { machine with
                         NextEphemeralPort = next
                     }
                 )
-            else
-                sweep (remaining - 1) next
+            | None -> sweep (remaining - 1) next
 
         // A cursor outside the range can only come from a hand-built machine;
         // start from the bottom rather than sweeping from nowhere.
