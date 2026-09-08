@@ -1,0 +1,23 @@
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+OffsetToStringData=12 IntPtr.Size=8
+string len 0, &s[0]              addr&7=4 addr&15=4 obj&7=0 obj&15=8 delta=12
+string len 1, &s[0]              addr&7=4 addr&15=12 obj&7=0 obj&15=0 delta=12
+string len 2, &s[0]              addr&7=4 addr&15=12 obj&7=0 obj&15=0 delta=12
+string len 4, &s[1]              addr&7=6 addr&15=6 obj&7=0 obj&15=8 delta=14
+string len 4, &s[2]              addr&7=0 addr&15=8 obj&7=0 obj&15=8 delta=16
+object pointer     over &7:  200,0,0,0,0,0,0,0
+string &s[0]       over &7:  0,0,0,0,200,0,0,0
+string &s[0]       over &15: 0,0,0,0,111,0,0,0,0,0,0,0,89,0,0,0
+char[1], &a[0]                   addr&7=0 addr&15=0 obj&7=0 obj&15=0 delta=16
+byte[1], &b[0]                   addr&7=0 addr&15=0 obj&7=0 obj&15=0 delta=16
+char[] &a[0]       over &7:  200,0,0,0,0,0,0,0
+byte[] &b[0]       over &7:  200,0,0,0,0,0,0,0
+LOH string len 60000, &s[0]      addr&7=4 addr&15=4 obj&7=0 obj&15=8 delta=12
+of 200 strings, ((long)&s[0] & 7) == 0 for 0
