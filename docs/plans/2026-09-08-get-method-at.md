@@ -1,6 +1,6 @@
 # `RuntimeTypeHandle_GetMethodAt`: the method occupying a MethodTable slot
 
-Status: plan, awaiting a decision on the options in "Decisions". Stacks on `module-gettoken`
+Status: implemented on this branch; the recommendations under "Decisions" were confirmed, with one refinement to decision 2 recorded under "Outcome". Stacks on `module-gettoken`
 (#1403), which stacks on `composite-target` (#1394).
 
 ## What is measured
@@ -172,3 +172,27 @@ Written before the implementation, and observed failing on the unimplemented nat
 After this, rung J's next stop is whatever `NullabilityInfoContext` reaches next, or
 `GetNumVirtualsAndStaticVirtuals` if `GetInterfaceMap` is on the path; measure rather than
 predict.
+
+## Outcome
+
+Implemented as recommended. Decision 2 needed one refinement, found by Codex's first review: the
+first cut refused any *generic* ancestor of a definition receiver, which also refused the closed
+ancestor of `D<T> : B<int>`. The content table names an inherited occupant's declarer in the
+ancestor's own vocabulary, so the arm now takes the ancestor's arguments from the identity table
+(which `placedSlotsOfDefinition` rebases into the definition's vocabulary), closes each one, and
+concretises the ancestor; only an argument that is one of the definition's own formals is refused.
+
+Codex's second round found two more shapes, both measured before being fixed: an array over a
+type variable as the receiver (an array MethodTable; a guest reaches it, stopping one call
+earlier at `GetNumVirtuals`, so that composite arm and `methodAt` now delegate to `System.Array`
+and the guest pins it), and an ancestor argument spelled under a context carrying an unused
+formal (`TwoStep<T> : Mid<int, T> : Base<int>`; a guest cannot reach it, because the definition's
+`BaseType` stops first, so a Roslyn-compiled corpus under the host oracle pins it instead). Only
+the context entries a spelling mentions are closed now. The declaring-type derivation moved out
+of the QCall into `VirtualSlotLayout.declaringTypeAt` so the fixture could ask it directly.
+
+Measured after the change: rung J runs the request and stops 15 frames out in
+`RuntimeMethodHandle.InvokeMethod` on `Int32.TryParse`, whose `out` parameter needs reflection-
+invoke byref copy-back. The out-of-range mutant the plan expected to survive was killed instead,
+by the corpus test's one-past-the-end check.
+

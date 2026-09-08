@@ -928,3 +928,147 @@ module TestVirtualMethodSlots =
                 VirtualSlotLayout.numVirtualsOfDefinition loggerFactory bct "test" state identity
 
             count |> shouldEqual (List.length slots)
+
+    /// The host's internal `RuntimeTypeHandle.GetMethodAt(RuntimeType, int)`, the very QCall
+    /// wrapper `Associates.AssignAssociates` and `GetBaseDefinition` call, and
+    /// `RuntimeType.GetMethodBase(RuntimeType, RuntimeMethodHandleInternal)`, which turns its answer
+    /// into a `MethodBase`. Reaching past the public surface is what makes the oracle say *which*
+    /// method occupies a slot rather than merely how many slots there are.
+    let private hostMethodAt : Type -> int -> MethodBase =
+        let runtimeType = typeof<obj>.Assembly.GetType "System.RuntimeType"
+
+        let internalHandle =
+            typeof<obj>.Assembly.GetType "System.RuntimeMethodHandleInternal"
+
+        let getMethodAt =
+            typeof<RuntimeTypeHandle>
+                .GetMethod (
+                    "GetMethodAt",
+                    BindingFlags.NonPublic ||| BindingFlags.Static,
+                    null,
+                    [| runtimeType ; typeof<int> |],
+                    null
+                )
+
+        let getMethodBase =
+            runtimeType.GetMethod (
+                "GetMethodBase",
+                BindingFlags.NonPublic ||| BindingFlags.Static,
+                null,
+                [| runtimeType ; internalHandle |],
+                null
+            )
+
+        fun (t : Type) (slot : int) ->
+            let handle = getMethodAt.Invoke ((null : obj), [| box t ; box slot |])
+            getMethodBase.Invoke ((null : obj), [| box t ; handle |]) :?> MethodBase
+
+    /// The host's `RuntimeTypeHandle_GetNumVirtualsAndStaticVirtuals`, which is how far
+    /// `GetInterfaceMap` iterates `GetMethodAt` on an interface: the vtable, then the static virtuals.
+    let private hostNumVirtualsAndStaticVirtuals : Type -> int =
+        let runtimeType = typeof<obj>.Assembly.GetType "System.RuntimeType"
+
+        let impl =
+            typeof<RuntimeTypeHandle>
+                .GetMethod (
+                    "GetNumVirtualsAndStaticVirtuals",
+                    BindingFlags.NonPublic ||| BindingFlags.Static,
+                    null,
+                    [| runtimeType |],
+                    null
+                )
+
+        fun (t : Type) -> impl.Invoke ((null : obj), [| box t |]) :?> int
+
+    /// A slot's occupant named the way both sides can spell it: the TypeDef token of the type that
+    /// declares it and its own MethodDef token. A closed instantiation's `DeclaringType` on the host
+    /// is the instantiation, whose `MetadataToken` is the definition's, so the comparison does not
+    /// depend on how either side spells an instantiation.
+    let private hostOccupant (t : Type) (slot : int) : int * int =
+        let method = hostMethodAt t slot
+        method.DeclaringType.MetadataToken, method.MetadataToken
+
+    let private pawPrintOccupant (slot : VtableSlot) : int * int =
+        let typeToken =
+            MetadataTokens.GetToken (
+                System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit slot.DeclaredBy.Identity.TypeDefinition.Get
+                : System.Reflection.Metadata.EntityHandle
+            )
+
+        let methodToken =
+            match fst slot.Method.IdentityKey with
+            | Some handle ->
+                MetadataTokens.GetToken (
+                    System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle
+                    : System.Reflection.Metadata.EntityHandle
+                )
+            | None -> -1
+
+        typeToken, methodToken
+
+    /// `RuntimeTypeHandle_GetMethodAt` is `MethodTable::GetMethodDescForSlot` below the vtable's
+    /// end and the static-virtual tail past it: the slot's *content*. Over corelib content and
+    /// identity coincide (see `TestFabricatedSlotContent` for why, and for the case where they do
+    /// not), so what this pins is that every slot of every corpus type, static virtuals included,
+    /// names the method the host names -- declaring type and all, which is what `GetBaseDefinition`
+    /// hands back.
+    [<Test>]
+    let ``the method at every slot agrees with the host CLR`` () : unit =
+        let mutable exercised = 0
+        let mutable failures = []
+
+        for label, concretiseType, host in allCorpus do
+            let state, handle = concretiseType (state ())
+            let target = RuntimeTypeHandleTarget.Closed handle
+            // Interfaces number their static virtuals on past the vtable; for a class the two
+            // counts are equal.
+            let count = hostNumVirtualsAndStaticVirtuals host
+
+            for slot in 0 .. count - 1 do
+                let _, answer =
+                    VirtualSlotLayout.methodAt loggerFactory bct "test" state target slot
+
+                let expected = hostOccupant host slot
+
+                match answer with
+                | VirtualSlotLayout.MethodAtSlot.Method occupant ->
+                    let actual = pawPrintOccupant occupant
+
+                    if actual <> expected then
+                        failures <- $"%s{label} slot %i{slot}: PawPrint %A{actual}, host %A{expected}" :: failures
+                | VirtualSlotLayout.MethodAtSlot.OutOfRange ->
+                    failures <- $"%s{label} slot %i{slot}: PawPrint out of range, host %A{expected}" :: failures
+
+                exercised <- exercised + 1
+
+            // One past the end is out of range on both sides: the host throws ArgumentException.
+            let _, pastTheEnd =
+                VirtualSlotLayout.methodAt loggerFactory bct "test" state target count
+
+            match pastTheEnd with
+            | VirtualSlotLayout.MethodAtSlot.OutOfRange -> ()
+            | VirtualSlotLayout.MethodAtSlot.Method occupant ->
+                failures <-
+                    $"%s{label} slot %i{count}: PawPrint answers %A{pawPrintOccupant occupant}, host has no such slot"
+                    :: failures
+
+        if not failures.IsEmpty then
+            failwith (String.Join ("\n", List.rev failures))
+
+        // Guard against the corpus going empty or the counts collapsing to zero.
+        exercised |> shouldBeGreaterThan 500
+
+    /// The interface entry of the corpus is the one with a static-virtual tail, so the test above
+    /// is only checking that tail if it actually walked past the vtable there.
+    [<Test>]
+    let ``the corpus interface has a static-virtual tail past its vtable`` () : unit =
+        let host =
+            (hostType "System.Numerics" "INumberBase`1").MakeGenericType [| typeof<int> |]
+
+        let numVirtuals = hostNumVirtuals host
+        let withStatics = hostNumVirtualsAndStaticVirtuals host
+        withStatics |> shouldBeGreaterThan numVirtuals
+        // And the tail's occupants are static virtuals on the host, so the walk is asked for them.
+        let tailMethod = hostMethodAt host numVirtuals
+        tailMethod.IsStatic |> shouldEqual true
+        tailMethod.IsVirtual |> shouldEqual true
