@@ -57,6 +57,7 @@ module NativeRuntimeTypeHelpers =
     let nativeIntElementPointer
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
         (buffer : ManagedPointerSource)
         (index : int)
         : ManagedPointerSource
@@ -87,6 +88,17 @@ module NativeRuntimeTypeHelpers =
                 ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
                 [ proj ]
             )
+        // `IntPtr*` pinned over an `IntPtr[]`, which is how `RuntimeTypeHandle.Instantiate(Type[])`
+        // hands over two or more generic arguments: `fixed (IntPtr* p = handles)` is
+        // `ldelema IntPtr; conv.u`, and `conv.u` anchors the element's own type as a byte view on
+        // the array byref. The native side indexes that pointer in bytes, so do the same and let
+        // the byte-view arithmetic fold whole cells back into the element index.
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, [ ByrefProjection.ReinterpretAs reinterpretTy ]) ->
+            if InternalTypeKind.kind baseClassTypes reinterpretTy <> InternalTypeKind.NativeInt then
+                failwith
+                    $"%s{operation}: expected IntPtr-reinterpret on array buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
+
+            ManagedPointerByteView.addByteOffsetToByteView state (index * nativeIntSize) buffer
         // The 1-arg overload of CreateInstanceForAnotherGenericParameter takes the
         // address of a single IntPtr local (`&typeHandle`), so element 0 *is* the
         // buffer itself. We cannot stride past it without escaping the local.
@@ -94,9 +106,10 @@ module NativeRuntimeTypeHelpers =
         | ManagedPointerSource.Byref (ByrefRoot.Argument _, []) when index = 0 -> buffer
         // Buffers are currently reached through GetFields' stackalloc/array path
         // (either as a bare byte byref or with a trailing `ReinterpretAs IntPtr` when
-        // the buffer was wrapped in a Span<IntPtr>), or through a single-IntPtr local
-        // taken by `&` for the 1-arg overload of CreateInstanceForAnotherGenericParameter.
-        // Other shapes should fail with their structure intact.
+        // the buffer was wrapped in a Span<IntPtr>), through an `IntPtr[]` pinned by
+        // `fixed`, or through a single-IntPtr local taken by `&` for the 1-arg overload of
+        // CreateInstanceForAnotherGenericParameter. Other shapes should fail with their
+        // structure intact.
         | _ -> failwith $"%s{operation}: unsupported IntPtr result buffer pointer shape %O{buffer}"
 
     let writeFieldHandleElement
@@ -108,7 +121,7 @@ module NativeRuntimeTypeHelpers =
         (value : int64)
         : IlMachineState
         =
-        let ptr = nativeIntElementPointer operation baseClassTypes buffer index
+        let ptr = nativeIntElementPointer operation baseClassTypes state buffer index
 
         IlMachineState.writeManagedByrefWithBase
             baseClassTypes
@@ -1598,7 +1611,7 @@ module NativeRuntimeTypeHelpers =
         (index : int)
         : ConcreteTypeHandle
         =
-        let ptr = nativeIntElementPointer operation baseClassTypes buffer index
+        let ptr = nativeIntElementPointer operation baseClassTypes state buffer index
 
         match
             IlMachineState.readManagedByref baseClassTypes state ptr
