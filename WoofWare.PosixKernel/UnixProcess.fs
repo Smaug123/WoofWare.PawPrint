@@ -361,11 +361,10 @@ module UnixProcessState =
     /// Whether any socket event port holds a registration targeting an open
     /// file description that names `socketId`.
     ///
-    /// This is what makes a readiness change on the socket *observable*: the
-    /// `UnixDescriptor.close` consults it before destroying the peer of an
-    /// established pair, because the survivor's level would change to one this
-    /// kernel cannot represent, and with no registration there is nothing that
-    /// could deliver the difference.
+    /// A registration is one way a readiness change on the socket becomes
+    /// observable; `poll(2)` is another, which is why `UnixDescriptor.close`
+    /// does not consult this before destroying the peer of an established
+    /// pair. Nothing in the library calls it.
     let socketIsRegisteredWithAnyEventPort<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (socketId : SocketId)
         (proc : UnixProcessState<'Task, 'Handler>)
