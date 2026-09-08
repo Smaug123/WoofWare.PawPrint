@@ -305,6 +305,11 @@ type SocketEventRegistrationRefusal =
     /// know that it diverges, which is not far enough to model the state a call
     /// leaves behind.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
+    /// The registration asked to be level-triggered, and this port models
+    /// edge-triggered registrations only: `drain` consumes every entry it
+    /// walks and never re-arms a still-ready one, so a wait after a partly
+    /// drained level would sleep where a real `epoll_wait` returns again.
+    | LevelTriggered
 
 [<RequireQualifiedAccess>]
 module SocketEventRegistrationRefusal =
@@ -315,6 +320,8 @@ module SocketEventRegistrationRefusal =
         match refusal with
         | SocketEventRegistrationRefusal.UnmodelledFlavour flavour ->
             $"this kernel is %O{flavour}-flavoured, and registration is modelled here for Linux only. kqueue's semantics -- per-filter state, a silently-replacing ADD, file targets succeeding -- are unmeasured beyond the fact that they diverge from epoll's, and the return codes alone are not a model of the state a call leaves behind. Measure them before answering."
+        | SocketEventRegistrationRefusal.LevelTriggered ->
+            "the registration asked to be level-triggered, and this port models edge-triggered registrations only: the ready list is consumed as it is drained and a still-ready entry is never re-armed, so a wait after a partly drained level would sleep where a real epoll_wait returns again. Register with EPOLLET, or model level-triggering before answering."
 
 [<RequireQualifiedAccess>]
 module UnixPoll =
@@ -467,6 +474,18 @@ module UnixPoll =
             Error (SocketEventRegistrationRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
+        let levelTriggered =
+            match change with
+            | SocketEventRegistrationChange.Add (SocketEventTrigger.LevelTriggered, _, _)
+            | SocketEventRegistrationChange.Modify (SocketEventTrigger.LevelTriggered, _, _) -> true
+            | SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, _, _)
+            | SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, _, _)
+            | SocketEventRegistrationChange.Remove -> false
+
+        if levelTriggered then
+            Error SocketEventRegistrationRefusal.LevelTriggered
+        else
+
         let ordinal = system.Machine.NextSocketEventRegistrationOrdinal
 
         match
@@ -498,8 +517,8 @@ module UnixPoll =
 
         match change with
         | SocketEventRegistrationChange.Remove -> Ok (SocketEventRegistrationAnswer.Changed, system)
-        | SocketEventRegistrationChange.Add (interest, _)
-        | SocketEventRegistrationChange.Modify (interest, _) ->
+        | SocketEventRegistrationChange.Add (_, interest, _)
+        | SocketEventRegistrationChange.Modify (_, interest, _) ->
 
         // Both fds resolved a moment ago inside the registry change, so these
         // lookups cannot miss.

@@ -195,6 +195,41 @@ module TestSocketEventRegistration =
     // The flavour
     // ------------------------------------------------------------------
 
+    /// The port models edge-triggered registrations only, and says so at the
+    /// registration rather than serving a level-triggered request as an
+    /// edge-triggered one: a wait after a partly drained level would sleep
+    /// where a real `epoll_wait` returns again.
+    [<Test>]
+    let ``a level-triggered registration is refused, on ADD and on MOD`` () : unit =
+        let portFd, socketFd, system = portAndSocket linux
+
+        UnixPoll.changeSocketEventRegistration
+            portFd
+            socketFd
+            (SocketEventRegistrationChange.Add (SocketEventTrigger.LevelTriggered, everything, 1UL))
+            system
+        |> shouldEqual (Error SocketEventRegistrationRefusal.LevelTriggered)
+
+        let registered =
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 1UL))
+                system
+
+        UnixPoll.changeSocketEventRegistration
+            portFd
+            socketFd
+            (SocketEventRegistrationChange.Modify (SocketEventTrigger.LevelTriggered, readOnly, 2UL))
+            registered
+        |> shouldEqual (Error SocketEventRegistrationRefusal.LevelTriggered)
+
+        // ...and the refusal changed nothing: the registration is as it was,
+        // and a removal still finds it.
+        match changeOrFail portFd socketFd SocketEventRegistrationChange.Remove registered with
+        | SocketEventRegistrationAnswer.Changed, _ -> ()
+        | other -> failwith $"expected the removal to apply, got %A{other}"
+
     /// Ahead of everything, including the descriptor lookups: kqueue's model is
     /// structurally different rather than differently numbered, so there is no
     /// row of it to answer even for inputs epoll would refuse.
@@ -208,8 +243,8 @@ module TestSocketEventRegistration =
 
         let changes =
             [
-                SocketEventRegistrationChange.Add (everything, 1UL)
-                SocketEventRegistrationChange.Modify (everything, 1UL)
+                SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 1UL)
+                SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, everything, 1UL)
                 SocketEventRegistrationChange.Remove
             ]
 
@@ -234,12 +269,20 @@ module TestSocketEventRegistration =
         system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 0L
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Add (everything, 1UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 1UL))
+                system
 
         system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 1L
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Modify (everything, 2UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, everything, 2UL))
+                system
 
         system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 1L
 
@@ -248,7 +291,11 @@ module TestSocketEventRegistration =
 
         // ...and the next Add takes the number the Modify and Remove left alone.
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Add (everything, 3UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 3UL))
+                system
 
         system.Machine.NextSocketEventRegistrationOrdinal |> shouldEqual 2L
 
@@ -259,11 +306,21 @@ module TestSocketEventRegistration =
         let portFd, socketFd, system = portAndSocket linux
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Add (everything, 1UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 1UL))
+                system
 
         let before = system.Machine.NextSocketEventRegistrationOrdinal
 
-        match changeOrFail portFd socketFd (SocketEventRegistrationChange.Add (everything, 2UL)) system with
+        match
+            changeOrFail
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 2UL))
+                system
+        with
         | SocketEventRegistrationAnswer.Changed, _ -> failwith "expected EEXIST"
         | SocketEventRegistrationAnswer.Failed reason, after ->
             reason |> shouldEqual SocketEventRegistrationError.AlreadyRegistered
@@ -285,7 +342,11 @@ module TestSocketEventRegistration =
         ready portFd system |> shouldEqual []
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Add (everything, 1UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 1UL))
+                system
 
         let portId =
             match FileDescriptorRegistry.tryFindId portFd system.Process.FileDescriptors with
@@ -308,7 +369,11 @@ module TestSocketEventRegistration =
         let portFd, socketFd, system = portAndSocket linux
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Add (readOnly, 1UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readOnly, 1UL))
+                system
 
         ready portFd system |> List.length |> shouldEqual 1
 
@@ -319,12 +384,20 @@ module TestSocketEventRegistration =
         let portFd, socketFd, system = portAndSocket linux
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Add (everything, 1UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 1UL))
+                system
 
         let afterAdd = ready portFd system
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Modify (everything, 2UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, everything, 2UL))
+                system
 
         ready portFd system |> shouldEqual afterAdd
 
@@ -334,7 +407,11 @@ module TestSocketEventRegistration =
         let portFd, socketFd, system = portAndSocket linux
 
         let system =
-            applied portFd socketFd (SocketEventRegistrationChange.Add (everything, 1UL)) system
+            applied
+                portFd
+                socketFd
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, everything, 1UL))
+                system
 
         let system = applied portFd socketFd SocketEventRegistrationChange.Remove system
 
@@ -355,6 +432,10 @@ module TestSocketEventRegistration =
         // fd 1 is standard output: its level is OUT and nothing else, so a
         // read-only interest reports nothing at all.
         let system =
-            applied portFd 1 (SocketEventRegistrationChange.Add (readOnly, 1UL)) system
+            applied
+                portFd
+                1
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readOnly, 1UL))
+                system
 
         ready portFd system |> shouldEqual []
