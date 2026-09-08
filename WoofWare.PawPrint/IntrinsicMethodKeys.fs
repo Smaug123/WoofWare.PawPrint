@@ -16,6 +16,13 @@ module IntrinsicMethodKeys =
             DeclaringTypeFullName : string
             MethodName : string
             ParameterShapes : string list
+
+            /// The shape of what the method returns, in the same vocabulary as `ParameterShapes`.
+            /// Overloads that differ only here are distinct methods with distinct bodies -- CoreLib's
+            /// conversion operators are the reason this is here: `System.Int128` declares sixteen
+            /// `op_Explicit` overloads that all take a single `System.Int128`, and eleven of them are
+            /// a one-instruction truncation while the rest are real floating-point algorithms.
+            ReturnShape : MethodReturnType<string>
         }
 
     [<RequireQualifiedAccess>]
@@ -27,12 +34,23 @@ module IntrinsicMethodKeys =
         | SzArray
         | Array
 
+    /// How a pattern constrains what a method returns. This mirrors `MethodReturnType` rather than
+    /// folding `Void` into the shape vocabulary, so "returns nothing" cannot be confused with
+    /// "returns something whose shape happens to be spelled that way".
+    [<RequireQualifiedAccess>]
+    type private IntrinsicReturnPattern =
+        | Void
+        | Returns of IntrinsicParameterPattern
+
     type private IntrinsicMethodPattern =
         {
             AssemblyName : string
             DeclaringTypeFullName : string
             MethodName : string
             ParameterPatterns : IntrinsicParameterPattern list option
+            /// `None` constrains nothing, which is what almost every entry wants: an overload set
+            /// whose members already differ in their parameters is fully identified without this.
+            ReturnPattern : IntrinsicReturnPattern option
         }
 
     let private pattern
@@ -47,6 +65,26 @@ module IntrinsicMethodKeys =
             DeclaringTypeFullName = declaringTypeFullName
             MethodName = methodName
             ParameterPatterns = Some parameterPatterns
+            ReturnPattern = None
+        }
+
+    /// As `pattern`, but also pinning what the method returns. Reach for this only when the
+    /// parameters do not identify the method on their own -- an overload set that differs solely in
+    /// its return type, which in CoreLib means the conversion operators.
+    let private patternReturning
+        (assemblyName : string)
+        (declaringTypeFullName : string)
+        (methodName : string)
+        (parameterPatterns : IntrinsicParameterPattern list)
+        (returnPattern : IntrinsicReturnPattern)
+        : IntrinsicMethodPattern
+        =
+        {
+            AssemblyName = assemblyName
+            DeclaringTypeFullName = declaringTypeFullName
+            MethodName = methodName
+            ParameterPatterns = Some parameterPatterns
+            ReturnPattern = Some returnPattern
         }
 
     let private anyParams
@@ -60,6 +98,7 @@ module IntrinsicMethodKeys =
             DeclaringTypeFullName = declaringTypeFullName
             MethodName = methodName
             ParameterPatterns = None
+            ReturnPattern = None
         }
 
     let methodKey
@@ -98,11 +137,25 @@ module IntrinsicMethodKeys =
             DeclaringTypeFullName = TypeInfo.fullName (fun h -> declaringAssy.TypeDefs.[h]) declaringType
             MethodName = methodToCall.Name
             ParameterShapes = methodToCall.Signature.ParameterTypes |> List.map concreteTypeShape
+            ReturnShape =
+                // Note that `MethodReturnType.Void` is strictly the bare `void` column: a `void`
+                // under custom modifiers, which is how C# spells every `init` accessor, decodes as
+                // `Returns` (see `TypeMethodSignature`'s own docstring). Mirroring the decoded
+                // column rather than re-classifying it keeps this key saying what the blob said.
+                match methodToCall.Signature.ReturnType with
+                | MethodReturnType.Void -> MethodReturnType.Void
+                | MethodReturnType.Returns handle -> MethodReturnType.Returns (concreteTypeShape handle)
         }
 
     let formatMethodKey (key : IntrinsicMethodKey) : string =
         let parameters = key.ParameterShapes |> String.concat ", "
-        $"%s{AssemblyDefinitionName.simpleName key.DeclaringAssemblyFullName} %s{key.DeclaringTypeFullName}.%s{key.MethodName}(%s{parameters})"
+
+        let returns =
+            match key.ReturnShape with
+            | MethodReturnType.Void -> "void"
+            | MethodReturnType.Returns shape -> shape
+
+        $"%s{AssemblyDefinitionName.simpleName key.DeclaringAssemblyFullName} %s{key.DeclaringTypeFullName}.%s{key.MethodName}(%s{parameters}) : %s{returns}"
 
     let private parameterPatternMatches (pattern : IntrinsicParameterPattern) (actual : string) : bool =
         match pattern with
@@ -113,15 +166,28 @@ module IntrinsicMethodKeys =
         | IntrinsicParameterPattern.SzArray -> actual = "[]"
         | IntrinsicParameterPattern.Array -> actual.StartsWith ("[", StringComparison.Ordinal)
 
+    let private returnPatternMatches (pattern : IntrinsicReturnPattern) (actual : MethodReturnType<string>) : bool =
+        match pattern, actual with
+        | IntrinsicReturnPattern.Void, MethodReturnType.Void -> true
+        | IntrinsicReturnPattern.Returns pattern, MethodReturnType.Returns actual ->
+            parameterPatternMatches pattern actual
+        | IntrinsicReturnPattern.Void, MethodReturnType.Returns _
+        | IntrinsicReturnPattern.Returns _, MethodReturnType.Void -> false
+
     let private methodPatternMatches (pattern : IntrinsicMethodPattern) (key : IntrinsicMethodKey) : bool =
         AssemblyDefinitionName.isNamed pattern.AssemblyName key.DeclaringAssemblyFullName
         && pattern.DeclaringTypeFullName = key.DeclaringTypeFullName
         && pattern.MethodName = key.MethodName
-        && match pattern.ParameterPatterns with
+        && (
+            match pattern.ParameterPatterns with
+            | None -> true
+            | Some patterns ->
+                List.length patterns = List.length key.ParameterShapes
+                && List.forall2 parameterPatternMatches patterns key.ParameterShapes
+        )
+        && match pattern.ReturnPattern with
            | None -> true
-           | Some patterns ->
-               List.length patterns = List.length key.ParameterShapes
-               && List.forall2 parameterPatternMatches patterns key.ParameterShapes
+           | Some pattern -> returnPatternMatches pattern key.ReturnShape
 
     let private safeIntrinsics =
         [
@@ -1607,6 +1673,83 @@ module IntrinsicMethodKeys =
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
+            // The unchecked 128-bit addition, which `TimeSpan.FromMilliseconds(long, long)`
+            // reaches through `Math.BigMul(long, long) + microseconds`. Its body is
+            // `ldarg.0; ldfld _lower; ldarg.1; ldfld _lower; add; stloc.0; ldloc.0; ldarg.0;
+            // ldfld _lower; clt.un; conv.i8; stloc.1; ldarg.0; ldfld _upper; ldarg.1;
+            // ldfld _upper; add; ldloc.1; add; ldloc.0; newobj .ctor; ret` — a wrapping 64-bit
+            // add of the low halves, a carry recovered from the wrap by the *unsigned* compare
+            // `sum <u left._lower`, then a wrapping add of the high halves plus that carry. Both
+            // `add`s are the unwidened wrapping opcode, not `add.ovf`: this is `op_Addition`, and
+            // the operator C# emits under `checked` is the separate `op_CheckedAddition`, which
+            // is not allowlisted. Every boundary is already modelled — `ldfld` of a `ulong` field
+            // on a by-value struct argument as `op_Equality` does it, int64 `add` and `clt.un`,
+            // and the `.ctor` allowlisted above.
+            //
+            // The signed `Int128` and the unsigned `UInt128` spell this body identically, since
+            // two's complement addition does not depend on the reading; `UInt128.op_Addition` is
+            // nonetheless left off until something exercises it.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L667-L676
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Addition"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
+            // The two strict orderings, which `TimeSpan.FromMicroseconds(Int128)` reaches in its
+            // bound check. `op_LessThan` is
+            // `ldarg.0; ldfld _upper; ldarg.1; ldfld _upper; blt TRUE; ldarg.0; ldfld _upper;
+            // ldarg.1; ldfld _upper; bne.un FALSE; ldarg.0; ldfld _lower; ldarg.1; ldfld _lower;
+            // clt.un; ret; FALSE: ldc.i4.0; ret; TRUE: ldc.i4.1; ret`, and `op_GreaterThan` is
+            // that with `bgt` and `cgt.un`. So the high halves are compared *signed* -- in two's
+            // complement the high half carries the sign of the whole value -- and the low halves
+            // *unsigned*, and the low halves are consulted only when the high halves are equal.
+            // Every boundary is already modelled: `ldfld` of a `ulong` field on a by-value struct
+            // argument, and int64 `blt`/`bgt`/`bne.un`/`clt.un`/`cgt.un`.
+            //
+            // `op_LessThanOrEqual` and `op_GreaterThanOrEqual` are the same body with the last
+            // comparison inverted (`cgt.un; ldc.i4.0; ceq`) and the branch target shifted, but
+            // nothing exercises them, so they are left off; `Int128Comparison.cs` therefore may
+            // not spell `<=` or `>=` between two `Int128`s.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L1008-L1036
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_LessThan"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_GreaterThan"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
+            // The narrowing conversion to `Int64`, which is how `TimeSpan.FromMicroseconds(Int128)`
+            // gets back to ticks. Its whole body is `ldarg.0; ldfld _lower; ret` -- the low half
+            // reinterpreted as signed, which costs no instruction -- and it discards the high half
+            // without inspecting it, so it is `unchecked` by construction. The operator C# emits
+            // under `checked` is the separate `op_CheckedExplicit`, which is not allowlisted.
+            //
+            // This is the one entry in the file that has to name its return type. `Int128` declares
+            // sixteen `op_Explicit` overloads that all take a single `System.Int128` and differ only
+            // in what they return, so without the discriminator this line would equally admit the
+            // conversions to `double`, `single`, `System.Half`, `System.Decimal` and `System.UInt128`
+            // -- four of which are real conversion algorithms rather than a field read, and none of
+            // which has been reviewed. `patternReturning` is what makes the entry say only what was
+            // reviewed.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L295
+            patternReturning
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Explicit"
+                [ IntrinsicParameterPattern.Exact "System.Int128" ]
+                (IntrinsicReturnPattern.Returns (IntrinsicParameterPattern.Exact "System.Int64"))
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
