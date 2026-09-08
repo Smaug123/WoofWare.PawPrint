@@ -113,6 +113,8 @@ type IlMachineState =
         DotnetRuntimeDirs : string ImmutableArray
         TypeHandles : TypeHandleRegistry
         GcHandles : GcHandleRegistry
+        /// Every live `EVP_MD_CTX` the OpenSSL digest natives have handed out to the guest.
+        EvpDigests : EvpDigestRegistry
         FieldHandles : FieldHandleRegistry
         MethodHandles : MethodHandleRegistry
         /// Deterministic virtual hardware capability profile. This is deliberately

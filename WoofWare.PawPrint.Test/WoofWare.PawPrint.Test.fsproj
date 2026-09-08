@@ -166,6 +166,8 @@
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
     <Compile Include="TestMakeSZArrayRefusal.fs" />
     <Compile Include="TestGcHandleRegistry.fs" />
+    <Compile Include="TestSha256.fs" />
+    <Compile Include="TestEvpDigestRegistry.fs" />
     <Compile Include="TestSocketCreation.fs" />
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
     <Compile Include="TestUnixErrorPal.fs" />
@@ -249,7 +251,9 @@
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
+    <Compile Include="LinuxCoreLibFlavour.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
+    <Compile Include="TestEvpDigestNatives.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />
     <Compile Include="TestReinterpretCellAccess.fs" />
     <Compile Include="TestBulkMoveCellAccess.fs" />

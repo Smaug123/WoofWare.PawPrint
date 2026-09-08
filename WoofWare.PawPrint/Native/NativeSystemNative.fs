@@ -378,7 +378,7 @@ module NativeSystemNative =
 
     /// Which way bytes move through a caller-supplied buffer.
     [<RequireQualifiedAccess>]
-    type private BufferTransfer =
+    type internal BufferTransfer =
         | Into
         | OutOf
 
@@ -395,7 +395,7 @@ module NativeSystemNative =
     /// Only what has been established is refused: a buffer whose coordinate or
     /// whose storage's size cannot be derived is let past, to fail (or not) at
     /// the access itself.
-    let private requireBufferRoom
+    let internal requireBufferRoom
         (ctx : NativeCallContext)
         (operation : string)
         (direction : BufferTransfer)
@@ -428,7 +428,7 @@ module NativeSystemNative =
     /// elsewhere). Room for the bytes is checked here rather than by the caller,
     /// because what must fit is what actually moves — a short read at
     /// end-of-file transfers nothing and so needs no room at all.
-    let private writeBytesThrough
+    let internal writeBytesThrough
         (ctx : NativeCallContext)
         (operation : string)
         (buffer : ManagedPointerSource)
@@ -463,7 +463,7 @@ module NativeSystemNative =
     /// Drain `byteCount` bytes from a caller-supplied `byte*`: the mirror of
     /// `writeBytesThrough`, with the same room requirement and the same per-byte
     /// walk.
-    let private readBytesThrough
+    let internal readBytesThrough
         (ctx : NativeCallContext)
         (operation : string)
         (buffer : ManagedPointerSource)
@@ -504,7 +504,7 @@ module NativeSystemNative =
     /// Always a refusal when there is nothing to write through, and null is not
     /// special: upstream would fault on a null exactly as it would on any other
     /// address naming nothing.
-    let private requireUnscreenedStorage
+    let internal requireUnscreenedStorage
         (operation : string)
         (argName : string)
         (pointer : BufferPointer)
