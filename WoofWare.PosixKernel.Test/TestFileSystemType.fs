@@ -45,11 +45,9 @@ module TestFileSystemType =
     [<DllImport("libc")>]
     extern int private close(int fd)
 
-    /// The machine a simulated process boots with. Every row that uses it
-    /// overwrites both the fields it goes on to read, so the flavour booted
-    /// here is not observable.
-    let private initialMachine : UnixMachineState =
-        (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64).Machine
+    /// The machine a simulated process boots with on `flavour`'s platform.
+    let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)).Machine
 
     let private everyFlavour : SimulatedUnixFlavour list =
         [ SimulatedUnixFlavour.Linux ; SimulatedUnixFlavour.Darwin ]
@@ -119,9 +117,7 @@ module TestFileSystemType =
     [<Test>]
     let ``omitting the filesystem type takes the flavour's own default`` () : unit =
         for flavour in everyFlavour do
-            let kernel =
-                initialMachine
-                |> UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
+            let kernel = machineOn flavour |> UnixMachineState.withFileSystemType None
 
             kernel.FileSystemType |> shouldEqual (EmulatedFileSystemType.defaultFor flavour)
 
@@ -142,11 +138,7 @@ module TestFileSystemType =
                     | Some fsType -> EmulatedFileSystemType.isReportableUnder flavour fsType
 
                 if permitted then
-                    let kernel =
-                        initialMachine
-                        |> UnixMachineState.withUnixPlatformAndFileSystemType
-                            (HostPlatform.platformOf flavour)
-                            requested
+                    let kernel = machineOn flavour |> UnixMachineState.withFileSystemType requested
 
                     let carried = SimulatedUnixPlatform.flavour kernel.UnixPlatform
 
@@ -171,10 +163,8 @@ module TestFileSystemType =
         for flavour, fsType in refused do
             let thrown =
                 Assert.Throws (fun () ->
-                    initialMachine
-                    |> UnixMachineState.withUnixPlatformAndFileSystemType
-                        (HostPlatform.platformOf flavour)
-                        (Some fsType)
+                    machineOn flavour
+                    |> UnixMachineState.withFileSystemType (Some fsType)
                     |> ignore<UnixMachineState>
                 )
 
@@ -195,9 +185,7 @@ module TestFileSystemType =
             ]
 
         for flavour, fsType in accepted do
-            let kernel =
-                initialMachine
-                |> UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) (Some fsType)
+            let kernel = machineOn flavour |> UnixMachineState.withFileSystemType (Some fsType)
 
             kernel.FileSystemType |> shouldEqual fsType
 

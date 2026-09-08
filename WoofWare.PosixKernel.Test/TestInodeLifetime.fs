@@ -58,7 +58,7 @@ module TestInodeLifetime =
     let private standingAt (dir : string) : UnixSystem<int, string> =
         match
             UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
-            |> UnixSystem.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt seed (absolute dir)
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt seed (absolute dir)
         with
         | Ok system -> system
         | Error fault -> failwith $"the fixture's own seed did not boot at %s{dir}: %O{fault}."

@@ -8,7 +8,7 @@ open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
 /// `KernelConfig` is everything a host may set about the simulated process
-/// before a run, and `applyTo` is the only production path that writes those
+/// before a run, and `toKernel` is the only production path that writes those
 /// fields onto a kernel. These are the rows about that layer itself — that its
 /// defaults agree with the kernel's, that it reaches the field it names, and
 /// that it validates rather than passing a bad value through — as opposed to
@@ -66,8 +66,7 @@ module TestKernelConfig =
         |> shouldEqual EmulatedKernel.defaultInstructionCostTicks
 
         let configured =
-            EmulatedKernel.initial
-            |> KernelConfig.applyTo
+            KernelConfig.toKernel
                 { KernelConfig.Default with
                     InstructionCostTicks = 10_000L
                 }
@@ -79,8 +78,7 @@ module TestKernelConfig =
         // knob could reach by off-by-one. Rejected at the setter, like `ProcessorCount`.
         for bad in [ 0L ; -1L ] do
             let apply () =
-                EmulatedKernel.initial
-                |> KernelConfig.applyTo
+                KernelConfig.toKernel
                     { KernelConfig.Default with
                         InstructionCostTicks = bad
                     }
@@ -97,7 +95,7 @@ module TestKernelConfig =
                 CurrentDirectory = absolute "/outer/inner"
             }
 
-        let kernel = KernelConfig.applyTo config EmulatedKernel.initial
+        let kernel = KernelConfig.toKernel config
 
         kernel.CurrentDirectoryInode |> shouldEqual (inodeOf kernel "/outer/inner")
         EmulatedKernel.checkInvariants kernel |> shouldEqual []

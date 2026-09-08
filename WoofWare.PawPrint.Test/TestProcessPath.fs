@@ -9,7 +9,7 @@ open WoofWare.PosixKernel
 /// `KernelConfig.ProcessPath` is the executable path a guest reads back through
 /// `SystemNative_GetProcessPath`. These pin the configuration-to-kernel wiring,
 /// which no end-to-end guest can distinguish from a handler that read the field
-/// but discarded the write: `applyTo` threading a value it then drops would leave
+/// but discarded the write: `toKernel` threading a value it then drops would leave
 /// every case in the suite green.
 ///
 /// The guest-visible half — that the value reaches `Environment.ProcessPath`
@@ -29,12 +29,11 @@ module TestProcessPath =
         EmulatedKernel.initial.ProcessPath |> shouldEqual None
 
     [<Test>]
-    let ``applyTo carries a configured process path onto the kernel`` () : unit =
+    let ``toKernel carries a configured process path onto the kernel`` () : unit =
         let path = AbsoluteUnixPath.parseOrFail "test" "/home/pawprint/work/Guest"
 
         let kernel =
-            EmulatedKernel.initial
-            |> KernelConfig.applyTo
+            KernelConfig.toKernel
                 { KernelConfig.Default with
                     ProcessPath = Some path
                 }
@@ -42,22 +41,22 @@ module TestProcessPath =
         kernel.ProcessPath |> shouldEqual (Some path)
 
     [<Test>]
-    let ``applyTo preserves None rather than substituting a default`` () : unit =
+    let ``toKernel preserves None rather than substituting a default`` () : unit =
         // `KernelConfig` holds two `option` fields whose `None`s mean different
-        // things: `FileSystemType`'s asks `applyTo` to derive a value from the
+        // things: `FileSystemType`'s asks `toKernel` to derive a value from the
         // flavour, while `ProcessPath`'s *is* the answer. This is the test that
         // stops the second from being "fixed" into the first.
-        let kernel = EmulatedKernel.initial |> KernelConfig.applyTo KernelConfig.Default
+        let kernel = KernelConfig.toKernel KernelConfig.Default
 
         kernel.ProcessPath |> shouldEqual None
 
     [<Test>]
-    let ``applyTo rejects a forged path, naming the knob a host would fix`` () : unit =
+    let ``toKernel rejects a forged path, naming the knob a host would fix`` () : unit =
         // `AbsoluteUnixPath`'s case is private, so the only invalid value a host
         // can produce is a defaulted one. `UnixProcessState.withProcessPath` is
         // where that stops — its own test is in `WoofWare.PosixKernel.Test` — and
         // what PawPrint owns is the *name* it hands that setter. Asserted through
-        // `applyTo` because that is the path a host takes, and because the name
+        // `toKernel` because that is the path a host takes, and because the name
         // is only right if it is the one this call site passes: a setter tested
         // directly would be asserting a string the test itself chose.
         //
@@ -66,8 +65,7 @@ module TestProcessPath =
         // `withFileSystemAndCurrentDirectory` draws for the current directory.
         let exn =
             Assert.Throws<Exception> (fun () ->
-                EmulatedKernel.initial
-                |> KernelConfig.applyTo
+                KernelConfig.toKernel
                     { KernelConfig.Default with
                         ProcessPath = Some Unchecked.defaultof<AbsoluteUnixPath>
                     }

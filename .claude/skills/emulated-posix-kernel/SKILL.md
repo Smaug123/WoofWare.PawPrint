@@ -44,15 +44,18 @@ Two traps when adding a `KernelConfig` field:
   non-optional field whose sensible default depends on the platform gets one
   fixed default, so every `{ Default with UnixPlatform = macOsArm64 }` site
   silently keeps the other platform's value. Make it an `option` and resolve it
-  in `applyTo`.
-- **Do not write a setter that reads `kernel.UnixPlatform`.** That makes two
-  `with` functions order-dependent. Take the platform as a parameter instead;
-  `withUnixPlatformAndFileSystemType` fuses the pair for exactly this reason,
-  and `withFileSystemAndCurrentDirectory` takes the platform *and* the clock as
-  arguments for it. Fuse two knobs into one setter when neither answer is
-  well-formed without the other — a current directory is an inode of *this*
-  filesystem, and a new filesystem invalidates every inode number the previous
-  one handed out.
+  in `toKernel`.
+- **The platform is a constructor argument, never a setter's.**
+  `UnixSystem.initial` and `EmulatedKernel.create` take it, and nothing
+  changes it afterwards, so a setter that reads `machine.UnixPlatform` for a
+  flavour-derived default (`withSoMaxConn`, `withFileSystemType`, the limits
+  `withFileSystemAndCurrentDirectory` admits a directory under) is not
+  order-dependent: there is no platform setter to run after it. A field whose
+  default depends on the flavour is an `option` in `KernelConfig`, resolved by
+  such a setter in `toKernel`. Fuse two knobs into one setter when neither
+  answer is well-formed without the other — a current directory is an inode
+  of *this* filesystem, and a new filesystem invalidates every inode number
+  the previous one handed out.
 
 ## 2. Per-thread state: field or map?
 

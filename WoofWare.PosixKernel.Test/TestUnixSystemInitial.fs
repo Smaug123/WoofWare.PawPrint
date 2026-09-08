@@ -58,6 +58,33 @@ module TestUnixSystemInitial =
             system.Machine.FileSystemType
         |> shouldEqual true
 
+    /// `somaxconn` left unconfigured is the machine's own flavour's default,
+    /// so a Darwin machine never carries Linux's 4096 and a configured value
+    /// is carried as given.
+    [<TestCaseSource(nameof platforms)>]
+    let ``withSoMaxConn None takes the machine's own flavour's default`` (platform : SimulatedUnixPlatform) : unit =
+        let system : UnixSystem<int, string> = UnixSystem.initial platform
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        let configured = system.Machine |> UnixMachineState.withSoMaxConn (Some 7)
+        configured.SoMaxConn |> shouldEqual 7
+
+        // Back to the default, from a machine that no longer carries it.
+        (configured |> UnixMachineState.withSoMaxConn None).SoMaxConn
+        |> shouldEqual (UnixMachineState.defaultSoMaxConn flavour)
+
+    /// The platform is fixed at construction and nothing validates it later,
+    /// so a forged one has to be refused here, naming this constructor.
+    [<Test>]
+    let ``a forged platform is refused by the constructor`` () : unit =
+        let exn =
+            Assert.Throws<System.Exception> (fun () ->
+                UnixSystem.initial<int, string> Unchecked.defaultof<SimulatedUnixPlatform>
+                |> ignore<UnixSystem<int, string>>
+            )
+
+        exn.Message |> shouldContainText "UnixSystem.initial"
+
     [<TestCaseSource(nameof platforms)>]
     let ``the platform asked for is the platform reported`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> = UnixSystem.initial platform

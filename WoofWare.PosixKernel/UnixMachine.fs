@@ -229,9 +229,9 @@ type UnixMachineState =
         ///
         /// Seeded from `KernelConfig.FileSystemType` and fixed for the run: no
         /// syscall in CoreLib's interop surface can mount anything, so nothing
-        /// a guest does can change it. Set only by
-        /// `withUnixPlatformAndFileSystemType`, which writes it and
-        /// `UnixPlatform` together so that the two cannot disagree.
+        /// a guest does can change it. Derived from the flavour by
+        /// `UnixSystem.initial` and set only by `withFileSystemType`, which
+        /// refuses a type this machine's flavour cannot report.
         FileSystemType : EmulatedFileSystemType
     }
 
@@ -408,35 +408,17 @@ module UnixMachineState =
             LocalRoutes = routes
         }
 
-    /// Set the Unix platform identity the simulated process reports, together
-    /// with the filesystem its mount claims to be. `None` takes the flavour's
-    /// own default; an explicit type that flavour could not mount is refused.
-    ///
-    /// One setter for two fields, in the manner of `withUserAndGroupId`,
-    /// because they are not independent: `SystemNative_GetFileSystemType`
+    /// Set the filesystem type the machine's mount claims to be. `None` takes
+    /// the flavour's own default; an explicit type this machine's flavour
+    /// could not mount is refused, because `SystemNative_GetFileSystemType`
     /// answers a *file* from the type and every other descriptor from the
-    /// flavour, so a machine carrying Linux with APFS would hand a guest a
-    /// combination no machine could produce. Separate setters could each be
-    /// called alone, which is exactly how that state would arise; fused, it is
-    /// unrepresentable rather than merely checked.
-    ///
-    /// Rejects a forged `Unchecked.defaultof` platform, whose null release
-    /// would otherwise reach a guest as its `uname -r`.
-    let withUnixPlatformAndFileSystemType
-        (platform : SimulatedUnixPlatform)
+    /// flavour, so the pair must describe one machine.
+    let withFileSystemType
         (fileSystemType : EmulatedFileSystemType option)
         (machine : UnixMachineState)
         : UnixMachineState
         =
-        // No eager validation of the release string:
-        // `SimulatedUnixPlatform.create` validates at construction, so a value
-        // of the type is already a platform some Unix could be. `assertValid`
-        // still catches the one value that can bypass that — the forged
-        // `Unchecked.defaultof`.
-        let platform =
-            SimulatedUnixPlatform.assertValid "UnixMachineState.UnixPlatform" platform
-
-        let flavour = SimulatedUnixPlatform.flavour platform
+        let flavour = SimulatedUnixPlatform.flavour machine.UnixPlatform
 
         let resolved =
             match fileSystemType with
@@ -449,7 +431,6 @@ module UnixMachineState =
                 requested
 
         { machine with
-            UnixPlatform = platform
             FileSystemType = resolved
         }
 
@@ -788,25 +769,17 @@ module UnixMachineState =
     /// one — which is what lets every reader of the table treat its names as
     /// ones a real process could hold. Failing here rather than at the first read
     /// means a host learns at configuration time, before any guest code runs.
-    /// Set the `somaxconn` sysctl. Takes the platform as a parameter rather
-    /// than reading `machine.UnixPlatform`, so that this and the platform
-    /// setter cannot become order-dependent; `KernelConfig.applyTo` passes
-    /// the same platform to both.
+    /// Set the `somaxconn` sysctl.
     ///
-    /// `None` takes the flavour's measured default. The clamp this feeds
-    /// (`connectSocket`'s capacity rule) was measured with the sysctl set to
-    /// 3 on Linux and at the default 128 on Darwin, so a configured value is
-    /// on measured ground, but it must be positive: no machine was measured
-    /// with a non-positive somaxconn.
-    let withSoMaxConn
-        (platform : SimulatedUnixPlatform)
-        (value : int option)
-        (machine : UnixMachineState)
-        : UnixMachineState
-        =
+    /// `None` takes the measured default of this machine's flavour. The clamp
+    /// this feeds (`connectSocket`'s capacity rule) was measured with the
+    /// sysctl set to 3 on Linux and at the default 128 on Darwin, so a
+    /// configured value is on measured ground, but it must be positive: no
+    /// machine was measured with a non-positive somaxconn.
+    let withSoMaxConn (value : int option) (machine : UnixMachineState) : UnixMachineState =
         let resolved =
             match value with
-            | None -> defaultSoMaxConn (SimulatedUnixPlatform.flavour platform)
+            | None -> defaultSoMaxConn (SimulatedUnixPlatform.flavour machine.UnixPlatform)
             | Some value ->
                 if value < 1 then
                     failwith

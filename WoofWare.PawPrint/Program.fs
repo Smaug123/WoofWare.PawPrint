@@ -1121,7 +1121,7 @@ module Program =
 
         let state =
             IlMachineState.initial loggerFactory dotnetRuntimeDirs dumped
-            |> fun s -> s.MapKernel (KernelConfig.applyTo kernelConfig)
+            |> fun s -> s.MapKernel (fun _ -> KernelConfig.toKernel kernelConfig)
             |> fun s ->
                 match pctSeed with
                 | None -> s

@@ -17,7 +17,7 @@ open WoofWare.PosixKernel
 /// validating setter `withVirtualClockTicks`. The properties below assert the two agree on the
 /// resulting kernel *and* on which inputs are rejected, because collapsing the copies must not
 /// quietly collapse the validation with it. `EmulatedKernel.withInstructionCostTicks` rejects a
-/// cost below 1 and `KernelConfig.applyTo` is the only production path that writes the field, so
+/// cost below 1 and `KernelConfig.toKernel` is the only production path that writes the field, so
 /// the kernels below — assembled by record-copy, which bypasses that setter — are reaching the
 /// same hole `validateVirtualClockTicks`' own comment cites for its negative check.
 [<TestFixture>]

@@ -437,8 +437,11 @@ module TestSignalDispatch =
                                     }
                         }
                 }
-                |> EmulatedKernel.mapMachine (
-                    UnixMachineState.withUnixPlatformAndFileSystemType SimulatedUnixPlatform.macOsArm64 None
+                // The platform is fixed at construction, so the prepared
+                // state's machine, untouched so far, is swapped for a Darwin
+                // one rather than re-flavoured in place.
+                |> EmulatedKernel.mapMachine (fun _ ->
+                    (EmulatedKernel.create SimulatedUnixPlatform.macOsArm64).Machine
                 )
             )
 
