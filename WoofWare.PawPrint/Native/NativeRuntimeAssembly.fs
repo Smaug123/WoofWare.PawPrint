@@ -1494,15 +1494,13 @@ module NativeRuntimeAssembly =
                 }
 
             // The managed side pins `AssemblyName.CultureName`, so a null pointer is a name that
-            // never had a culture set and an empty string is the neutral culture spelled out;
-            // `AssemblySpec` treats both as neutral.
+            // never had a culture set and an empty string is the neutral culture spelled out.
+            // Both bind the neutral assembly, and the binder keeps them apart for the one place
+            // they differ, its cache of bound specs.
             let culture =
                 match NativeCall.managedPointerOfPointerArgument operation "_pCultureName" (field "_pCultureName") with
                 | ManagedPointerSource.Null -> None
-                | culturePtr ->
-                    match NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state culturePtr with
-                    | "" -> None
-                    | culture -> Some culture
+                | culturePtr -> Some (NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state culturePtr)
 
             let flags = NativeCall.int32Argument operation (field "_flags")
 

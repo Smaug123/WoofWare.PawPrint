@@ -892,6 +892,21 @@ type LoadedAssemblies =
     /// references it; without this fallback we would go to disk for an assembly we already
     /// have, and fail outright for one that was never written to disk.
     /// </remarks>
+    /// <summary>
+    /// Every reference binding recorded so far, as (reference identity, definition identity)
+    /// pairs, sorted by reference identity.
+    /// </summary>
+    /// <remarks>
+    /// Sorted because the underlying dictionary's order is not reproducible (see
+    /// <c>DefinitionNames</c>), and a caller that picks the first match must pick the same one
+    /// on every run.
+    /// </remarks>
+    member this.ReferenceBindings : (string * string) list =
+        this.Bindings
+        |> Seq.map (fun kv -> kv.Key, kv.Value)
+        |> Seq.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal (a, b))
+        |> List.ofSeq
+
     member this.TryResolveReference (reference : WoofWare.PawPrint.AssemblyReference) : DumpedAssembly option =
         let refFullName = reference.Name.FullName
 

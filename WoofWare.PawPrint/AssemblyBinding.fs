@@ -2,6 +2,7 @@ namespace WoofWare.PawPrint
 
 open System
 open System.IO
+open System.Reflection
 open Microsoft.Extensions.Logging
 
 /// <summary>
@@ -60,15 +61,19 @@ type AssemblyLoadRequest =
 /// again. Both halves are guest-observable, each measured on .NET 10.
 /// </summary>
 /// <remarks>
-/// A request that has bound answers the same assembly again without the binder being asked.
-/// A request that has failed poisons every later request sharing its <em>failure key</em>: the
-/// simple name (ignoring case), the version, and the culture -- but not the token, the
-/// architecture or the content type, so a miss for
+/// A request that has bound answers the same assembly again without the binder being asked:
+/// that is the AppDomain's cache of bound specs, which also holds the entry assembly's own
+/// identity and the identity every metadata reference was bound under, and compares specs
+/// exactly (<c>BaseAssemblySpec::CompareEx</c>) -- the simple name case-sensitively, the version
+/// up to the first component a request left out. A request that has failed poisons every later
+/// request sharing its <em>failure key</em>, <c>AssemblyName::GetDisplayName(INCLUDE_VERSION)</c>:
+/// the simple name (ignoring case), the version when its major was given, the culture and the
+/// token -- but not the architecture or the content type. So a miss for
 /// <c>System.Security.Claims, processorArchitecture=x86</c> makes the plain
 /// <c>System.Security.Claims</c> a miss for the rest of the process, while a miss for
-/// <c>Version=99.0.0.0</c> or <c>Culture=fr</c> leaves it alone. The two halves are consulted
-/// in that order, which is why a plain request that bound before survives a later
-/// architecture miss for the same name.
+/// <c>Version=99.0.0.0</c> or <c>Culture=fr</c> leaves it alone. The bound specs are consulted
+/// first, which is why a plain request that bound before survives a later architecture miss
+/// for the same name.
 /// </remarks>
 type AssemblyBindCache =
     private
@@ -77,6 +82,12 @@ type AssemblyBindCache =
             Failed : Set<string>
             /// Every part of the requests that bound, to the definition identity each bound to.
             Bound : Map<string, string>
+            /// Definition identities of the assemblies a request read from disk. CoreCLR caches
+            /// the *request's* spec for those, not the assembly's own identity -- measured: a
+            /// plain request that bound `System.Security.Claims` leaves its full identity
+            /// unanswered after a miss under that identity -- whereas the entry assembly and
+            /// every reference are cached under their own.
+            LoadedByName : Set<string>
         }
 
 [<RequireQualifiedAccess>]
@@ -85,6 +96,7 @@ module AssemblyBindCache =
         {
             Failed = Set.empty
             Bound = Map.empty
+            LoadedByName = Set.empty
         }
 
     let private tokenText (request : AssemblyLoadRequest) : string =
@@ -114,19 +126,124 @@ module AssemblyBindCache =
 
         $"%s{request.SimpleName.ToLowerInvariant ()}|%s{version}|%s{culture}|%s{tokenText request}"
 
+    /// The version as `BaseAssemblySpec::CompareEx` compares it: component by component, and no
+    /// further than the first one the request left out -- so `65535.1.2.3` is the unversioned
+    /// request, and `10.0` is `10.0.65535.3`. Measured on .NET 10: after `Version=10.0` bound
+    /// and an architecture miss poisoned the name, `Version=10.0.65535.3` still answers.
+    let private comparedVersion (v : RequestedAssemblyVersion) : uint16 list =
+        [ v.Major ; v.Minor ; v.Build ; v.Revision ]
+        |> List.takeWhile (fun c -> c <> RequestedAssemblyVersion.Unspecified)
+
     /// Every part of the request, as spelled, for the successes the process remembers: the
     /// AppDomain's cache of bound specs compares simple names case-sensitively (measured on
     /// .NET 10: after `System.Buffers` bound and `system.buffers, processorArchitecture=x86`
-    /// missed, `System.Buffers` still answers and `SYSTEM.BUFFERS` does not).
+    /// missed, `System.Buffers` still answers and `SYSTEM.BUFFERS` does not). A culture never
+    /// set and the neutral culture spelled out are two specs to `CompareEx`.
     let private requestKey (request : AssemblyLoadRequest) : string =
-        let v = request.Version
+        let version =
+            comparedVersion request.Version |> List.map string |> String.concat "."
 
         let culture =
             match request.Culture with
-            | None -> ""
+            | None -> "<none>"
             | Some culture -> culture
 
-        $"%s{request.SimpleName}|%d{v.Major}.%d{v.Minor}.%d{v.Build}.%d{v.Revision}|%s{culture}|%s{tokenText request}|%d{request.Flags}"
+        $"%s{request.SimpleName}|%s{version}|%s{culture}|%s{tokenText request}|%d{request.Flags}"
+
+    /// `BaseAssemblySpec::CompareEx` between the request and an identity the runtime recorded
+    /// when it loaded something by another route: the entry assembly's own, or the one a
+    /// metadata reference named. Name, token and every flag exactly; the version component by
+    /// component, stopping at the first one both left out; the culture exactly, with a culture
+    /// never set matching none.
+    let private specEquals (request : AssemblyLoadRequest) (identity : AssemblyName) : bool =
+        let identityToken =
+            match identity.GetPublicKeyToken () with
+            | null -> None
+            | token when token.Length = 0 -> None
+            | token -> Some token
+
+        let sameToken =
+            match request.PublicKeyToken, identityToken with
+            | None, None -> true
+            | Some a, Some b -> a = b
+            | _ -> false
+
+        // `AssemblyName.Flags` leaves the content type to its own property; the spec's flags
+        // word carries both. No architecture term: neither a manifest row nor a display name
+        // the BCL formats carries one, so an identity recorded by another route never has it,
+        // and a request that names one is unequal to every such identity through `Flags`.
+        let identityFlags =
+            int identity.Flags ||| (int identity.ContentType <<< 9)
+
+        let sameVersion =
+            let identityComponents =
+                match identity.Version with
+                | null -> List.replicate 4 RequestedAssemblyVersion.Unspecified
+                | version ->
+                    [ version.Major ; version.Minor ; version.Build ; version.Revision ]
+                    |> List.map (fun c ->
+                        if c < 0 then
+                            RequestedAssemblyVersion.Unspecified
+                        else
+                            uint16 c
+                    )
+
+            let requestedComponents =
+                [
+                    request.Version.Major
+                    request.Version.Minor
+                    request.Version.Build
+                    request.Version.Revision
+                ]
+
+            let rec compare (requested : uint16 list) (found : uint16 list) : bool =
+                match requested, found with
+                | [], [] -> true
+                | r :: requested, f :: found ->
+                    if r <> f then false
+                    elif r = RequestedAssemblyVersion.Unspecified then true
+                    else compare requested found
+                | _ -> false
+
+            compare requestedComponents identityComponents
+
+        let sameCulture =
+            match request.Culture with
+            | None -> false
+            | Some culture -> String.Equals (culture, identity.CultureName, StringComparison.Ordinal)
+
+        String.Equals (request.SimpleName, identity.Name, StringComparison.Ordinal)
+        && sameToken
+        && request.Flags = identityFlags
+        && sameVersion
+        && sameCulture
+
+    /// The definition identity the runtime would answer this request with from the specs it
+    /// recorded by other routes, if any: a reference bound under an identity the request
+    /// equals, or an assembly loaded by the host whose own identity it equals.
+    let tryFindRecordedByOtherRoute
+        (request : AssemblyLoadRequest)
+        (assemblies : LoadedAssemblies)
+        (cache : AssemblyBindCache)
+        : string option
+        =
+        let byReference =
+            assemblies.ReferenceBindings
+            |> List.tryPick (fun (reference, definition) ->
+                if specEquals request (AssemblyName reference) then
+                    Some definition
+                else
+                    None
+            )
+
+        match byReference with
+        | Some definition -> Some definition
+        | None ->
+            assemblies.DefinitionNamesInLoadOrder
+            |> Seq.tryFind (fun definition ->
+                not (Set.contains definition cache.LoadedByName)
+                && specEquals request (assemblies.ByDefinitionName definition).Name
+            )
 
     /// The definition identity an identical request bound to before, if one did.
     let tryFindBound (request : AssemblyLoadRequest) (cache : AssemblyBindCache) : string option =
@@ -139,11 +256,17 @@ module AssemblyBindCache =
     let withBound
         (request : AssemblyLoadRequest)
         (definitionName : string)
+        (readFromDisk : bool)
         (cache : AssemblyBindCache)
         : AssemblyBindCache
         =
         { cache with
             Bound = Map.add (requestKey request) definitionName cache.Bound
+            LoadedByName =
+                if readFromDisk then
+                    Set.add definitionName cache.LoadedByName
+                else
+                    cache.LoadedByName
         }
 
     let withFailed (request : AssemblyLoadRequest) (cache : AssemblyBindCache) : AssemblyBindCache =
@@ -346,10 +469,22 @@ module AssemblyBinding =
         let sameName (candidate : DumpedAssembly) : bool =
             String.Equals (candidate.Name.Name, request.SimpleName, StringComparison.OrdinalIgnoreCase)
 
+        // A culture never set and the neutral culture spelled out both bind the neutral
+        // assembly (`AssemblySpec` treats both as neutral); they part company only in the spec
+        // cache, above.
         let sameCulture (candidate : DumpedAssembly) : bool =
             match request.Culture with
-            | None -> String.IsNullOrEmpty candidate.Name.CultureName
+            | None
+            | Some "" -> String.IsNullOrEmpty candidate.Name.CultureName
             | Some culture -> String.Equals (candidate.Name.CultureName, culture, StringComparison.OrdinalIgnoreCase)
+
+        // CoreCLR refuses to load a WindowsRuntime assembly at all ("The given assembly name
+        // was invalid"), whatever the request asked for; that is not an outcome this binder
+        // reports.
+        let requireDefaultContentType (candidate : DumpedAssembly) : unit =
+            if candidate.Name.ContentType <> AssemblyContentType.Default then
+                failwith
+                    $"TODO: %s{describe} found %s{candidate.Name.FullName}, whose manifest declares ContentType=%O{candidate.Name.ContentType}; CoreCLR refuses to load such an image (FileLoadException, 'The given assembly name was invalid'), which is not an outcome this binder reports"
 
         let foundVersion (candidate : DumpedAssembly) : Version =
             match candidate.Name.Version with
@@ -368,6 +503,7 @@ module AssemblyBinding =
             // "Can't give higher version than already bound" (assemblybindercommon.cpp): the
             // context holds one assembly per simple name, so an incompatible one is a miss
             // rather than a reason to probe for another.
+            requireDefaultContentType candidate
             requireAgnostic candidate
 
             if
@@ -390,6 +526,7 @@ module AssemblyBinding =
                 AssemblyBindResult.NotFound
             else
 
+            requireDefaultContentType read
             requireAgnostic read
 
             if not architectureAccepts then
@@ -416,7 +553,12 @@ module AssemblyBinding =
         (cache : AssemblyBindCache)
         : AssemblyBindCache * AssemblyBindResult
         =
-        match AssemblyBindCache.tryFindBound request cache with
+        let recorded =
+            match AssemblyBindCache.tryFindBound request cache with
+            | Some definitionName -> Some definitionName
+            | None -> AssemblyBindCache.tryFindRecordedByOtherRoute request assemblies cache
+
+        match recorded with
         | Some definitionName ->
             match assemblies.TryByDefinitionName definitionName with
             | Some bound -> cache, AssemblyBindResult.Bound (assemblies, bound)
@@ -430,6 +572,9 @@ module AssemblyBinding =
         else
 
         match bindUncached loggerFactory dotnetRuntimeDirs request assemblies with
-        | AssemblyBindResult.Bound (assemblies, bound) ->
-            AssemblyBindCache.withBound request bound.Name.FullName cache, AssemblyBindResult.Bound (assemblies, bound)
+        | AssemblyBindResult.Bound (loaded, bound) ->
+            let readFromDisk = not (assemblies.ContainsDefinition bound.Name)
+
+            AssemblyBindCache.withBound request bound.Name.FullName readFromDisk cache,
+            AssemblyBindResult.Bound (loaded, bound)
         | AssemblyBindResult.NotFound -> AssemblyBindCache.withFailed request cache, AssemblyBindResult.NotFound

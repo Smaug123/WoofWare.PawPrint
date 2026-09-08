@@ -79,6 +79,38 @@ public class Program
         }
         if (Binds ("System.ComponentModel")) return 29;
 
+        // The runtime recorded the entry assembly's own identity, and the identity each
+        // reference was bound under, when it loaded them: a miss under exactly that identity
+        // does not cost the identity itself.
+        string entry = typeof (Program).Assembly.FullName;
+        if (Binds (entry + ", processorArchitecture=x86")) return 30;
+        if (!Binds (entry)) return 31;
+        // Naming the type is what makes this a reference the runtime bound, whichever
+        // assemblies this file was compiled against.
+        string referenced = typeof (System.Text.RegularExpressions.Regex).Assembly.FullName;
+        if (Binds (referenced + ", processorArchitecture=x86")) return 32;
+        if (!Binds (referenced)) return 33;
+
+        // An assembly a request read from disk has only the request's spec recorded: the same
+        // miss under its identity does cost the identity. System.Security.Claims was read by
+        // the plain request at the top.
+        string claims = Assembly.Load ("System.Security.Claims").FullName;
+        if (Binds (claims + ", processorArchitecture=x86")) return 34;
+        if (Binds (claims)) return 35;
+
+        // A bound spec's version is compared no further than the first unspecified component,
+        // so `65535.1.2.3` is the unversioned request that bound.
+        if (!Binds ("System.Collections.Concurrent")) return 36;
+        if (Binds ("System.Collections.Concurrent, processorArchitecture=x86")) return 37;
+        try
+        {
+            Assembly.Load (new AssemblyName { Name = "System.Collections.Concurrent", Version = new Version (65535, 1, 2, 3) });
+        }
+        catch (FileNotFoundException)
+        {
+            return 38;
+        }
+
         // `Type.GetType` swallows the miss, and is poisoned by it all the same.
         if (Type.GetType ("System.Text.Json.JsonSerializer, System.Text.Json, processorArchitecture=x86") != null) return 15;
         if (Type.GetType ("System.Text.Json.JsonSerializer, System.Text.Json") != null) return 16;

@@ -669,3 +669,128 @@ module TestAssemblyBinding =
                 | AssemblyBindResult.NotFound -> ()
                 | AssemblyBindResult.Bound (_, bound) -> failwith $"culture '../fr' bound %s{bound.Name.FullName}"
             )
+
+    /// Measured on .NET 10: after `Version=10.0` bound and an architecture miss poisoned the
+    /// name, `Version=10.0.65535.3` still answers, and the unversioned request answers
+    /// `65535.1.2.3`.
+    [<Test>]
+    let ``a bound spec's version is compared no further than the first unspecified component`` () =
+        withRuntimeDir
+            (testAssemblySimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+                let bind = bindsWith loggerFactory root
+
+                let own =
+                    (Assembly.readFile loggerFactory (Path.Combine (root, testAssemblySimpleName + ".dll")))
+                        .Name.Version
+
+                let withVersion (v : RequestedAssemblyVersion) =
+                    { plainRequest testAssemblySimpleName with
+                        Version = v
+                    }
+
+                let majorMinor =
+                    requested (uint16 own.Major) (uint16 own.Minor) unspecified unspecified
+
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty (withVersion majorMinor)
+
+                bound |> shouldEqual true
+
+                let cache, assemblies, bound =
+                    bind
+                        cache
+                        assemblies
+                        { withVersion majorMinor with
+                            Flags = 0x20
+                        }
+
+                bound |> shouldEqual false
+
+                let _, _, bound =
+                    bind
+                        cache
+                        assemblies
+                        (withVersion (requested (uint16 own.Major) (uint16 own.Minor) unspecified 3us))
+
+                bound |> shouldEqual true
+
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty (plainRequest testAssemblySimpleName)
+
+                bound |> shouldEqual true
+
+                let cache, assemblies, bound =
+                    bind
+                        cache
+                        assemblies
+                        { plainRequest testAssemblySimpleName with
+                            Flags = 0x20
+                        }
+
+                bound |> shouldEqual false
+
+                let _, _, bound =
+                    bind cache assemblies (withVersion (requested unspecified 1us 2us 3us))
+
+                bound |> shouldEqual true
+            )
+
+    /// The request that spells an assembly's full identity, as `AssemblyName.FullName` would.
+    let private fullIdentityRequest (assy : DumpedAssembly) : AssemblyLoadRequest =
+        let v = assy.Name.Version
+
+        {
+            SimpleName = assy.Name.Name
+            Version = requested (uint16 v.Major) (uint16 v.Minor) (uint16 v.Build) (uint16 v.Revision)
+            Culture = Some ""
+            PublicKeyToken =
+                match assy.Name.GetPublicKeyToken () with
+                | null -> None
+                | token when token.Length = 0 -> None
+                | token -> Some token
+            Flags = int assy.Name.Flags
+        }
+
+    /// Measured on .NET 10: the entry assembly's own identity is a spec the runtime recorded when
+    /// it loaded it, so an architecture miss under that identity does not cost it; an assembly a
+    /// request read from disk has only the request's spec recorded, so the same miss under its
+    /// identity does.
+    [<Test>]
+    let ``an assembly loaded by the host answers to its own identity after a miss under it; one loaded by name does not``
+        ()
+        =
+        withRuntimeDir
+            (testAssemblySimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+                let bind = bindsWith loggerFactory root
+
+                let image =
+                    Assembly.readFile loggerFactory (Path.Combine (root, testAssemblySimpleName + ".dll"))
+
+                let full = fullIdentityRequest image
+
+                let fullX86 =
+                    { full with
+                        Flags = full.Flags ||| 0x20
+                    }
+
+                // Loaded by the host: the identity is recorded.
+                let hosted = LoadedAssemblies.ofAssemblies [ image ]
+                let cache, assemblies, bound = bind AssemblyBindCache.empty hosted fullX86
+                bound |> shouldEqual false
+                let _, _, bound = bind cache assemblies full
+                bound |> shouldEqual true
+
+                // Loaded by a plain request: only that request's spec is recorded.
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty (plainRequest testAssemblySimpleName)
+
+                bound |> shouldEqual true
+                let cache, assemblies, bound = bind cache assemblies fullX86
+                bound |> shouldEqual false
+                let _, _, bound = bind cache assemblies full
+                bound |> shouldEqual false
+            )
