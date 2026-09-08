@@ -51,12 +51,50 @@ module NativeArray =
     /// CoreCLR's `MAX_RANK` (vm/array.h): the most dimensions an array type can have.
     let private maxRank = 32
 
+    /// CoreCLR's `CheckElementType` (classlibnative/bcltype/arraynative.cpp): the element
+    /// types no array can be made of, each carrying the message the `NotSupportedException`
+    /// CoreCLR throws renders from its resource string. `None` means the element is allowed.
+    ///
+    /// Pointers and function pointers are `TypeDesc`s this screen deliberately lets through:
+    /// only a byref or a generic variable is refused there, and `int*[,]` is a legal array
+    /// type (measured on real .NET). Open generic types, generic parameters and open
+    /// constructed types never reach here — each is its own `RuntimeTypeHandleTarget` arm,
+    /// refused before the element is in hand.
+    let private forbiddenElementTypeMessage
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (element : ConcreteTypeHandle)
+        : string option
+        =
+        match element with
+        | ConcreteTypeHandle.Byref _ -> Some "Type is not supported."
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> None
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            // An array-typed element (`int[][,]`) has no nominal TypeDef to ask, and is
+            // neither byref-like nor `System.Void`, so `None` is the right answer for it.
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes element with
+            | None -> None
+            | Some (concreteType, typeInfo) ->
+                if DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+                    Some "Cannot create arrays of ByRef-like values."
+                elif concreteType.Identity = baseClassTypes.Void.Identity then
+                    Some "Arrays of System.Void are not supported."
+                else
+                    None
+
+    /// The array type to allocate and its element type, or the message of the
+    /// `NotSupportedException` CoreCLR raises for an element type no array can hold.
     let private arrayTypeForCreateInstance
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
         (operation : string)
         (fromArrayType : bool)
         (rank : int)
         (target : RuntimeTypeHandleTarget)
-        : ConcreteTypeHandle * ConcreteTypeHandle
+        : Result<ConcreteTypeHandle * ConcreteTypeHandle, string>
         =
         match target with
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
@@ -75,28 +113,37 @@ module NativeArray =
         | RuntimeTypeHandleTarget.FunctionPointer _ -> RuntimeTypeHandleTarget.refuseComposite operation target
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             if fromArrayType then
+                // No element-type screen on this path, as CoreCLR has none: the array type is
+                // already loaded, and an array type with a forbidden element could not have
+                // been formed to be passed in.
                 match typeHandle with
-                | ConcreteTypeHandle.OneDimArrayZero element when rank = 1 -> typeHandle, element
+                | ConcreteTypeHandle.OneDimArrayZero element when rank = 1 -> Ok (typeHandle, element)
                 | ConcreteTypeHandle.Array (_, 1) ->
                     // A rank-1 ELEMENT_TYPE_ARRAY (`T[*]`) is a distinct runtime type from the
                     // szarray `T[]`, and PawPrint has no allocation for it: the multi-dim
                     // constructor refuses rank 1 for the same reason.
                     failwith
                         $"TODO: %s{operation} from rank-1 multidimensional array type %O{typeHandle}; PawPrint does not model T[*]"
-                | ConcreteTypeHandle.Array (element, arrayRank) when rank = arrayRank -> typeHandle, element
+                | ConcreteTypeHandle.Array (element, arrayRank) when rank = arrayRank -> Ok (typeHandle, element)
                 | ConcreteTypeHandle.Array _ ->
                     failwith $"%s{operation}: requested rank %d{rank} does not match array type %O{typeHandle}"
                 | other -> failwith $"%s{operation}: fromArrayType=true expected array RuntimeType, got %O{other}"
-            else if rank = 1 then
-                ConcreteTypeHandle.OneDimArrayZero typeHandle, typeHandle
-            else if rank > maxRank then
+            else
+
+            match forbiddenElementTypeMessage baseClassTypes state typeHandle with
+            | Some message -> Error message
+            | None ->
+
+            if rank = 1 then
+                Ok (ConcreteTypeHandle.OneDimArrayZero typeHandle, typeHandle)
+            elif rank > maxRank then
                 // `ClassLoader::LoadArrayTypeThrowing` refuses the type itself with
                 // IDS_CLASSLOAD_RANK_TOOLARGE, so the guest sees a TypeLoadException naming
                 // the array type and its assembly.
                 failwith
                     $"TODO: %s{operation} for rank %d{rank}, above CoreCLR's MAX_RANK of %d{maxRank}; should raise TypeLoadException"
             else
-                ConcreteTypeHandle.Array (typeHandle, rank), typeHandle
+                Ok (ConcreteTypeHandle.Array (typeHandle, rank), typeHandle)
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -153,6 +200,18 @@ module NativeArray =
             if rank < 1 then
                 failwith $"%s{operation}: rank %d{rank} violates the QCall's precondition that it is positive"
 
+            // CoreCLR screens the element type and loads the array type before it reads any
+            // length, so a forbidden element type is reported even where a length would
+            // independently have failed.
+            match arrayTypeForCreateInstance ctx.BaseClassTypes state operation fromArrayType rank typeHandle with
+            | Error message ->
+                NativeHandlerResult.raiseExceptionWithMessage
+                    ctx.BaseClassTypes.NotSupportedException
+                    (Some message)
+                    state
+                |> Some
+            | Ok (arrayType, elementType) ->
+
             let int32ConcreteType = requiredInt32ConcreteType operation ctx.BaseClassTypes state
 
             let dimensionLengths =
@@ -185,9 +244,6 @@ module NativeArray =
                     if lowerBound <> 0 then
                         failwith
                             $"TODO: %s{operation} with non-zero lower bound %d{lowerBound} at dimension %d{i}; PawPrint only models zero lower bounds"
-
-            let arrayType, elementType =
-                arrayTypeForCreateInstance operation fromArrayType rank typeHandle
 
             let zero, state =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes elementType

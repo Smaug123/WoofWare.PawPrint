@@ -10,6 +10,11 @@ using System;
 //
 // Only zero lower bounds are exercised: an array with a non-zero lower bound is a
 // different runtime shape, and this guest is about the rank.
+//
+// CoreCLR's `CheckElementType` runs on this QCall whenever the caller named an element
+// type rather than an array type, so the element types it forbids are exercised too, at
+// rank 1 as well as above it. Each is checked by the exact message CoreCLR's resource
+// string renders, so a refusal for some other reason does not pass.
 public class TestArrayCreateInstanceMultiDim
 {
     private struct Pair
@@ -178,6 +183,70 @@ public class TestArrayCreateInstanceMultiDim
         return 0;
     }
 
+    private static string Refusal(Func<object> f)
+    {
+        try
+        {
+            f();
+            return "no exception";
+        }
+        catch (NotSupportedException e)
+        {
+            return e.Message;
+        }
+        catch (Exception e)
+        {
+            return e.GetType().Name;
+        }
+    }
+
+    // The element types CoreCLR forbids, at rank 1 and above it: the screen precedes the
+    // rank, so both must refuse and with the same message.
+    private static int ForbiddenElementTypes()
+    {
+        const string voidMessage = "Arrays of System.Void are not supported.";
+        const string byRefLikeMessage = "Cannot create arrays of ByRef-like values.";
+
+        if (Refusal(() => Array.CreateInstance(typeof(void), 2, 3)) != voidMessage) return 1;
+        if (Refusal(() => Array.CreateInstance(typeof(void), new int[] { 2, 3, 4 })) != voidMessage) return 2;
+        if (Refusal(() => Array.CreateInstance(typeof(void), 2)) != voidMessage) return 3;
+
+        if (Refusal(() => Array.CreateInstance(typeof(Span<int>), 2, 3)) != byRefLikeMessage) return 4;
+        if (Refusal(() => Array.CreateInstance(typeof(Span<int>), 2)) != byRefLikeMessage) return 5;
+        if (Refusal(() => Array.CreateInstance(typeof(TypedReference), 2, 3)) != byRefLikeMessage) return 6;
+
+        // The refusal is a guest-catchable exception, so execution continues normally: a
+        // legal creation right after a refused one still works.
+        Array afterwards = Array.CreateInstance(typeof(int), 2, 3);
+        if (afterwards.Length != 6) return 7;
+
+        return 0;
+    }
+
+    // A pointer element is a `TypeDesc` the screen deliberately lets through, as is an
+    // array element. Both must still allocate.
+    private static unsafe int AllowedExoticElementTypes()
+    {
+        Array pointers = Array.CreateInstance(typeof(int*), 2, 3);
+        if (pointers.Rank != 2) return 1;
+        if (pointers.Length != 6) return 2;
+        if (pointers.GetType() != typeof(int*[,])) return 3;
+
+        Array jagged = Array.CreateInstance(typeof(int[]), 2, 3);
+        if (jagged.Rank != 2) return 4;
+        if (jagged.Length != 6) return 5;
+        // Reflection and C# order the suffixes oppositely: this is `System.Int32[][,]` to
+        // reflection and `int[,][]` in C#, a rank-2 array whose elements are `int[]`.
+        if (jagged.GetType() != typeof(int[,][])) return 6;
+
+        int[,][] typedJagged = (int[,][])jagged;
+        if (typedJagged[1, 2] != null) return 7;
+        typedJagged[1, 2] = new int[1];
+        if (typedJagged[1, 2].Length != 1) return 8;
+
+        return 0;
+    }
+
     public static int Main()
     {
         int r;
@@ -188,6 +257,8 @@ public class TestArrayCreateInstanceMultiDim
         if ((r = ZeroDimension()) != 0) return 180 + r;
         if ((r = FromArrayType()) != 0) return 200 + r;
         if ((r = Rank1StaysSzArray()) != 0) return 220 + r;
+        if ((r = ForbiddenElementTypes()) != 0) return 230 + r;
+        if ((r = AllowedExoticElementTypes()) != 0) return 240 + r;
         return 0;
     }
 }
