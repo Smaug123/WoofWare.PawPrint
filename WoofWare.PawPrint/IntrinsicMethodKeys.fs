@@ -1395,21 +1395,32 @@ module IntrinsicMethodKeys =
                 "System.Runtime.CompilerServices.Unsafe"
                 "IsAddressGreaterThanOrEqualTo"
                 [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Byref ]
-            // Vector{64,128,256,512}<T>.IsSupported asks whether T is a valid vector
-            // *element type*, not whether the hardware can accelerate the width: real .NET
-            // answers true for the twelve primitive element types even on hardware with no
-            // SIMD at all, and ThrowHelper.ThrowForUnsupportedIntrinsicsVectorNNNBaseType
-            // relies on the true answer to no-op on paths that are live under a scalar
-            // profile (folding these to false raises NotSupportedException where real .NET
-            // proceeds). The body is an honest terminating chain of twelve
-            // `typeof(T) == typeof(X)` checks — ldtoken / GetTypeFromHandle / op_Equality
-            // throughout, all modelled boundaries — which the JIT merely constant-folds.
-            // All four widths share the same body shape.
+            // Vector{64,128,256,512}<T>.IsSupported and System.Numerics.Vector<T>.IsSupported
+            // ask whether T is a valid vector *element type*, not whether the hardware can
+            // accelerate the width: real .NET answers true for the twelve primitive element
+            // types even on hardware with no SIMD at all, and
+            // ThrowHelper.ThrowForUnsupportedIntrinsicsVectorNNNBaseType /
+            // ThrowForUnsupportedNumericsVectorBaseType rely on the true answer to no-op on
+            // paths that are live under a scalar profile (folding these to false raises
+            // NotSupportedException where real .NET proceeds). The body is an honest
+            // terminating chain of twelve `typeof(T) == typeof(X)` checks — ldtoken /
+            // GetTypeFromHandle / op_Equality throughout, all modelled boundaries — which the
+            // JIT merely constant-folds. All five types share the same body shape.
+            //
+            // A true answer commits PawPrint to nothing further. All five types carry a
+            // type-level [Intrinsic], and `isIntrinsic` (IlMachineStateExecution.fs) reads that
+            // attribute off the call site's declaring type, so a direct call to any other member
+            // — including the ones with no [Intrinsic] of their own, such as the constructors,
+            // `ToString` and `CopyTo` — is routed to the intrinsic dispatcher and stops at the
+            // unimplemented-intrinsic gate rather than running IL the scalar profile cannot
+            // honour.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics/Vector256_1.cs#L78-L97
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/Vector_1.cs#L169-L183
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector64`1" "get_IsSupported" []
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector128`1" "get_IsSupported" []
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector256`1" "get_IsSupported" []
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector512`1" "get_IsSupported" []
+            pattern "System.Private.CoreLib" "System.Numerics.Vector`1" "get_IsSupported" []
             // `System.Int128` and `System.UInt128` each carry a *type-level* [Intrinsic], which
             // is why every one of their members reaches the intrinsic dispatcher. That marker is
             // not about body substitution: CoreCLR consumes it in MethodTableBuilder

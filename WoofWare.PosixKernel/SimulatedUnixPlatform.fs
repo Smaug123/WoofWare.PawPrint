@@ -290,6 +290,20 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> RawErrnoNumbering.Linux
         | SimulatedUnixFlavour.Darwin -> RawErrnoNumbering.Darwin
 
+    /// Whose `<signal.h>` numbering this platform reports.
+    ///
+    /// Same shape as `rawErrnoNumbering`, and needed for the same reason: a
+    /// signo says nothing until something names the Unix that assigned it.
+    /// 17 is `SIGCHLD` on Linux and `SIGSTOP` on Darwin, so a guest that
+    /// registers for `PosixSignal.SIGCHLD` must be handed 17 on the one and 20
+    /// on the other, and one that hands 17 back must be told it cannot catch
+    /// it on Darwin alone. `Signal.toRawSignoUnder` and its siblings take the
+    /// answer.
+    let signalNumbering (platform : SimulatedUnixPlatform) : SignalNumbering =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> SignalNumbering.Linux
+        | SimulatedUnixFlavour.Darwin -> SignalNumbering.Darwin
+
     /// What this platform's `getcwd(3)` reports for a removed current directory.
     /// See `GetCwdOrphanAnswer`.
     let getCwdOrphanAnswer (platform : SimulatedUnixPlatform) : GetCwdOrphanAnswer =

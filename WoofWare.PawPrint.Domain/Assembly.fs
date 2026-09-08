@@ -1091,6 +1091,56 @@ module Assembly =
     let private fileCache : ConcurrentDictionary<AssemblyFileCacheKey, Lazy<DumpedAssembly>> =
         ConcurrentDictionary<AssemblyFileCacheKey, Lazy<DumpedAssembly>> ()
 
+    /// <summary>
+    /// The MethodDef the CLI header names as the image's managed entry point, or None when the
+    /// header names none (the field is zero, or holds a token whose row is zero, which is what
+    /// CoreCLR's <c>IsNilToken</c> takes to mean the same).
+    /// </summary>
+    /// <remarks>
+    /// Refuses the image rather than answering when the field is not a MethodDef token:
+    /// with <c>CorFlags.NativeEntryPoint</c> set it is an RVA into native code, which this
+    /// runtime never executes; a <c>File</c> token points into another module of a
+    /// multi-module assembly, which nothing here can load; any other kind, or a MethodDef row
+    /// the table does not have, is a malformed image.
+    /// </remarks>
+    let private managedEntryPoint (corHeader : CorHeader) (methodDefRowCount : int) : MethodDefinitionHandle option =
+        let field = corHeader.EntryPointTokenOrRelativeVirtualAddress
+
+        if corHeader.Flags.HasFlag CorFlags.NativeEntryPoint then
+            failwith
+                $"Image has CorFlags.NativeEntryPoint set, so its entry-point field 0x%08x{field} is an RVA into native code rather than a MethodDef token; this runtime never executes native code"
+
+        // CoreCLR's IsNilToken looks only at the row bits, so a row-zero token is "no entry
+        // point" whatever its table tag, including tags no entity table has. Decoding the tag
+        // first would refuse such a token instead.
+        if field &&& 0x00FFFFFF = 0 then
+            None
+        else
+
+        let handle =
+            try
+                MetadataTokens.EntityHandle field
+            with :? ArgumentException ->
+                // A user-string tag, or a tag no table has.
+                failwith
+                    $"Entry-point token 0x%08x{field} has table tag 0x%02x{(field >>> 24) &&& 0xFF}, which is not a metadata table; ECMA-335 II.25.3.3 allows only a MethodDef or File token here"
+
+        match handle.Kind with
+        | HandleKind.MethodDefinition ->
+            let row = MetadataTokens.GetRowNumber handle
+
+            if row > methodDefRowCount then
+                failwith
+                    $"Entry-point token 0x%08x{field} names MethodDef row %d{row}, but the MethodDef table has only %d{methodDefRowCount} rows"
+
+            Some (MethodDefinitionHandle.op_Explicit handle)
+        | HandleKind.AssemblyFile ->
+            failwith
+                $"TODO: entry-point token 0x%08x{field} is a File token, placing the entry point in another module of a multi-module assembly, which is not supported"
+        | kind ->
+            failwith
+                $"Entry-point token 0x%08x{field} has kind %A{kind}; ECMA-335 II.25.3.3 allows only a MethodDef or File token here"
+
     let private readUncached
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
@@ -1112,12 +1162,8 @@ module Assembly =
             metadataReader.GetAssemblyDefinition ()
             |> WoofWare.PawPrint.AssemblyDefinition.make
 
-        let entryPoint =
-            peReader.PEHeaders.CorHeader.EntryPointTokenOrRelativeVirtualAddress
-            |> fun x -> if x = 0 then None else Some x
-
         let entryPointMethod =
-            entryPoint |> Option.map MetadataTokens.MethodDefinitionHandle
+            managedEntryPoint peReader.PEHeaders.CorHeader (metadataReader.GetTableRowCount TableIndex.MethodDef)
 
         let assemblyRefs =
             let builder = ImmutableDictionary.CreateBuilder ()
