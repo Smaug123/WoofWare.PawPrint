@@ -206,6 +206,22 @@ module TestWithFileSystemAndCurrentDirectory =
             | Ok _ -> ()
             | Error fault -> failwith $"a 255-byte name is within NAME_MAX, but the seed answered %O{fault}."
 
+    /// A forged seed name is refused with the seed's context before it is
+    /// measured, as it was before the length rule stood in front of the graph.
+    [<Test>]
+    let ``a forged seed name is refused by name, not by a null dereference`` () : unit =
+        let forged =
+            Map.ofList [ Unchecked.defaultof<DirectoryEntryName>, SeedEntry.file noBytes ]
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt forged (absolute "/")
+                |> ignore<Result<UnixSystem<int, string>, CurrentDirectoryFault>>
+            )
+
+        exn.Message |> shouldContainText "withFileSystemAndCurrentDirectory"
+
     [<Test>]
     let ``a directory the seed does not contain answers DoesNotResolve`` () : unit =
         startAt SimulatedUnixPlatform.linuxX64 seed "/outer/nope"

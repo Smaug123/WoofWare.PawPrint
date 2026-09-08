@@ -887,6 +887,12 @@ module UnixSystem =
             entries
             |> Map.toSeq
             |> Seq.tryPick (fun (name, entry) ->
+                // A forged name is refused with the seed's context, as
+                // `ofFileSystemSeed` would refuse it, rather than reaching the
+                // measurement as a null.
+                let name =
+                    DirectoryEntryName.assertValid "UnixSystem.withFileSystemAndCurrentDirectory seed" name
+
                 if not (PathLimits.nameWithinLimit limits name) then
                     Some name
                 else
