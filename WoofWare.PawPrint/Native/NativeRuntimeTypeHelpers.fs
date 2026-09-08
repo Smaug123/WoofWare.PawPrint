@@ -1871,8 +1871,9 @@ module NativeRuntimeTypeHelpers =
 
     /// Why CoreCLR's type loader will not construct an szarray over `element`, if it will not.
     /// The three refusals are checked in this order (`ClassLoader::CreateTypeHandleForTypeKey`,
-    /// clsload.cpp:2693-2708), so a byref over a byref-like type is refused as a byref. Every
-    /// other element is legal, including `void*`, a function pointer, an open definition, a type
+    /// clsload.cpp:2693-2708). A byref over a byref-like type is refused as a byref, which is a
+    /// fact about `isByRefLike` (a byref is a TypeDesc) rather than about the order. Every other
+    /// element is legal, including `void*`, a function pointer, an open definition, a type
     /// variable (whatever its constraints) and a shape over one.
     let szArrayElementRefusal
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)

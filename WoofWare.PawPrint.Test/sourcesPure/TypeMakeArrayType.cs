@@ -125,7 +125,8 @@ static class Program
         {
             if (Refused(typeof(delegate*<int, string>).MakeByRefType(), "System.String(System.Int32)&", coreLib, "ByRef") is int r6) return 150 + r6;
         }
-        // A byref over a byref-like type is refused as a byref: that check comes first.
+        // A byref over a byref-like type is refused as a byref: a byref is a TypeDesc, and no
+        // TypeDesc is byref-like whatever its element is.
         if (Refused(typeof(Span<int>).MakeByRefType(), "System.Span`1[System.Int32]&", coreLib, "ByRef") is int r7) return 160 + r7;
 
         if (Refused(typeof(Span<int>), "System.Span`1[System.Int32][]", coreLib, "ByRef-like") is int r8) return 170 + r8;
