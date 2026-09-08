@@ -5,12 +5,16 @@ open System.Reflection
 open Microsoft.Extensions.Logging
 
 /// The reason CoreCLR's type loader refuses to construct an szarray over an element type. Each
-/// case is one `IDS_CLASSLOAD_*ARRAY` resource (mscorrc/resource.h:108-110).
+/// case is one `mscorrc` resource, and they are checked in this order.
 [<RequireQualifiedAccess>]
 type SzArrayElementRefusal =
     | ByRef
     | ByRefLike
     | Void
+    /// A value type too big for the array's `ComponentSize` field to describe. Unlike the three
+    /// above, this one is raised when the array's own MethodTable is built rather than when its
+    /// type key is validated, and its message names the *element* rather than the array.
+    | ValueClassTooLarge
 
 module NativeRuntimeTypeHelpers =
     let primitiveCorElementType (primitive : PrimitiveType) : int32 =
@@ -1879,22 +1883,35 @@ module NativeRuntimeTypeHelpers =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (element : RuntimeTypeHandleTarget)
-        : SzArrayElementRefusal option
+        : IlMachineState * SzArrayElementRefusal option
         =
         match element with
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
-        | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) -> Some SzArrayElementRefusal.ByRef
+        | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) -> state, Some SzArrayElementRefusal.ByRef
         | _ ->
 
         if RuntimeTypeHandleTarget.isByRefLike baseClassTypes state._LoadedAssemblies state.ConcreteTypes element then
-            Some SzArrayElementRefusal.ByRefLike
+            state, Some SzArrayElementRefusal.ByRefLike
         else
 
         match element with
         // `TypeHandle::GetSignatureCorElementType() == ELEMENT_TYPE_VOID`: only the `System.Void`
         // MethodTable itself, never a shape over it.
-        | RuntimeTypeHandleTarget.Closed (ConcreteVoid state.ConcreteTypes) -> Some SzArrayElementRefusal.Void
-        | _ -> None
+        | RuntimeTypeHandleTarget.Closed (ConcreteVoid state.ConcreteTypes) -> state, Some SzArrayElementRefusal.Void
+        | RuntimeTypeHandleTarget.Closed handle when argumentIsValueType baseClassTypes state handle ->
+            // Only a value type can be big enough to matter: every other element occupies one
+            // pointer. Real .NET refuses an *open* value type by the same rule (measured:
+            // `BigWrapper<>[]` and `BigWrapper<T>[]` both throw), but PawPrint cannot size an open
+            // generic at all -- `MethodTableProjection.openArrayComponentSize` refuses one outright
+            // -- so this decides only the closed elements, which is exactly the set whose size the
+            // array's own `ComponentSize` projection would otherwise be asked for and fail on.
+            let size, state = MethodTableProjection.storageSize baseClassTypes state handle
+
+            if size > MethodTableProjection.maxValueClassSizeInArray then
+                state, Some SzArrayElementRefusal.ValueClassTooLarge
+            else
+                state, None
+        | _ -> state, None
 
     /// A display name for a constraint type, for the diagnostic message only.
     let private constraintDisplayName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
@@ -2520,10 +2537,10 @@ module NativeRuntimeTypeHelpers =
         targetName typeHandleTarget
 
 
-    /// The type string CoreCLR's `ClassLoader::ThrowTypeLoadException` puts in the
-    /// `TypeLoadException` for `refusal` of an szarray over `element`: the array key rendered under
-    /// `FormatNamespace` alone, except that for a byref element it is the byref alone, because the
-    /// type-name builder will not append `[]` after `&`. Measured on .NET 10 for each refusal.
+    /// The type string CoreCLR puts in the `TypeLoadException` for `refusal` of an szarray over
+    /// `element`, rendered under `FormatNamespace` alone. Usually the array key; for a byref
+    /// element it is the byref alone, because the type-name builder will not append `[]` after
+    /// `&`, and for an oversized value type it is the element. Measured on .NET 10 for each.
     let szArrayRefusalTypeName
         (operation : string)
         (state : IlMachineState)
@@ -2533,7 +2550,11 @@ module NativeRuntimeTypeHelpers =
         =
         let rendered =
             match refusal with
-            | SzArrayElementRefusal.ByRef -> element
+            // The byref refusal renders the byref alone rather than the array over it, and the
+            // oversized-value-type one names the element because CoreCLR passes
+            // `elemTypeHnd.GetName` rather than the type key (array.cpp:362).
+            | SzArrayElementRefusal.ByRef
+            | SzArrayElementRefusal.ValueClassTooLarge -> element
             | SzArrayElementRefusal.ByRefLike
             | SzArrayElementRefusal.Void -> RuntimeTypeHandleTarget.composite CompositeShape.OneDimArrayZero element
 

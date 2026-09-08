@@ -29,11 +29,26 @@ public class Generic<T> { }
 
 public struct PlainStruct { public int Field; }
 
+public struct GenericStruct<T> { public T Field; }
+
 public ref struct RefStruct { public int Field; }
 
 public ref struct GenericRefStruct<T> { public int Field; }
 
 public class AllowsRef<T> where T : allows ref struct { }
+
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Size = 65535)]
+public struct AtLimit { }
+
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Size = 65536)]
+public struct OverLimit { }
+
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit, Size = 70000)]
+public struct WayOverLimit { }
+
+public struct NaturallyOversized { public AtLimit Pad; public int Tail; }
+
+public class OversizedHolder { public OverLimit Field; }
 
 public unsafe class FnPtrHolder<T>
 {
@@ -170,6 +185,8 @@ public unsafe class FnPtrHolder<T>
         let allowsRefVariable =
             RuntimeTypeHandleTarget.GenericParameter (allowsRef.Identity, 0)
 
+        let genericStruct = guestType "GenericStruct`1"
+        let hostGenericStruct = hostType "GenericStruct`1"
         let fnPtrHolder = guestType "FnPtrHolder`1"
 
         let fnPtrVariable =
@@ -268,6 +285,34 @@ public unsafe class FnPtrHolder<T>
             "System.String(System.Int32)&",
             closed (TypeDefn.Byref (TypeDefn.FunctionPointer closedFunctionPointerSignature)),
             (hostFunctionPointer "Closed").MakeByRefType ()
+            // The size limit, from both sides of it: `ComponentSize` is a UInt16, so 65535 is the
+            // largest element an array may have. Only value types can reach it -- a class element
+            // is one pointer -- so the class row below is the control that keeps the rule from
+            // being "anything whose declared Size is large".
+            "AtLimit (65535 bytes)", closed (definitionDefn (guestType "AtLimit")), hostType "AtLimit"
+            "OverLimit (65536 bytes)", closed (definitionDefn (guestType "OverLimit")), hostType "OverLimit"
+            "WayOverLimit (70000 bytes)", closed (definitionDefn (guestType "WayOverLimit")), hostType "WayOverLimit"
+            // Oversized by its fields rather than by a declared Size.
+            "NaturallyOversized",
+            closed (definitionDefn (guestType "NaturallyOversized")),
+            hostType "NaturallyOversized"
+            // A *generic* value type is sized after substitution, so the same argument makes
+            // Generic<OverLimit> too large while Generic<AtLimit> is not.
+            "GenericStruct<OverLimit>",
+            closed (closedGeneric genericStruct (definitionDefn (guestType "OverLimit"))),
+            hostGenericStruct.MakeGenericType (hostType "OverLimit")
+            "GenericStruct<AtLimit>",
+            closed (closedGeneric genericStruct (definitionDefn (guestType "AtLimit"))),
+            hostGenericStruct.MakeGenericType (hostType "AtLimit")
+            "OversizedHolder (a class)",
+            closed (definitionDefn (guestType "OversizedHolder")),
+            hostType "OversizedHolder"
+            "OverLimit*",
+            closed (TypeDefn.Pointer (definitionDefn (guestType "OverLimit"))),
+            (hostType "OverLimit").MakePointerType ()
+            "OverLimit&",
+            closed (TypeDefn.Byref (definitionDefn (guestType "OverLimit"))),
+            (hostType "OverLimit").MakeByRefType ()
         ]
 
     /// The host's verdict: `None` if the array type loads, else the refusal and the type string
@@ -284,6 +329,8 @@ public unsafe class FnPtrHolder<T>
                     SzArrayElementRefusal.ByRefLike
                 elif e.Message.EndsWith "because the element type is System.Void." then
                     SzArrayElementRefusal.Void
+                elif e.Message.EndsWith "cannot be created because base value type is too large." then
+                    SzArrayElementRefusal.ValueClassTooLarge
                 else
                     failwith $"host refused an szarray over %O{element} with an unrecognised message: %s{e.Message}"
 
@@ -293,12 +340,18 @@ public unsafe class FnPtrHolder<T>
     let private pawPrintVerdict
         (state : IlMachineState)
         (element : RuntimeTypeHandleTarget)
-        : (SzArrayElementRefusal * string) option
+        : IlMachineState * (SzArrayElementRefusal * string) option
         =
-        NativeRuntimeTypeHelpers.szArrayElementRefusal bct state element
-        |> Option.map (fun refusal ->
-            refusal, NativeRuntimeTypeHelpers.szArrayRefusalTypeName "test" state element refusal
-        )
+        let state, refusal =
+            NativeRuntimeTypeHelpers.szArrayElementRefusal bct state element
+
+        let rendered =
+            refusal
+            |> Option.map (fun refusal ->
+                refusal, NativeRuntimeTypeHelpers.szArrayRefusalTypeName "test" state element refusal
+            )
+
+        state, rendered
 
     [<Test>]
     let ``every element's szarray refusal and type string agree with the host CLR`` () : unit =
@@ -309,8 +362,8 @@ public unsafe class FnPtrHolder<T>
         for name, target, hostElement in elementPool do
             let expected = hostVerdict hostElement
             let state', element = target state
+            let state', actual = pawPrintVerdict state' element
             state <- state'
-            let actual = pawPrintVerdict state element
 
             verdictsSeen <- verdictsSeen.Add (expected |> Option.map fst)
 
@@ -332,6 +385,7 @@ public unsafe class FnPtrHolder<T>
                     Some SzArrayElementRefusal.ByRef
                     Some SzArrayElementRefusal.ByRefLike
                     Some SzArrayElementRefusal.Void
+                    Some SzArrayElementRefusal.ValueClassTooLarge
                 ]
 
         if verdictsSeen <> allVerdicts then

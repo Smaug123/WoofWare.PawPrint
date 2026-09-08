@@ -319,6 +319,28 @@ module internal MethodTableProjection =
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
         | RuntimeTypeHandleTarget.FunctionPointer _ -> 0
 
+    /// How many bytes one storage slot of <paramref name="handle"/> occupies: the value's own
+    /// image for a value type, and a pointer for everything else. This is CoreCLR's
+    /// <c>TypeHandle::GetSize</c>, and hence what an array of this element would report as its
+    /// <c>MethodTable::ComponentSize</c> — which is why the array type-load size limit is decided
+    /// with this same function rather than a second one that could disagree with it.
+    let storageSize
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (handle : ConcreteTypeHandle)
+        : int * IlMachineState
+        =
+        match tryFastStorageSize baseClassTypes state handle with
+        | Some size -> size, state
+        | None ->
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes handle
+            CliType.sizeOf zero, state
+
+    /// The largest a value-type array element may be. CoreCLR's
+    /// <c>MAX_SIZE_FOR_VALUECLASS_IN_ARRAY</c>, enforced by <c>Module::CreateArrayMethodTable</c>
+    /// (array.cpp:358-366) because <c>ComponentSize</c> is a <c>UInt16</c>.
+    let maxValueClassSizeInArray : int = int UInt16.MaxValue
+
     let private componentSize
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -327,14 +349,9 @@ module internal MethodTableProjection =
         =
         match tryArrayElement methodTableFor with
         | Some (element, _) ->
-            let size, state =
-                match tryFastStorageSize baseClassTypes state element with
-                | Some size -> size, state
-                | None ->
-                    let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes element
-                    CliType.sizeOf zero, state
+            let size, state = storageSize baseClassTypes state element
 
-            if size < 0 || size > int UInt16.MaxValue then
+            if size < 0 || size > maxValueClassSizeInArray then
                 failwith $"MethodTable::ComponentSize for %O{methodTableFor} does not fit in UInt16: %i{size}"
 
             uint16 size, state

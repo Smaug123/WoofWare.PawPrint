@@ -1,6 +1,18 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.InteropServices;
+
+// An array's ComponentSize is a UInt16, so 65535 is the largest value-type element it may have.
+[StructLayout(LayoutKind.Sequential, Size = 65535)]
+public struct AtLimit { }
+
+[StructLayout(LayoutKind.Sequential, Size = 65536)]
+public struct OverLimit { }
+
+public struct GenericStruct<T> { public T Field; }
+
+public class BigFieldClass { public OverLimit Field; }
 
 class Sample
 {
@@ -140,7 +152,51 @@ static class Program
 
         if (Refused(typeof(void), "System.Void[]", coreLib, "System.Void") is int r15) return 240 + r15;
 
+        // The size limit, from both sides. Unlike the three refusals above, this one is raised when
+        // the array's own MethodTable is built, and its message names the element rather than the
+        // array it was asked for.
+        if (typeof(AtLimit).MakeArrayType() != typeof(AtLimit[])) return 250;
+        if (typeof(GenericStruct<AtLimit>).MakeArrayType() != typeof(GenericStruct<AtLimit>[])) return 251;
+        // Only value types can reach the limit: a class element is one pointer however big the
+        // class is, and a pointer to an oversized struct is still a pointer.
+        if (typeof(BigFieldClass).MakeArrayType() != typeof(BigFieldClass[])) return 252;
+        unsafe
+        {
+            // Spelled with `typeof` rather than `MakePointerType()`, which is the separate and
+            // still-unimplemented `RuntimeTypeHandle_MakePointer` QCall.
+            if (typeof(OverLimit*).MakeArrayType() != typeof(OverLimit*[])) return 253;
+        }
+
+        if (TooLarge(typeof(OverLimit), "OverLimit", here) is int r16) return 260 + r16;
+        if (TooLarge(typeof(GenericStruct<OverLimit>), "GenericStruct`1[OverLimit]", here) is int r17) return 270 + r17;
+
         return 0;
+    }
+
+    // As `Refused`, for the oversized-value-type refusal, whose message has its own shape.
+    static int? TooLarge(Type element, string expectedTypeName, string expectedAssembly)
+    {
+        try
+        {
+            element.MakeArrayType();
+            return 1;
+        }
+        catch (TypeLoadException e)
+        {
+            string expected = $"Array of type '{expectedTypeName}' from assembly '{expectedAssembly}' cannot be created because base value type is too large.";
+            if (e.Message != expected)
+            {
+                Console.Error.WriteLine($"message: {e.Message}");
+                return 2;
+            }
+            if (e.TypeName != expectedTypeName)
+            {
+                Console.Error.WriteLine($"TypeName: {e.TypeName}");
+                return 3;
+            }
+        }
+
+        return null;
     }
 
     // Null when the call behaves as CoreCLR does; otherwise a small code saying which check failed.

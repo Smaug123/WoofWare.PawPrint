@@ -357,7 +357,7 @@ module NativeRuntimeTypeQCall =
             // like any other (measured on .NET 10: the hidden type reached through
             // `RuntimeMethodHandle.GetDeclaringType` answers `(dynamicClass)[]`).
             match szArrayElementRefusal ctx.BaseClassTypes state typeHandleTarget with
-            | Some refusal ->
+            | state, Some refusal ->
                 // `ClassLoader::ThrowTypeLoadException(pKey, ...)` names the assembly of the
                 // key's module, which for an array key is its element's; `typeAssemblyFullName`
                 // peels the shapes the same way.
@@ -370,24 +370,32 @@ module NativeRuntimeTypeQCall =
                 // The EE constructs the exception from the two strings and the resource id, which
                 // is where `TypeLoadException.TypeName` and the serialised `TypeLoadResourceID`
                 // come from (mscorrc/resource.h:108-110; the format strings are mscorrc.rc:326-328).
-                let reason, resourceId =
+                let message, resourceId =
                     match refusal with
-                    | SzArrayElementRefusal.ByRef -> "ByRef", 0x1775
-                    | SzArrayElementRefusal.ByRefLike -> "ByRef-like", 0x1776
-                    | SzArrayElementRefusal.Void -> "System.Void", 0x1777
+                    | SzArrayElementRefusal.ByRef ->
+                        $"Could not create array type '%s{typeName}' from assembly '%s{assemblyName}' because the element type is ByRef.",
+                        0x1775
+                    | SzArrayElementRefusal.ByRefLike ->
+                        $"Could not create array type '%s{typeName}' from assembly '%s{assemblyName}' because the element type is ByRef-like.",
+                        0x1776
+                    | SzArrayElementRefusal.Void ->
+                        $"Could not create array type '%s{typeName}' from assembly '%s{assemblyName}' because the element type is System.Void.",
+                        0x1777
+                    | SzArrayElementRefusal.ValueClassTooLarge ->
+                        $"Array of type '%s{typeName}' from assembly '%s{assemblyName}' cannot be created because base value type is too large.",
+                        0x177b
 
                 NativeHandlerResult.raiseExceptionWithFields
                     ctx.BaseClassTypes.TypeLoadException
                     [
-                        RuntimeExceptionField.Message
-                            $"Could not create array type '%s{typeName}' from assembly '%s{assemblyName}' because the element type is %s{reason}."
+                        RuntimeExceptionField.Message message
                         RuntimeExceptionField.TypeLoadClassName typeName
                         RuntimeExceptionField.TypeLoadAssemblyName assemblyName
                         RuntimeExceptionField.TypeLoadResourceId resourceId
                     ]
                     state
                 |> Some
-            | None ->
+            | state, None ->
                 // The type-handle registry keys on the whole target, and `composite` spells an
                 // szarray over a closed element as the closed array, so this is the same
                 // `RuntimeType` object `typeof(int[])`, a reflected `int[]` parameter and
