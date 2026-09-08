@@ -136,3 +136,23 @@ reference: with exactly one name, `[t1]` and `[instance]` would be the same shap
   library and applied in the entry assembly to one of the entry assembly's own types. The blob
   names that type unqualified, so it resolves only if the requesting assembly is the decorated
   one rather than the constructor's.
+
+## Outcome
+
+Implemented as option B. Measured rather than predicted:
+
+* `sourcesPure/CustomAttributeTypeArg.cs` exits 0 under the interpreter and on real .NET;
+  `TestCrossAssemblyTypeAttribute` passes, so the scope really is the decorated assembly.
+* Six mutants, each applied to the committed tree and restored by copy: resolving against the
+  ctor's assembly is killed only by the cross-assembly test (the same-assembly guest and the
+  fixture survive it, as they must); reversing the answers is killed by the guest (exit 13);
+  omitting the sentinel by the fixture's first-entry test and the guest; unregistering
+  `RegisterCollectibleTypeDependency` by the guest naming that QCall; a decoder that does not
+  advance past the name by four blob tests and the guest; a lowering that does not consume by
+  three lowering tests and the guest's own "unconsumed" check.
+* Default suite 3327 passed; Guest category 1107 passed.
+
+Found by running it, not anticipated above: the two further resolver gaps behind a bare name,
+`GetTypeCore`'s span-marshalling stub for a nested name and `RuntimeTypeHandle_MakeSZArray` for
+an array name. Both reproduce with plain `Type.GetType` and are parked as
+`CustomAttributeTypeArgNested.cs` and `CustomAttributeTypeArgArrayType.cs`.
