@@ -338,10 +338,39 @@ module ArithmeticOperation =
             ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
             |> Choice1Of2
         | ArithmeticTarget.ArrayTarget (arr, index) ->
-            let index = checkedAddInt32 "array index" index v
+            // ECMA-335 III.1.5 makes `&` +/- `int` byte arithmetic, whatever the byref's
+            // pointee is, so `v` is a byte count and has to be divided by the element stride
+            // before it can move a cell index. The three sibling arms above and below already
+            // read it that way. Measured against the real runtime (`TestFabricatedArrayByrefAdd`)
+            // that `ldelema char; ldc.i4.4; add; ldind.u2` reads element 2, not element 4.
+            let elementSize = ManagedPointerByteView.arrayElementSize state arr
 
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
-            |> Choice1Of2
+            // Floor division, so a negative advance lands the residue in `[0, elementSize)`.
+            // The product cannot overflow: `q` is the truncated quotient, so `q * elementSize`
+            // is no larger in magnitude than `v`.
+            let cellAdvance, residue =
+                let q = v / elementSize
+                let r = v - q * elementSize
+                if r < 0 then q - 1, r + elementSize else q, r
+
+            let index = checkedAddInt32 "array index" index cellAdvance
+
+            let advanced = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
+
+            if residue = 0 then
+                // A whole-cell advance keeps the natural element byref. That matters beyond
+                // tidiness: the cells of a reference array have no byte image, so a byte cursor
+                // left over one could not be dereferenced at all, and `&a[1]` on an `object[]`
+                // is an ordinary managed pointer on the real runtime.
+                Choice1Of2 advanced
+            else
+                // Mid-cell, so the honest view is bytes. Whether those bytes can be read is a
+                // question for the access, which refuses for cells that hold references.
+                let byteType = byteConcreteType baseClassTypes state
+
+                advanced
+                |> ManagedPointerByteView.addByteOffset state byteType residue
+                |> Choice1Of2
         | ArithmeticTarget.StringTarget (str, charIndex) ->
             let charType = charConcreteType baseClassTypes state
 

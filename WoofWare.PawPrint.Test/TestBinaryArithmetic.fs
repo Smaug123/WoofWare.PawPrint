@@ -174,8 +174,11 @@ module TestBinaryArithmetic =
         {
             Length : int
             Index : int
+            /// Whole cells, so `FirstStep * 4 + Residue` is the byte count actually added.
             FirstStep : int
             SecondStep : int
+            /// In `[0, 4)`, the part of the first step that does not land on a cell boundary.
+            Residue : int
         }
 
     type private CrossArrayCase =
@@ -231,6 +234,7 @@ module TestBinaryArithmetic =
             let! index = genSmallOffset
             let! firstStep = genSmallOffset
             let! secondStep = genSmallOffset
+            let! residue = Gen.choose (0, 3)
 
             return
                 {
@@ -238,6 +242,7 @@ module TestBinaryArithmetic =
                     Index = index
                     FirstStep = firstStep
                     SecondStep = secondStep
+                    Residue = residue
                 }
         }
 
@@ -442,17 +447,20 @@ module TestBinaryArithmetic =
         residualOffsets |> shouldEqual 6358
 
     [<Test>]
-    let ``add advances plain array byrefs by element offset`` () : unit =
+    let ``add advances a plain array byref by a byte count`` () : unit =
+        // ECMA-335 III.1.5: the integer operand of `add` against a byref is a number of bytes,
+        // whatever the byref's pointee is. `TestFabricatedArrayByrefAdd` measures the same
+        // contract against the real runtime, over IL that no C# source can spell.
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim 2))
+        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim 8))
         |> expectArrayPointer arr 3
 
     [<Test>]
     let ``add supports integer offset on the left of an array byref`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        execute ArithmeticOperation.add state (EvalStackValue.Int32 (Int32Source.Verbatim 2)) (arrayPointer arr 1)
+        execute ArithmeticOperation.add state (EvalStackValue.Int32 (Int32Source.Verbatim 8)) (arrayPointer arr 1)
         |> expectArrayPointer arr 3
 
     [<Test>]
@@ -463,25 +471,40 @@ module TestBinaryArithmetic =
             ArithmeticOperation.add
             state
             (arrayPointer arr 0)
-            (EvalStackValue.NativeInt (NativeIntSource.Verbatim 3L))
+            (EvalStackValue.NativeInt (NativeIntSource.Verbatim 12L))
         |> expectArrayPointer arr 3
 
     [<Test>]
     let ``array byref arithmetic permits one-past and negative offsets`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ]
 
-        execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+        execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 (Int32Source.Verbatim 4))
         |> expectArrayPointer arr 3
 
-        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim -1))
+        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim -4))
         |> expectArrayPointer arr 0
 
     [<Test>]
     let ``subtracting an integer from an array byref moves backwards`` () : unit =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
-        execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 (Int32Source.Verbatim 2))
+        execute ArithmeticOperation.sub state (arrayPointer arr 3) (EvalStackValue.Int32 (Int32Source.Verbatim 8))
         |> expectArrayPointer arr 1
+
+    [<Test>]
+    let ``an offset that lands inside a cell turns a plain array byref into a byte cursor`` () : unit =
+        // A cell index cannot name a mid-cell address, so the result has to carry a byte cursor.
+        // Whether those bytes can be read is a separate question, answered at the access: for an
+        // array of references it is refused there.
+        let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
+
+        execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim 6))
+        |> shouldEqual (byteViewPointer arr 2 2)
+
+        // Floor division, so a backwards offset that is not a whole number of cells lands on the
+        // cell below with a positive residue rather than on the cell above with a negative one.
+        execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 (Int32Source.Verbatim -6))
+        |> shouldEqual (byteViewPointer arr 0 2)
 
     /// Weighted towards the range boundaries, so `sub.ovf`'s trapping regime is
     /// exercised as often as its ordinary arithmetic one.
@@ -1316,7 +1339,10 @@ module TestBinaryArithmetic =
                     ArithmeticOperation.add
                     state
                     (arrayPointer arr System.Int32.MaxValue)
-                    (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+                    // A whole cell, so that the guard being tested is reached at all: a byte
+                    // count smaller than the stride moves the cursor inside the cell and leaves
+                    // the index alone.
+                    (EvalStackValue.Int32 (Int32Source.Verbatim 4))
                 |> ignore
             )
 
@@ -1339,36 +1365,62 @@ module TestBinaryArithmetic =
             let state, arr = stateWithIntArray (valuesOfLength case.Length)
             let ptr = arrayPointer arr case.Index
 
-            let afterFirst =
-                execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 (Int32Source.Verbatim case.FirstStep))
+            // Steps are byte counts, so a whole-cell move is four of them. The residue is drawn
+            // separately rather than folded into one generated byte count so that both halves of
+            // the floor division are exercised independently, including for negative steps.
+            let firstBytes = case.FirstStep * 4 + case.Residue
+            let secondBytes = case.SecondStep * 4
 
-            afterFirst |> expectArrayPointer arr (case.Index + case.FirstStep)
+            let afterFirst =
+                execute ArithmeticOperation.add state ptr (EvalStackValue.Int32 (Int32Source.Verbatim firstBytes))
+
+            let expectedAfterFirst =
+                if case.Residue = 0 then
+                    arrayPointer arr (case.Index + case.FirstStep)
+                else
+                    byteViewPointer arr (case.Index + case.FirstStep) case.Residue
+
+            afterFirst |> shouldEqual expectedAfterFirst
 
             let afterBoth =
                 execute
                     ArithmeticOperation.add
                     state
                     afterFirst
-                    (EvalStackValue.Int32 (Int32Source.Verbatim case.SecondStep))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim secondBytes))
 
             let direct =
                 execute
                     ArithmeticOperation.add
                     state
                     ptr
-                    (EvalStackValue.Int32 (Int32Source.Verbatim (case.FirstStep + case.SecondStep)))
+                    (EvalStackValue.Int32 (Int32Source.Verbatim (firstBytes + secondBytes)))
 
             afterBoth |> shouldEqual direct
 
-            execute
-                ArithmeticOperation.sub
-                state
-                afterFirst
-                (EvalStackValue.Int32 (Int32Source.Verbatim case.FirstStep))
-            |> shouldEqual ptr
+            // Stepping back the same number of bytes returns to the same address. It does not
+            // always return the same *representation*: once a mid-cell step has made the byref a
+            // byte cursor, coming back to a cell boundary leaves the cursor in place rather than
+            // recovering the bare element byref. The two denote one address, which the
+            // subtraction below shows.
+            let backAgain =
+                execute
+                    ArithmeticOperation.sub
+                    state
+                    afterFirst
+                    (EvalStackValue.Int32 (Int32Source.Verbatim firstBytes))
 
-            execute ArithmeticOperation.sub state afterFirst ptr
-            |> expectNativeInt (int64 case.FirstStep * 4L)
+            if case.Residue = 0 then
+                backAgain |> shouldEqual ptr
+            else
+                backAgain |> shouldEqual (byteViewPointer arr case.Index 0)
+
+            // Subtracting the two byrefs reports the byte distance. Only the whole-cell case is
+            // asked here: subtracting a bare element byref from a byte cursor over the same array
+            // is a shape `subManagedPtrs` has no arm for yet.
+            if case.Residue = 0 then
+                execute ArithmeticOperation.sub state afterFirst ptr
+                |> expectNativeInt (int64 firstBytes)
 
             true
 

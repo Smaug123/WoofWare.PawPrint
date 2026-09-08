@@ -79,12 +79,16 @@ module ManagedPointerByteView =
 
         ManagedPointerSource.addByteOffsetToByteView normalisation byteOffset ptr
 
-    /// Anchor a byte-view on a plain byref (array-element or string-char) so
-    /// subsequent pointer arithmetic uses byte stride (ECMA-335 §III.1.5:
-    /// native-pointer +/- int is byte arithmetic). Plain byrefs without this
-    /// anchor keep element-stride semantics, matching `Unsafe.Add<T>`
-    /// intrinsic behaviour. Apply at the byref-to-native-pointer transition
-    /// (`Conv_U`, `Conv_I`).
+    /// Anchor a byte-view on a plain byref (array-element or string-char), naming the type that
+    /// later reads and writes through the pointer should view its target as. Apply at the
+    /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`).
+    ///
+    /// The anchor does not decide the *stride*. `add` and `sub` against a byref are byte
+    /// arithmetic whether or not it carries one (ECMA-335 §III.1.5), and `BinaryArithmetic`
+    /// divides by the element stride itself. What the anchor decides is which branch the
+    /// `Unsafe.*` intrinsics take — `IntrinsicHelpers.offsetManagedPointerByElements` looks for a
+    /// byte-view tail to tell a byte cursor from an element walk — and which shape the
+    /// cell-aligned read and write short-circuits match on.
     ///
     /// Reference-typed element arrays (e.g. `object[]`) and jagged arrays
     /// (e.g. `object[][]`) are anchored too: cell-aligned typed reads and
@@ -92,9 +96,9 @@ module ManagedPointerByteView =
     /// correct — reference cells aren't byte-addressable.
     ///
     /// Byrefs into arrays whose element handle is a pointer/byref/fnptr
-    /// (e.g. `int*[]`, `delegate*<...>[]`) are left un-anchored: subsequent
-    /// pointer arithmetic on them still uses element-stride semantics. A
-    /// byref whose declared pointee really is `byte` does not need this
+    /// (e.g. `int*[]`, `delegate*<...>[]`) are left un-anchored, because there is no view type
+    /// that could honestly describe such a cell; arithmetic on them is byte-strided all the
+    /// same. A byref whose declared pointee really is `byte` does not need this
     /// anchor at all and can be anchored unconditionally — see
     /// `anchorByteStrideOverArrayData` below.
     let anchorByteViewIfPlainArrayByref
@@ -117,12 +121,11 @@ module ManagedPointerByteView =
 
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
-                // Reference-typed elements (e.g. `object[]`) are anchored too:
-                // the C# `fixed (object* p = arr) { p[k] = ...; }` pattern
-                // lowers to a byref-to-native-pointer transition followed by
-                // `sizeof object; add; stind.ref`, so without the anchor the
-                // trailing `add` would be element-stride and produce
-                // out-of-bounds element indices. The cells themselves are
+                // Reference-typed elements (e.g. `object[]`) are anchored too, so that the C#
+                // `fixed (object* p = arr) { p[k] = ...; }` pattern — which lowers to a
+                // byref-to-native-pointer transition followed by `sizeof object; add;
+                // stind.ref` — writes through a pointer whose view type is the cell's own
+                // shape. The cells themselves are
                 // non-byte-addressable (`ObjectRef`); cell-aligned typed reads
                 // route through `readArrayBytesAs`'s shape-matching
                 // short-circuit and cell-aligned typed writes route through
@@ -154,7 +157,8 @@ module ManagedPointerByteView =
             // merely transports it onto the native-int eval stack, which is
             // what the legal-IL `ldelema ptr[int32]; conv.u` shape
             // needs, without forcing the byte-addressability promise
-            // we cannot keep.
+            // we cannot keep. Arithmetic on the result is still byte-strided,
+            // because that does not depend on the anchor.
             | ConcreteTypeHandle.Byref _
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ -> ptr
