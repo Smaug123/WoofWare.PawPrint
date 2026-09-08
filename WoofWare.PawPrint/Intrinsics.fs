@@ -3312,8 +3312,8 @@ module Intrinsics =
                     | "GetLength" -> arr.Lengths.[dimension]
                     // PawPrint has no representation for a non-zero lower bound:
                     // `allocateMultiDimArray` documents that only the zero-lower-bound constructor
-                    // form is modelled, and no guest-reachable path produces anything else. Revisit
-                    // this arm if `Array.CreateInstance(Type, int[], int[])` is ever implemented.
+                    // form is modelled, and `Array.CreateInstance(Type, int[], int[])` refuses a
+                    // non-zero lower bound, so no guest-reachable path produces anything else.
                     | "GetLowerBound" -> 0
                     | "GetUpperBound" -> arr.Lengths.[dimension] - 1
                     | other -> failwith $"logic error: unreachable Array bound accessor %s{other}"
