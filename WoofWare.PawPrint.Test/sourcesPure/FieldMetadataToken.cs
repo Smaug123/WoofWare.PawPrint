@@ -38,6 +38,9 @@ public class Holder
 
     [Marker ("static")]
     public static long Static;
+
+    // Declared immediately after `Static`, and a literal, so its own token comes from
+    // metadata rather than from the InternalCall under test. Check 8 leans on both facts.
     public const int Constant = 7;
 
     public Holder ()
@@ -130,7 +133,17 @@ public class Program
         if (y != x + 1)
             return 7;
 
-        // 8: the consumer that reaches this InternalCall in the first place. `CustomAttribute`
+        // 8: the absolute anchor, with no image constant in it. A literal field has no
+        // FieldDesc, so CoreCLR gives it an `MdFieldInfo`, whose `MetadataToken` is the token it
+        // read straight out of metadata (MdFieldInfo.cs:44) and which therefore never reaches
+        // this InternalCall at all. `Constant` is declared immediately after `Static`, so the
+        // native's answer for one and the metadata's own answer for the other must be adjacent
+        // rows. Everything above this line would still hold if every token were uniformly
+        // shifted; this is what pins the native to the real row number.
+        if (constant.MetadataToken != stat.MetadataToken + 1)
+            return 8;
+
+        // 9: the consumer that reaches this InternalCall in the first place. `CustomAttribute`
         // looks the field's token up in the CustomAttribute table by `Parent`, so a token
         // naming a neighbouring row does not fail -- it quietly returns some *other* member's
         // attributes. Two adjacent fields therefore carry differently-argumented attributes,
@@ -138,15 +151,15 @@ public class Program
         object[] onInstance = instance.GetCustomAttributes (typeof (MarkerAttribute), false);
 
         if (onInstance.Length != 1 || ((MarkerAttribute) onInstance[0]).Which != "instance")
-            return 8;
+            return 9;
 
         object[] onStatic = stat.GetCustomAttributes (typeof (MarkerAttribute), false);
 
         if (onStatic.Length != 1 || ((MarkerAttribute) onStatic[0]).Which != "static")
-            return 9;
+            return 10;
 
         if (secret.GetCustomAttributes (typeof (MarkerAttribute), false).Length != 0)
-            return 10;
+            return 11;
 
         return 0;
     }
