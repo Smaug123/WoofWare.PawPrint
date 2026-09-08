@@ -84,6 +84,15 @@ module UnixErrorPal =
         | UnixError.EISCONN -> 0x1001E
         | UnixError.EINPROGRESS -> 0x1001A
         | UnixError.ECONNREFUSED -> 0x1000E
+        // The PAL, like Linux, gives ENOTSUP and EOPNOTSUPP one value.
+        | UnixError.ENOTSUP -> 0x1003D
+        | UnixError.ENOTCONN -> 0x10038
+        | UnixError.ETIMEDOUT -> 0x1004D
+        | UnixError.ECONNRESET -> 0x1000F
+        | UnixError.EMSGSIZE -> 0x10023
+        | UnixError.ENOSYS -> 0x10037
+        | UnixError.EDEADLK -> 0x10010
+        | UnixError.ENOLCK -> 0x1002F
 
     /// PawPrint's `SystemNative_ConvertErrorPlatformToPal`: raw errno to PAL
     /// `Interop.Error`.
@@ -130,11 +139,11 @@ module UnixErrorPal =
     /// A table entry whose raw number is platform-dependent becomes matchable,
     /// so raw 40 answers `ELOOP` under Linux and raw 39 answers `ENOTEMPTY`. A
     /// number the table does not contain at all still fails loudly rather than
-    /// falling through to `ENONSTANDARD`: raw 35 under Linux really is
-    /// `EDEADLK`, which PawPrint has not modelled, and `ENONSTANDARD` would
+    /// falling through to `ENONSTANDARD`: raw 72 under Linux is
+    /// `EMULTIHOP`, which PawPrint has not modelled, and `ENONSTANDARD` would
     /// silently take a guest down the wrong branch of an
-    /// `if (errorInfo.Error == Interop.Error.EDEADLK)`. Knowing the platform
-    /// does not conjure a table entry.
+    /// `if (errorInfo.Error == ...)`. Knowing the platform does not conjure a
+    /// table entry.
     let ofRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : int =
         if raw = 0 then
             palSuccess
@@ -146,4 +155,4 @@ module UnixErrorPal =
         | None when UnixError.isUnambiguouslyNonStandardRawErrno raw -> palNonStandard
         | None ->
             failwith
-                $"UnixErrorPal.ofRawErrnoUnder: cannot convert raw errno %d{raw} to a PAL Interop.Error value under the %O{reporting} numbering. The number is outside the portable set (1-34 except 11) and the table has no entry for it on this platform — raw 35 under Linux is EDEADLK, which is not yet modelled. Answering ENONSTANDARD would silently take a guest down the wrong branch of an `if (errorInfo.Error == Interop.Error.EDEADLK)`, so this fails instead. Add the error to UnixError's table (with RawErrnoPortability.PlatformDependent if the two Unixes disagree); if it reached here via Marshal.SetLastSystemError, the guest is asserting an errno PawPrint does not model."
+                $"UnixErrorPal.ofRawErrnoUnder: cannot convert raw errno %d{raw} to a PAL Interop.Error value under the %O{reporting} numbering. The number is outside the portable set (1-34 except 11) and the table has no entry for it on this platform. Answering ENONSTANDARD would silently take a guest down the wrong branch of an `if (errorInfo.Error == ...)`, so this fails instead. Add the error to UnixError's table (with RawErrnoPortability.PlatformDependent if the two Unixes disagree); if it reached here via Marshal.SetLastSystemError, the guest is asserting an errno PawPrint does not model."

@@ -68,7 +68,7 @@ module FLockRefusal =
     let describe (refusal : FLockRefusal) : string =
         match refusal with
         | FLockRefusal.DarwinMalformedOperation operation ->
-            $"operation %d{operation} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL and Darwin does not treat uniformly -- measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
+            $"operation %d{operation} is malformed (not exactly one of LOCK_SH/LOCK_EX/LOCK_UN, optionally with LOCK_NB), which Linux rejects with EINVAL unless LOCK_MAND (bit 32) is set, in which case it ignores the request and answers 0, and which Darwin does not treat uniformly -- measured, Darwin answers EBADF for 0, a bare LOCK_NB and unknown bits alone, but *succeeds* for LOCK_SH|LOCK_EX, LOCK_UN|LOCK_SH and LOCK_SH with an unknown bit."
         | FLockRefusal.DarwinStandardStream role ->
             $"the descriptor is the standard stream %O{role}, which this kernel models as a pipe. Linux permits `flock` on a pipe and returns 0; Darwin refuses it with ENOTSUP (raw 45, and note Darwin numbers ENOTSUP and EOPNOTSUPP differently, 45 against 102, while Linux gives both 95)."
         | FLockRefusal.DarwinSocketEventPort ->
@@ -632,10 +632,28 @@ module UnixDescriptor =
         let lockExclusive = 2
         let lockNonBlocking = 4
         let lockUnlock = 8
+        let lockMandatory = 32
 
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
         let nonBlocking = operation &&& lockNonBlocking <> 0
         let mode = operation &&& ~~~lockNonBlocking
+
+        let descriptor = FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors
+
+        // Where the descriptor is looked up relative to the operation screens
+        // parts the flavours, and both are measured
+        // (`docs/probes/flock/lock-mand.py`): Linux screens the operation
+        // first, so a closed descriptor with a malformed operation is EINVAL,
+        // and a `LOCK_MAND` request is answered 0 -- mandatory locking was
+        // removed in 5.15 and the request is ignored -- before anything is
+        // looked up, closed descriptors included. Darwin looks the descriptor
+        // up first, so a closed one is EBADF whatever the operation.
+        match flavour, descriptor with
+        | SimulatedUnixFlavour.Linux, _ when operation &&& lockMandatory <> 0 ->
+            Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), system)
+        | SimulatedUnixFlavour.Darwin, None ->
+            Ok (SyscallOutcome.Answered (SyscallAnswer.Failed UnixError.EBADF), system)
+        | _ ->
 
         let request : FlockRequest option =
             if mode = lockUnlock then
@@ -661,7 +679,7 @@ module UnixDescriptor =
         // models one coherent set of rules. An unknown fd is EBADF on both
         // platforms, so there is nothing to refuse for one.
         let darwinRefusal : FLockRefusal option =
-            match flavour, FileDescriptorRegistry.tryFind fd system.Process.FileDescriptors with
+            match flavour, descriptor with
             | SimulatedUnixFlavour.Linux, _
             | _, None -> None
             | SimulatedUnixFlavour.Darwin, Some description ->

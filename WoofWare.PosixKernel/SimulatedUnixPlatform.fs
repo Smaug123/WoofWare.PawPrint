@@ -177,6 +177,19 @@ type GetSockNameFaultLength =
     /// attempting the copy that then faulted.
     | AlreadyReported
 
+/// What a kernel does with the buffer size a `readlink(2)` caller passed,
+/// before it copies anything. `SimulatedUnixPlatform.readlinkCapacity`.
+[<RequireQualifiedAccess>]
+type ReadLinkCapacityVerdict =
+    /// The call fails with this errno before the path is resolved: a missing
+    /// path is answered the same way.
+    | Refuse of UnixError
+    /// The path is resolved and must name a symbolic link, and the call then
+    /// reports zero bytes without consulting the buffer.
+    | ReportNothing
+    /// The size is one the copy can honour.
+    | Admit
+
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
@@ -541,6 +554,30 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> true
         | SimulatedUnixFlavour.Darwin -> false
+
+    /// How this platform's `readlink(2)` treats a buffer size that is not
+    /// positive, measured on both (`docs/probes/readlink/capacity.py`):
+    ///
+    /// * Linux refuses `bufsiz <= 0` with EINVAL before looking at the path
+    ///   (`do_readlinkat` checks it first), so a missing path is EINVAL too.
+    /// * Darwin takes a `size_t`, so a negative `int` arrives as a size past
+    ///   `INT_MAX`, which it refuses with EINVAL before resolving; a size of
+    ///   zero resolves the path, and a symbolic link answers 0 with the buffer
+    ///   never consulted -- a null buffer is accepted.
+    ///
+    /// A positive size is admitted on both.
+    let readlinkCapacity (platform : SimulatedUnixPlatform) (capacity : int) : ReadLinkCapacityVerdict =
+        if capacity > 0 then
+            ReadLinkCapacityVerdict.Admit
+        else
+
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> ReadLinkCapacityVerdict.Refuse UnixError.EINVAL
+        | SimulatedUnixFlavour.Darwin ->
+            if capacity = 0 then
+                ReadLinkCapacityVerdict.ReportNothing
+            else
+                ReadLinkCapacityVerdict.Refuse UnixError.EINVAL
 
     /// The bounds this platform's kernel puts on path resolution.
     ///

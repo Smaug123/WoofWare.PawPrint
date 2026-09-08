@@ -140,7 +140,7 @@ module TestConnect =
 
         match UnixConnection.connect fd UserBuffer.Mapped declaredLength family endpoint system with
         | Ok result -> result
-        | Error refusal -> failwith $"expected an answer, got a refusal: %s{SockaddrCopyRefusal.describe refusal}"
+        | Error refusal -> failwith $"expected an answer, got a refusal: %s{ConnectRefusal.describe refusal}"
 
     // ------------------------------------------------------------------
     // The admission's screens
@@ -428,3 +428,85 @@ module TestConnect =
         connectTo fd 16 (loopback 5000us) system
         |> fst
         |> shouldEqual (ConnectOutcome.Failed UnixError.ECONNREFUSED)
+
+    // ------------------------------------------------------------------
+    // What this kernel refuses, by type
+    // ------------------------------------------------------------------
+
+    /// The refusal `connect` answers, for the rows about what this kernel
+    /// will not model. Each is a case a client can match on rather than a
+    /// message it would have to read.
+    let private refusedBy
+        (fd : int)
+        (family : int option)
+        (destination : InternetEndpoint option)
+        (system : UnixSystem<int, string>)
+        : ConnectRefusal
+        =
+        match UnixConnection.connect fd UserBuffer.Mapped 16 family destination system with
+        | Error refusal -> refusal
+        | Ok answer -> failwith $"expected a refusal, got %A{answer}"
+
+    [<TestCaseSource(nameof platforms)>]
+    let ``a raw socket's connect is refused as unmeasured`` (platform : SimulatedUnixPlatform) : unit =
+        let raw =
+            { streamSocket None SocketPhase.Idle with
+                Kind = SocketKind.Raw
+            }
+
+        let fd, system = withSocket (SocketId 0L) raw (systemOn platform)
+
+        refusedBy fd (Some (inetFamily platform)) (Some (loopback 5000us)) system
+        |> shouldEqual (ConnectRefusal.UnmeasuredKind (SocketId 0L, SocketKind.Raw))
+
+    [<TestCaseSource(nameof platforms)>]
+    let ``an unbound connect to a local address other than 127.0.0.1 is refused``
+        (platform : SimulatedUnixPlatform)
+        : unit
+        =
+        // 127.0.0.2 is local on both flavours' loopback route, but the source
+        // a kernel picks for it is unmeasured.
+        let fd, system =
+            withSocket (SocketId 0L) (streamSocket None SocketPhase.Idle) (systemOn platform)
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        LocalRoutes = UnixSystem.defaultLocalRoutes
+                    }
+            }
+
+        let other = InternetEndpoint.ofParts 0x7F000002u 5000us
+
+        refusedBy fd (Some (inetFamily platform)) (Some other) system
+        |> shouldEqual (ConnectRefusal.SourceForNonLoopbackDestination (SocketId 0L, other, false))
+
+    [<TestCaseSource(nameof platforms)>]
+    let ``an implicit bind with no port left is refused, naming the range`` (platform : SimulatedUnixPlatform) : unit =
+        // One port in the range, and a live socket already holding it.
+        let holder =
+            streamSocket (boundAt (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 40000us)) SocketPhase.Idle
+
+        let _, system = withSocket (SocketId 0L) holder (systemOn platform)
+
+        let fd, system =
+            withSocket (SocketId 1L) (streamSocket None SocketPhase.Idle) system
+
+        let system =
+            { system with
+                Machine = UnixMachineState.withEphemeralPortRange (40000us, 40000us) system.Machine
+            }
+
+        refusedBy fd (Some (inetFamily platform)) (Some (loopback 5000us)) system
+        |> shouldEqual (ConnectRefusal.EphemeralPortsExhausted (40000us, 40000us))
+
+    /// The sockaddr copy's refusals come through `connect` under `Copy`, so a
+    /// client matching on one type sees both kinds of refusal.
+    [<TestCaseSource(nameof platforms)>]
+    let ``a copy refusal is carried as a connect refusal`` (platform : SimulatedUnixPlatform) : unit =
+        let fd, system = client platform
+
+        match UnixConnection.connect fd UserBuffer.Addressless 16 None None system with
+        | Error (ConnectRefusal.Copy _) -> ()
+        | other -> failwith $"expected a copy refusal, got %A{other}"

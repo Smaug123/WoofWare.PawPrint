@@ -389,6 +389,26 @@ type UnixError =
     /// Linux numbers it 111; Darwin numbers it 61.
     /// </remarks>
     | ECONNREFUSED
+    /// Not supported. Darwin numbers this 45 and `EOPNOTSUPP` 102: `flock` on a
+    /// socket, a pipe or a kqueue answers this one. Linux gives both the one
+    /// number, 95.
+    | ENOTSUP
+    /// The socket is not connected. Linux 107, Darwin 57.
+    | ENOTCONN
+    /// Connection timed out. Linux 110, Darwin 60.
+    | ETIMEDOUT
+    /// Connection reset by peer. Linux 104, Darwin 54.
+    | ECONNRESET
+    /// Message too long. Linux 90, Darwin 40 -- which is `ELOOP` on Linux.
+    | EMSGSIZE
+    /// Function not implemented. Linux 38 -- which is `ENOTSOCK` on Darwin --
+    /// and Darwin 78.
+    | ENOSYS
+    /// Resource deadlock would occur. The V7 transposition with `EAGAIN`:
+    /// Linux 35, Darwin 11.
+    | EDEADLK
+    /// No locks available. Linux 37, Darwin 77.
+    | ENOLCK
 
 [<RequireQualifiedAccess>]
 module UnixError =
@@ -445,6 +465,14 @@ module UnixError =
             UnixError.EISCONN
             UnixError.EINPROGRESS
             UnixError.ECONNREFUSED
+            UnixError.ENOTSUP
+            UnixError.ENOTCONN
+            UnixError.ETIMEDOUT
+            UnixError.ECONNRESET
+            UnixError.EMSGSIZE
+            UnixError.ENOSYS
+            UnixError.EDEADLK
+            UnixError.ENOLCK
         ]
 
     let private portable (raw : int) : RawErrnoPortability = RawErrnoPortability.Portable raw
@@ -527,6 +555,21 @@ module UnixError =
         | UnixError.EISCONN -> platformDependent 106 56
         | UnixError.EINPROGRESS -> platformDependent 115 36
         | UnixError.ECONNREFUSED -> platformDependent 111 61
+        // Linux has one number for ENOTSUP and EOPNOTSUPP, so under its
+        // numbering raw 95 decodes as EOPNOTSUPP, the first of the pair in
+        // `all`. Darwin keeps them apart: 45 against 102.
+        | UnixError.ENOTSUP -> platformDependent 95 45
+        | UnixError.ENOTCONN -> platformDependent 107 57
+        | UnixError.ETIMEDOUT -> platformDependent 110 60
+        | UnixError.ECONNRESET -> platformDependent 104 54
+        // Raw 40 is EMSGSIZE on Darwin and ELOOP on Linux.
+        | UnixError.EMSGSIZE -> platformDependent 90 40
+        // Raw 38 is ENOSYS on Linux and ENOTSOCK on Darwin.
+        | UnixError.ENOSYS -> platformDependent 38 78
+        // The other half of the V7 transposition: raw 35 is EDEADLK on Linux
+        // and EAGAIN on Darwin, and raw 11 the reverse.
+        | UnixError.EDEADLK -> platformDependent 35 11
+        | UnixError.ENOLCK -> platformDependent 37 77
 
     /// <summary>
     /// The raw <c>&lt;errno.h&gt;</c> integer for this error, if that number would be the same across all
@@ -599,6 +642,8 @@ module UnixError =
     /// <remarks>
     /// Unlike <c>ofRawErrno</c>, this returns values for platform-dependent entries too.
     /// It can still return <c>None</c> for errnos that are valid but which WoofWare.PosixKernel doesn't yet model.
+    /// Where a platform gives two errors one number, the first of them in <c>all</c> is answered:
+    /// Linux's 95 is <c>EOPNOTSUPP</c>, never <c>ENOTSUP</c>.
     /// </remarks>
     let ofRawErrnoUnder (reporting : RawErrnoNumbering) (raw : int) : UnixError option =
         all |> List.tryFind (fun error -> toRawErrnoUnder reporting error = raw)

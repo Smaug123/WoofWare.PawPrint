@@ -98,6 +98,28 @@ module TestSocketFuzz =
         | EmulatedRun.Transcript transcript ->
             Assert.Fail $"an out-of-range interest mask was accepted outright: %s{transcript}"
 
+    /// A typed refusal from any op is a skip, never a finding: the model has
+    /// said, in its own type, that the sequence is outside what it answers.
+    /// One from `close` (a listener with an unaccepted client) and one from
+    /// `connect` (a full accept queue), which are the two ops that refuse.
+    [<Test>]
+    let ``a typed refusal is a skip, whichever op it comes from`` () : unit =
+        let refusedBy (ops : FuzzOp list) : int =
+            match SocketFuzz.executeEmulated ops with
+            | EmulatedRun.Refused (index, _) -> index
+            | other -> failwith $"expected a refusal, got %A{other}"
+
+        // Closing the listener while its queue holds an unaccepted client.
+        refusedBy
+            [
+                FuzzOp.NewSocket 0
+                FuzzOp.Listen 0
+                FuzzOp.NewSocket 1
+                FuzzOp.Connect (1, 0)
+                FuzzOp.Close 0
+            ]
+        |> shouldEqual 4
+
     [<Test>]
     let ``SocketFuzzCorpus: every measured real-kernel transcript replays against the emulated kernel`` () : unit =
         let rows = corpusRows ()

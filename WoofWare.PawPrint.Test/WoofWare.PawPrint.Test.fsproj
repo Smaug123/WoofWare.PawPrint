@@ -230,6 +230,7 @@
     <Compile Include="TestNativeMdUtf8String.fs" />
     <Compile Include="TestNativeRuntimeMethodHandle.fs" />
     <Compile Include="TestVirtualMethodSlots.fs" />
+    <Compile Include="TestMethodAtSlotShapes.fs" />
     <Compile Include="TestFabricatedVtableLayout.fs" />
     <Compile Include="TestFabricatedSlotAliasing.fs" />
     <Compile Include="TestFabricatedSlotContent.fs" />

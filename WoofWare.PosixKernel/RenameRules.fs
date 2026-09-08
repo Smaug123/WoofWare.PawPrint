@@ -252,6 +252,12 @@ module RenameRules =
     ///    ENOTEMPTY.
     ///  * A destination directory that still holds an entry is ENOTEMPTY.
     ///
+    /// One ENOTEMPTY comes much earlier: a destination that is the source's
+    /// own parent, or an ancestor of it, is refused straight after the EINVAL
+    /// arm, ahead of the type rule and every EACCES. Measured (ext4, uid 1000
+    /// and 0): `rename(a/f, a)` with `f` a file is ENOTEMPTY, not EISDIR, and
+    /// `rename(a/sub, a)` with `a` unwritable is ENOTEMPTY, not EACCES.
+    ///
     /// Linux never consults the mode of the thing being displaced: measured,
     /// `rename(dir, emptydir)` succeeds with the destination at mode 0. That is
     /// the arm Darwin has and this one does not.
@@ -297,6 +303,18 @@ module RenameRules =
             && VirtualFileSystem.isWithinSubtree moved destinationDirectory vfs
         then
             RenameVerdict.Refuse UnixError.EINVAL
+        elif
+            // The other direction of the same trap: the destination names the
+            // source's own parent, or an ancestor of it. `do_renameat2` refuses
+            // that with ENOTEMPTY immediately after the EINVAL arm and before
+            // `vfs_rename`, so it beats the type rule and every EACCES --
+            // measured for a file, a symlink and a directory source, with the
+            // parents writable and not (`docs/probes/rename/ancestor-trap.py`).
+            (match displacedDirectory with
+             | Some displaced -> VirtualFileSystem.isWithinSubtree displaced sourceDirectory vfs
+             | None -> false)
+        then
+            RenameVerdict.Refuse UnixError.ENOTEMPTY
         elif RenameChecks.lacksWrite "the source's parent" privilege sourceDirectory vfs then
             RenameVerdict.Refuse UnixError.EACCES
         elif RenameChecks.lacksWrite "the destination's parent" privilege destinationDirectory vfs then

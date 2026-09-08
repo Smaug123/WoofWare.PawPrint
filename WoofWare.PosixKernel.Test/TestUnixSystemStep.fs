@@ -1835,6 +1835,107 @@ module TestUnixSystemStep =
         | SyscallAnswer.Failed actual, _ -> actual |> shouldEqual error
         | other -> failwith $"expected %O{error}, got %A{other}"
 
+    /// The copy-in rule, at every path-taking syscall rather than only at
+    /// `rename`: a pathname past this platform's PATH_MAX is ENAMETOOLONG
+    /// before anything is looked up. Built from short components, so that a
+    /// kernel which merely walked it would answer ENOENT at the first.
+    [<Test>]
+    let ``a pathname past PATH_MAX is ENAMETOOLONG from every path syscall, before resolution`` () : unit =
+        // 4501 bytes: past both Darwin's 1024 and Linux's 4096.
+        let overBoth = statPath (String.replicate 1500 "ab/" + "x")
+        // 1030 bytes: past Darwin's and within Linux's.
+        let overDarwinOnly = statPath (String.replicate 343 "ab/" + "x")
+
+        let everyAnswer (path : UnixPath) (system : UnixSystem<int, string>) : UnixError list =
+            let answer (result : SyscallAnswer * UnixSystem<int, string>) : UnixError =
+                match result with
+                | SyscallAnswer.Failed error, _ -> error
+                | other -> failwith $"expected a failure, got %A{other}"
+
+            [
+                (match UnixPathResolution.stat SymlinkPolicy.Follow path system with
+                 | FileStatusAnswer.Failed error -> error
+                 | other -> failwith $"expected a failure, got %A{other}")
+                UnixNamespace.mkdir path 0o777 system |> answer
+                UnixNamespace.unlink path system |> answer
+                UnixNamespace.rmdir path system |> answer
+                UnixPathResolution.chdir path system |> answer
+                UnixNamespace.openPath
+                    {
+                        Access = FileAccessMode.ReadOnly
+                        Create = false
+                        Exclusive = false
+                        Truncate = false
+                        NoFollow = false
+                        CloseOnExec = false
+                        Synchronous = false
+                    }
+                    path
+                    0
+                    system
+                |> answer
+                (match UnixNamespace.opendir path system with
+                 | OpenDirAnswer.Failed error, _ -> error
+                 | other -> failwith $"expected a failure, got %A{other}")
+                (match UnixNamespace.readlink path UserBuffer.Mapped 4096 system with
+                 | Ok (ReadLinkAnswer.Failed error) -> error
+                 | other -> failwith $"expected a failure, got %A{other}")
+            ]
+
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            everyAnswer overBoth system
+            |> List.distinct
+            |> shouldEqual [ UnixError.ENAMETOOLONG ]
+
+        let _, _, _, darwinTree = withTree darwin
+
+        everyAnswer overDarwinOnly darwinTree
+        |> List.distinct
+        |> shouldEqual [ UnixError.ENAMETOOLONG ]
+
+        // ...and within Linux's limit the walk runs, and finds nothing.
+        let _, _, _, linuxTree = withTree linux
+
+        everyAnswer overDarwinOnly linuxTree
+        |> List.distinct
+        |> shouldEqual [ UnixError.ENOENT ]
+
+    /// The boundary itself, as `PathArgument.parse` already states it for raw
+    /// bytes: a usable path is one byte shorter than PATH_MAX, because the
+    /// limit counts the terminator. Short components throughout, so that a
+    /// path within the limit is refused by the walk (ENOENT at its first
+    /// name) and never by NAME_MAX.
+    [<Test>]
+    let ``the resolution door's PATH_MAX boundary is PathArgument.parse's`` () : unit =
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
+            let usable = PathLimits.pathMaxBytes limits - 1
+
+            for length in [ usable - 1 ; usable ; usable + 1 ] do
+                let text = "/" + String.init (length - 1) (fun i -> if i % 3 = 2 then "/" else "a")
+
+                let expected =
+                    if length > usable then
+                        UnixError.ENAMETOOLONG
+                    else
+                        UnixError.ENOENT
+
+                match UnixPathResolution.stat SymlinkPolicy.Follow (statPath text) system with
+                | FileStatusAnswer.Failed actual -> actual |> shouldEqual expected
+                | other -> failwith $"expected %O{expected} at %d{length} bytes, got %A{other}"
+
+                // The raw-bytes door draws the line at the same byte.
+                let viaBytes =
+                    PathArgument.parse limits (ImmutableArray.CreateRange (System.Text.Encoding.UTF8.GetBytes text))
+
+                match viaBytes, expected with
+                | Ok (PathArgument.Failed error), UnixError.ENAMETOOLONG -> error |> shouldEqual UnixError.ENAMETOOLONG
+                | Ok (PathArgument.Parsed _), UnixError.ENOENT -> ()
+                | other -> failwith $"the two doors disagree at %d{length} bytes: %A{other}"
+
     [<Test>]
     let ``mkdir binds a directory the umask has had its say over`` () : unit =
         // The mode is raw — the shim passes it straight through — so what the
@@ -2417,6 +2518,39 @@ module TestUnixSystemStep =
 
         UnixDescriptor.flock holderTask 0 shAndEx (withTask holderTask darwin)
         |> shouldEqual (Error (FLockRefusal.DarwinMalformedOperation shAndEx))
+
+    /// `LOCK_MAND` (bit 32): Linux removed mandatory locking in 5.15 and now
+    /// answers 0 to any request carrying the bit, before it looks the
+    /// descriptor up, so a closed descriptor is answered too and nothing about
+    /// the lock table changes. Measured (`docs/probes/flock/lock-mand.py`).
+    [<Test>]
+    let ``a LOCK_MAND request is ignored on Linux, closed descriptors included`` () : unit =
+        for operation in [ 32 ; 32 ||| 1 ; 32 ||| 2 ; 32 ||| 8 ; 32 ||| 4 ] do
+            for fd in [ 0 ; 99 ] do
+                match UnixDescriptor.flock holderTask fd operation (withTask holderTask linux) with
+                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), after) ->
+                    after |> shouldEqual (withTask holderTask linux)
+                | other -> failwith $"flock(%d{fd}, %d{operation}) on Linux: expected 0, got %A{other}"
+
+    /// Darwin looks the descriptor up before it screens the operation, so a
+    /// closed descriptor is EBADF whatever was asked -- where Linux screens
+    /// first and answers EINVAL. Measured on both.
+    [<Test>]
+    let ``a closed descriptor is EBADF on Darwin and EINVAL on Linux for a malformed operation`` () : unit =
+        for operation in [ 0 ; 4 ; 1 ||| 2 ; 16 ; 32 ] do
+            UnixDescriptor.flock holderTask 99 operation (withTask holderTask darwin)
+            |> answeredOutcome
+            |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
+
+        for operation in [ 0 ; 4 ; 1 ||| 2 ; 16 ] do
+            UnixDescriptor.flock holderTask 99 operation (withTask holderTask linux)
+            |> answeredOutcome
+            |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL)
+
+        // ...and a malformed operation on an *open* Darwin descriptor is still
+        // refused, since what it leaves the lock table as is unmeasured.
+        UnixDescriptor.flock holderTask 0 (32 ||| 1) (withTask holderTask darwin)
+        |> shouldEqual (Error (FLockRefusal.DarwinMalformedOperation (32 ||| 1)))
 
     [<Test>]
     let ``flock on a pipe is Linux's business and Darwin's refusal`` () : unit =
@@ -3113,6 +3247,7 @@ module TestUnixSystemStep =
                     stdin
                     0L
                     (SocketEventRegistrationChange.Add (
+                        SocketEventTrigger.EdgeTriggered,
                         {
                             SocketEventInterest.In = false
                             Out = false
@@ -4187,6 +4322,48 @@ module TestUnixSystemStep =
             |> readLinkBytes
             |> shouldEqual (List.truncate (expected.Length - 1) expected)
 
+    /// The two flavours part on a size that is not positive, and both are
+    /// measured (`docs/probes/readlink/capacity.py`): Linux refuses zero and
+    /// negative before resolving; Darwin refuses negative before resolving and
+    /// answers zero bytes from a resolved link for zero.
+    [<Test>]
+    let ``a non-positive capacity is answered as the flavour answers it`` () : unit =
+        let _, _, _, linux = withTree linux
+        let _, _, _, darwin = withTree darwin
+
+        for capacity in [ 0 ; -1 ; System.Int32.MinValue ] do
+            // Linux: EINVAL whatever the path, since the size is checked first.
+            for path in [ "/l" ; "/d/inner" ; "/nope" ] do
+                UnixNamespace.readlink (statPath path) UserBuffer.Mapped capacity linux
+                |> readLinkFailed
+                |> shouldEqual UnixError.EINVAL
+
+            // ...and the buffer is never consulted.
+            UnixNamespace.readlink (statPath "/l") (UserBuffer.Unmapped 8UL) capacity linux
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+        // Darwin, negative: the same, before resolution.
+        for capacity in [ -1 ; System.Int32.MinValue ] do
+            for path in [ "/l" ; "/d/inner" ; "/nope" ] do
+                UnixNamespace.readlink (statPath path) UserBuffer.Mapped capacity darwin
+                |> readLinkFailed
+                |> shouldEqual UnixError.EINVAL
+
+        // Darwin, zero: resolved first, so the path's own answer wins...
+        UnixNamespace.readlink (statPath "/d/inner") UserBuffer.Mapped 0 darwin
+        |> readLinkFailed
+        |> shouldEqual UnixError.EINVAL
+
+        UnixNamespace.readlink (statPath "/nope") UserBuffer.Mapped 0 darwin
+        |> readLinkFailed
+        |> shouldEqual UnixError.ENOENT
+
+        // ...and a link reports nothing, through a buffer nothing could write to.
+        UnixNamespace.readlink (statPath "/l") (UserBuffer.Unmapped 8UL) 0 darwin
+        |> readLinkBytes
+        |> shouldEqual []
+
     [<Test>]
     let ``a short buffer truncates rather than failing`` () : unit =
         // Truncation is how the BCL *sizes* its allocation: `Interop.Sys.ReadLink`
@@ -4300,22 +4477,6 @@ module TestUnixSystemStep =
             UnixNamespace.readlink (statPath "/dangling") UserBuffer.Mapped 4096 system
             |> readLinkBytes
             |> shouldEqual (targetOf "/d/inner/gone")
-
-    [<Test>]
-    let ``readlink refuses a capacity no kernel it models was ever asked`` () : unit =
-        // Zero and negative are the shim's guard, and the only reason this
-        // syscall is cross-platform: the raw one answers 0 on Darwin and EINVAL
-        // on Linux for a zero size.
-        let _, _, _, system = withTree linux
-
-        for capacity in [ 0 ; -1 ] do
-            let exn =
-                Assert.Throws<exn> (fun () ->
-                    UnixNamespace.readlink (statPath "/l") UserBuffer.Mapped capacity system
-                    |> ignore<Result<ReadLinkAnswer, BufferRefusal>>
-                )
-
-            exn.Message |> shouldContainText "not positive"
 
 
     /// A descriptor onto one INET stream socket bound to 127.0.0.1:8080.

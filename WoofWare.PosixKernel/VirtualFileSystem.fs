@@ -916,9 +916,9 @@ module VirtualFileSystem =
     /// A real kernel refuses to create anything inside such a directory —
     /// `mkdir`, `open(O_CREAT)` and `symlink` are all ENOENT there, measured on
     /// both flavours — so a caller that is about to add a name must ask. That
-    /// rule is also what keeps an orphan *empty*: a directory can only be
-    /// orphaned by `rmdir`, which refuses a non-empty one, and it can never gain
-    /// an entry afterwards.
+    /// rule is also what keeps an orphan *empty*: a directory is orphaned only
+    /// by `rmdir`, or by a `rename` that displaces it, both of which refuse a
+    /// non-empty one, and it can never gain an entry afterwards.
     ///
     /// False for anything that is not a directory. A file with no names left is
     /// orphaned in the same sense, but nothing can be created inside it, so no

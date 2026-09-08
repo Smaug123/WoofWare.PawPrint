@@ -171,7 +171,7 @@ module TestSocketEventDelivery =
             UnixPoll.changeSocketEventRegistration
                 portFd
                 targetFd
-                (SocketEventRegistrationChange.Add (allInterest, data))
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, allInterest, data))
                 kernel
         with
         | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -185,7 +185,9 @@ module TestSocketEventDelivery =
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
+        match UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel with
+        | Ok answer -> answer
+        | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
     /// The delivered rows' `Data` fields, so a test can assert order without
     /// restating every mask.
@@ -462,7 +464,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     listenerFd
-                    (SocketEventRegistrationChange.Modify (allInterest, 7UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 7UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -491,7 +493,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     l2Fd
-                    (SocketEventRegistrationChange.Modify (allInterest, 2UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 2UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -637,7 +639,7 @@ module TestSocketEventDelivery =
             UnixPoll.changeSocketEventRegistration
                 portFd
                 listenerFd
-                (SocketEventRegistrationChange.Add (allInterest, 8UL))
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, allInterest, 8UL))
                 kernel
         with
         | Ok (SocketEventRegistrationAnswer.Changed, _) -> failwith "expected EEXIST"
@@ -718,7 +720,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     clientFd
-                    (SocketEventRegistrationChange.Add (emptyInterest, 5UL))
+                    (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, emptyInterest, 5UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -750,7 +752,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     clientFd
-                    (SocketEventRegistrationChange.Modify (allInterest, 5UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 5UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -911,7 +913,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     l1Fd
-                    (SocketEventRegistrationChange.Add (writeInterest, 1UL))
+                    (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, writeInterest, 1UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -931,7 +933,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     l1Fd
-                    (SocketEventRegistrationChange.Modify (allInterest, 1UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 1UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -959,7 +961,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     listenerFd
-                    (SocketEventRegistrationChange.Modify (writeInterest, 6UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, writeInterest, 6UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel
@@ -1003,7 +1005,7 @@ module TestSocketEventDelivery =
                 UnixPoll.changeSocketEventRegistration
                     portFd
                     listenerFd
-                    (SocketEventRegistrationChange.Modify (allInterest, 1UL))
+                    (SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, allInterest, 1UL))
                     kernel
             with
             | Ok (SocketEventRegistrationAnswer.Changed, kernel) -> kernel

@@ -1056,6 +1056,9 @@ module EmulatedKernel =
         | Error CurrentDirectoryFault.NotADirectory ->
             failwith
                 $"EmulatedKernel.CurrentDirectory: \"%s{described}\" resolves in KernelConfig.FileSystem, but not to a directory. No process can be started anywhere else; point KernelConfig.CurrentDirectory at a directory the seed contains."
+        | Error (CurrentDirectoryFault.SeedNameTooLong (name, flavour)) ->
+            failwith
+                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toString name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in KernelConfig.FileSystem, or configure the flavour whose limit admits it."
 
 
 
@@ -1478,7 +1481,8 @@ module EmulatedKernel =
     ///
     /// Here for the reason `acceptConnection` below is: six fixtures call it
     /// holding an `EmulatedKernel`, and writing `unix` in and `withUnix` back
-    /// out at each would be this function, copied.
+    /// out at each would be this function, copied. A `ConnectRefusal` is
+    /// raised, since the fixtures that call this never ask for one.
     let connectSocket
         (socketId : SocketId)
         (nonBlocking : bool)
@@ -1488,10 +1492,9 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : ConnectOutcome * EmulatedKernel
         =
-        let outcome, system =
-            UnixConnection.connectSocket socketId nonBlocking declaredLength family destination (unix kernel)
-
-        outcome, withUnix system kernel
+        match UnixConnection.connectSocket socketId nonBlocking declaredLength family destination (unix kernel) with
+        | Ok (outcome, system) -> outcome, withUnix system kernel
+        | Error refusal -> failwith $"EmulatedKernel.connectSocket: %s{ConnectRefusal.describe refusal}"
 
     /// `UnixConnection.acceptConnection` — dequeue the oldest completed connection
     /// from `socketId`'s accept queue and materialise the server-side socket

@@ -114,9 +114,18 @@ module TestUnixErrorPal =
             | Some expected -> UnixErrorPal.toPal error |> shouldEqual expected
 
     [<Test>]
-    let ``PAL numbering is injective`` () : unit =
-        let pals = UnixError.all |> List.map UnixErrorPal.toPal
-        pals |> List.distinct |> List.length |> shouldEqual pals.Length
+    let ``PAL numbering is injective, up to the enum's own alias`` () : unit =
+        // `Interop.Error` defines `EOPNOTSUPP = ENOTSUP`, so those two are one
+        // value by the enum's own declaration; any other collision is ours.
+        let collisions =
+            UnixError.all
+            |> List.groupBy UnixErrorPal.toPal
+            |> List.filter (fun (_, errors) -> List.length errors > 1)
+            |> List.filter (fun (_, errors) ->
+                Set.ofList errors <> Set.ofList [ UnixError.EOPNOTSUPP ; UnixError.ENOTSUP ]
+            )
+
+        collisions |> shouldEqual []
 
     [<Test>]
     let ``a platform-dependent error still has a usable PAL value`` () : unit =
@@ -191,9 +200,14 @@ module TestUnixErrorPal =
         |> shouldEqual (UnixErrorPal.toPal UnixError.ELOOP)
 
         // And the two numberings genuinely disagree on the same input: raw 40
-        // under Darwin is EMSGSIZE, which is not modelled, so it fails rather
-        // than answering ELOOP.
+        // under Darwin is EMSGSIZE, not ELOOP.
+        UnixErrorPal.ofRawErrnoUnder RawErrnoNumbering.Darwin 40
+        |> shouldEqual (UnixErrorPal.toPal UnixError.EMSGSIZE)
+
+        // A number the table has no entry for on the named platform still
+        // fails rather than answering ENONSTANDARD: raw 72 under Linux is
+        // EMULTIHOP, which is not modelled.
         let exn =
-            Assert.Throws<Exception> (fun () -> UnixErrorPal.ofRawErrnoUnder RawErrnoNumbering.Darwin 40 |> ignore<int>)
+            Assert.Throws<Exception> (fun () -> UnixErrorPal.ofRawErrnoUnder RawErrnoNumbering.Linux 72 |> ignore<int>)
 
         exn.Message |> shouldContainText "no entry for it on this platform"

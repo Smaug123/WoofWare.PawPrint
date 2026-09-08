@@ -1,0 +1,21 @@
+Linux 6.18.5
+flock(closed fd 99, LOCK_MAND         ) -> ret=0 errno=0 
+flock(open file   , LOCK_MAND         ) -> ret=0 errno=0 
+flock(closed fd 99, LOCK_MAND|LOCK_SH ) -> ret=0 errno=0 
+flock(open file   , LOCK_MAND|LOCK_SH ) -> ret=0 errno=0 
+flock(closed fd 99, LOCK_MAND|LOCK_EX ) -> ret=0 errno=0 
+flock(open file   , LOCK_MAND|LOCK_EX ) -> ret=0 errno=0 
+flock(closed fd 99, LOCK_MAND|LOCK_UN ) -> ret=0 errno=0 
+flock(open file   , LOCK_MAND|LOCK_UN ) -> ret=0 errno=0 
+flock(closed fd 99, LOCK_MAND|LOCK_NB ) -> ret=0 errno=0 
+flock(open file   , LOCK_MAND|LOCK_NB ) -> ret=0 errno=0 
+flock(closed fd 99, 0                 ) -> ret=-1 errno=22 EINVAL
+flock(open file   , 0                 ) -> ret=-1 errno=22 EINVAL
+flock(closed fd 99, LOCK_NB           ) -> ret=-1 errno=22 EINVAL
+flock(open file   , LOCK_NB           ) -> ret=-1 errno=22 EINVAL
+flock(closed fd 99, LOCK_SH|LOCK_EX   ) -> ret=-1 errno=22 EINVAL
+flock(open file   , LOCK_SH|LOCK_EX   ) -> ret=-1 errno=22 EINVAL
+flock(closed fd 99, unknown bit 16    ) -> ret=-1 errno=22 EINVAL
+flock(open file   , unknown bit 16    ) -> ret=-1 errno=22 EINVAL
+flock(closed fd 99, LOCK_SH|16        ) -> ret=-1 errno=22 EINVAL
+flock(open file   , LOCK_SH|16        ) -> ret=-1 errno=22 EINVAL

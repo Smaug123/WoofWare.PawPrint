@@ -800,7 +800,21 @@ module TestSocketTable =
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
+        match UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel with
+        | Ok answer -> answer
+        | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
+
+    /// The refusal a connect answers, for the rows about what this kernel
+    /// will not model.
+    let private connectRefused
+        (client : SocketId)
+        (dest : InternetEndpoint)
+        (kernel : UnixSystem<int, string>)
+        : ConnectRefusal
+        =
+        match UnixConnection.connectSocket client false 16 inetFamily (Some dest) kernel with
+        | Error refusal -> refusal
+        | Ok answer -> failwith $"expected a refusal, got %A{answer}"
 
     /// The write-back a guest cannot inspect: the queue's content, the
     /// connection's two addresses, and the client's implicit binding. A
@@ -993,10 +1007,11 @@ module TestSocketTable =
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
         let _, kernel = connect (SocketId 2L) false (loopback 5000us) kernel
 
-        let e =
-            Assert.Throws<System.Exception> (fun () -> connect (SocketId 3L) false (loopback 5000us) kernel |> ignore)
-
-        e.Message |> shouldContainText "its measured capacity"
+        match connectRefused (SocketId 3L) (loopback 5000us) kernel with
+        | ConnectRefusal.AcceptQueueFull (_, destination, queued) ->
+            destination |> shouldEqual (loopback 5000us)
+            queued |> shouldEqual 2
+        | other -> failwith $"expected the queue to be full, got %A{other}"
 
     [<Test>]
     let ``the accept queue admits exactly backlog on Darwin`` () : unit =
@@ -1012,10 +1027,11 @@ module TestSocketTable =
 
         let _, kernel = connect (SocketId 1L) false (loopback 5000us) kernel
 
-        let e =
-            Assert.Throws<System.Exception> (fun () -> connect (SocketId 2L) false (loopback 5000us) kernel |> ignore)
-
-        e.Message |> shouldContainText "its measured capacity"
+        match connectRefused (SocketId 2L) (loopback 5000us) kernel with
+        | ConnectRefusal.AcceptQueueFull (_, destination, queued) ->
+            destination |> shouldEqual (loopback 5000us)
+            queued |> shouldEqual 1
+        | other -> failwith $"expected the queue to be full, got %A{other}"
 
     /// The producer this slice exists for: a connect onto a registered
     /// listener queues the accept-queue-push edge, so the port has something
@@ -1259,7 +1275,9 @@ module TestSocketTable =
         // AF_UNSPEC dissolves on Linux, and — measured, unlike TCP's reset —
         // drops the implicit binding entirely, port included.
         let outcome, kernel =
-            UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None kernel
+            match UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None kernel with
+            | Ok answer -> answer
+            | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
         outcome |> shouldEqual ConnectOutcome.Completed
         let socket = UnixMachineState.socket (SocketId 0L) kernel.Machine
@@ -1284,7 +1302,9 @@ module TestSocketTable =
             }
 
         let outcome, _ =
-            UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None darwin
+            match UnixConnection.connectSocket (SocketId 0L) false 16 (Some 0) None darwin with
+            | Ok answer -> answer
+            | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
         outcome |> shouldEqual (ConnectOutcome.Failed UnixError.EAFNOSUPPORT)
 
@@ -1498,12 +1518,9 @@ module TestSocketTable =
                     kernel
                 )
 
-            let e =
-                Assert.Throws<System.Exception> (fun () ->
-                    connect (SocketId 5L) false (loopback 5000us) kernel |> ignore
-                )
-
-            e.Message |> shouldContainText "its measured capacity"
+            match connectRefused (SocketId 5L) (loopback 5000us) kernel with
+            | ConnectRefusal.AcceptQueueFull _ -> ()
+            | other -> failwith $"expected the queue to be full, got %A{other}"
 
     [<Test>]
     let ``a Darwin backlog clamps to somaxconn with no plus-one`` () : unit =
@@ -1528,12 +1545,9 @@ module TestSocketTable =
                     kernel
                 )
 
-            let e =
-                Assert.Throws<System.Exception> (fun () ->
-                    connect (SocketId 4L) false (loopback 5000us) kernel |> ignore
-                )
-
-            e.Message |> shouldContainText "its measured capacity"
+            match connectRefused (SocketId 4L) (loopback 5000us) kernel with
+            | ConnectRefusal.AcceptQueueFull _ -> ()
+            | other -> failwith $"expected the queue to be full, got %A{other}"
 
     /// A wildcard-bound client resolves to a concrete loopback source at
     /// connect — in the *binding* (getsockname reports it) and in the
@@ -1722,13 +1736,8 @@ module TestSocketTable =
             }
 
         // Bound and idle: the measured dropped-SYN refusal.
-        let e =
-            Assert.Throws<System.Exception> (fun () ->
-                connect (SocketId 1L) false (loopback 5000us) (kernelWith SocketPhase.Idle Map.empty)
-                |> ignore
-            )
-
-        e.Message |> shouldContainText "rather than answering RST"
+        connectRefused (SocketId 1L) (loopback 5000us) (kernelWith SocketPhase.Idle Map.empty)
+        |> shouldEqual (ConnectRefusal.DarwinSynDropped (loopback 5000us))
 
         // Established at the port (its listener long closed): RST, so the
         // connect is refused like any closed port — and this socket latches

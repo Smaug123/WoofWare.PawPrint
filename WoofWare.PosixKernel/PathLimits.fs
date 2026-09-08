@@ -306,7 +306,9 @@ type PathArgumentBytes =
     /// the kernel gets round to copying it in.
     | Unreadable
     /// The pathname's bytes **without a NUL terminator**, as `PathArgument.parse`
-    /// takes them.
+    /// takes them. A NUL among them is one the kernel could never have been
+    /// handed -- a C string ends at its first NUL -- and `PathArgument.parse`
+    /// refuses it.
     | Bytes of bytes : ImmutableArray<byte>
 
 /// <summary>
@@ -326,6 +328,11 @@ type PathArgumentRefusal =
     /// can't name a file with a non-UTF-8 string.
     /// </remarks>
     | NotUtf8
+    /// The bytes hold a NUL at `offset`. A kernel receives a pathname as a C
+    /// string, which ends at its first NUL, so bytes carrying one are not a
+    /// pathname any kernel was ever handed: the caller read past the end of
+    /// the string, or built the bytes from something that was never one.
+    | InteriorNul of offset : int
 
 [<RequireQualifiedAccess>]
 module PathArgument =
@@ -347,7 +354,7 @@ module PathArgument =
     /// </param>
     /// <param name="bytes">
     /// The path argument, without its NUL terminator.
-    /// If this is not a UTF-8 string (but is within the length limit), we return a refusal.
+    /// If it holds a NUL, or is not a UTF-8 string (but is within the length limit), we return a refusal.
     /// </param>
     let parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : Result<PathArgument, PathArgumentRefusal> =
         // A forged `PathLimits` has a `PathMaxBytes` of zero, which is not very
@@ -361,10 +368,18 @@ module PathArgument =
             failwith
                 "PathArgument.parse: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty path; pass ImmutableArray<byte>.Empty."
 
+        // Before the length: a NUL says the bytes are not the C string the
+        // kernel would have copied in, so no rule about that string applies.
+        let nulOffset = bytes.IndexOf 0uy
+
         // The limit counts the NUL byte, but the caller has not passed that; hence `- 1`.
-        // Length is checked first: PATH_MAX is enforced by getname()/copyinstr
+        // Length is checked next: PATH_MAX is enforced by getname()/copyinstr
         // when the kernel copies the string in, before anything looks at what it says.
-        if bytes.Length > PathLimits.pathMaxBytes limits - 1 then
+        let overPathMax = bytes.Length > PathLimits.pathMaxBytes limits - 1
+
+        if nulOffset >= 0 then
+            Error (PathArgumentRefusal.InteriorNul nulOffset)
+        elif overPathMax then
             Ok (PathArgument.Failed UnixError.ENAMETOOLONG)
         else
 

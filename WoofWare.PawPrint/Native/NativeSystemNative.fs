@@ -670,6 +670,11 @@ module NativeSystemNative =
 
             failwith
                 $"%s{operation}: the guest passed a path that is not valid UTF-8 (bytes: %s{rendered}). This kernel models a filename as a string of characters, so this path has no representation in the emulated filesystem, and decoding it leniently would silently resolve a different file. CoreLib never produces such a path — it encodes from a string — so this can only come from a hand-rolled P/Invoke."
+        | Error (PathArgumentRefusal.InteriorNul offset) ->
+            // The bytes come from reading the guest's C string up to its NUL,
+            // so a NUL among them means that read went wrong.
+            failwith
+                $"%s{operation}: the bytes read for the guest's path hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
 
     /// The resolution of a guest path, or the errno the lookup owes the guest.
     ///
@@ -1044,6 +1049,9 @@ module NativeSystemNative =
                 // than this boundary's.
                 failwith
                     $"%s{operation}: the guest passed a path that is not valid UTF-8. This kernel models a filename as a string of characters, so this path has no representation in the emulated filesystem, and decoding it leniently would silently resolve a different file. CoreLib never produces such a path -- it encodes from a string -- so this can only come from a hand-rolled P/Invoke."
+            | Error (PathArgumentRefusal.InteriorNul offset) ->
+                failwith
+                    $"%s{operation}: the bytes read for one of the guest's paths hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
             | Ok (SyscallAnswer.Failed error, system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
@@ -4377,7 +4385,13 @@ module NativeSystemNative =
                     destination
                     (EmulatedKernel.unix state.Kernel)
             with
-            | Error refusal -> refuse refusal
+            | Error (ConnectRefusal.Copy refusal) -> refuse refusal
+            | Error refusal ->
+                // The library says which unmeasured or unmodelled input it
+                // will not answer across; a guest reached it through the
+                // ordinary `Socket.Connect`, so there is no managed caller to
+                // exclude.
+                failwith $"%s{operation}: fd %d{fd}: %s{ConnectRefusal.describe refusal}"
             | Ok (outcome, unix) ->
                 // The system comes back on the failing arms too: several of
                 // connect's failures latch a phase change first.
@@ -4867,10 +4881,13 @@ module NativeSystemNative =
                         | Ok value -> value
                         | Error _ -> 0UL
 
+                    // Edge-triggered unconditionally: the shim ORs EPOLLET into
+                    // every registration it makes (pal_networking.c), and the
+                    // PAL's SocketEvents carry no trigger for a caller to choose.
                     if currentEvents = 0 then
-                        SocketEventRegistrationChange.Add (interest, placeholder)
+                        SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interest, placeholder)
                     else
-                        SocketEventRegistrationChange.Modify (interest, placeholder)
+                        SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, interest, placeholder)
 
             match EmulatedKernel.changeSocketEventRegistration portFd targetFd change state.Kernel with
             | Error refusal ->

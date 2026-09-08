@@ -1454,6 +1454,77 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.pushToEvalStack (CliType.ValueType handleValue) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_GetMethodAt",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          _,
+          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                              "MethodTable",
+                                                              methodTableGenerics))
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) when
+            methodTableGenerics.IsEmpty
+            ->
+            // CoreCLR (runtimehandles.cpp:399): the `MethodDesc` at a slot of a method table --
+            // `GetMethodDescForSlot` below `GetNumVirtuals`, the static-virtual tail of an interface
+            // past it, and `ArgumentException` past that. `VirtualSlotLayout.methodAt` is that
+            // rule; what remains here is naming the occupant's declaring type as the receiver
+            // instantiates it, so that the handle minted is the one `GetBaseDefinition` and the
+            // accessor association report as the method's `DeclaringType`.
+            let operation = "RuntimeTypeHandle.GetMethodAt"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let target =
+                NativeCall.runtimeTypeHandleTargetOfEvalStackValue
+                    operation
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let slot =
+                match CliType.unwrapPrimitiveLikeDeep instruction.Arguments.[1] with
+                | CliType.Numeric (CliNumericType.Int32 slot) -> slot
+                | other -> failwith $"%s{operation}: expected an Int32 slot, got %O{other}"
+
+            let state, answer =
+                VirtualSlotLayout.methodAt ctx.LoggerFactory ctx.BaseClassTypes operation state target slot
+
+            match answer with
+            | VirtualSlotLayout.MethodAtSlot.OutOfRange ->
+                // `COMPlusThrow(kArgumentException, W("Arg_ArgumentOutOfRangeException"))`.
+                NativeHandlerResult.raiseException ctx.BaseClassTypes.ArgumentException state
+                |> Some
+            | VirtualSlotLayout.MethodAtSlot.Method occupant ->
+
+            let state, declaringTarget =
+                VirtualSlotLayout.declaringTypeAt
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    operation
+                    state
+                    target
+                    slot
+                    occupant
+
+            let id, registry =
+                MethodHandleRegistry.getOrAllocateInternalId
+                    occupant.DeclaredBy.AssemblyFullName
+                    declaringTarget
+                    occupant.Method
+                    state.MethodHandles
+
+            // A raw `MethodDesc*` in an `IntPtr`, which the managed wrapper reads back as
+            // `new RuntimeMethodHandleInternal(IntPtr)`: the same spelling of a registry id that
+            // `NativeStackTrace` hands out through an `IntPtr[]` cell.
+            { state with
+                MethodHandles = registry
+            }
+            |> IlMachineState.pushToEvalStack'
+                (EvalStackValue.NativeInt (NativeIntSource.MethodHandlePtr id))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | "RuntimeTypeHandle_GetFields",
           "System.Private.CoreLib",
           "System",

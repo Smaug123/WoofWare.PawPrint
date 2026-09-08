@@ -358,14 +358,28 @@ module MethodHandleRegistry =
         }
         |> MethodHandle.FromMetadata
 
-    /// Returns a bare `System.RuntimeMethodHandleInternal` value type identifying the given method
-    /// declared on `declaringType`, allocating a fresh registry id if necessary. No managed-heap
-    /// allocation is performed; this is the representation `RuntimeTypeHandle.GetFirstIntroducedMethod`
+    /// The registry id identifying the given method declared on `declaringType`, allocating a fresh
+    /// one if necessary: CoreCLR's open `MethodDesc*`, for a QCall that hands one back as a raw
+    /// `IntPtr`. No managed-heap allocation is performed; this is the representation `RuntimeTypeHandle.GetFirstIntroducedMethod`
     /// / `GetNextIntroducedMethod` surface, being raw method-table slots rather than full handles,
     /// and the one `RuntimeMethodHandle_GetStubIfNeededSlow` rebinds onto when the declaring type is
     /// a generic type *definition*. Method-generic parameters of the input `method` are intentionally
     /// NOT instantiated, so the registered handle has empty `MethodGenerics`: that is the method
     /// definition, analogous to a CoreCLR open `MethodDesc*`, which is what both callers want.
+    let getOrAllocateInternalId
+        (assemblyFullName : string)
+        (declaringType : RuntimeTypeHandleTarget)
+        (method : MethodInfo<'tyGen, GenericParamFromMetadata, TypeDefn>)
+        (reg : MethodHandleRegistry)
+        : int64 * MethodHandleRegistry
+        =
+        let handle =
+            makeOpenMethodHandle "MethodHandleRegistry.getOrAllocateInternalId" assemblyFullName declaringType method
+
+        idOfHandle handle reg
+
+    /// As `getOrAllocateInternalId`, wrapped as the `RuntimeMethodHandleInternal` value type the
+    /// managed side reads.
     let getOrAllocateInternalHandle
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
@@ -375,14 +389,8 @@ module MethodHandleRegistry =
         (reg : MethodHandleRegistry)
         : CliValueType * MethodHandleRegistry
         =
-        let handle =
-            makeOpenMethodHandle
-                "MethodHandleRegistry.getOrAllocateInternalHandle"
-                assemblyFullName
-                declaringType
-                method
-
-        let registryId, reg = idOfHandle handle reg
+        let registryId, reg =
+            getOrAllocateInternalId assemblyFullName declaringType method reg
 
         let mHandle =
             CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)

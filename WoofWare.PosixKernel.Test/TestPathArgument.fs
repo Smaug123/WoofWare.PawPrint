@@ -106,6 +106,29 @@ module TestPathArgument =
         PathArgument.parse linux (ImmutableArray.CreateRange [ 0x2Fuy ; 0xFFuy ])
         |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
 
+    /// A kernel receives a pathname as a C string, which ends at its first
+    /// NUL, so bytes carrying one are something no kernel was handed. Refused
+    /// as the caller's mistake, and before any rule about the string is
+    /// applied.
+    [<Test>]
+    let ``bytes holding a NUL are refused, naming where it is`` () : unit =
+        PathArgument.parse linux (ImmutableArray.CreateRange [ 0x61uy ; 0x00uy ; 0x62uy ])
+        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
+
+        PathArgument.parse linux (ImmutableArray.CreateRange [ 0x00uy ])
+        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 0))
+
+        // Ahead of the length rule: what follows the NUL is not part of any
+        // string the kernel would have seen, so its length is not either.
+        let overLong = Array.append [| 0x61uy ; 0x00uy |] (Array.create 5000 0x62uy)
+
+        PathArgument.parse linux (ImmutableArray.CreateRange overLong)
+        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
+
+        // ...and ahead of the decode, for the same reason.
+        PathArgument.parse linux (ImmutableArray.CreateRange [ 0xFFuy ; 0x00uy ])
+        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
+
     [<Test>]
     let ``a path within the limit parses to what it says`` () : unit =
         match PathArgument.parse linux (bytesOf "/etc/hostname") with

@@ -142,22 +142,32 @@ module TestUnixError =
         | RawErrnoPortability.Portable value -> value
         | RawErrnoPortability.PlatformDependent (linux, darwinValue) -> if darwin then darwinValue else linux
 
+    /// The one number a platform gives two errors: Linux's `<errno.h>` defines
+    /// `ENOTSUP` as `EOPNOTSUPP`. Any other collision is a transcription error.
+    let private aliased (darwin : bool) : Set<UnixError> list =
+        if darwin then
+            []
+        else
+            [ Set.ofList [ UnixError.EOPNOTSUPP ; UnixError.ENOTSUP ] ]
+
     [<Test>]
-    let ``raw errno numbering is injective on each platform separately`` () : unit =
+    let ``raw errno numbering is injective on each platform, up to the one Linux alias`` () : unit =
         // Injectivity has to hold per platform, not across the union: 40 is a
         // legitimate number for two different errors *on different platforms*,
         // and comparing the pooled values would report a collision that no
         // running system could ever observe.
         for darwin in [ true ; false ] do
-            let raws = UnixError.all |> List.map (rawOn darwin)
+            let collisions =
+                UnixError.all
+                |> List.groupBy (rawOn darwin)
+                |> List.filter (fun (_, errors) -> List.length errors > 1)
+                |> List.filter (fun (_, errors) -> not (List.contains (Set.ofList errors) (aliased darwin)))
 
-            if List.length (List.distinct raws) <> List.length raws then
+            if not (List.isEmpty collisions) then
                 let platform = if darwin then "Darwin" else "Linux"
 
                 let collisions =
-                    UnixError.all
-                    |> List.groupBy (rawOn darwin)
-                    |> List.filter (fun (_, errors) -> List.length errors > 1)
+                    collisions
                     |> List.map (fun (raw, errors) ->
                         let names = errors |> List.map caseName |> String.concat "/"
                         $"%d{raw} is claimed by %s{names}"
@@ -238,6 +248,48 @@ module TestUnixError =
         // where 40 is EMSGSIZE; mapping 62 would be wrong the other way round.
         UnixError.ofRawErrno 40 |> shouldEqual None
         UnixError.ofRawErrno 62 |> shouldEqual None
+
+    /// The alias, from the decoding side: Linux's 95 is one errno, and it is
+    /// answered as `EOPNOTSUPP`; Darwin's 45 and 102 are two.
+    [<Test>]
+    let ``the Linux alias decodes as EOPNOTSUPP, and Darwin's two numbers as two errors`` () : unit =
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Linux 95
+        |> shouldEqual (Some UnixError.EOPNOTSUPP)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Darwin 45
+        |> shouldEqual (Some UnixError.ENOTSUP)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Darwin 102
+        |> shouldEqual (Some UnixError.EOPNOTSUPP)
+
+        // Both directions of the encode agree with that.
+        UnixError.toRawErrnoUnder RawErrnoNumbering.Linux UnixError.ENOTSUP
+        |> shouldEqual 95
+
+        UnixError.toRawErrnoUnder RawErrnoNumbering.Linux UnixError.EOPNOTSUPP
+        |> shouldEqual 95
+
+    /// The errnos the library's own refusal messages cite as measured answers
+    /// can now be spelled.
+    [<Test>]
+    let ``the measured socket and lock errnos decode on both numberings`` () : unit =
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Linux 107
+        |> shouldEqual (Some UnixError.ENOTCONN)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Darwin 57
+        |> shouldEqual (Some UnixError.ENOTCONN)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Linux 35
+        |> shouldEqual (Some UnixError.EDEADLK)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Darwin 11
+        |> shouldEqual (Some UnixError.EDEADLK)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Linux 40
+        |> shouldEqual (Some UnixError.ELOOP)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Darwin 40
+        |> shouldEqual (Some UnixError.EMSGSIZE)
 
     [<Test>]
     let ``ofRawErrno declines a platform-dependent errno`` () : unit =
