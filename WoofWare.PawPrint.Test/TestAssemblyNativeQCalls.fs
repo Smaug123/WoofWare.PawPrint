@@ -1967,7 +1967,7 @@ public static class StreamVersionLibrary
         // arms reachable at all: no compiler emits the MC++ shape, and the ReadyToRun arms
         // need a crossgen2 image.
         let decode (headers : PEImageHeaders) : int * int =
-            let result = NativeModuleHandle.peKindAndMachine "test" headers
+            let result = PEImageKind.peKindAndMachine "test" headers
             result.PEKind, result.Machine
 
         // AnyCPU, which is every image the test harness compiles and every non-ReadyToRun
@@ -2031,7 +2031,7 @@ public static class StreamVersionLibrary
         // overwrites the machine regardless, so it is the only place the identity shows.
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                NativeModuleHandle.peKindAndMachine
+                PEImageKind.peKindAndMachine
                     "test"
                     (headersOf
                         linuxX64NativeNiMachine

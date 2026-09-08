@@ -261,6 +261,96 @@ module TestAssemblyBinding =
             )
 
     [<Test>]
+    let ``an upper-case extension is found on a case-sensitive host`` () =
+        withRuntimeDir
+            (testAssemblySimpleName.ToUpperInvariant () + ".DLL")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                AssemblyBinding.tryReadFromRuntimeDirs loggerFactory [ root ] None testAssemblySimpleName
+                |> Option.map (fun assy -> assy.Name.Name)
+                |> shouldEqual (Some testAssemblySimpleName)
+            )
+
+    /// `TestCandidateRefMatchesDef`: the file was chosen by its name, and the manifest inside it
+    /// must agree before it answers.
+    [<Test>]
+    let ``a file whose manifest names another assembly does not bind`` () =
+        withRuntimeDir
+            "Alias.dll"
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                let request : AssemblyLoadRequest =
+                    {
+                        SimpleName = "Alias"
+                        Version = requested unspecified unspecified unspecified unspecified
+                        Culture = None
+                        PublicKeyToken = None
+                        Flags = 0
+                    }
+
+                match
+                    snd (
+                        AssemblyBinding.tryBind
+                            loggerFactory
+                            [ root ]
+                            request
+                            LoadedAssemblies.empty
+                            AssemblyBindCache.empty
+                    )
+                with
+                | AssemblyBindResult.NotFound -> ()
+                | AssemblyBindResult.Bound (_, bound) -> failwith $"expected NotFound, bound %s{bound.Name.FullName}"
+            )
+
+    /// Measured on .NET 10 against an IL-only assembly: `MSIL` binds, `x86` and `AMD64` do not.
+    [<Test>]
+    let ``a requested processor architecture is compared with the image's`` () =
+        withRuntimeDir
+            (testAssemblySimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                let request (flags : int) : AssemblyLoadRequest =
+                    {
+                        SimpleName = testAssemblySimpleName
+                        Version = requested unspecified unspecified unspecified unspecified
+                        Culture = None
+                        PublicKeyToken = None
+                        Flags = flags
+                    }
+
+                for flags in [ 0x20 ; 0x40 ] do
+                    match
+                        snd (
+                            AssemblyBinding.tryBind
+                                loggerFactory
+                                [ root ]
+                                (request flags)
+                                LoadedAssemblies.empty
+                                AssemblyBindCache.empty
+                        )
+                    with
+                    | AssemblyBindResult.NotFound -> ()
+                    | AssemblyBindResult.Bound _ -> failwith $"expected NotFound for flags 0x%x{flags}"
+
+                for flags in [ 0 ; 0x10 ] do
+                    match
+                        snd (
+                            AssemblyBinding.tryBind
+                                loggerFactory
+                                [ root ]
+                                (request flags)
+                                LoadedAssemblies.empty
+                                AssemblyBindCache.empty
+                        )
+                    with
+                    | AssemblyBindResult.Bound _ -> ()
+                    | AssemblyBindResult.NotFound -> failwith $"expected Bound for flags 0x%x{flags}"
+            )
+
+    [<Test>]
     let ``binding registers the assembly once and answers the same instance thereafter`` () =
         withRuntimeDir
             (testAssemblySimpleName + ".dll")
@@ -277,13 +367,29 @@ module TestAssemblyBinding =
                     }
 
                 // Too high a version: not found, and nothing registered.
-                match AssemblyBinding.tryBind loggerFactory [ root ] (request 999us) LoadedAssemblies.empty with
+                match
+                    snd (
+                        AssemblyBinding.tryBind
+                            loggerFactory
+                            [ root ]
+                            (request 999us)
+                            LoadedAssemblies.empty
+                            AssemblyBindCache.empty
+                    )
+                with
                 | AssemblyBindResult.NotFound -> ()
                 | AssemblyBindResult.Bound _ -> failwith "expected NotFound"
 
                 let assemblies, first =
                     match
-                        AssemblyBinding.tryBind loggerFactory [ root ] (request unspecified) LoadedAssemblies.empty
+                        snd (
+                            AssemblyBinding.tryBind
+                                loggerFactory
+                                [ root ]
+                                (request unspecified)
+                                LoadedAssemblies.empty
+                                AssemblyBindCache.empty
+                        )
                     with
                     | AssemblyBindResult.Bound (assemblies, assy) -> assemblies, assy
                     | AssemblyBindResult.NotFound -> failwith "expected Bound"
@@ -296,7 +402,16 @@ module TestAssemblyBinding =
                 Directory.Delete (root, true)
                 Directory.CreateDirectory root |> ignore<DirectoryInfo>
 
-                match AssemblyBinding.tryBind loggerFactory [ root ] (request unspecified) assemblies with
+                match
+                    snd (
+                        AssemblyBinding.tryBind
+                            loggerFactory
+                            [ root ]
+                            (request unspecified)
+                            assemblies
+                            AssemblyBindCache.empty
+                    )
+                with
                 | AssemblyBindResult.Bound (again, second) ->
                     Object.ReferenceEquals (first, second) |> shouldEqual true
 
@@ -306,7 +421,97 @@ module TestAssemblyBinding =
                 | AssemblyBindResult.NotFound -> failwith "expected Bound from the load context"
 
                 // A version the loaded one cannot satisfy is a miss even though it is loaded.
-                match AssemblyBinding.tryBind loggerFactory [ root ] (request 999us) assemblies with
+                match
+                    snd (
+                        AssemblyBinding.tryBind
+                            loggerFactory
+                            [ root ]
+                            (request 999us)
+                            assemblies
+                            AssemblyBindCache.empty
+                    )
+                with
                 | AssemblyBindResult.NotFound -> ()
                 | AssemblyBindResult.Bound _ -> failwith "expected NotFound against the loaded version"
+            )
+
+    /// The sequences measured on .NET 10 that pin the failure cache's key and its ordering
+    /// against the success cache; `sourcesPure/AssemblyLoadFailureCache.cs` runs the same
+    /// sequences against the real runtime.
+    [<Test>]
+    let ``the failure cache is keyed by name, version and culture, and consulted after the success cache`` () =
+        withRuntimeDir
+            (testAssemblySimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                let request
+                    (name : string)
+                    (major : uint16)
+                    (culture : string option)
+                    (flags : int)
+                    : AssemblyLoadRequest
+                    =
+                    {
+                        SimpleName = name
+                        Version = requested major unspecified unspecified unspecified
+                        Culture = culture
+                        PublicKeyToken = None
+                        Flags = flags
+                    }
+
+                let plain = request testAssemblySimpleName unspecified None 0
+                let x86 = request (testAssemblySimpleName.ToLowerInvariant ()) unspecified None 0x20
+                let msil = request testAssemblySimpleName unspecified None 0x10
+                let tooHigh = request testAssemblySimpleName 999us None 0
+                let french = request testAssemblySimpleName unspecified (Some "fr") 0
+
+                let bind (cache : AssemblyBindCache) (assemblies : LoadedAssemblies) (r : AssemblyLoadRequest) =
+                    let cache, result =
+                        AssemblyBinding.tryBind loggerFactory [ root ] r assemblies cache
+
+                    match result with
+                    | AssemblyBindResult.Bound (assemblies, _) -> cache, assemblies, true
+                    | AssemblyBindResult.NotFound -> cache, assemblies, false
+
+                // An architecture miss, even under another spelling of the name, poisons the plain
+                // request and the MSIL one.
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty x86
+
+                bound |> shouldEqual false
+                let cache, assemblies, bound = bind cache assemblies plain
+                bound |> shouldEqual false
+                let cache, assemblies, bound = bind cache assemblies msil
+                bound |> shouldEqual false
+                // A version-specific request has its own key and still binds.
+                let ownMajor =
+                    (Assembly.readFile loggerFactory (Path.Combine (root, testAssemblySimpleName + ".dll")))
+                        .Name.Version.Major
+                    |> uint16
+
+                let _, _, bound =
+                    bind cache assemblies (request testAssemblySimpleName ownMajor None 0)
+
+                bound |> shouldEqual true
+
+                // A version miss and a culture miss leave the plain request alone.
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty tooHigh
+
+                bound |> shouldEqual false
+                let cache, assemblies, bound = bind cache assemblies french
+                bound |> shouldEqual false
+                let _, _, bound = bind cache assemblies plain
+                bound |> shouldEqual true
+
+                // A plain request that bound survives a later architecture miss for the same name.
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty plain
+
+                bound |> shouldEqual true
+                let cache, assemblies, bound = bind cache assemblies x86
+                bound |> shouldEqual false
+                let _, _, bound = bind cache assemblies plain
+                bound |> shouldEqual true
             )

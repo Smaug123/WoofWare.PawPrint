@@ -1469,14 +1469,21 @@ module NativeRuntimeAssembly =
                 let fieldId = IlMachineState.requiredOwnInstanceFieldId state parts.Declared name
                 CliValueType.DereferenceFieldById fieldId parts
 
+            // `Assembly.Load(new AssemblyName())`, whose `Name` was never set: the managed side
+            // pins a null string, and CoreCLR refuses the null pointer with `ArgumentException`
+            // (`Format_StringZeroLength`) before binding anything. A `Name` set to `""` is a
+            // different case, handled with the other misses below.
+            match NativeCall.managedPointerOfPointerArgument operation "_pName" (field "_pName") with
+            | ManagedPointerSource.Null ->
+                NativeHandlerResult.raiseExceptionWithMessage
+                    ctx.BaseClassTypes.ArgumentException
+                    (Some "String cannot have zero length.")
+                    state
+                |> Some
+            | namePtr ->
+
             let simpleName =
-                match NativeCall.managedPointerOfPointerArgument operation "_pName" (field "_pName") with
-                | ManagedPointerSource.Null ->
-                    // `Assembly.Load(new AssemblyName())`: CoreCLR raises `ArgumentException`
-                    // (`Format_StringZeroLength`) before binding, which this handler does not.
-                    failwith
-                        $"TODO: %s{operation} with a null simple name, which CoreCLR refuses with ArgumentException (Format_StringZeroLength) before binding"
-                | namePtr -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
+                NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
 
             let version : RequestedAssemblyVersion =
                 {
@@ -1555,7 +1562,20 @@ module NativeRuntimeAssembly =
                     Flags = flags
                 }
 
-            match AssemblyBinding.tryBind ctx.LoggerFactory state.DotnetRuntimeDirs request state._LoadedAssemblies with
+            let cache, bound =
+                AssemblyBinding.tryBind
+                    ctx.LoggerFactory
+                    state.DotnetRuntimeDirs
+                    request
+                    state._LoadedAssemblies
+                    state.AssemblyBindCache
+
+            let state =
+                { state with
+                    AssemblyBindCache = cache
+                }
+
+            match bound with
             | AssemblyBindResult.Bound (assemblies, bound) ->
                 let state =
                     { state with
@@ -1589,12 +1609,18 @@ module NativeRuntimeAssembly =
                 // component prints as `65535`. Measured on .NET 10 for a missing name, a known
                 // name at too high a version, and a known name in a culture with no satellite.
                 let requested =
-                    displayNameWithToken
-                        simpleName
-                        (RequestedAssemblyVersion.toVersion version)
-                        (culture |> Option.defaultValue "")
-                        publicKeyToken
-                        flags
+                    // A `Name` set to `""` has no display name at all, and CoreCLR reports the
+                    // failure under `<Unknown>` instead -- measured on .NET 10, in both the
+                    // message and `FileName`, whatever else the request specified.
+                    if simpleName = "" then
+                        "<Unknown>"
+                    else
+                        displayNameWithToken
+                            simpleName
+                            (RequestedAssemblyVersion.toVersion version)
+                            (culture |> Option.defaultValue "")
+                            publicKeyToken
+                            flags
 
                 // CoreCLR constructs the exception from the file name and `COR_E_FILENOTFOUND`
                 // alone, and `FileNotFoundException.SetMessageField` then renders the message

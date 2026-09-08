@@ -124,6 +124,9 @@ type IlMachineState =
         /// Cache of RuntimeAssembly heap objects keyed by assembly full name, so that
         /// two types from the same assembly return the same Assembly object (reference identity).
         RuntimeAssemblyObjects : ImmutableDictionary<string, ManagedHeapAddress>
+        /// What `Assembly.Load` and its kin have bound and failed to bind so far; see
+        /// `AssemblyBindCache` for what a guest can observe of it.
+        AssemblyBindCache : AssemblyBindCache
         /// Cache of RuntimeModule heap objects keyed by assembly full name. PawPrint currently
         /// models one loaded PE module per DumpedAssembly.
         RuntimeModuleObjects : ImmutableDictionary<string, ManagedHeapAddress>

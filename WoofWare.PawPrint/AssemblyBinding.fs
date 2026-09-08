@@ -55,6 +55,83 @@ type AssemblyLoadRequest =
         Flags : int
     }
 
+/// <summary>
+/// What one process remembers of the binds it has already tried, and consults before binding
+/// again. Both halves are guest-observable, each measured on .NET 10.
+/// </summary>
+/// <remarks>
+/// A request that has bound answers the same assembly again without the binder being asked.
+/// A request that has failed poisons every later request sharing its <em>failure key</em>: the
+/// simple name (ignoring case), the version, and the culture -- but not the token, the
+/// architecture or the content type, so a miss for
+/// <c>System.Security.Claims, processorArchitecture=x86</c> makes the plain
+/// <c>System.Security.Claims</c> a miss for the rest of the process, while a miss for
+/// <c>Version=99.0.0.0</c> or <c>Culture=fr</c> leaves it alone. The two halves are consulted
+/// in that order, which is why a plain request that bound before survives a later
+/// architecture miss for the same name.
+/// </remarks>
+type AssemblyBindCache =
+    private
+        {
+            /// Failure keys of the requests that missed.
+            Failed : Set<string>
+            /// Every part of the requests that bound, to the definition identity each bound to.
+            Bound : Map<string, string>
+        }
+
+[<RequireQualifiedAccess>]
+module AssemblyBindCache =
+    let empty : AssemblyBindCache =
+        {
+            Failed = Set.empty
+            Bound = Map.empty
+        }
+
+    let private versionText (v : RequestedAssemblyVersion) : string =
+        $"%d{v.Major}.%d{v.Minor}.%d{v.Build}.%d{v.Revision}"
+
+    /// `AssemblyName::GetDisplayName(INCLUDE_VERSION)`, as far as what it distinguishes: the
+    /// binder's failure cache is keyed by it. Measured: the key ignores the simple name's case.
+    let private failureKey (request : AssemblyLoadRequest) : string =
+        let culture =
+            match request.Culture with
+            | None -> ""
+            | Some culture -> culture.ToLowerInvariant ()
+
+        $"%s{request.SimpleName.ToLowerInvariant ()}|%s{versionText request.Version}|%s{culture}"
+
+    /// Every part of the request, for the successes the process remembers.
+    let private requestKey (request : AssemblyLoadRequest) : string =
+        let token =
+            match request.PublicKeyToken with
+            | None -> ""
+            | Some token -> Convert.ToHexString token
+
+        $"%s{failureKey request}|%s{token}|%d{request.Flags}"
+
+    /// The definition identity an identical request bound to before, if one did.
+    let tryFindBound (request : AssemblyLoadRequest) (cache : AssemblyBindCache) : string option =
+        Map.tryFind (requestKey request) cache.Bound
+
+    /// Has a request sharing this one's failure key missed before?
+    let hasFailed (request : AssemblyLoadRequest) (cache : AssemblyBindCache) : bool =
+        Set.contains (failureKey request) cache.Failed
+
+    let withBound
+        (request : AssemblyLoadRequest)
+        (definitionName : string)
+        (cache : AssemblyBindCache)
+        : AssemblyBindCache
+        =
+        { cache with
+            Bound = Map.add (requestKey request) definitionName cache.Bound
+        }
+
+    let withFailed (request : AssemblyLoadRequest) (cache : AssemblyBindCache) : AssemblyBindCache =
+        { cache with
+            Failed = Set.add (failureKey request) cache.Failed
+        }
+
 [<RequireQualifiedAccess>]
 type AssemblyBindResult =
     /// The load context with the assembly registered, and the canonical instance for its
@@ -165,7 +242,9 @@ module AssemblyBinding =
                 else
 
                 let caseInsensitive =
-                    Directory.EnumerateFiles (dir, "*.dll")
+                    // Every file, not `*.dll`: a case-sensitive host's pattern match would
+                    // drop `Foo.DLL` before the comparison below ever saw it.
+                    Directory.EnumerateFiles dir
                     |> Seq.filter (fun candidate ->
                         String.Equals (Path.GetFileName candidate, fileName, StringComparison.OrdinalIgnoreCase)
                     )
@@ -183,12 +262,8 @@ module AssemblyBinding =
                         $"TODO: %s{dir} holds %d{List.length several} files named %s{fileName} differing only by case (%A{several}); CoreCLR's trusted-platform-assemblies table would keep whichever its host enumerated last, which PawPrint does not reproduce"
         )
 
-    /// <summary>
-    /// Bind <paramref name="request"/> the way <c>AssemblyNative_InternalLoad</c> does in the
-    /// default load context: an assembly already loaded under that simple name and culture wins
-    /// if its version satisfies the request, and otherwise the runtime directories are probed.
-    /// </summary>
-    let tryBind
+    /// The binder proper, once the caches have been consulted.
+    let private bindUncached
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (request : AssemblyLoadRequest)
@@ -201,6 +276,39 @@ module AssemblyBinding =
         if request.Flags &&& 0xE00 = 0x200 then
             AssemblyBindResult.NotFound
         else
+
+        // afPA_Mask: the `ProcessorArchitecture` the request names, if any. Two rules apply
+        // in turn. `IsValidArchitecture` accepts MSIL and none outright, and otherwise only the
+        // architecture of the process itself; every platform PawPrint simulates is 64-bit, so a
+        // 32-bit request (x86, IA64, ARM) is never valid, and a miss. A valid request is then
+        // compared with the candidate's own architecture (`TestCandidateRefMatchesDef`), and
+        // a mismatch is a miss too. Measured on .NET 10 against the framework's IL-only
+        // System.Security.Claims: MSIL binds, x86 and AMD64 do not.
+        let architectureAccepts (candidate : DumpedAssembly) : bool =
+            match (request.Flags &&& 0x70) >>> 4 with
+            | 0 -> true
+            | requested ->
+
+            let found =
+                PEImageKind.peKindAndMachine $"binding '%s{request.SimpleName}'" candidate.PEImageHeaders
+                |> PEImageKind.architectureOfImage $"binding '%s{request.SimpleName}'"
+
+            match requested, found with
+            | 1, ImageArchitecture.Msil -> true
+            | 1, _ -> false
+            | 2, _
+            | 3, _
+            | 5, _ -> false
+            | 4, ImageArchitecture.Amd64 ->
+                // Valid on an x64 process and a mismatch on an arm64 one, and which of those
+                // is executing is the native runtime's own identity, which PawPrint does not
+                // model (see `PEImageKind.peKindAndMachine` on ReadyToRun images).
+                failwith
+                    $"TODO: Assembly.Load of '%s{request.SimpleName}' asks for processorArchitecture=AMD64 and the candidate is an AMD64-specific image; whether that binds depends on the architecture of the executing runtime, which PawPrint does not model"
+            | 4, _ -> false
+            | other, _ ->
+                failwith
+                    $"Assembly.Load of '%s{request.SimpleName}': processor-architecture field %d{other} names no System.Reflection.ProcessorArchitecture value"
 
         let sameName (candidate : DumpedAssembly) : bool =
             String.Equals (candidate.Name.Name, request.SimpleName, StringComparison.OrdinalIgnoreCase)
@@ -227,7 +335,10 @@ module AssemblyBinding =
             // "Can't give higher version than already bound" (assemblybindercommon.cpp): the
             // context holds one assembly per simple name, so an incompatible one is a miss
             // rather than a reason to probe for another.
-            if isCompatibleVersion request.Version (foundVersion candidate) then
+            if
+                architectureAccepts candidate
+                && isCompatibleVersion request.Version (foundVersion candidate)
+            then
                 AssemblyBindResult.Bound (assemblies, candidate)
             else
                 AssemblyBindResult.NotFound
@@ -236,9 +347,48 @@ module AssemblyBinding =
         match tryReadFromRuntimeDirs loggerFactory dotnetRuntimeDirs request.Culture request.SimpleName with
         | None -> AssemblyBindResult.NotFound
         | Some read ->
-            if not (isCompatibleVersion request.Version (foundVersion read)) then
+            // The file was chosen by its name; the *manifest* must agree
+            // (`TestCandidateRefMatchesDef`): `Alias.dll` declaring itself `Real` does not
+            // answer to `Alias`, and a file found in a culture's subdirectory must declare that
+            // culture.
+            if not (sameName read && sameCulture read && architectureAccepts read) then
+                AssemblyBindResult.NotFound
+            elif not (isCompatibleVersion request.Version (foundVersion read)) then
                 AssemblyBindResult.NotFound
             else
 
             let assemblies = assemblies.WithLoadedAssembly read
             AssemblyBindResult.Bound (assemblies, assemblies.ByDefinitionName read.Name.FullName)
+
+    /// <summary>
+    /// Bind <paramref name="request"/> the way <c>AssemblyNative_InternalLoad</c> does in the
+    /// default load context: a request that bound before answers the same assembly, a request
+    /// whose failure key missed before misses again, and otherwise an assembly already loaded
+    /// under that simple name and culture wins if its version satisfies the request, else the
+    /// runtime directories are probed. The returned cache remembers the outcome.
+    /// </summary>
+    let tryBind
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (request : AssemblyLoadRequest)
+        (assemblies : LoadedAssemblies)
+        (cache : AssemblyBindCache)
+        : AssemblyBindCache * AssemblyBindResult
+        =
+        match AssemblyBindCache.tryFindBound request cache with
+        | Some definitionName ->
+            match assemblies.TryByDefinitionName definitionName with
+            | Some bound -> cache, AssemblyBindResult.Bound (assemblies, bound)
+            | None ->
+                failwith
+                    $"AssemblyBinding.tryBind: '%s{request.SimpleName}' bound to %s{definitionName} earlier in this run, which is no longer loaded; assemblies are never unloaded"
+        | None ->
+
+        if AssemblyBindCache.hasFailed request cache then
+            cache, AssemblyBindResult.NotFound
+        else
+
+        match bindUncached loggerFactory dotnetRuntimeDirs request assemblies with
+        | AssemblyBindResult.Bound (assemblies, bound) ->
+            AssemblyBindCache.withBound request bound.Name.FullName cache, AssemblyBindResult.Bound (assemblies, bound)
+        | AssemblyBindResult.NotFound -> AssemblyBindCache.withFailed request cache, AssemblyBindResult.NotFound
