@@ -191,6 +191,11 @@ type CurrentDirectoryFault =
     | TooLong of SimulatedUnixFlavour
     /// The path resolves, to something that is not a directory.
     | NotADirectory
+    /// The seed holds a directory entry whose name is past this flavour's
+    /// `NAME_MAX`, so it describes a filesystem no kernel of that flavour could
+    /// have mounted: `stat` of the name would answer ENAMETOOLONG while
+    /// `readdir` listed it.
+    | SeedNameTooLong of name : DirectoryEntryName * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
@@ -872,8 +877,30 @@ module UnixSystem =
             failwith
                 $"UnixSystem.withFileSystemAndCurrentDirectory: the process still holds %d{List.length stranded} handle(s) onto the current filesystem (%s{listed}). Replacing the filesystem would leave them naming a graph that no longer exists, or silently naming whatever the new one gives the same inode number. This is a boot-time operation; close them first, or build the system with the filesystem it is to run on."
 
-        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt seed
         let limits = SimulatedUnixPlatform.pathLimits platform
+
+        // Every name in the seed, under this flavour's NAME_MAX, before the
+        // graph is built: a name a kernel could never have created is not one
+        // its filesystem can hold. The first offender in `Map` order, which is
+        // the order the seed is realised in.
+        let rec firstOverlongName (entries : Map<DirectoryEntryName, SeedEntry>) : DirectoryEntryName option =
+            entries
+            |> Map.toSeq
+            |> Seq.tryPick (fun (name, entry) ->
+                if not (PathLimits.nameWithinLimit limits name) then
+                    Some name
+                else
+                    match entry with
+                    | SeedEntry.Directory (children, _) -> firstOverlongName children
+                    | SeedEntry.File _
+                    | SeedEntry.Symlink _ -> None
+            )
+
+        match firstOverlongName seed with
+        | Some name -> Error (CurrentDirectoryFault.SeedNameTooLong (name, SimulatedUnixPlatform.flavour platform))
+        | None ->
+
+        let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt seed
         let root = VirtualFileSystem.root filesystem
 
         let located =

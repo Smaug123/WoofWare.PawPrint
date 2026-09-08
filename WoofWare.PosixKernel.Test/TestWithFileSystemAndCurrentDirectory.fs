@@ -154,6 +154,58 @@ module TestWithFileSystemAndCurrentDirectory =
         replaced.Process.CurrentDirectoryInode
         |> shouldNotEqual system.Process.CurrentDirectoryInode
 
+    /// A seed name past the flavour's NAME_MAX describes a filesystem no
+    /// kernel of that flavour could have mounted, so the seed is refused
+    /// rather than realised; measured in the units each flavour counts,
+    /// bytes on Linux and UTF-16 code units on Darwin.
+    [<Test>]
+    let ``a seed name past the flavour's NAME_MAX is refused, wherever it sits`` () : unit =
+        let overlong = String.replicate 256 "a"
+
+        let nested =
+            Map.ofList
+                [
+                    name "outer",
+                    SeedEntry.directory (Map.ofList [ name overlong, SeedEntry.directory FileSystemSeed.empty ])
+                ]
+
+        for platform, flavour in
+            [
+                SimulatedUnixPlatform.linuxX64, SimulatedUnixFlavour.Linux
+                SimulatedUnixPlatform.macOsArm64, SimulatedUnixFlavour.Darwin
+            ] do
+            UnixSystem.initial<int, string> platform
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt nested (absolute "/outer")
+            |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name overlong, flavour)))
+
+        // 255 CJK characters: 765 bytes, past Linux's limit, and 255 code
+        // units, within Darwin's -- the same name `startAt` admits as a
+        // current directory on Darwin alone.
+        let wide = String.replicate 255 "中"
+        let wideSeed = Map.ofList [ name wide, SeedEntry.file noBytes ]
+
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+        |> UnixSystem.withFileSystemAndCurrentDirectory createdAt wideSeed (absolute "/")
+        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
+
+        match
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt wideSeed (absolute "/")
+        with
+        | Ok _ -> ()
+        | Error fault -> failwith $"Darwin admits a 255-code-unit name, but the seed answered %O{fault}."
+
+        // The boundary itself: 255 ASCII bytes is admitted on both.
+        let atLimit = Map.ofList [ name (String.replicate 255 "a"), SeedEntry.file noBytes ]
+
+        for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
+            match
+                UnixSystem.initial<int, string> platform
+                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt atLimit (absolute "/")
+            with
+            | Ok _ -> ()
+            | Error fault -> failwith $"a 255-byte name is within NAME_MAX, but the seed answered %O{fault}."
+
     [<Test>]
     let ``a directory the seed does not contain answers DoesNotResolve`` () : unit =
         startAt SimulatedUnixPlatform.linuxX64 seed "/outer/nope"
@@ -167,18 +219,19 @@ module TestWithFileSystemAndCurrentDirectory =
         |> shouldEqual (Error CurrentDirectoryFault.NotADirectory)
 
     [<Test>]
-    let ``a component past NAME_MAX answers TooLong, on the flavour that says so`` () : unit =
+    let ``a component past NAME_MAX is refused with the seed, on the flavour that says so`` () : unit =
         // The same seed and the same path under both flavours, because that is
         // what makes this a claim about `NAME_MAX` rather than about the seed:
         // `NAME_MAX` counts UTF-16 code units on Darwin and bytes on Linux, so
         // 255 CJK characters name a directory a Darwin process can start in and
-        // a Linux one cannot.
+        // a Linux one cannot -- and on Linux the seed itself is refused, since
+        // no Linux filesystem could hold the name.
         let wide = String.replicate 255 "中"
         let entries = Map.ofList [ name wide, SeedEntry.directory FileSystemSeed.empty ]
         let path = "/" + wide
 
         startAt SimulatedUnixPlatform.linuxX64 entries path
-        |> shouldEqual (Error (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Linux))
+        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         match startAt SimulatedUnixPlatform.macOsArm64 entries path with
         | Ok system ->
@@ -197,7 +250,7 @@ module TestWithFileSystemAndCurrentDirectory =
 
         UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
         |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute path)
-        |> shouldEqual (Error (CurrentDirectoryFault.TooLong SimulatedUnixFlavour.Linux))
+        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (name wide, SimulatedUnixFlavour.Linux)))
 
         // And the accepting direction, which a guard that simply refused
         // every wide name would pass the row above without.
@@ -223,10 +276,18 @@ module TestWithFileSystemAndCurrentDirectory =
             [
                 startAt SimulatedUnixPlatform.linuxX64 seed "/outer/nope"
                 startAt SimulatedUnixPlatform.linuxX64 seed "/outer/file"
+                // A seed name no Linux filesystem could hold.
                 startAt
                     SimulatedUnixPlatform.linuxX64
                     (Map.ofList [ name (String.replicate 255 "中"), SeedEntry.directory FileSystemSeed.empty ])
                     ("/" + String.replicate 255 "中")
+                // A symlink whose expansion carries the walk past Darwin's
+                // PATH_MAX, which is the length the walk itself refuses: four
+                // hundred two-byte components, each within NAME_MAX.
+                startAt
+                    SimulatedUnixPlatform.macOsArm64
+                    (Map.ofList [ name "l", SeedEntry.Symlink (target (String.replicate 400 "/ab")) ])
+                    "/l"
             ]
             |> List.choose (fun result ->
                 match result with

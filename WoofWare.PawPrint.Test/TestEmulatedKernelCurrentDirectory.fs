@@ -145,6 +145,25 @@ module TestEmulatedKernelCurrentDirectory =
 
         text |> shouldContainText "EmulatedKernel.CurrentDirectory"
 
+    /// A seed name past the flavour's NAME_MAX is a host mistake in
+    /// `KernelConfig.FileSystem`, and the message says which name and which
+    /// knob.
+    [<Test>]
+    let ``an overlong seed name names the filesystem knob and the name`` () : unit =
+        let overlong = String.replicate 300 "z"
+        let seed = Map.ofList [ name overlong, SeedEntry.file noBytes ]
+
+        let text =
+            message (fun () ->
+                EmulatedKernel.initial
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/")
+                |> ignore<EmulatedKernel>
+            )
+
+        text |> shouldContainText "KernelConfig.FileSystem"
+        text |> shouldContainText "NAME_MAX"
+        text |> shouldContainText overlong
+
     [<Test>]
     let ``a current directory the seed does not contain names both knobs`` () : unit =
         let text = message (fun () -> seededAt "/outer/nope" |> ignore<EmulatedKernel>)
