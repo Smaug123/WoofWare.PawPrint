@@ -367,3 +367,110 @@ public static class Driver
         // type, which the MethodImpl plus unification moves to the fourth type's body.
         movedIn "D" [ "A" ; "B" ; "C" ; "D" ] |> shouldEqual [ "A" ; "B" ]
         movedIn "DG" [ "AG" ; "BG" ; "CG" ; "DG" ] |> shouldEqual [ "AG" ; "BG" ]
+
+    /// The host CLR's copy of the image, in a fresh load context (see `TestFabricatedVtableLayout`
+    /// for why that keeps it from colliding with anything else in the suite).
+    let private hostAssembly : Assembly = Assembly.Load image
+
+    /// The host's own `RuntimeTypeHandle.GetMethodAt`, reached past the public surface, with
+    /// `RuntimeType.GetMethodBase` to name what it answers.
+    let private hostMethodAt : Type -> int -> MethodBase =
+        let runtimeType = typeof<obj>.Assembly.GetType "System.RuntimeType"
+
+        let internalHandle =
+            typeof<obj>.Assembly.GetType "System.RuntimeMethodHandleInternal"
+
+        let getMethodAt =
+            typeof<RuntimeTypeHandle>
+                .GetMethod (
+                    "GetMethodAt",
+                    BindingFlags.NonPublic ||| BindingFlags.Static,
+                    null,
+                    [| runtimeType ; typeof<int> |],
+                    null
+                )
+
+        let getMethodBase =
+            runtimeType.GetMethod (
+                "GetMethodBase",
+                BindingFlags.NonPublic ||| BindingFlags.Static,
+                null,
+                [| runtimeType ; internalHandle |],
+                null
+            )
+
+        fun (t : Type) (slot : int) ->
+            let handle = getMethodAt.Invoke ((null : obj), [| box t ; box slot |])
+            getMethodBase.Invoke ((null : obj), [| box t ; handle |]) :?> MethodBase
+
+    /// The host's `RuntimeMethodHandle.GetSlot`, as `TestVirtualMethodSlots` reaches it.
+    let private hostSlotOf : MethodBase -> int =
+        let impl =
+            typeof<RuntimeMethodHandle>.GetMethods (BindingFlags.NonPublic ||| BindingFlags.Static)
+            |> Array.filter (fun candidate ->
+                candidate.Name = "GetSlot"
+                && candidate.GetParameters().[0].ParameterType.Name = "IRuntimeMethodInfo"
+            )
+            |> Array.exactlyOne
+
+        fun (method : MethodBase) -> impl.Invoke ((null : obj), [| box method |]) :?> int
+
+    /// `RuntimeTypeHandle_GetMethodAt` reads the slot's *content*, and this image is the one place
+    /// content and identity differ: on `C`, the slot `A::M` owns holds `C::M`, the MethodImpl
+    /// body. The host says so through its own `GetMethodAt`, and PawPrint's `methodAt` must agree
+    /// -- on the method and on the type that declared it, which is what `GetBaseDefinition` and the
+    /// accessor association report.
+    [<Test>]
+    let ``GetMethodAt reads the slot's content, on the host and in PawPrint`` () : unit =
+        let hostA = hostAssembly.GetType "A"
+        let hostC = hostAssembly.GetType "C"
+        let slot = hostSlotOf (hostA.GetMethod "M")
+        let expected = hostMethodAt hostC slot
+        // The fixture would be vacuous if the host answered the owner rather than the body.
+        expected.DeclaringType.Name |> shouldEqual "C"
+
+        let state = state ()
+        let cIdentity = identityOfFabricated "C"
+
+        // `C` is not generic, so a guest can hold it as a closed runtime type; the definition
+        // spelling is what `typeof(C<>)`-style callers would hold. `methodAt` answers the two from
+        // different tables (`dispatchTableOfClosed` and `contentVtableOfDefinition`), so both are
+        // asked, or a content rule broken in one arm would hide behind the other.
+        let cTypeInfo =
+            match fabricated.TryGetTopLevelTypeDef "" "C" with
+            | Some typeInfo -> typeInfo
+            | None -> failwith "fabricated assembly has no type C"
+
+        let state, closedC =
+            DumpedAssembly.typeInfoToTypeDefn' bct state._LoadedAssemblies cTypeInfo
+            |> IlMachineState.concretizeType
+                loggerFactory
+                bct
+                state
+                fabricated.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+
+        for label, target in
+            [
+                "closed", RuntimeTypeHandleTarget.Closed closedC
+                "definition", RuntimeTypeHandleTarget.OpenGenericTypeDefinition cIdentity
+            ] do
+            let _, answer =
+                VirtualSlotLayout.methodAt loggerFactory bct "test" state target slot
+
+            match answer with
+            | VirtualSlotLayout.MethodAtSlot.OutOfRange -> failwith $"PawPrint has no slot %i{slot} on C (%s{label})"
+            | VirtualSlotLayout.MethodAtSlot.Method occupant ->
+                tagOfDeclaringType occupant.DeclaredBy.Description |> shouldEqual (tagOf "C")
+
+                let token =
+                    match fst occupant.Method.IdentityKey with
+                    | Some handle ->
+                        System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken (
+                            System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle
+                            : System.Reflection.Metadata.EntityHandle
+                        )
+                    | None -> -1
+
+                token |> shouldEqual expected.MetadataToken
