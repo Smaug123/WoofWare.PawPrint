@@ -7,7 +7,8 @@ using System.Reflection;
 //
 // Every check here is a relation between tokens rather than a literal value, so the guest
 // says the same thing on both runtimes without depending on which rows Roslyn happened to
-// emit -- except the one place that deliberately does depend on it, which says so.
+// emit. Checks 7 and 8 do depend on Roslyn emitting a type's FieldDef rows in declaration
+// order, and say why that is worth the dependency.
 //
 // Returns 0 on success, or the number of the first check that failed.
 [AttributeUsage (AttributeTargets.Field)]
@@ -121,12 +122,15 @@ public class Program
         if (typeof (int).GetField ("MaxValue").MetadataToken == typeof (int).GetField ("MinValue").MetadataToken)
             return 6;
 
-        // 7: the one image-dependent check, and the reason it is here: everything above would
-        // still pass if the token were any injective function of the field rather than its
-        // metadata row. Roslyn emits a type's FieldDef rows in declaration order and does not
-        // interleave two types' fields, so `Point`'s two fields occupy consecutive rows. If a
-        // future Roslyn stops doing that this check fails on both runtimes at once, which is a
-        // visible break rather than a silent one.
+        // 7: the first of the two checks that depend on how the image was laid out. Everything
+        // above would still pass if the token were any injective function of the field rather
+        // than its metadata row; this rules out the ones that do not preserve the *spacing* of
+        // rows, such as a scaled or hashed row number. Roslyn emits a type's FieldDef rows in
+        // declaration order and does not interleave two types' fields, so `Point`'s two fields
+        // occupy consecutive rows. If a future Roslyn stops doing that this check fails on both
+        // runtimes at once, which is a visible break rather than a silent one. Note that both
+        // tokens here came from the native, so a *uniform* shift survives this: check 8 is what
+        // catches that.
         int x = typeof (Point).GetField ("X").MetadataToken;
         int y = typeof (Point).GetField ("Y").MetadataToken;
 
