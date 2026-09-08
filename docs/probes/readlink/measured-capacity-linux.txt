@@ -1,0 +1,13 @@
+Linux 6.18.5
+link                         size=   0 buf=ok  : ret=-1 errno=22 EINVAL
+link NULL buffer             size=   0 buf=NULL: ret=-1 errno=22 EINVAL
+directory                    size=   0 buf=ok  : ret=-1 errno=22 EINVAL
+missing                      size=   0 buf=ok  : ret=-1 errno=22 EINVAL
+missing NULL buffer          size=   0 buf=NULL: ret=-1 errno=22 EINVAL
+link                         size=  -1 buf=ok  : ret=-1 errno=22 EINVAL
+link NULL buffer             size=  -1 buf=NULL: ret=-1 errno=22 EINVAL
+directory                    size=  -1 buf=ok  : ret=-1 errno=22 EINVAL
+missing                      size=  -1 buf=ok  : ret=-1 errno=22 EINVAL
+missing NULL buffer          size=  -1 buf=NULL: ret=-1 errno=22 EINVAL
+link                         size=4096 buf=ok  : ret=6 errno=0 
+link NULL buffer             size=4096 buf=NULL: ret=-1 errno=14 EFAULT

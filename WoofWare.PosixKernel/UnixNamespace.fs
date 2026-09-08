@@ -406,12 +406,12 @@ module UnixNamespace =
     /// inside one entry point would set mount semantics for every future read
     /// by accident, and would make `readlink` the only syscall obeying them.
     ///
-    /// `capacity` is the caller's buffer size and must be positive. Zero and
-    /// negative are the shim's own guard, and it is the only reason this
-    /// syscall is cross-platform at all: measured, the raw syscall answers 0 on
-    /// Darwin and EINVAL on Linux for a zero size, and the guard means neither
-    /// answer escapes. So a caller that has not screened it is asking a question
-    /// no kernel this library models was ever asked.
+    /// `capacity` is the caller's buffer size. A size that is not positive is
+    /// answered as this system's flavour answers it
+    /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before resolution on
+    /// Linux and for a negative size on Darwin, and zero bytes from a resolved
+    /// link on Darwin for a size of zero. CoreLib's shim never passes one, but
+    /// a guest with its own `readlink` import can.
     let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (destination : UserBuffer)
@@ -419,9 +419,13 @@ module UnixNamespace =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<ReadLinkAnswer, BufferRefusal>
         =
-        if capacity <= 0 then
-            failwith
-                $"UnixNamespace.readlink: capacity %d{capacity} is not positive, and the two flavours do not agree on what such a call does -- Darwin answers 0 where Linux answers EINVAL. Screen this in the client, where the shim that rejects it lives (this is a bug in the caller)."
+        let verdict =
+            SimulatedUnixPlatform.readlinkCapacity system.Machine.UnixPlatform capacity
+
+        match verdict with
+        | ReadLinkCapacityVerdict.Refuse error -> Ok (ReadLinkAnswer.Failed error)
+        | ReadLinkCapacityVerdict.ReportNothing
+        | ReadLinkCapacityVerdict.Admit ->
 
         // `NoFollowFinal` is what makes this `readlink` rather than an expensive
         // way of asking about the target: a final symlink is the thing being
@@ -450,6 +454,15 @@ module UnixNamespace =
             // `readlink("f", (char*)8, 16)` is EINVAL, not EFAULT.
             Ok (ReadLinkAnswer.Failed UnixError.EINVAL)
         | Some (InodeContent.Symlink target) ->
+
+        match verdict with
+        | ReadLinkCapacityVerdict.Refuse _ ->
+            failwith "UnixNamespace.readlink: a refused capacity was answered above (this is a bug in this library)."
+        | ReadLinkCapacityVerdict.ReportNothing ->
+            // Nothing is copied, so the destination is never looked at:
+            // measured, a null buffer with a zero size answers 0.
+            Ok (ReadLinkAnswer.Reported ImmutableArray<byte>.Empty)
+        | ReadLinkCapacityVerdict.Admit ->
 
         // The destination is consulted only here, on the path that actually
         // writes through it. `readlink(2)` runs no up-front address check on

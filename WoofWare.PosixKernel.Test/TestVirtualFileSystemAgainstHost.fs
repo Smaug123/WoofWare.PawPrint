@@ -857,6 +857,73 @@ module TestVirtualFileSystemAgainstHost =
         finally
             removeHostTree root
 
+    /// What `readlink(2)` returns for a buffer size the shim would never pass,
+    /// on this host and in the model: the count, or the errno.
+    let private hostReadLink (root : string) (relative : string) (capacity : int) : Result<int, int> =
+        let buffer = Array.zeroCreate<byte> 4096
+        let read = readlink (hostPath root relative, buffer, nativeint capacity)
+
+        if read >= 0n then Ok (int read) else Error (errno ())
+
+    let private modelReadLink (vfs : VirtualFileSystem) (relative : string) (capacity : int) : Result<int, int> =
+        let system : UnixSystem<int, string> = UnixSystem.initial (hostPlatform ())
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        FileSystem = vfs
+                    }
+                Process =
+                    { system.Process with
+                        CurrentDirectoryInode = VirtualFileSystem.root vfs
+                    }
+            }
+
+        match UnixNamespace.readlink (UnixPath.parseOrFail "test" relative) UserBuffer.Mapped capacity system with
+        | Ok (ReadLinkAnswer.Reported bytes) -> Ok bytes.Length
+        | Ok (ReadLinkAnswer.Failed error) -> Error (hostErrno error)
+        | Error refusal -> failwith $"the model refused readlink of %s{relative}: %A{refusal}"
+
+    /// `SimulatedUnixPlatform.readlinkCapacity`, against the kernel it claims
+    /// to describe: a link, a directory and a missing path, each asked with a
+    /// zero and a negative size, and a positive size as the control.
+    [<Test>]
+    let ``readlink answers a non-positive size exactly as this kernel does`` () : unit =
+        if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
+            Assert.Ignore "This oracle compares against a Unix kernel."
+
+        let unique = Guid.NewGuid().ToString "N"
+        let root = Path.Combine (Path.GetTempPath (), $"pawprint-readlink-%s{unique}")
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+        let root = physicalPath root
+
+        try
+            buildHostTree root
+            let vfs = buildModel ()
+
+            let mismatches =
+                [
+                    for relative in [ "lf" ; "d" ; "nope" ] do
+                        for capacity in [ 0 ; -1 ; 4096 ] do
+                            let expected = hostReadLink root relative capacity
+                            let actual = modelReadLink vfs relative capacity
+
+                            if expected <> actual then
+                                yield
+                                    $"readlink(%s{relative}, %d{capacity}): kernel said %A{expected}, model said %A{actual}"
+                ]
+
+            if not (List.isEmpty mismatches) then
+                let rendered = String.Join (Environment.NewLine, mismatches)
+                failwith $"The model disagrees with this kernel:%s{Environment.NewLine}%s{rendered}"
+
+            // The control row must have reported the target, or the rows above
+            // agreed on a corpus with no link in it.
+            hostReadLink root "lf" 4096 |> Result.isOk |> shouldEqual true
+        finally
+            removeHostTree root
+
     // ------------------------------------------------------------------ the test
 
     [<Test>]

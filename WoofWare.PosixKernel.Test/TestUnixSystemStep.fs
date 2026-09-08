@@ -4187,6 +4187,48 @@ module TestUnixSystemStep =
             |> readLinkBytes
             |> shouldEqual (List.truncate (expected.Length - 1) expected)
 
+    /// The two flavours part on a size that is not positive, and both are
+    /// measured (`docs/probes/readlink/capacity.py`): Linux refuses zero and
+    /// negative before resolving; Darwin refuses negative before resolving and
+    /// answers zero bytes from a resolved link for zero.
+    [<Test>]
+    let ``a non-positive capacity is answered as the flavour answers it`` () : unit =
+        let _, _, _, linux = withTree linux
+        let _, _, _, darwin = withTree darwin
+
+        for capacity in [ 0 ; -1 ; System.Int32.MinValue ] do
+            // Linux: EINVAL whatever the path, since the size is checked first.
+            for path in [ "/l" ; "/d/inner" ; "/nope" ] do
+                UnixNamespace.readlink (statPath path) UserBuffer.Mapped capacity linux
+                |> readLinkFailed
+                |> shouldEqual UnixError.EINVAL
+
+            // ...and the buffer is never consulted.
+            UnixNamespace.readlink (statPath "/l") (UserBuffer.Unmapped 8UL) capacity linux
+            |> readLinkFailed
+            |> shouldEqual UnixError.EINVAL
+
+        // Darwin, negative: the same, before resolution.
+        for capacity in [ -1 ; System.Int32.MinValue ] do
+            for path in [ "/l" ; "/d/inner" ; "/nope" ] do
+                UnixNamespace.readlink (statPath path) UserBuffer.Mapped capacity darwin
+                |> readLinkFailed
+                |> shouldEqual UnixError.EINVAL
+
+        // Darwin, zero: resolved first, so the path's own answer wins...
+        UnixNamespace.readlink (statPath "/d/inner") UserBuffer.Mapped 0 darwin
+        |> readLinkFailed
+        |> shouldEqual UnixError.EINVAL
+
+        UnixNamespace.readlink (statPath "/nope") UserBuffer.Mapped 0 darwin
+        |> readLinkFailed
+        |> shouldEqual UnixError.ENOENT
+
+        // ...and a link reports nothing, through a buffer nothing could write to.
+        UnixNamespace.readlink (statPath "/l") (UserBuffer.Unmapped 8UL) 0 darwin
+        |> readLinkBytes
+        |> shouldEqual []
+
     [<Test>]
     let ``a short buffer truncates rather than failing`` () : unit =
         // Truncation is how the BCL *sizes* its allocation: `Interop.Sys.ReadLink`
@@ -4300,22 +4342,6 @@ module TestUnixSystemStep =
             UnixNamespace.readlink (statPath "/dangling") UserBuffer.Mapped 4096 system
             |> readLinkBytes
             |> shouldEqual (targetOf "/d/inner/gone")
-
-    [<Test>]
-    let ``readlink refuses a capacity no kernel it models was ever asked`` () : unit =
-        // Zero and negative are the shim's guard, and the only reason this
-        // syscall is cross-platform: the raw one answers 0 on Darwin and EINVAL
-        // on Linux for a zero size.
-        let _, _, _, system = withTree linux
-
-        for capacity in [ 0 ; -1 ] do
-            let exn =
-                Assert.Throws<exn> (fun () ->
-                    UnixNamespace.readlink (statPath "/l") UserBuffer.Mapped capacity system
-                    |> ignore<Result<ReadLinkAnswer, BufferRefusal>>
-                )
-
-            exn.Message |> shouldContainText "not positive"
 
 
     /// A descriptor onto one INET stream socket bound to 127.0.0.1:8080.
