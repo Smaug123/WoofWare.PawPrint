@@ -10,9 +10,11 @@ open System.Collections.Immutable
 /// `Interop.CryptoInitializer`'s class constructor makes before any of them (every other
 /// `Interop.Crypto` member is preceded by that class constructor).
 ///
-/// Only SHA-256 is modelled. The shim's `const EVP_MD*` for it is a fixed sentinel, and every
-/// `EVP_MD_CTX` is an entry in `IlMachineState.EvpDigests`, whose handle the guest holds as
-/// an `IntPtr`.
+/// Only SHA-256 is modelled. Both of the opaque pointers OpenSSL hands out are tagged
+/// `NativeIntSource` cases rather than numbers, so a guest cannot invent one: the `const
+/// EVP_MD*` is `NativeIntSource.EvpMdPtr`, naming the algorithm and nothing else, and each
+/// `EVP_MD_CTX` is a `NativeIntSource.EvpMdCtxPtr` naming an entry in
+/// `IlMachineState.EvpDigests`.
 ///
 /// The C side (`pal_evp.c`) is not in the pinned runtime checkout, so the contracts here are
 /// OpenSSL's documented `EVP_Digest*` ones (1 on success, 0 on failure; `EVP_DigestFinal_ex`
@@ -31,53 +33,68 @@ module NativeCryptoNative =
     [<Literal>]
     let private evpMaxMdSize = 64
 
-    /// The `const EVP_MD*` handed out for SHA-256. Any nonzero fixed value would do, since
-    /// the guest only ever stores it and hands it back; this one spells "MDSHA256" in ASCII
-    /// so that it is recognisable in a dump, and cannot collide with the context handles,
-    /// which count up from 1.
-    [<Literal>]
-    let private sha256EvpMd = 0x4D44534841323536L
-
     let private pushInt32 (value : int) (ctx : NativeCallContext) (state : IlMachineState) : NativeHandlerResult =
         state
         |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim value)) ctx.Thread
         |> NativeHandlerResult.completed
 
-    let private pushIntPtr (bits : int64) (ctx : NativeCallContext) (state : IlMachineState) : NativeHandlerResult =
+    let private pushNativeInt
+        (source : NativeIntSource)
+        (ctx : NativeCallContext)
+        (state : IlMachineState)
+        : NativeHandlerResult
+        =
         state
-        |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt (NativeIntSource.Verbatim bits)) ctx.Thread
+        |> IlMachineState.pushToEvalStack' (EvalStackValue.NativeInt source) ctx.Thread
         |> NativeHandlerResult.completed
 
-    /// The bits of an `IntPtr` argument that this shim itself handed out earlier (an `EVP_MD`
-    /// sentinel or an `EVP_MD_CTX` handle), or zero for a null.
-    let private intPtrBits (operation : string) (argName : string) (arg : CliType) : int64 =
+    /// What this shim will accept where OpenSSL takes an opaque pointer: one it handed out
+    /// earlier, or a null.
+    ///
+    /// A number the guest invented is not one of those, however its bits compare: an `EVP_MD`
+    /// and an `EVP_MD_CTX` are addresses of libcrypto's own allocations, and a `(nint)1` is not
+    /// the address of anything.
+    [<RequireQualifiedAccess>]
+    type private EvpPointerArgument =
+        | Null
+        | Md of EvpDigestAlgorithm
+        | MdCtx of EvpMdCtxHandle
+
+    let private evpPointerArgument (operation : string) (argName : string) (arg : CliType) : EvpPointerArgument =
         match CliType.unwrapPrimitiveLikeDeep arg with
-        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim bits)) -> bits
-        | CliType.RuntimePointer (CliRuntimePointer.Verbatim bits) -> bits
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.EvpMdPtr algorithm)) ->
+            EvpPointerArgument.Md algorithm
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.EvpMdCtxPtr handle)) ->
+            EvpPointerArgument.MdCtx handle
         | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null))
-        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> 0L
+        | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> EvpPointerArgument.Null
+        | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
+        | CliType.RuntimePointer (CliRuntimePointer.Verbatim 0L) -> EvpPointerArgument.Null
         | other ->
             failwith
-                $"%s{operation}: expected %s{argName} to be an IntPtr this shim handed out (an EVP_MD from CryptoNative_EvpSha256, or an EVP_MD_CTX from CryptoNative_EvpMdCtxCreate/CopyEx), got %O{other}"
+                $"%s{operation}: %s{argName} is %O{other}, which is not a pointer this shim handed out. Pass the EVP_MD CryptoNative_EvpSha256 returns, or an EVP_MD_CTX from CryptoNative_EvpMdCtxCreate/CopyEx; libcrypto's allocations have no numeric address a guest can compute, so an invented one names nothing on a real run."
 
     /// The algorithm a `const EVP_MD*` argument names.
     let private algorithmOfEvpMd (operation : string) (argName : string) (arg : CliType) : EvpDigestAlgorithm =
-        match intPtrBits operation argName arg with
-        | bits when bits = sha256EvpMd -> EvpDigestAlgorithm.Sha256
-        | 0L ->
+        match evpPointerArgument operation argName arg with
+        | EvpPointerArgument.Md algorithm -> algorithm
+        | EvpPointerArgument.Null ->
             failwith
                 $"%s{operation}: %s{argName} is a null EVP_MD. CoreLib never passes one: HashAlgorithmToEvp throws for a name it has no EVP_MD for, so this is a hand-rolled P/Invoke. Pass the EVP_MD CryptoNative_EvpSha256 returns."
-        | bits ->
+        | EvpPointerArgument.MdCtx handle ->
             failwith
-                $"%s{operation}: %s{argName} is 0x%x{bits}, which is not an EVP_MD this shim handed out. Only CryptoNative_EvpSha256's is modelled."
+                $"%s{operation}: %s{argName} is %O{handle}, which is an EVP_MD_CTX rather than an EVP_MD. Pass the EVP_MD CryptoNative_EvpSha256 returns."
 
     /// The context an `EVP_MD_CTX*` argument names, for an entry point that dereferences it.
     let private ctxHandleOfArgument (operation : string) (argName : string) (arg : CliType) : EvpMdCtxHandle =
-        match intPtrBits operation argName arg with
-        | 0L ->
+        match evpPointerArgument operation argName arg with
+        | EvpPointerArgument.MdCtx handle -> handle
+        | EvpPointerArgument.Null ->
             failwith
                 $"%s{operation}: %s{argName} is a null EVP_MD_CTX. CoreLib never marshals one: CheckValidOpenSslHandle rejects an invalid SafeEvpMdCtxHandle at creation, so this is a hand-rolled P/Invoke, and a real run would fault here."
-        | bits -> EvpMdCtxHandle bits
+        | EvpPointerArgument.Md algorithm ->
+            failwith
+                $"%s{operation}: %s{argName} is the EVP_MD for %O{algorithm} rather than an EVP_MD_CTX. Pass a context from CryptoNative_EvpMdCtxCreate/CopyEx."
 
     let private withRegistry (registry : EvpDigestRegistry) (state : IlMachineState) : IlMachineState =
         { state with
@@ -144,7 +161,8 @@ module NativeCryptoNative =
         | Some "CryptoNative_EvpSha256",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr) ->
-            pushIntPtr sha256EvpMd ctx state |> Some
+            pushNativeInt (NativeIntSource.EvpMdPtr EvpDigestAlgorithm.Sha256) ctx state
+            |> Some
         | Some ("CryptoNative_EvpMd5" as entryPoint), [], MethodReturnType.Returns _ ->
             unmodelledAlgorithm entryPoint "MD5"
         | Some ("CryptoNative_EvpSha1" as entryPoint), [], MethodReturnType.Returns _ ->
@@ -179,10 +197,11 @@ module NativeCryptoNative =
             let operation = "CryptoNative_EvpMdCtxCreate"
             let algorithm = algorithmOfEvpMd operation "type" instruction.Arguments.[0]
 
-            let EvpMdCtxHandle bits, registry =
-                EvpDigestRegistry.create algorithm state.EvpDigests
+            let handle, registry = EvpDigestRegistry.create algorithm state.EvpDigests
 
-            withRegistry registry state |> pushIntPtr bits ctx |> Some
+            withRegistry registry state
+            |> pushNativeInt (NativeIntSource.EvpMdCtxPtr handle) ctx
+            |> Some
         // `EVP_MD_CTX* CryptoNative_EvpMdCtxCopyEx(const EVP_MD_CTX* ctx)`: a fresh context
         // that `EVP_MD_CTX_copy_ex` has made a duplicate of `ctx`.
         | Some "CryptoNative_EvpMdCtxCopyEx",
@@ -191,20 +210,23 @@ module NativeCryptoNative =
             let operation = "CryptoNative_EvpMdCtxCopyEx"
             let source = ctxHandleOfArgument operation "ctx" instruction.Arguments.[0]
 
-            let EvpMdCtxHandle bits, registry =
-                EvpDigestRegistry.copy operation source state.EvpDigests
+            let handle, registry = EvpDigestRegistry.copy operation source state.EvpDigests
 
-            withRegistry registry state |> pushIntPtr bits ctx |> Some
+            withRegistry registry state
+            |> pushNativeInt (NativeIntSource.EvpMdCtxPtr handle) ctx
+            |> Some
         // `void CryptoNative_EvpMdCtxDestroy(EVP_MD_CTX* ctx)`: `EVP_MD_CTX_free`, which is
         // documented as a no-op on NULL.
         | Some "CryptoNative_EvpMdCtxDestroy", [ ConcreteIntPtr state.ConcreteTypes ], MethodReturnType.Void ->
             let operation = "CryptoNative_EvpMdCtxDestroy"
 
-            match intPtrBits operation "ctx" instruction.Arguments.[0] with
-            | 0L -> NativeHandlerResult.completed state |> Some
-            | bits ->
-                let registry =
-                    EvpDigestRegistry.destroy operation (EvpMdCtxHandle bits) state.EvpDigests
+            match evpPointerArgument operation "ctx" instruction.Arguments.[0] with
+            | EvpPointerArgument.Null -> NativeHandlerResult.completed state |> Some
+            | EvpPointerArgument.Md algorithm ->
+                failwith
+                    $"%s{operation}: ctx is the EVP_MD for %O{algorithm} rather than an EVP_MD_CTX. EVP_MD_CTX_free would free libcrypto's own static digest description."
+            | EvpPointerArgument.MdCtx handle ->
+                let registry = EvpDigestRegistry.destroy operation handle state.EvpDigests
 
                 withRegistry registry state |> NativeHandlerResult.completed |> Some
         // `int32_t CryptoNative_EvpDigestReset(EVP_MD_CTX* ctx, const EVP_MD* type)`:

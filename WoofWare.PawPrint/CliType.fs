@@ -120,7 +120,9 @@ module private ByteAddressabilityClassifier =
         | NativeIntSource.EventPipeProviderPtr _
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _
-        | NativeIntSource.WaitHandlePtr _ ->
+        | NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.EvpMdPtr _
+        | NativeIntSource.EvpMdCtxPtr _ ->
             // Named, not refused: each of these is a *handle*, an identity PawPrint carries in
             // place of an address, so byte i of it is a position within that identity.
             // `SignatureHelper.InternalAddRuntimeType` copies exactly that, one byte at a time,

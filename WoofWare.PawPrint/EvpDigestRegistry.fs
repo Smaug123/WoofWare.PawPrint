@@ -2,21 +2,15 @@ namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
 
-/// A digest algorithm the emulated OpenSSL shim can run: what a `const EVP_MD*` names.
+// The type itself is in `AbstractMachineDomain.fs`, early enough for `NativeIntSource` to
+// name it; the module suffix is what lets the two live in different files.
 [<RequireQualifiedAccess>]
-type EvpDigestAlgorithm = | Sha256
-
-[<RequireQualifiedAccess>]
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module EvpDigestAlgorithm =
     /// `EVP_MD_get_size`: the byte length of a finished digest.
     let digestSize (algorithm : EvpDigestAlgorithm) : int =
         match algorithm with
         | EvpDigestAlgorithm.Sha256 -> Sha256.DigestSize
-
-/// Identifies one live `EVP_MD_CTX`. The number is what the guest holds as its `IntPtr`, so
-/// it is minted from a counter rather than from anything the host could vary.
-[<Struct>]
-type EvpMdCtxHandle = | EvpMdCtxHandle of int64
 
 /// A running digest computation: the algorithm and its state, kept together so that they
 /// cannot disagree.
@@ -72,7 +66,7 @@ module EvpDigestContext =
         | EvpDigestContext.Running state -> state
         | EvpDigestContext.Finalised algorithm ->
             failwith
-                $"%s{operation}: EVP_MD_CTX %O{handle} has already been finalised (it ran %O{algorithm}). OpenSSL permits no further digest operation on such a context except EVP_DigestInit_ex; CoreLib always resets before reusing one, so this is a hand-rolled P/Invoke."
+                $"%s{operation}: %O{handle} has already been finalised (it ran %O{algorithm}). OpenSSL permits no further digest operation on such a context except EVP_DigestInit_ex; CoreLib always resets before reusing one, so this is a hand-rolled P/Invoke."
 
     /// `EVP_DigestUpdate`.
     let update
@@ -140,7 +134,7 @@ module EvpDigestRegistry =
         | Some context -> context
         | None ->
             failwith
-                $"%s{operation}: EVP_MD_CTX %O{handle} is not a live digest context: it was never created by EvpMdCtxCreate/EvpMdCtxCopyEx, or has been destroyed. A real run would read freed or invented memory here."
+                $"%s{operation}: %O{handle} is not a live digest context: it was never created by EvpMdCtxCreate/EvpMdCtxCopyEx, or has been destroyed. A real run would read freed or invented memory here."
 
     /// Replace the context behind `handle`, which must be live.
     let set

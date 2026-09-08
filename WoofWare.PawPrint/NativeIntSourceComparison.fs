@@ -84,6 +84,8 @@ module NativeIntSourceComparison =
         | NativeIntSource.EventPipeEventPtr f1, NativeIntSource.EventPipeEventPtr f2 -> f1 = f2
         | NativeIntSource.LowLevelMonitorPtr f1, NativeIntSource.LowLevelMonitorPtr f2 -> f1 = f2
         | NativeIntSource.WaitHandlePtr f1, NativeIntSource.WaitHandlePtr f2 -> f1 = f2
+        | NativeIntSource.EvpMdPtr f1, NativeIntSource.EvpMdPtr f2 -> f1 = f2
+        | NativeIntSource.EvpMdCtxPtr f1, NativeIntSource.EvpMdCtxPtr f2 -> f1 = f2
         | NativeIntSource.Verbatim f1, NativeIntSource.Verbatim f2 -> f1 = f2
         | NativeIntSource.SyntheticCrossArrayOffset _, NativeIntSource.SyntheticCrossArrayOffset _
         | NativeIntSource.Verbatim _, NativeIntSource.SyntheticCrossArrayOffset _
@@ -136,7 +138,11 @@ module NativeIntSourceComparison =
         | NativeIntSource.OpaqueHashBits bits, (NativeIntSource.LowLevelMonitorPtr _ as handle)
         | (NativeIntSource.LowLevelMonitorPtr _ as handle), NativeIntSource.OpaqueHashBits bits
         | NativeIntSource.OpaqueHashBits bits, (NativeIntSource.WaitHandlePtr _ as handle)
-        | (NativeIntSource.WaitHandlePtr _ as handle), NativeIntSource.OpaqueHashBits bits ->
+        | (NativeIntSource.WaitHandlePtr _ as handle), NativeIntSource.OpaqueHashBits bits
+        | NativeIntSource.OpaqueHashBits bits, (NativeIntSource.EvpMdPtr _ as handle)
+        | (NativeIntSource.EvpMdPtr _ as handle), NativeIntSource.OpaqueHashBits bits
+        | NativeIntSource.OpaqueHashBits bits, (NativeIntSource.EvpMdCtxPtr _ as handle)
+        | (NativeIntSource.EvpMdCtxPtr _ as handle), NativeIntSource.OpaqueHashBits bits ->
             hashBitsEqualHandle counters bits handle
         // CoreCLR's TypeHandle wraps either a MethodTable* (when !IsTypeDesc) or a tagged
         // TypeDesc*; for non-TypeDesc handles the inner pointer IS the MethodTable address.
@@ -274,7 +280,11 @@ module NativeIntSourceComparison =
         | NativeIntSource.LowLevelMonitorPtr _, _
         | _, NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.WaitHandlePtr _, _
-        | _, NativeIntSource.WaitHandlePtr _ -> false
+        | _, NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.EvpMdPtr _, _
+        | _, NativeIntSource.EvpMdPtr _
+        | NativeIntSource.EvpMdCtxPtr _, _
+        | _, NativeIntSource.EvpMdCtxPtr _ -> false
         // OpaqueHashBits vs ManagedPointer: every other OpaqueHashBits
         // pairing is handled above (vs Verbatim/OpaqueHashBits, vs
         // SyntheticCrossArrayOffset, and vs the various handle kinds);

@@ -305,6 +305,21 @@ type NativeIntSource =
     /// `Verbatim 0L`, so the BCL's "create failed → throw" check does not fire
     /// for a successfully-minted handle.
     | WaitHandlePtr of WaitHandleId
+    /// The `const EVP_MD*` returned by `CryptoNative_EvpSha256` and its siblings. The guest
+    /// only ever caches it (`Interop.Crypto.s_evpSha256`) and hands it back, so the algorithm
+    /// it names is the whole of its content. Distinguished by tag so a foreign `IntPtr` cannot
+    /// be mistaken for an `EVP_MD` the shim handed out, and so it can never be passed where an
+    /// `EVP_MD_CTX` is expected; never compares equal to `Verbatim 0L`, so CoreLib's
+    /// "unsupported algorithm" check (`EvpSha3_256() != 0`) does not fire for one that is
+    /// modelled.
+    | EvpMdPtr of EvpDigestAlgorithm
+    /// Opaque handle returned by `CryptoNative_EvpMdCtxCreate` / `CryptoNative_EvpMdCtxCopyEx`,
+    /// which the guest wraps in a `SafeEvpMdCtxHandle` and feeds back to the other
+    /// `CryptoNative_EvpDigest*` entry points. Distinguished by tag for the same reasons as
+    /// `EvpMdPtr`, and so that an `IntPtr` a guest invented cannot name a live context merely
+    /// by matching the registry's counter; never compares equal to `Verbatim 0L`, so
+    /// `SafeEvpMdCtxHandle.IsInvalid` is false for a successfully-minted context.
+    | EvpMdCtxPtr of EvpMdCtxHandle
     /// Returned by `Unsafe.ByteOffset` or managed-pointer subtraction for two byrefs into distinct byte-addressed
     /// storage containers.
     | SyntheticCrossArrayOffset of SyntheticCrossArrayOffset
@@ -343,6 +358,8 @@ type NativeIntSource =
         | NativeIntSource.EventPipeEventPtr id -> $"<EventPipe event #%i{id}>"
         | NativeIntSource.LowLevelMonitorPtr id -> $"%O{id}"
         | NativeIntSource.WaitHandlePtr id -> $"%O{id}"
+        | NativeIntSource.EvpMdPtr algorithm -> $"<EVP_MD for %O{algorithm}>"
+        | NativeIntSource.EvpMdCtxPtr handle -> $"%O{handle}"
         | NativeIntSource.SyntheticCrossArrayOffset _ -> "<synthetic cross-storage byte offset>"
         | NativeIntSource.OpaqueHashBits bits -> $"<opaque hash bits (native int) 0x%x{bits}>"
 
@@ -371,6 +388,8 @@ type NativeIntSource =
             | NativeIntSource.EventPipeEventPtr left, NativeIntSource.EventPipeEventPtr right -> left = right
             | NativeIntSource.LowLevelMonitorPtr left, NativeIntSource.LowLevelMonitorPtr right -> left = right
             | NativeIntSource.WaitHandlePtr left, NativeIntSource.WaitHandlePtr right -> left = right
+            | NativeIntSource.EvpMdPtr left, NativeIntSource.EvpMdPtr right -> left = right
+            | NativeIntSource.EvpMdCtxPtr left, NativeIntSource.EvpMdCtxPtr right -> left = right
             | NativeIntSource.SyntheticCrossArrayOffset left, NativeIntSource.SyntheticCrossArrayOffset right ->
                 left = right
             | NativeIntSource.OpaqueHashBits left, NativeIntSource.OpaqueHashBits right -> left = right
@@ -393,6 +412,8 @@ type NativeIntSource =
             | NativeIntSource.EventPipeEventPtr _, _
             | NativeIntSource.LowLevelMonitorPtr _, _
             | NativeIntSource.WaitHandlePtr _, _
+            | NativeIntSource.EvpMdPtr _, _
+            | NativeIntSource.EvpMdCtxPtr _, _
             | NativeIntSource.SyntheticCrossArrayOffset _, _
             | NativeIntSource.OpaqueHashBits _, _ -> false
         | _ -> false
@@ -420,6 +441,8 @@ type NativeIntSource =
         | NativeIntSource.OpaqueHashBits bits -> HashCode.Combine (15, bits)
         | NativeIntSource.LowLevelMonitorPtr id -> HashCode.Combine (16, id)
         | NativeIntSource.WaitHandlePtr id -> HashCode.Combine (17, id)
+        | NativeIntSource.EvpMdPtr algorithm -> HashCode.Combine (21, algorithm)
+        | NativeIntSource.EvpMdCtxPtr handle -> HashCode.Combine (22, handle)
 
 /// CoreCLR's `TypeHandle` is a tagged pointer: it wraps either a `MethodTable*`
 /// or a `TypeDesc*`, and distinguishes them by setting bit 1 in the TypeDesc
@@ -529,6 +552,8 @@ module NativeIntSource =
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.EvpMdPtr _
+        | NativeIntSource.EvpMdCtxPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> false
@@ -562,6 +587,8 @@ module NativeIntSource =
         | NativeIntSource.EventPipeEventPtr _
         | NativeIntSource.LowLevelMonitorPtr _
         | NativeIntSource.WaitHandlePtr _
+        | NativeIntSource.EvpMdPtr _
+        | NativeIntSource.EvpMdCtxPtr _
         | NativeIntSource.AssemblyHandle _
         | NativeIntSource.MetadataImportHandle _
         | NativeIntSource.ModuleHandle _ -> true

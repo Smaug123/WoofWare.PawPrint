@@ -102,6 +102,9 @@ module EvalStackValue =
             failwith $"%s{operation}: refusing to convert low-level monitor handle %O{id} to a float"
         | NativeIntSource.WaitHandlePtr id ->
             failwith $"%s{operation}: refusing to convert wait handle %O{id} to a float"
+        | NativeIntSource.EvpMdPtr algorithm ->
+            failwith $"%s{operation}: refusing to convert EVP_MD for %O{algorithm} to a float"
+        | NativeIntSource.EvpMdCtxPtr handle -> failwith $"%s{operation}: refusing to convert %O{handle} to a float"
         | NativeIntSource.AssemblyHandle assemblyName ->
             failwith $"%s{operation}: refusing to convert assembly handle %s{assemblyName} to a float"
         | NativeIntSource.ModuleHandle moduleName ->
@@ -298,6 +301,10 @@ module EvalStackValue =
                 failwith $"Conv_U: refusing to convert low-level monitor handle %O{id} to unsigned native int"
             | NativeIntSource.WaitHandlePtr id ->
                 failwith $"Conv_U: refusing to convert wait handle %O{id} to unsigned native int"
+            | NativeIntSource.EvpMdPtr algorithm ->
+                failwith $"Conv_U: refusing to convert EVP_MD for %O{algorithm} to unsigned native int"
+            | NativeIntSource.EvpMdCtxPtr handle ->
+                failwith $"Conv_U: refusing to convert %O{handle} to unsigned native int"
             | NativeIntSource.AssemblyHandle assemblyName ->
                 failwith $"Conv_U: refusing to convert assembly handle %s{assemblyName} to unsigned native int"
             | NativeIntSource.ModuleHandle moduleName ->
@@ -735,6 +742,9 @@ module EvalStackValue =
                     | NativeIntSource.LowLevelMonitorPtr id ->
                         failwith $"refusing to coerce low-level monitor handle %O{id} to int64"
                     | NativeIntSource.WaitHandlePtr id -> failwith $"refusing to coerce wait handle %O{id} to int64"
+                    | NativeIntSource.EvpMdPtr algorithm ->
+                        failwith $"refusing to coerce EVP_MD for %O{algorithm} to int64"
+                    | NativeIntSource.EvpMdCtxPtr handle -> failwith $"refusing to coerce %O{handle} to int64"
                     | NativeIntSource.AssemblyHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.ModuleHandle f -> failwith $"TODO: {f}"
                     | NativeIntSource.MetadataImportHandle f ->
@@ -888,6 +898,8 @@ module EvalStackValue =
                 | NativeIntSource.LowLevelMonitorPtr _ ->
                     failwith "refusing to interpret low-level monitor handle as an object ref"
                 | NativeIntSource.WaitHandlePtr _ -> failwith "refusing to interpret wait handle as an object ref"
+                | NativeIntSource.EvpMdPtr _ -> failwith "refusing to interpret EVP_MD as an object ref"
+                | NativeIntSource.EvpMdCtxPtr _ -> failwith "refusing to interpret EVP_MD_CTX handle as an object ref"
                 | NativeIntSource.AssemblyHandle _ -> failwith "refusing to interpret assembly handle as an object ref"
                 | NativeIntSource.ModuleHandle _ -> failwith "refusing to interpret module handle as an object ref"
                 | NativeIntSource.MetadataImportHandle _ ->
@@ -959,6 +971,12 @@ module EvalStackValue =
                 | NativeIntSource.WaitHandlePtr id ->
                     failwith
                         $"refusing to coerce wait handle %O{id} to runtime pointer: wait handles are opaque, not addresses"
+                | NativeIntSource.EvpMdPtr algorithm ->
+                    failwith
+                        $"refusing to coerce EVP_MD for %O{algorithm} to runtime pointer: an EVP_MD is opaque, not an address"
+                | NativeIntSource.EvpMdCtxPtr handle ->
+                    failwith
+                        $"refusing to coerce %O{handle} to runtime pointer: an EVP_MD_CTX is opaque, not an address"
                 | NativeIntSource.AssemblyHandle _ -> failwith "todo: AssemblyHandle into CliType.RuntimePointer"
                 | NativeIntSource.ModuleHandle _ -> failwith "todo: ModuleHandle into CliType.RuntimePointer"
                 | NativeIntSource.MetadataImportHandle _ ->

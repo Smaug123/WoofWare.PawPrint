@@ -367,7 +367,9 @@ module NativeSystemNative =
             | NativeIntSource.EventPipeProviderPtr _
             | NativeIntSource.EventPipeEventPtr _
             | NativeIntSource.LowLevelMonitorPtr _
-            | NativeIntSource.WaitHandlePtr _ -> BufferPointer.Symbolic (operation, argName, arg)
+            | NativeIntSource.WaitHandlePtr _
+            | NativeIntSource.EvpMdPtr _
+            | NativeIntSource.EvpMdCtxPtr _ -> BufferPointer.Symbolic (operation, argName, arg)
             // Not an address at all, but classification must stay total: an
             // entry point that never inspects its buffer has to keep answering,
             // so the refusal waits until something actually needs the address.

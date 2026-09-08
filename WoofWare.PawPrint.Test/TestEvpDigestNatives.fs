@@ -386,3 +386,65 @@ public unsafe class Program
 
         EvpDigestRegistry.isLive (EvpMdCtxHandle 2L) terminalState.EvpDigests
         |> shouldEqual false
+
+    /// An `EVP_MD_CTX` is an opaque address, not a number the guest may invent. Handles count
+    /// up from 1, so `(IntPtr)1` collides exactly with the first context a run mints — and must
+    /// still be refused, because on a real run that integer addresses nothing and freeing
+    /// through it would be a wild pointer rather than a free of that context.
+    [<Test>]
+    let ``a forged EVP_MD_CTX is refused even when its bits match a live context`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.InteropServices;
+
+public class Program
+{
+    const string Lib = "libSystem.Security.Cryptography.Native.OpenSsl";
+
+    [DllImport(Lib, EntryPoint = "CryptoNative_EvpSha256")] static extern IntPtr EvpSha256();
+    [DllImport(Lib, EntryPoint = "CryptoNative_EvpMdCtxCreate")] static extern IntPtr EvpMdCtxCreate(IntPtr type);
+    [DllImport(Lib, EntryPoint = "CryptoNative_EvpMdCtxDestroy")] static extern void EvpMdCtxDestroy(IntPtr ctx);
+
+    public static int Main(string[] args)
+    {
+        // Mints handle 1, so the invented pointer below has exactly its bits.
+        EvpMdCtxCreate(EvpSha256());
+        EvpMdCtxDestroy((IntPtr)1);
+        return 0;
+    }
+}
+"""
+
+        let exn =
+            Assert.Catch (fun () -> runOnHostFramework "EvpDigestForgedCtx.cs" source |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "CryptoNative_EvpMdCtxDestroy"
+
+    /// The `EVP_MD` is opaque for the same reason: `EVP_sha256()` returns the address of one of
+    /// libcrypto's own statics, and no integer a guest computes is that address.
+    [<Test>]
+    let ``a forged EVP_MD is refused`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.InteropServices;
+
+public class Program
+{
+    const string Lib = "libSystem.Security.Cryptography.Native.OpenSsl";
+
+    [DllImport(Lib, EntryPoint = "CryptoNative_EvpMdCtxCreate")] static extern IntPtr EvpMdCtxCreate(IntPtr type);
+
+    public static int Main(string[] args)
+    {
+        EvpMdCtxCreate((IntPtr)0x4D44534841323536L);
+        return 0;
+    }
+}
+"""
+
+        let exn =
+            Assert.Catch (fun () -> runOnHostFramework "EvpDigestForgedMd.cs" source |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "CryptoNative_EvpMdCtxCreate"
