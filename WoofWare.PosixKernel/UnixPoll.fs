@@ -658,16 +658,18 @@ module UnixPoll =
                 |> PollEvents.ofLevel entry.Requested
                 |> Ok
 
-        let reported =
-            List.foldBack
-                (fun entry acc ->
-                    match acc, reportOne entry with
-                    | Error refusal, _ -> Error refusal
-                    | _, Error refusal -> Error refusal
-                    | Ok rest, Ok events -> Ok (events :: rest)
-                )
-                entries
-                (Ok [])
+        // In list order, stopping at the first entry that cannot be answered:
+        // a real `poll` inspects its entries in order, so that is the entry a
+        // refusal names.
+        let rec report (remaining : PollEntry list) (acc : PollEvents list) : Result<PollEvents list, PollRefusal> =
+            match remaining with
+            | [] -> Ok (List.rev acc)
+            | entry :: rest ->
+                match reportOne entry with
+                | Error refusal -> Error refusal
+                | Ok events -> report rest (events :: acc)
+
+        let reported = report entries []
 
         match reported with
         | Error refusal -> Error refusal
