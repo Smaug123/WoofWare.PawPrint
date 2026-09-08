@@ -108,6 +108,11 @@ public static class Program
         if (typeof(int[]).GetArrayRank() != 1) return 30;
         if (typeof(int[,,]).GetArrayRank() != 3) return 31;
 
+        // `MakeByRefType` on the variable itself must mint the very `Type` the signature walk
+        // reflected for `ref T`: the two routes meet in the type-handle registry.
+        if (!ReferenceEquals(formal.MakeByRefType(), byrefParam)) return 32;
+        if (!ReferenceEquals(arrayParam.MakeByRefType(), refArrayParam)) return 33;
+
         return 0;
     }
 }

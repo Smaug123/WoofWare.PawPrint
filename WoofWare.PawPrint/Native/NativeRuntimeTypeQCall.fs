@@ -232,7 +232,8 @@ module NativeRuntimeTypeQCall =
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
                 RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _) ->
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+            | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) ->
                 // `ClassLoader::ThrowTypeLoadException` (clsload.cpp:2724) renders the wrapped
                 // byref with `TypeString::AppendTypeKey` under `FormatNamespace` alone — nested
                 // types as `Outer+Inner`, instantiations as `List`1[System.String]`, function
@@ -264,15 +265,22 @@ module NativeRuntimeTypeQCall =
                     ]
                     state
                 |> Some
-            | RuntimeTypeHandleTarget.Closed element ->
-                // The type-handle registry keys on the whole target, so this is the same
-                // `RuntimeType` object a reflected `ref int` parameter yields -- which is what makes
-                // `typeof(int).MakeByRefType() == parameter.ParameterType` true.
+            | RuntimeTypeHandleTarget.Closed _
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.OpenConstructed _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                // The type-handle registry keys on the whole target, and `composite` spells a
+                // byref over a closed element as the closed byref, so this is the same
+                // `RuntimeType` object a reflected `ref int` (or `ref T`) parameter yields --
+                // which is what makes `typeof(int).MakeByRefType() == parameter.ParameterType` true.
                 let byrefAddr, state =
                     IlMachineState.getOrAllocateType
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
-                        (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref element))
+                        (RuntimeTypeHandleTarget.composite CompositeShape.Byref typeHandleTarget)
                         state
 
                 let state =
@@ -283,15 +291,6 @@ module NativeRuntimeTypeQCall =
                         (CliType.ObjectRef (Some byrefAddr))
 
                 NativeHandlerResult.completed state |> Some
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-            | RuntimeTypeHandleTarget.OpenConstructed _
-            | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
-                // CoreCLR answers `T&` and `List<>&` here; `RuntimeTypeHandleTarget` can spell a
-                // byref only over a `ConcreteTypeHandle`, so there is no target to mint. Refuse
-                // rather than answer with the element or a closed stand-in.
-                failwith
-                    $"TODO: %s{operation}: a byref over %O{typeHandleTarget} is not representable, because RuntimeTypeHandleTarget has no byref-over-a-generic-variable case; CoreCLR answers it"
         | "RuntimeTypeHandle_Instantiate",
           "System.Private.CoreLib",
           "System",
