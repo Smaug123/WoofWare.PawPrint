@@ -80,6 +80,7 @@ module TestListen =
             {
                 Endpoint = endpoint
                 LockedAddress = Some endpoint.Address
+                LockedPort = true
             }
 
     let private listenOrFail (fd : int) (backlog : int) (system : UnixSystem<int, string>) =
@@ -140,6 +141,7 @@ module TestListen =
                 {
                     Endpoint = where
                     LockedAddress = None
+                    LockedPort = false
                 }
         )
 
@@ -415,6 +417,7 @@ module TestListen =
                         {
                             Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 40000us
                             LockedAddress = None
+                            LockedPort = false
                         })
                     false
                     SocketPhase.Idle)

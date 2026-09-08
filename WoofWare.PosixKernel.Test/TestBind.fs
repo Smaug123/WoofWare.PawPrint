@@ -116,6 +116,7 @@ module TestBind =
                     // `bind(2)`'s own address is locked, so a later Linux refusal
                     // delivery reverts a connect's source resolution to exactly it.
                     LockedAddress = Some InternetEndpoint.LoopbackAddress
+                    LockedPort = true
                 }
         )
 

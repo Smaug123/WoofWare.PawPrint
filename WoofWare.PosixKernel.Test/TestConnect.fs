@@ -86,6 +86,7 @@ module TestConnect =
             {
                 Endpoint = endpoint
                 LockedAddress = Some endpoint.Address
+                LockedPort = true
             }
 
     /// A client socket bound to loopback, and the descriptor it is open on.
