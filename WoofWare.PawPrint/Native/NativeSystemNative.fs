@@ -3037,13 +3037,12 @@ module NativeSystemNative =
             // `Program.fireSyscallWakes` flipping this thread back to
             // Runnable once the lock could be granted — re-enters this handler
             // and finishes the acquisition from the caller's own frame.
-            let park (condition : WakeCondition) (system : UnixSystem<ThreadId, SignalHandler>) =
-                // The record and the status are written together. The record is
-                // derived from the condition rather than built beside it, so a
-                // task cannot be parked on one lock while the sweep polls for
-                // another; and `close` needs it, to refuse destroying the
-                // description this thread is waiting on.
-                withAnswered (UnixDescriptor.parkFlock ctx.Thread condition system) state
+            let park (system : UnixSystem<ThreadId, SignalHandler>) =
+                // The library recorded the park in `system` when it answered
+                // `WouldBlock`; what is left to this handler is the thread's
+                // status, which is written from the same answer so the two
+                // cannot disagree.
+                withAnswered system state
                 |> Scheduler.parkInSyscall ctx.Thread
                 |> NativeHandlerResult.blockedRetainingFrame
                 |> Some
@@ -3076,38 +3075,32 @@ module NativeSystemNative =
                 failwith
                     $"%s{operation}: thread %O{ctx.Thread} entered an flock while its task is parked in a socket wait. A task blocks in one syscall at a time, so the wait's completion failed to clear its record (this is an interpreter bug)."
             | Some (ParkedSyscall.Flock parked) ->
-                match UnixDescriptor.flockAcquire parked.Requester parked.Mode (EmulatedKernel.unix state.Kernel) with
+                match UnixDescriptor.flockAcquire ctx.Thread (EmulatedKernel.unix state.Kernel) with
                 | Error refusal -> refused refusal
-                | Ok (SyscallOutcome.WouldBlock condition, system) ->
+                | Ok (SyscallOutcome.WouldBlock _, system) ->
                     // Woken and beaten: a release wakes every waiter and they
                     // race, so all but one of them find the lock gone. Park
                     // again on the same condition, which is the ordinary case
-                    // rather than an edge one.
-                    park condition system
-                | Ok (SyscallOutcome.Answered answer, system) ->
-
-                let system =
-                    { system with
-                        Tasks = UnixTaskTable.withParked ctx.Thread None system.Tasks
-                    }
-
-                match answer with
-                | SyscallAnswer.Completed _ -> granted system
-                | SyscallAnswer.Failed error ->
+                    // rather than an edge one; the record stands.
+                    park system
+                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed _), system) ->
+                    // The grant cleared the record.
+                    granted system
+                | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), _) ->
                     failwith
                         $"%s{operation}: finishing a parked acquisition on %O{parked.Requester} answered %O{error}. A resume acquires on a description the close path is obliged to keep alive, so it can only be granted or still blocked (this is an interpreter bug)."
             | None ->
 
-            match UnixDescriptor.flock fd request (EmulatedKernel.unix state.Kernel) with
+            match UnixDescriptor.flock ctx.Thread fd request (EmulatedKernel.unix state.Kernel) with
             | Error refusal -> refused refusal
-            | Ok (SyscallOutcome.WouldBlock condition, system) ->
+            | Ok (SyscallOutcome.WouldBlock _, system) ->
                 // The system this parks with is not the one the call arrived
                 // with: a conversion has already dropped the caller's old lock,
                 // which is what a real kernel does before it sleeps.
                 //
                 // CoreLib never reaches this: SafeFileHandle.Init always sets
                 // LOCK_NB. A guest hand-rolling the P/Invoke can.
-                park condition system
+                park system
             | Ok (SyscallOutcome.Answered (SyscallAnswer.Failed error), system) ->
                 withErrno ctx error system state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim -1)) ctx.Thread
