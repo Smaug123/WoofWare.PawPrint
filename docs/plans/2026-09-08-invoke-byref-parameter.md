@@ -219,9 +219,36 @@ than this PR growing to cover it.
 
 ## Ladder
 
-Rung J's next stop is unknown until re-measured with this in; the doc's row will be filled from
-the run, not predicted.
+Re-measured with this in (linux flavour): rung J binds the route parameter, runs the handler,
+and stops 33 frames out in JSON serialisation of the result, at
+
+```
+RuntimeTypeHandle.Instantiate: unsupported IntPtr result buffer pointer shape
+<<element 0 of array <object #68509>> as System.IntPtr>
+```
+
+reached from `RuntimeType.MakeGenericType` inside
+`System.Text.Json.ObjectConverterFactory.CreateConverter`, under `Ok<T>.ExecuteAsync`. The
+`Instantiate` QCall's result buffer arrives as a byref into an array element, a shape its
+handler does not yet accept. That is the next feature, not this one.
 
 ## Outcome
 
-(filled in after review)
+Decisions 1, 2 and 3 held as recommended. Two of the planned checks turned out to reach
+pre-existing gaps *before* the QCall, and were parked rather than absorbed:
+
+- A null `out int` slot: `TryChangeType` allocates the default box through
+  `RuntimeHelpers.GetUninitializedObject`, whose QCall
+  `ReflectionSerialization_GetCreateUninitializedObjectInfo` is unimplemented
+  (`ReflectionInvokeOutNullSlot.cs`). Rung J does not need it: the interpreter's
+  `ByRefUpdater` passes a boxed default, and the active guest does the same.
+- A reference-holding struct argument: the managed copy is `RuntimeHelpers.Box` over the
+  box's raw data, and the bytewise copy in `BoxCache.Box` refuses a box holding references —
+  the same gap `RuntimeHelpersBoxReferenceContainingStruct.cs` is parked on
+  (`ReflectionInvokeByRefReferenceStruct.cs`). The active guest uses a reference-free struct,
+  which still needs the element view (a field cannot be selected under the byte view).
+
+Mutation: m1–m3 killed by the new guest; m4 survived as predicted; m5 (the shared classifier
+viewing a reference element as itself) survived the two new guests and was killed by the F#
+`sprintf` guests, whose `CaptureFinalN` arguments include arrays; m6 (the byref arm alone
+doing so) is killed by the `ref int[]` check added for it.
