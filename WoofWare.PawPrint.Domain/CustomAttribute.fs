@@ -8,10 +8,9 @@ open System.Reflection.Metadata
 /// Each variant corresponds to a <c>CorSerializationType</c> the metadata blob can carry.
 /// </summary>
 /// <remarks>
-/// Not all <c>CorSerializationType</c> values are represented yet:
-/// <c>TYPE</c> (0x50) and <c>TAGGED_OBJECT</c> (0x51) will be added when a caller
-/// needs them. The current set covers attributes whose ctors take primitives,
-/// strings, enums, and SZARRAYs of those.
+/// <c>TAGGED_OBJECT</c> (0x51) has no variant yet; a caller that meets one fails when building
+/// its <see cref="T:WoofWare.PawPrint.CustomAttribArgShape"/>. The current set covers attributes
+/// whose ctors take primitives, strings, enums, <c>System.Type</c>, and SZARRAYs of those.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type CustomAttribFixedArg =
@@ -48,6 +47,12 @@ type CustomAttribFixedArg =
     /// <c>CustomAttribArgShape</c> input, so a caller that wants the enum's identity (to render
     /// a member name, say) zips the decoded args against the shapes it supplied.
     | Enum of underlying : CustomAttribFixedArg
+    /// <c>TYPE</c> (0x50): a <c>System.Type</c>-valued argument, stored as the <c>SerString</c> of
+    /// the type's reflection name. A name rather than a resolved type, because resolving it needs
+    /// assembly lookup, which the decoder does not have; <c>CustomAttribute.typeNamesToResolve</c>
+    /// lists the names a caller must resolve before lowering. <c>None</c> is the SerString null
+    /// sentinel, which CoreCLR hands to the constructor as a null <c>Type</c>.
+    | Type of typeName : string option
 
 /// <summary>
 /// The types ECMA-335 II.14.3 admits as an enum's underlying type: "the underlying type shall be
@@ -117,13 +122,17 @@ module EnumUnderlyingType =
 /// lookup, which the parser deliberately does not have. Callers resolve first and hand the decoder
 /// this plan instead, which is decodable by construction.
 ///
-/// <c>TYPE</c> (0x50) and <c>TAGGED_OBJECT</c> (0x51) arguments have no variant here yet; a caller
-/// that meets one fails when building the plan, which is where the diagnostic belongs.
+/// <c>TAGGED_OBJECT</c> (0x51) arguments have no variant here yet; a caller that meets one fails
+/// when building the plan, which is where the diagnostic belongs.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type CustomAttribArgShape =
     | Primitive of PrimitiveType
     | Enum of underlying : EnumUnderlyingType
+    /// A <c>System.Type</c> parameter. Its bytes are a <c>SerString</c>, read exactly as a string
+    /// argument's are; it is a separate shape because what the string *means* differs, and the
+    /// decoded value has to say so.
+    | Type
     | SzArray of elements : CustomAttribArgShape
 
 /// <summary>
@@ -717,6 +726,14 @@ module CustomAttribute =
 
         match shape with
         | CustomAttribArgShape.Primitive pt -> readPrimitiveValue pt offset
+        | CustomAttribArgShape.Type ->
+            // ECMA-335 II.23.3: a System.Type argument is stored as the SerString of its
+            // reflection name, and CoreCLR reads it with the same `GetStringSize` it uses for a
+            // string argument, answering a null type for the null sentinel
+            // (customattribute.cpp:437-441).
+            match readSerString blob offset with
+            | Error e -> Error e
+            | Ok (name, next) -> Ok (CustomAttribFixedArg.Type name, next)
         | CustomAttribArgShape.Enum underlying ->
             // ECMA-335 II.23.3: "if the parameter kind is an enum, ... the value is stored
             // using the underlying type of the enum". There is no tag; the width comes
@@ -798,6 +815,42 @@ module CustomAttribute =
                 | Ok (value, next) -> loop tail next (value :: acc)
 
         loop paramShapes 2 []
+
+    /// <summary>
+    /// The type names in <paramref name="args"/> that a caller must resolve before the arguments
+    /// can be lowered, in the order they appear in the blob: every non-null
+    /// <c>CustomAttribFixedArg.Type</c>, including those inside arrays. The null sentinel needs no
+    /// resolution and is not listed.
+    /// </summary>
+    /// <remarks>
+    /// One entry per occurrence rather than per distinct name: CoreCLR resolves each occurrence
+    /// separately (<c>ReadArray</c> calls <c>GetDataFromBlob</c> once per element), and an
+    /// <c>AssemblyLoadContext.TypeResolve</c> handler would observe the difference.
+    /// </remarks>
+    let rec typeNamesToResolve (args : CustomAttribFixedArg list) : string list =
+        args
+        |> List.collect (fun arg ->
+            match arg with
+            | CustomAttribFixedArg.Type (Some name) -> [ name ]
+            | CustomAttribFixedArg.Type None -> []
+            | CustomAttribFixedArg.Array (Some elements) -> typeNamesToResolve elements
+            | CustomAttribFixedArg.Array None -> []
+            // An enum's payload is one of the integral variants, never a type.
+            | CustomAttribFixedArg.Enum _ -> []
+            | CustomAttribFixedArg.Bool _
+            | CustomAttribFixedArg.Char _
+            | CustomAttribFixedArg.I1 _
+            | CustomAttribFixedArg.U1 _
+            | CustomAttribFixedArg.I2 _
+            | CustomAttribFixedArg.U2 _
+            | CustomAttribFixedArg.I4 _
+            | CustomAttribFixedArg.U4 _
+            | CustomAttribFixedArg.I8 _
+            | CustomAttribFixedArg.U8 _
+            | CustomAttribFixedArg.R4 _
+            | CustomAttribFixedArg.R8 _
+            | CustomAttribFixedArg.String _ -> []
+        )
 
     /// <summary>
     /// Read one array element tag at <paramref name="offset"/> — the tag byte, plus an enum's type

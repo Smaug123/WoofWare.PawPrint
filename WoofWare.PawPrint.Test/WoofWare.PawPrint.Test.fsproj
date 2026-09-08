@@ -115,6 +115,7 @@
     <Compile Include="TestCrossAssemblyUnsafeAccessor.fs" />
     <Compile Include="TestCrossAssemblyFieldScope.fs" />
     <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
+    <Compile Include="TestCrossAssemblyTypeAttribute.fs" />
     <Compile Include="TestCrossAssemblyFriendValidation.fs" />
     <Compile Include="TestCrossAssemblyStructZero.fs" />
     <Compile Include="TestCrossAssemblyInitSetter.fs" />
