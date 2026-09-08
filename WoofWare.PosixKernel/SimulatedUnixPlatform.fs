@@ -378,6 +378,24 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> false
         | SimulatedUnixFlavour.Darwin -> true
 
+    /// Whether this platform's libc provides <c>posix_fadvise(2)</c> at all.
+    ///
+    /// Measured, not read from a feature test: macOS 26.6's libc exports no such
+    /// symbol, so a program that called it would not link, and there is no
+    /// answer for a caller to compare against. Linux 6.18.5 provides it. A
+    /// caller that has no answer of its own to give for the absent case wants
+    /// <c>UnixDescriptor.posixFadvise</c>, which reports the absence rather than
+    /// leaving it to be guessed.
+    ///
+    /// Darwin's nearest equivalent is the <c>F_RDADVISE</c> fcntl, which takes a
+    /// different argument shape and is not modelled: the two are not
+    /// interchangeable, so this is a genuine "no such call" rather than a
+    /// renaming.
+    let providesPosixFadvise (platform : SimulatedUnixPlatform) : bool =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> true
+        | SimulatedUnixFlavour.Darwin -> false
+
     /// The permission bits this platform reports for a symbolic link, which no
     /// syscall can set and which the two Unixes disagree about.
     ///

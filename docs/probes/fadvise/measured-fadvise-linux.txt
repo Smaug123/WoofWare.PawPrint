@@ -1,0 +1,133 @@
+[0/6] [0s]
+[1/6] Fetching image [0s]
+[2/6] Unpacking image [0s]
+[3/6] Fetching kernel [0s]
+[4/6] Fetching init image [0s]
+[5/6] Unpacking init image [0s]
+[6/6] Starting container [0s]
+[6/6] Starting container [0s]
+Linux 6.18.5 aarch64
+== descriptor kind x advice, offset 0 length 0
+fadvise(closed fd 99     , 0, 0, NORMAL 0        ) -> ret=9 EBADF errno=0
+fadvise(closed fd 99     , 0, 0, RANDOM 1        ) -> ret=9 EBADF errno=0
+fadvise(closed fd 99     , 0, 0, SEQUENTIAL 2    ) -> ret=9 EBADF errno=0
+fadvise(closed fd 99     , 0, 0, WILLNEED 3      ) -> ret=9 EBADF errno=0
+fadvise(closed fd 99     , 0, 0, DONTNEED 4      ) -> ret=9 EBADF errno=0
+fadvise(closed fd 99     , 0, 0, NOREUSE 5       ) -> ret=9 EBADF errno=0
+fadvise(closed fd 99     , 0, 0, out of range 6  ) -> ret=9 EBADF errno=0
+fadvise(closed fd 99     , 0, 0, out of range -1 ) -> ret=9 EBADF errno=0
+fadvise(regular O_RDWR   , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(regular O_RDWR   , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(regular O_RDWR   , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(regular O_RDWR   , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(regular O_RDWR   , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(regular O_RDWR   , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(regular O_RDWR   , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(regular O_RDWR   , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+fadvise(regular O_RDONLY , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(regular O_RDONLY , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(regular O_RDONLY , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(regular O_RDONLY , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(regular O_RDONLY , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(regular O_RDONLY , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(regular O_RDONLY , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(regular O_RDONLY , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+fadvise(regular O_WRONLY , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(regular O_WRONLY , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(regular O_WRONLY , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(regular O_WRONLY , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(regular O_WRONLY , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(regular O_WRONLY , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(regular O_WRONLY , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(regular O_WRONLY , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+fadvise(directory        , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(directory        , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(directory        , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(directory        , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(directory        , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(directory        , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(directory        , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(directory        , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+fadvise(/dev/null        , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(/dev/null        , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(/dev/null        , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(/dev/null        , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(/dev/null        , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(/dev/null        , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(/dev/null        , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(/dev/null        , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+fadvise(pipe read end    , 0, 0, NORMAL 0        ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end    , 0, 0, RANDOM 1        ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end    , 0, 0, SEQUENTIAL 2    ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end    , 0, 0, WILLNEED 3      ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end    , 0, 0, DONTNEED 4      ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end    , 0, 0, NOREUSE 5       ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end    , 0, 0, out of range 6  ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end    , 0, 0, out of range -1 ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, NORMAL 0        ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, RANDOM 1        ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, SEQUENTIAL 2    ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, WILLNEED 3      ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, DONTNEED 4      ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, NOREUSE 5       ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, out of range 6  ) -> ret=29 ESPIPE errno=0
+fadvise(pipe write end   , 0, 0, out of range -1 ) -> ret=29 ESPIPE errno=0
+fadvise(TCP socket       , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(TCP socket       , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(TCP socket       , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(TCP socket       , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(TCP socket       , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(TCP socket       , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(TCP socket       , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(TCP socket       , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+fadvise(unix socket      , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(unix socket      , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(unix socket      , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(unix socket      , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(unix socket      , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(unix socket      , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(unix socket      , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(unix socket      , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+fadvise(epoll port       , 0, 0, NORMAL 0        ) -> ret=0  errno=0
+fadvise(epoll port       , 0, 0, RANDOM 1        ) -> ret=0  errno=0
+fadvise(epoll port       , 0, 0, SEQUENTIAL 2    ) -> ret=0  errno=0
+fadvise(epoll port       , 0, 0, WILLNEED 3      ) -> ret=0  errno=0
+fadvise(epoll port       , 0, 0, DONTNEED 4      ) -> ret=0  errno=0
+fadvise(epoll port       , 0, 0, NOREUSE 5       ) -> ret=0  errno=0
+fadvise(epoll port       , 0, 0, out of range 6  ) -> ret=22 EINVAL errno=0
+fadvise(epoll port       , 0, 0, out of range -1 ) -> ret=22 EINVAL errno=0
+== regular file O_RDWR x range, advice NORMAL then DONTNEED
+fadvise(regular, offset 0 length 0                , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset 0 length 0                , DONTNEED 4 ) -> ret=0  errno=0
+fadvise(regular, offset 0 length 4096             , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset 0 length 4096             , DONTNEED 4 ) -> ret=0  errno=0
+fadvise(regular, offset 0 length -1               , NORMAL 0   ) -> ret=22 EINVAL errno=0
+fadvise(regular, offset 0 length -1               , DONTNEED 4 ) -> ret=22 EINVAL errno=0
+fadvise(regular, offset -1 length 0               , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset -1 length 0               , DONTNEED 4 ) -> ret=0  errno=0
+fadvise(regular, offset -1 length -1              , NORMAL 0   ) -> ret=22 EINVAL errno=0
+fadvise(regular, offset -1 length -1              , DONTNEED 4 ) -> ret=22 EINVAL errno=0
+fadvise(regular, offset 0 length INT64_MAX        , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset 0 length INT64_MAX        , DONTNEED 4 ) -> ret=0  errno=0
+fadvise(regular, offset INT64_MAX length 1        , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset INT64_MAX length 1        , DONTNEED 4 ) -> ret=0  errno=0
+fadvise(regular, offset INT64_MAX length INT64_MAX, NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset INT64_MAX length INT64_MAX, DONTNEED 4 ) -> ret=0  errno=0
+== pipe read end x range: does ESPIPE precede the range and advice checks?
+fadvise(pipe read end, offset 0 length 0  , NORMAL 0      ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end, offset 0 length 0  , out of range 6) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end, offset 0 length -1 , NORMAL 0      ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end, offset 0 length -1 , out of range 6) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end, offset -1 length -1, NORMAL 0      ) -> ret=29 ESPIPE errno=0
+fadvise(pipe read end, offset -1 length -1, out of range 6) -> ret=29 ESPIPE errno=0
+== regular file: negative offset with a positive length, and INT64_MIN
+fadvise(regular, offset -1 length 4096            , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset -4096 length 4096         , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset INT64_MIN length 0        , NORMAL 0   ) -> ret=0  errno=0
+fadvise(regular, offset 0 length INT64_MIN        , NORMAL 0   ) -> ret=22 EINVAL errno=0
+fadvise(regular, offset INT64_MAX length INT64_MIN, NORMAL 0   ) -> ret=22 EINVAL errno=0
+== ordering: bad fd with out-of-range advice, and bad range
+fadvise(closed fd 99   , offset 0 length 0  , out of range 6) -> ret=9 EBADF errno=0
+fadvise(closed fd 99   , offset -1 length -1, out of range 6) -> ret=9 EBADF errno=0
+fadvise(regular O_RDWR , offset 0 length 0  , out of range 6) -> ret=22 EINVAL errno=0
+fadvise(regular O_RDWR , offset -1 length -1, out of range 6) -> ret=22 EINVAL errno=0

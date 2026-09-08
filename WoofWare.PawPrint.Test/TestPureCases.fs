@@ -293,6 +293,15 @@ module TestPureCases =
                     name "dang", SeedEntry.Symlink (target "nx")
                     name "cyc", SeedEntry.Symlink (target "cyc")
                 ]
+            "PosixFAdviseSeeded.cs",
+            Map.ofList
+                [
+                    // One file to read back through each hinted open, and a
+                    // second to write through, so the write cannot disturb what
+                    // the read rows expect.
+                    name "f", file "hello"
+                    name "g", file "hello"
+                ]
             "TruncateSeeded.cs",
             Map.ofList
                 [

@@ -296,6 +296,18 @@ module TestImpureCases =
                 entry "zerolen" 0o4755
             ]
 
+    /// The seed both `posix_fadvise`-wiring guests read: one ordinary file, the
+    /// hint saying nothing about what is in it.
+    let private fadviseSeed : Map<DirectoryEntryName, SeedEntry> =
+        Map.ofList
+            [
+                DirectoryEntryName.parseOrFail "test seed" "f",
+                SeedEntry.file (
+                    Text.Encoding.UTF8.GetBytes "hello"
+                    |> System.Collections.Immutable.ImmutableArray.CreateRange
+                )
+            ]
+
     /// The seed both truncation-wiring guests read: one file per mode shape, each
     /// holding the same five bytes, so a row's answer turns on its mode alone.
     let private truncationModeSeed : Map<DirectoryEntryName, SeedEntry> =
@@ -1875,6 +1887,41 @@ module TestImpureCases =
                     { KernelConfig.Default with
                         UnixPlatform = SimulatedUnixPlatform.macOsArm64
                         FileSystem = truncationModeSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `posix_fadvise`'s one flavour-dependent fact: whether the
+                // platform has the call at all. A handler that hardcoded either
+                // answer instead of reading
+                // `SimulatedUnixPlatform.providesPosixFadvise` would satisfy
+                // `TestPosixFadvise` (it passes the platform in by hand),
+                // `TestFileAdvicePal` (it covers the advice screen alone) *and*
+                // one of these two.
+                FileName = "PosixFAdviseWiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        // The default already, stated explicitly because this
+                        // case's whole subject is which flavour is configured.
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                        FileSystem = fadviseSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                FileName = "PosixFAdviseWiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        FileSystem = fadviseSeed
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
