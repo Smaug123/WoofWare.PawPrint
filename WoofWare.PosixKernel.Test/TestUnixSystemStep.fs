@@ -2426,8 +2426,9 @@ module TestUnixSystemStep =
     let ``a LOCK_MAND request is ignored on Linux, closed descriptors included`` () : unit =
         for operation in [ 32 ; 32 ||| 1 ; 32 ||| 2 ; 32 ||| 8 ; 32 ||| 4 ] do
             for fd in [ 0 ; 99 ] do
-                match UnixDescriptor.flock fd operation linux with
-                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), after) -> after |> shouldEqual linux
+                match UnixDescriptor.flock holderTask fd operation (withTask holderTask linux) with
+                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), after) ->
+                    after |> shouldEqual (withTask holderTask linux)
                 | other -> failwith $"flock(%d{fd}, %d{operation}) on Linux: expected 0, got %A{other}"
 
     /// Darwin looks the descriptor up before it screens the operation, so a
@@ -2436,18 +2437,18 @@ module TestUnixSystemStep =
     [<Test>]
     let ``a closed descriptor is EBADF on Darwin and EINVAL on Linux for a malformed operation`` () : unit =
         for operation in [ 0 ; 4 ; 1 ||| 2 ; 16 ; 32 ] do
-            UnixDescriptor.flock 99 operation darwin
+            UnixDescriptor.flock holderTask 99 operation (withTask holderTask darwin)
             |> answeredOutcome
             |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
 
         for operation in [ 0 ; 4 ; 1 ||| 2 ; 16 ] do
-            UnixDescriptor.flock 99 operation linux
+            UnixDescriptor.flock holderTask 99 operation (withTask holderTask linux)
             |> answeredOutcome
             |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL)
 
         // ...and a malformed operation on an *open* Darwin descriptor is still
         // refused, since what it leaves the lock table as is unmeasured.
-        UnixDescriptor.flock 0 (32 ||| 1) darwin
+        UnixDescriptor.flock holderTask 0 (32 ||| 1) (withTask holderTask darwin)
         |> shouldEqual (Error (FLockRefusal.DarwinMalformedOperation (32 ||| 1)))
 
     [<Test>]
