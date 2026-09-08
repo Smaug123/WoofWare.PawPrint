@@ -446,14 +446,23 @@ module AbstractMachine =
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> dispatchDelegateInvoke ()
         | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
             StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state
-        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName)) ->
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
             let nameStr =
                 match targetName with
                 | Some n -> $"\"{n}\""
                 | None -> "<attributed method name>"
 
+            let overrides =
+                if hasTypeNameOverrides then
+                    ", types named by [UnsafeAccessorType]"
+                else
+                    ""
+
             failwith
-                $"TODO: dispatch [UnsafeAccessor] is unimplemented for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} (kind={kind}, target={nameStr})"
+                $"TODO: dispatch [UnsafeAccessor] is unimplemented for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} (kind={kind}, target={nameStr}{overrides})"
+        | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (raw, _)) ->
+            failwith
+                $"TODO: dispatch [UnsafeAccessor] is unimplemented for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name}, whose UnsafeAccessorKind ({raw}) names none of the five kinds; CoreCLR raises BadImageFormatException on its first invocation"
         | MethodBody.RuntimeProvided (RuntimeBehaviour.Unrecognised name) ->
             failwith
                 $"BUG: reached executeOneStep for {MethodOwner.describe instruction.ExecutingMethod.Owner}::{instruction.ExecutingMethod.Name} which is runtime-provided but unclassified ({name}); add explicit handling"

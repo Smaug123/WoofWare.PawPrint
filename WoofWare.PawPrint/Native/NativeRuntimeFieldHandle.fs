@@ -125,6 +125,56 @@ module NativeRuntimeFieldHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
+          "AcquiresContextFromThis",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->
+            // CoreCLR's RuntimeFieldHandle::AcquiresContextFromThis (runtimehandles.cpp:250) answers
+            // `pField->IsSharedByGenericInstantiations()`: true for an *instance* field whose
+            // FieldDesc belongs to a canonical `__Canon` MethodTable (field.h:398), which is when the
+            // field's approximate declaring type is not its exact one and the exact type has to be
+            // recovered from the `this` object. Its two managed callers exist only to compensate for
+            // that: `MemberInfoCache.AddField` (RuntimeType.CoreCLR.cs:311) switches from an exact
+            // comparison of the declaring type against the reflected type to a canonical one, and
+            // `RuntimeType.GetFieldInfo` (RuntimeType.CoreCLR.cs:1988) lets a caller-supplied
+            // declaring type through when it merely canonicalises alike.
+            //
+            // PawPrint shares no field descriptions between instantiations: a `FieldHandle` records
+            // the exact `RuntimeTypeHandleTarget` the guest asked about, and `GetApproxDeclaringType`
+            // above hands that exact type back. So the answer is `false` for every handle the registry
+            // mints, and both callers then take their exact-comparison arm, which is the right one for
+            // an exact type. The one observable consequence is the same one the method-handle
+            // registry already has, recorded in docs/divergences.md ("A field handle is
+            // per-instantiation ..."): CoreCLR accepts `GetFieldFromHandle` on a handle from one
+            // reference-type instantiation together with a *different* reference-type instantiation
+            // of the same definition, because the two canonicalise alike, and PawPrint rejects it with
+            // the `ArgumentException` the exact comparison produces.
+            let operation = "RuntimeFieldHandle.AcquiresContextFromThis"
+
+            let fieldHandle =
+                // CoreCLR's PRECONDITION(CheckPointer(pField)) — a null handle is a caller bug, and the
+                // sibling arms above fault the same way.
+                fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
+
+            let acquiresContextFromThis =
+                match fieldHandle.GetDeclaringTypeHandle () with
+                | RuntimeTypeHandleTarget.Closed _
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> false
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.OpenConstructed _
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _ as other ->
+                    // `FieldHandleRegistry.getOrAllocate` refuses these, so no handle can carry one.
+                    failwith
+                        $"BUG: %s{operation}: field-registry handle has declaring type %O{other}, which FieldHandleRegistry.getOrAllocate is supposed to have refused"
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ofBool acquiresContextFromThis) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeFieldHandle",
           "IsFastPathSupported",
           [ CorelibType state.ConcreteTypes ("System.Reflection", "RtFieldInfo", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->

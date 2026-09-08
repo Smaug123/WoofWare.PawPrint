@@ -50,6 +50,7 @@
     <Compile Include="TestAccept.fs" />
     <Compile Include="TestBind.fs" />
     <Compile Include="TestSocketBinding.fs" />
+    <Compile Include="TestEphemeralPorts.fs" />
     <Compile Include="TestListen.fs" />
     <Compile Include="TestNonBlocking.fs" />
     <Compile Include="TestConnect.fs" />
