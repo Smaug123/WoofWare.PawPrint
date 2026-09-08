@@ -4,6 +4,18 @@ open System.Collections.Immutable
 open System.Reflection
 open Microsoft.Extensions.Logging
 
+/// The reason CoreCLR's type loader refuses to construct an szarray over an element type. Each
+/// case is one `mscorrc` resource, and they are checked in this order.
+[<RequireQualifiedAccess>]
+type SzArrayElementRefusal =
+    | ByRef
+    | ByRefLike
+    | Void
+    /// A value type too big for the array's `ComponentSize` field to describe. Unlike the three
+    /// above, this one is raised when the array's own MethodTable is built rather than when its
+    /// type key is validated, and its message names the *element* rather than the array.
+    | ValueClassTooLarge
+
 module NativeRuntimeTypeHelpers =
     let primitiveCorElementType (primitive : PrimitiveType) : int32 =
         match primitive with
@@ -54,6 +66,16 @@ module NativeRuntimeTypeHelpers =
         =
         IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 value))
 
+    /// The address of element `index` of an `IntPtr*` buffer a QCall was handed, whatever the
+    /// guest built the buffer from: a `fixed` pointer over an `IntPtr[]`, a `Span<IntPtr>` over a
+    /// `stackalloc`, or the address of a single `IntPtr` local for a one-element buffer.
+    ///
+    /// Strided by the interpreter's own pointer arithmetic under the `IntPtr` view, which is what
+    /// the guest's `p + index` on the same pointer would do (ECMA-335 III.1.5: byte-stride once a
+    /// byref has become a native pointer). The arithmetic folds a whole-cell advance back into the
+    /// root, so the result addresses a *cell* of the buffer — an array element or a `stackalloc`
+    /// offset — and the provenance-bearing handle stored there (`TypeHandlePtr`, `FieldHandlePtr`)
+    /// is read or written as a cell, never as bytes.
     let nativeIntElementPointer
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -62,55 +84,23 @@ module NativeRuntimeTypeHelpers =
         (index : int)
         : ManagedPointerSource
         =
-        match buffer with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
-            ManagedPointerSource.Byref (
-                ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
-                []
-            )
-        // Span<IntPtr> pinned over a `stackalloc IntPtr[N]` buffer: the Span(void*, int)
-        // constructor appends `ReinterpretAs IntPtr` to the localloc byte byref when
-        // storing it into `_reference`, and the LibraryImport stub for the QCall pulls
-        // that reference back out. The reinterpret is address-preserving, so striding
-        // by nativeIntSize bytes and preserving the projection keeps the typed view.
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset),
-                                      [ ByrefProjection.ReinterpretAs reinterpretTy as proj ]) ->
-            // The QCall signature mandates `Span<IntPtr>`; any other reinterpret type would mean
-            // the buffer was constructed from a different element type and `nativeIntSize` striding
-            // would be wrong, so surface the mismatch loudly rather than silently mis-striding.
-            if InternalTypeKind.kind baseClassTypes reinterpretTy <> InternalTypeKind.NativeInt then
-                failwith
-                    $"%s{operation}: expected IntPtr-reinterpret on localloc buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
+        if index < 0 then
+            failwith $"%s{operation}: negative buffer index %d{index}"
 
-            ManagedPointerSource.Byref (
-                ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
-                [ proj ]
-            )
-        // `IntPtr*` pinned over an `IntPtr[]`, which is how `RuntimeTypeHandle.Instantiate(Type[])`
-        // hands over two or more generic arguments: `fixed (IntPtr* p = handles)` is
-        // `ldelema IntPtr; conv.u`, and `conv.u` anchors the element's own type as a byte view on
-        // the array byref. The native side indexes that pointer in bytes, so do the same and let
-        // the byte-view arithmetic fold whole cells back into the element index.
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, [ ByrefProjection.ReinterpretAs reinterpretTy ]) ->
-            if InternalTypeKind.kind baseClassTypes reinterpretTy <> InternalTypeKind.NativeInt then
-                failwith
-                    $"%s{operation}: expected IntPtr-reinterpret on array buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
+        // `p + 0` is `p` (BinaryArithmetic.fs): a one-element buffer is the bare address of a
+        // single local, which has no cursor to advance and must not gain one.
+        if index = 0 then
+            buffer
+        else
 
-            ManagedPointerByteView.addByteOffsetToByteView state (index * nativeIntSize) buffer
-        // The 1-arg overload of CreateInstanceForAnotherGenericParameter takes the
-        // address of a single IntPtr local (`&typeHandle`), so element 0 *is* the
-        // buffer itself. We cannot stride past it without escaping the local.
-        | ManagedPointerSource.Byref (ByrefRoot.LocalVariable _, []) when index = 0 -> buffer
-        | ManagedPointerSource.Byref (ByrefRoot.Argument _, []) when index = 0 -> buffer
-        // Buffers are currently reached through GetFields' stackalloc/array path
-        // (either as a bare byte byref or with a trailing `ReinterpretAs IntPtr` when
-        // the buffer was wrapped in a Span<IntPtr>), through an `IntPtr[]` pinned by
-        // `fixed`, or through a single-IntPtr local taken by `&` for the 1-arg overload of
-        // CreateInstanceForAnotherGenericParameter. Other shapes should fail with their
-        // structure intact.
-        | _ -> failwith $"%s{operation}: unsupported IntPtr result buffer pointer shape %O{buffer}"
+        let intPtrType =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
+            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: System.IntPtr is not concretized, so the buffer cannot be strided"
+            )
+
+        ManagedPointerByteView.addByteOffset state intPtrType (index * nativeIntSize) buffer
 
     let writeFieldHandleElement
         (operation : string)
@@ -1847,18 +1837,76 @@ module NativeRuntimeTypeHelpers =
                 |> List.exists (fun m -> m.Name = ".ctor" && not m.IsStatic && MethodInfo.arity m = 0 && m.IsPublic)
 
     /// True iff `arg` is a byref-like type (a C# `ref struct`), which may not be used as a generic
-    /// argument unless the parameter carries `allows ref struct`. CoreCLR's `TypeHandle::IsByRefLike`
-    /// (typehandle.cpp:1061) answers `false` for every TypeDesc, so a structural shape — for which
-    /// `nominalTypeInfoOfArgument` returns `None` — is never byref-like whatever its element type is.
+    /// argument unless the parameter carries `allows ref struct`. A structural shape is never
+    /// byref-like whatever its element type is; see `RuntimeTypeHandleTarget.isByRefLike`.
     let argumentIsByRefLike
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (arg : ConcreteTypeHandle)
         : bool
         =
-        match nominalTypeInfoOfArgument state arg with
-        | None -> false
-        | Some typeInfo -> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
+        RuntimeTypeHandleTarget.isByRefLike
+            baseClassTypes
+            state._LoadedAssemblies
+            state.ConcreteTypes
+            (RuntimeTypeHandleTarget.Closed arg)
+
+    /// Why CoreCLR's type loader will not construct an szarray over `element`, if it will not.
+    /// The three refusals are checked in this order (`ClassLoader::CreateTypeHandleForTypeKey`,
+    /// clsload.cpp:2693-2708). A byref over a byref-like type is refused as a byref, which is a
+    /// fact about `isByRefLike` (a byref is a TypeDesc) rather than about the order. Every other
+    /// element is legal, including `void*`, a function pointer, an open definition, a type
+    /// variable (whatever its constraints) and a shape over one.
+    let szArrayElementRefusal
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (element : RuntimeTypeHandleTarget)
+        : IlMachineState * SzArrayElementRefusal option
+        =
+        match element with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
+        | RuntimeTypeHandleTarget.Composite (CompositeShape.Byref, _) -> state, Some SzArrayElementRefusal.ByRef
+        | _ ->
+
+        if RuntimeTypeHandleTarget.isByRefLike baseClassTypes state._LoadedAssemblies state.ConcreteTypes element then
+            state, Some SzArrayElementRefusal.ByRefLike
+        else
+
+        match element with
+        // `TypeHandle::GetSignatureCorElementType() == ELEMENT_TYPE_VOID`: only the `System.Void`
+        // MethodTable itself, never a shape over it.
+        | RuntimeTypeHandleTarget.Closed (ConcreteVoid state.ConcreteTypes) -> state, Some SzArrayElementRefusal.Void
+        | (RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity | RuntimeTypeHandleTarget.OpenConstructed (identity,
+                                                                                                                 _)) when
+            state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
+            |> DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies
+            ->
+            // Real .NET applies the size limit to an open value type too, sizing its canonical
+            // form: measured on .NET 10, `BigWrapper<>[]` and `BigWrapper<T>[]` throw where
+            // `SmallWrapper<>[]` loads. PawPrint cannot size an open generic at all
+            // (`MethodTableProjection.openArrayComponentSize` refuses one outright), so it cannot
+            // tell those apart. Answering `None` would silently hand the guest an array type that
+            // real .NET refuses, so refuse to answer instead.
+            //
+            // Only *non*-byref-like open value types reach here; a `ref struct` definition is
+            // already refused above, which is why `Span<>` does not land in this hole.
+            failwith
+                $"TODO: %s{operation}: cannot decide whether an array over the open value type %O{identity.TypeDefinition.Get} is legal, because PawPrint cannot size an open generic; real .NET refuses one whose canonical form exceeds %d{MethodTableProjection.maxValueClassSizeInArray} bytes and loads any other"
+        | RuntimeTypeHandleTarget.Closed handle when argumentIsValueType baseClassTypes state handle ->
+            // Only a value type can be big enough to matter: every other element occupies one
+            // pointer. Real .NET refuses an *open* value type by the same rule (measured:
+            // `BigWrapper<>[]` and `BigWrapper<T>[]` both throw), but PawPrint cannot size an open
+            // generic at all -- `MethodTableProjection.openArrayComponentSize` refuses one outright
+            // -- so this decides only the closed elements, which is exactly the set whose size the
+            // array's own `ComponentSize` projection would otherwise be asked for and fail on.
+            let size, state = MethodTableProjection.storageSize baseClassTypes state handle
+
+            if size > MethodTableProjection.maxValueClassSizeInArray then
+                state, Some SzArrayElementRefusal.ValueClassTooLarge
+            else
+                state, None
+        | _ -> state, None
 
     /// A display name for a constraint type, for the diagnostic message only.
     let private constraintDisplayName (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
@@ -2368,7 +2416,33 @@ module NativeRuntimeTypeHelpers =
                 | CompositeShape.Array rank ->
                     let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
                     $"%s{elementName}[%s{dims}]"
-            | RuntimeTypeHandleTarget.FunctionPointer _ -> RuntimeTypeHandleTarget.refuseComposite operation target
+            // The same rendering as the closed function pointer in `concreteTypeHandleName`; the
+            // parameter or return types that are not closed simply print as themselves, so
+            // `delegate*<T, void>` reflected from a generic method is "System.Void(T)" and its
+            // `Name` is "" (both measured on .NET 10).
+            | RuntimeTypeHandleTarget.FunctionPointer signature ->
+                if not includeNamespace then
+                    ""
+                else
+
+                let args = signature.ParameterTypes |> List.map targetName
+
+                let args =
+                    if
+                        signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
+                    then
+                        args @ [ "..." ]
+                    else
+                        args
+
+                let argStr = args |> String.concat ", "
+
+                let retStr =
+                    match signature.ReturnType with
+                    | MethodReturnType.Void -> "System.Void"
+                    | MethodReturnType.Returns ret -> targetName ret
+
+                $"%s{retStr}(%s{argStr})"
 
         and nonConstructedName (typeHandleTarget : RuntimeTypeHandleTarget) : string =
             match typeHandleTarget with
@@ -2456,6 +2530,7 @@ module NativeRuntimeTypeHelpers =
                 parameter.Name
 
         targetName typeHandleTarget
+
 
     /// CoreCLR's `TypeHandle::GetName` (`vm/typehandle.cpp:659`) — a *different* renderer from
     /// `runtimeTypeHandleName` above, which models `TypeString::AppendType` (the reflection
@@ -2567,6 +2642,29 @@ module NativeRuntimeTypeHelpers =
                         |> String.concat ","
 
                     $"%s{name}[%s{args}]"
+
+    /// The type string CoreCLR puts in the `TypeLoadException` for `refusal` of an szarray over
+    /// `element`. Which of the two type renderers applies is part of the answer: the three
+    /// type-key refusals are formatted by `ClassLoader::ThrowTypeLoadException` from the array
+    /// key, and the oversized-value-type one by `array.cpp:362` from the element's own
+    /// `TypeHandle::GetName`. So a nested `Outer.Big` is `Outer+Big` in the first three and bare
+    /// `Big` in the fourth. Measured on .NET 10 for each refusal, nested and not.
+    let szArrayRefusalTypeName
+        (operation : string)
+        (state : IlMachineState)
+        (element : RuntimeTypeHandleTarget)
+        (refusal : SzArrayElementRefusal)
+        : string
+        =
+        match refusal with
+        | SzArrayElementRefusal.ValueClassTooLarge -> typeHandleGetName operation state element
+        // The byref refusal renders the byref alone rather than the array over it: the type-name
+        // builder will not append `[]` after `&`.
+        | SzArrayElementRefusal.ByRef -> runtimeTypeHandleName operation state formatNamespaceFlag element
+        | SzArrayElementRefusal.ByRefLike
+        | SzArrayElementRefusal.Void ->
+            RuntimeTypeHandleTarget.composite CompositeShape.OneDimArrayZero element
+            |> runtimeTypeHandleName operation state formatNamespaceFlag
 
     /// PawPrint's rendering of CoreCLR's `CopyRuntimeTypeHandles` (runtimehandles.cpp:561), the
     /// single helper behind every QCall that hands a type list back through an
