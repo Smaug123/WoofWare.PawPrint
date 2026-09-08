@@ -1846,6 +1846,9 @@ module VirtualSlotLayout =
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
             failwith
                 $"%s{operation}: invoked on method-generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; the BCL is expected to strip generic variables via GetBaseType before calling"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            RuntimeTypeHandleTarget.refuseComposite operation typeHandleTarget
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             // Slot layout is a property of the generic definition: `MethodTableBuilder` places
             // virtuals from the definition's own metadata, so every instantiation ends up with the
@@ -1910,7 +1913,9 @@ module VirtualSlotLayout =
             Some (identity.AssemblyFullName, target, declared)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) ->
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
             // CoreCLR's IntroducedMethodIterator runs on a MethodTable; byrefs/pointers/function-
             // pointers are TypeDescs with no MethodTable, so GetFirstIntroducedMethod returns null
             // and the managed enumerator terminates without iterating.
@@ -1921,13 +1926,14 @@ module VirtualSlotLayout =
             // `PopulateConstructors` returns an empty array for `IsGenericParameter`
             // (RuntimeType.CoreCLR.cs:755) rather than iterating.
             None
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ as handle)
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _ as handle) ->
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
             // Synthesised array MethodTables have a small fixed set of introduced methods (Get/Set/
             // Address/the parameterless ctor). PawPrint does not yet model these; no test exercises
             // this path, so fail loudly to flag the gap rather than silently reporting zero.
             failwith
-                $"TODO: %s{operation} for synthesised array handle %O{handle}; need to surface the array's intrinsic Get/Set/Address methods"
+                $"TODO: %s{operation} for synthesised array handle %O{target}; need to surface the array's intrinsic Get/Set/Address methods"
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->

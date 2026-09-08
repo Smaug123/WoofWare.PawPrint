@@ -355,6 +355,10 @@ module NativeCustomAttribute =
                     | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                         failwith
                             $"%s{operation}: attribute type was a method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}; the BCL filter should never surface this"
+                    | RuntimeTypeHandleTarget.Composite _
+                    | RuntimeTypeHandleTarget.FunctionPointer _ as composite ->
+                        failwith
+                            $"%s{operation}: attribute type was %O{composite}, a shape over a generic variable; the BCL filter should never surface this"
 
                 let concreteType =
                     AllConcreteTypes.lookup instantiatedHandle state.ConcreteTypes

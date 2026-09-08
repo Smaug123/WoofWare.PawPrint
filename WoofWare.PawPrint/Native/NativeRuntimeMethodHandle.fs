@@ -459,10 +459,11 @@ module NativeRuntimeMethodHandle =
             // an instantiation exactly when it was built with generic arguments.
             factsOfTypeInfo (typeInfoOf concreteType.Identity) (not concreteType.Generics.IsEmpty) false
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
             // Arrays carry MethodTables in modern CoreCLR (only byrefs/pointers, function pointers
-            // and generic variables are TypeDescs). An array is a reference type with no
-            // instantiation of its own, so no stub is ever needed for a method on one.
+            // and generic variables are TypeDescs), whatever their element. An array is a reference
+            // type with no instantiation of its own, so no stub is ever needed for a method on one.
             StubDeclaringType.MethodTable
                 {
                     IsValueType = false
@@ -472,7 +473,9 @@ module NativeRuntimeMethodHandle =
                 }
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _) ->
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
             // ParamTypeDesc (BYREF, PTR) and FnPtrTypeDesc.
             StubDeclaringType.TypeDesc
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
@@ -704,6 +707,10 @@ module NativeRuntimeMethodHandle =
                 // condition for the caller to fix at the source.
                 failwith
                     $"TODO: %s{operation}: %s{label} is a structural type (%O{handle}); CoreCLR throws ArgumentNullException(\"Arg_InvalidHandle\") for TypeDesc handles here"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            failwith
+                $"TODO: %s{operation}: %s{label} is a structural type (%O{target}); CoreCLR throws ArgumentNullException(\"Arg_InvalidHandle\") for TypeDesc handles here"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             // typeof(G<>) is a MethodTable in CoreCLR (the "typical
             // instantiation"); reflection passes it here when filtering CAs on
@@ -1112,7 +1119,9 @@ module NativeRuntimeMethodHandle =
                     | RuntimeTypeHandleTarget.Closed handle -> handle
                     | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                     | RuntimeTypeHandleTarget.GenericParameter _
-                    | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                    | RuntimeTypeHandleTarget.MethodGenericParameter _
+                    | RuntimeTypeHandleTarget.Composite _
+                    | RuntimeTypeHandleTarget.FunctionPointer _ ->
                         // Reached by `MakeGenericMethod` with a type argument that still contains
                         // generic parameters -- `M.MakeGenericMethod(typeof(G<>))` or
                         // `M.MakeGenericMethod(someTypeParameter)`. Both are legal: real .NET

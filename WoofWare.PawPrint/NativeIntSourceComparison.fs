@@ -201,6 +201,20 @@ module NativeIntSourceComparison =
                 // `typeof(List<>).GetGenericArguments()[0]`, and CoreCLR compares the
                 // two pointers and finds them unequal.
                 false
+            // The same split as for the closed shapes above, and for the same reason (see
+            // `TypeHandleTag.forTarget`): an array over a variable is a MethodTable that aliases
+            // only itself, while a byref, pointer or function pointer over one is a TypeDesc, which
+            // has no MethodTable address to have been taken and never equals one.
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _), _
+            | RuntimeTypeHandleTarget.FunctionPointer _, _ ->
+                failwith
+                    $"CEQ: MethodTablePtr with a TypeDesc-shaped target has no MethodTable identity: %O{t1} vs %O{t2}"
+            | _, RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+            | _, RuntimeTypeHandleTarget.FunctionPointer _ -> false
+            | RuntimeTypeHandleTarget.Composite (s1, e1), RuntimeTypeHandleTarget.Composite (s2, e2) ->
+                s1 = s2 && e1 = e2
+            | RuntimeTypeHandleTarget.Composite _, _
+            | _, RuntimeTypeHandleTarget.Composite _ -> false
         | NativeIntSource.ManagedPointer f1, NativeIntSource.ManagedPointer f2 ->
             // Match the `EvalStackValue.ManagedPointer` vs `ManagedPointer`
             // arm below: trailing `ReinterpretAs` projections are address-

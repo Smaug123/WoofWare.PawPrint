@@ -120,6 +120,10 @@ module NativeCall =
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             failwith
                 $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got method generic parameter"
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ as composite ->
+            failwith
+                $"%s{operation}: expected closed RuntimeTypeHandleTarget in QCallTypeHandle._handle, but got %O{composite}, a shape over a generic variable"
 
     let gcHandleKindOfEvalStackValue (operation : string) (arg : EvalStackValue) : GcHandleKind =
         let value =
@@ -793,7 +797,7 @@ module NativeCall =
         DynamicScopeOperand.runtimeTypeHandleTargetOfRuntimeType operation state runtimeTypeAddr
 
     /// The definition identity of the assembly that declares the type this handle names.
-    let typeAssemblyFullName
+    let rec typeAssemblyFullName
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -813,6 +817,12 @@ module NativeCall =
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) ->
             // A generic parameter belongs to the same assembly as its declaring type.
             declaringType.AssemblyFullName
+        // The same element rule as the closed shapes below.
+        | RuntimeTypeHandleTarget.Composite (_, element) -> typeAssemblyFullName operation baseClassTypes state element
+        | RuntimeTypeHandleTarget.FunctionPointer signature ->
+            match signature.ReturnType with
+            | MethodReturnType.Void -> baseClassTypes.Void.AssemblyFullName
+            | MethodReturnType.Returns ret -> typeAssemblyFullName operation baseClassTypes state ret
         | RuntimeTypeHandleTarget.Closed concreteTypeHandle ->
             // Unwrap Byref/Pointer/Array to reach the element type's assembly.
             // In .NET, typeof(T[]).Assembly == typeof(T).Assembly, so arrays follow

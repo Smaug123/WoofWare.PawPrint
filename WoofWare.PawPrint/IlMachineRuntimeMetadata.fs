@@ -393,6 +393,23 @@ module IlMachineRuntimeMetadata =
                 resolveBaseConcreteType loggerFactory baseClassTypes state handle
 
             state, parent |> Option.map RuntimeTypeHandleTarget.Closed
+        // An array's base type is System.Array whatever its element, exactly as
+        // `resolveBaseConcreteType` answers for a closed array.
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+            let state, arrayHandle =
+                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Array
+                |> IlMachineTypeResolution.concretizeType
+                    loggerFactory
+                    baseClassTypes
+                    state
+                    baseClassTypes.Corelib.DefinitionFullName
+                    ImmutableArray.Empty
+                    ImmutableArray.Empty
+
+            state, Some (RuntimeTypeHandleTarget.Closed arrayHandle)
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            RuntimeTypeHandleTarget.refuseComposite "resolveBaseRuntimeTypeHandleTarget" target
         // An instantiation's parent is its definition's base type with the instantiation
         // substituted in. The substitution is only needed when the base actually mentions a
         // parameter, and the existing guard below refuses exactly that case — so the common
@@ -2463,6 +2480,9 @@ module IlMachineRuntimeMetadata =
         | RuntimeTypeHandleTarget.DynamicMethodsClass a, RuntimeTypeHandleTarget.DynamicMethodsClass b -> state, a = b
         | RuntimeTypeHandleTarget.DynamicMethodsClass _, _
         | _, RuntimeTypeHandleTarget.DynamicMethodsClass _ -> state, false
+        | (RuntimeTypeHandleTarget.Composite _ | RuntimeTypeHandleTarget.FunctionPointer _ as composite), _
+        | _, (RuntimeTypeHandleTarget.Composite _ | RuntimeTypeHandleTarget.FunctionPointer _ as composite) ->
+            RuntimeTypeHandleTarget.refuseComposite "isRuntimeTypeHandleTargetAssignableTo" composite
         | RuntimeTypeHandleTarget.OpenConstructed _, RuntimeTypeHandleTarget.Closed t when
             (match AllConcreteTypes.lookup t state.ConcreteTypes with
              | Some ct -> ct.Identity = baseClassTypes.Object.Identity

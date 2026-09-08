@@ -268,6 +268,15 @@ module NativeRuntimeTypeHelpers =
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // ELEMENT_TYPE_MVAR — the method-level counterpart of VAR.
             0x1E
+        // The shape's own element type, as for the closed shapes below: `ParamTypeDesc` and the
+        // array MethodTable both report the kind they were built with, whatever the element.
+        | RuntimeTypeHandleTarget.Composite (shape, _) ->
+            match shape with
+            | CompositeShape.Byref -> 0x10
+            | CompositeShape.Pointer -> 0x0F
+            | CompositeShape.OneDimArrayZero -> 0x1D
+            | CompositeShape.Array _ -> 0x14
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> 0x1B
         | RuntimeTypeHandleTarget.Closed typeHandle ->
             match typeHandle with
             | ConcreteVoid state.ConcreteTypes -> 0x01
@@ -656,6 +665,9 @@ module NativeRuntimeTypeHelpers =
             | ConcreteTypeHandle.FunctionPointer _
             | ConcreteTypeHandle.OneDimArrayZero _
             | ConcreteTypeHandle.Array _ -> mdTypeDefNil
+        // No row of its own, as for the closed shapes just above.
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> mdTypeDefNil
 
     let containsGenericVariables
         (operation : string)
@@ -794,6 +806,10 @@ module NativeRuntimeTypeHelpers =
                     state
 
             Some addr, state
+        // No declaring type, as for the closed shapes below: a ParamTypeDesc has none, and an
+        // array MethodTable is synthesised outside any nesting.
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> None, state
         | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _declaringMethod, _) ->
             // The DeclaringType of a method-generic parameter is the type that
             // declares the method. CoreCLR's TypeVarTypeDesc::GetDeclaringType
@@ -908,6 +924,24 @@ module NativeRuntimeTypeHelpers =
             | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
                 failwith
                     $"TODO: RuntimeTypeHandle.GetBaseType for method generic parameter #%i{position} of method %O{declaringMethod.Get} on %O{declaringType.TypeDefinition.Get}"
+            // A TypeDesc has no base type, as for the closed shapes above.
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> None, state
+            | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                // System.Array, whatever the element; `resolveBaseRuntimeTypeHandleTarget` is
+                // the one definition of that.
+                let state, parent =
+                    IlMachineState.resolveBaseRuntimeTypeHandleTarget
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        typeHandleTarget
+
+                match parent with
+                | Some (RuntimeTypeHandleTarget.Closed parent) -> Some parent, state
+                | other ->
+                    failwith
+                        $"RuntimeTypeHandle.GetBaseType: expected the closed System.Array as the base of %O{typeHandleTarget}, got %O{other}"
 
         match baseHandle with
         | None -> None, state
@@ -943,6 +977,11 @@ module NativeRuntimeTypeHelpers =
             // A generic parameter is not an array/pointer/byref, so GetElementType returns null.
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> None
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> None
+            | RuntimeTypeHandleTarget.Composite (_, element) ->
+                // Never `Closed`, by `RuntimeTypeHandleTarget.composite`'s collapse, so the
+                // element is a target to hand back as it is.
+                Some element
             | RuntimeTypeHandleTarget.Closed typeHandle ->
                 match typeHandle with
                 | ConcreteTypeHandle.Concrete _ -> None
@@ -953,20 +992,16 @@ module NativeRuntimeTypeHelpers =
                 | ConcreteTypeHandle.FunctionPointer _ -> None
                 | ConcreteTypeHandle.Byref inner
                 | ConcreteTypeHandle.Pointer inner
-                | ConcreteTypeHandle.OneDimArrayZero inner -> Some inner
+                | ConcreteTypeHandle.OneDimArrayZero inner -> Some (RuntimeTypeHandleTarget.Closed inner)
                 // Multi-dim arrays drop the rank: typeof(int[,]).GetElementType()
                 // returns typeof(int), not typeof(int[]).
-                | ConcreteTypeHandle.Array (inner, _) -> Some inner
+                | ConcreteTypeHandle.Array (inner, _) -> Some (RuntimeTypeHandleTarget.Closed inner)
 
         match elementHandle with
         | None -> None, state
         | Some inner ->
             let addr, state =
-                IlMachineState.getOrAllocateType
-                    loggerFactory
-                    baseClassTypes
-                    (RuntimeTypeHandleTarget.Closed inner)
-                    state
+                IlMachineState.getOrAllocateType loggerFactory baseClassTypes inner state
 
             Some addr, state
 
@@ -1178,9 +1213,9 @@ module NativeRuntimeTypeHelpers =
     /// <paramref name="assembly"/> is the one whose token space <paramref name="ty"/> is spelled
     /// in; <paramref name="ownerDescription"/> names what carries the element, for diagnostics.
     ///
-    /// Refuses an array, pointer, byref or function pointer *over* a variable, naming the shape:
-    /// real .NET reflects those with an element type of the variable itself, and
-    /// <c>RuntimeTypeHandleTarget</c> has no case for them.
+    /// An array, pointer, byref or function pointer *over* a variable comes back as a
+    /// <c>Composite</c> or <c>FunctionPointer</c> target, with the variable beneath the shape as
+    /// real .NET reflects it.
     let rec reflectedTypeTarget
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1287,9 +1322,60 @@ module NativeRuntimeTypeHelpers =
             // own method signatures -- back to the bare definition, exactly as CoreCLR's class
             // loader does, so the guest sees one `Type` object rather than two.
             state, RuntimeTypeHandleTarget.openConstructed definition (List.rev argumentTargets)
-        | _ ->
+        | TypeDefn.Byref element
+        | TypeDefn.Pointer element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element
+        | TypeDefn.Array (element, _) ->
+            let shape =
+                match ty with
+                | TypeDefn.Byref _ -> CompositeShape.Byref
+                | TypeDefn.Pointer _ -> CompositeShape.Pointer
+                | TypeDefn.OneDimensionalArrayLowerBoundZero _ -> CompositeShape.OneDimArrayZero
+                | TypeDefn.Array (_, rank) -> CompositeShape.Array rank
+                | _ -> failwith "unreachable: the enclosing arm matched one of the four shapes"
+
+            let state, elementTarget =
+                reflectedTypeTarget
+                    loggerFactory
+                    baseClassTypes
+                    operation
+                    ownerDescription
+                    assembly
+                    environment
+                    state
+                    element
+
+            // `composite` collapses a closed element back into the closed shape; the axis test
+            // above means the element here mentions a formal, but the collapse is what keeps this
+            // canonical if that ever changes.
+            state, RuntimeTypeHandleTarget.composite shape elementTarget
+        | TypeDefn.FunctionPointer signature ->
+            let state, signature =
+                TypeMethodSignature.map
+                    state
+                    (fun state ty ->
+                        reflectedTypeTarget
+                            loggerFactory
+                            baseClassTypes
+                            operation
+                            ownerDescription
+                            assembly
+                            environment
+                            state
+                            ty
+                    )
+                    signature
+
+            state, RuntimeTypeHandleTarget.functionPointer signature
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.FromReference _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.Void ->
             failwith
-                $"TODO: %s{operation}: %s{ownerDescription} names %O{ty}, which embeds a generic parameter beneath an array, pointer, byref or function-pointer shape; real .NET reflects those with the variable as their element type, and RuntimeTypeHandleTarget can name only a variable, a definition, an open construction of one, or a closed runtime type"
+                $"unreachable: %s{operation}: %s{ownerDescription} names %O{ty}, which mentions no generic variable and so should have taken the closed path above"
+        | TypeDefn.Pinned _ ->
+            failwith
+                $"%s{operation}: %s{ownerDescription} names %O{ty}, but a pinned type is a local-variable constraint (ECMA-335 II.23.2.9) and cannot appear in a signature reflection reads"
 
     /// The types a generic parameter is constrained to be assignable to, in metadata row order.
     /// This is exactly what <c>RuntimeType.GetGenericParameterConstraints</c> reports, and the list
@@ -1317,7 +1403,9 @@ module NativeRuntimeTypeHelpers =
             | RuntimeTypeHandleTarget.Closed _
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.OpenConstructed _
-            | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 failwith
                     $"%s{operation}: genericParameterConstraintTargets requires a generic-parameter target, got %O{target}"
 
@@ -1384,7 +1472,9 @@ module NativeRuntimeTypeHelpers =
             | RuntimeTypeHandleTarget.Closed _
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.OpenConstructed _
-            | RuntimeTypeHandleTarget.DynamicMethodsClass _ ->
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 failwith
                     $"logic error: %s{operation}: %O{target} is not a generic-parameter target, which binding `declaringType` above has already refused"
 
@@ -1458,7 +1548,9 @@ module NativeRuntimeTypeHelpers =
                     | RuntimeTypeHandleTarget.OpenConstructed _
                     | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
                     | RuntimeTypeHandleTarget.GenericParameter _
-                    | RuntimeTypeHandleTarget.MethodGenericParameter _ -> false
+                    | RuntimeTypeHandleTarget.MethodGenericParameter _
+                    | RuntimeTypeHandleTarget.Composite _
+                    | RuntimeTypeHandleTarget.FunctionPointer _ -> false
                 )
 
             if alreadyHasValueType then
@@ -1611,7 +1703,9 @@ module NativeRuntimeTypeHelpers =
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
             failwith $"TODO: %s{operation} for structural RuntimeTypeHandleTarget %O{target}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             // A generic parameter is not itself a generic type definition, so it cannot be
@@ -1655,7 +1749,9 @@ module NativeRuntimeTypeHelpers =
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Pointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.FunctionPointer _)
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
-        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _)
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
             // Structural targets carry no open-generic definition. Downstream
             // `instantiateGenericRuntimeTypeTarget` rejects them with `failwith`,
             // so we leave validation to that path.
@@ -2246,13 +2342,29 @@ module NativeRuntimeTypeHelpers =
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.GenericParameter _
             | RuntimeTypeHandleTarget.MethodGenericParameter _ -> nonConstructedName target
+            // `TypeString::AppendType` renders a ParamTypeDesc as its element followed by the
+            // shape's suffix, exactly as the closed shapes in `concreteTypeHandleName` do; the
+            // element here is a variable or an open construction, which print as themselves.
+            | RuntimeTypeHandleTarget.Composite (shape, element) ->
+                let elementName = targetName element
+
+                match shape with
+                | CompositeShape.Byref -> $"%s{elementName}&"
+                | CompositeShape.Pointer -> $"%s{elementName}*"
+                | CompositeShape.OneDimArrayZero -> $"%s{elementName}[]"
+                | CompositeShape.Array rank ->
+                    let dims = if rank <= 1 then "*" else System.String (',', rank - 1)
+                    $"%s{elementName}[%s{dims}]"
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> RuntimeTypeHandleTarget.refuseComposite operation target
 
         and nonConstructedName (typeHandleTarget : RuntimeTypeHandleTarget) : string =
             match typeHandleTarget with
             | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
                 RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
             | RuntimeTypeHandleTarget.Closed typeHandle -> concreteTypeHandleName typeHandle
-            | RuntimeTypeHandleTarget.OpenConstructed _ -> targetName typeHandleTarget
+            | RuntimeTypeHandleTarget.OpenConstructed _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ -> targetName typeHandleTarget
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
                 let assembly =
                     state.LoadedAssembly identity.AssemblyFullName
@@ -2364,6 +2476,20 @@ module NativeRuntimeTypeHelpers =
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
         | RuntimeTypeHandleTarget.GenericParameter (_, position) -> $"!%d{position}"
         | RuntimeTypeHandleTarget.MethodGenericParameter (_, _, position) -> $"!!%d{position}"
+        // `ConstructName` renders a ParamTypeDesc as its element followed by the shape's suffix,
+        // as the closed shapes below do; the element is a variable, which renders as `!0` / `!!0`.
+        | RuntimeTypeHandleTarget.Composite (shape, element) ->
+            let elementName = typeHandleGetName operation state element
+
+            match shape with
+            | CompositeShape.Byref -> $"%s{elementName}&"
+            | CompositeShape.Pointer -> $"%s{elementName}*"
+            | CompositeShape.OneDimArrayZero -> $"%s{elementName}[]"
+            | CompositeShape.Array rank ->
+                let dims = if rank = 1 then "*" else System.String (',', rank - 1)
+                $"%s{elementName}[%s{dims}]"
+        // `ConstructName` emits this literal for ELEMENT_TYPE_FNPTR, with no signature.
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> "FNPTR"
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
             // The canonical MethodTable of an open definition has an instantiation of type
             // variables, so `GetName` would append something like `[!0]`. Nothing reachable
@@ -2672,7 +2798,9 @@ module ActivationInfo =
             | RuntimeTypeHandleTarget.Closed handle -> handle
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 failwith
                     $"%s{operation}: reached for %O{target}, which contains generic variables; RuntimeType.CreateInstanceCheckThis should have thrown ArgumentException (Acc_CreateGenericEx) before the QCall"
 
@@ -2828,7 +2956,9 @@ module BoxInfo =
             | RuntimeTypeHandleTarget.Closed handle -> handle
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
             | RuntimeTypeHandleTarget.GenericParameter _
-            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            | RuntimeTypeHandleTarget.MethodGenericParameter _
+            | RuntimeTypeHandleTarget.Composite _
+            | RuntimeTypeHandleTarget.FunctionPointer _ ->
                 failwith
                     $"%s{operation}: reached for %O{target}, which contains generic variables; RuntimeType.BoxCache's constructor should have thrown ArgumentException (Arg_TypeNotSupported) before the QCall"
 

@@ -116,12 +116,19 @@ module PointerHashSynthesis =
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.OpenConstructed _ as target)
         // Same again: the dynamic-methods class is a real MethodTable, so its `MethodTablePtr` and
         // `TypeHandlePtr` are one address and must share a key.
-        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.DynamicMethodsClass _ as target) ->
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.DynamicMethodsClass _ as target)
+        // And again for an array over a variable, which is an array MethodTable like any other
+        // (see `TypeHandleTag.forTarget`).
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _),
+                                                                             _) as target) ->
             CanonicalPointerKey.TypeHandle target
         | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.GenericParameter _ as target)
-        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.MethodGenericParameter _ as target) ->
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.MethodGenericParameter _ as target)
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer),
+                                                                             _) as target)
+        | NativeIntSource.MethodTablePtr (RuntimeTypeHandleTarget.FunctionPointer _ as target) ->
             failwith
-                $"PointerHashSynthesis.canonicalKey: MethodTablePtr(%O{target}) has no MethodTable identity (generic parameters are TypeDescs in CoreCLR)"
+                $"PointerHashSynthesis.canonicalKey: MethodTablePtr(%O{target}) has no MethodTable identity (generic parameters, byrefs, pointers and function pointers are TypeDescs in CoreCLR)"
         | NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed handle as target) ->
             match handle with
             | ConcreteTypeHandle.Concrete _
