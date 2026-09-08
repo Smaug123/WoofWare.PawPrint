@@ -545,6 +545,7 @@ module TestUnixSystemInvariants =
             {
                 Endpoint = InternetEndpoint.ofParts InternetEndpoint.LoopbackAddress port
                 LockedAddress = None
+                LockedPort = false
             }
 
     let private listening : SocketPhase =

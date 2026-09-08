@@ -1,0 +1,9 @@
+Darwin 25.6.0
+bind(0.0.0.0:5555), connect, unspec       : bound=('0.0.0.0', 5555) connected=('127.0.0.1', 5555) unspec ret=-1 errno=47 EAFNOSUPPORT after=('0.0.0.0', 5555) peer ENOTCONN; bind(0.0.0.0:0) EINVAL
+bind(0.0.0.0:0), connect, unspec          : bound=('0.0.0.0', 51589) connected=('127.0.0.1', 51589) unspec ret=-1 errno=47 EAFNOSUPPORT after=('0.0.0.0', 51589) peer ENOTCONN; bind(0.0.0.0:0) EINVAL
+bind(127.0.0.1:5556), connect, unspec     : bound=('127.0.0.1', 5556) connected=('127.0.0.1', 5556) unspec ret=-1 errno=47 EAFNOSUPPORT after=('0.0.0.0', 5556) peer ENOTCONN; bind(0.0.0.0:0) EINVAL
+bind(127.0.0.1:0), connect, unspec        : bound=('127.0.0.1', 58706) connected=('127.0.0.1', 58706) unspec ret=-1 errno=47 EAFNOSUPPORT after=('0.0.0.0', 58706) peer ENOTCONN; bind(0.0.0.0:0) EINVAL
+unbound, connect, unspec                  : bound=('0.0.0.0', 0) connected=('127.0.0.1', 65159) unspec ret=-1 errno=47 EAFNOSUPPORT after=('0.0.0.0', 65159) peer ENOTCONN; bind(0.0.0.0:0) EINVAL
+bind(0.0.0.0:5557), no connect, unspec    : bound=('0.0.0.0', 5557) connected=('0.0.0.0', 5557) unspec ret=-1 errno=47 EAFNOSUPPORT after=('0.0.0.0', 5557) peer ENOTCONN; bind(0.0.0.0:0) EINVAL
+bind(127.0.0.1:5558), no connect, unspec  : bound=('127.0.0.1', 5558) connected=('127.0.0.1', 5558) unspec ret=-1 errno=47 EAFNOSUPPORT after=('127.0.0.1', 5558) peer ENOTCONN; bind(0.0.0.0:0) EINVAL
+unbound, no connect, unspec               : bound=('0.0.0.0', 0) connected=('0.0.0.0', 0) unspec ret=-1 errno=47 EAFNOSUPPORT after=('0.0.0.0', 0) peer ENOTCONN; bind(0.0.0.0:0) ok -> ('0.0.0.0', 57986)

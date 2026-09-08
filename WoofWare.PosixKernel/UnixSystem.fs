@@ -135,8 +135,10 @@ type UnixSystemDefect<'Task> =
     /// so this one can never be reached.
     | ListenerWithoutBinding of socket : SocketId
     /// A bound socket holds port 0, which is how a guest *asks* for a port and
-    /// never one it is given; `bind`'s port-0 path relies on no socket holding
-    /// it.
+    /// never one it is given, with one exception: a datagram socket whose
+    /// Linux `connect(AF_UNSPEC)` kept a locked concrete address and dropped
+    /// an unlocked port is half-bound at `address:0`, which is measured and
+    /// is what a later `bind` or `connect` completes.
     | BoundToPortZero of socket : SocketId
     /// The signal dispatcher is not a task in the table, so no delivery can
     /// wake it.
@@ -515,7 +517,25 @@ module UnixSystem =
 
                 let portZero =
                     match socket.Binding with
-                    | Some binding when binding.Endpoint.Port = 0us -> [ UnixSystemDefect.BoundToPortZero socketId ]
+                    | Some binding when binding.Endpoint.Port = 0us ->
+                        let halfBound =
+                            // Only Linux's `connect(AF_UNSPEC)` produces this,
+                            // and it always leaves the socket idle.
+                            SimulatedUnixPlatform.flavour system.Machine.UnixPlatform = SimulatedUnixFlavour.Linux
+                            && socket.Kind = SocketKind.Datagram
+                            && socket.Phase = SocketPhase.Idle
+                            && not binding.LockedPort
+                            && (
+                                match binding.LockedAddress with
+                                | Some locked ->
+                                    locked <> InternetEndpoint.WildcardAddress && locked = binding.Endpoint.Address
+                                | None -> false
+                            )
+
+                        if halfBound then
+                            []
+                        else
+                            [ UnixSystemDefect.BoundToPortZero socketId ]
                     | _ -> []
 
                 unboundListener @ portZero

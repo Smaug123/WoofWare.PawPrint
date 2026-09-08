@@ -378,6 +378,7 @@ module TestEphemeralPorts =
                 {
                     Endpoint = loopback port
                     LockedAddress = None
+                    LockedPort = false
                 }
 
             UnixMachineState.allocateEphemeralPort

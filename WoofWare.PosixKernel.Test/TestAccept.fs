@@ -88,6 +88,7 @@ module TestAccept =
                     {
                         Endpoint = serverAddress
                         LockedAddress = None
+                        LockedPort = false
                     }
             ReuseAddress = false
             Phase = phase
@@ -201,6 +202,7 @@ module TestAccept =
                 {
                     Endpoint = serverAddress
                     LockedAddress = None
+                    LockedPort = false
                 }
         )
 

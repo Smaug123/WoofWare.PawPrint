@@ -170,6 +170,7 @@ module TestUnixSystemInitial =
             {
                 Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
                 LockedAddress = None
+                LockedPort = false
             }
 
         match

@@ -124,6 +124,14 @@ type SocketBinding =
         /// `None`) while keeping the port — measured for all three
         /// provenances — where Darwin keeps the resolved address.
         LockedAddress : uint32 option
+        /// Whether the guest's own `bind(2)` chose the port: true only when it
+        /// asked for a non-zero one. The kernel state Linux calls
+        /// SOCK_BINDPORT_LOCK: a datagram `connect(AF_UNSPEC)` there keeps a
+        /// locked port and drops an unlocked one, measured
+        /// (`docs/probes/udp-connect/dissolve.py`), so a socket bound to
+        /// `0.0.0.0:5555` dissolves to `0.0.0.0:5555` where one bound to
+        /// `0.0.0.0:0` dissolves to nothing.
+        LockedPort : bool
     }
 
 /// What `listen(2)` gave a socket: the number it was called with, and the
