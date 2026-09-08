@@ -276,6 +276,10 @@ module AttributeFormatting =
         // decoded arg. Unreachable today: this dumper cannot resolve a parameter type to an enum,
         // so such blobs take the hex-dump path in `tryDecodeBlob` and never get here.
         | CustomAttribFixedArg.Enum underlying -> formatFixedArg underlying
+        // Unreachable today for the same reason: identifying a `System.Type` parameter needs the
+        // signature resolved, which `tryShapeWithoutResolution` cannot do.
+        | CustomAttribFixedArg.Type None -> "null"
+        | CustomAttribFixedArg.Type (Some name) -> sprintf "typeof(%s)" name
 
     /// Dump the attribute's raw <c>Value</c> blob as space-separated hex bytes.
     /// Used when the structured decoder can't make progress.

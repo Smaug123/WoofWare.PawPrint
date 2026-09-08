@@ -2139,7 +2139,7 @@ module TestUnixSystemStep =
 
     [<Test>]
     let ``close reaps the inode whose last name had already gone`` () : unit =
-        // The rule `close` adds over `FileDescriptorRegistry.close`: the
+        // The rule `close` adds over `FileDescriptorRegistry.dropDescriptor`: the
         // descriptor was the last reference, so the inode goes with it. The two
         // `forgetIfUnheld` rows below are the same rule stated on its own; this
         // is the one that says `close` actually applies it.
@@ -2241,7 +2241,7 @@ module TestUnixSystemStep =
             | Error error -> failwith $"could not unlink the file: %O{error}"
 
         let released =
-            match FileDescriptorRegistry.close fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor fd system.Process.FileDescriptors with
             | Ok (registry, _) -> registry
             | Error error -> failwith $"could not close the descriptor: %O{error}"
 
@@ -2772,7 +2772,7 @@ module TestUnixSystemStep =
         let condition, parkedIn = UnixDescriptor.flock waiterTask second 2 held |> parked
 
         let closed =
-            match FileDescriptorRegistry.close second parkedIn.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor second parkedIn.Process.FileDescriptors with
             | Ok (registry, Some _) ->
                 { parkedIn with
                     Process =
@@ -3330,7 +3330,7 @@ module TestUnixSystemStep =
         let portId = descriptionOf fd system
 
         let closed =
-            match FileDescriptorRegistry.close fd system.Process.FileDescriptors with
+            match FileDescriptorRegistry.dropDescriptor fd system.Process.FileDescriptors with
             | Ok (registry, _) ->
                 { system with
                     Process =

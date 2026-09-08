@@ -115,6 +115,7 @@
     <Compile Include="TestCrossAssemblyUnsafeAccessor.fs" />
     <Compile Include="TestCrossAssemblyFieldScope.fs" />
     <Compile Include="TestCrossAssemblyEnumAttribute.fs" />
+    <Compile Include="TestCrossAssemblyTypeAttribute.fs" />
     <Compile Include="TestCrossAssemblyFriendValidation.fs" />
     <Compile Include="TestCrossAssemblyStructZero.fs" />
     <Compile Include="TestCrossAssemblyInitSetter.fs" />
@@ -326,6 +327,6 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
-    <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.3.2"/>
+    <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.5.4"/>
   </ItemGroup>
 </Project>

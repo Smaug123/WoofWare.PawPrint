@@ -46,7 +46,7 @@ module TestFileDescriptorRegistry =
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry, FileDescriptorCloseError>
         =
-        FileDescriptorRegistry.close fd registry |> Result.map fst
+        FileDescriptorRegistry.dropDescriptor fd registry |> Result.map fst
 
     let private someInode : InodeNumber = InodeNumber 42L
     let private otherInode : InodeNumber = InodeNumber 43L
@@ -1673,7 +1673,7 @@ module TestFileDescriptorRegistry =
         let registry = FileDescriptorRegistry.setNonBlocking fd true registry
 
         let registry =
-            match FileDescriptorRegistry.close duplicated registry with
+            match FileDescriptorRegistry.dropDescriptor duplicated registry with
             | Ok (registry, destroyed) ->
                 // The original still names the description, so nothing died.
                 destroyed |> shouldEqual None

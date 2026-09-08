@@ -20,6 +20,11 @@ open Microsoft.Extensions.Logging
 type CustomAttribArgPlan =
     | Primitive of PrimitiveType
     | Enum of underlying : EnumUnderlyingType
+    /// A <c>System.Type</c> parameter. The blob carries a type *name*, which the lowering cannot
+    /// resolve itself: the caller resolves every name first (see
+    /// <c>CustomAttribute.typeNamesToResolve</c>) and hands <c>toCliType</c> the resulting
+    /// <c>RuntimeType</c> objects.
+    | Type
     /// <c>elementType</c> is the element type the constructor *declared*, concretised: CoreCLR's
     /// fixed-arg loop likewise takes it from the signature (<c>customattribute.cpp:961</c>) rather
     /// than from the blob, so the allocated array's element type does not depend on what the bytes
@@ -33,6 +38,7 @@ module CustomAttribArgPlan =
         match plan with
         | CustomAttribArgPlan.Primitive pt -> CustomAttribArgShape.Primitive pt
         | CustomAttribArgPlan.Enum underlying -> CustomAttribArgShape.Enum underlying
+        | CustomAttribArgPlan.Type -> CustomAttribArgShape.Type
         | CustomAttribArgPlan.SzArray (_, elements) -> CustomAttribArgShape.SzArray (shape elements)
 
 /// <summary>
@@ -42,9 +48,9 @@ module CustomAttribArgPlan =
 /// <remarks>
 /// Mirrors the per-arg cases that CoreCLR's <c>CustomAttribute_CreateCustomAttributeInstance</c>
 /// (<c>customattribute.cpp:900</c>) produces via <c>GetDataFromBlob</c> + <c>Box</c> just
-/// before invoking the ctor. The current set is limited to the cases the blob
-/// reader emits: primitives, <c>SerString</c>, <c>ENUM</c>, and <c>SZARRAY</c> of those.
-/// <c>TYPE</c> and <c>TAGGED_OBJECT</c> will be added when the QCall handler needs them.
+/// before invoking the ctor. The set is the one the blob reader emits: primitives,
+/// <c>SerString</c>, <c>ENUM</c>, <c>TYPE</c>, and <c>SZARRAY</c> of those; <c>TAGGED_OBJECT</c>
+/// will be added when the QCall handler needs it.
 /// </remarks>
 [<RequireQualifiedAccess>]
 module CustomAttribValueLowering =
@@ -52,8 +58,8 @@ module CustomAttribValueLowering =
     /// <summary>
     /// Convert a fixed arg whose lowering needs nothing but the decoded value itself. Returns
     /// <c>Error</c> for the variants that need more — a heap allocation (<c>String (Some _)</c>),
-    /// or the element type an <c>Array</c> does not carry; callers should use <c>toCliType</c> in
-    /// that case.
+    /// a resolved type (<c>Type (Some _)</c>), or the element type an <c>Array</c> does not carry;
+    /// callers should use <c>toCliType</c> in that case.
     /// </summary>
     /// <remarks>
     /// CLI eval-stack rules treat <c>uint32</c>/<c>uint64</c> identically to their
@@ -87,6 +93,12 @@ module CustomAttribValueLowering =
         // that slot. Enums flatten to their underlying integer on the eval stack
         // (`PrimitiveLikeKind.EnumLike`), so pushing the wrapper here would be wrong.
         | CustomAttribFixedArg.Enum underlying -> tryToPureCliType underlying
+        // The null sentinel is a null `Type`, and CoreCLR likewise passes a null reference without
+        // resolving anything (customattribute.cpp:438).
+        | CustomAttribFixedArg.Type None -> CliType.ObjectRef None |> Ok
+        | CustomAttribFixedArg.Type (Some _) ->
+            Error
+                "CustomAttribFixedArg.Type (Some _) requires the resolved System.Type object; use CustomAttribValueLowering.toCliType"
         // Even the null-array sentinel is refused here rather than answered with `ObjectRef None`:
         // ECMA-335 II.23.3 gives an SZARRAY argument no element type, so without a
         // `CustomAttribArgPlan` there is nothing to confirm this value came from an array
@@ -100,6 +112,13 @@ module CustomAttribValueLowering =
     /// <c>SerString</c> or a non-null <c>SZARRAY</c>. For every other variant the state is returned
     /// unchanged. <paramref name="plan"/> must be the plan the arg was decoded with.
     /// </summary>
+    /// <param name="resolvedTypes">
+    /// The <c>RuntimeType</c> objects for the names <c>CustomAttribute.typeNamesToResolve</c>
+    /// listed for this arg, in that order. Each non-null <c>Type</c> met consumes the head, and
+    /// the unconsumed tail is returned, so a caller lowering several args threads it through and
+    /// checks that nothing is left at the end. Running out at a <c>Type</c> is a caller bug and
+    /// fails loudly.
+    /// </param>
     /// <remarks>
     /// The empty <c>SerString</c> routes through the canonical interned empty
     /// string, mirroring CoreCLR's <c>GetDataFromBlob</c> for
@@ -113,14 +132,15 @@ module CustomAttribValueLowering =
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (plan : CustomAttribArgPlan)
         (arg : CustomAttribFixedArg)
+        (resolvedTypes : ManagedHeapAddress list)
         (state : IlMachineState)
-        : CliType * IlMachineState
+        : CliType * ManagedHeapAddress list * IlMachineState
         =
         match plan, arg with
         // ECMA-335 II.23.3's `NumElem = 0xFFFFFFFF` is the null-array sentinel, which is a
         // different result from the zero-length array below; CoreCLR likewise leaves the argument
         // slot null rather than allocating (`customattribute.cpp:845`).
-        | CustomAttribArgPlan.SzArray _, CustomAttribFixedArg.Array None -> CliType.ObjectRef None, state
+        | CustomAttribArgPlan.SzArray _, CustomAttribFixedArg.Array None -> CliType.ObjectRef None, resolvedTypes, state
         | CustomAttribArgPlan.SzArray (elementType, elementPlan), CustomAttribFixedArg.Array (Some elements) ->
             let elementZero, state =
                 IlMachineState.cliTypeZeroOfHandle state baseClassTypes elementType
@@ -132,10 +152,11 @@ module CustomAttribValueLowering =
                     (List.length elements)
                     state
 
-            let state =
-                (state, List.indexed elements)
-                ||> List.fold (fun state (index, element) ->
-                    let cell, state = toCliType loggerFactory baseClassTypes elementPlan element state
+            let resolvedTypes, state =
+                ((resolvedTypes, state), List.indexed elements)
+                ||> List.fold (fun (resolvedTypes, state) (index, element) ->
+                    let cell, resolvedTypes, state =
+                        toCliType loggerFactory baseClassTypes elementPlan element resolvedTypes state
 
                     // The coercion `stelem` performs on every guest array store. It is what rewraps
                     // an enum element — which lowers to its bare underlying integer — into the
@@ -147,10 +168,33 @@ module CustomAttribValueLowering =
                     let cell =
                         EvalStackValue.toCliTypeCoerced elementZero (EvalStackValue.ofCliType cell)
 
-                    IlMachineState.setArrayValue addr cell index state
+                    resolvedTypes, IlMachineState.setArrayValue addr cell index state
                 )
 
-            CliType.ObjectRef (Some addr), state
+            CliType.ObjectRef (Some addr), resolvedTypes, state
+        | CustomAttribArgPlan.Type, CustomAttribFixedArg.Type (Some name) ->
+            // The head is this occurrence's type: `typeNamesToResolve` lists names in the order
+            // this walk meets them, and each is resolved to exactly one object.
+            match resolvedTypes with
+            | resolved :: rest -> CliType.ObjectRef (Some resolved), rest, state
+            | [] ->
+                failwithf
+                    "CustomAttribValueLowering.toCliType: bug — no resolved type left for the System.Type argument named \"%s\"; the caller must resolve every name CustomAttribute.typeNamesToResolve lists, in order"
+                    name
+        | CustomAttribArgPlan.Type, (CustomAttribFixedArg.Type None as arg) ->
+            match tryToPureCliType arg with
+            | Ok t -> t, resolvedTypes, state
+            | Error msg -> failwithf "CustomAttribValueLowering.toCliType: bug — a null Type produced Error %s" msg
+        | CustomAttribArgPlan.Type, other ->
+            failwithf
+                "CustomAttribValueLowering.toCliType: bug — Type plan paired with non-Type value %A; a value must be lowered with the plan it was decoded with"
+                other
+        | (CustomAttribArgPlan.Primitive _ | CustomAttribArgPlan.Enum _ | CustomAttribArgPlan.SzArray _),
+          CustomAttribFixedArg.Type _ ->
+            failwithf
+                "CustomAttribValueLowering.toCliType: bug — plan %A paired with Type value %A; a value must be lowered with the plan it was decoded with"
+                plan
+                arg
         | CustomAttribArgPlan.SzArray _, other ->
             failwithf
                 "CustomAttribValueLowering.toCliType: bug — SZARRAY plan %A paired with non-array value %A; a value must be lowered with the plan it was decoded with"
@@ -165,14 +209,14 @@ module CustomAttribValueLowering =
             let addr, state =
                 IlMachineState.internCanonicalEmptyString loggerFactory baseClassTypes state
 
-            CliType.ObjectRef (Some addr), state
+            CliType.ObjectRef (Some addr), resolvedTypes, state
         | _, CustomAttribFixedArg.String (Some s) ->
             let addr, state =
                 IlMachineState.allocateManagedString loggerFactory baseClassTypes s state
 
-            CliType.ObjectRef (Some addr), state
+            CliType.ObjectRef (Some addr), resolvedTypes, state
         | _, _ ->
             match tryToPureCliType arg with
-            | Ok t -> t, state
+            | Ok t -> t, resolvedTypes, state
             | Error msg ->
                 failwithf "CustomAttribValueLowering.toCliType: bug — non-allocating arg %A produced Error %s" arg msg

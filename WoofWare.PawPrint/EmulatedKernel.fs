@@ -1722,12 +1722,14 @@ type KernelConfig =
         /// the same tree whatever the machine.
         FileSystem : Map<DirectoryEntryName, SeedEntry>
         /// Effective user ID the simulated process runs as, observed as every
-        /// inode's `st_uid`. See `UnixSystem.defaultUserId` for why the
-        /// default is 1000 rather than root.
-        UserId : uint32
+        /// inode's `st_uid`, or `None` for the flavour's first interactive
+        /// user (1000 on Linux, 501 on Darwin). See `UnixSystem.defaultUserId`
+        /// for why the default is not root.
+        UserId : uint32 option
         /// Effective group ID the simulated process runs as, observed as every
-        /// inode's `st_gid`.
-        GroupId : uint32
+        /// inode's `st_gid`, or `None` for the flavour's default (1000 on
+        /// Linux, 20 on Darwin).
+        GroupId : uint32 option
         /// The file-mode creation mask `open(O_CREAT)` applies to the mode its
         /// caller asked for. See `EmulatedKernel.Umask`; it does not affect the
         /// modes `FileSystem` states, which describe a tree this process did not
@@ -1749,11 +1751,12 @@ type KernelConfig =
         /// throughout, so `Nfs` here buys a kernel that reports NFS, not one
         /// that behaves like a remote filesystem.
         FileSystemType : EmulatedFileSystemType option
-        /// Range `bind(2)` draws an ephemeral port from, inclusive at both ends.
-        /// See `UnixSystem.defaultEphemeralPortRange`; the low end must not
+        /// Range `bind(2)` draws an ephemeral port from, inclusive at both ends,
+        /// or `None` for the flavour's default (32768-60999 on Linux,
+        /// 49152-65535 on Darwin). See `UnixSystem.defaultEphemeralPortRange`; the low end must not
         /// exceed the high end, and neither may be zero, since port 0 is the
         /// request rather than an answer.
-        EphemeralPortRange : uint16 * uint16
+        EphemeralPortRange : (uint16 * uint16) option
         /// The `somaxconn` sysctl, or `None` for the flavour's measured
         /// default (4096 on Linux, 128 on Darwin): the ceiling `listen(2)`
         /// clamps its backlog to. See `UnixMachineState.withSoMaxConn`.
@@ -1784,11 +1787,11 @@ type KernelConfig =
             CurrentDirectory = UnixSystem.defaultCurrentDirectory
             ProcessPath = UnixSystem.defaultProcessPath
             FileSystem = FileSystemSeed.empty
-            UserId = UnixSystem.defaultUserId
-            GroupId = UnixSystem.defaultGroupId
+            UserId = None
+            GroupId = None
             Umask = UnixSystem.defaultUmask
             FileSystemType = None
-            EphemeralPortRange = UnixSystem.defaultEphemeralPortRange
+            EphemeralPortRange = None
             SoMaxConn = None
             LocalAddresses = UnixSystem.defaultLocalAddresses
             LocalRoutes = UnixSystem.defaultLocalRoutes
@@ -1812,6 +1815,8 @@ module KernelConfig =
         let platform =
             SimulatedUnixPlatform.assertValid "KernelConfig.UnixPlatform" config.UnixPlatform
 
+        let flavour = SimulatedUnixPlatform.flavour platform
+
         EmulatedKernel.create platform
         |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "KernelConfig.Environment" config.Environment)
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
@@ -1826,8 +1831,17 @@ module KernelConfig =
             (UnixTimestamp.ofMillisecondsSinceEpoch config.WallClockEpochMs)
             config.FileSystem
             config.CurrentDirectory
-        |> EmulatedKernel.mapProcess (UnixProcessState.withUserAndGroupId config.UserId config.GroupId)
-        |> EmulatedKernel.mapMachine (UnixMachineState.withEphemeralPortRange config.EphemeralPortRange)
+        |> EmulatedKernel.mapProcess (
+            UnixProcessState.withUserAndGroupId
+                (config.UserId |> Option.defaultValue (UnixSystem.defaultUserId flavour))
+                (config.GroupId |> Option.defaultValue (UnixSystem.defaultGroupId flavour))
+        )
+        |> EmulatedKernel.mapMachine (
+            UnixMachineState.withEphemeralPortRange (
+                config.EphemeralPortRange
+                |> Option.defaultValue (UnixSystem.defaultEphemeralPortRange flavour)
+            )
+        )
         |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
         |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> EmulatedKernel.mapProcess (UnixProcessState.withUmask "KernelConfig.Umask" config.Umask)

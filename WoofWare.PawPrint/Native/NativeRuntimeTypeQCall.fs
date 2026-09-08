@@ -161,6 +161,37 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_RegisterCollectibleTypeDependency",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "RegisterCollectibleTypeDependency",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", assemblyGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && assemblyGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.RegisterCollectibleTypeDependency"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            // CoreCLR (runtimehandles.cpp:1249) does nothing unless the *type's* loader allocator is
+            // collectible; only then does it consult the assembly, throwing NotSupportedException
+            // for a null or non-collectible one and otherwise recording the reference. With one
+            // arena the type's answer is `false`, so the assembly is never consulted and is not
+            // decoded here: `TypeNameResolver.GetTypeHelper` passes a null `requestingAssembly`
+            // through, and CoreCLR's `pAssembly == NULL` check is behind the same guard. The type
+            // handle is decoded, as `IsCollectible` decodes its own, so that a malformed handle
+            // fails here by name rather than being silently accepted.
+            instruction.Arguments.[0]
+            |> EvalStackValue.ofCliType
+            |> NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget operation state
+            |> ignore<RuntimeTypeHandleTarget>
+
+            if LoaderAllocator.isCollectible LoaderAllocator.Global then
+                failwith
+                    $"%s{operation}: the loader allocator reports collectible, so the assembly must now be checked and the dependency recorded (runtimehandles.cpp:1257-1266)"
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeTypeHandle_IsCollectible",
           "System.Private.CoreLib",
           "System",
