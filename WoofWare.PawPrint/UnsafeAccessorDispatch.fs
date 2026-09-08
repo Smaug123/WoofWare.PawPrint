@@ -898,10 +898,12 @@ module internal UnsafeAccessorDispatch =
     /// `BadImageFormatException` on the first invocation. The accessor's own declaring type is not
     /// initialised: the stub fails to compile before the method's prologue could run.
     ///
-    /// One thing *is* read before that switch: `ProcessUnsafeAccessorTypeAttributes` resolves any
-    /// `[UnsafeAccessorType]` names first, so a declaration carrying one can raise for the named
-    /// type (a `TypeLoadException`, say) before its kind is ever examined. That attribute is
-    /// refused wherever it appears, this path included.
+    /// Two things *are* read before that switch, in this order. The accessor must be static
+    /// (unsafeaccessors.cpp:1045), asked before the attribute is even parsed: an instance accessor
+    /// is the same `BadImageFormatException` whatever else its declaration says. Then
+    /// `ProcessUnsafeAccessorTypeAttributes` resolves any `[UnsafeAccessorType]` names, so a static
+    /// declaration carrying one can raise for the named type (a `TypeLoadException`, say) before
+    /// its kind is ever examined. That attribute is refused wherever it appears, this path included.
     let executeInvalidKind
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -911,9 +913,9 @@ module internal UnsafeAccessorDispatch =
         (state : IlMachineState)
         : ExecutionResult
         =
-        if hasTypeNameOverrides then
-            let accessor = instruction.ExecutingMethod
+        let accessor = instruction.ExecutingMethod
 
+        if accessor.IsStatic && hasTypeNameOverrides then
             failwith
                 $"TODO: [UnsafeAccessor] %s{MethodOwner.describe accessor.Owner}::%s{accessor.Name} names none of the five kinds and also names at least one of its types with [UnsafeAccessorType]; CoreCLR resolves those names before it examines the kind, so what it raises depends on the named types, which PawPrint does not resolve"
 

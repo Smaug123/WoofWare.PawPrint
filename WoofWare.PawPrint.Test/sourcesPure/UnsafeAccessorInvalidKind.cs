@@ -27,6 +27,18 @@ public class TestUnsafeAccessorInvalidKind
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_f")]
     private static extern ref int Valid(Target t);
 
+    private class Instance
+    {
+        // Not static, which CoreCLR refuses before it reads the kind -- and before it resolves any
+        // `[UnsafeAccessorType]` name, which is why the name here can be of a type that does not
+        // exist: were the name resolved first, this would be a `TypeLoadException`.
+        [UnsafeAccessor((UnsafeAccessorKind) 99, Name = "_f")]
+        internal extern ref int NotStaticNamingAType([UnsafeAccessorType("NoSuchType")] object t);
+
+        [UnsafeAccessor((UnsafeAccessorKind) 99, Name = "_f")]
+        internal extern ref int NotStatic(Target t);
+    }
+
     private static int Run()
     {
         Target t = new Target();
@@ -59,6 +71,20 @@ public class TestUnsafeAccessorInvalidKind
         catch (BadImageFormatException) { }
 
         if (Valid(t) != 3) return 6;
+
+        try
+        {
+            new Instance().NotStatic(t);
+            return 7;
+        }
+        catch (BadImageFormatException) { }
+
+        try
+        {
+            new Instance().NotStaticNamingAType(t);
+            return 8;
+        }
+        catch (BadImageFormatException) { }
 
         return 0;
     }
