@@ -92,10 +92,7 @@ class CommandLineArgsWithArguments
     /// The exit code a `RunOutcome` carries, read the way the App reads it.
     let private exitCodeOf (outcome : RunOutcome) : int =
         match outcome with
-        | RunOutcome.NormalExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
-            | other -> failwith $"guest did not leave an int32 exit code on the stack: %O{other}"
+        | RunOutcome.NormalExit (state, _) -> state.LatchedExitCode
         | other -> failwith $"guest did not exit normally: %O{other}"
 
     [<Test>]

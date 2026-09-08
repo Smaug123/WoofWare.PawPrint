@@ -1773,19 +1773,20 @@ module NullaryIlOp =
             match IlMachineState.returnStackFrame loggerFactory corelib currentThread state with
             | ReturnFrameResult.NoFrameToReturn -> ExecutionResult.Terminated (state, currentThread)
             | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-            | ReturnFrameResult.DispatchException (state, exnAddr, exnType, message) ->
+            | ReturnFrameResult.DispatchException (state, exnAddr, exnType, fields) ->
                 // The ctor has run; now overwrite _HResult with the CLR's mapped value,
                 // matching EEException::CreateThrowable's SetHResult(GetHR()) post-ctor step.
                 let state =
                     ExceptionDispatching.overwriteHResultPostCtor corelib exnAddr exnType state
 
-                // The raiser asked for a specific message, i.e. the CLR would have used a
-                // message-taking ctor overload here. This has to happen after the ctor, which
+                // The raiser asked for specific field values, i.e. the CLR would have used a
+                // constructor overload taking them. This has to happen after the ctor, which
                 // has just written the type's default resource string into `_message`.
                 let state =
-                    match message with
-                    | None -> state
-                    | Some message -> IlMachineState.setExceptionMessage loggerFactory corelib exnAddr message state
+                    (state, fields)
+                    ||> List.fold (fun state field ->
+                        IlMachineState.setRuntimeExceptionField loggerFactory corelib exnAddr field state
+                    )
 
                 match
                     ExceptionDispatching.throwExceptionObject loggerFactory corelib state currentThread exnAddr exnType
@@ -2520,10 +2521,18 @@ module NullaryIlOp =
                 | EvalStackValue.ObjectRef addr -> addr
                 | _ -> failwith $"can't get len of {popped}"
 
-            let popped = ManagedHeap.getArrayShape popped state.ManagedHeap
+            let shape = ManagedHeap.getArrayShape popped state.ManagedHeap
 
+            // ECMA-335 III.4.12 types the result native unsigned int, but CoreCLR's importer
+            // types it TYP_INT (`CEE_LDLEN` in jit/importer.cpp), so arithmetic on the raw result
+            // wraps at 32 bits: `ldlen; ldc.i4 0x7fffffff; add; conv.i` on a one-element array
+            // yields 0xffffffff80000000 there. The int32 slot reproduces that. A consumer that
+            // takes the value as a native int (a `nint` local, a `nuint` return, a call argument)
+            // widens it at `EvalStackValue.toCliTypeCoerced`, and a comparison against a native
+            // int widens it in `EvalStackValueComparisons`, as CoreCLR's `impImplicitIorI4Cast`
+            // does at each of those sinks.
             IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim popped.Length))
+                (EvalStackValue.Int32 (Int32Source.Verbatim shape.Length))
                 currentThread
                 state
             |> IlMachineState.advanceProgramCounter currentThread

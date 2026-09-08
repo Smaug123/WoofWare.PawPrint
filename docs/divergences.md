@@ -616,6 +616,32 @@ Console.WriteLine (typeof (List<string>).GetMethod ("Add")
 
 **Where this lives in code**: `MethodHandleRegistry`, whose `MethodHandle` keys on a closed `ConcreteTypeHandle` declaring type — every minting path inherits the choice. `NativeDelegate.tryExecute`'s `Delegate.GetInvokeMethod` arm is one such path.
 
+## A field handle is per-instantiation, so `RuntimeFieldHandle.AcquiresContextFromThis` is always false
+
+The field-handle counterpart of the entry above, and the same absence: PawPrint models no `__Canon` sharing, so a `FieldHandle` names its exact declaring type and nothing about it is approximate.
+
+**CoreCLR**: a `FieldDesc` belongs to an `EEClass`, which is shared between instantiations that canonicalise alike (see the table above), so `List<string>._items` and `List<object>._items` are one `FieldDesc` whose enclosing `MethodTable` is `List<__Canon>` — the *approximate* declaring type, in the runtime's own vocabulary (`FieldDesc::GetApproxEnclosingMethodTable`, field.h:392). `RuntimeFieldHandle::AcquiresContextFromThis` (runtimehandles.cpp:250) reports `pField->IsSharedByGenericInstantiations()`: true for an instance field of such a shared `MethodTable`, meaning the exact declaring type must be recovered from the `this` object. Its two managed callers exist to compensate. `MemberInfoCache.AddField` (RuntimeType.CoreCLR.cs:311) computes `isInherited` by canonical rather than exact comparison when it is true, and `RuntimeType.GetFieldInfo` (RuntimeType.CoreCLR.cs:1988) accepts a caller-supplied declaring type that differs from the handle's own provided the two canonicalise alike.
+
+**PawPrint**: `FieldHandleRegistry` keys a handle on the exact `RuntimeTypeHandleTarget` the guest asked about — a closed instantiation gets `Closed`, the open definition gets `OpenGenericTypeDefinition`, and the two mint distinct ids. `GetApproxDeclaringMethodTable` hands that exact type back, so there is no context to acquire and the FCall answers `false` for every handle. Both callers then take their exact-comparison arm, which is the correct arm for an exact type: `isInherited` agrees with CoreCLR on every field a guest can name, because canonical and exact comparison coincide whenever the declaring type is exact.
+
+**Spec status**: as for method handles above — ECMA-335 gives `RuntimeFieldHandle` no identity semantics beyond III.4.17 `ldtoken`, and `__Canon` is a CoreCLR code-sharing strategy rather than a standard one. The platform documentation for the two-argument `FieldInfo.GetFieldFromHandle` says only that it throws `ArgumentException` when the declaring type "is not compatible with" the handle, and gives the open-definition-for-a-constructed-type case as its example; it does not promise that a *different* constructed type is compatible.
+
+**Why we chose this**: the alternative is to answer the adjacent question "would CoreCLR share this field's description?" — true for an instance field whose declaring instantiation has a reference-type argument — and then also implement `RuntimeTypeHandle::CompareCanonicalHandles`, the FCall both callers reach when the answer is true, so that the two callers can undo the sharing PawPrint never did. That reproduces a code-sharing artefact as if it were a fact about fields, with a canonicalisation rule that has to match the type loader's exactly, in order to make one lenient acceptance agree. Answering about PawPrint's own handle keeps the FCall's contract truthful for its callers, which is what they need to be right.
+
+**Observable example**: the two-argument overload with a *different* reference-type instantiation of the same definition.
+
+```csharp
+RuntimeFieldHandle handle = typeof (List<string>).GetField ("_items", BindingFlags.NonPublic | BindingFlags.Instance).FieldHandle;
+
+// CoreCLR:  returns List<object>'s _items — the handle is List<__Canon>'s, which canonicalises like List<object>.
+// PawPrint: throws ArgumentException — the handle is List<string>'s, and List<object> is not that type.
+FieldInfo.GetFieldFromHandle (handle, typeof (List<object>).TypeHandle);
+```
+
+The shapes CoreCLR does not share agree between the runtimes: a value-type instantiation's handle offered a different value-type instantiation (`List<int>`'s for `List<long>`) or the open definition, and a base type's field offered the derived type, all throw `ArgumentException` on both. `sourcesPure/FieldHandleAcquiresContextFromThis.cs` pins those, together with the `isInherited` computation for instance, static, closed-generic and inherited fields reached through their handles.
+
+**Where this lives in code**: `NativeRuntimeFieldHandle.tryExecute`'s `AcquiresContextFromThis` arm; the identity it reports on is `FieldHandle.DeclaringType`.
+
 ## A delegate invocation that fails before entering its target names no frame for it
 
 **CoreCLR**: when invoking a delegate fails *because of the target itself*, the failure happens

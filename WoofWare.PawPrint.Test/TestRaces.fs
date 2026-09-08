@@ -35,13 +35,8 @@ module TestRaces =
     /// claim.
     let private exitCodeOfOutcome (sourceName : string) (seed : uint64 option) (outcome : RunOutcome) : int =
         match outcome with
-        | RunOutcome.NormalExit (terminalState, terminatingThread)
-        | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
-            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode
-            | [] -> failwith $"%s{sourceName} (seed=%A{seed}) returned void; race tests expect Int32 exit codes"
-            | ret :: _ ->
-                failwith $"%s{sourceName} (seed=%A{seed}) returned %O{ret}; race tests expect an Int32 on the stack"
+        | RunOutcome.NormalExit (terminalState, _)
+        | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
         | RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"%s{sourceName} (seed=%A{seed}) aborted (%O{fatal.Code}): %s{m}"

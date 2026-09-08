@@ -712,11 +712,8 @@ public static class Entry
             }
 
         match BoundedRun.run loggerFactory "ClockJitterJoin" (Some "ClockJitterJoin.cs") peImage hostConfig with
-        | RunOutcome.NormalExit (state, thread)
-        | RunOutcome.ProcessExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> code, state
-            | stack -> failwith $"expected an int exit code on the stack, got %A{stack}"
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode, state
         | other -> failwith $"guest did not exit normally: %O{other}"
 
     [<Test>]

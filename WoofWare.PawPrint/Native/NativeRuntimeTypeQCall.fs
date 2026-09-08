@@ -198,6 +198,100 @@ module NativeRuntimeTypeQCall =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeTypeHandle_MakeByRef",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeTypeHandle",
+          "MakeByRef",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", qCallGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when qCallGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            let operation = "RuntimeTypeHandle.MakeByRef"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let typeHandleTarget =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (instruction.Arguments.[0] |> EvalStackValue.ofCliType)
+
+            let retType =
+                NativeCall.objectHandleOnStackTarget operation state "retType" instruction.Arguments.[1]
+
+            // CoreCLR (runtimehandles.cpp:1079) is `TypeHandle::MakeByRef`, i.e.
+            // `ClassLoader::LoadPointerOrByrefTypeThrowing(ELEMENT_TYPE_BYREF, ...)`: a type-key
+            // load with exactly one rule of its own, that the element may not itself be a byref.
+            // Measured on .NET 10: `int`, `string`, `int[]`, `List<int>`, `int*`, `void`, a function
+            // pointer, a generic parameter and an open definition all succeed, and only
+            // `typeof(int).MakeByRefType().MakeByRefType()` throws, with the message below naming
+            // the byref being wrapped and the assembly of its element.
+            match typeHandleTarget with
+            | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+                RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _) ->
+                // `ClassLoader::ThrowTypeLoadException` (clsload.cpp:2724) renders the wrapped
+                // byref with `TypeString::AppendTypeKey` under `FormatNamespace` alone — nested
+                // types as `Outer+Inner`, instantiations as `List`1[System.String]`, function
+                // pointers as their signature — and names the assembly of the key's module, which
+                // for a byref key is its element's; `typeAssemblyFullName` peels the wrappers the
+                // same way. The EE then constructs the exception from those two strings and the
+                // resource id `IDS_CLASSLOAD_BYREF_OF_BYREF` (resource.h:160), which is where
+                // `TypeLoadException.TypeName` and the serialised `TypeLoadResourceID` come from.
+                // Measured on .NET 10 for a nested type, a nested generic instantiation, `int[,]`,
+                // `int*`, two function pointers and `void`; the id serialises as 6063.
+                let typeName =
+                    NativeRuntimeTypeHelpers.runtimeTypeHandleName
+                        operation
+                        state
+                        NativeRuntimeTypeHelpers.formatNamespaceFlag
+                        typeHandleTarget
+
+                let assemblyName =
+                    NativeCall.typeAssemblyFullName operation ctx.BaseClassTypes state typeHandleTarget
+
+                NativeHandlerResult.raiseExceptionWithFields
+                    ctx.BaseClassTypes.TypeLoadException
+                    [
+                        RuntimeExceptionField.Message
+                            $"Could not create a ByRef of a ByRef. Type: '%s{typeName}'. Assembly: '%s{assemblyName}'."
+                        RuntimeExceptionField.TypeLoadClassName typeName
+                        RuntimeExceptionField.TypeLoadAssemblyName assemblyName
+                        RuntimeExceptionField.TypeLoadResourceId 0x17af
+                    ]
+                    state
+                |> Some
+            | RuntimeTypeHandleTarget.Closed element ->
+                // The type-handle registry keys on the whole target, so this is the same
+                // `RuntimeType` object a reflected `ref int` parameter yields -- which is what makes
+                // `typeof(int).MakeByRefType() == parameter.ParameterType` true.
+                let byrefAddr, state =
+                    IlMachineState.getOrAllocateType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        (RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref element))
+                        state
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        retType
+                        (CliType.ObjectRef (Some byrefAddr))
+
+                NativeHandlerResult.completed state |> Some
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+            | RuntimeTypeHandleTarget.OpenConstructed _
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+                // CoreCLR answers `T&` and `List<>&` here; `RuntimeTypeHandleTarget` can spell a
+                // byref only over a `ConcreteTypeHandle`, so there is no target to mint. Refuse
+                // rather than answer with the element or a closed stand-in.
+                failwith
+                    $"TODO: %s{operation}: a byref over %O{typeHandleTarget} is not representable, because RuntimeTypeHandleTarget has no byref-over-a-generic-variable case; CoreCLR answers it"
         | "RuntimeTypeHandle_Instantiate",
           "System.Private.CoreLib",
           "System",

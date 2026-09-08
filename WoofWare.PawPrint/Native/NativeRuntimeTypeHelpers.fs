@@ -2140,8 +2140,20 @@ module NativeRuntimeTypeHelpers =
                 if not includeNamespace then
                     ""
                 else
-                    let argStr =
-                        signature.ParameterTypes |> Seq.map concreteTypeHandleName |> String.concat ", "
+                    let args = signature.ParameterTypes |> List.map concreteTypeHandleName
+
+                    // A vararg signature ends in `...` after the declared parameters
+                    // (typestring.cpp:815-821). No C# guest can spell one, so this arm is from
+                    // source rather than measured.
+                    let args =
+                        if
+                            signature.Header.Get.CallingConvention = System.Reflection.Metadata.SignatureCallingConvention.VarArgs
+                        then
+                            args @ [ "..." ]
+                        else
+                            args
+
+                    let argStr = args |> String.concat ", "
 
                     let retStr =
                         match signature.ReturnType with

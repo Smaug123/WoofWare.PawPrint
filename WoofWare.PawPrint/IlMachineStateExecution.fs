@@ -2231,7 +2231,16 @@ module IlMachineStateExecution =
                 | Some result -> Some result
                 | None ->
 
-                match Intrinsics.call loggerFactory baseClassTypes wasConstructing methodToCall thread state with
+                match
+                    Intrinsics.call
+                        loggerFactory
+                        baseClassTypes
+                        wasConstructing
+                        methodToCall
+                        thread
+                        advanceProgramCounterOfCaller
+                        state
+                with
                 | IntrinsicResult.Completed result -> Some (result, CallCommitment.Committed)
                 | IntrinsicResult.RaiseException (state, exnType, message) ->
                     // The intrinsic described an exception rather than raising it, because it
@@ -2789,15 +2798,17 @@ module IlMachineStateExecution =
     /// instance ctor, then overwrite HResult.
     /// See: https://github.com/dotnet/dotnet/blob/10060d128e3f470e77265f8490f5e4f72dae738e/src/runtime/src/coreclr/vm/clrex.cpp#L972-L1019
     ///
-    /// `message` overrides `_message` once the ctor has run, for the cases where the CLR
-    /// would have used a message-taking ctor overload. Most callers want `None` — the CLR
-    /// throws the great majority of these with no argument — and should use
-    /// `raiseRuntimeException` below, which is this function with `None` supplied.
-    and raiseRuntimeExceptionWithMessage
+    /// `fields` are written once the ctor has run, for the cases where the CLR would have used
+    /// a constructor overload taking them: a message, or a `TypeLoadException`'s type and
+    /// assembly names. Most callers want none — the CLR throws the great majority of these
+    /// with no argument — and should use `raiseRuntimeException` below, which is this
+    /// function with an empty list supplied; `raiseRuntimeExceptionWithMessage` is the
+    /// message-only spelling.
+    and raiseRuntimeExceptionWithFields
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (message : string option)
+        (fields : RuntimeExceptionField list)
         (currentThread : ThreadId)
         (state : IlMachineState)
         : IlMachineState * WhatWeDid
@@ -2872,7 +2883,7 @@ module IlMachineStateExecution =
                 currentThread
                 threadState
                 None
-                (ReturnValueDisposition.DispatchAsException message)
+                (ReturnValueDisposition.DispatchAsException fields)
                 false // wrapExceptionInTargetInvocation
                 state
 
@@ -2900,6 +2911,25 @@ module IlMachineStateExecution =
         | other ->
             failwith
                 $"logic error: manufacturing %s{exceptionTypeInfo.Namespace}.%s{exceptionTypeInfo.Name} pushed a constructor frame whose pending type initialisation is %O{other}, not the exception's own type %O{ctorDeclaringTypeHandle}; the class-initialisation bypass cannot be applied to it"
+
+    /// `raiseRuntimeExceptionWithFields` writing only `_message`, or nothing when `message` is
+    /// `None`.
+    and raiseRuntimeExceptionWithMessage
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (exceptionTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (message : string option)
+        (currentThread : ThreadId)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
+        raiseRuntimeExceptionWithFields
+            loggerFactory
+            baseClassTypes
+            exceptionTypeInfo
+            (message |> Option.toList |> List.map RuntimeExceptionField.Message)
+            currentThread
+            state
 
     /// `raiseRuntimeExceptionWithMessage` with no message override, i.e. the exception is
     /// constructed exactly as `new SomeException()` would construct it. This is the right

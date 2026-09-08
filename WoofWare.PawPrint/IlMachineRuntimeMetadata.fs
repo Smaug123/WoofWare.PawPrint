@@ -943,38 +943,50 @@ module IlMachineRuntimeMetadata =
         )
         |> String.concat Environment.NewLine
 
-    /// Write `_message` on an already-allocated exception object.
+    /// Write one field on an already-allocated exception object.
     ///
     /// `ExceptionDispatching.allocateRuntimeException` only zero-initialises the object and does
     /// not run any constructor, so runtime-synthesised exceptions otherwise carry a null `_message`
-    /// and `Exception.Message` falls back to the generic "Exception of type X was thrown" string.
-    /// Where the CLR would have passed a specific resource string to the constructor, call this so
-    /// a guest that catches the exception and reads `.Message` sees what it would really see.
-    let setExceptionMessage
+    /// and `Exception.Message` falls back to the generic "Exception of type X was thrown" string,
+    /// and a `TypeLoadException` reports an empty `TypeName`. Where the CLR would have passed the
+    /// value to a constructor overload, call this so a guest that catches the exception sees what
+    /// it would really see. The declaring type of the field is part of the case, so a
+    /// `TypeLoadException` field on an exception of another type fails loudly.
+    let setRuntimeExceptionField
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (exceptionAddr : ManagedHeapAddress)
-        (message : string)
+        (field : RuntimeExceptionField)
         (state : IlMachineState)
         : IlMachineState
         =
+        let declaringType, fieldName, value =
+            match field with
+            | RuntimeExceptionField.Message message -> baseClassTypes.Exception, "_message", Choice1Of2 message
+            | RuntimeExceptionField.TypeLoadClassName className ->
+                baseClassTypes.TypeLoadException, "_className", Choice1Of2 className
+            | RuntimeExceptionField.TypeLoadAssemblyName assemblyName ->
+                baseClassTypes.TypeLoadException, "_assemblyName", Choice1Of2 assemblyName
+            | RuntimeExceptionField.TypeLoadResourceId resourceId ->
+                baseClassTypes.TypeLoadException, "_resourceId", Choice2Of2 resourceId
+
         match
             ManagedHeap.tryGet exceptionAddr state.ManagedHeap,
-            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Exception.Identity
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes declaringType.Identity
         with
-        | Some _, Some exceptionHandle ->
-            let messageAddr, state =
-                allocateManagedString loggerFactory baseClassTypes message state
+        | Some _, Some declaringTypeHandle ->
+            let value, state =
+                match value with
+                | Choice1Of2 (str : string) ->
+                    let valueAddr, state = allocateManagedString loggerFactory baseClassTypes str state
+                    CliType.ObjectRef (Some valueAddr), state
+                | Choice2Of2 (i : int) -> CliType.Numeric (CliNumericType.Int32 i), state
 
-            let messageField =
-                FieldIdentity.requiredOwnInstanceField baseClassTypes.Exception "_message"
-                |> FieldIdentity.fieldId exceptionHandle
+            let fieldId =
+                FieldIdentity.requiredOwnInstanceField declaringType fieldName
+                |> FieldIdentity.fieldId declaringTypeHandle
 
-            IlMachineThreadState.setInstanceFieldById
-                exceptionAddr
-                messageField
-                (CliType.ObjectRef (Some messageAddr))
-                state
+            IlMachineThreadState.setInstanceFieldById exceptionAddr fieldId value state
         // Mirrors `setExceptionStackTraceString`: skeletal states in low-level dispatch tests may
         // lack either piece, and there is nothing to project into in that case.
         | None, _
@@ -1627,20 +1639,20 @@ module IlMachineRuntimeMetadata =
 
                 if isPrimitive then
                     Some id
+                // CoreCLR puts three CoreLib handle structs in the primitive category too,
+                // by name, reporting ELEMENT_TYPE_I — the same element type as `IntPtr`
+                // (MethodTableBuilder, the `g_RuntimeMethodHandleInternalName` /
+                // `g_RuntimeFieldHandleInternalName` / `g_RuntimeArgumentHandleName` arms of
+                // `SetInternalCorElementType`). So `unbox.any IntPtr` on one of them is legal.
+                // PawPrint already flattens the two `*HandleInternal` structs to a
+                // runtime-pointer NativeInt, so they can be honoured exactly.
+                //
+                // `RuntimeArgumentHandle` is absent: PawPrint has no
+                // `PrimitiveLikeKind` for it, so it is not stored flattened and answering
+                // `Some` here would license an unbox this interpreter cannot materialise.
+                // It stays unclassified, which costs an InvalidCastException in a case only
+                // `__arglist` IL can reach.
                 else if
-                    // CoreCLR puts three CoreLib handle structs in the primitive category too,
-                    // by name, reporting ELEMENT_TYPE_I — the same element type as `IntPtr`
-                    // (MethodTableBuilder, the `g_RuntimeMethodHandleInternalName` /
-                    // `g_RuntimeFieldHandleInternalName` / `g_RuntimeArgumentHandleName` arms of
-                    // `SetInternalCorElementType`). So `unbox.any IntPtr` on one of them is legal.
-                    // PawPrint already flattens the two `*HandleInternal` structs to a
-                    // runtime-pointer NativeInt, so they can be honoured exactly.
-                    //
-                    // `RuntimeArgumentHandle` is absent: PawPrint has no
-                    // `PrimitiveLikeKind` for it, so it is not stored flattened and answering
-                    // `Some` here would license an unbox this interpreter cannot materialise.
-                    // It stays unclassified, which costs an InvalidCastException in a case only
-                    // `__arglist` IL can reach.
                     id = baseClassTypes.RuntimeMethodHandleInternal.Identity
                     || id = baseClassTypes.RuntimeFieldHandleInternal.Identity
                 then

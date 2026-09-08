@@ -749,6 +749,14 @@ module EvalStackValue =
             | CliNumericType.NativeInt _ ->
                 match popped with
                 | EvalStackValue.NativeInt s -> CliNumericType.NativeInt s |> CliType.Numeric
+                | EvalStackValue.Int32 int32Source ->
+                    // Table III.4 lets an int32 land in a native-int slot (`stloc` into a `nint`
+                    // local, `ret` from a `nuint` method, a call argument, `stind.i`). CoreCLR
+                    // sign-extends at every one of those sinks (`impImplicitIorI4Cast` in
+                    // jit/importer.cpp, with `zeroExtend` left false), whether the slot is `nint`
+                    // or `nuint`: the JIT does not distinguish the two.
+                    let i = Int32Source.value "widening to a native int location" int32Source
+                    CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim (int64 i)))
                 | EvalStackValue.ManagedPointer ptrSrc ->
                     CliNumericType.NativeInt (NativeIntSource.ManagedPointer ptrSrc)
                     |> CliType.Numeric

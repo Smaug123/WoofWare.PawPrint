@@ -75,7 +75,7 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
             AppContext = AppContextProperties.empty
         }
 
-    let terminalState, terminatingThread =
+    let terminalState =
         match Program.run loggerFactory (Some dllPath) peImage hostConfig with
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
@@ -83,16 +83,12 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
             let m = message |> Option.defaultValue "<no message>"
             failwith $"Guest called Environment.FailFast: %s{m}"
         | RunOutcome.SignalTerminated (_, signal) -> failwith $"Guest was terminated by POSIX signal %O{signal}"
-        | RunOutcome.NormalExit (state, thread) -> state, thread
-        | RunOutcome.ProcessExit (state, thread) -> state, thread
+        | RunOutcome.NormalExit (state, _) -> state
+        | RunOutcome.ProcessExit (state, _) -> state
 
-    let exitCode =
-        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-        | [] -> failwith "expected program to return a value, but it returned void"
-        | head :: _ ->
-            match head with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) -> i
-            | ret -> failwith $"expected program to return an int, but it returned %O{ret}"
+    // CoreCLR's latched exit code: an `int Main`'s return value, else the guest's last
+    // `Environment.ExitCode` write, else 0.
+    let exitCode = terminalState.LatchedExitCode
 
     // The guest's own writes to stdout/stderr never reach the host's streams during
     // execution: they're accumulated in the kernel's output log, in the order the guest
@@ -103,7 +99,7 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
     exitCode, terminalState.Kernel.OutputLog
 ```
 
-`RunOutcome.ProcessExit` is the guest having called `System.Environment.Exit`; like `RunOutcome.NormalExit`, it leaves the exit code on top of the relevant thread's evaluation stack, which is why both cases are handled the same way above.
+`RunOutcome.ProcessExit` is the guest having called `System.Environment.Exit`; like `RunOutcome.NormalExit`, its exit code is the state's `LatchedExitCode`, which is why both cases are handled the same way above.
 
 PawPrint's own tests do this, e.g. in [TestImpureCases.fs](../../WoofWare.PawPrint.Test/TestImpureCases.fs) and [TestPureCases.fs](../../WoofWare.PawPrint.Test/TestPureCases.fs).
 We also have [WoofWare.PawPrint.App](../../WoofWare.PawPrint.App/Program.fs), which is a console app that executes a program under PawPrint; it shows how to drain the output log to the host's real standard streams, and how to map each `RunOutcome` onto the exit code a real .NET process would have produced.

@@ -53,6 +53,7 @@
     <Compile Include="TestTypeInfoAssemblyIdentity.fs" />
     <Compile Include="TestEnumClassification.fs" />
     <Compile Include="TestEvalStack.fs" />
+    <Compile Include="TestMixedWidthComparisons.fs" />
     <Compile Include="TestIntrinsicValueArguments.fs" />
     <Compile Include="TestTaggedPointerBits.fs" />
     <Compile Include="TestNativeIntSource.fs" />
@@ -98,6 +99,8 @@
     <Compile Include="TestUnaryMetadataIlOp.fs" />
     <Compile Include="TestMetadataTokenValidity.fs" />
     <Compile Include="TestNestedClassifier.fs" />
+    <Compile Include="TestEntryPointToken.fs" />
+    <Compile Include="TestMethodSpecToken.fs" />
     <Compile Include="TestMethodTableProjection.fs" />
     <Compile Include="TestElementOffsetOverflow.fs" />
     <Compile Include="TestSzArrayInterfaceDispatch.fs" />
@@ -235,6 +238,8 @@
     <Compile Include="TestFabricatedEndfilter.fs" />
     <Compile Include="TestFabricatedCastclassNullable.fs" />
     <Compile Include="TestFabricatedCallvirtMethodSpecMethodDef.fs" />
+    <Compile Include="TestFabricatedLdlen.fs" />
+    <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
