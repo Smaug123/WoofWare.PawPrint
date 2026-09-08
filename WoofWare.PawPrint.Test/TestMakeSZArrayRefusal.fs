@@ -442,3 +442,30 @@ public unsafe class FnPtrHolder<T>
 
         if verdictsSeen <> allVerdicts then
             failwith $"the corpus does not reach every verdict: saw only %A{Set.toList verdictsSeen}"
+
+    /// The one element the classifier declines to answer for. It cannot be a row in the agreement
+    /// corpus above: the host has a verdict for these (`BigWrapper<>[]` throws, `SmallWrapper<>[]`
+    /// loads) and PawPrint has none, which is the whole point — it cannot size an open generic, so
+    /// answering either way would be a guess. What must hold is that it *refuses* rather than
+    /// silently reporting the array legal, which is what a guest would otherwise be handed.
+    [<Test>]
+    let ``an open value-type element is refused rather than answered`` () : unit =
+        let openStruct =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition (guestType "GenericStruct`1").Identity
+
+        let exn =
+            Assert.Throws (fun () ->
+                NativeRuntimeTypeHelpers.szArrayElementRefusal "test" bct initialState openStruct
+                |> ignore
+            )
+
+        Assert.That (exn.Message, Does.Contain "cannot size an open generic")
+
+        // The control: an open *reference* type needs no size, and is answered normally.
+        let openClass =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition (guestType "Generic`1").Identity
+
+        let _, refusal =
+            NativeRuntimeTypeHelpers.szArrayElementRefusal "test" bct initialState openClass
+
+        Assert.That (refusal, Is.Null)
