@@ -794,3 +794,72 @@ module TestAssemblyBinding =
                 let _, _, bound = bind cache assemblies full
                 bound |> shouldEqual false
             )
+
+    /// `IsValidArchitecture` is asked before any candidate is read: a request for x86 is a miss
+    /// on every platform PawPrint simulates without the file being opened, which a file that is
+    /// not an image at all makes visible.
+    [<Test>]
+    let ``an x86 request misses before any file is read`` () =
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            File.WriteAllBytes (Path.Combine (root, "Broken.dll"), [| 0uy ; 1uy ; 2uy ; 3uy |])
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+            let request =
+                { plainRequest "Broken" with
+                    Flags = 0x20
+                }
+
+            match
+                snd (
+                    AssemblyBinding.tryBind
+                        loggerFactory
+                        [ root ]
+                        request
+                        LoadedAssemblies.empty
+                        AssemblyBindCache.empty
+                )
+            with
+            | AssemblyBindResult.NotFound -> ()
+            | AssemblyBindResult.Bound (_, bound) -> failwith $"bound %s{bound.Name.FullName}"
+        finally
+            Directory.Delete (root, true)
+
+    /// Two files differing only by case are a collision however the request spells the name,
+    /// so the answer cannot depend on the request's casing. Only a case-sensitive filesystem
+    /// can hold the pair.
+    [<Test>]
+    let ``files differing only by case are refused whatever the request's casing`` () =
+        let root =
+            Path.Combine (Path.GetTempPath (), "PawPrint-" + Guid.NewGuid().ToString "N")
+
+        Directory.CreateDirectory root |> ignore<DirectoryInfo>
+
+        try
+            let image = typeof<BindingTestMarker>.Assembly.Location
+            File.Copy (image, Path.Combine (root, testAssemblySimpleName + ".dll"))
+            let lower = Path.Combine (root, testAssemblySimpleName.ToLowerInvariant () + ".dll")
+
+            if File.Exists lower then
+                Assert.Ignore "the filesystem is case-insensitive, so the pair cannot exist"
+
+            File.Copy (image, lower)
+            let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+            for name in [ testAssemblySimpleName ; testAssemblySimpleName.ToLowerInvariant () ] do
+                let refused =
+                    try
+                        AssemblyBinding.tryReadFromRuntimeDirs loggerFactory [ root ] None name
+                        |> ignore<DumpedAssembly option>
+
+                        false
+                    with e when e.Message.Contains "differing only by case" ->
+                        true
+
+                refused |> shouldEqual true
+        finally
+            Directory.Delete (root, true)

@@ -172,8 +172,7 @@ module AssemblyBindCache =
         // word carries both. No architecture term: neither a manifest row nor a display name
         // the BCL formats carries one, so an identity recorded by another route never has it,
         // and a request that names one is unequal to every such identity through `Flags`.
-        let identityFlags =
-            int identity.Flags ||| (int identity.ContentType <<< 9)
+        let identityFlags = int identity.Flags ||| (int identity.ContentType <<< 9)
 
         let sameVersion =
             let identityComponents =
@@ -230,7 +229,7 @@ module AssemblyBindCache =
         let byReference =
             assemblies.ReferenceBindings
             |> List.tryPick (fun (reference, definition) ->
-                if specEquals request (AssemblyName reference) then
+                if specEquals request reference then
                     Some definition
                 else
                     None
@@ -349,10 +348,12 @@ module AssemblyBinding =
     /// would let a directory we were never going to bind against fail the load, because anything
     /// but <c>FileNotFoundException</c> escapes.
     ///
-    /// A file whose name matches only ignoring case is accepted, because CoreCLR's table of
-    /// trusted platform assemblies is keyed by lower-cased simple name. Deciding that by listing
-    /// the directory rather than by asking the filesystem keeps the answer the same on a
-    /// case-sensitive host and a case-insensitive one.
+    /// The file is found by listing the directory and matching the whole file name ignoring
+    /// case, because CoreCLR's table of trusted platform assemblies is keyed by lower-cased
+    /// simple name. Listing rather than asking the filesystem for the exact name keeps the
+    /// answer the same on a case-sensitive host and a case-insensitive one, and asks the same
+    /// question whatever the request's own casing: two files that differ only by case are a
+    /// collision this refuses, however the request spells the name.
     /// </remarks>
     let tryReadFromRuntimeDirs
         (loggerFactory : ILoggerFactory)
@@ -371,37 +372,29 @@ module AssemblyBinding =
                 | None -> dir
                 | Some culture -> Path.Combine (dir, culture)
 
-            let exact = Path.Combine (dir, fileName)
+            if not (Directory.Exists dir) then
+                None
+            else
 
-            try
-                logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", exact)
-                Assembly.readFile loggerFactory exact |> Some
-            with
-            | :? FileNotFoundException
-            | :? DirectoryNotFoundException ->
-                if not (Directory.Exists dir) then
-                    None
-                else
+            let matches =
+                // Every file, not `*.dll`: a case-sensitive host's pattern match would drop
+                // `Foo.DLL` before the comparison below ever saw it.
+                Directory.EnumerateFiles dir
+                |> Seq.filter (fun candidate ->
+                    String.Equals (Path.GetFileName candidate, fileName, StringComparison.OrdinalIgnoreCase)
+                )
+                // Filesystem enumeration order is not reproducible; the report below must be.
+                |> Seq.sort
+                |> List.ofSeq
 
-                let caseInsensitive =
-                    // Every file, not `*.dll`: a case-sensitive host's pattern match would
-                    // drop `Foo.DLL` before the comparison below ever saw it.
-                    Directory.EnumerateFiles dir
-                    |> Seq.filter (fun candidate ->
-                        String.Equals (Path.GetFileName candidate, fileName, StringComparison.OrdinalIgnoreCase)
-                    )
-                    // Filesystem enumeration order is not reproducible; the report below must be.
-                    |> Seq.sort
-                    |> List.ofSeq
-
-                match caseInsensitive with
-                | [] -> None
-                | [ single ] ->
-                    logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", single)
-                    Assembly.readFile loggerFactory single |> Some
-                | several ->
-                    failwith
-                        $"TODO: %s{dir} holds %d{List.length several} files named %s{fileName} differing only by case (%A{several}); CoreCLR's trusted-platform-assemblies table would keep whichever its host enumerated last, which PawPrint does not reproduce"
+            match matches with
+            | [] -> None
+            | [ single ] ->
+                logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", single)
+                Assembly.readFile loggerFactory single |> Some
+            | several ->
+                failwith
+                    $"TODO: %s{dir} holds %d{List.length several} files named %s{fileName} differing only by case (%A{several}); CoreCLR's trusted-platform-assemblies table would keep whichever its host enumerated last, which PawPrint does not reproduce"
         )
 
     /// The binder proper, once the caches have been consulted.
@@ -456,15 +449,31 @@ module AssemblyBinding =
         // afPA_Mask: the `ProcessorArchitecture` the request names, if any. The field is read
         // the way CoreCLR reads a manifest's (`GetProcessorArchitectureFromAssemblyFlags`),
         // by testing bits in order rather than by value, so IA64 (0x30) and ARM (0x50) are
-        // MSIL -- measured on .NET 10, both bind the framework's System.Security.Claims. Then
-        // `IsValidArchitecture` accepts MSIL outright and otherwise only the architecture of
-        // the process itself, and `TestCandidateRefMatchesDef` compares it with the
-        // candidate's, which `requireAgnostic` has already pinned to MSIL. Every platform
-        // PawPrint simulates is 64-bit, so x86 is never valid, and AMD64 never matches an
-        // agnostic image: measured, both are misses.
-        let architectureAccepts : bool =
+        // MSIL -- measured on .NET 10, both bind the framework's System.Security.Claims.
+        let requestedArchitecture : ImageArchitecture option =
             let field = request.Flags &&& 0x70
-            field = 0 || field &&& 0x10 <> 0
+
+            if field = 0 then None
+            elif field &&& 0x10 <> 0 then Some ImageArchitecture.Msil
+            elif field &&& 0x20 <> 0 then Some ImageArchitecture.I386
+            else Some ImageArchitecture.Amd64
+
+        // `IsValidArchitecture`, which `BindByName` asks before it looks at any candidate:
+        // MSIL and none outright, otherwise only the architecture of the process itself.
+        // Every platform PawPrint simulates is 64-bit, so x86 is never valid, and a miss
+        // before anything is read.
+        if requestedArchitecture = Some ImageArchitecture.I386 then
+            AssemblyBindResult.NotFound
+        else
+
+        // `TestCandidateRefMatchesDef` then compares a valid request with the candidate's own
+        // architecture, which `requireAgnostic` has pinned to MSIL: AMD64 never matches it.
+        // Measured, x86 and AMD64 are both misses against the framework's agnostic images.
+        let architectureAccepts : bool =
+            match requestedArchitecture with
+            | None
+            | Some ImageArchitecture.Msil -> true
+            | Some _ -> false
 
         let sameName (candidate : DumpedAssembly) : bool =
             String.Equals (candidate.Name.Name, request.SimpleName, StringComparison.OrdinalIgnoreCase)
@@ -518,18 +527,18 @@ module AssemblyBinding =
         match tryReadFromRuntimeDirs loggerFactory dotnetRuntimeDirs request.Culture request.SimpleName with
         | None -> AssemblyBindResult.NotFound
         | Some read ->
+            // CoreCLR initialises the image before it compares identities, so an image it
+            // cannot load fails as such whatever its manifest says.
+            requireDefaultContentType read
+            requireAgnostic read
+
             // The file was chosen by its name; the *manifest* must agree
             // (`TestCandidateRefMatchesDef`): `Alias.dll` declaring itself `Real` does not
             // answer to `Alias`, and a file found in a culture's subdirectory must declare that
             // culture.
             if not (sameName read && sameCulture read) then
                 AssemblyBindResult.NotFound
-            else
-
-            requireDefaultContentType read
-            requireAgnostic read
-
-            if not architectureAccepts then
+            elif not architectureAccepts then
                 AssemblyBindResult.NotFound
             elif not (isCompatibleVersion request.Version (foundVersion read)) then
                 AssemblyBindResult.NotFound
