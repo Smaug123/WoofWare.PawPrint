@@ -256,3 +256,20 @@ module TestDatagramDissolve =
             forge SimulatedUnixPlatform.linuxX64 (SocketPhase.DatagramPeer (endpoint loopback 9000us))
         )
         |> shouldEqual [ UnixSystemDefect.BoundToPortZero (SocketId 0L) ]
+
+    /// A half-bound socket reserves no port, so a second socket asking for
+    /// `127.0.0.1:0` beside it is given a port rather than EADDRINUSE: two
+    /// zero ports are not a collision.
+    [<Test>]
+    let ``a port-0 bind beside a half-bound socket is served`` () : unit =
+        let _, system = halfBound ()
+
+        let other, system =
+            UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Datagram SocketProtocol.Udp system
+
+        match UnixSocket.bind other UserBuffer.Mapped 16 false inetFamily (Some (endpoint loopback 0us)) system with
+        | Ok (BindAnswer.Bound actual, after) ->
+            actual.Address |> shouldEqual loopback
+            actual.Port |> shouldNotEqual 0us
+            UnixSystem.checkInvariants after |> shouldEqual []
+        | other -> failwith $"bind beside the half-bound socket: %A{other}"
