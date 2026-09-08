@@ -195,7 +195,10 @@ type CurrentDirectoryFault =
 [<RequireQualifiedAccess>]
 module UnixSystem =
 
-    /// Answer one syscall.
+    /// Answer one syscall, made by `task`.
+    ///
+    /// The task is what a blocking answer is recorded against: `FLock` that
+    /// would block parks it, and the returned system carries that park.
     ///
     /// Sugar over the per-syscall functions above, for a client that wants one
     /// surface — to log every syscall, to replay a recorded sequence, or to
@@ -212,6 +215,7 @@ module UnixSystem =
     /// a buffer-carrying syscall gets to choose it. Until then those syscalls
     /// are reached through their own functions, which lose nothing.
     let step<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (call : Syscall)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, SyscallRefusal<'Task>>
@@ -240,7 +244,8 @@ module UnixSystem =
             |> answered
             |> Result.mapError SyscallRefusal.LSeek
         | Syscall.FLock (fd, operation) ->
-            UnixDescriptor.flock fd operation system |> Result.mapError SyscallRefusal.FLock
+            UnixDescriptor.flock task fd operation system
+            |> Result.mapError SyscallRefusal.FLock
         | Syscall.FTruncate (fd, length) ->
             UnixDescriptor.ftruncate fd length system
             |> answered

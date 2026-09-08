@@ -593,8 +593,8 @@ module UnixDescriptor =
         truncateAt inode length system
         |> Result.map (fun system -> SyscallAnswer.Completed 0L, system)
 
-    /// `flock(2)`: take, convert or release an advisory lock on `fd`'s open file
-    /// description.
+    /// `flock(2)`, made by `task`: take, convert or release an advisory lock on
+    /// `fd`'s open file description.
     ///
     /// Models Linux's rules and refuses under Darwin rather than guessing, for
     /// each of the divergences `FLockRefusal` names.
@@ -602,13 +602,28 @@ module UnixDescriptor =
     /// A blocking acquisition that another description's lock stands in the way
     /// of answers `SyscallOutcome.WouldBlock`, in the system a real kernel would
     /// have slept in — which is not the system the call arrived with, because
-    /// the caller's own old lock has already gone.
+    /// the caller's own old lock has already gone — and that system records
+    /// `task` as parked on the lock. The record is what `close` reads to refuse
+    /// destroying the description, and what `flockAcquire` finishes from once
+    /// the condition holds. `task` must be registered in `Tasks`, and must not
+    /// already be parked: a task blocks in one syscall at a time, and a parked
+    /// `flock` is finished through `flockAcquire`, never re-issued.
     let flock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (task : 'Task)
         (fd : int)
         (operation : int)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
         =
+        // Loudly partial in an unregistered task, before anything is answered:
+        // a non-blocking call by one would otherwise be served and only a
+        // blocking one refused.
+        match UnixTaskTable.parkedFor task system.Tasks with
+        | Some parked ->
+            failwith
+                $"UnixDescriptor.flock: task %O{task} is parked in %A{parked}, and is issuing an flock. A task blocks in one syscall at a time; a parked flock is finished with `flockAcquire`, and a socket wait's completion must clear its record first (this is a bug in the client)."
+        | None ->
+
         // Unlike a foreign-function layer's error and open-flag encodings, these
         // are *not* values anything translates: `flock(2)` takes them verbatim,
         // and Linux and Darwin happen to agree on all four — measured on both
@@ -709,23 +724,44 @@ module UnixDescriptor =
                     failwith
                         $"flock: fd %d{fd} reported contention but names no open file description (this is an interpreter bug)"
 
-            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, requested)), advanced)
+            // The record is derived from the condition rather than built beside
+            // it, so a task cannot be parked on one lock while a client polls
+            // for another: `WakeCondition.ofPark` of this record is this
+            // condition.
+            let parkedIn =
+                { advanced with
+                    Tasks =
+                        UnixTaskTable.withParked
+                            task
+                            (Some (
+                                ParkedSyscall.Flock
+                                    {
+                                        ParkedFlock.Requester = requester
+                                        Mode = requested
+                                    }
+                            ))
+                            advanced.Tasks
+                }
+
+            Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, requested)), parkedIn)
         | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
 
-    /// Finish an `flock` acquisition that parked, against the open file
-    /// description it parked on.
+    /// Finish the `flock` acquisition `task` parked in, against the open file
+    /// description its park record names.
     ///
-    /// This rather than re-issuing `flock` with the descriptor the call was made
-    /// through, and not as a convenience: descriptor numbers are allocated
-    /// lowest-free and reused as soon as they are freed, so a `close` of that
-    /// number elsewhere — survivable whenever a `dup` keeps the description
-    /// alive — can leave it naming a different object by the time the lock frees.
-    /// A real kernel has no such hazard: the sleeping call holds the file.
+    /// From the record rather than by re-issuing `flock` with the descriptor
+    /// the call was made through, and not as a convenience: descriptor numbers
+    /// are allocated lowest-free and reused as soon as they are freed, so a
+    /// `close` of that number elsewhere — survivable whenever a `dup` keeps the
+    /// description alive — can leave it naming a different object by the time
+    /// the lock frees. A real kernel has no such hazard: the sleeping call
+    /// holds the file. `task` must be parked in an `flock`.
     ///
-    /// Answers `WouldBlock` again, with the same condition, when the lock has
-    /// been taken since the waiter was woken. That is the ordinary case rather
-    /// than an edge one: a release wakes every waiter and they race, so all but
-    /// one of them find it gone.
+    /// A grant clears the park record. `WouldBlock`, with the same condition
+    /// and the record left standing, is the answer when the lock has been
+    /// taken since the waiter was woken. That is the ordinary case rather than
+    /// an edge one: a release wakes every waiter and they race, so all but one
+    /// of them find it gone.
     ///
     /// Most of what `flock` screens is not re-screened, because a screen over
     /// facts that cannot change is spent: the operation bits were validated
@@ -738,11 +774,20 @@ module UnixDescriptor =
     /// a first acquisition, and the resume is then the conversion whose
     /// keep-versus-drop divergence is unmeasured.
     let flockAcquire<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (requester : OpenFileDescriptionId)
-        (mode : FlockMode)
+        (task : 'Task)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<SyscallOutcome * UnixSystem<'Task, 'Handler>, FLockRefusal>
         =
+        let requester, mode =
+            match UnixTaskTable.parkedFor task system.Tasks with
+            | Some (ParkedSyscall.Flock parked) -> parked.Requester, parked.Mode
+            | Some (ParkedSyscall.SocketWait wait) ->
+                failwith
+                    $"UnixDescriptor.flockAcquire: task %O{task} is parked in a socket wait on %O{wait.Port}, not in an flock, so there is no acquisition to finish (this is a bug in the client)."
+            | None ->
+                failwith
+                    $"UnixDescriptor.flockAcquire: task %O{task} is not parked, so there is no acquisition to finish. A blocked `flock` records the park; only a task it answered `WouldBlock` finishes here (this is a bug in the client)."
+
         let descriptions =
             FileDescriptorRegistry.descriptions system.Process.FileDescriptors
 
@@ -776,44 +821,13 @@ module UnixDescriptor =
                 $"UnixDescriptor.flockAcquire: acquiring on open file description %O{requester} reported EBADF, which only a descriptor lookup can produce (this is an interpreter bug)."
         | Some FlockError.WouldBlock ->
             Ok (SyscallOutcome.WouldBlock (WakeCondition.FlockGrantable (requester, mode)), advanced)
-        | None -> Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), advanced)
+        | None ->
+            let granted =
+                { advanced with
+                    Tasks = UnixTaskTable.withParked task None advanced.Tasks
+                }
 
-    /// Record that `task` has parked in the `flock` `condition` describes.
-    ///
-    /// The record is derived from the condition rather than built beside it, so
-    /// that a client cannot park a task on one lock while polling for another.
-    /// Clearing it is `UnixTaskTable.withParked task None`, which the client does
-    /// when the acquisition finishes.
-    let parkFlock<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (task : 'Task)
-        (condition : WakeCondition)
-        (system : UnixSystem<'Task, 'Handler>)
-        : UnixSystem<'Task, 'Handler>
-        =
-        match condition with
-        | WakeCondition.FlockGrantable (requester, mode) ->
-            { system with
-                Tasks =
-                    UnixTaskTable.withParked
-                        task
-                        (Some (
-                            ParkedSyscall.Flock
-                                {
-                                    ParkedFlock.Requester = requester
-                                    Mode = mode
-                                }
-                        ))
-                        system.Tasks
-            }
-        | WakeCondition.SocketEventDeliverable port ->
-            // No sibling of this function exists for the socket wait, and none can:
-            // `ParkedSocketWait` also carries the event count the finishing call
-            // copies out with, which is re-entry state no condition mentions. So a
-            // socket wait's record cannot be derived from its condition, and the
-            // client writes it directly. `WakeCondition.ofPark` is the direction
-            // that works for both.
-            failwith
-                $"UnixDescriptor.parkFlock: asked to park task %O{task} in an flock, but the condition is a wait for events on open file description %O{port}. A socket wait's record carries an event count its condition does not, so it cannot be derived from one; write the record directly."
+            Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), granted)
 
     /// `close(2)`: drop `fd` from the process's table, together with the kernel
     /// objects the description it named was the last reference to — the socket,

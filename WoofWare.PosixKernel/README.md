@@ -47,8 +47,10 @@ both individually and through a `step` dispatcher.
 Everything else is still reached through the state modules directly.
 There is also no constructor for a fresh `UnixSystem` yet, so a client must assemble one field by field.
 
-A syscall that would block does not block: `step` answers `SyscallOutcome.WouldBlock` carrying a
-`WakeCondition`, and the client decides what to do with the calling task.
+A syscall that would block does not block: `step`, which takes the calling task, answers
+`SyscallOutcome.WouldBlock` carrying a `WakeCondition`, and the state that comes back records the task
+as parked on it (`UnixTaskTable.parkedFor`). That record is what `close` reads to refuse destroying a
+description a task is waiting on, and what `UnixDescriptor.flockAcquire` finishes the call from.
 `WakeCondition.isSatisfied` answers whether the condition holds yet, so a client's scheduler can poll it;
 the state that comes back with a `WouldBlock` is the state after whatever the call did before sleeping,
 which is why it is returned rather than discarded.
