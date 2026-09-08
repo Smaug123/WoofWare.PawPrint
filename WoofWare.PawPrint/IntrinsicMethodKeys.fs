@@ -1607,6 +1607,31 @@ module IntrinsicMethodKeys =
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
+            // The unchecked 128-bit addition, which `TimeSpan.FromMilliseconds(long, long)`
+            // reaches through `Math.BigMul(long, long) + microseconds`. Its body is
+            // `ldarg.0; ldfld _lower; ldarg.1; ldfld _lower; add; stloc.0; ldloc.0; ldarg.0;
+            // ldfld _lower; clt.un; conv.i8; stloc.1; ldarg.0; ldfld _upper; ldarg.1;
+            // ldfld _upper; add; ldloc.1; add; ldloc.0; newobj .ctor; ret` — a wrapping 64-bit
+            // add of the low halves, a carry recovered from the wrap by the *unsigned* compare
+            // `sum <u left._lower`, then a wrapping add of the high halves plus that carry. Both
+            // `add`s are the unwidened wrapping opcode, not `add.ovf`: this is `op_Addition`, and
+            // the operator C# emits under `checked` is the separate `op_CheckedAddition`, which
+            // is not allowlisted. Every boundary is already modelled — `ldfld` of a `ulong` field
+            // on a by-value struct argument as `op_Equality` does it, int64 `add` and `clt.un`,
+            // and the `.ctor` allowlisted above.
+            //
+            // The signed `Int128` and the unsigned `UInt128` spell this body identically, since
+            // two's complement addition does not depend on the reading; `UInt128.op_Addition` is
+            // nonetheless left off until something exercises it.
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L667-L676
+            pattern
+                "System.Private.CoreLib"
+                "System.Int128"
+                "op_Addition"
+                [
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                    IntrinsicParameterPattern.Exact "System.Int128"
+                ]
         ]
 
     let isSafeIntrinsic (key : IntrinsicMethodKey) : bool =
