@@ -46,15 +46,24 @@ module TestEphemeralPorts =
     let private newStream (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Stream SocketProtocol.Tcp system
 
+    let private bindWithReuse
+        (reuseAddress : bool)
+        (fd : int)
+        (endpoint : InternetEndpoint)
+        (system : UnixSystem<int, string>)
+        : Result<BindAnswer, BindRefusal> * UnixSystem<int, string>
+        =
+        match UnixSocket.bind fd UserBuffer.Mapped 16 reuseAddress inetFamily (Some endpoint) system with
+        | Ok (answer, system) -> Ok answer, system
+        | Error refusal -> Error refusal, system
+
     let private bindTo
         (fd : int)
         (endpoint : InternetEndpoint)
         (system : UnixSystem<int, string>)
         : Result<BindAnswer, BindRefusal> * UnixSystem<int, string>
         =
-        match UnixSocket.bind fd UserBuffer.Mapped 16 false inetFamily (Some endpoint) system with
-        | Ok (answer, system) -> Ok answer, system
-        | Error refusal -> Error refusal, system
+        bindWithReuse false fd endpoint system
 
     /// `bind(2)` to the wildcard address and port 0, answering the port the
     /// kernel chose.
@@ -258,6 +267,64 @@ module TestEphemeralPorts =
             localPort fd system |> shouldEqual 40001us
             noDefects system
         | ConnectOutcome.Failed error, _ -> failwith $"connect to the first listener failed with %A{error}"
+
+    /// A connection queued at a wildcard listener has a concrete server
+    /// endpoint that no socket is bound at, and the listener owns it through
+    /// its queue: it is not an orphan, so it takes nothing away from a bind
+    /// the measured conflict rule admits beside the listener.
+    [<Test>]
+    let ``a queued connection's server endpoint belongs to the listener`` () : unit =
+        // Darwin's measured rule: a specific reuse-address bind beside a
+        // wildcard reuse-address listener on the same port is admitted, so
+        // the only thing that could refuse the port is a misread of the queue.
+        let system = systemOn SimulatedUnixPlatform.macOsArm64 (40000us, 40001us)
+
+        let listenerFd, system = newStream system
+
+        let system =
+            match bindWithReuse true listenerFd (wildcard 0us) system with
+            | Ok (BindAnswer.Bound endpoint), system ->
+                endpoint.Port |> shouldEqual 40000us
+                system
+            | other, _ -> failwith $"binding the wildcard listener: %A{other}"
+
+        let system =
+            match listenOn listenerFd system with
+            | ListenAnswer.Listening _, system -> system
+            | ListenAnswer.Failed error, _ -> failwith $"listen failed with %A{error}"
+
+        let clientFd, system = newStream system
+
+        let system =
+            match connectTo clientFd (loopback 40000us) system with
+            | ConnectOutcome.Completed, system -> system
+            | ConnectOutcome.Failed error, _ -> failwith $"connect failed with %A{error}"
+
+        // The client took 40001; put the cursor back on the listener's port.
+        localPort clientFd system |> shouldEqual 40001us
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        NextEphemeralPort = 40000us
+                    }
+            }
+
+        let bindBesideListener (system : UnixSystem<int, string>) : uint16 =
+            let fd, system = newStream system
+
+            match bindWithReuse true fd (loopback 0us) system with
+            | Ok (BindAnswer.Bound endpoint), _ -> endpoint.Port
+            | other, _ -> failwith $"binding beside the listener: %A{other}"
+
+        // Not yet accepted: the connection sits in the listener's queue.
+        bindBesideListener system |> shouldEqual 40000us
+
+        // Accepted: the accepted socket is bound at the server endpoint, and
+        // the same answer follows from the measured established-socket row.
+        let _, system = acceptFrom listenerFd system
+        bindBesideListener system |> shouldEqual 40000us
 
     // ------------------------------------------------------------------
     // For all interleavings: the three choices never contradict each other

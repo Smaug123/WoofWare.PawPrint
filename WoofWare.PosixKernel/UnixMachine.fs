@@ -615,23 +615,36 @@ module UnixMachineState =
         || first.Address = InternetEndpoint.WildcardAddress
         || second.Address = InternetEndpoint.WildcardAddress
 
-    /// Whether a TCP connection endpoint no stream socket is bound at still
-    /// occupies `endpoint`'s port.
+    /// Whether a TCP connection endpoint whose socket has gone still occupies
+    /// `endpoint`'s port.
+    ///
+    /// An endpoint is held while a socket references its connection from
+    /// that end: an established socket bound at the endpoint, or a listener
+    /// whose accept queue still holds the connection, which owns the server
+    /// end until `accept(2)` mints a socket for it.
     let private orphanedConnectionOccupies (endpoint : InternetEndpoint) (machine : UnixMachineState) : bool =
-        let heldByStreamSocket (held : InternetEndpoint) : bool =
+        let heldFrom (connectionId : ConnectionId) (held : InternetEndpoint) (isServerEnd : bool) : bool =
             machine.Sockets
             |> Map.exists (fun _ socket ->
-                socket.Kind = SocketKind.Stream
-                && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))
+                match socket.Phase with
+                | SocketPhase.Established c
+                | SocketPhase.EstablishedPendingReport c ->
+                    c = connectionId
+                    && (socket.Binding |> Option.exists (fun binding -> binding.Endpoint = held))
+                | SocketPhase.Listening listenState -> isServerEnd && List.contains connectionId listenState.Queue
+                | SocketPhase.Idle
+                | SocketPhase.RefusedPendingDelivery
+                | SocketPhase.Dead
+                | SocketPhase.DatagramPeer _ -> false
             )
 
         machine.Connections
-        |> Map.exists (fun _ connection ->
-            [ connection.ClientAddress ; connection.ServerAddress ]
-            |> List.exists (fun held ->
+        |> Map.exists (fun connectionId connection ->
+            [ connection.ClientAddress, false ; connection.ServerAddress, true ]
+            |> List.exists (fun (held, isServerEnd) ->
                 held.Port = endpoint.Port
                 && addressesOverlap held endpoint
-                && not (heldByStreamSocket held)
+                && not (heldFrom connectionId held isServerEnd)
             )
         )
 
