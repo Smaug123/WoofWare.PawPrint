@@ -103,7 +103,7 @@ module TestEphemeralPorts =
         =
         match UnixConnection.connect fd UserBuffer.Mapped 16 inetFamily (Some destination) system with
         | Ok result -> result
-        | Error refusal -> failwith $"connect refused: %s{SockaddrCopyRefusal.describe refusal}"
+        | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
     let private acceptFrom (fd : int) (system : UnixSystem<int, string>) : int * UnixSystem<int, string> =
         match UnixConnection.accept fd UserBuffer.Mapped 16 system with

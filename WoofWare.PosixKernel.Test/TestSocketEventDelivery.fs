@@ -185,7 +185,9 @@ module TestSocketEventDelivery =
         (kernel : UnixSystem<int, string>)
         : ConnectOutcome * UnixSystem<int, string>
         =
-        UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel
+        match UnixConnection.connectSocket client nonBlocking 16 inetFamily (Some dest) kernel with
+        | Ok answer -> answer
+        | Error refusal -> failwith $"connect refused: %s{ConnectRefusal.describe refusal}"
 
     /// The delivered rows' `Data` fields, so a test can assert order without
     /// restating every mask.

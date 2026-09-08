@@ -1478,7 +1478,8 @@ module EmulatedKernel =
     ///
     /// Here for the reason `acceptConnection` below is: six fixtures call it
     /// holding an `EmulatedKernel`, and writing `unix` in and `withUnix` back
-    /// out at each would be this function, copied.
+    /// out at each would be this function, copied. A `ConnectRefusal` is
+    /// raised, since the fixtures that call this never ask for one.
     let connectSocket
         (socketId : SocketId)
         (nonBlocking : bool)
@@ -1488,10 +1489,9 @@ module EmulatedKernel =
         (kernel : EmulatedKernel)
         : ConnectOutcome * EmulatedKernel
         =
-        let outcome, system =
-            UnixConnection.connectSocket socketId nonBlocking declaredLength family destination (unix kernel)
-
-        outcome, withUnix system kernel
+        match UnixConnection.connectSocket socketId nonBlocking declaredLength family destination (unix kernel) with
+        | Ok (outcome, system) -> outcome, withUnix system kernel
+        | Error refusal -> failwith $"EmulatedKernel.connectSocket: %s{ConnectRefusal.describe refusal}"
 
     /// `UnixConnection.acceptConnection` — dequeue the oldest completed connection
     /// from `socketId`'s accept queue and materialise the server-side socket
