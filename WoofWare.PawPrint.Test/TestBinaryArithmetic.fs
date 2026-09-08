@@ -72,6 +72,12 @@ module TestBinaryArithmetic =
     let private byteType : ConcreteType<ConcreteTypeHandle> =
         concreteTypeFor baseClassTypes.Byte
 
+    /// The view an `int[]` element byref picks up when arithmetic turns it into a byte cursor:
+    /// the cursor is anchored on the element's own shape, not on `System.Byte`, so that a
+    /// cell-aligned read back through it still sees a cell rather than a run of bytes.
+    let private int32Type : ConcreteType<ConcreteTypeHandle> =
+        concreteTypeFor baseClassTypes.Int32
+
     let private allocatedIntArray (values : int list) : AllocatedArray =
         let elements : ImmutableArray<CliType> =
             values
@@ -123,18 +129,31 @@ module TestBinaryArithmetic =
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
         |> EvalStackValue.ManagedPointer
 
-    let private byteViewPointer (arr : ManagedHeapAddress) (index : int) (byteOffset : int) : EvalStackValue =
+    let private byteViewPointerAs
+        (viewType : ConcreteType<ConcreteTypeHandle>)
+        (arr : ManagedHeapAddress)
+        (index : int)
+        (byteOffset : int)
+        : EvalStackValue
+        =
         let projs =
             if byteOffset = 0 then
-                [ ByrefProjection.ReinterpretAs byteType ]
+                [ ByrefProjection.ReinterpretAs viewType ]
             else
                 [
-                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ReinterpretAs viewType
                     ByrefProjection.ByteOffset byteOffset
                 ]
 
         ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), projs)
         |> EvalStackValue.ManagedPointer
+
+    let private byteViewPointer : ManagedHeapAddress -> int -> int -> EvalStackValue =
+        byteViewPointerAs byteType
+
+    /// What `add`/`sub` produce from a plain `int[]` element byref that lands mid-cell.
+    let private cellViewPointer : ManagedHeapAddress -> int -> int -> EvalStackValue =
+        byteViewPointerAs int32Type
 
     let private expectArrayPointer
         (expectedArr : ManagedHeapAddress)
@@ -499,12 +518,12 @@ module TestBinaryArithmetic =
         let state, arr = stateWithIntArray [ 10 ; 20 ; 30 ; 40 ]
 
         execute ArithmeticOperation.add state (arrayPointer arr 1) (EvalStackValue.Int32 (Int32Source.Verbatim 6))
-        |> shouldEqual (byteViewPointer arr 2 2)
+        |> shouldEqual (cellViewPointer arr 2 2)
 
         // Floor division, so a backwards offset that is not a whole number of cells lands on the
         // cell below with a positive residue rather than on the cell above with a negative one.
         execute ArithmeticOperation.add state (arrayPointer arr 2) (EvalStackValue.Int32 (Int32Source.Verbatim -6))
-        |> shouldEqual (byteViewPointer arr 0 2)
+        |> shouldEqual (cellViewPointer arr 0 2)
 
     /// Weighted towards the range boundaries, so `sub.ovf`'s trapping regime is
     /// exercised as often as its ordinary arithmetic one.
@@ -1378,7 +1397,7 @@ module TestBinaryArithmetic =
                 if case.Residue = 0 then
                     arrayPointer arr (case.Index + case.FirstStep)
                 else
-                    byteViewPointer arr (case.Index + case.FirstStep) case.Residue
+                    cellViewPointer arr (case.Index + case.FirstStep) case.Residue
 
             afterFirst |> shouldEqual expectedAfterFirst
 
@@ -1413,7 +1432,7 @@ module TestBinaryArithmetic =
             if case.Residue = 0 then
                 backAgain |> shouldEqual ptr
             else
-                backAgain |> shouldEqual (byteViewPointer arr case.Index 0)
+                backAgain |> shouldEqual (cellViewPointer arr case.Index 0)
 
             // Subtracting the two byrefs reports the byte distance. Only the whole-cell case is
             // asked here: subtracting a bare element byref from a byte cursor over the same array

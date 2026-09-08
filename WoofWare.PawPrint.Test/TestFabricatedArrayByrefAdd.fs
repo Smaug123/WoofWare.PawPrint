@@ -55,6 +55,25 @@ module TestFabricatedArrayByrefAdd =
         define "LongAt" typeof<int64> typeof<int64> OpCodes.Add OpCodes.Ldind_I8
         define "RefAt" typeof<string> typeof<string> OpCodes.Add OpCodes.Ldind_Ref
 
+        // `ldarg.0; ldarg.1; add; ldarg.1; sub; ldind.ref; ret` -- out to a mid-cell address and
+        // back to the boundary it started from, then read. The arithmetic cancels, so the real
+        // runtime reads the original cell whatever the intermediate offset was.
+        let defineRoundTrip (name : string) (elementType : Type) (returnType : Type) (load : OpCode) : unit =
+            let method =
+                adv.DefineMethod (name, attributes, returnType, [| elementType.MakeByRefType () ; typeof<int> |])
+
+            let il = method.GetILGenerator ()
+            il.Emit OpCodes.Ldarg_0
+            il.Emit OpCodes.Ldarg_1
+            il.Emit OpCodes.Add
+            il.Emit OpCodes.Ldarg_1
+            il.Emit OpCodes.Sub
+            il.Emit load
+            il.Emit OpCodes.Ret
+
+        defineRoundTrip "RefRoundTrip" typeof<string> typeof<string> OpCodes.Ldind_Ref
+        defineRoundTrip "IntRoundTrip" typeof<int> typeof<int> OpCodes.Ldind_I4
+
         adv.CreateType () |> ignore<Type>
 
         use image = new MemoryStream ()
@@ -136,6 +155,22 @@ public static class Driver
         return 0;
     }
 
+    // Out to a mid-cell address and back again. The two steps cancel before anything is read, so
+    // the address dereferenced is the cell boundary it started from -- including for an array of
+    // references, whose cells cannot be read a byte at a time at all.
+    private static int RoundTripThroughMidCell()
+    {
+        string[] s = new string[] { "zero", "one" };
+        int[] n = new int[] { 11, 22 };
+
+        if (!ReferenceEquals(Adv.RefRoundTrip(ref s[1], 1), s[1])) return 15;
+        if (!ReferenceEquals(Adv.RefRoundTrip(ref s[0], 3), s[0])) return 16;
+        if (Adv.IntRoundTrip(ref n[1], 1) != 22) return 17;
+        if (Adv.IntRoundTrip(ref n[0], 6) != 11) return 18;
+
+        return 0;
+    }
+
     public static int Main()
     {
         int r;
@@ -148,6 +183,8 @@ public static class Driver
         r = PartialElement();
         if (r != 0) return r;
         r = ReferenceElement();
+        if (r != 0) return r;
+        r = RoundTripThroughMidCell();
         if (r != 0) return r;
         return 0;
     }

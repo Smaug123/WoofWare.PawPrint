@@ -350,11 +350,24 @@ module ArithmeticOperation =
             let elementSize = ManagedPointerByteView.arrayElementSize state arr
             checkedAddInt32 "array index" index (v / elementSize) |> ignore<int>
 
-            let byteType = byteConcreteType baseClassTypes state
+            let plain = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
 
-            let advanced =
-                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
-                |> ManagedPointerByteView.addByteOffset state byteType v
+            // The byte cursor is anchored on the *element's* shape rather than on `System.Byte`,
+            // which is what `Conv_I`/`Conv_U` do through `anchorByteViewIfPlainArrayByref` and for
+            // the same reason: a cell-aligned read or write through the result then routes
+            // through the identity-preserving short-circuits, so a cursor that steps out to a
+            // mid-cell address and back can still dereference an `object[]` cell. `System.Byte`
+            // is the fallback for the element shapes that anchor declines — pointers, byrefs and
+            // function pointers, which have no view type that could honestly describe them —
+            // where the stride is still well defined even though byte-granular access is not.
+            let anchored =
+                match ManagedPointerByteView.anchorByteViewIfPlainArrayByref baseClassTypes state plain with
+                | ManagedPointerSource.Byref (_, []) ->
+                    let byteType = byteConcreteType baseClassTypes state
+                    ManagedPointerByteView.addByteOffset state byteType 0 plain
+                | anchored -> anchored
+
+            let advanced = ManagedPointerByteView.addByteOffsetToByteView state v anchored
 
             match advanced with
             | ManagedPointerSource.Byref (root, [ ByrefProjection.ReinterpretAs _ ]) ->
