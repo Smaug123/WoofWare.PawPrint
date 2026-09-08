@@ -37,11 +37,9 @@ module TestUserBufferCheckAgainstHost =
     [<Literal>]
     let private EFAULT = 14
 
-    /// A machine to apply this host's measured facts to. Every field this
-    /// fixture reads is written by the setters above before it is read, so the
-    /// flavour booted here is not observable.
-    let private initialMachine : UnixMachineState =
-        (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64).Machine
+    /// A machine on `flavour`'s platform, to apply this host's measured facts to.
+    let private machineOn (flavour : SimulatedUnixFlavour) : UnixMachineState =
+        (UnixSystem.initial<int, string> (HostPlatform.platformOf flavour)).Machine
 
     /// Whether the host refuses `length` bytes at `address` on a descriptor with
     /// nothing to transfer.
@@ -162,8 +160,7 @@ module TestUserBufferCheckAgainstHost =
                     match measureLimit fd 1UL with
                     | None -> UserBufferCheck.AtCopyTime
                     | Some limit ->
-                        initialMachine
-                        |> UnixMachineState.withUnixPlatformAndFileSystemType (HostPlatform.platformOf flavour) None
+                        machineOn flavour
                         |> UnixMachineState.withUserAddressLimit limit
                         |> UnixMachineState.userBufferCheck
 

@@ -147,6 +147,9 @@ type UnixSystemDefect<'Task> =
     /// A pending signal is directed at a task the table does not hold, so it
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
+    /// The machine's mount claims a filesystem type its flavour cannot report,
+    /// so `fstatfs` on a file would answer a fact no such machine could tell.
+    | FileSystemTypeNotReportable of flavour : SimulatedUnixFlavour * fileSystemType : EmulatedFileSystemType
 
 /// Why the directory a host named cannot be the one a simulated process starts
 /// in. `UnixSystem.withFileSystemAndCurrentDirectory` returns one instead of
@@ -539,6 +542,16 @@ module UnixSystem =
 
             dispatcher @ masks @ targets
 
+        let fileSystemType =
+            let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
+
+            if EmulatedFileSystemType.isReportableUnder flavour system.Machine.FileSystemType then
+                []
+            else
+                [
+                    UnixSystemDefect.FileSystemTypeNotReportable (flavour, system.Machine.FileSystemType)
+                ]
+
         dangling
         @ unreferenced
         @ freshness
@@ -556,6 +569,7 @@ module UnixSystem =
         @ parks
         @ bindings
         @ signals
+        @ fileSystemType
 
     /// Logical-processor count a freshly-minted simulated process reports.
     /// One, because only single-processor behaviour has been exercised
@@ -693,6 +707,11 @@ module UnixSystem =
         (platform : SimulatedUnixPlatform)
         : UnixSystem<'Task, 'Handler>
         =
+        // `SimulatedUnixPlatform.create` validates at construction, so a value
+        // of the type is already a platform some Unix could be; this catches
+        // the one value that bypasses that, the forged `Unchecked.defaultof`,
+        // whose null release would otherwise reach a guest as its `uname -r`.
+        let platform = SimulatedUnixPlatform.assertValid "UnixSystem.initial" platform
         let flavour = SimulatedUnixPlatform.flavour platform
 
         // Bound once so that `CurrentDirectoryInode` is the root of *this*
@@ -748,22 +767,21 @@ module UnixSystem =
     /// One operation rather than two because neither answer is well-formed
     /// without the other: a current directory is an inode of *this* filesystem,
     /// and a filesystem replaces every inode number the previous one handed
-    /// out. The same reason `withUnixPlatformAndFileSystemType` is one setter.
+    /// out.
     ///
-    /// Takes the moment and the platform explicitly rather than reading
-    /// `system.Machine.WallClockEpochMs` and `system.Machine.UnixPlatform`, so
-    /// that the result does not depend on whether the caller happened to set
-    /// the clock or the flavour before or after the filesystem — an ordering
-    /// dependence between two `with` functions is exactly the kind of thing
-    /// that works until someone reorders the calls.
+    /// Takes the moment explicitly rather than reading
+    /// `system.Machine.WallClockEpochMs`, so that the result does not depend
+    /// on whether the caller happened to set the clock before or after the
+    /// filesystem — an ordering dependence between two `with` functions is
+    /// exactly the kind of thing that works until someone reorders the calls.
     ///
-    /// The platform is here because its `NAME_MAX` decides whether the *path
-    /// the caller wrote* is one a process on that flavour could name at all:
-    /// 255 CJK characters is a legal directory name on Darwin and too long on
-    /// Linux. It is a check on that path and not on the graph — the seed itself
-    /// is realised without consulting any limit, so a filesystem may perfectly
-    /// well contain a directory whose name the current directory could not
-    /// spell.
+    /// The system's own platform decides whether the *path the caller wrote*
+    /// is one a process on that flavour could name at all, through its
+    /// `NAME_MAX`: 255 CJK characters is a legal directory name on Darwin and
+    /// too long on Linux. It is a check on that path and not on the graph —
+    /// the seed itself is realised without consulting any limit, so a
+    /// filesystem may perfectly well contain a directory whose name the
+    /// current directory could not spell.
     ///
     /// A **boot-time** operation: it crashes if the process still holds any
     /// handle onto the filesystem being replaced — an open descriptor or a
@@ -783,19 +801,21 @@ module UnixSystem =
     /// resolved away — measured on both kernels, `chdir("outer/lnk")` with
     /// `lnk -> inner` is followed by `getcwd() == ".../outer/inner"`.
     let withFileSystemAndCurrentDirectory<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (platform : SimulatedUnixPlatform)
         (createdAt : UnixTimestamp)
         (seed : Map<DirectoryEntryName, SeedEntry>)
         (directory : AbsoluteUnixPath)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, CurrentDirectoryFault>
         =
-        // Asserted here as well as by any caller that names its own knob: this
-        // is a package boundary, so the preconditions cannot be left to the one
-        // client that happens to check them today.
-        let platform =
-            SimulatedUnixPlatform.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" platform
+        // The directory is admitted under the platform the process will run
+        // on, which is the system's own: `NAME_MAX` counts bytes on Linux and
+        // UTF-16 code units on Darwin, so a name one flavour admits is one the
+        // other refuses.
+        let platform = system.Machine.UnixPlatform
 
+        // Asserted here as well as by any caller that names its own knob: this
+        // is a package boundary, so the precondition cannot be left to the one
+        // client that happens to check it today.
         let directory =
             AbsoluteUnixPath.assertValid "UnixSystem.withFileSystemAndCurrentDirectory" directory
 

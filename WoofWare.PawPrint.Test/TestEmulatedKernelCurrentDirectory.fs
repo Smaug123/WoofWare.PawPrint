@@ -51,7 +51,7 @@ module TestEmulatedKernelCurrentDirectory =
     /// A kernel seeded with the tree above, whose current directory is `dir`.
     let private seededAt (dir : string) : EmulatedKernel =
         EmulatedKernel.initial
-        |> EmulatedKernel.withFileSystemAndCurrentDirectory SimulatedUnixPlatform.linuxX64 createdAt seed (absolute dir)
+        |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute dir)
 
     let private message (body : unit -> unit) : string =
         let thrown = Assert.Throws<exn> (fun () -> body ())
@@ -72,46 +72,30 @@ module TestEmulatedKernelCurrentDirectory =
     // ------------------------------- the arguments, not the kernel's own fields
 
     [<Test>]
-    let ``the platform argument decides, not the one the kernel carries`` () : unit =
-        // The sharp case, and the reason the platform is an argument rather
-        // than a field read: `NAME_MAX` is 255 *UTF-16 code units* on Darwin and
-        // 255 *bytes* on Linux, so this one name is a directory a macOS process
-        // could be started in and a Linux one could not.
+    let ``the kernel's own platform decides`` () : unit =
+        // The sharp case: `NAME_MAX` is 255 *UTF-16 code units* on Darwin and
+        // 255 *bytes* on Linux, so this one name is a directory a macOS
+        // process could be started in and a Linux one could not, and which
+        // applies is decided by the platform the kernel was created on.
         let wide = String.replicate 255 "\u4e2d"
         let seed = Map.ofList [ name wide, SeedEntry.directory FileSystemSeed.empty ]
 
         let darwin =
-            EmulatedKernel.initial
-            |> EmulatedKernel.withFileSystemAndCurrentDirectory
-                SimulatedUnixPlatform.macOsArm64
-                createdAt
-                seed
-                (absolute $"/%s{wide}")
+            EmulatedKernel.create SimulatedUnixPlatform.macOsArm64
+            |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute $"/%s{wide}")
 
         darwin.CurrentDirectoryInode
         |> shouldNotEqual (VirtualFileSystem.root darwin.FileSystem)
 
+        darwin.UnixPlatform |> shouldEqual SimulatedUnixPlatform.macOsArm64
         EmulatedKernel.checkInvariants darwin |> shouldEqual []
-
-        // The kernel this ran against is still Linux-flavoured -- nothing set
-        // its platform -- so a wrapper reading `kernel.UnixPlatform` instead of
-        // passing its argument down would have refused the name above. That is
-        // what makes the pair setter order-independent with respect to
-        // `withUnixPlatformAndFileSystemType`. The library function's own half
-        // of this claim is in `TestWithFileSystemAndCurrentDirectory`; what is
-        // tested here is that the wrapper hands the argument over.
-        darwin.UnixPlatform |> shouldEqual SimulatedUnixPlatform.linuxX64
 
         // ...and the other flavour really does refuse it, so the row above is
         // not passing because the limit is never consulted.
         let text =
             message (fun () ->
-                EmulatedKernel.initial
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory
-                    SimulatedUnixPlatform.linuxX64
-                    createdAt
-                    seed
-                    (absolute $"/%s{wide}")
+                EmulatedKernel.create SimulatedUnixPlatform.linuxX64
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute $"/%s{wide}")
                 |> ignore<EmulatedKernel>
             )
 
@@ -135,12 +119,8 @@ module TestEmulatedKernelCurrentDirectory =
 
         let text =
             message (fun () ->
-                EmulatedKernel.initial
-                |> EmulatedKernel.withFileSystemAndCurrentDirectory
-                    SimulatedUnixPlatform.macOsArm64
-                    createdAt
-                    seed
-                    (absolute "/l")
+                EmulatedKernel.create SimulatedUnixPlatform.macOsArm64
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/l")
                 |> ignore<EmulatedKernel>
             )
 
@@ -157,7 +137,6 @@ module TestEmulatedKernelCurrentDirectory =
             message (fun () ->
                 EmulatedKernel.initial
                 |> EmulatedKernel.withFileSystemAndCurrentDirectory
-                    SimulatedUnixPlatform.linuxX64
                     (UnixTimestamp.ofSeconds 0L)
                     FileSystemSeed.empty
                     Unchecked.defaultof<AbsoluteUnixPath>

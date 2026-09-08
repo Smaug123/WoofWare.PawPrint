@@ -142,8 +142,7 @@ module TestUserBufferCheck =
     // ------------------------------------------------- the platforms' answers
 
     let private kernelOn (platform : SimulatedUnixPlatform) (limit : uint64) : EmulatedKernel =
-        EmulatedKernel.initial
-        |> EmulatedKernel.mapMachine (UnixMachineState.withUnixPlatformAndFileSystemType platform None)
+        EmulatedKernel.create platform
         |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit limit)
 
     /// macOS performs no up-front check at all: measured, every address at
