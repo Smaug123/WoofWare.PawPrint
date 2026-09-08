@@ -55,6 +55,7 @@
     <Compile Include="TestEvalStack.fs" />
     <Compile Include="TestMixedWidthComparisons.fs" />
     <Compile Include="TestIntrinsicValueArguments.fs" />
+    <Compile Include="TestIntrinsicReturnShape.fs" />
     <Compile Include="TestTaggedPointerBits.fs" />
     <Compile Include="TestNativeIntSource.fs" />
     <Compile Include="TestPointerHashSynthesis.fs" />
