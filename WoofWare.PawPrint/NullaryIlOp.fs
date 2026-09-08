@@ -56,15 +56,115 @@ module NullaryIlOp =
                 |> Option.map (fun byteOffset -> int64<int> charIndex * cliCharSizeBytes + byteOffset)
             | ManagedPointerSource.Byref _ -> None
 
+    /// What `and`ing a byref with a constant mask comes to, once the model has
+    /// decided. The three widths managed code writes the mask in — `conv.i4`,
+    /// `conv.i`, `conv.i8` — differ only in how they spell the answer, so they
+    /// share this and cannot drift apart.
+    [<RequireQualifiedAccess>]
+    type private ByrefMask =
+        /// The mask selected only bits the model knows, and they are these.
+        | Bits of int64
+        /// The mask preserved every bit, so the value is the pointer it started as.
+        | Unchanged
+        /// The model cannot say. The reason completes the sentence "refusing to
+        /// mask <pointer> with <mask>: ...".
+        | Unanswerable of reason : string
+
+    /// `ptr &&& mask`, from the byref model alone: an unknown container start whose
+    /// low bits the runtime guarantees clear, plus a known offset from it. See
+    /// `ManagedPointerSource.tryContainerBase`.
+    let private maskByref (state : IlMachineState) (ptr : ManagedPointerSource) (mask : int64) : ByrefMask =
+        match ptr with
+        // A null byref and the `Unsafe.AsRef<T>((void*)bits)` placeholder are
+        // values rather than unknown addresses: their bits are known exactly, so
+        // there is no base to reason about.
+        | ManagedPointerSource.Null -> ByrefMask.Bits 0L
+        | ManagedPointerSource.NativeIntPlaceholder bits -> ByrefMask.Bits (bits &&& mask)
+        | ManagedPointerSource.Byref _ ->
+
+        // A byref whose container carries no alignment claim, or no stable
+        // in-container offset, is not outside the model: it is an unknown address
+        // with an *empty* known region. The decision procedure still answers the two
+        // address-independent masks from that — `p & 0` is zero and `p & -1` is the
+        // identity, whatever the address — and refuses the rest. Rejecting outright
+        // would refuse something answerable, which is the one thing this is not
+        // allowed to do.
+        let containerBase, inContainerOffset =
+            match ManagedPointerSource.tryContainerBase ptr, tryManagedPointerAddressBits state ptr with
+            | Some containerBase, Some offset -> containerBase, offset
+            | _ ->
+                {
+                    AlignmentBits = 0
+                    HeaderBytes = 0L
+                },
+                0L
+
+        // The offset is measured from the *container start*, so the header has to
+        // join it: a string's characters are `object + 12 + 2k`, and it is the 12
+        // that makes them 4 mod 8 rather than 0.
+        let offsetFromBase = containerBase.HeaderBytes + inContainerOffset
+
+        match TaggedPointerBits.bitAndOffsetFromAlignedBase containerBase.AlignmentBits offsetFromBase mask with
+        | TaggedPointerBitsResult.TagBitsOnly bits ->
+            Debug.Assert (
+                (bits &&& ~~~(TaggedPointerBits.tagMask containerBase.AlignmentBits)) = 0L,
+                $"masked byref bits 0x%x{bits} escape the %i{containerBase.AlignmentBits}-bit alignment region"
+            )
+
+            ByrefMask.Bits bits
+        | TaggedPointerBitsResult.Retagged newLowBits when
+            newLowBits = (offsetFromBase &&& TaggedPointerBits.tagMask containerBase.AlignmentBits)
+            ->
+            ByrefMask.Unchanged
+        | TaggedPointerBitsResult.Retagged _ ->
+            // Align-down (`p & ~7`). The answer is a *different* byref, which would
+            // have to be expressed by walking the offset back; PawPrint has no
+            // consumer for that yet, so refuse rather than approximate.
+            ByrefMask.Unanswerable
+                "the result is the same container at a lower offset, which PawPrint does not yet re-express as a byref"
+        | TaggedPointerBitsResult.NotStatable ->
+            if containerBase.AlignmentBits = 0 then
+                ByrefMask.Unanswerable
+                    "PawPrint claims no alignment for this byref's container, so only masks of 0 and -1 are answerable"
+            else
+                ByrefMask.Unanswerable
+                    $"the result would depend on address bits above the container's guaranteed %i{containerBase.AlignmentBits}-bit alignment"
+
+    let private byrefMaskRefusal (ptr : ManagedPointerSource) (mask : int64) (reason : string) : string =
+        $"And: refusing to mask managed pointer %O{ptr} with 0x%x{mask}: %s{reason}"
+
+    /// `ptr &&& mask` where the pointer occupies a pointer-shaped stack slot, so an
+    /// unchanged result is still that pointer.
     let private andManagedPointerAddressBits
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
+        (unchanged : EvalStackValue)
         (mask : int64)
         : EvalStackValue
         =
-        match tryManagedPointerAddressBits state ptr with
-        | Some bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
-        | None -> failwith $"And: refusing to convert managed pointer %O{ptr} to integer bits"
+        match maskByref state ptr mask with
+        | ByrefMask.Bits bits -> NativeIntSource.Verbatim bits |> EvalStackValue.NativeInt
+        | ByrefMask.Unchanged -> unchanged
+        | ByrefMask.Unanswerable reason -> failwith (byrefMaskRefusal ptr mask reason)
+
+    /// `ptr &&& mask` where `conv.i8` has widened the byref (see
+    /// `Int64Source.WidenedNativeInt`). This is the 64-bit twin of
+    /// `andNarrowedManagedPointerBits`: `UnicodeEncoding.GetByteCount` gates its
+    /// vectorised loop on `(unchecked((long)chars) & 7) == 0` where the 32-bit build
+    /// masks 3, and the two must answer alike.
+    let private andWidenedManagedPointerBits
+        (state : IlMachineState)
+        (ptr : ManagedPointerSource)
+        (signed : bool)
+        (mask : int64)
+        : EvalStackValue
+        =
+        match maskByref state ptr mask with
+        | ByrefMask.Bits bits -> Int64Source.Verbatim bits |> EvalStackValue.Int64
+        | ByrefMask.Unchanged ->
+            Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, signed)
+            |> EvalStackValue.Int64
+        | ByrefMask.Unanswerable reason -> failwith (byrefMaskRefusal ptr mask reason)
 
     /// Mask a type-handle-shaped pointer, if the model can state the answer.
     /// PawPrint models no address for a `MethodTable*` or a `TypeDesc*`, so the
@@ -136,56 +236,23 @@ module NullaryIlOp =
     /// and the truncation does not change the answer, because every bit the mask is
     /// allowed to select lies inside the alignment region, far below the width that
     /// was discarded.
+    /// `ptr &&& mask` where `conv.i4` / `conv.u4` has truncated the byref (see
+    /// `Int32Source.NarrowedManagedPointer`). The truncation does not change the
+    /// answer: every bit the mask is allowed to select lies inside the container's
+    /// alignment region, far below the width that was discarded.
     let private andNarrowedManagedPointerBits
         (state : IlMachineState)
         (ptr : ManagedPointerSource)
         (mask : int64)
         : Int32Source
         =
-        let refuse (reason : string) : Int32Source =
+        match maskByref state ptr mask with
+        // `Bits` only ever names bits inside the alignment region, so narrowing
+        // to int32 is exact.
+        | ByrefMask.Bits bits -> int32<int64> bits |> Int32Source.Verbatim
+        | ByrefMask.Unchanged -> Int32Source.NarrowedManagedPointer ptr
+        | ByrefMask.Unanswerable reason ->
             failwith $"And: refusing to mask managed pointer %O{ptr}, truncated to 32 bits, with 0x%x{mask}: %s{reason}"
-
-        // A byref whose container has no alignment claim, or no stable in-container
-        // offset, is not outside the model: it is an unknown address with an *empty*
-        // tag region. `TaggedPointerBits` still answers the two address-independent
-        // masks from that — `p & 0` is zero and `p & -1` is the identity, whatever
-        // the address — and refuses the rest. Rejecting outright would be a refusal
-        // of something answerable, which is the one thing this decision procedure is
-        // not allowed to do.
-        let alignmentBits, offset =
-            match ManagedPointerSource.tryContainerAlignmentBits ptr, tryManagedPointerAddressBits state ptr with
-            | Some alignmentBits, Some offset -> alignmentBits, offset
-            | _ -> 0, 0L
-
-        match TaggedPointerBits.bitAndOffsetFromAlignedBase alignmentBits offset mask with
-        | TaggedPointerBitsResult.TagBitsOnly bits ->
-            // `TagBitsOnly` only fires when the mask selects nothing above the
-            // container's alignment, so `bits` is a handful of low bits and the
-            // narrowing to int32 is exact.
-            Debug.Assert (
-                (bits &&& ~~~(TaggedPointerBits.tagMask alignmentBits)) = 0L,
-                $"masked byref bits 0x%x{bits} escape the %i{alignmentBits}-bit alignment region"
-            )
-
-            int32<int64> bits |> Int32Source.Verbatim
-        | TaggedPointerBitsResult.Retagged newLowBits when
-            newLowBits = (offset &&& TaggedPointerBits.tagMask alignmentBits)
-            ->
-            // The mask preserved every bit, so the value is unchanged.
-            Int32Source.NarrowedManagedPointer ptr
-        | TaggedPointerBitsResult.Retagged _ ->
-            // Align-down (`p & ~7`). The answer is a *different* byref, which would
-            // have to be expressed by walking the offset back; PawPrint has no
-            // consumer for that yet, so refuse rather than approximate.
-            refuse
-                "the result is the same container at a lower offset, which PawPrint does not yet re-express as a byref"
-        | TaggedPointerBitsResult.NotStatable ->
-            if alignmentBits = 0 then
-                refuse
-                    "PawPrint claims no alignment for this byref's container, so only masks of 0 and -1 are answerable"
-            else
-                refuse
-                    $"the result would depend on address bits above the container's guaranteed %i{alignmentBits}-bit alignment"
 
     let private andNativeIntAddressBits
         (state : IlMachineState)
@@ -195,7 +262,8 @@ module NullaryIlOp =
         =
         match source with
         | NativeIntSource.Verbatim bits -> NativeIntSource.Verbatim (bits &&& mask) |> EvalStackValue.NativeInt
-        | NativeIntSource.ManagedPointer ptr -> andManagedPointerAddressBits state ptr mask
+        | NativeIntSource.ManagedPointer ptr ->
+            andManagedPointerAddressBits state ptr (EvalStackValue.NativeInt source) mask
         | NativeIntSource.GcHandlePtr (handle, tag) ->
             gcHandleTagOp "And" TaggedPointerBits.bitAnd handle tag mask
             |> EvalStackValue.NativeInt
@@ -2202,13 +2270,27 @@ module NullaryIlOp =
                     v1 &&& v2 |> Int32Source.Verbatim |> EvalStackValue.Int32, state
                 | EvalStackValue.Int32 (Int32Source.Verbatim mask),
                   EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    int64<int32> mask |> andManagedPointerAddressBits state ptr, state
+                    andManagedPointerAddressBits state ptr v2 (int64<int32> mask), state
                 | EvalStackValue.Int32 (Int32Source.Verbatim v1), EvalStackValue.NativeInt (NativeIntSource.Verbatim v2) ->
                     int64<int32> v1 &&& v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
                 | EvalStackValue.Int32 (Int32Source.Verbatim mask), EvalStackValue.NativeInt src ->
                     andNativeIntAddressBits state src (int64<int32> mask), state
                 | EvalStackValue.Int32 (Int32Source.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
-                    int64<int32> mask |> andManagedPointerAddressBits state ptr, state
+                    andManagedPointerAddressBits state ptr v2 (int64<int32> mask), state
+                // The 64-bit spelling of the same alignment test, which is what
+                // `#if TARGET_64BIT` selects: `(unchecked((long)chars) & 7) == 0`
+                // in `UnicodeEncoding.GetByteCount`. `conv.i8` kept the byref
+                // alive in the int64 slot precisely so this could be asked.
+                | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, signed)),
+                  EvalStackValue.Int64 (Int64Source.Verbatim mask)
+                | EvalStackValue.Int64 (Int64Source.Verbatim mask),
+                  EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer ptr, signed)) ->
+                    andWidenedManagedPointerBits state ptr signed mask, state
+                // Two widened byrefs: `p & q` would need both addresses.
+                | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer p1, _)),
+                  EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer p2, _)) ->
+                    failwith
+                        $"And: refusing to mask one widened managed pointer with another (%O{p1} and %O{p2}); the result would depend on both containers' addresses, which PawPrint does not model"
                 | EvalStackValue.Int64 v1, EvalStackValue.Int64 v2 ->
                     let r, counters = Int64Source.bitAnd "And" v1 v2 state.PointerHashState
 
@@ -2216,30 +2298,34 @@ module NullaryIlOp =
                     { state with
                         PointerHashState = counters
                     }
-                | EvalStackValue.Int64 mask, EvalStackValue.ManagedPointer ptr -> failwith "TODO"
-                // andManagedPointerAddressBits state ptr mask
-                | EvalStackValue.Int64 mask, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    // andManagedPointerAddressBits state ptr mask
-                    failwith "TODO"
+                // A byref in a pointer-shaped slot against an int64 mask. Only a
+                // constant mask is answerable; anything else is asking about an
+                // address rather than about the low bits of one.
+                | EvalStackValue.Int64 (Int64Source.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
+                    andManagedPointerAddressBits state ptr v2 mask, state
+                | EvalStackValue.Int64 (Int64Source.Verbatim mask),
+                  EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
+                    andManagedPointerAddressBits state ptr v2 mask, state
                 | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int32 (Int32Source.Verbatim mask) ->
-                    int64<int32> mask |> andManagedPointerAddressBits state ptr, state
-                | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 mask ->
-                    // andManagedPointerAddressBits state ptr mask
-                    failwith "TODO"
-                | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
+                    andManagedPointerAddressBits state ptr v1 (int64<int32> mask), state
+                | EvalStackValue.ManagedPointer ptr, EvalStackValue.Int64 (Int64Source.Verbatim mask) ->
+                    andManagedPointerAddressBits state ptr v1 mask, state
+                | EvalStackValue.ManagedPointer ptr, EvalStackValue.NativeInt (NativeIntSource.Verbatim mask) ->
+                    andManagedPointerAddressBits state ptr v1 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask), EvalStackValue.ManagedPointer ptr ->
-                    andManagedPointerAddressBits state ptr mask, state
+                    andManagedPointerAddressBits state ptr v2 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
                   EvalStackValue.Int32 (Int32Source.Verbatim mask) ->
-                    int64<int32> mask |> andManagedPointerAddressBits state ptr, state
-                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr), EvalStackValue.Int64 mask ->
-                    // andManagedPointerAddressBits state ptr mask
-                    failwith "TODO"
+                    andManagedPointerAddressBits state ptr v1 (int64<int32> mask), state
                 | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
-                  EvalStackValue.NativeInt (NativeIntSource.Verbatim mask)
+                  EvalStackValue.Int64 (Int64Source.Verbatim mask) ->
+                    andManagedPointerAddressBits state ptr v1 mask, state
+                | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr),
+                  EvalStackValue.NativeInt (NativeIntSource.Verbatim mask) ->
+                    andManagedPointerAddressBits state ptr v1 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim mask),
                   EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ptr) ->
-                    andManagedPointerAddressBits state ptr mask, state
+                    andManagedPointerAddressBits state ptr v2 mask, state
                 | EvalStackValue.NativeInt (NativeIntSource.Verbatim v1), EvalStackValue.Int32 (Int32Source.Verbatim v2) ->
                     v1 &&& int64<int32> v2 |> NativeIntSource.Verbatim |> EvalStackValue.NativeInt, state
                 | EvalStackValue.NativeInt src, EvalStackValue.Int32 (Int32Source.Verbatim mask) ->

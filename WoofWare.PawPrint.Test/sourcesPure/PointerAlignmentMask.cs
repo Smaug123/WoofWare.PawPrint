@@ -13,8 +13,12 @@ using System.Runtime.InteropServices;
 //
 //   * CoreCLR allocates objects 8-byte aligned on x64 and puts SZARRAY data at a
 //     16-byte header offset, so `&arr[k]` has low three bits `k * sizeof(T)`.
-//   * String character data sits at object + 12 (MethodTable* + length), so it is
-//     4-byte aligned — hence masks up to 3, and no further.
+//   * String character data sits at a fixed object + 12 (MethodTable* + length), so
+//     from an 8-byte-aligned object it is 4 mod 8 — determined, and never 8-byte
+//     aligned. Masks up to 7 are therefore answerable; 15 is not, because objects
+//     are 8-byte aligned and not 16. Measured in
+//     docs/probes/byref-alignment/, 200 samples on each of macOS arm64 and
+//     linux-x64: `&s[0] & 7` is 4 every time, while `& 15` takes both 4 and 12.
 //   * `NativeMemory.Alloc` is `malloc`, which is aligned for any fundamental type
 //     (16 bytes on x64), so masks up to 7 are safe.
 //   * `stackalloc` has no documented alignment beyond the stack's own, so only the
@@ -81,13 +85,73 @@ unsafe class PointerAlignmentMask
         string s = "hello";
         fixed (char* p = s)
         {
-            // String data is only 4-byte aligned, so 3 is the widest honest mask.
             if (((int)p & 3) != 0)
                 return 30;
             if (((int)(p + 1) & 3) != 2)
                 return 31;
             if (((int)(p + 2) & 3) != 0)
                 return 32;
+
+            // The 12-byte header is what makes these 4 rather than 0: a string's
+            // characters are the one container start that is *not* 8-byte aligned.
+            if (((int)p & 7) != 4)
+                return 33;
+            if (((int)(p + 1) & 7) != 6)
+                return 34;
+            if (((int)(p + 2) & 7) != 0)
+                return 35;
+            if (((int)(p + 3) & 7) != 2)
+                return 36;
+            // Wrapping back into the same residue one 8-byte block later.
+            if (((int)(p + 4) & 7) != 4)
+                return 37;
+        }
+
+        return 0;
+    }
+
+    /// The same masks through the three widths managed code writes them in. The
+    /// answer cannot depend on which cast the guest used to get to the integer
+    /// domain: `conv.i4`, `conv.i` and `conv.i8` all ask the same question.
+    ///
+    /// `UnicodeEncoding.GetByteCount` gates its vectorised loop on exactly the
+    /// 64-bit form of this, `(unchecked((long)chars) & 7) == 0`, which for a
+    /// string is false on every run of every real .NET.
+    static int TestMaskWidths()
+    {
+        string s = "hello";
+        fixed (char* p = s)
+        {
+            if ((((nint)p) & 7) != 4)
+                return 70;
+            if ((((long)p) & 7) != 4)
+                return 71;
+            if ((((nint)p) & 3) != 0)
+                return 72;
+            if ((((long)p) & 3) != 0)
+                return 73;
+            if ((((nint)p) & 1) != 0)
+                return 74;
+            if ((((long)p) & 1) != 0)
+                return 75;
+
+            // The gate itself.
+            if (((long)p & 7) == 0)
+                return 76;
+        }
+
+        byte[] bytes = new byte[8];
+        fixed (byte* q = bytes)
+        {
+            // Array data *is* 8-byte aligned, so the same masks answer 0 here —
+            // which is what stops these rows passing for a model that simply
+            // reports "unaligned" for everything.
+            if ((((nint)q) & 7) != 0)
+                return 77;
+            if ((((long)q) & 7) != 0)
+                return 78;
+            if ((((long)(q + 3)) & 7) != 3)
+                return 79;
         }
 
         return 0;
@@ -157,6 +221,10 @@ unsafe class PointerAlignmentMask
             return result;
 
         result = TestIntArrayElements();
+        if (result != 0)
+            return result;
+
+        result = TestMaskWidths();
         if (result != 0)
             return result;
 

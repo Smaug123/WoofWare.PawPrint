@@ -696,6 +696,28 @@ type ByteAddressDeltaSign =
     | Decided of sign : int
     | NeedsByteLocation of left : ManagedPointerSource * right : ManagedPointerSource * diagnostic : string
 
+/// The base a byref's address is measured from, when PawPrint will not name that
+/// address: a container whose start the real runtime guarantees to be aligned, and
+/// the distance from that start to the container's first data byte.
+///
+/// Two byrefs with the same base and the same in-container offset have the same low
+/// address bits, whatever the base turns out to be — which is what lets
+/// `TaggedPointerBits.bitAndOffsetFromAlignedBase` answer an alignment mask without
+/// an address.
+type ByrefContainerBase =
+    {
+        /// Low bits of the container start that the runtime guarantees to be zero.
+        AlignmentBits : int
+        /// Distance from that start to the container's first data byte.
+        ///
+        /// Claimed only modulo `2^AlignmentBits`, which is all a mask that this
+        /// model can answer will ever select: an SZARRAY's header is exactly 16,
+        /// while a multi-dimensional array adds two `int`s of bounds per rank — a
+        /// further multiple of 8 — so the two agree on every bit that can be asked
+        /// about.
+        HeaderBytes : int64
+    }
+
 [<RequireQualifiedAccess>]
 module ManagedPointerSource =
     /// A *bit-pattern byref* is one that carries a raw native-int value rather
@@ -946,47 +968,70 @@ module ManagedPointerSource =
             foldCursor (int64<int> peByteRange.RelativeVirtualAddress) projs
         | ManagedPointerSource.Byref _ -> None
 
-    /// How many low bits of a byref's *container start* address the real runtime
-    /// guarantees to be zero, for the roots whose container alignment PawPrint is
-    /// willing to claim. `None` means "no claim": nothing may be said about that
-    /// byref's low address bits.
+    /// The base a byref's address is measured from, for the roots whose container
+    /// PawPrint is willing to make a claim about. `None` means "no claim": nothing
+    /// may be said about that byref's low address bits.
     ///
-    /// This is the alignment half of the byref model — a container whose address is
-    /// unknown, plus a known in-container byte offset (`tryStableAddressBits` and
-    /// its array/string counterpart in `NullaryIlOp`). Together they let
+    /// This is the alignment half of the byref model — an unknown base plus a known
+    /// in-container byte offset (`tryStableAddressBits` and its array/string
+    /// counterpart in `NullaryIlOp`). Together they let
     /// `TaggedPointerBits.bitAndOffsetFromAlignedBase` answer the alignment masks
     /// managed code writes, without inventing an address. Every number below is a
     /// guarantee the runtime makes, not an observation of a particular run, and
     /// each is deliberately conservative: claiming *fewer* bits only ever refuses
     /// more questions.
     ///
+    /// The base is the *object*, not the data start, and that distinction is the
+    /// whole point: a string's characters are 4 mod 8, and stating them as
+    /// "4-byte-aligned data" instead of "8-byte-aligned object plus a 12-byte
+    /// header" loses the one bit that separates the two.
+    ///
     /// All of these assume the 64-bit object layout, which is the only one PawPrint
-    /// models (`NativeIntSource` is 64-bit throughout).
-    let tryContainerAlignmentBits (src : ManagedPointerSource) : int option =
+    /// models (`NativeIntSource` is 64-bit throughout). Measured in
+    /// `docs/probes/byref-alignment/`, on macOS arm64 and linux-x64 alike.
+    let tryContainerBase (src : ManagedPointerSource) : ByrefContainerBase option =
         match src with
         // Not "unknown base plus offset": these have exact, fully-known bit
-        // patterns, and callers must use those rather than an alignment claim.
+        // patterns, and callers must use those rather than a base claim.
         | ManagedPointerSource.Null
         | ManagedPointerSource.NativeIntPlaceholder _ -> None
         // The GC allocates objects 8-byte aligned on 64-bit, and an SZARRAY's
         // element data begins after a 16-byte header (`MethodTable*` plus a 4-byte
-        // component count and 4 bytes of padding). Multi-dimensional arrays add two
-        // `int`s of bounds per rank, i.e. a further multiple of 8. So array data
-        // starts 8-byte aligned in every case.
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) -> Some 3
+        // component count and 4 bytes of padding).
+        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, _) ->
+            {
+                AlignmentBits = 3
+                HeaderBytes = 16L
+            }
+            |> Some
         // A string's character data begins at object + 12 (`MethodTable*` plus a
-        // 4-byte length), so from an 8-byte-aligned object it is 4-byte aligned —
-        // and no better. This is the one container where the obvious 8-byte guess
-        // would be wrong.
-        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, _) -> Some 2
+        // 4-byte length). This is the one container whose data start is not itself
+        // 8-byte aligned.
+        | ManagedPointerSource.Byref (ByrefRoot.StringCharAt _, _) ->
+            {
+                AlignmentBits = 3
+                HeaderBytes = 12L
+            }
+            |> Some
         // The stack pointer is kept 16-byte aligned on both x64 and arm64, and the
         // JIT rounds a `localloc` up to the stack alignment, so a localloc block
-        // starts at least 8-byte aligned.
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) -> Some 3
+        // starts at least 8-byte aligned. The block's first byte is its base, so
+        // there is no header.
+        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte _, _) ->
+            {
+                AlignmentBits = 3
+                HeaderBytes = 0L
+            }
+            |> Some
         // `NativeMemory.Alloc` / `Marshal.AllocHGlobal` bottom out in `malloc`,
         // which returns storage aligned for any fundamental type — 16 bytes on
         // 64-bit targets.
-        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) -> Some 3
+        | ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte _, _) ->
+            {
+                AlignmentBits = 3
+                HeaderBytes = 0L
+            }
+            |> Some
         // A PE image is mapped at a page-aligned base and its sections at their
         // RVAs, so the low bits of an RVA are the low bits of the mapped address —
         // but only for the variants whose RVA means that. `FieldSignatureBlob` lives
@@ -996,7 +1041,12 @@ module ManagedPointerSource =
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
             match peByteRange.Source with
             | PeByteRangePointerSource.FieldRva _
-            | PeByteRangePointerSource.ManagedResource _ -> Some 3
+            | PeByteRangePointerSource.ManagedResource _ ->
+                {
+                    AlignmentBits = 3
+                    HeaderBytes = 0L
+                }
+                |> Some
             | PeByteRangePointerSource.FieldSignatureBlob _
             | PeByteRangePointerSource.MethodSignatureBlob _
             | PeByteRangePointerSource.PropertySignatureBlob _
@@ -1004,7 +1054,7 @@ module ManagedPointerSource =
         // Object fields, static fields, stack slots and the synthetic roots have no
         // stable in-container offset either (see `tryStableAddressBits` and
         // `NullaryIlOp.tryManagedPointerAddressBits`), so there is nothing to pair
-        // an alignment claim with.
+        // a base claim with.
         | ManagedPointerSource.Byref _ -> None
 
     let appendProjection (projection : ByrefProjection) (src : ManagedPointerSource) : ManagedPointerSource =

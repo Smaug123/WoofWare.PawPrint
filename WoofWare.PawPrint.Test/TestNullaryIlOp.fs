@@ -1944,6 +1944,129 @@ module TestNullaryIlOp =
         runBinary NullaryIlOp.And (EvalStackValue.Int32 (Int32Source.Verbatim 3)) (narrowed 6)
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 2))
 
+    // --- A string's characters: the one container whose data start is not aligned ---
+    //
+    // Measured in `docs/probes/byref-alignment/`: an object pointer is 8-byte
+    // aligned and a string's characters sit a fixed 12 bytes past it, so
+    // `&s[k] & 7` is `(12 + 2k) & 7` — determined, and never 0. Modelling the
+    // *data start* as 4-byte aligned instead loses bit 2, which is the bit
+    // `UnicodeEncoding.GetByteCount`'s vectorised gate asks about.
+    //
+    // A string byref needs no heap: unlike an array element, its offset is
+    // `charIndex * 2` with no stride to look up.
+
+    let private stringByref (charIndex : int) : ManagedPointerSource =
+        ManagedPointerSource.Byref (ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 1, charIndex), [])
+
+    /// The three widths managed code writes an alignment mask in. `and` must give
+    /// the same answer for all three: the cast the guest used to reach the integer
+    /// domain is not part of the question.
+    let private maskedAtEachWidth (charIndex : int) (mask : int64) : EvalStackValue list =
+        [
+            runBinary
+                NullaryIlOp.And
+                (EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer (stringByref charIndex)))
+                (EvalStackValue.Int32 (Int32Source.Verbatim (int32<int64> mask)))
+            runBinary
+                NullaryIlOp.And
+                (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref charIndex)))
+                (nativeConst mask)
+            runBinary
+                NullaryIlOp.And
+                (EvalStackValue.Int64 (
+                    Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref charIndex), true)
+                ))
+                (EvalStackValue.Int64 (Int64Source.Verbatim mask))
+        ]
+
+    [<Test>]
+    let ``a string's characters are four mod eight, at every mask width`` () : unit =
+        // The row that was silently answering 0 before the container base moved
+        // from the data start to the object.
+        for actual in maskedAtEachWidth 0 7L do
+            match actual with
+            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> int64<int32> v |> shouldEqual 4L
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim v) -> v |> shouldEqual 4L
+            | EvalStackValue.Int64 (Int64Source.Verbatim v) -> v |> shouldEqual 4L
+            | other -> failwith $"And of a string byref with 7 produced %O{other}, which names no number"
+
+    [<TestCase(0, 4L)>]
+    [<TestCase(1, 6L)>]
+    [<TestCase(2, 0L)>]
+    [<TestCase(3, 2L)>]
+    [<TestCase(4, 4L)>]
+    let ``the character index moves the low bits by two bytes each`` (charIndex : int, expected : int64) : unit =
+        for actual in maskedAtEachWidth charIndex 7L do
+            match actual with
+            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> int64<int32> v |> shouldEqual expected
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim v) -> v |> shouldEqual expected
+            | EvalStackValue.Int64 (Int64Source.Verbatim v) -> v |> shouldEqual expected
+            | other -> failwith $"And of a string byref with 7 produced %O{other}, which names no number"
+
+    [<Test>]
+    let ``the narrower masks still answer, and still agree`` () : unit =
+        // A model that simply added 12 to the offset without moving the base
+        // would get these right too; the `& 7` rows above are what separate the
+        // two. These are here so that widening the claim cannot quietly break
+        // what the 4-byte claim already answered.
+        for actual in maskedAtEachWidth 0 3L do
+            match actual with
+            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> int64<int32> v |> shouldEqual 0L
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim v) -> v |> shouldEqual 0L
+            | EvalStackValue.Int64 (Int64Source.Verbatim v) -> v |> shouldEqual 0L
+            | other -> failwith $"And of a string byref with 3 produced %O{other}, which names no number"
+
+        for actual in maskedAtEachWidth 1 3L do
+            match actual with
+            | EvalStackValue.Int32 (Int32Source.Verbatim v) -> int64<int32> v |> shouldEqual 2L
+            | EvalStackValue.NativeInt (NativeIntSource.Verbatim v) -> v |> shouldEqual 2L
+            | EvalStackValue.Int64 (Int64Source.Verbatim v) -> v |> shouldEqual 2L
+            | other -> failwith $"And of a string byref with 3 produced %O{other}, which names no number"
+
+    [<Test>]
+    let ``a sixteen-byte alignment question is refused at every width`` () : unit =
+        // Objects are 8-byte aligned and not 16 — measured, a string's characters
+        // are 4 mod 16 on some runs and 12 on others — so this one really does
+        // depend on the address. Answering it would mean inventing one.
+        for build in
+            [
+                fun () ->
+                    runBinary
+                        NullaryIlOp.And
+                        (EvalStackValue.Int32 (Int32Source.NarrowedManagedPointer (stringByref 0)))
+                        (EvalStackValue.Int32 (Int32Source.Verbatim 15))
+                fun () ->
+                    runBinary
+                        NullaryIlOp.And
+                        (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref 0)))
+                        (nativeConst 15L)
+                fun () ->
+                    runBinary
+                        NullaryIlOp.And
+                        (EvalStackValue.Int64 (
+                            Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref 0), true)
+                        ))
+                        (EvalStackValue.Int64 (Int64Source.Verbatim 15L))
+            ] do
+            let exn = Assert.Throws (fun () -> build () |> ignore<EvalStackValue>)
+            exn.Message |> shouldContainText "alignment"
+
+    [<Test>]
+    let ``an all-ones mask leaves a string byref untouched at every width`` () : unit =
+        runBinary
+            NullaryIlOp.And
+            (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref 3)))
+            (nativeConst -1L)
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (stringByref 3)))
+
+        runBinary
+            NullaryIlOp.And
+            (EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref 3), true)))
+            (EvalStackValue.Int64 (Int64Source.Verbatim -1L))
+        |> shouldEqual (
+            EvalStackValue.Int64 (Int64Source.WidenedNativeInt (NativeIntSource.ManagedPointer (stringByref 3), true))
+        )
+
     [<Test>]
     let ``an all-ones mask leaves the narrowed byref untouched`` () : unit =
         runBinary NullaryIlOp.And (narrowed 6) (EvalStackValue.Int32 (Int32Source.Verbatim -1))
@@ -2055,7 +2178,7 @@ module TestNullaryIlOp =
 
         let blob = peByteRangeByref (PeByteRangePointerSource.MethodSignatureBlob method) 0
 
-        ManagedPointerSource.tryContainerAlignmentBits blob |> shouldEqual None
+        ManagedPointerSource.tryContainerBase blob |> shouldEqual None
 
         let exn =
             Assert.Throws (fun () ->
@@ -2081,7 +2204,7 @@ module TestNullaryIlOp =
         let blob =
             peByteRangeByref (PeByteRangePointerSource.PropertySignatureBlob property) 0
 
-        ManagedPointerSource.tryContainerAlignmentBits blob |> shouldEqual None
+        ManagedPointerSource.tryContainerBase blob |> shouldEqual None
 
         let exn =
             Assert.Throws (fun () ->
@@ -2103,20 +2226,26 @@ module TestNullaryIlOp =
                 System.Reflection.Metadata.Ecma335.MetadataTokens.FieldDefinitionHandle 1
             )
 
-        ManagedPointerSource.tryContainerAlignmentBits (peByteRangeByref (PeByteRangePointerSource.FieldRva field) 6)
-        |> shouldEqual (Some 3)
+        // A PE range's RVA is measured from the image base itself, so there is no
+        // header between the two.
+        let mappedSection : ByrefContainerBase =
+            {
+                AlignmentBits = 3
+                HeaderBytes = 0L
+            }
 
-        ManagedPointerSource.tryContainerAlignmentBits (
-            peByteRangeByref (PeByteRangePointerSource.ManagedResource "r") 6
-        )
-        |> shouldEqual (Some 3)
+        ManagedPointerSource.tryContainerBase (peByteRangeByref (PeByteRangePointerSource.FieldRva field) 6)
+        |> shouldEqual (Some mappedSection)
+
+        ManagedPointerSource.tryContainerBase (peByteRangeByref (PeByteRangePointerSource.ManagedResource "r") 6)
+        |> shouldEqual (Some mappedSection)
 
         // A signature blob lives in the metadata `#Blob` heap, and fixes its RVA at
         // 0 as a placeholder. Claiming alignment there would turn the byte cursor
         // into fabricated address bits.
         let blob = peByteRangeByref (PeByteRangePointerSource.FieldSignatureBlob field) 0
 
-        ManagedPointerSource.tryContainerAlignmentBits blob |> shouldEqual None
+        ManagedPointerSource.tryContainerBase blob |> shouldEqual None
 
         let exn =
             Assert.Throws (fun () ->
@@ -2510,9 +2639,15 @@ module TestNullaryIlOp =
             | other -> failwith $"Expected And to leave one stack value, got %O{other}"
         | other -> failwith $"Expected And to step, got %O{other}"
 
-    /// The byte offset `And` computes for element `index` of a fresh `elementType[len]`,
-    /// recovered by masking with -1 (which preserves every bit).
-    let private elementByteOffset
+    /// The low three address bits `And` computes for element `index` of a fresh
+    /// `elementType[len]`.
+    ///
+    /// Three bits is the whole of what the model can express here, and it is enough
+    /// to see the stride: an SZARRAY's 16-byte header contributes nothing modulo 8,
+    /// so these bits are `index * stride` modulo 8, and element types of different
+    /// widths separate at the same index. Masking with -1 to recover the full offset
+    /// would not do — `p & -1` is the pointer, not a number.
+    let private elementLowAddressBits
         (elementType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (len : int)
         (index : int)
@@ -2530,7 +2665,7 @@ module TestNullaryIlOp =
                     ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
                     |> EvalStackValue.ManagedPointer
 
-                state, ptr, nativeConst -1L
+                state, ptr, nativeConst 7L
             )
 
         match result with
@@ -2539,29 +2674,30 @@ module TestNullaryIlOp =
 
     [<Test>]
     let ``And scales an array-element index by the element's stride`` () : unit =
-        elementByteOffset baseClassTypes.Int32 4 2
-        |> shouldEqual (2L * int64 sizeof<int32>)
+        // One index, four element widths: the answers separate exactly as the
+        // strides do, which they could not if the index were not being scaled.
+        elementLowAddressBits baseClassTypes.Byte 8 1 |> shouldEqual 1L
+        elementLowAddressBits baseClassTypes.Char 8 1 |> shouldEqual 2L
+        elementLowAddressBits baseClassTypes.Int32 8 1 |> shouldEqual 4L
+        elementLowAddressBits baseClassTypes.Int64 8 1 |> shouldEqual 0L
 
-        elementByteOffset baseClassTypes.Int64 4 3
-        |> shouldEqual (3L * int64 sizeof<int64>)
+        elementLowAddressBits baseClassTypes.Byte 8 3 |> shouldEqual 3L
+        elementLowAddressBits baseClassTypes.Int32 8 3 |> shouldEqual 4L
 
-        elementByteOffset baseClassTypes.Byte 4 3
-        |> shouldEqual (3L * int64 sizeof<byte>)
+        // Element 0 is the data start, which an SZARRAY's 16-byte header leaves
+        // 8-byte aligned — unlike a string's characters.
+        elementLowAddressBits baseClassTypes.Int32 8 0 |> shouldEqual 0L
 
     [<Test>]
     let ``And answers for an empty array, at every index rather than only zero`` () : unit =
-        elementByteOffset baseClassTypes.Int32 0 0 |> shouldEqual 0L
-
-        elementByteOffset baseClassTypes.Int32 0 2
-        |> shouldEqual (2L * int64 sizeof<int32>)
-
-        elementByteOffset baseClassTypes.Int64 0 3
-        |> shouldEqual (3L * int64 sizeof<int64>)
+        elementLowAddressBits baseClassTypes.Int32 0 0 |> shouldEqual 0L
+        elementLowAddressBits baseClassTypes.Int32 0 1 |> shouldEqual 4L
+        elementLowAddressBits baseClassTypes.Byte 0 3 |> shouldEqual 3L
 
         // The empty array must agree with the populated one of the same element type: the
         // offset is a fact about the element type, not about how many cells exist.
-        elementByteOffset baseClassTypes.Int32 0 2
-        |> shouldEqual (elementByteOffset baseClassTypes.Int32 8 2)
+        elementLowAddressBits baseClassTypes.Int32 0 1
+        |> shouldEqual (elementLowAddressBits baseClassTypes.Int32 8 1)
 
     // --- initblk operand refusals ---
     //
