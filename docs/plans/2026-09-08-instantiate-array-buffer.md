@@ -141,6 +141,17 @@ attributes on the result type's fields. That is the next feature.
 
 ## Outcome
 
+**#1417 landed first.** While this branch was being written, PR #1417 ("Read a multi-argument
+`MakeGenericType`'s handle buffer as the pinned `IntPtr[]` it is", motivated by Fantomas 7's
+`--version`, not the ladder) fixed the same stop with option A: one more arm for the
+array-element-under-`IntPtr`-view shape, striding through `addByteOffsetToByteView`, plus a
+two- and three-argument guest (`MakeGenericTypeMultipleArguments.cs`). So the rung J stop this
+plan measured is already closed on main, and this branch, rebased over #1417, is now the
+generalisation alone: the enumeration of buffer shapes (including #1417's arm) becomes the one
+arithmetic rule, and the guest adds the five-argument, constraint-violation and
+`Activator.CreateInstance` checks #1417's guest does not have. Whether that generalisation is
+wanted as its own change is a judgement about the classifier, not about rung J.
+
 Option C held and the fallback was not needed: with the enumeration replaced by
 `addByteOffset` under the `IntPtr` view, the new guest passes and so does every guest through
 the other users of the classifier (`GetFields`, `CreateInstanceForAnotherGenericParameter`, the
