@@ -343,34 +343,32 @@ module ArithmeticOperation =
             // before it can move a cell index. The three sibling arms above and below already
             // read it that way. Measured against the real runtime (`TestFabricatedArrayByrefAdd`)
             // that `ldelema char; ldc.i4.4; add; ldind.u2` reads element 2, not element 4.
+            // Dividing `v` by the stride here would duplicate what the byte-view normalisation
+            // does anyway, floor semantics included, so the offset goes on as bytes and the cell
+            // index is recovered from the result. The index is still checked separately for the
+            // int32 overflow this model has no room for.
             let elementSize = ManagedPointerByteView.arrayElementSize state arr
+            checkedAddInt32 "array index" index (v / elementSize) |> ignore<int>
 
-            // Floor division, so a negative advance lands the residue in `[0, elementSize)`.
-            // The product cannot overflow: `q` is the truncated quotient, so `q * elementSize`
-            // is no larger in magnitude than `v`.
-            let cellAdvance, residue =
-                let q = v / elementSize
-                let r = v - q * elementSize
-                if r < 0 then q - 1, r + elementSize else q, r
+            let byteType = byteConcreteType baseClassTypes state
 
-            let index = checkedAddInt32 "array index" index cellAdvance
+            let advanced =
+                ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
+                |> ManagedPointerByteView.addByteOffset state byteType v
 
-            let advanced = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
-
-            if residue = 0 then
-                // A whole-cell advance keeps the natural element byref. That matters beyond
-                // tidiness: the cells of a reference array have no byte image, so a byte cursor
-                // left over one could not be dereferenced at all, and `&a[1]` on an `object[]`
-                // is an ordinary managed pointer on the real runtime.
+            match advanced with
+            | ManagedPointerSource.Byref (root, [ ByrefProjection.ReinterpretAs _ ]) ->
+                // The whole advance folded into the cell index with nothing left over, so the
+                // address is a cell boundary and the byte view can go. That matters beyond
+                // tidiness: the cells of a reference array have no byte image, so a cursor left
+                // over one could not be dereferenced, and `&a[1]` on an `object[]` is an
+                // ordinary managed pointer on the real runtime.
+                ManagedPointerSource.Byref (root, []) |> Choice1Of2
+            | _ ->
+                // Mid-cell, so a byte cursor is the honest representation. Whether those bytes
+                // can be read is a question for the access, which refuses cells holding
+                // references.
                 Choice1Of2 advanced
-            else
-                // Mid-cell, so the honest view is bytes. Whether those bytes can be read is a
-                // question for the access, which refuses for cells that hold references.
-                let byteType = byteConcreteType baseClassTypes state
-
-                advanced
-                |> ManagedPointerByteView.addByteOffset state byteType residue
-                |> Choice1Of2
         | ArithmeticTarget.StringTarget (str, charIndex) ->
             let charType = charConcreteType baseClassTypes state
 
