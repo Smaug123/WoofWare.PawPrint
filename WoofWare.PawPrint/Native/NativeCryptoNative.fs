@@ -80,7 +80,7 @@ module NativeCryptoNative =
         | EvpPointerArgument.Md algorithm -> algorithm
         | EvpPointerArgument.Null ->
             failwith
-                $"%s{operation}: %s{argName} is a null EVP_MD. CoreLib never passes one: HashAlgorithmToEvp throws for a name it has no EVP_MD for, so this is a hand-rolled P/Invoke. Pass the EVP_MD CryptoNative_EvpSha256 returns."
+                $"%s{operation}: %s{argName} is a null EVP_MD. CoreLib never passes one: HashAlgorithmToEvp throws for a name it has no EVP_MD for, so this is a hand-rolled P/Invoke. Whether the shim screens a null type or hands it to EVP_DigestInit_ex -- which OpenSSL documents as reusing the context's existing digest -- is not decidable from the pinned source, since pal_evp.c is outside its sparse checkout; widen that checkout and answer this from the C rather than guessing. Pass the EVP_MD CryptoNative_EvpSha256 returns."
         | EvpPointerArgument.MdCtx handle ->
             failwith
                 $"%s{operation}: %s{argName} is %O{handle}, which is an EVP_MD_CTX rather than an EVP_MD. Pass the EVP_MD CryptoNative_EvpSha256 returns."
@@ -91,7 +91,7 @@ module NativeCryptoNative =
         | EvpPointerArgument.MdCtx handle -> handle
         | EvpPointerArgument.Null ->
             failwith
-                $"%s{operation}: %s{argName} is a null EVP_MD_CTX. CoreLib never marshals one: CheckValidOpenSslHandle rejects an invalid SafeEvpMdCtxHandle at creation, so this is a hand-rolled P/Invoke, and a real run would fault here."
+                $"%s{operation}: %s{argName} is a null EVP_MD_CTX. CoreLib never marshals one: CheckValidOpenSslHandle rejects an invalid SafeEvpMdCtxHandle at creation, so this is a hand-rolled P/Invoke. Whether the shim screens the null or dereferences it is not decidable from the pinned source, since pal_evp.c is outside its sparse checkout; widen that checkout and answer this from the C rather than guessing."
         | EvpPointerArgument.Md algorithm ->
             failwith
                 $"%s{operation}: %s{argName} is the EVP_MD for %O{algorithm} rather than an EVP_MD_CTX. Pass a context from CryptoNative_EvpMdCtxCreate/CopyEx."
@@ -105,8 +105,10 @@ module NativeCryptoNative =
     /// out-parameters.
     ///
     /// Both must name storage: `md` is written unconditionally by OpenSSL, and `s` by the shim
-    /// on success. CoreLib always passes a pinned span and a local for them; what a real run
-    /// does with a null `s` is not in the pinned source, so it is refused rather than guessed.
+    /// on success. CoreLib always passes a pinned span and a local for them (both are `ref`
+    /// parameters), so only a hand-rolled P/Invoke reaches here with a null. What the shim does
+    /// with one is not decidable from the pinned source -- `pal_evp.c` is outside its sparse
+    /// checkout -- so it is refused rather than guessed.
     let private writeDigest
         (ctx : NativeCallContext)
         (operation : string)
@@ -215,8 +217,10 @@ module NativeCryptoNative =
             withRegistry registry state
             |> pushNativeInt (NativeIntSource.EvpMdCtxPtr handle) ctx
             |> Some
-        // `void CryptoNative_EvpMdCtxDestroy(EVP_MD_CTX* ctx)`: `EVP_MD_CTX_free`, which is
-        // documented as a no-op on NULL.
+        // `void CryptoNative_EvpMdCtxDestroy(EVP_MD_CTX* ctx)`: `EVP_MD_CTX_free`. Null is the
+        // one argument here whose answer does not depend on the shim's unread C: OpenSSL
+        // documents `EVP_MD_CTX_free(NULL)` as a no-op, so a null screen and a pass-through
+        // agree.
         | Some "CryptoNative_EvpMdCtxDestroy", [ ConcreteIntPtr state.ConcreteTypes ], MethodReturnType.Void ->
             let operation = "CryptoNative_EvpMdCtxDestroy"
 
@@ -255,7 +259,7 @@ module NativeCryptoNative =
 
             if count < 0 then
                 failwith
-                    $"%s{operation}: EVP_MD_CTX %O{handle} was given cnt %d{count}, which is negative. The shim casts that to a size_t of several exabytes and OpenSSL reads that far; CoreLib passes a span's length, so this is a hand-rolled P/Invoke."
+                    $"%s{operation}: %O{handle} was given cnt %d{count}, which is negative. CoreLib passes a span's length, so this is a hand-rolled P/Invoke, and what the shim does with a negative count -- screen it, or widen it to a size_t and read that far -- is not decidable from the pinned source, since pal_evp.c is outside its sparse checkout."
 
             // Zero bytes read nothing, so the buffer is never resolved: `LiteHash.Append` returns
             // before the call for an empty span, but a hand-rolled P/Invoke may pass `(NULL, 0)`,
@@ -336,7 +340,7 @@ module NativeCryptoNative =
 
             if sourceSize < 0 then
                 failwith
-                    $"%s{operation}: sourceSize %d{sourceSize} is negative. CoreLib passes a span's length, so this is a hand-rolled P/Invoke, and what the shim answers for it is not in the pinned source."
+                    $"%s{operation}: sourceSize %d{sourceSize} is negative. CoreLib passes a span's length, so this is a hand-rolled P/Invoke, and what the shim answers for it is not decidable from the pinned source, since pal_evp.c is outside its sparse checkout."
 
             // An empty `ReadOnlySpan` pins to a null reference, so `source` is null exactly
             // when `sourceSize` is 0 on CoreLib's own path; nothing is read in that case.
