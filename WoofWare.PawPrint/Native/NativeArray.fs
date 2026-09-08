@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
+
 [<RequireQualifiedAccess>]
 module NativeArray =
     let private int32OfCliType (operation : string) (argName : string) (arg : CliType) : int =
@@ -7,22 +9,47 @@ module NativeArray =
         | CliType.Numeric (CliNumericType.Int32 i) -> i
         | other -> failwith $"%s{operation}: expected %s{argName} as Int32, got %O{other}"
 
-    let private readInt32Pointer
+    let private requiredInt32ConcreteType
+        (operation : string)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : ConcreteType<ConcreteTypeHandle>
+        =
+        let handle =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.Int32.Identity
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Int32 is not concretized")
+
+        AllConcreteTypes.lookup handle state.ConcreteTypes
+        |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Int32 handle %O{handle} not found")
+
+    /// Read `buffer[index]` of an `int*` argument. The native side indexes the pointer in
+    /// bytes at the Int32 stride whatever the buffer's provenance, so this does the same:
+    /// CoreLib hands over a `stackalloc int[]`, an `int[]` pinned by `fixed`, or the address
+    /// of a single `int` local, and only the last of those is limited to index 0.
+    let private readInt32Element
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
+        (int32ConcreteType : ConcreteType<ConcreteTypeHandle>)
         (argName : string)
-        (ptr : ManagedPointerSource)
+        (buffer : ManagedPointerSource)
+        (index : int)
         : int
         =
-        match ptr with
+        match buffer with
         | ManagedPointerSource.Null -> failwith $"%s{operation}: expected non-null %s{argName} pointer"
         | ManagedPointerSource.NativeIntPlaceholder bits ->
             failwith
                 $"%s{operation}: cannot read %s{argName} through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref _ ->
+            let ptr =
+                ManagedPointerByteView.addByteOffset state int32ConcreteType (index * sizeof<int32>) buffer
+
             IlMachineState.readManagedByref baseClassTypes state ptr
-            |> int32OfCliType operation argName
+            |> int32OfCliType operation $"%s{argName}[%d{index}]"
+
+    /// CoreCLR's `MAX_RANK` (vm/array.h): the most dimensions an array type can have.
+    let private maxRank = 32
 
     let private arrayTypeForCreateInstance
         (operation : string)
@@ -50,17 +77,26 @@ module NativeArray =
             if fromArrayType then
                 match typeHandle with
                 | ConcreteTypeHandle.OneDimArrayZero element when rank = 1 -> typeHandle, element
-                | ConcreteTypeHandle.Array (element, arrayRank) when rank = arrayRank ->
+                | ConcreteTypeHandle.Array (_, 1) ->
+                    // A rank-1 ELEMENT_TYPE_ARRAY (`T[*]`) is a distinct runtime type from the
+                    // szarray `T[]`, and PawPrint has no allocation for it: the multi-dim
+                    // constructor refuses rank 1 for the same reason.
                     failwith
-                        $"TODO: %s{operation} from multidimensional array type %O{typeHandle}; PawPrint array allocation currently models one length"
+                        $"TODO: %s{operation} from rank-1 multidimensional array type %O{typeHandle}; PawPrint does not model T[*]"
+                | ConcreteTypeHandle.Array (element, arrayRank) when rank = arrayRank -> typeHandle, element
                 | ConcreteTypeHandle.Array _ ->
                     failwith $"%s{operation}: requested rank %d{rank} does not match array type %O{typeHandle}"
                 | other -> failwith $"%s{operation}: fromArrayType=true expected array RuntimeType, got %O{other}"
             else if rank = 1 then
                 ConcreteTypeHandle.OneDimArrayZero typeHandle, typeHandle
-            else
+            else if rank > maxRank then
+                // `ClassLoader::LoadArrayTypeThrowing` refuses the type itself with
+                // IDS_CLASSLOAD_RANK_TOOLARGE, so the guest sees a TypeLoadException naming
+                // the array type and its assembly.
                 failwith
-                    $"TODO: %s{operation} for rank %d{rank}; PawPrint array allocation currently models rank-1 zero-lower-bound arrays"
+                    $"TODO: %s{operation} for rank %d{rank}, above CoreCLR's MAX_RANK of %d{maxRank}; should raise TypeLoadException"
+            else
+                ConcreteTypeHandle.Array (typeHandle, rank), typeHandle
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -114,11 +150,20 @@ module NativeArray =
             let retArray =
                 NativeCall.objectHandleOnStackTarget operation state "retArray" instruction.Arguments.[5]
 
-            let arrayLength =
-                readInt32Pointer ctx.BaseClassTypes operation state "lengths[0]" lengths
+            if rank < 1 then
+                failwith $"%s{operation}: rank %d{rank} violates the QCall's precondition that it is positive"
 
-            if arrayLength < 0 then
-                failwith "TODO: Array.CreateInstance with negative length should throw ArgumentOutOfRangeException"
+            let int32ConcreteType = requiredInt32ConcreteType operation ctx.BaseClassTypes state
+
+            let dimensionLengths =
+                Array.init
+                    rank
+                    (readInt32Element ctx.BaseClassTypes operation state int32ConcreteType "lengths" lengths)
+
+            for i in 0 .. rank - 1 do
+                if dimensionLengths.[i] < 0 then
+                    failwith
+                        $"TODO: %s{operation} with negative length %d{dimensionLengths.[i]} at dimension %d{i} should throw ArgumentOutOfRangeException"
 
             match lowerBounds with
             | ManagedPointerSource.Null -> ()
@@ -126,12 +171,20 @@ module NativeArray =
                 failwith
                     $"%s{operation}: cannot read lowerBounds through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
             | ManagedPointerSource.Byref _ ->
-                let lowerBound =
-                    readInt32Pointer ctx.BaseClassTypes operation state "lowerBounds[0]" lowerBounds
+                for i in 0 .. rank - 1 do
+                    let lowerBound =
+                        readInt32Element
+                            ctx.BaseClassTypes
+                            operation
+                            state
+                            int32ConcreteType
+                            "lowerBounds"
+                            lowerBounds
+                            i
 
-                if lowerBound <> 0 then
-                    failwith
-                        $"TODO: %s{operation} with non-zero lower bound %d{lowerBound}; PawPrint only models SZ arrays here"
+                    if lowerBound <> 0 then
+                        failwith
+                            $"TODO: %s{operation} with non-zero lower bound %d{lowerBound} at dimension %d{i}; PawPrint only models zero lower bounds"
 
             let arrayType, elementType =
                 arrayTypeForCreateInstance operation fromArrayType rank typeHandle
@@ -140,7 +193,16 @@ module NativeArray =
                 IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes elementType
 
             let arrayAddr, state =
-                IlMachineState.allocateArray arrayType (fun () -> zero) arrayLength state
+                match arrayType with
+                | ConcreteTypeHandle.OneDimArrayZero _ ->
+                    IlMachineState.allocateArray arrayType (fun () -> zero) dimensionLengths.[0] state
+                | ConcreteTypeHandle.Array _ ->
+                    IlMachineState.allocateMultiDimArray
+                        arrayType
+                        (fun () -> zero)
+                        (ImmutableArray.CreateRange dimensionLengths)
+                        state
+                | other -> failwith $"%s{operation}: arrayTypeForCreateInstance answered non-array type %O{other}"
 
             let state =
                 IlMachineState.writeManagedByrefWithBase
