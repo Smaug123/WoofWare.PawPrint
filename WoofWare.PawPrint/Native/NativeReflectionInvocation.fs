@@ -172,31 +172,50 @@ module internal NativeReflectionInvocation =
 
         ManagedPointerByteView.addByteOffset state byteType (index * NativeRuntimeTypeHelpers.nativeIntSize) buffer
 
-    /// Read the value the caller placed behind `args[index]`, as the *signature's* parameter type.
+    /// The type view to re-impose on a byref the caller built for a value of type `ty`: `ty` itself
+    /// for a value type, `System.Object` for a reference type.
+    ///
+    /// This is `_invokerArgFlags[i] & InvokerArgFlags.IsValueType` (MethodBaseInvoker.cs:167), the
+    /// split by which the caller decided what its byref addresses: a value type's byref addresses
+    /// the *payload* of a box, a reference type's an `object?` slot. `InvokeUtil::CopyArg` splits on
+    /// it too, and copies a reference-type argument as a bare `OBJECTREF` without regard to its
+    /// exact type — so `System.Object` is the honest view there, and it is also the only one
+    /// available, since an array type has no nominal `ConcreteType` to name as a reinterpret
+    /// target.
+    ///
+    /// One classifier for both the value-parameter path (which dereferences through the view) and
+    /// the byref-parameter path (which hands the viewed byref to the callee), so the two cannot
+    /// disagree about what a given argument slot holds.
+    let private viewTypeOf
+        (ctx : NativeCallContext)
+        (state : IlMachineState)
+        (ty : ConcreteTypeHandle)
+        : ConcreteTypeHandle
+        =
+        if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state ty then
+            ty
+        else
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.Object
+
+    /// The byref the caller placed at `args[index]`, re-viewed as a byref to `ty`.
     ///
     /// `args[i]` is a `ByReference`, whose sole field is a `ref byte`: the caller type-erases every
     /// argument through `Unsafe.As<T, byte>` on the way in (`ByReference.Create<T>`), so the byref
     /// that arrives here always carries a trailing `ReinterpretAs System.Byte`. Re-imposing a type
     /// on it is therefore not an optimisation but the whole operation, and it is exactly what
     /// CoreCLR does: `InvokeUtil::CopyArg(th, args[i], &argDest)` takes the width and shape from
-    /// `th`, the signature's argument TypeHandle, never from the pointee.
-    ///
-    /// The two kinds of byref the caller can have built are distinguished by that same type
-    /// (`_invokerArgFlags[i] & InvokerArgFlags.IsValueType`, MethodBaseInvoker.cs:167): a value-type
-    /// parameter's byref addresses the *payload* of a box, and a reference-type parameter's byref
-    /// addresses an `object?` slot. `CopyArg` splits on it too, and copies a reference-type argument
-    /// as a bare `OBJECTREF` without regard to its exact type — so `System.Object` is the honest
-    /// view to re-impose there, and it is also the only one available, since an array-typed
-    /// parameter has no nominal `ConcreteType` to name as a reinterpret target.
-    let private readArgument
+    /// `th`, the signature's argument TypeHandle, never from the pointee. For a byref parameter the
+    /// view matters to the *callee*: every `ldind`/`stind` through the parameter would otherwise go
+    /// through the byte-view path, which cannot address a struct holding references.
+    let private argumentByref
         (ctx : NativeCallContext)
         (operation : string)
         (state : IlMachineState)
         (byReferenceZero : CliType)
         (buffer : ManagedPointerSource)
         (index : int)
-        (parameterType : ConcreteTypeHandle)
-        : CliType
+        (ty : ConcreteTypeHandle)
+        : ManagedPointerSource
         =
         let slot = argumentByrefSlot ctx.BaseClassTypes state buffer index
 
@@ -214,11 +233,7 @@ module internal NativeReflectionInvocation =
             failwith
                 $"%s{operation}: args[%d{index}] was a null byref; the managed argument-marshalling layer is expected to have materialised every argument before the QCall"
 
-        let viewType =
-            if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state parameterType then
-                parameterType
-            else
-                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.Object
+        let viewType = viewTypeOf ctx state ty
 
         let viewConcreteType =
             AllConcreteTypes.lookup viewType state.ConcreteTypes
@@ -228,7 +243,34 @@ module internal NativeReflectionInvocation =
             )
 
         ManagedPointerSource.reinterpretAs viewConcreteType byref
-        |> IlMachineState.readManagedByref ctx.BaseClassTypes state
+
+    /// The argument to pass for `args[index]`, given the signature's parameter type.
+    ///
+    /// A byref parameter *is* its byref: CoreCLR's `CopyArg` `ELEMENT_TYPE_BYREF` case is
+    /// `*(PVOID *)pArgDst = argRef` (invokeutil.cpp:241), and nothing is read through it before
+    /// the call or written back after. What the callee writes lands in the storage the caller's
+    /// byref addresses — the private box `MethodBaseInvoker.CheckArguments` made for a value
+    /// element, or its `copyOfArgs[i]` slot for a reference element — and `CopyBack` is managed
+    /// code that moves it into the caller's `object[]` afterwards. Any other parameter is read out
+    /// of its byref as a value.
+    let private argumentOf
+        (ctx : NativeCallContext)
+        (operation : string)
+        (state : IlMachineState)
+        (byReferenceZero : CliType)
+        (buffer : ManagedPointerSource)
+        (index : int)
+        (parameterType : ConcreteTypeHandle)
+        : CliType
+        =
+        match parameterType with
+        | ConcreteTypeHandle.Byref element ->
+            argumentByref ctx operation state byReferenceZero buffer index element
+            |> CliRuntimePointer.Managed
+            |> CliType.RuntimePointer
+        | _ ->
+            argumentByref ctx operation state byReferenceZero buffer index parameterType
+            |> IlMachineState.readManagedByref ctx.BaseClassTypes state
 
     /// Reject the invocation shapes CoreCLR handles but this does not, naming the triggering
     /// condition rather than diverging quietly.
@@ -337,34 +379,47 @@ module internal NativeReflectionInvocation =
                 failwith
                     $"TODO: %s{operation} on %s{describe ()}, a virtual instance method of a value type; CoreCLR may hold an unboxing stub here, whose `this` is the box rather than its payload, and PawPrint does not model unboxing stubs"
 
-        let rejectParameterShape (index : int) (parameterType : ConcreteTypeHandle) : unit =
-            match parameterType with
+        // `what` names the thing being classified in the message: the parameter itself, or the
+        // element a byref parameter points at. The managed layer classifies the two identically
+        // (`MethodInvokerCommon.Initialize` strips the byref first and sets `IsValueType` from what
+        // remains, MethodInvokerCommon.cs:42), so the same shapes are unservable in both positions
+        // and for the same reasons.
+        let rejectValueShape (index : int) (what : string) (ty : ConcreteTypeHandle) : unit =
+            match ty with
             | ConcreteTypeHandle.Byref _ ->
-                // A `ref`/`out` parameter needs the callee's writes propagated back out through the
-                // caller's byref, which is `MethodBaseInvoker.CopyBack`'s half of the contract.
+                // The signature blob grammar (ECMA-335 II.23.2.12) has no byref-to-byref, so this
+                // is a malformed image rather than a guest shape.
                 failwith
-                    $"TODO: %s{operation} on %s{describe ()}: parameter %d{index} is a byref, whose copy-back semantics are not modelled"
+                    $"%s{operation} on %s{describe ()}: %s{what} of parameter %d{index} is itself a byref, which no signature can encode"
             | ConcreteTypeHandle.Pointer _
             | ConcreteTypeHandle.FunctionPointer _ ->
-                // `InvokerArgFlags.IsValueType` is set for a pointer parameter
+                // `InvokerArgFlags.IsValueType` is set for a pointer
                 // (`MethodInvokerCommon.Initialize`), so the caller's byref addresses the payload of
                 // a boxed `IntPtr` rather than an `object?` slot — reachable with a plain `null`
                 // argument, which `CheckValue` converts to `IntPtr.Zero`. `argumentIsValueType` says
-                // false for a structural pointer handle, so `readArgument` would take its
-                // reference-type branch and misread the payload. Reject here instead: the read
+                // false for a structural pointer handle, so `viewTypeOf` would choose the
+                // reference-type view and misaddress the payload. Reject here instead: the view
                 // needs a pointer-width payload path of its own, and a `System.Reflection.Pointer`
                 // argument needs unwrapping besides.
                 failwith
-                    $"TODO: %s{operation} on %s{describe ()}: parameter %d{index} is a pointer or function pointer, whose argument buffer entry addresses a boxed IntPtr payload rather than an object slot"
+                    $"TODO: %s{operation} on %s{describe ()}: %s{what} of parameter %d{index} is a pointer or function pointer, whose argument buffer entry addresses a boxed IntPtr payload rather than an object slot"
             | _ ->
 
-            if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state parameterType then
+            if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state ty then
                 // `CheckValue` converts the incoming object to a *true* boxed `Nullable<T>` before
-                // the byref is formed, so unmarshalling one means reading a `Nullable<T>` out of a
-                // box that is itself a `Nullable<T>` — the one shape PawPrint's boxing deliberately
-                // never produces.
+                // the byref is formed, so the byref addresses a `Nullable<T>` inside a box that is
+                // itself a `Nullable<T>` — the one shape PawPrint's boxing deliberately never
+                // produces.
                 failwith
-                    $"TODO: %s{operation} on %s{describe ()}: parameter %d{index} is a Nullable<T>, which arrives as a true boxed Nullable rather than as a boxed T"
+                    $"TODO: %s{operation} on %s{describe ()}: %s{what} of parameter %d{index} is a Nullable<T>, which arrives as a true boxed Nullable rather than as a boxed T"
+
+        let rejectParameterShape (index : int) (parameterType : ConcreteTypeHandle) : unit =
+            match parameterType with
+            | ConcreteTypeHandle.Byref element ->
+                // `ref`, `out` and `in` alike: all are `ELEMENT_TYPE_BYREF` here, and the
+                // distinction lives on the `ParameterInfo`, which the QCall never sees.
+                rejectValueShape index "the byref element" element
+            | _ -> rejectValueShape index "the type" parameterType
 
         target.Method.Signature.ParameterTypes |> List.iteri rejectParameterShape
 
@@ -561,7 +616,7 @@ module internal NativeReflectionInvocation =
 
                     // Every slot of the buffer is a `System.ByReference`, so its zero is materialised
                     // once here rather than per argument — and here rather than inside
-                    // `readArgument`, because materialising it can register concrete types and that
+                    // `argumentByref`, because materialising it can register concrete types and that
                     // has to reach the state the call goes on to use.
                     let byReferenceZero, state =
                         match ctx.BaseClassTypes.ByReference with
@@ -575,7 +630,7 @@ module internal NativeReflectionInvocation =
                     state,
                     (parameterTypes
                      |> List.mapi (fun index parameterType ->
-                         readArgument ctx operation state byReferenceZero buffer index parameterType
+                         argumentOf ctx operation state byReferenceZero buffer index parameterType
                      ))
 
                 // The re-entry marker. It must be pushed *first*, because `callMethod` pops exactly
