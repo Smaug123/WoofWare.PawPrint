@@ -87,27 +87,46 @@ module AssemblyBindCache =
             Bound = Map.empty
         }
 
-    let private versionText (v : RequestedAssemblyVersion) : string =
-        $"%d{v.Major}.%d{v.Minor}.%d{v.Build}.%d{v.Revision}"
+    let private tokenText (request : AssemblyLoadRequest) : string =
+        match request.PublicKeyToken with
+        | None -> ""
+        | Some token -> Convert.ToHexString token
 
     /// `AssemblyName::GetDisplayName(INCLUDE_VERSION)`, as far as what it distinguishes: the
-    /// binder's failure cache is keyed by it. Measured: the key ignores the simple name's case.
+    /// binder's failure cache is keyed by it. That is the simple name, the version when its
+    /// major was given (an unspecified major drops the whole segment, so a request versioned
+    /// `65535.1.2.3` shares its key with an unversioned one), the culture, and the token.
+    /// Measured on .NET 10: the key ignores the simple name's case, and a miss under
+    /// `PublicKeyToken=0000000000000000` leaves the tokenless request alone.
     let private failureKey (request : AssemblyLoadRequest) : string =
+        let version =
+            let v = request.Version
+
+            if v.Major = RequestedAssemblyVersion.Unspecified then
+                ""
+            else
+                $"%d{v.Major}.%d{v.Minor}.%d{v.Build}.%d{v.Revision}"
+
         let culture =
             match request.Culture with
             | None -> ""
             | Some culture -> culture.ToLowerInvariant ()
 
-        $"%s{request.SimpleName.ToLowerInvariant ()}|%s{versionText request.Version}|%s{culture}"
+        $"%s{request.SimpleName.ToLowerInvariant ()}|%s{version}|%s{culture}|%s{tokenText request}"
 
-    /// Every part of the request, for the successes the process remembers.
+    /// Every part of the request, as spelled, for the successes the process remembers: the
+    /// AppDomain's cache of bound specs compares simple names case-sensitively (measured on
+    /// .NET 10: after `System.Buffers` bound and `system.buffers, processorArchitecture=x86`
+    /// missed, `System.Buffers` still answers and `SYSTEM.BUFFERS` does not).
     let private requestKey (request : AssemblyLoadRequest) : string =
-        let token =
-            match request.PublicKeyToken with
-            | None -> ""
-            | Some token -> Convert.ToHexString token
+        let v = request.Version
 
-        $"%s{failureKey request}|%s{token}|%d{request.Flags}"
+        let culture =
+            match request.Culture with
+            | None -> ""
+            | Some culture -> culture
+
+        $"%s{request.SimpleName}|%d{v.Major}.%d{v.Minor}.%d{v.Build}.%d{v.Revision}|%s{culture}|%s{tokenText request}|%d{request.Flags}"
 
     /// The definition identity an identical request bound to before, if one did.
     let tryFindBound (request : AssemblyLoadRequest) (cache : AssemblyBindCache) : string option =
@@ -277,38 +296,52 @@ module AssemblyBinding =
             AssemblyBindResult.NotFound
         else
 
-        // afPA_Mask: the `ProcessorArchitecture` the request names, if any. Two rules apply
-        // in turn. `IsValidArchitecture` accepts MSIL and none outright, and otherwise only the
-        // architecture of the process itself; every platform PawPrint simulates is 64-bit, so a
-        // 32-bit request (x86, IA64, ARM) is never valid, and a miss. A valid request is then
-        // compared with the candidate's own architecture (`TestCandidateRefMatchesDef`), and
-        // a mismatch is a miss too. Measured on .NET 10 against the framework's IL-only
-        // System.Security.Claims: MSIL binds, x86 and AMD64 do not.
-        let architectureAccepts (candidate : DumpedAssembly) : bool =
-            match (request.Flags &&& 0x70) >>> 4 with
-            | 0 -> true
-            | requested ->
+        // A simple name is a name, not a path: a separator in it, or a rooted one, is a miss
+        // (measured on .NET 10: `/tmp/target`, `../target` and `a/b` are each reported not
+        // found), and the probe below must never see one, since `Path.Combine` would follow it
+        // out of the runtime directories.
+        let isPathLike (segment : string) : bool =
+            segment.IndexOfAny [| '/' ; '\\' |] >= 0 || Path.IsPathRooted segment
 
-            let found =
-                PEImageKind.peKindAndMachine $"binding '%s{request.SimpleName}'" candidate.PEImageHeaders
-                |> PEImageKind.architectureOfImage $"binding '%s{request.SimpleName}'"
+        if isPathLike request.SimpleName || (request.Culture |> Option.exists isPathLike) then
+            AssemblyBindResult.NotFound
+        else
 
-            match requested, found with
-            | 1, ImageArchitecture.Msil -> true
-            | 1, _ -> false
-            | 2, _
-            | 3, _
-            | 5, _ -> false
-            | 4, ImageArchitecture.Amd64 ->
-                // Valid on an x64 process and a mismatch on an arm64 one, and which of those
-                // is executing is the native runtime's own identity, which PawPrint does not
-                // model (see `PEImageKind.peKindAndMachine` on ReadyToRun images).
+        let describe = $"binding '%s{request.SimpleName}'"
+
+        // The candidate's own architecture, which CoreCLR validates on every load
+        // (`Assembly::Init`), requested or not. PawPrint hosts processor-agnostic IL: an
+        // image built for a 32-bit architecture is `BadImageFormatException` on every 64-bit
+        // platform it simulates, and one built for a 64-bit architecture loads only on a
+        // runtime of that architecture -- the native runtime's own identity, which PawPrint
+        // does not model (see `PEImageKind.peKindAndMachine` on ReadyToRun images).
+        let requireAgnostic (candidate : DumpedAssembly) : unit =
+            match
+                PEImageKind.peKindAndMachine describe candidate.PEImageHeaders
+                |> PEImageKind.architectureOfImage describe
+            with
+            | ImageArchitecture.Msil -> ()
+            | ImageArchitecture.I386
+            | ImageArchitecture.Arm as found ->
                 failwith
-                    $"TODO: Assembly.Load of '%s{request.SimpleName}' asks for processorArchitecture=AMD64 and the candidate is an AMD64-specific image; whether that binds depends on the architecture of the executing runtime, which PawPrint does not model"
-            | 4, _ -> false
-            | other, _ ->
+                    $"TODO: %s{describe} found %s{candidate.Name.FullName} built for %O{found}, which CoreCLR refuses with BadImageFormatException on a 64-bit runtime; that exception is not one this binder raises"
+            | ImageArchitecture.Amd64
+            | ImageArchitecture.Arm64 as found ->
                 failwith
-                    $"Assembly.Load of '%s{request.SimpleName}': processor-architecture field %d{other} names no System.Reflection.ProcessorArchitecture value"
+                    $"TODO: %s{describe} found %s{candidate.Name.FullName} built for %O{found}; whether that loads depends on the architecture of the executing runtime, which PawPrint does not model"
+
+        // afPA_Mask: the `ProcessorArchitecture` the request names, if any. The field is read
+        // the way CoreCLR reads a manifest's (`GetProcessorArchitectureFromAssemblyFlags`),
+        // by testing bits in order rather than by value, so IA64 (0x30) and ARM (0x50) are
+        // MSIL -- measured on .NET 10, both bind the framework's System.Security.Claims. Then
+        // `IsValidArchitecture` accepts MSIL outright and otherwise only the architecture of
+        // the process itself, and `TestCandidateRefMatchesDef` compares it with the
+        // candidate's, which `requireAgnostic` has already pinned to MSIL. Every platform
+        // PawPrint simulates is 64-bit, so x86 is never valid, and AMD64 never matches an
+        // agnostic image: measured, both are misses.
+        let architectureAccepts : bool =
+            let field = request.Flags &&& 0x70
+            field = 0 || field &&& 0x10 <> 0
 
         let sameName (candidate : DumpedAssembly) : bool =
             String.Equals (candidate.Name.Name, request.SimpleName, StringComparison.OrdinalIgnoreCase)
@@ -335,8 +368,10 @@ module AssemblyBinding =
             // "Can't give higher version than already bound" (assemblybindercommon.cpp): the
             // context holds one assembly per simple name, so an incompatible one is a miss
             // rather than a reason to probe for another.
+            requireAgnostic candidate
+
             if
-                architectureAccepts candidate
+                architectureAccepts
                 && isCompatibleVersion request.Version (foundVersion candidate)
             then
                 AssemblyBindResult.Bound (assemblies, candidate)
@@ -351,7 +386,13 @@ module AssemblyBinding =
             // (`TestCandidateRefMatchesDef`): `Alias.dll` declaring itself `Real` does not
             // answer to `Alias`, and a file found in a culture's subdirectory must declare that
             // culture.
-            if not (sameName read && sameCulture read && architectureAccepts read) then
+            if not (sameName read && sameCulture read) then
+                AssemblyBindResult.NotFound
+            else
+
+            requireAgnostic read
+
+            if not architectureAccepts then
                 AssemblyBindResult.NotFound
             elif not (isCompatibleVersion request.Version (foundVersion read)) then
                 AssemblyBindResult.NotFound

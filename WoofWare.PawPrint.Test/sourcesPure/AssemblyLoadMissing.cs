@@ -60,6 +60,13 @@ public class Program
             "No.Such, Culture=neutral, PublicKeyToken=null, processorArchitecture=x86");
         if (r != 0) return r;
 
+        // A simple name is a name, not a path: nothing is probed for one with a separator in it,
+        // and the report spells it as given.
+        r = Expect (63, () => Assembly.Load ("/tmp/target"), "/tmp/target, Culture=neutral, PublicKeyToken=null");
+        if (r != 0) return r;
+        r = Expect (66, () => Assembly.Load ("../target"), "../target, Culture=neutral, PublicKeyToken=null");
+        if (r != 0) return r;
+
         // Known, but not at that version.
         r = Expect (70,
             () => Assembly.Load ("System.Security.Claims, Version=99.0.0.0"),

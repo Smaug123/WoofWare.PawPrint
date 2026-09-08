@@ -304,7 +304,8 @@ module TestAssemblyBinding =
                 | AssemblyBindResult.Bound (_, bound) -> failwith $"expected NotFound, bound %s{bound.Name.FullName}"
             )
 
-    /// Measured on .NET 10 against an IL-only assembly: `MSIL` binds, `x86` and `AMD64` do not.
+    /// Measured on .NET 10 against an IL-only assembly: `MSIL`, `IA64` and `ARM` bind, `x86` and
+    /// `AMD64` do not.
     [<Test>]
     let ``a requested processor architecture is compared with the image's`` () =
         withRuntimeDir
@@ -335,7 +336,8 @@ module TestAssemblyBinding =
                     | AssemblyBindResult.NotFound -> ()
                     | AssemblyBindResult.Bound _ -> failwith $"expected NotFound for flags 0x%x{flags}"
 
-                for flags in [ 0 ; 0x10 ] do
+                // IA64 (0x30) and ARM (0x50) read as MSIL, the way CoreCLR bit-tests the field.
+                for flags in [ 0 ; 0x10 ; 0x30 ; 0x50 ] do
                     match
                         snd (
                             AssemblyBinding.tryBind
@@ -514,4 +516,156 @@ module TestAssemblyBinding =
                 bound |> shouldEqual false
                 let _, _, bound = bind cache assemblies plain
                 bound |> shouldEqual true
+            )
+
+    let private plainRequest (name : string) : AssemblyLoadRequest =
+        {
+            SimpleName = name
+            Version = requested unspecified unspecified unspecified unspecified
+            Culture = None
+            PublicKeyToken = None
+            Flags = 0
+        }
+
+    let private bindsWith
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (root : string)
+        (cache : AssemblyBindCache)
+        (assemblies : LoadedAssemblies)
+        (r : AssemblyLoadRequest)
+        : AssemblyBindCache * LoadedAssemblies * bool
+        =
+        let cache, result =
+            AssemblyBinding.tryBind loggerFactory [ root ] r assemblies cache
+
+        match result with
+        | AssemblyBindResult.Bound (assemblies, _) -> cache, assemblies, true
+        | AssemblyBindResult.NotFound -> cache, assemblies, false
+
+    /// Measured on .NET 10: a miss under a token poisons only requests under that token, and
+    /// a version whose major is unspecified is no version at all in the key.
+    [<Test>]
+    let ``the failure key keeps the token and drops an unspecified version`` () =
+        withRuntimeDir
+            (testAssemblySimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+                let bind = bindsWith loggerFactory root
+                let token = Array.zeroCreate<byte> 8
+
+                let x86WithToken =
+                    { plainRequest testAssemblySimpleName with
+                        PublicKeyToken = Some token
+                        Flags = 0x20
+                    }
+
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty x86WithToken
+
+                bound |> shouldEqual false
+
+                let cache, assemblies, bound =
+                    bind cache assemblies (plainRequest testAssemblySimpleName)
+
+                bound |> shouldEqual true
+
+                let _, _, bound =
+                    bind
+                        cache
+                        assemblies
+                        { plainRequest testAssemblySimpleName with
+                            PublicKeyToken = Some token
+                        }
+
+                bound |> shouldEqual false
+
+                let unspecifiedMajor =
+                    { plainRequest testAssemblySimpleName with
+                        Version = requested unspecified 1us 2us 3us
+                        Flags = 0x20
+                    }
+
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty unspecifiedMajor
+
+                bound |> shouldEqual false
+                let _, _, bound = bind cache assemblies (plainRequest testAssemblySimpleName)
+                bound |> shouldEqual false
+            )
+
+    /// Measured on .NET 10: the successes are remembered under the request's own spelling,
+    /// the misses under any spelling.
+    [<Test>]
+    let ``the success cache is spelled case-sensitively`` () =
+        withRuntimeDir
+            (testAssemblySimpleName + ".dll")
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+                let bind = bindsWith loggerFactory root
+                let lower = testAssemblySimpleName.ToLowerInvariant ()
+                let upper = testAssemblySimpleName.ToUpperInvariant ()
+
+                let cache, assemblies, bound =
+                    bind AssemblyBindCache.empty LoadedAssemblies.empty (plainRequest testAssemblySimpleName)
+
+                bound |> shouldEqual true
+
+                let cache, assemblies, bound =
+                    bind
+                        cache
+                        assemblies
+                        { plainRequest lower with
+                            Flags = 0x20
+                        }
+
+                bound |> shouldEqual false
+
+                let cache, assemblies, bound =
+                    bind cache assemblies (plainRequest testAssemblySimpleName)
+
+                bound |> shouldEqual true
+                let cache, assemblies, bound = bind cache assemblies (plainRequest upper)
+                bound |> shouldEqual false
+                let _, _, bound = bind cache assemblies (plainRequest lower)
+                bound |> shouldEqual false
+            )
+
+    /// Measured on .NET 10: `/tmp/target`, `../target` and `a/b` are each reported not found.
+    /// The file here exists at exactly the path the rooted name would reach, so a probe that
+    /// followed it would bind.
+    [<Test>]
+    let ``a name with a separator, or a rooted one, is a miss without a probe`` () =
+        withRuntimeDir
+            "target.dll"
+            (fun root ->
+                let _messages, loggerFactory = LoggerFactory.makeTest ()
+
+                for name in [ Path.Combine (root, "target") ; "../target" ; "a/b" ; "sub\\target" ] do
+                    match
+                        snd (
+                            AssemblyBinding.tryBind
+                                loggerFactory
+                                [ root ]
+                                (plainRequest name)
+                                LoadedAssemblies.empty
+                                AssemblyBindCache.empty
+                        )
+                    with
+                    | AssemblyBindResult.NotFound -> ()
+                    | AssemblyBindResult.Bound (_, bound) -> failwith $"'%s{name}' bound %s{bound.Name.FullName}"
+
+                match
+                    snd (
+                        AssemblyBinding.tryBind
+                            loggerFactory
+                            [ root ]
+                            { plainRequest "target" with
+                                Culture = Some "../fr"
+                            }
+                            LoadedAssemblies.empty
+                            AssemblyBindCache.empty
+                    )
+                with
+                | AssemblyBindResult.NotFound -> ()
+                | AssemblyBindResult.Bound (_, bound) -> failwith $"culture '../fr' bound %s{bound.Name.FullName}"
             )

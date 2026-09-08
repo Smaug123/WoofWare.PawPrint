@@ -50,6 +50,35 @@ public class Program
         if (Binds ("System.Memory, ContentType=WindowsRuntime")) return 13;
         if (Binds ("System.Memory")) return 14;
 
+        // The key keeps the token: a miss under one token leaves the tokenless request and
+        // the real token alone, and poisons only requests under that token.
+        if (Binds ("System.Runtime.InteropServices, PublicKeyToken=0000000000000000, processorArchitecture=x86")) return 17;
+        if (!Binds ("System.Runtime.InteropServices")) return 18;
+        if (Binds ("System.Runtime.InteropServices, PublicKeyToken=0000000000000000")) return 19;
+        if (!Binds ("System.Runtime.InteropServices, PublicKeyToken=b03f5f7f11d50a3a")) return 20;
+
+        // IA64 and ARM read as MSIL, the way CoreCLR bit-tests the field, and bind.
+        if (!Binds ("System.Threading, processorArchitecture=IA64")) return 21;
+        if (!Binds ("System.Threading.Tasks, processorArchitecture=ARM")) return 22;
+
+        // A success is remembered under its own spelling; a miss under any spelling.
+        if (!Binds ("System.Buffers")) return 23;
+        if (Binds ("system.buffers, processorArchitecture=x86")) return 24;
+        if (!Binds ("System.Buffers")) return 25;
+        if (Binds ("SYSTEM.BUFFERS")) return 26;
+        if (Binds ("system.buffers")) return 27;
+
+        // A version whose major is unspecified is no version at all in the key.
+        try
+        {
+            Assembly.Load (new AssemblyName { Name = "System.ComponentModel", Version = new Version (65535, 1, 2, 3), ProcessorArchitecture = ProcessorArchitecture.X86 });
+            return 28;
+        }
+        catch (FileNotFoundException)
+        {
+        }
+        if (Binds ("System.ComponentModel")) return 29;
+
         // `Type.GetType` swallows the miss, and is poisoned by it all the same.
         if (Type.GetType ("System.Text.Json.JsonSerializer, System.Text.Json, processorArchitecture=x86") != null) return 15;
         if (Type.GetType ("System.Text.Json.JsonSerializer, System.Text.Json") != null) return 16;
