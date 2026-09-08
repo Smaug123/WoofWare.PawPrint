@@ -358,29 +358,6 @@ module UnixProcessState =
         )
         |> Set.ofSeq
 
-    /// Whether any socket event port holds a registration targeting an open
-    /// file description that names `socketId`.
-    ///
-    /// A registration is one way a readiness change on the socket becomes
-    /// observable; `poll(2)` is another, which is why `UnixDescriptor.close`
-    /// does not consult this before destroying the peer of an established
-    /// pair. Nothing in the library calls it.
-    let socketIsRegisteredWithAnyEventPort<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
-        (socketId : SocketId)
-        (proc : UnixProcessState<'Task, 'Handler>)
-        : bool
-        =
-        let namingDescriptions = descriptionsNamingSocket socketId proc
-
-        FileDescriptorRegistry.descriptions proc.FileDescriptors
-        |> Map.exists (fun _ description ->
-            match description.Target with
-            | OpenFileTarget.SocketEventPort portState ->
-                portState.Registrations
-                |> Map.exists (fun (_, targetId) _ -> Set.contains targetId namingDescriptions)
-            | _ -> false
-        )
-
     /// A *state-change* wake on `socketId` — a connect resolving (completion
     /// or refusal), the refusal delivery's reset, a peer's FIN. Unkeyed:
     /// measured (`order8.c`, `order9.c`), such a wake queues every

@@ -294,7 +294,7 @@ module TestInodeLifetime =
     [<Test>]
     let ``closing one of two descriptors onto one description reaps nothing`` () : unit =
         // `dup(2)` makes a second descriptor onto the *same* description, and
-        // `FileDescriptorRegistry.close` destroys the description only when the
+        // `FileDescriptorRegistry.dropDescriptor` destroys the description only when the
         // last of them goes. A reaping rule keyed on the descriptor rather than
         // on the description would free the inode here, while a live fd still
         // named it.

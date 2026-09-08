@@ -1010,10 +1010,13 @@ module FileDescriptorRegistry =
     /// intact — true of everything PawPrint models, though not of POSIX in
     /// general (see the record-lock note on `FileDescriptorRegistry`).
     ///
-    /// The descriptor-table half of `close(2)`, called by `UnixDescriptor.close`,
-    /// which is the syscall; the in-house property tests drive close+dup
-    /// cycles directly against this function to exercise the `lowestFree`
-    /// invariant against the gap structure that close produces.
+    /// The descriptor-table half of `close(2)`, and only that half: it drops
+    /// the descriptor and, if it was the last one, the description, and it
+    /// releases nothing that description referenced. `UnixDescriptor.close` is
+    /// the syscall, and the one caller; a client that wants `close(2)` wants
+    /// that. The in-house property tests drive close+dup cycles directly
+    /// against this function to exercise the `lowestFree` invariant against
+    /// the gap structure that closing produces.
     ///
     /// Reports the description it destroyed, if this was the last descriptor
     /// naming one: closing a `dup(2)` of a live descriptor destroys nothing and
@@ -1021,7 +1024,7 @@ module FileDescriptorRegistry =
     /// last reference to a *kernel object* whose lifetime is decided elsewhere —
     /// `EmulatedKernel.Sockets` is the one that exists today — and this registry
     /// cannot reach that state to clean it up itself.
-    let close
+    let dropDescriptor
         (fd : int)
         (registry : FileDescriptorRegistry)
         : Result<FileDescriptorRegistry * OpenFileDescription option, FileDescriptorCloseError>

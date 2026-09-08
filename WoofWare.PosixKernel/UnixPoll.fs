@@ -30,7 +30,7 @@ module SocketEventPort =
         match Map.tryFind targetId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} names no live open file description. FileDescriptorRegistry.close sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
+                $"SocketEventPort.epollReadinessOfDescription: %O{targetId} names no live open file description. FileDescriptorRegistry.dropDescriptor sweeps destroyed descriptions out of every interest table, so this is an interpreter bug."
         | Some description ->
 
         match description.Target with
