@@ -247,6 +247,62 @@ public class TestArrayCreateInstanceMultiDim
         return 0;
     }
 
+    private static string OomRefusal(Func<object> f)
+    {
+        try
+        {
+            f();
+            return "no exception";
+        }
+        catch (OutOfMemoryException e)
+        {
+            return e.Message;
+        }
+        catch (Exception e)
+        {
+            return e.GetType().Name;
+        }
+    }
+
+    // `AllocateArrayEx` refuses dimensions by two independent rules, and neither can be
+    // rescued by a zero dimension elsewhere: a single dimension above `MaxArrayLength`
+    // (2147483591), recorded and raised after the whole walk, and a running element count
+    // that overflows UInt32 at some multiply. A product that merely passes above
+    // Int32.MaxValue and comes back down is fine, which is what separates the two.
+    //
+    // None of these allocate anything, so the guest can assert them cheaply.
+    private static int DimensionLimits()
+    {
+        const string exceeded = "Array dimensions exceeded supported range.";
+
+        // One over MaxArrayLength, in the first dimension and in a later one.
+        if (OomRefusal(() => Array.CreateInstance(typeof(byte), new int[] { 0x7FFFFFC8, 0 })) != exceeded) return 1;
+        if (OomRefusal(() => Array.CreateInstance(typeof(byte), new int[] { 0, 0x7FFFFFC8 })) != exceeded) return 2;
+        if (OomRefusal(() => Array.CreateInstance(typeof(byte), new int[] { int.MaxValue, 0 })) != exceeded) return 3;
+
+        // The same rule reaches the rank-1 overloads, which allocate a szarray.
+        if (OomRefusal(() => Array.CreateInstance(typeof(byte), 0x7FFFFFC8)) != exceeded) return 4;
+
+        // MaxArrayLength itself is allowed: the boundary is inclusive, and the zero dimension
+        // makes the array empty, so nothing is actually allocated.
+        Array atLimit = Array.CreateInstance(typeof(byte), new int[] { 0x7FFFFFC7, 0 });
+        if (atLimit.Length != 0) return 5;
+        if (atLimit.GetLength(0) != 0x7FFFFFC7) return 6;
+        if (atLimit.GetLength(1) != 0) return 7;
+
+        // The running product overflows UInt32 at the second multiply, so the trailing zero
+        // does not rescue it.
+        if (OomRefusal(() => Array.CreateInstance(typeof(int), new int[] { 65536, 65536, 0 })) != exceeded) return 8;
+
+        // But a prefix that merely exceeds Int32.MaxValue does come back down: 50000 * 50000
+        // is 2.5e9, which fits in UInt32, and the trailing zero empties the array.
+        Array transient = Array.CreateInstance(typeof(int), new int[] { 50000, 50000, 0 });
+        if (transient.Length != 0) return 9;
+        if (transient.GetLength(1) != 50000) return 10;
+
+        return 0;
+    }
+
     public static int Main()
     {
         int r;
@@ -259,6 +315,7 @@ public class TestArrayCreateInstanceMultiDim
         if ((r = Rank1StaysSzArray()) != 0) return 220 + r;
         if ((r = ForbiddenElementTypes()) != 0) return 230 + r;
         if ((r = AllowedExoticElementTypes()) != 0) return 240 + r;
+        if ((r = DimensionLimits()) != 0) return 250 + r;
         return 0;
     }
 }

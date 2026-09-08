@@ -219,10 +219,20 @@ module NativeArray =
                     rank
                     (readInt32Element ctx.BaseClassTypes operation state int32ConcreteType "lengths" lengths)
 
-            for i in 0 .. rank - 1 do
-                if dimensionLengths.[i] < 0 then
-                    failwith
-                        $"TODO: %s{operation} with negative length %d{dimensionLengths.[i]} at dimension %d{i} should throw ArgumentOutOfRangeException"
+            // CoreCLR validates the dimensions inside `AllocateArrayEx`, after the array type is
+            // in hand, and answers a violation with an exception the guest can catch. The
+            // szarray path shares the rule for its single dimension, since `AllocateArrayEx`
+            // forwards a rank-1 zero-lower-bound request to `AllocateSzArray`.
+            let dimensionLengths = ImmutableArray.CreateRange dimensionLengths
+
+            let totalLength =
+                match MultiDimArrayAllocation.totalElements dimensionLengths with
+                | Error err -> Error (MultiDimArrayAllocation.exceptionFor ctx.BaseClassTypes err)
+                | Ok totalLength -> Ok totalLength
+
+            match totalLength with
+            | Error (exnType, message) -> NativeHandlerResult.raiseExceptionWithMessage exnType message state |> Some
+            | Ok totalLength ->
 
             match lowerBounds with
             | ManagedPointerSource.Null -> ()
@@ -251,13 +261,10 @@ module NativeArray =
             let arrayAddr, state =
                 match arrayType with
                 | ConcreteTypeHandle.OneDimArrayZero _ ->
-                    IlMachineState.allocateArray arrayType (fun () -> zero) dimensionLengths.[0] state
+                    // A szarray's own length *is* the total, rank being 1 here.
+                    IlMachineState.allocateArray arrayType (fun () -> zero) totalLength state
                 | ConcreteTypeHandle.Array _ ->
-                    IlMachineState.allocateMultiDimArray
-                        arrayType
-                        (fun () -> zero)
-                        (ImmutableArray.CreateRange dimensionLengths)
-                        state
+                    IlMachineState.allocateMultiDimArray arrayType (fun () -> zero) dimensionLengths state
                 | other -> failwith $"%s{operation}: arrayTypeForCreateInstance answered non-array type %O{other}"
 
             let state =
