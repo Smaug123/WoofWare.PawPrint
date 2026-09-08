@@ -631,15 +631,19 @@ module UnixSystem =
     /// particular executable set `KernelConfig.ProcessPath`.
     let defaultProcessPath : AbsoluteUnixPath option = None
 
-    /// The range `bind(2)` draws from when asked for port 0.
+    /// The range `bind(2)` draws from when asked for port 0, on a machine of
+    /// this flavour that has not configured it.
     ///
-    /// A sysctl on both platforms rather than a property of the kernel image —
-    /// Linux's `ip_local_port_range` reads 32768-60999 and Darwin's
-    /// `net.inet.ip.portrange.first`/`last` read 49152-65535 — so this is
-    /// configuration with one default, and not a per-flavour derivation the way
-    /// `FileSystemType` and `SoMaxConn` are. The default is Linux's, matching
-    /// `defaultUnixPlatform`.
-    let defaultEphemeralPortRange : uint16 * uint16 = 32768us, 60999us
+    /// A sysctl on both platforms rather than a property of the kernel image,
+    /// so a host may set it to anything; but each flavour ships a default, and
+    /// a Darwin machine draws from Darwin's. Measured: Linux's
+    /// `ip_local_port_range` reads 32768-60999, and Darwin's
+    /// `net.inet.ip.portrange.first`/`last` read 49152-65535 (macOS 26,
+    /// 2026-09-08).
+    let defaultEphemeralPortRange (flavour : SimulatedUnixFlavour) : uint16 * uint16 =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 32768us, 60999us
+        | SimulatedUnixFlavour.Darwin -> 49152us, 65535us
 
     /// The addresses this machine holds, as `bind(2)` decides whether an address
     /// is assignable. Loopback only: PawPrint models no interface a guest could
@@ -657,18 +661,26 @@ module UnixSystem =
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
-    /// 1000 rather than 0: `Environment.IsPrivilegedProcess` is literally
+    /// Not 0: `Environment.IsPrivilegedProcess` is literally
     /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
     /// the privileged branch of every check it makes about itself — the
-    /// uninteresting one, and not the one most programs are written for. 1000
-    /// is also the first interactive user on the Ubuntu-shaped platform
-    /// `defaultUnixPlatform` already claims to be. A host that wants root says
+    /// uninteresting one, and not the one most programs are written for.
+    /// Instead the first interactive user each flavour creates: 1000 on the
+    /// Ubuntu-shaped Linux, and 501 on macOS (measured, `id -u` of the first
+    /// account on a macOS 26 machine, 2026-09-08). A host that wants root says
     /// so in `KernelConfig.UserId`.
-    let defaultUserId : uint32 = 1000u
+    let defaultUserId (flavour : SimulatedUnixFlavour) : uint32 =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 1000u
+        | SimulatedUnixFlavour.Darwin -> 501u
 
-    /// Effective group ID a freshly-minted simulated process runs as. Matches
-    /// `defaultUserId`, as a Linux user-private group does.
-    let defaultGroupId : uint32 = 1000u
+    /// Effective group ID a freshly-minted simulated process runs as: the
+    /// first user's primary group, which is a user-private group numbered as
+    /// the user on Linux and `staff` (20) on macOS (measured with the uid).
+    let defaultGroupId (flavour : SimulatedUnixFlavour) : uint32 =
+        match flavour with
+        | SimulatedUnixFlavour.Linux -> 1000u
+        | SimulatedUnixFlavour.Darwin -> 20u
 
     /// File-mode creation mask a freshly-minted simulated process reports.
     /// 0o022 because that is what essentially every Unix login shell and service
@@ -707,12 +719,14 @@ module UnixSystem =
     /// by hand is what lets that state exist, so the constructor is also the
     /// rule.
     ///
-    /// Everything else is a flat default, including two that look derivable and
-    /// are deliberately not: `UserAddressLimit` is a property of the machine's
-    /// paging depth rather than of its kernel, and `EphemeralPortRange` is a
-    /// sysctl either flavour can be set to anything. Both are configuration a
-    /// caller overrides by record-update, which is also how a caller supplies a
-    /// non-empty filesystem, a different address list, or a process identity.
+    /// The ephemeral port range and the process identity are the flavour's
+    /// shipped defaults too, though a host may set either: they are what a
+    /// default machine of that flavour reports, not facts of its kernel image.
+    /// `UserAddressLimit` is the one field that looks derivable and is
+    /// deliberately not: it is a property of the machine's paging depth rather
+    /// than of its kernel. All of these are configuration a caller overrides
+    /// by record-update or the setters, which is also how a caller supplies a
+    /// non-empty filesystem or a different address list.
     let initial<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (platform : SimulatedUnixPlatform)
         : UnixSystem<'Task, 'Handler>
@@ -736,8 +750,8 @@ module UnixSystem =
                     NextConnectionId = ConnectionId 0L
                     NextSocketEventRegistrationOrdinal = 0L
                     NextSocketId = SocketId 0L
-                    NextEphemeralPort = fst defaultEphemeralPortRange
-                    EphemeralPortRange = defaultEphemeralPortRange
+                    NextEphemeralPort = fst (defaultEphemeralPortRange flavour)
+                    EphemeralPortRange = defaultEphemeralPortRange flavour
                     SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
                     LocalAddresses = defaultLocalAddresses
                     LocalRoutes = defaultLocalRoutes
@@ -763,8 +777,8 @@ module UnixSystem =
                     // whatever else a host goes on to set.
                     CurrentDirectoryInode = VirtualFileSystem.root filesystem
                     ProcessPath = defaultProcessPath
-                    UserId = defaultUserId
-                    GroupId = defaultGroupId
+                    UserId = defaultUserId flavour
+                    GroupId = defaultGroupId flavour
                     Umask = defaultUmask
                     Signals = SignalState.empty
                 }
