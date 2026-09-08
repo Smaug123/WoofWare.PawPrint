@@ -161,12 +161,8 @@ public static class Driver
                     match
                         Program.run loggerFactory (Some driverPath) peImage (HostConfig.Default dotnetRuntimeDirs)
                     with
-                    | RunOutcome.NormalExit (state, thread)
-                    | RunOutcome.ProcessExit (state, thread) ->
-                        match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-                        | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> code
-                        | [] -> failwith "guest returned no value"
-                        | head :: _ -> failwith $"guest returned a non-int: %O{head}"
+                    | RunOutcome.NormalExit (state, _)
+                    | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
                     | RunOutcome.GuestUnhandledException (_, _, exn) -> failwith $"guest threw: %O{exn.ExceptionObject}"
                     | RunOutcome.Aborted (_, _, fatal) ->
                         let message = fatal.Message |> Option.defaultValue "<none>"

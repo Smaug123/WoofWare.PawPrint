@@ -894,6 +894,49 @@ module NativeSignature =
 
         setSignatureField state signatureAddr "_csig" (CliType.Numeric (CliNumericType.Int32 cCorSig))
 
+    /// One side of `Signature_AreEqual`: the assembly owning the blob, and the blob decoded.
+    ///
+    /// `EqualsSig` is this QCall's only caller in the BCL, and it always passes two property
+    /// signatures, so a Field- or Method-provenance blob is refused rather than guessed at.
+    let private decodeSignatureOperand
+        (operation : string)
+        (state : IlMachineState)
+        (side : string)
+        (sigArg : CliType)
+        (cSigArg : CliType)
+        : DumpedAssembly * MethodSignature<TypeDefn>
+        =
+        let peByteRange =
+            corSigPeByteRange operation sigArg
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the %s{side} COR signature pointer was null; `Signature._sig` is populated by Signature_Init and is never null by the time two signatures are compared"
+            )
+
+        let cSig = NativeCall.int32Argument operation cSigArg
+
+        if cSig <> peByteRange.Size then
+            failwith
+                $"%s{operation}: the %s{side} cSig %d{cSig} does not match the %d{peByteRange.Size}-byte signature blob it points at (%O{peByteRange})"
+
+        let assembly =
+            state.LoadedAssembly peByteRange.AssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: the %s{side} signature blob references unloaded assembly %s{peByteRange.AssemblyFullName}"
+            )
+
+        let metadataReader = assembly.PeReader.GetMetadataReader ()
+
+        match peByteRange.Source with
+        | PeByteRangePointerSource.PropertySignatureBlob property ->
+            let propertyDef = metadataReader.GetPropertyDefinition property.Get
+
+            assembly, PropertySignatureDecoding.decode assembly.Name metadataReader propertyDef.Signature
+        | other ->
+            failwith
+                $"TODO: %s{operation} on a %s{side} signature whose blob is %O{other}; `RuntimePropertyInfo.EqualsSig` is the only BCL caller and it compares two PropertySig blobs"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -907,6 +950,72 @@ module NativeSignature =
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
+        | "Signature_AreEqual",
+          "System.Private.CoreLib",
+          "System",
+          "Signature",
+          _,
+          [ ConcretePointer (ConcreteVoid state.ConcreteTypes)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", leftHandleGenerics)
+            ConcretePointer (ConcreteVoid state.ConcreteTypes)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", rightHandleGenerics) ],
+          returnType when leftHandleGenerics.IsEmpty && rightHandleGenerics.IsEmpty ->
+            let operation = "Signature_AreEqual"
+
+            match returnType with
+            | MethodReturnType.Returns (CorelibType state.ConcreteTypes ("", "BOOL", boolGenerics)) when
+                boolGenerics.IsEmpty
+                ->
+                ()
+            | other -> failwith $"%s{operation}: unexpected QCall stub return type %O{other}"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            // The two QCallTypeHandle arguments are deliberately unread. CoreCLR passes each
+            // signature's `_declaringType` only to reach `GetModule()` for token resolution, and
+            // never as a `Substitution` — both of those are null. PawPrint's byte range already
+            // names its owning assembly, so the declaring types carry nothing extra. Reading them
+            // as generic arguments would rebuild exactly the substitution CoreCLR is refusing to
+            // do, making a type parameter compare equal to whatever an instantiation supplies.
+
+            let leftAssembly, left =
+                decodeSignatureOperand operation state "first" instruction.Arguments.[0] instruction.Arguments.[1]
+
+            let rightAssembly, right =
+                decodeSignatureOperand operation state "second" instruction.Arguments.[3] instruction.Arguments.[4]
+
+            let leftBytes = resolveSignatureBlob operation state instruction.Arguments.[0]
+            let rightBytes = resolveSignatureBlob operation state instruction.Arguments.[3]
+
+            let assemblies, areEqual =
+                SignatureComparison.signaturesAreEqual
+                    ctx.LoggerFactory
+                    state.DotnetRuntimeDirs
+                    operation
+                    state._LoadedAssemblies
+                    leftAssembly
+                    leftBytes
+                    left
+                    rightAssembly
+                    rightBytes
+                    right
+
+            let state =
+                { state with
+                    _LoadedAssemblies = assemblies
+                }
+
+            // Interop.BOOL is int32-backed, with FALSE = 0 and TRUE = 1.
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.Int32 (if areEqual then 1 else 0)))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
         | "Signature_Init",
           "System.Private.CoreLib",
           "System",

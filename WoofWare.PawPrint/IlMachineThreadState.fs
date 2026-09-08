@@ -195,65 +195,13 @@ module IlMachineThreadState =
         let returningFrameId = threadStateAtEndOfMethod.ActiveMethodState
         let returningMethodState = threadStateAtEndOfMethod.MethodState
 
-        match returningMethodState.ReturnState with
-        | None -> ReturnFrameResult.NoFrameToReturn
-        | Some returnState ->
-
-        let state =
-            match returnState.WasInitialisingType with
-            | None -> state
-            | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
-
-        // Return to previous stack frame. `setActiveFrame` fails loud if `JumpTo`
-        // is not live on this thread.
-        let threadState =
-            threadStateAtEndOfMethod
-            |> ThreadState.setActiveFrame returnState.JumpTo
-            |> ThreadState.removeFrame returningFrameId
-
-        let state =
-            { state with
-                ThreadState = state.ThreadState |> Map.add currentThread threadState
-            }
-
-        match returnState.Constructing with
-        | ConstructionState.Constructing constructing ->
-            match returnState.ReturnValueDisposition with
-            | ReturnValueDisposition.DispatchAsException message ->
-                // This ctor was constructing a runtime-synthesised exception object.
-                // Don't push it onto the eval stack; signal to the caller that exception
-                // dispatch should occur.
-                let constructed = ManagedHeap.get constructing state.ManagedHeap
-                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, message)
-            | ReturnValueDisposition.Discard ->
-                // A constructor's product is the object, and it is already allocated and reachable
-                // from `Constructing` — there is nothing here to throw away, and the caller
-                // presumably wanted the object. Nobody constructs `Discard`ing frames today.
-                failwith
-                    $"logic error: %s{returningMethodState.ExecutingMethod.Name} was constructing an object, but its frame asked for its product to be discarded"
-            | ReturnValueDisposition.PushToCaller ->
-
-            // Assumption: a constructor can't also return a value.
-            // If we were constructing a reference type, we push a reference to it.
-            // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
-            let constructed = ManagedHeap.get constructing state.ManagedHeap
-
-            let _, ty' =
-                AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes constructed.ConcreteType
-                |> Option.get
-
-            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty' then
-                state
-                // TODO: ordering of fields probably important
-                |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
-            else
-                state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
-            |> ReturnFrameResult.NormalReturn
-        | ConstructionState.NotConstructing ->
-
-        // The frame's stack is checked against its signature whatever becomes of the value: a
-        // method that returned the wrong number of values is an invalid program whether or not
-        // anyone wanted the value. Only the *push* is the disposition's business.
+        // The frame's stack is checked against its signature whatever becomes of the value, and
+        // whether or not there is a frame to return to: a method that returned the wrong number
+        // of values is an invalid program whether or not anyone wanted the value, and CoreCLR's
+        // JIT refuses it (`InvalidProgramException`) before it runs. A thread's bottom frame —
+        // `Main` above all — reaches `ret` with nothing to return to, and is held to this like any
+        // other, or a `void Main` that left a value behind would be reported as a clean exit. Only
+        // the *push* is the disposition's business.
         let returned : (EvalStackValue * ConcreteTypeHandle) option =
             match
                 returningMethodState.ExecutingMethod.Signature.ReturnType, returningMethodState.EvaluationStack.Values
@@ -283,6 +231,62 @@ module IlMachineThreadState =
             | MethodReturnType.Returns _, _ ->
                 failwith
                     $"Invalid CIL: method %s{returningMethodState.ExecutingMethod.Name} returned with more than one evaluation stack value"
+
+        match returningMethodState.ReturnState with
+        | None -> ReturnFrameResult.NoFrameToReturn
+        | Some returnState ->
+
+        let state =
+            match returnState.WasInitialisingType with
+            | None -> state
+            | Some finishedInitialising -> state.WithTypeEndInit currentThread finishedInitialising
+
+        // Return to previous stack frame. `setActiveFrame` fails loud if `JumpTo`
+        // is not live on this thread.
+        let threadState =
+            threadStateAtEndOfMethod
+            |> ThreadState.setActiveFrame returnState.JumpTo
+            |> ThreadState.removeFrame returningFrameId
+
+        let state =
+            { state with
+                ThreadState = state.ThreadState |> Map.add currentThread threadState
+            }
+
+        match returnState.Constructing with
+        | ConstructionState.Constructing constructing ->
+            match returnState.ReturnValueDisposition with
+            | ReturnValueDisposition.DispatchAsException fields ->
+                // This ctor was constructing a runtime-synthesised exception object.
+                // Don't push it onto the eval stack; signal to the caller that exception
+                // dispatch should occur.
+                let constructed = ManagedHeap.get constructing state.ManagedHeap
+                ReturnFrameResult.DispatchException (state, constructing, constructed.ConcreteType, fields)
+            | ReturnValueDisposition.Discard ->
+                // A constructor's product is the object, and it is already allocated and reachable
+                // from `Constructing` — there is nothing here to throw away, and the caller
+                // presumably wanted the object. Nobody constructs `Discard`ing frames today.
+                failwith
+                    $"logic error: %s{returningMethodState.ExecutingMethod.Name} was constructing an object, but its frame asked for its product to be discarded"
+            | ReturnValueDisposition.PushToCaller ->
+
+            // Assumption: a constructor can't also return a value.
+            // If we were constructing a reference type, we push a reference to it.
+            // Otherwise, extract the now-complete object from the heap and push it to the stack directly.
+            let constructed = ManagedHeap.get constructing state.ManagedHeap
+
+            let _, ty' =
+                AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes constructed.ConcreteType
+                |> Option.get
+
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies ty' then
+                state
+                // TODO: ordering of fields probably important
+                |> pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
+            else
+                state |> pushToEvalStack (CliType.ofManagedObject constructing) currentThread
+            |> ReturnFrameResult.NormalReturn
+        | ConstructionState.NotConstructing ->
 
         match returnState.ReturnValueDisposition with
         | ReturnValueDisposition.DispatchAsException _ ->
@@ -331,6 +335,7 @@ module IlMachineThreadState =
                 InternedStrings = ImmutableDictionary.Empty
                 _LoadedAssemblies = LoadedAssemblies.empty
                 EntryAssembly = entryAssembly.Name
+                LatchedExitCode = 0
                 Statics = StaticStorage.empty
                 TypeInitTable = ImmutableDictionary.Empty
                 DotnetRuntimeDirs = dotnetRuntimeDirs

@@ -248,46 +248,16 @@ module UnixConnection =
                     LockedAddress = None
                 }
 
-            let acceptable (port : uint16) : bool =
-                not (
-                    system.Machine.Sockets
-                    |> Map.exists (fun otherId other ->
-                        if otherId = socketId then
-                            false
-                        else
-
-                        match other.Binding with
-                        | None -> false
-                        | Some existing ->
-                            other.Kind = sock.Kind
-                            && SimulatedUnixPlatform.bindConflict
-                                platform
-                                existing
-                                other.ReuseAddress
-                                other.Phase
-                                (candidate port)
-                                sock.ReuseAddress
-                    )
-                )
-                // A connection can outlive the socket that opened it (a
-                // closed client whose connection sits queued or accepted),
-                // and its four-tuple stays occupied for this destination
-                // even though no socket holds the port any more. A real
-                // kernel's connect-time port selection skips such tuples,
-                // so the allocator must too, in either orientation.
-                && not (
-                    system.Machine.Connections
-                    |> Map.exists (fun _ connection ->
-                        let endpoint = (candidate port).Endpoint
-
-                        (connection.ClientAddress = endpoint && connection.ServerAddress = dest)
-                        || (connection.ClientAddress = dest && connection.ServerAddress = endpoint)
-                    )
-                )
-
-            match UnixMachineState.allocateEphemeralPort acceptable system.Machine with
-            | Some (port, machine) ->
-                candidate port,
+            match
+                UnixMachineState.allocateEphemeralPort
+                    (EphemeralPortUse.ConnectTo dest)
+                    socketId
+                    sock
+                    candidate
+                    system.Machine
+            with
+            | Some (binding, machine) ->
+                binding,
                 { system with
                     Machine = machine
                 }

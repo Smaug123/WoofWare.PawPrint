@@ -97,7 +97,6 @@ module TestConcurrencyBugs =
     [<RequireQualifiedAccess>]
     type private RunSummary =
         | ExitCode of int
-        | NonIntReturn of string
         | Deadlock of stuck : string
         /// A guest thread raised an unhandled CLI exception.
         /// `TypeFullName` is the guest type's fully-qualified name (extracted
@@ -126,12 +125,6 @@ module TestConcurrencyBugs =
     let private compileImage (sourceName : string) : byte[] =
         let source = Assembly.getEmbeddedResourceAsString sourceName assy
         Roslyn.compile [ source ]
-
-    let private extractExitCode (state : IlMachineState) (thread : ThreadId) : RunSummary =
-        match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> RunSummary.ExitCode code
-        | [] -> RunSummary.NonIntReturn "void"
-        | head :: _ -> RunSummary.NonIntReturn (sprintf "%O" head)
 
     /// Read the fully-qualified type name of the guest exception object from the
     /// host's `AllConcreteTypes` registry. The exception object's runtime type is
@@ -168,8 +161,8 @@ module TestConcurrencyBugs =
 
     let private classifyRunOutcome (outcome : RunOutcome) : RunSummary =
         match outcome with
-        | RunOutcome.NormalExit (state, thread)
-        | RunOutcome.ProcessExit (state, thread) -> extractExitCode state thread
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> RunSummary.ExitCode state.LatchedExitCode
         | RunOutcome.GuestUnhandledException (state, _, exn) ->
             let typeName = exceptionTypeFullName state exn.ExceptionObject
             let message = exceptionMessage state exn.ExceptionObject

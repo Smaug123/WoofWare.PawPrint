@@ -603,10 +603,10 @@ module Scheduler =
     /// Record that the entry thread has returned from `Main`.
     ///
     /// The thread never runs again but is not dead: it goes to `WaitingForForegroundThreads`,
-    /// keeping its final frame — `Main`'s return value on its eval stack is the process exit
-    /// code — and any thread joined on it stays blocked. That is what CoreCLR does: after
-    /// `Main`, `RunMainPost` blocks the entry thread in `WaitForOtherThreads` until every other
-    /// foreground thread has finished, and a `Join` on it waits for a death that never comes.
+    /// keeping its final frame, and any thread joined on it stays blocked. That is what CoreCLR
+    /// does: after `Main`, `RunMainPost` blocks the entry thread in `WaitForOtherThreads` until
+    /// every other foreground thread has finished, and a `Join` on it waits for a death that
+    /// never comes.
     /// So none of the checks `onThreadTerminated` makes apply — a monitor the entry thread still
     /// holds is held by a live thread, and a waiter on it is stuck exactly as it would be on
     /// real .NET.

@@ -374,11 +374,6 @@ module DebuggerServer =
         writeValueArray writer "locals" frame.LocalVariables writeCliType
         writer.WriteEndObject ()
 
-    let private tryExitCode (state : IlMachineState) (thread : ThreadId) : int option =
-        match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-        | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> Some i
-        | _ -> None
-
     let private writeRunOutcome (writer : Utf8JsonWriter) (outcome : RunOutcome) : unit =
         writer.WritePropertyName "outcome"
         writer.WriteStartObject ()
@@ -387,11 +382,11 @@ module DebuggerServer =
         | RunOutcome.NormalExit (state, thread) ->
             writer.WriteString ("kind", "normalExit")
             writer.WriteNumber ("thread", threadIdValue thread)
-            writeOptionalInt writer "exitCode" (tryExitCode state thread)
+            writer.WriteNumber ("exitCode", state.LatchedExitCode)
         | RunOutcome.ProcessExit (state, thread) ->
             writer.WriteString ("kind", "processExit")
             writer.WriteNumber ("thread", threadIdValue thread)
-            writeOptionalInt writer "exitCode" (tryExitCode state thread)
+            writer.WriteNumber ("exitCode", state.LatchedExitCode)
         | RunOutcome.Aborted (_state, thread, fatal) ->
             writer.WriteString ("kind", "aborted")
             writer.WriteNumber ("thread", threadIdValue thread)

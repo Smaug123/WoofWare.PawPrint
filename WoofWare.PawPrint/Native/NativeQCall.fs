@@ -51,6 +51,7 @@ module NativeQCall =
             "RuntimeTypeHandle_GetInstantiation", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInstantiation"
             "RuntimeTypeHandle_GetInterfaces", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetInterfaces"
             "RuntimeTypeHandle_IsCollectible", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_IsCollectible"
+            "RuntimeTypeHandle_MakeByRef", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_MakeByRef"
             "RuntimeTypeHandle_Instantiate", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_Instantiate"
             "ModuleHandle_GetMDStreamVersion", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetMDStreamVersion"
             "ModuleHandle_GetPEKind", NativeModuleHandle.tryExecuteQCall "ModuleHandle_GetPEKind"
@@ -111,6 +112,7 @@ module NativeQCall =
             "IsEventSourceLoggingEnabled", NativeEventSource.tryExecuteQCall "IsEventSourceLoggingEnabled"
             "LogEventSource", NativeEventSource.tryExecuteQCall "LogEventSource"
             "Signature_Init", NativeSignature.tryExecuteQCall "Signature_Init"
+            "Signature_AreEqual", NativeSignature.tryExecuteQCall "Signature_AreEqual"
             "Signature_GetCustomModifiersAtOffset",
             NativeSignature.tryExecuteQCall "Signature_GetCustomModifiersAtOffset"
             "Array_CreateInstance", NativeArray.tryExecuteQCall "Array_CreateInstance"

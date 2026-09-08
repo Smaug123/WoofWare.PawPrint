@@ -96,10 +96,11 @@ module TestStepEffectStreaming =
                     failwith $"expected guest to deadlock, but it completed: %O{outcome}"
 
                 match outcome with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim 0) :: _ -> List.rev acc, terminalState
-                    | other -> failwith $"guest did not return exit code 0: %O{other}"
+                | RunOutcome.NormalExit (terminalState, _) ->
+                    if terminalState.LatchedExitCode <> 0 then
+                        failwith $"guest did not return exit code 0: %d{terminalState.LatchedExitCode}"
+
+                    List.rev acc, terminalState
                 | other -> failwith $"guest did not exit normally: %O{other}"
             | Program.ProgramStepOutcome.Deadlocked (prepared, stuck) ->
                 if not expectDeadlock then

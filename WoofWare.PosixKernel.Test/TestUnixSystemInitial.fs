@@ -112,10 +112,33 @@ module TestUnixSystemInitial =
     let ``the first ephemeral port drawn is the bottom of the range`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> = UnixSystem.initial platform
 
-        match UnixMachineState.allocateEphemeralPort (fun _ -> true) system.Machine with
+        let socket : SocketDescription =
+            {
+                Domain = SocketDomain.InterNetwork
+                Kind = SocketKind.Stream
+                Protocol = SocketProtocol.Tcp
+                Binding = None
+                ReuseAddress = false
+                Phase = SocketPhase.Idle
+            }
+
+        let candidate (port : uint16) : SocketBinding =
+            {
+                Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
+                LockedAddress = None
+            }
+
+        match
+            UnixMachineState.allocateEphemeralPort
+                EphemeralPortUse.Reserve
+                (SocketId 0L)
+                socket
+                candidate
+                system.Machine
+        with
         | None -> failwith "a fresh machine could allocate no ephemeral port at all"
-        | Some (port, machine) ->
-            port |> shouldEqual 32768us
+        | Some (bound, machine) ->
+            bound.Endpoint.Port |> shouldEqual 32768us
             // ...and the cursor advances by one, so the next draw is not the same port.
             machine.NextEphemeralPort |> shouldEqual 32769us
 

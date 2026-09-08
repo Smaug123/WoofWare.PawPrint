@@ -61,6 +61,7 @@
     <Compile Include="StackFrameCapture.fs" />
     <Compile Include="StackCrawlMark.fs" />
     <Compile Include="TypeResolution.fs" />
+    <Compile Include="SignatureComparison.fs" />
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
     <Compile Include="SignalHandler.fs" />

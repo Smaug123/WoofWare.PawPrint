@@ -78,11 +78,8 @@ module TestClockJitterFindsBugs =
 
     let private endingOfOutcome (outcome : RunOutcome) : Ending =
         match outcome with
-        | RunOutcome.NormalExit (state, thread)
-        | RunOutcome.ProcessExit (state, thread) ->
-            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim code) :: _ -> Ending.ExitCode code
-            | stack -> Ending.Other $"non-int return: %A{stack}"
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> Ending.ExitCode state.LatchedExitCode
         | RunOutcome.GuestUnhandledException _ -> Ending.Other "unhandled guest exception"
         | RunOutcome.Aborted (_, _, fatal) -> Ending.Other $"aborted %O{fatal.Code}: %A{fatal.Message}"
         | RunOutcome.SignalTerminated (_, signal) -> Ending.Other $"signalled: %O{signal}"

@@ -85,6 +85,20 @@ type IlMachineState =
         /// of the entry thread is a CoreLib `.cctor` during pre-`Main` pumping and absent entirely
         /// once `Main` has returned.
         EntryAssembly : AssemblyName
+        /// CoreCLR's latched exit code (`LatchedExitCode`, ceemain.cpp): the exit code the host
+        /// reports for a clean exit, `RunOutcome.NormalExit` and `ProcessExit` alike.
+        /// `Environment.ExitCode` reads and writes it (the `get_ExitCode` / `set_ExitCode`
+        /// FCalls); `Environment.Exit(n)` writes `n` before tearing the process down; and
+        /// `RunMain` writes an `int Main`'s return value to it the moment `Main` returns. So a
+        /// `void Main` leaves the guest's last write in place, and a foreground worker that
+        /// writes it after `Main` has returned still decides the exit code, because the host
+        /// reads it only once the last foreground thread has finished.
+        ///
+        /// Zero at `IlMachineState.initial`, standing in for `RunMain`'s `SetLatchedExitCode(0)`:
+        /// on CoreCLR that reset precedes every class initialiser `Main` triggers, and nothing
+        /// PawPrint runs before those (the AppContext seed, the command-line initialiser) writes
+        /// it. Startup hooks, which run before the reset on CoreCLR, are not modelled.
+        LatchedExitCode : int
         /// Tracks initialization state of types across assemblies
         TypeInitTable : TypeInitTable
         /// The guest's static fields. An ordinary static lives under `StaticOwner.Shared`; a
@@ -538,15 +552,16 @@ type NativeHandlerResult =
     /// on the stack so exception dispatch can unwind it on the ctor's `Ret`; the handler
     /// is never re-entered. Reports `WhatWeDid.SuspendedForManagedCall` to the Scheduler.
     ///
-    /// `message` names the string the CLR would have passed to a message-taking ctor
-    /// overload — for a native handler that typically means one of the `mscorrc` resource
-    /// strings CoreCLR's `EEMessageException` carries (e.g. `IDS_EE_CANNOTCAST`, which
-    /// `ObjIsInstanceOfCore` throws). `None` accepts the parameterless ctor's default, which
-    /// is correct wherever CoreCLR itself throws with no message.
+    /// `fields` are the strings the CLR would have passed to a constructor overload — for a
+    /// native handler that typically means one of the `mscorrc` resource strings CoreCLR's
+    /// `EEMessageException` carries (e.g. `IDS_EE_CANNOTCAST`, which `ObjIsInstanceOfCore`
+    /// throws), or the type and assembly names an `EETypeLoadException` records. An empty list
+    /// accepts the parameterless ctor's defaults, which is correct wherever CoreCLR itself
+    /// throws with no argument.
     | RaiseException of
         IlMachineState *
         exnType : TypeInfo<GenericParamFromMetadata, TypeDefn> *
-        message : string option *
+        fields : RuntimeExceptionField list *
         StepEffect
     /// A type's `.cctor` has been pushed on top of the native frame (typically because a
     /// sub-call into managed code needed to initialise an uninitialised type). Dispatcher
@@ -607,23 +622,25 @@ type ReturnFrameResult =
     /// The caller should dispatch this object as a managed exception instead of pushing it
     /// onto the eval stack.  Before dispatching, the caller MUST call
     /// ExceptionDispatching.overwriteHResultPostCtor to apply the CLR's post-ctor
-    /// SetHResult(GetHR()) step, and then, when `message` is `Some`, overwrite `_message`
-    /// with it (see `ReturnValueDisposition.DispatchAsException` for why that has to
-    /// happen after the ctor rather than before it).
+    /// SetHResult(GetHR()) step, and then write each of `fields` (see
+    /// `ReturnValueDisposition.DispatchAsException` for why that has to happen after the ctor
+    /// rather than before it).
     | DispatchException of
         IlMachineState *
         exceptionAddr : ManagedHeapAddress *
         exceptionType : ConcreteTypeHandle *
-        message : string option
+        fields : RuntimeExceptionField list
 
 /// Result of a complete program run (the pump loop having finished).
 type RunOutcome =
-    /// Every thread ran to `ret`. `terminatingThread` is the entry thread, whose
-    /// eval stack carries the exit code.
+    /// The entry thread's bottom frame returned. For `Main` that means the process exited
+    /// cleanly — `Main` returned and then the last foreground thread finished — with the exit
+    /// code `IlMachineState.LatchedExitCode`; during startup it means the pumped call is done
+    /// (see `Program.EntryFrameKind`). `terminatingThread` is the entry thread.
     | NormalExit of IlMachineState * terminatingThread : ThreadId
     /// A thread called `Environment.Exit`. The process tore itself down regardless
-    /// of other threads still running; `exitingThread`'s eval stack carries the exit
-    /// code. Distinct from `NormalExit` so the pre-main cctor pump can bail rather
+    /// of other threads still running, with the exit code `IlMachineState.LatchedExitCode`.
+    /// Distinct from `NormalExit` so the pre-main cctor pump can bail rather
     /// than silently continuing into `Main` after the guest already asked to die.
     | ProcessExit of IlMachineState * exitingThread : ThreadId
     /// A fatal error aborted the process while `abortingThread` was running: `Environment.FailFast`,
@@ -759,7 +776,18 @@ module NativeHandlerResult =
         (state : IlMachineState)
         : NativeHandlerResult
         =
-        NativeHandlerResult.RaiseException (state, exnType, None, StepEffect.NoEffect)
+        NativeHandlerResult.RaiseException (state, exnType, [], StepEffect.NoEffect)
+
+    /// `raiseException`, but populating the string fields CoreCLR's `EEException::CreateThrowable`
+    /// would have set through a constructor overload: the message, and for a
+    /// `TypeLoadException` the type and assembly names its `TypeName` and message report.
+    let raiseExceptionWithFields
+        (exnType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (fields : RuntimeExceptionField list)
+        (state : IlMachineState)
+        : NativeHandlerResult
+        =
+        NativeHandlerResult.RaiseException (state, exnType, fields, StepEffect.NoEffect)
 
     /// `raiseException`, but with the message CoreCLR would have attached. Pass `Some` only
     /// where CoreCLR throws with an explicit message (typically an `EEMessageException`
@@ -775,7 +803,7 @@ module NativeHandlerResult =
         (state : IlMachineState)
         : NativeHandlerResult
         =
-        NativeHandlerResult.RaiseException (state, exnType, message, StepEffect.NoEffect)
+        raiseExceptionWithFields exnType (message |> Option.toList |> List.map RuntimeExceptionField.Message) state
 
     /// Forward a `WhatWeDid.SuspendedForClassInit` outcome from a sub-call. Use this
     /// at the leaf of a passthrough branch when the dispatcher should keep the native

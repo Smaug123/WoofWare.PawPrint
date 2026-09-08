@@ -112,13 +112,7 @@ public static class Program
         try
             match Program.run loggerFactory (Some sourceName) peImage (HostConfig.Default dotnetRuntimes) with
             | RunOutcome.NormalExit (state, thread)
-            | RunOutcome.ProcessExit (state, thread) ->
-                let exitCode =
-                    match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
-                    | other -> failwith $"guest did not return an int exit code: %O{other}"
-
-                state, thread, exitCode
+            | RunOutcome.ProcessExit (state, thread) -> state, thread, state.LatchedExitCode
             | other -> failwith $"guest did not exit normally: %O{other}"
         with _ ->
             for message in messages () do

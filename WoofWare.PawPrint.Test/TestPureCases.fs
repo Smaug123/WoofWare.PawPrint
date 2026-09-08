@@ -35,7 +35,6 @@ module TestPureCases =
             "UnsafeAccessorPrimitiveBackingField.cs" // An accessor naming a primitive's own backing field -- `System.Int32.m_value` over a `ref int`. Real .NET returns a reference to the underlying value itself, so the accessor aliases the very `int` it was handed. PawPrint stores a primitive-like value type as a bare cell rather than a field map, so there is no field for `instanceFieldAddress` to project onto, and the byref it would hand back could not be read or written; the refusal is "TODO: [UnsafeAccessor] .TestUnsafeAccessorPrimitiveBackingField::IntValue names field m_value of a primitive-like value type". Un-park when such a field's address is understood to *be* its container's -- that is a change to `instanceFieldAddress`, and so to `ldflda` for every caller, rather than to accessor dispatch. The single-field struct beside it in this file is the near miss that already works. Verified to exit 0 on real .NET.
             "ValueTypeHashCodeOverlappingReferenceFields.cs" // Explicit layout may put two *reference* fields at the same offset -- the GC sees one pointer slot, so the type loads, and real .NET hashes whichever object the slot holds (measured: exits 0). PawPrint cannot reach it, and not because of anything in `ValueType_GetHashCodeStrategy`: an explicit-layout struct with overlapping reference fields has no access route at all. `CliValueType.DereferenceFieldById` sees more than one field covering the range and falls back to rendering the bytes, and `CliType.ToBytes` refuses a non-null reference because PawPrint models one as an opaque handle rather than an address. That is the same dead end as `RuntimeHelpersBoxReferenceContainingStruct.cs`, `ReinterpretCellUnderAliasedAncestor.cs` and `BulkMoveAcrossOverlappedStructPadding.cs`. Note that answering the strategy's nullness question some other way would not be enough: the guest's own `Unsafe.As<byte, object>(ref rawData + fieldOffset)` read then hits the same wall, because the two aliased cells make `tryReadHeapValueFieldPrecise`'s uniqueness gate fail and the byte walk refuses a reference-containing payload. Un-park when a reference cell can be named through an aliased explicit-layout offset. Verified to exit 0 on real .NET.
             "ReflectionFieldSetValueFailingCctor.cs" // A reflective field set whose declaring type's initialiser throws. `InvokeUtil::SetValidField` runs the initialiser inside an `EX_TRY` and rethrows the failure wrapped in a *fresh* `TargetInvocationException` (`CreateTargetExcept`, invokeutil.cpp:803), so the guest's `catch (TargetInvocationException)` fires and the inner exception is the `TypeInitializationException`. Note this is the opposite of the sibling `ReflectionInvocation_RunClassConstructor` QCall, which deliberately lets the TIE through unwrapped (reflectioninvocation.cpp:1226) — the suspension plumbing is shared between the two handlers but the exception contract is not. Measured rather than assumed: real .NET exits 0, and PawPrint reports "threw unhandled exception" because the bare `TypeInitializationException` does not match the guest's `catch`. Not fixable inside the handler as it stands. `RuntimeFieldHandle_SetValue` returns `suspendedForClassInit`, the initialiser frame runs and throws, and the exception propagates through the native frame without the handler ever being re-entered, so there is no point at which it could wrap. (The *other* half — a declaring type already in `TypeInitState.Failed` on entry — the handler does catch, and refuses loudly with a TODO naming this, because `ensureTypeInitialised` dispatches that cached exception itself.) Un-park when a native frame can intercept an exception propagating through it. See docs/divergences.md.
-            "ReflectionOverloadedIndexer.cs" // Two properties on one type sharing a name — for C#, overloaded indexers, both called `Item`. `RuntimeType.PopulateProperties` compares their signatures to decide whether the second is a duplicate, via `RuntimePropertyInfo.EqualsSig` and so the `Signature_AreEqual` QCall, which is unimplemented. This shape became reachable only once PropertySig decoding landed: before that, any property reflection died earlier in `Signature_Init`. `Signature_AreEqual` is a separate primitive from `Signature_Init` — CoreCLR implements it with `MetaSig::CompareMethodSigs` over two blobs under two type contexts — so it is its own change. A hidden inherited property of the same name reaches the same comparison, so this file stands in for that shape too. Not satisfiable the wrong way: an implementation that always answered "not equal" would still report two properties, so the file also pins which overload each `GetValue` reached. Verified to exit 0 on real .NET.
             "DelegateOverNullInstanceReceiver.cs" // A delegate over an instance method with a null receiver. CoreCLR refuses to build one at all -- `MulticastDelegate.CtorClosed` throws `ArgumentException(Arg_DlgtNullInst)` (MulticastDelegate.CoreCLR.cs:552-556), and the *open* instance delegate that C# cannot spell is made only by `Delegate.CreateDelegate`, which records its target in `_methodPtrAux`. `IlMachineRuntimeMetadata.executeDelegateConstructor` performs no such check, so PawPrint builds the delegate instead. Measured before `Delegate_FindMethodHandle` grew its null-`_target` guard: PawPrint returned 24 where real .NET returns 0 -- the non-generic shape constructed silently, and the generic one then faulted with a NullReferenceException inside `Delegate.GetMethodImpl`, which dereferences `_target` to walk the base chain (Delegate.CoreCLR.cs:189). That second half is now a named refusal from the QCall instead of a guest-visible NRE, so the file stops there rather than returning a code; the first half is still silently wrong either way. Fixing it means teaching delegate construction which of CoreCLR's ctor bodies (`CtorClosed`, `CtorClosedStatic`, `CtorOpened`) the `newobj` selects, which reaches every delegate and so is its own slice. Un-park then. Verified to exit 0 on real .NET.
             "ReflectionParameterMarshalAsPresent.cs" // A parameter carrying a real `[MarshalAs]`, so `PseudoCustomAttribute.GetCustomAttributes` gets a non-empty MarshalSpec blob (ECMA-335 II.23.4) out of `MetadataImport.GetFieldMarshal` and goes on to parse it. Measured on top of that handler: the guest stops at the next InternalCall along, `System.Reflection.MetadataImport::GetMarshalAs(IntPtr, Int32, &Int32, &Int32, &byte*, &Int32, &Int32, &Int32, &byte*, &byte*, &Int32) -> Boolean`, which is CoreCLR's `ParseNativeTypeInfo` (mlinfo.cpp:135) behind an FCall. The *absent* half — every shape whose blob is empty, including the nil ParamDef token that a return value with no Param row produces — is active in `ReflectionParameterMarshalAsAbsent.cs`, so what is parked here is the parsing, not the lookup. One thing for whoever implements `GetMarshalAs`: its two string outputs are not faithfully reproducible. The FCall hands back raw pointers into the blob (managedmdimport.cpp:62-64) and the managed wrapper reads them with `CreateReadOnlySpanFromNullTerminated` (MdImport.cs:265-270), but MarshalSpec strings are length-prefixed rather than NUL-terminated, so real .NET over-reads into whatever `#Blob` bytes follow — measured as a `MarshalType` of "Some.Marshaller" being reported as "Some.MarshallerckM". This file therefore asserts only the numeric properties, which are unaffected. Verified to exit 0 on real .NET.
             "DelegateCombine.cs" // Multicast delegates (issue #959). `Delegate.Combine` reaches `MulticastDelegate.NewMulticastDelegate` (MulticastDelegate.CoreCLR.cs:168), which needs four things. The first is implemented: `RuntimeTypeHandle.InternalAllocNoChecks`, which allocates the new multicast instance (`TestInternalAllocNoChecks` covers it directly, because no guest can reach it without immediately hitting the next blocker). Measured by un-parking on top of that: the guest stops at `System.Delegate::GetMulticastInvoke(MethodTable*)`, an unimplemented InternalCall with a `Delegate_GetMulticastInvokeSlow` QCall fallback, which supplies the new delegate's `_methodPtr`. That one needs a decision about what a "multicast invoke stub" even is in PawPrint's `NativeIntSource.FunctionPointer` model, which has no such shape today. `System.Delegate::GetInvokeMethod(MethodTable*)`, one instruction further on, supplies the new delegate's `_methodPtrAux` and is implemented -- it is the InternalCall under `Delegate.DynamicInvoke` -- and what it answers is a method-registry handle, being the `MethodDesc*` CoreCLR stores there for a multicast delegate rather than a code address. So a multicast delegate will be one of the first things PawPrint builds with a nonzero `_methodPtrAux`, and `Delegate_FindMethodHandle`'s guard on that field becomes a live safety net rather than dead: nothing this file does reaches that QCall (`MulticastDelegate.GetMethodImpl` answers a multicast from the *last invocation-list entry's* `.Method`, MulticastDelegate.CoreCLR.cs:500-507, and only an unmanaged function pointer asks the runtime about the multicast itself), but whoever adds a path that does will get a named refusal rather than a `_methodPtr` read that answers some other method. The fourth is dispatch: `AbstractMachine.dispatchDelegateInvoke` reads `_target` and `_methodPtr` and performs exactly one call, so it must learn to walk `_invocationList[0 .. _invocationCount-1]` — note that the array is longer than the count, since `CombineImpl` grows it by doubling, so honouring `_invocationCount` rather than the array length is the thing to get right. That needs a frame surviving N sequential calls, which is the same shape as the limitation `DelegateToActivatorCreateInstance.cs` documents. Un-park when the stub pointers and multicast dispatch land; they interact, since what dispatch needs to see in `_methodPtr` determines what the stub pointers should be.
@@ -82,6 +81,10 @@ module TestPureCases =
     let customExitCodes =
         [
             "ExceptionWithNoOpFinally.cs", 3
+            "ForegroundThreadExitsAfterMainReturns.cs", 7
+            "IntMainReturnOverridesExitCode.cs", 3
+            "VoidMainSetsExitCode.cs", 9
+            "ExitOverridesExitCode.cs", 2
             "ForegroundWorkerTurnsBackgroundAfterMainReturns.cs", 5
             "BackgroundWorkerJoinsMainThread.cs", 4
             "EntryThreadIsBackgroundAfterMainReturns.cs", 11
@@ -574,11 +577,7 @@ public class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | outcome ->
                     failwith
                         $"Expected the guest to catch a NullReferenceException from the null calli, got %O{outcome}"
@@ -764,11 +763,7 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -829,11 +824,7 @@ class Program
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -888,11 +879,7 @@ class Program
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -934,11 +921,7 @@ class Program
             KernelConfig.Default
             (fun _image pawPrintResult ->
                 match pawPrintResult with
-                | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-                    match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-                    | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ -> exitCode |> shouldEqual 0
-                    | [] -> failwith "expected program to return an int, but it returned void"
-                    | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+                | RunOutcome.NormalExit (terminalState, _) -> terminalState.LatchedExitCode |> shouldEqual 0
                 | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
@@ -1098,13 +1081,9 @@ class Program
     /// with the code the guest actually chose.
     let private expectExitCode (expected : int) (outcome : RunOutcome) : IlMachineState =
         match outcome with
-        | RunOutcome.NormalExit (terminalState, terminatingThread) ->
-            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim exitCode) :: _ ->
-                exitCode |> shouldEqual expected
-                terminalState
-            | [] -> failwith "expected program to return an int, but it returned void"
-            | ret :: _ -> failwith $"expected program to return an int, but it returned %O{ret}"
+        | RunOutcome.NormalExit (terminalState, _) ->
+            terminalState.LatchedExitCode |> shouldEqual expected
+            terminalState
         | RunOutcome.ProcessExit _ -> failwith "expected normal exit, got process exit"
         | RunOutcome.Aborted (_, _, fatal) ->
             let m = fatal.Message |> Option.defaultValue "<no message>"

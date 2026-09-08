@@ -130,6 +130,7 @@
     <Compile Include="TestLocalSignatureDecoding.fs" />
     <Compile Include="TestMethodSignatureDecoding.fs" />
     <Compile Include="TestPropertySignatureDecoding.fs" />
+    <Compile Include="TestSignatureComparison.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
     <Compile Include="TestNativeRuntimeFieldHandleSetValue.fs" />
@@ -240,6 +241,7 @@
     <Compile Include="TestFabricatedCastclassNullable.fs" />
     <Compile Include="TestFabricatedCallvirtMethodSpecMethodDef.fs" />
     <Compile Include="TestFabricatedLdlen.fs" />
+    <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />

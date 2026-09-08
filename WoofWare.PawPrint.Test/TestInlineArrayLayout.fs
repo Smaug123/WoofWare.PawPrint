@@ -24,8 +24,8 @@ open WoofWare.PawPrint.Test
 ///
 /// Each generated program measures four sizes — N = 1, 2 and 3, plus the buffer's placement inside
 /// a larger struct — from a single compilation. PawPrint returns all four packed into one int32,
-/// which is read directly off the evaluation stack; the real runtime is a real process, whose exit
-/// code on Unix is only 8 bits, so it is run once per measurement. On disagreement the assertion
+/// read as its latched exit code with all 32 bits intact; the real runtime is a real process, whose
+/// exit code on Unix is only 8 bits, so it is run once per measurement. On disagreement the assertion
 /// message decodes both sides, so a failure names the shape.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
@@ -259,12 +259,8 @@ public class TestInlineArrayLayoutSweep
                 reraise ()
 
         match outcome with
-        | RunOutcome.NormalExit (terminalState, terminatingThread)
-        | RunOutcome.ProcessExit (terminalState, terminatingThread) ->
-            match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-            | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
-            | [] -> failwith $"%s{sourceName}: expected the program to return an int, but it returned void"
-            | ret :: _ -> failwith $"%s{sourceName}: expected the program to return an int, but it returned %O{ret}"
+        | RunOutcome.NormalExit (terminalState, _)
+        | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
         | RunOutcome.GuestUnhandledException (_, _, exn) ->
             failwith $"%s{sourceName}: guest threw an unhandled exception: %O{exn.ExceptionObject}"
         | RunOutcome.Aborted (_, _, fatal) ->

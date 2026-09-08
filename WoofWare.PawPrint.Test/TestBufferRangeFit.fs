@@ -117,16 +117,10 @@ class Program
 """
 
     let private exitCodeOf (outcome : RunOutcome) : int =
-        let terminalState, terminatingThread =
-            match outcome with
-            | RunOutcome.NormalExit (state, thread) -> state, thread
-            | RunOutcome.ProcessExit (state, thread) -> state, thread
-            | other -> failwith $"expected the guest to terminate cleanly, got %O{other}"
-
-        match terminalState.ThreadState.[terminatingThread].MethodState.EvaluationStack.Values with
-        | [] -> failwith "expected the guest to return a value, but it returned void"
-        | EvalStackValue.Int32 (Int32Source.Verbatim i) :: _ -> i
-        | ret :: _ -> failwith $"expected the guest to return an int, but it returned %O{ret}"
+        match outcome with
+        | RunOutcome.NormalExit (state, _)
+        | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
+        | other -> failwith $"expected the guest to terminate cleanly, got %O{other}"
 
     let private run (name : string) (body : string) : RunOutcome =
         let image = Roslyn.compile [ guest body ]
