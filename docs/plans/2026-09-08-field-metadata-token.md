@@ -113,12 +113,33 @@ the guest says the same thing on both runtimes without depending on a literal ro
    which looks the token up in the CustomAttribute table by `Parent` — returns the *wrong
    field's* attributes rather than failing if the row is off by one.
 
-Mutation: (m1) return the declaring type's TypeDef token with the field tag; (m2) return
-`mdtFieldDef ||| registryId`; (m3) return `token + 1`; (m4) return the token with the
-`mdtMethodDef` tag.
+## Outcome
+
+Checks 1-7 above are as planned. Check 8 is new, and came out of the battery rather than the
+plan: mutating the handler to `token + 1` died at check 2, which a uniform shift cannot cause,
+and the reason turned out to be that `Constant`'s token never went through the handler at all.
+A literal field has no FieldDesc, so CoreCLR reflects it as `MdFieldInfo`, whose `MetadataToken`
+is the token it read straight out of metadata (MdFieldInfo.cs:44). Declaring the literal
+immediately after `Static` therefore gives the guest an oracle for the *absolute* row number
+rather than only for relations between tokens the native itself produced, so that accident was
+made deliberate: check 8 asserts the adjacency, and mutant m5 exists to exercise it.
+
+Mutants, each run against the 123 tests matching
+`TestCategory=Guest&(Name~FieldMetadataToken|Name~Attribute|Name~Field|Name~Reflect)`, with
+`FieldMetadataToken.cs` the only failure in every case:
+
+| mutant | outcome | died at |
+| --- | --- | --- |
+| m1: the declaring type's token wearing the field tag | killed | check 2 |
+| m2: an injective function of the handle (the shape a registry id has) | killed | check 3 |
+| m3: `token + 1` | killed | check 2 |
+| m4: the right row under the `mdtMethodDef` tag | killed | check 1 |
+| m5: `token + 0x1000`, far enough not to collide with the literal's row | killed | check 8 |
 
 ## Ladder
 
-To be filled in once the handler is in: re-run
-`docs/plans/2026-08-17-aspnet-critical-path/run-ladder.sh -o DIR RungJ` with
-`LADDER_FLAVOUR=linux`.
+Rung J advances 7 frames. It now stops 45 frames out from `Main` in `Utf8.FromUtf16`:
+"refusing to subtract array element pointer from incompatible pointer,
+`<element 15 of array <object #70560>>` vs `<<element 13 of array <object #70560>> as
+System.Byte>`" -- the JSON writer transcoding the response body. That is a byref-model question
+rather than a native, and is recorded as the next stop.
