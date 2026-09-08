@@ -54,6 +54,16 @@ module NativeRuntimeTypeHelpers =
         =
         IlMachineState.writeManagedByrefWithBase baseClassTypes state ptr (CliType.Numeric (CliNumericType.Int32 value))
 
+    /// The address of element `index` of an `IntPtr*` buffer a QCall was handed, whatever the
+    /// guest built the buffer from: a `fixed` pointer over an `IntPtr[]`, a `Span<IntPtr>` over a
+    /// `stackalloc`, or the address of a single `IntPtr` local for a one-element buffer.
+    ///
+    /// Strided by the interpreter's own pointer arithmetic under the `IntPtr` view, which is what
+    /// the guest's `p + index` on the same pointer would do (ECMA-335 III.1.5: byte-stride once a
+    /// byref has become a native pointer). The arithmetic folds a whole-cell advance back into the
+    /// root, so the result addresses a *cell* of the buffer — an array element or a `stackalloc`
+    /// offset — and the provenance-bearing handle stored there (`TypeHandlePtr`, `FieldHandlePtr`)
+    /// is read or written as a cell, never as bytes.
     let nativeIntElementPointer
         (operation : string)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -62,55 +72,23 @@ module NativeRuntimeTypeHelpers =
         (index : int)
         : ManagedPointerSource
         =
-        match buffer with
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex), []) ->
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, baseIndex + index), [])
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset), []) ->
-            ManagedPointerSource.Byref (
-                ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
-                []
-            )
-        // Span<IntPtr> pinned over a `stackalloc IntPtr[N]` buffer: the Span(void*, int)
-        // constructor appends `ReinterpretAs IntPtr` to the localloc byte byref when
-        // storing it into `_reference`, and the LibraryImport stub for the QCall pulls
-        // that reference back out. The reinterpret is address-preserving, so striding
-        // by nativeIntSize bytes and preserving the projection keeps the typed view.
-        | ManagedPointerSource.Byref (ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset),
-                                      [ ByrefProjection.ReinterpretAs reinterpretTy as proj ]) ->
-            // The QCall signature mandates `Span<IntPtr>`; any other reinterpret type would mean
-            // the buffer was constructed from a different element type and `nativeIntSize` striding
-            // would be wrong, so surface the mismatch loudly rather than silently mis-striding.
-            if InternalTypeKind.kind baseClassTypes reinterpretTy <> InternalTypeKind.NativeInt then
-                failwith
-                    $"%s{operation}: expected IntPtr-reinterpret on localloc buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
+        if index < 0 then
+            failwith $"%s{operation}: negative buffer index %d{index}"
 
-            ManagedPointerSource.Byref (
-                ByrefRoot.StackMemoryByte (thread, frame, block, byteOffset + (index * nativeIntSize)),
-                [ proj ]
-            )
-        // `IntPtr*` pinned over an `IntPtr[]`, which is how `RuntimeTypeHandle.Instantiate(Type[])`
-        // hands over two or more generic arguments: `fixed (IntPtr* p = handles)` is
-        // `ldelema IntPtr; conv.u`, and `conv.u` anchors the element's own type as a byte view on
-        // the array byref. The native side indexes that pointer in bytes, so do the same and let
-        // the byte-view arithmetic fold whole cells back into the element index.
-        | ManagedPointerSource.Byref (ByrefRoot.ArrayElement _, [ ByrefProjection.ReinterpretAs reinterpretTy ]) ->
-            if InternalTypeKind.kind baseClassTypes reinterpretTy <> InternalTypeKind.NativeInt then
-                failwith
-                    $"%s{operation}: expected IntPtr-reinterpret on array buffer, got %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name} in %O{buffer}"
+        // `p + 0` is `p` (BinaryArithmetic.fs): a one-element buffer is the bare address of a
+        // single local, which has no cursor to advance and must not gain one.
+        if index = 0 then
+            buffer
+        else
 
-            ManagedPointerByteView.addByteOffsetToByteView state (index * nativeIntSize) buffer
-        // The 1-arg overload of CreateInstanceForAnotherGenericParameter takes the
-        // address of a single IntPtr local (`&typeHandle`), so element 0 *is* the
-        // buffer itself. We cannot stride past it without escaping the local.
-        | ManagedPointerSource.Byref (ByrefRoot.LocalVariable _, []) when index = 0 -> buffer
-        | ManagedPointerSource.Byref (ByrefRoot.Argument _, []) when index = 0 -> buffer
-        // Buffers are currently reached through GetFields' stackalloc/array path
-        // (either as a bare byte byref or with a trailing `ReinterpretAs IntPtr` when
-        // the buffer was wrapped in a Span<IntPtr>), through an `IntPtr[]` pinned by
-        // `fixed`, or through a single-IntPtr local taken by `&` for the 1-arg overload of
-        // CreateInstanceForAnotherGenericParameter. Other shapes should fail with their
-        // structure intact.
-        | _ -> failwith $"%s{operation}: unsupported IntPtr result buffer pointer shape %O{buffer}"
+        let intPtrType =
+            AllConcreteTypes.findExistingNonGenericConcreteType state.ConcreteTypes baseClassTypes.IntPtr.Identity
+            |> Option.bind (fun handle -> AllConcreteTypes.lookup handle state.ConcreteTypes)
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: System.IntPtr is not concretized, so the buffer cannot be strided"
+            )
+
+        ManagedPointerByteView.addByteOffset state intPtrType (index * nativeIntSize) buffer
 
     let writeFieldHandleElement
         (operation : string)
