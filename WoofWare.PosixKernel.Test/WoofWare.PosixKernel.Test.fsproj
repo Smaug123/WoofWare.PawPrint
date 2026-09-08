@@ -41,6 +41,7 @@
     <Compile Include="TestVirtualFileSystem.fs" />
     <Compile Include="TestOpenDirRules.fs" />
     <Compile Include="TestRmDirRules.fs" />
+    <Compile Include="TestPosixFadvise.fs" />
     <Compile Include="TestUnlinkRules.fs" />
     <Compile Include="TestRenameRules.fs" />
     <Compile Include="TestResolutionSplit.fs" />

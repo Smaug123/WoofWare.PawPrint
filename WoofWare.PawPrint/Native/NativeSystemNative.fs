@@ -2989,6 +2989,63 @@ module NativeSystemNative =
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 0)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
+        // `int32_t SystemNative_PosixFAdvise(intptr_t fd, int64_t offset,
+        // int64_t length, int32_t advice)` (pal_io.c:1114). The advice parameter
+        // is matched loosely for the same reason `SystemNative_FLock`'s
+        // operation is: CoreLib declares it as the `Interop.Sys.FileAdvice` enum
+        // while a guest hand-rolling the P/Invoke writes `int`.
+        | Some "SystemNative_PosixFAdvise",
+          [ ConcreteIntPtr state.ConcreteTypes
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64
+            _ ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // Unlike its neighbours this one reports failure by *returning* the
+            // raw errno and leaving errno alone — the managed declaration says
+            // `SetLastError = false`, "explicitly called out in the man page" —
+            // so there is no last-error store here, and success is 0 rather
+            // than a -1 sentinel.
+            //
+            // Reached from `SafeFileHandle.Init` (SafeFileHandle.Unix.cs:412)
+            // for a file opened `FileOptions.SequentialScan` or
+            // `FileOptions.RandomAccess`. That caller passes the result to
+            // `CheckFileCall(..., ignoreNotSupported: true)`, which inspects
+            // only `result < 0` — so no answer here can throw there, this being
+            // a hint.
+            let operation = "SystemNative_PosixFAdvise"
+            let numbering = SimulatedUnixPlatform.rawErrnoNumbering state.Kernel.UnixPlatform
+
+            // Decoded in the order the C reaches them, which is why the
+            // arguments are not read up front as the neighbouring handlers read
+            // theirs. `#if HAVE_POSIX_ADVISE` encloses the whole body, and the
+            // advice `switch` precedes `ToFileDescriptor(fd)` and the two casts
+            // — so on a platform without the call, and for an advice value the
+            // shim does not know, none of the other three arguments is looked
+            // at. A guest that passes a descriptor this interpreter cannot
+            // decode must still get those answers rather than an abort.
+            let returned =
+                if not (SimulatedUnixPlatform.providesPosixFadvise state.Kernel.UnixPlatform) then
+                    // The `#else` arm: "Not supported on this platform. Caller
+                    // can ignore this failure since it's just a hint."
+                    UnixError.toRawErrnoUnder numbering UnixError.ENOTSUP
+                else
+
+                match FileAdvicePal.decode (NativeCall.int32Argument operation instruction.Arguments.[3]) with
+                | None -> UnixError.toRawErrnoUnder numbering UnixError.EINVAL
+                | Some advice ->
+
+                let fd = fdArgument operation instruction.Arguments.[0]
+                let offset = NativeCall.int64Argument operation instruction.Arguments.[1]
+                let length = NativeCall.int64Argument operation instruction.Arguments.[2]
+
+                match UnixDescriptor.posixFadvise fd offset length advice (EmulatedKernel.unix state.Kernel) with
+                | FileAdviceAnswer.Completed -> 0
+                | FileAdviceAnswer.Failed error -> UnixError.toRawErrnoUnder numbering error
+
+            state
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim returned)) ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_FStat",
           [ ConcreteIntPtr state.ConcreteTypes ; ConcretePointer fileStatusHandle ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
