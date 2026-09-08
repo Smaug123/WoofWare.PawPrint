@@ -177,11 +177,30 @@ module GetCwdRefusal =
 [<RequireQualifiedAccess>]
 module UnixPathResolution =
 
+    /// Whether `path`, as the bytes a kernel would copy in, is within this
+    /// platform's `PATH_MAX`. A `UnixPath` is text of any length, so the
+    /// copy-in rule every path-taking syscall applies before it looks at the
+    /// path is applied here, at the one door those syscalls walk through:
+    /// measured on both, a too-long argument is ENAMETOOLONG whether or not
+    /// its first component exists.
+    let private withinPathMax<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        (path : UnixPath)
+        : bool
+        =
+        let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
+        // The limit counts the NUL terminator, which the text does not carry.
+        UnixPathText.utf8.GetByteCount (UnixPath.toString path)
+        <= PathLimits.pathMaxBytes limits - 1
+
     /// <summary>
     /// The full result of walking <c>path</c>.
     /// </summary>
     /// <remarks>
     /// Callers that only want the resulting inode should use <c>resolvePath</c> instead.
+    /// A path longer than this platform's <c>PATH_MAX</c> is <c>ENAMETOOLONG</c> before
+    /// anything is looked up, as the kernel's copy-in refuses it; <c>PathArgument.parse</c>
+    /// applies the same rule to raw bytes.
     /// This function is for callers that must distinguish
     /// "the name exists" from "the name is free in a directory that exists", such as
     /// <c>rename</c>, <c>link</c>, and <c>open</c> with <c>O_CREAT</c>.
@@ -196,6 +215,10 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<Resolution, UnixError>
         =
+        if not (withinPathMax system path) then
+            Error UnixError.ENAMETOOLONG
+        else
+
         // The held inode, not a re-walk of the recorded current directory: a real
         // process reaches its current directory through a reference it already
         // holds, so no component of that directory's own path is looked up here
@@ -238,6 +261,10 @@ module UnixPathResolution =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<PausedResolution, UnixError>
         =
+        if not (withinPathMax system path) then
+            Error UnixError.ENAMETOOLONG
+        else
+
         PathWalk.resolveParent
             (SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform)
             (UnixProcessState.callerPrivilege system.Process)

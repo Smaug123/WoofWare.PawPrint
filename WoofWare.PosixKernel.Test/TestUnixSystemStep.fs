@@ -1835,6 +1835,107 @@ module TestUnixSystemStep =
         | SyscallAnswer.Failed actual, _ -> actual |> shouldEqual error
         | other -> failwith $"expected %O{error}, got %A{other}"
 
+    /// The copy-in rule, at every path-taking syscall rather than only at
+    /// `rename`: a pathname past this platform's PATH_MAX is ENAMETOOLONG
+    /// before anything is looked up. Built from short components, so that a
+    /// kernel which merely walked it would answer ENOENT at the first.
+    [<Test>]
+    let ``a pathname past PATH_MAX is ENAMETOOLONG from every path syscall, before resolution`` () : unit =
+        // 4501 bytes: past both Darwin's 1024 and Linux's 4096.
+        let overBoth = statPath (String.replicate 1500 "ab/" + "x")
+        // 1030 bytes: past Darwin's and within Linux's.
+        let overDarwinOnly = statPath (String.replicate 343 "ab/" + "x")
+
+        let everyAnswer (path : UnixPath) (system : UnixSystem<int, string>) : UnixError list =
+            let answer (result : SyscallAnswer * UnixSystem<int, string>) : UnixError =
+                match result with
+                | SyscallAnswer.Failed error, _ -> error
+                | other -> failwith $"expected a failure, got %A{other}"
+
+            [
+                (match UnixPathResolution.stat SymlinkPolicy.Follow path system with
+                 | FileStatusAnswer.Failed error -> error
+                 | other -> failwith $"expected a failure, got %A{other}")
+                UnixNamespace.mkdir path 0o777 system |> answer
+                UnixNamespace.unlink path system |> answer
+                UnixNamespace.rmdir path system |> answer
+                UnixPathResolution.chdir path system |> answer
+                UnixNamespace.openPath
+                    {
+                        Access = FileAccessMode.ReadOnly
+                        Create = false
+                        Exclusive = false
+                        Truncate = false
+                        NoFollow = false
+                        CloseOnExec = false
+                        Synchronous = false
+                    }
+                    path
+                    0
+                    system
+                |> answer
+                (match UnixNamespace.opendir path system with
+                 | OpenDirAnswer.Failed error, _ -> error
+                 | other -> failwith $"expected a failure, got %A{other}")
+                (match UnixNamespace.readlink path UserBuffer.Mapped 4096 system with
+                 | Ok (ReadLinkAnswer.Failed error) -> error
+                 | other -> failwith $"expected a failure, got %A{other}")
+            ]
+
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+
+            everyAnswer overBoth system
+            |> List.distinct
+            |> shouldEqual [ UnixError.ENAMETOOLONG ]
+
+        let _, _, _, darwinTree = withTree darwin
+
+        everyAnswer overDarwinOnly darwinTree
+        |> List.distinct
+        |> shouldEqual [ UnixError.ENAMETOOLONG ]
+
+        // ...and within Linux's limit the walk runs, and finds nothing.
+        let _, _, _, linuxTree = withTree linux
+
+        everyAnswer overDarwinOnly linuxTree
+        |> List.distinct
+        |> shouldEqual [ UnixError.ENOENT ]
+
+    /// The boundary itself, as `PathArgument.parse` already states it for raw
+    /// bytes: a usable path is one byte shorter than PATH_MAX, because the
+    /// limit counts the terminator. Short components throughout, so that a
+    /// path within the limit is refused by the walk (ENOENT at its first
+    /// name) and never by NAME_MAX.
+    [<Test>]
+    let ``the resolution door's PATH_MAX boundary is PathArgument.parse's`` () : unit =
+        for flavour in [ linux ; darwin ] do
+            let _, _, _, system = withTree flavour
+            let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
+            let usable = PathLimits.pathMaxBytes limits - 1
+
+            for length in [ usable - 1 ; usable ; usable + 1 ] do
+                let text = "/" + String.init (length - 1) (fun i -> if i % 3 = 2 then "/" else "a")
+
+                let expected =
+                    if length > usable then
+                        UnixError.ENAMETOOLONG
+                    else
+                        UnixError.ENOENT
+
+                match UnixPathResolution.stat SymlinkPolicy.Follow (statPath text) system with
+                | FileStatusAnswer.Failed actual -> actual |> shouldEqual expected
+                | other -> failwith $"expected %O{expected} at %d{length} bytes, got %A{other}"
+
+                // The raw-bytes door draws the line at the same byte.
+                let viaBytes =
+                    PathArgument.parse limits (ImmutableArray.CreateRange (System.Text.Encoding.UTF8.GetBytes text))
+
+                match viaBytes, expected with
+                | Ok (PathArgument.Failed error), UnixError.ENAMETOOLONG -> error |> shouldEqual UnixError.ENAMETOOLONG
+                | Ok (PathArgument.Parsed _), UnixError.ENOENT -> ()
+                | other -> failwith $"the two doors disagree at %d{length} bytes: %A{other}"
+
     [<Test>]
     let ``mkdir binds a directory the umask has had its say over`` () : unit =
         // The mode is raw — the shim passes it straight through — so what the
