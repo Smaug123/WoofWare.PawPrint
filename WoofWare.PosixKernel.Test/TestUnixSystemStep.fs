@@ -2418,6 +2418,39 @@ module TestUnixSystemStep =
         UnixDescriptor.flock holderTask 0 shAndEx (withTask holderTask darwin)
         |> shouldEqual (Error (FLockRefusal.DarwinMalformedOperation shAndEx))
 
+    /// `LOCK_MAND` (bit 32): Linux removed mandatory locking in 5.15 and now
+    /// answers 0 to any request carrying the bit, before it looks the
+    /// descriptor up, so a closed descriptor is answered too and nothing about
+    /// the lock table changes. Measured (`docs/probes/flock/lock-mand.py`).
+    [<Test>]
+    let ``a LOCK_MAND request is ignored on Linux, closed descriptors included`` () : unit =
+        for operation in [ 32 ; 32 ||| 1 ; 32 ||| 2 ; 32 ||| 8 ; 32 ||| 4 ] do
+            for fd in [ 0 ; 99 ] do
+                match UnixDescriptor.flock holderTask fd operation (withTask holderTask linux) with
+                | Ok (SyscallOutcome.Answered (SyscallAnswer.Completed 0L), after) ->
+                    after |> shouldEqual (withTask holderTask linux)
+                | other -> failwith $"flock(%d{fd}, %d{operation}) on Linux: expected 0, got %A{other}"
+
+    /// Darwin looks the descriptor up before it screens the operation, so a
+    /// closed descriptor is EBADF whatever was asked -- where Linux screens
+    /// first and answers EINVAL. Measured on both.
+    [<Test>]
+    let ``a closed descriptor is EBADF on Darwin and EINVAL on Linux for a malformed operation`` () : unit =
+        for operation in [ 0 ; 4 ; 1 ||| 2 ; 16 ; 32 ] do
+            UnixDescriptor.flock holderTask 99 operation (withTask holderTask darwin)
+            |> answeredOutcome
+            |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)
+
+        for operation in [ 0 ; 4 ; 1 ||| 2 ; 16 ] do
+            UnixDescriptor.flock holderTask 99 operation (withTask holderTask linux)
+            |> answeredOutcome
+            |> shouldEqual (SyscallAnswer.Failed UnixError.EINVAL)
+
+        // ...and a malformed operation on an *open* Darwin descriptor is still
+        // refused, since what it leaves the lock table as is unmeasured.
+        UnixDescriptor.flock holderTask 0 (32 ||| 1) (withTask holderTask darwin)
+        |> shouldEqual (Error (FLockRefusal.DarwinMalformedOperation (32 ||| 1)))
+
     [<Test>]
     let ``flock on a pipe is Linux's business and Darwin's refusal`` () : unit =
         // The standard streams are pipes here. Linux permits `flock` on one and
