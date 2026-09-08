@@ -852,7 +852,7 @@ module UnixDescriptor =
     /// the connections nothing else references, and the inode whose last name
     /// had already gone.
     ///
-    /// `FileDescriptorRegistry.close` cannot do this itself: the socket table is
+    /// `FileDescriptorRegistry.dropDescriptor` cannot do this itself: the socket table is
     /// the machine's rather than the process's, and whether an inode is still
     /// named is a question about the filesystem. Closing one of several
     /// descriptors onto a description destroys nothing, and so frees neither.
@@ -868,7 +868,7 @@ module UnixDescriptor =
         // fd referred to.
         let closing = FileDescriptorRegistry.tryFindWithId fd system.Process.FileDescriptors
 
-        match FileDescriptorRegistry.close fd system.Process.FileDescriptors with
+        match FileDescriptorRegistry.dropDescriptor fd system.Process.FileDescriptors with
         | Error FileDescriptorCloseError.BadFd -> Ok (SyscallAnswer.Failed UnixError.EBADF, system)
         | Ok (registry, destroyed) ->
 

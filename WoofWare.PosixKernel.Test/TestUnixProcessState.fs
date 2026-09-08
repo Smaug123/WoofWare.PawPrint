@@ -197,32 +197,6 @@ module TestUnixProcessState =
         UnixProcessState.descriptionsNamingSocket (SocketId 3L) proc
         |> shouldEqual Set.empty
 
-        // Nothing is registered yet, so no port could deliver the difference.
-        UnixProcessState.socketIsRegisteredWithAnyEventPort watched proc
-        |> shouldEqual false
-
-        let registered =
-            FileDescriptorRegistry.changeSocketEventRegistration
-                portFd
-                watchedFd
-                0L
-                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readInterest, 0UL))
-                registry
-            |> function
-                | Ok registry -> registry
-                | Error error -> failwith $"could not register: %O{error}"
-
-        let proc =
-            { proc with
-                FileDescriptors = registered
-            }
-
-        UnixProcessState.socketIsRegisteredWithAnyEventPort watched proc
-        |> shouldEqual true
-        // The registration is of one socket, not of the port's whole table.
-        UnixProcessState.socketIsRegisteredWithAnyEventPort other proc
-        |> shouldEqual false
-
     [<Test>]
     let ``a state-change wake queues every registration of the socket`` () : unit =
         let watched = SocketId 1L

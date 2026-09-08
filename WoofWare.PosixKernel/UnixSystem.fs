@@ -34,7 +34,6 @@ type SyscallRefusal<'Task> =
     | FLock of FLockRefusal
     | FTruncate of TruncationRefusal
     | Close of CloseRefusal<'Task>
-    | Read of ReadRefusal
 
 /// A way this system's tables disagree with each other — a state no kernel
 /// could be in, and which the operations here exist to keep unreachable.
