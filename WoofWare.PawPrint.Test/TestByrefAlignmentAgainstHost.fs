@@ -7,24 +7,26 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// `ManagedPointerSource.tryContainerBase` states two runtime layout facts as
-/// numbers: an object is 8-byte aligned, a string's characters sit 12 bytes into
-/// it and an array's elements 16. Nothing in the type system keeps those honest,
-/// so they are measured here against the runtime running the test.
+/// numbers: how many low bits of a container's address the runtime guarantees,
+/// and how far into it the data starts. Nothing in the type system keeps those
+/// honest, so both are measured here against the runtime running the test — and
+/// compared in *both* directions, because a claim that is too strong is as wrong
+/// as one that is too weak. Too weak refuses questions that have answers; too
+/// strong answers questions that do not.
 ///
 /// The oracle is a pinned `GCHandle`, whose `AddrOfPinnedObject` is documented to
 /// give the first character of a string and the first element of an array — the
 /// two addresses the model claims. Pinning is what makes the reading meaningful:
 /// an unpinned object may move between the read and the assertion.
 ///
-/// `docs/probes/byref-alignment/` has the same measurements taken on macOS arm64
-/// and linux-x64 at greater length, along with what they imply.
+/// `docs/probes/byref-alignment/` has the same measurements at greater length, on
+/// macOS arm64 and linux-x64, along with what they imply.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestByrefAlignmentAgainstHost =
 
     /// Enough samples that a residue which merely *happened* to hold for one
-    /// allocation cannot survive, and enough for the 16-byte row below to see
-    /// both of its values.
+    /// allocation cannot survive, and enough to see a bit that varies do so.
     let private samples : int = 200
 
     let private pinnedAddress (o : obj) : int64 =
@@ -35,49 +37,80 @@ module TestByrefAlignmentAgainstHost =
         finally
             handle.Free ()
 
-    [<Test>]
-    let ``a string's characters are four modulo eight`` () : unit =
-        // The claim being checked is `AlignmentBits = 3` with `HeaderBytes = 12`:
-        // an 8-byte-aligned object plus a 12-byte header is 4 mod 8, every time.
-        // This is the one container whose data start is not itself aligned, and
-        // the residue is what `UnicodeEncoding.GetByteCount`'s vectorised gate
-        // reads.
-        for length in 0 .. samples - 1 do
-            let residue = pinnedAddress (System.String ('x', length)) &&& 7L
+    /// The measurement the model is compared against: how many low bits of these
+    /// addresses are the *same* in every sample, and what those bits are.
+    ///
+    /// A container start with `n` guaranteed zero bits, plus a fixed header, makes
+    /// exactly the low `n` bits of the data address constant. So the widest width
+    /// at which the samples agree is the alignment the runtime is really
+    /// guaranteeing, and the value they agree on is the header's residue.
+    let private determinedLowBits (addresses : int64 list) : int * int64 =
+        // 6 is past any alignment this model could sensibly claim; if the samples
+        // ever agreed that far the search would need widening, and the assertion
+        // that the model matches would fail rather than silently cap.
+        let widths =
+            [ 0..6 ]
+            |> List.filter (fun width ->
+                let mask = (1L <<< width) - 1L
 
-            if residue <> 4L then
-                failwith
-                    $"a string of length %d{length} has its characters at %d{residue} mod 8 on this runtime, but ManagedPointerSource.tryContainerBase claims 12 bytes past an 8-byte-aligned object, which is 4. The object layout this models has changed."
+                addresses
+                |> List.map (fun addr -> addr &&& mask)
+                |> List.distinct
+                |> List.length = 1
+            )
 
-    [<Test>]
-    let ``an array's elements are zero modulo eight`` () : unit =
-        // `HeaderBytes = 16` for an SZARRAY, which leaves the data 8-byte aligned.
-        for length in 0 .. samples - 1 do
-            for residue in
-                [
-                    pinnedAddress (Array.zeroCreate<byte> length) &&& 7L
-                    pinnedAddress (Array.zeroCreate<char> length) &&& 7L
-                    pinnedAddress (Array.zeroCreate<int64> length) &&& 7L
-                ] do
-                if residue <> 0L then
-                    failwith
-                        $"an array of length %d{length} has its elements at %d{residue} mod 8 on this runtime, but ManagedPointerSource.tryContainerBase claims a 16-byte header past an 8-byte-aligned object, which is 0. The object layout this models has changed."
+        let width = List.max widths
+        width, (List.head addresses &&& ((1L <<< width) - 1L))
 
-    [<Test>]
-    let ``sixteen-byte alignment really is undetermined`` () : unit =
-        // The falsifier for the claim above: `AlignmentBits` is 3 and not 4, so a
-        // mask of 15 is refused rather than answered. If every object were in fact
-        // 16-byte aligned that refusal would be leaving a real answer on the table,
-        // and this row is what would notice.
-        let residues =
-            [ 0 .. samples - 1 ]
-            |> List.map (fun length -> pinnedAddress (System.String ('x', length)) &&& 15L)
-            |> Set.ofList
+    let private containerBaseOf (root : ByrefRoot) : ByrefContainerBase =
+        match ManagedPointerSource.tryContainerBase (ManagedPointerSource.Byref (root, [])) with
+        | Some containerBase -> containerBase
+        | None ->
+            failwith $"ManagedPointerSource.tryContainerBase makes no claim for %O{root}, so there is nothing to check."
 
-        if Set.count residues < 2 then
+    /// The claim and the measurement, checked against each other. `expectedResidue`
+    /// is restated rather than derived so that a *matching* pair of wrong numbers —
+    /// a header and an alignment that drifted together — still fails.
+    let private checkAgainstHost
+        (what : string)
+        (root : ByrefRoot)
+        (expectedResidue : int64)
+        (addresses : int64 list)
+        : unit
+        =
+        let claimed = containerBaseOf root
+        let measuredBits, measuredResidue = determinedLowBits addresses
+
+        if measuredBits <> claimed.AlignmentBits then
             failwith
-                $"every one of %d{samples} strings had its characters at the same address modulo 16 (%A{residues}). Objects would then be 16-byte aligned rather than 8-byte, and ManagedPointerSource.tryContainerBase is refusing masks of 15 that it could answer."
+                $"this runtime determines %d{measuredBits} low bits of a %s{what}'s data address, but ManagedPointerSource.tryContainerBase claims %d{claimed.AlignmentBits}. Claiming too few refuses masks that have answers; claiming too many answers masks that do not. The object layout this models has changed."
 
-        // And they are the two an 8-byte-aligned object with a 12-byte header can
-        // produce, rather than some third value that would mean the header had moved.
-        residues |> shouldEqual (Set.ofList [ 4L ; 12L ])
+        let claimedResidue = claimed.HeaderBytes &&& ((1L <<< claimed.AlignmentBits) - 1L)
+
+        if measuredResidue <> claimedResidue then
+            failwith
+                $"a %s{what}'s data sits at %d{measuredResidue} modulo %d{1L <<< measuredBits} on this runtime, but ManagedPointerSource.tryContainerBase's %d{claimed.HeaderBytes}-byte header makes it %d{claimedResidue}."
+
+        measuredResidue |> shouldEqual expectedResidue
+
+    [<Test>]
+    let ``a string's characters are four modulo eight, and no better`` () : unit =
+        // An 8-byte-aligned object plus a 12-byte header. This is the one container
+        // whose data start is not itself aligned, and the residue is what
+        // `UnicodeEncoding.GetByteCount`'s vectorised gate reads.
+        [ 0 .. samples - 1 ]
+        |> List.map (fun length -> pinnedAddress (System.String ('x', length)))
+        |> checkAgainstHost "string" (ByrefRoot.StringCharAt (ManagedHeapAddress.ManagedHeapAddress 1, 0)) 4L
+
+    [<Test>]
+    let ``an array's elements are zero modulo eight, and no better`` () : unit =
+        // A 16-byte header, which leaves the data 8-byte aligned.
+        let root = ByrefRoot.ArrayElement (ManagedHeapAddress.ManagedHeapAddress 1, 0)
+
+        [ 0 .. samples - 1 ]
+        |> List.map (fun length -> pinnedAddress (Array.zeroCreate<byte> length))
+        |> checkAgainstHost "byte array" root 0L
+
+        [ 0 .. samples - 1 ]
+        |> List.map (fun length -> pinnedAddress (Array.zeroCreate<int64> length))
+        |> checkAgainstHost "int64 array" root 0L
