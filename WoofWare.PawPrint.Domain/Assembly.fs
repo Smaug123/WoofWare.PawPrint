@@ -882,17 +882,6 @@ type LoadedAssemblies =
         this.ByDefinition.ContainsKey name.FullName
 
     /// <summary>
-    /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
-    /// </summary>
-    /// <remarks>
-    /// A reference with no recorded binding may still name an assembly we hold, if its
-    /// reference identity happens to equal that assembly's definition identity — the CLR's
-    /// exact-identity match. That is how an assembly registered directly (the entry assembly,
-    /// or a fixture that exists only in memory) is found the first time some other assembly
-    /// references it; without this fallback we would go to disk for an assembly we already
-    /// have, and fail outright for one that was never written to disk.
-    /// </remarks>
-    /// <summary>
     /// Every reference binding recorded so far, as (reference identity, definition identity)
     /// pairs, sorted by reference identity.
     /// </summary>
@@ -907,6 +896,17 @@ type LoadedAssemblies =
         |> Seq.sortWith (fun (a, _) (b, _) -> String.CompareOrdinal (a, b))
         |> List.ofSeq
 
+    /// <summary>
+    /// Resolve an AssemblyReference to the assembly it names, if we have already bound it.
+    /// </summary>
+    /// <remarks>
+    /// A reference with no recorded binding may still name an assembly we hold, if its
+    /// reference identity happens to equal that assembly's definition identity — the CLR's
+    /// exact-identity match. That is how an assembly registered directly (the entry assembly,
+    /// or a fixture that exists only in memory) is found the first time some other assembly
+    /// references it; without this fallback we would go to disk for an assembly we already
+    /// have, and fail outright for one that was never written to disk.
+    /// </remarks>
     member this.TryResolveReference (reference : WoofWare.PawPrint.AssemblyReference) : DumpedAssembly option =
         let refFullName = reference.Name.FullName
 
