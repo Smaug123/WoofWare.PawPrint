@@ -1,0 +1,9 @@
+Linux 6.18.5 uid 0
+rename(a/f, a) f file             : ENOTEMPTY
+rename(a/sub, a) a 0555           : ENOTEMPTY
+rename(a/b/c, a) a/b 0555         : ENOTEMPTY
+rename(a/sub, a) a 0755           : ENOTEMPTY
+rename(a/b/c, a/b) parent         : ENOTEMPTY
+rename(a/b/c, a/b) parent 0555    : ENOTEMPTY
+rename(a/l, a) l symlink          : ENOTEMPTY
+rename(a/b/f, a) a/b 0555, f file : ENOTEMPTY

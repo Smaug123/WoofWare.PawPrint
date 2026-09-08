@@ -2878,6 +2878,12 @@ module TestVirtualFileSystemAgainstHost =
             "d/sub"
             "ld"
             "dang"
+            // A file under a directory, and a directory under an unwritable but
+            // searchable one: with `d` and `cls500` as destinations these are
+            // the ancestor trap, which on Linux beats the type rule and the
+            // permission arm respectively.
+            "d/g"
+            "cls500/kid"
             // Trailing separators, over a directory and over a file.
             "d/"
             "f/"
