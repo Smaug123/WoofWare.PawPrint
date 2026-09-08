@@ -422,7 +422,8 @@ module SocketFuzz =
                         }
                 }
         | FuzzOp.Add (port, target, mask) ->
-            let change = SocketEventRegistrationChange.Add (interestOfMask mask, uint64 target)
+            let change =
+                SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interestOfMask mask, uint64 target)
 
             match
                 UnixPoll.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel
@@ -436,7 +437,11 @@ module SocketFuzz =
             | Error refusal -> failwith $"INTERPRETER-DRIVER BUG: %s{SocketEventRegistrationRefusal.describe refusal}"
         | FuzzOp.Mod (port, target, mask) ->
             let change =
-                SocketEventRegistrationChange.Modify (interestOfMask mask, uint64 target)
+                SocketEventRegistrationChange.Modify (
+                    SocketEventTrigger.EdgeTriggered,
+                    interestOfMask mask,
+                    uint64 target
+                )
 
             match
                 UnixPoll.changeSocketEventRegistration (slotFd port state) (slotFd target state) change state.Kernel

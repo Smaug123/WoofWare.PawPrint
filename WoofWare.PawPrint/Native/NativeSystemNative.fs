@@ -4881,10 +4881,13 @@ module NativeSystemNative =
                         | Ok value -> value
                         | Error _ -> 0UL
 
+                    // Edge-triggered unconditionally: the shim ORs EPOLLET into
+                    // every registration it makes (pal_networking.c), and the
+                    // PAL's SocketEvents carry no trigger for a caller to choose.
                     if currentEvents = 0 then
-                        SocketEventRegistrationChange.Add (interest, placeholder)
+                        SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, interest, placeholder)
                     else
-                        SocketEventRegistrationChange.Modify (interest, placeholder)
+                        SocketEventRegistrationChange.Modify (SocketEventTrigger.EdgeTriggered, interest, placeholder)
 
             match EmulatedKernel.changeSocketEventRegistration portFd targetFd change state.Kernel with
             | Error refusal ->

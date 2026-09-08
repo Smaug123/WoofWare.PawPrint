@@ -206,7 +206,7 @@ module TestUnixProcessState =
                 portFd
                 watchedFd
                 0L
-                (SocketEventRegistrationChange.Add (readInterest, 0UL))
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readInterest, 0UL))
                 registry
             |> function
                 | Ok registry -> registry
@@ -237,7 +237,7 @@ module TestUnixProcessState =
                 portFd
                 watchedFd
                 0L
-                (SocketEventRegistrationChange.Add (readInterest, 0UL))
+                (SocketEventRegistrationChange.Add (SocketEventTrigger.EdgeTriggered, readInterest, 0UL))
                 registry
             |> function
                 | Ok registry -> registry

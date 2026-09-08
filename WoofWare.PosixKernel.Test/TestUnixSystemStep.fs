@@ -3146,6 +3146,7 @@ module TestUnixSystemStep =
                     stdin
                     0L
                     (SocketEventRegistrationChange.Add (
+                        SocketEventTrigger.EdgeTriggered,
                         {
                             SocketEventInterest.In = false
                             Out = false
