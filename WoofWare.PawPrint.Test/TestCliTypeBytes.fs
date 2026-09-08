@@ -747,6 +747,312 @@ module TestCliTypeBytes =
         symbolicCount > 0 |> shouldEqual true
         rejectedCount > 0 |> shouldEqual true
 
+    /// `struct { long N; object B; }` with explicit layout, `B` holding a live reference: the
+    /// bytes at [0, 8) have values and the bytes at [8, 16) do not.
+    let private liveReferenceHighSlotValueType () : CliValueType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 16, packingSize = 0))
+            CharSet.Ansi
+            [
+                cliField
+                    "N"
+                    (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x1122334455667788L)))
+                    (Some 0)
+                    int64Handle
+                cliField "B" (CliType.ObjectRef (Some (ManagedHeapAddress 11))) (Some 8) objectHandle
+            ]
+
+    /// `struct { IntPtr Handle; int N; }` with explicit layout, `Handle` a tagged native int:
+    /// the bytes at [0, 8) are only nameable, and the bytes at [8, 12) have values.
+    let private taggedNativeIntThenIntValueType () : CliValueType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            declaredHandle
+            (Layout.Custom (size = 16, packingSize = 0))
+            CharSet.Ansi
+            [
+                cliField
+                    "Handle"
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+                    (Some 0)
+                    intPtrHandle
+                cliField "N" (CliType.Numeric (CliNumericType.Int32 0x11223344)) (Some 8) int32Handle
+            ]
+
+    let private expectBytes (result : Result<byte[], CliByteAddressabilityRejection>) : byte[] =
+        match result with
+        | Ok bytes -> bytes
+        | Error rejection -> failwith $"expected a byte image, got a refusal: %s{rejection.Description}"
+
+    let private expectRefusal
+        (result : Result<byte[], CliByteAddressabilityRejection>)
+        : CliByteAddressabilityRejection
+        =
+        match result with
+        | Ok bytes -> failwith $"expected a refusal, got the bytes %A{bytes}"
+        | Error rejection -> rejection
+
+    [<Test>]
+    let ``TryBytesAt agrees with ToBytes wherever ToBytes answers`` () : unit =
+        // `ToBytes` is the renderer of record, and the one that gives a null reference its
+        // all-zero image. Where it renders a value, every slice of that value has bytes and
+        // `TryBytesAt` must produce them; where it does not, the whole-value slice has none.
+        let mutable renderable = 0
+        let mutable unrenderable = 0
+
+        let genValueAndSlice : Gen<CliType * int * int> =
+            gen {
+                let! value = genByteAddressabilityCliType
+                let! offset, count = genSliceRange (CliType.SizeOf(value).Size)
+                return value, offset, count
+            }
+
+        let property (value : CliType, offset : int, count : int) : unit =
+            let size = CliType.SizeOf(value).Size
+
+            let rendered =
+                try
+                    Some (CliType.ToBytes value)
+                with _ ->
+                    None
+
+            match rendered with
+            | Some bytes ->
+                renderable <- renderable + 1
+                CliType.TryBytesAt 0 size value |> expectBytes |> shouldEqual bytes
+
+                CliType.TryBytesAt offset count value
+                |> expectBytes
+                |> shouldEqual (Array.sub bytes offset count)
+            | None ->
+                unrenderable <- unrenderable + 1
+                CliType.TryBytesAt 0 size value |> expectRefusal |> ignore
+
+        Check.One (config, Prop.forAll (Arb.fromGen genValueAndSlice) property)
+        renderable > 0 |> shouldEqual true
+        unrenderable > 0 |> shouldEqual true
+
+    [<Test>]
+    let ``TryBytesAt renders a null reference as zero and refuses a live one`` () : unit =
+        CliType.TryBytesAt 0 8 (CliType.ObjectRef None)
+        |> expectBytes
+        |> shouldEqual (Array.zeroCreate 8)
+
+        CliType.TryBytesAt 3 2 (CliType.ObjectRef None)
+        |> expectBytes
+        |> shouldEqual [| 0uy ; 0uy |]
+
+        CliType.TryBytesAt 0 8 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+        |> expectRefusal
+        |> shouldEqual CliByteAddressabilityRejection.ObjectReference
+
+        CliType.TryBytesAt 3 2 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+        |> expectRefusal
+        |> shouldEqual CliByteAddressabilityRejection.ObjectReference
+
+        // Only the whole-value classifier is consulted by `BytesAt`, and it still refuses a
+        // null reference, so `TryBytesAt` is the only route to these zeros.
+        (fun () -> CliType.BytesAt 0 8 (CliType.ObjectRef None) |> ignore)
+        |> shouldFail<exn>
+
+    [<Test>]
+    let ``TryBytesAt answers a slice that misses every byte without a value`` () : unit =
+        let value = liveReferenceHighSlotValueType () |> CliType.ValueType
+
+        CliType.TryBytesAt 0 8 value
+        |> expectBytes
+        |> shouldEqual (System.BitConverter.GetBytes 0x1122334455667788L)
+
+        CliType.TryBytesAt 2 4 value
+        |> expectBytes
+        |> shouldEqual (Array.sub (System.BitConverter.GetBytes 0x1122334455667788L) 2 4)
+
+        for offset, count in [ 8, 8 ; 4, 8 ; 0, 16 ; 12, 4 ; 15, 1 ] do
+            match CliType.TryBytesAt offset count value |> expectRefusal with
+            | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_,
+                                                                                       field,
+                                                                                       CliByteAddressabilityRejection.ObjectReference) ->
+                field |> shouldEqual (FieldId.named "B")
+            | other -> failwith $"slice [%d{offset}, %d{offset + count}) refused for the wrong reason: %O{other}"
+
+        // A nameable byte is not one with a value: a slice over the tagged native int is
+        // refused, and one beside it is answered.
+        let tagged = taggedNativeIntThenIntValueType () |> CliType.ValueType
+
+        CliType.TryBytesAt 8 4 tagged
+        |> expectBytes
+        |> shouldEqual (System.BitConverter.GetBytes 0x11223344)
+
+        match CliType.TryBytesAt 4 8 tagged |> expectRefusal with
+        | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_,
+                                                                                   field,
+                                                                                   CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable _) ->
+            field |> shouldEqual (FieldId.named "Handle")
+        | other -> failwith $"slice over the tagged native int refused for the wrong reason: %O{other}"
+
+        CliType.TryBytesAt 0 8 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+        |> expectRefusal
+        |> shouldEqual (
+            CliByteAddressabilityRejection.NativeIntSourceNotByteAddressable (NativeIntSource.FieldHandlePtr 1234L)
+        )
+
+    [<Test>]
+    let ``TryBytesAt judges each byte by the field that last wrote it`` () : unit =
+        // An explicit-layout union: `Obj` is a live reference at [0, 8), and `Alias` an int at
+        // [4, 8) over its upper half. Whichever was written last owns the bytes they share, so
+        // a slice of those bytes has values exactly when the alias is the newer of the two.
+        let union () : CliValueType =
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 8, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField "Obj" (CliType.ObjectRef (Some (ManagedHeapAddress 11))) (Some 0) objectHandle
+                    cliField "Alias" (CliType.Numeric (CliNumericType.Int32 0)) (Some 4) int32Handle
+                ]
+
+        let aliasNewer =
+            union ()
+            |> CliValueType.WithFieldSet "Alias" (CliType.Numeric (CliNumericType.Int32 0x11223344))
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 4 4 aliasNewer
+        |> expectBytes
+        |> shouldEqual (System.BitConverter.GetBytes 0x11223344)
+
+        CliType.TryBytesAt 6 1 aliasNewer |> expectBytes |> shouldEqual [| 0x22uy |]
+
+        // The reference still owns [0, 4), so a slice reaching it is refused.
+        for offset, count in [ 0, 8 ; 0, 4 ; 3, 2 ] do
+            match CliType.TryBytesAt offset count aliasNewer |> expectRefusal with
+            | CliByteAddressabilityRejection.ValueTypeContainsNonByteAddressableField (_,
+                                                                                       field,
+                                                                                       CliByteAddressabilityRejection.ObjectReference) ->
+                field |> shouldEqual (FieldId.named "Obj")
+            | other -> failwith $"slice [%d{offset}, %d{offset + count}) refused for the wrong reason: %O{other}"
+
+        let referenceNewer =
+            union ()
+            |> CliValueType.WithFieldSet "Alias" (CliType.Numeric (CliNumericType.Int32 0x11223344))
+            |> CliValueType.WithFieldSet "Obj" (CliType.ObjectRef (Some (ManagedHeapAddress 12)))
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 4 4 referenceNewer |> expectRefusal |> ignore
+
+        // A null reference written last gives the shared bytes its zeros.
+        let nullNewer =
+            union ()
+            |> CliValueType.WithFieldSet "Alias" (CliType.Numeric (CliNumericType.Int32 0x11223344))
+            |> CliValueType.WithFieldSet "Obj" (CliType.ObjectRef None)
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 0 8 nullNewer
+        |> expectBytes
+        |> shouldEqual (Array.zeroCreate 8)
+
+    [<Test>]
+    let ``TryBytesAt keeps per-byte precision through a nested struct`` () : unit =
+        // `struct { Inner I; long L; }`, both at offset 0, where `Inner` is `{ IntPtr Handle;
+        // int N; }` with the handle tagged. A slice over the whole of `I` has bytes with values
+        // and bytes without; when `L` is written after `I`, its values displace the tagged
+        // bytes and the slice [0, 12) is `L` followed by `N`.
+        let inner () : CliValueType = taggedNativeIntThenIntValueType ()
+
+        let outer () : CliValueType =
+            SynthesisedLayoutKind.ofFields
+                bct
+                allCt
+                declaredHandle
+                (Layout.Custom (size = 16, packingSize = 0))
+                CharSet.Ansi
+                [
+                    cliField "I" (inner () |> CliType.ValueType) (Some 0) declaredHandle
+                    cliField "L" (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0L))) (Some 0) int64Handle
+                ]
+
+        let longNewer =
+            outer ()
+            |> CliValueType.WithFieldSet
+                "L"
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x0102030405060708L)))
+            |> CliType.ValueType
+
+        CliType.TryBytesAt 0 12 longNewer
+        |> expectBytes
+        |> shouldEqual (
+            Array.append (System.BitConverter.GetBytes 0x0102030405060708L) (System.BitConverter.GetBytes 0x11223344)
+        )
+
+        let innerNewer =
+            outer ()
+            |> CliValueType.WithFieldSet
+                "L"
+                (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim 0x0102030405060708L)))
+            |> CliValueType.WithFieldSet "I" (inner () |> CliType.ValueType)
+            |> CliType.ValueType
+
+        // With the inner struct written last its tagged bytes are back, but its `N` still has
+        // values, so a slice that misses the tagged bytes is answered.
+        CliType.TryBytesAt 0 12 innerNewer |> expectRefusal |> ignore
+
+        CliType.TryBytesAt 8 4 innerNewer
+        |> expectBytes
+        |> shouldEqual (System.BitConverter.GetBytes 0x11223344)
+
+    [<Test>]
+    let ``TryBytesAt answers an empty slice of anything in range`` () : unit =
+        // An empty slice reaches no byte, so it has no byte without a value.
+        CliType.TryBytesAt 8 0 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+        |> expectBytes
+        |> shouldEqual [||]
+
+        CliType.TryBytesAt 0 0 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+        |> expectBytes
+        |> shouldEqual [||]
+
+        CliType.TryBytesAt 0 0 (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr 1234L)))
+        |> expectBytes
+        |> shouldEqual [||]
+
+        // Inside the live reference of the struct, where a one-byte slice is refused.
+        let value = liveReferenceHighSlotValueType () |> CliType.ValueType
+        CliType.TryBytesAt 12 0 value |> expectBytes |> shouldEqual [||]
+        CliType.TryBytesAt 12 1 value |> expectRefusal |> ignore
+
+        (fun () ->
+            CliType.TryBytesAt 9 0 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+    [<Test>]
+    let ``TryBytesAt fails on a range outside the value`` () : unit =
+        // An out-of-range slice is a caller bug rather than a value without bytes, so it is an
+        // exception and not a refusal, as for `BytesAt`.
+        (fun () -> CliType.TryBytesAt 4 8 (CliType.ObjectRef None) |> ignore)
+        |> shouldFail<exn>
+
+        (fun () -> CliType.TryBytesAt 0 -1 (CliType.ObjectRef None) |> ignore)
+        |> shouldFail<exn>
+
+        (fun () ->
+            CliType.TryBytesAt 4 8 (CliType.ObjectRef (Some (ManagedHeapAddress 11)))
+            |> ignore
+        )
+        |> shouldFail<exn>
+
+        (fun () ->
+            CliType.TryBytesAt 12 8 (liveReferenceHighSlotValueType () |> CliType.ValueType)
+            |> ignore
+        )
+        |> shouldFail<exn>
+
     [<Test>]
     let ``byteAtOffset rejects byte-unaddressable values with clear diagnostics`` () : unit =
         let cases =
