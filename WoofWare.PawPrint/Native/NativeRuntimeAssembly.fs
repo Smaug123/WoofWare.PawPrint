@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 [<RequireQualifiedAccess>]
 module NativeRuntimeAssembly =
     open System.Collections.Immutable
+    open WoofWare.PosixKernel
 
     /// <summary>
     /// How <c>AssemblyNative_GetTypeCore</c> answers when it did not produce a type: following a
@@ -1560,9 +1561,16 @@ module NativeRuntimeAssembly =
                     Flags = flags
                 }
 
+            // The machine the runtime executes as is the emulated platform's.
+            let processArchitecture =
+                match SimulatedUnixPlatform.machineArchitecture state.Kernel.UnixPlatform with
+                | MachineArchitecture.X86_64 -> ImageArchitecture.Amd64
+                | MachineArchitecture.Arm64 -> ImageArchitecture.Arm64
+
             let cache, bound =
                 AssemblyBinding.tryBind
                     ctx.LoggerFactory
+                    processArchitecture
                     state.DotnetRuntimeDirs
                     request
                     state._LoadedAssemblies

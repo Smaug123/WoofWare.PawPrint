@@ -41,9 +41,11 @@ public class Program
         if (Binds ("System.Linq, Version=99.0.0.0")) return 8;
         if (!Binds ("System.Linq")) return 9;
 
-        // A plain request that bound survives a later architecture miss.
+        // A plain request that bound survives a later architecture miss. (x86 throughout this
+        // file rather than AMD64: AMD64 is the machine of an x64 host and binds there, while
+        // x86 is the machine of no 64-bit host.)
         if (!Binds ("System.Runtime")) return 10;
-        if (Binds ("System.Runtime, processorArchitecture=AMD64")) return 11;
+        if (Binds ("System.Runtime, processorArchitecture=x86")) return 11;
         if (!Binds ("System.Runtime")) return 12;
 
         // A content-type miss poisons the plain request the same way.

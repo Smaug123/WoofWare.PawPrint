@@ -297,6 +297,7 @@ module TestAssemblyBinding =
                     snd (
                         AssemblyBinding.tryBind
                             loggerFactory
+                            ImageArchitecture.Amd64
                             [ root ]
                             request
                             LoadedAssemblies.empty
@@ -307,10 +308,12 @@ module TestAssemblyBinding =
                 | AssemblyBindResult.Bound (_, bound) -> failwith $"expected NotFound, bound %s{bound.Name.FullName}"
             )
 
-    /// Measured on .NET 10 against an IL-only assembly: `MSIL`, `IA64` and `ARM` bind, `x86` and
-    /// `AMD64` do not.
+    /// `IsValidArchitecture`: MSIL and none outright (IA64 and ARM read as MSIL, the way CoreCLR
+    /// bit-tests the field), otherwise only the machine the runtime executes as. Measured on
+    /// .NET 10: x86 misses on both an arm64 and an x64 host, AMD64 misses on arm64 and binds on
+    /// x64, and the candidate's own architecture is not compared after that.
     [<Test>]
-    let ``a requested processor architecture is compared with the image's`` () =
+    let ``a requested processor architecture is valid only for MSIL or the platform's own machine`` () =
         withRuntimeDir
             (testAssemblySimpleName + ".dll")
             (fun root ->
@@ -325,34 +328,30 @@ module TestAssemblyBinding =
                         Flags = flags
                     }
 
-                for flags in [ 0x20 ; 0x40 ] do
+                let binds (processArchitecture : ImageArchitecture) (flags : int) : bool =
                     match
                         snd (
                             AssemblyBinding.tryBind
                                 loggerFactory
+                                processArchitecture
                                 [ root ]
                                 (request flags)
                                 LoadedAssemblies.empty
                                 AssemblyBindCache.empty
                         )
                     with
-                    | AssemblyBindResult.NotFound -> ()
-                    | AssemblyBindResult.Bound _ -> failwith $"expected NotFound for flags 0x%x{flags}"
+                    | AssemblyBindResult.Bound _ -> true
+                    | AssemblyBindResult.NotFound -> false
 
-                // IA64 (0x30) and ARM (0x50) read as MSIL, the way CoreCLR bit-tests the field.
                 for flags in [ 0 ; 0x10 ; 0x30 ; 0x50 ] do
-                    match
-                        snd (
-                            AssemblyBinding.tryBind
-                                loggerFactory
-                                [ root ]
-                                (request flags)
-                                LoadedAssemblies.empty
-                                AssemblyBindCache.empty
-                        )
-                    with
-                    | AssemblyBindResult.Bound _ -> ()
-                    | AssemblyBindResult.NotFound -> failwith $"expected Bound for flags 0x%x{flags}"
+                    binds ImageArchitecture.Amd64 flags |> shouldEqual true
+
+                // x86 is never the machine.
+                binds ImageArchitecture.Amd64 0x20 |> shouldEqual false
+                // AMD64 is the x64 platform's machine and not the arm64 one's; the arm64 case
+                // misses before the image is consulted.
+                binds ImageArchitecture.Amd64 0x40 |> shouldEqual true
+                binds ImageArchitecture.Arm64 0x40 |> shouldEqual false
             )
 
     [<Test>]
@@ -376,6 +375,7 @@ module TestAssemblyBinding =
                     snd (
                         AssemblyBinding.tryBind
                             loggerFactory
+                            ImageArchitecture.Amd64
                             [ root ]
                             (request 999us)
                             LoadedAssemblies.empty
@@ -390,6 +390,7 @@ module TestAssemblyBinding =
                         snd (
                             AssemblyBinding.tryBind
                                 loggerFactory
+                                ImageArchitecture.Amd64
                                 [ root ]
                                 (request unspecified)
                                 LoadedAssemblies.empty
@@ -411,6 +412,7 @@ module TestAssemblyBinding =
                     snd (
                         AssemblyBinding.tryBind
                             loggerFactory
+                            ImageArchitecture.Amd64
                             [ root ]
                             (request unspecified)
                             assemblies
@@ -430,6 +432,7 @@ module TestAssemblyBinding =
                     snd (
                         AssemblyBinding.tryBind
                             loggerFactory
+                            ImageArchitecture.Amd64
                             [ root ]
                             (request 999us)
                             assemblies
@@ -473,7 +476,7 @@ module TestAssemblyBinding =
 
                 let bind (cache : AssemblyBindCache) (assemblies : LoadedAssemblies) (r : AssemblyLoadRequest) =
                     let cache, result =
-                        AssemblyBinding.tryBind loggerFactory [ root ] r assemblies cache
+                        AssemblyBinding.tryBind loggerFactory ImageArchitecture.Amd64 [ root ] r assemblies cache
 
                     match result with
                     | AssemblyBindResult.Bound (assemblies, _) -> cache, assemblies, true
@@ -539,7 +542,7 @@ module TestAssemblyBinding =
         : AssemblyBindCache * LoadedAssemblies * bool
         =
         let cache, result =
-            AssemblyBinding.tryBind loggerFactory [ root ] r assemblies cache
+            AssemblyBinding.tryBind loggerFactory ImageArchitecture.Amd64 [ root ] r assemblies cache
 
         match result with
         | AssemblyBindResult.Bound (assemblies, _) -> cache, assemblies, true
@@ -648,6 +651,7 @@ module TestAssemblyBinding =
                         snd (
                             AssemblyBinding.tryBind
                                 loggerFactory
+                                ImageArchitecture.Amd64
                                 [ root ]
                                 (plainRequest name)
                                 LoadedAssemblies.empty
@@ -661,6 +665,7 @@ module TestAssemblyBinding =
                     snd (
                         AssemblyBinding.tryBind
                             loggerFactory
+                            ImageArchitecture.Amd64
                             [ root ]
                             { plainRequest "target" with
                                 Culture = Some "../fr"
@@ -821,6 +826,7 @@ module TestAssemblyBinding =
                 snd (
                     AssemblyBinding.tryBind
                         loggerFactory
+                        ImageArchitecture.Amd64
                         [ root ]
                         request
                         LoadedAssemblies.empty
@@ -905,6 +911,7 @@ module TestAssemblyBinding =
                 try
                     AssemblyBinding.tryBind
                         loggerFactory
+                        ImageArchitecture.Amd64
                         [ root ]
                         (plainRequest testAssemblySimpleName)
                         LoadedAssemblies.empty

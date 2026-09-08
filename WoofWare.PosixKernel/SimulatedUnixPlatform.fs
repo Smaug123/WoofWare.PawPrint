@@ -190,6 +190,17 @@ type ReadLinkCapacityVerdict =
     /// The size is one the copy can honour.
     | Admit
 
+/// <summary>
+/// The machine <c>uname -m</c> reports, and so the architecture a runtime built for this
+/// platform executes as.
+/// </summary>
+[<RequireQualifiedAccess>]
+type MachineArchitecture =
+    /// <c>x86_64</c>.
+    | X86_64
+    /// <c>arm64</c> on Darwin, <c>aarch64</c> on Linux.
+    | Arm64
+
 [<RequireQualifiedAccess>]
 module SimulatedUnixPlatform =
     /// Loosest ceiling any Unix we model imposes on `utsname.release`:
@@ -264,6 +275,19 @@ module SimulatedUnixPlatform =
 
     /// Which Unix this platform is.
     let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour = platform.Flavour
+
+    /// <summary>
+    /// The machine this platform runs on: a total function of the flavour, so that no
+    /// platform can claim a Darwin release alongside an x86_64 machine.
+    /// </summary>
+    /// <remarks>
+    /// Linux is x86_64 and Darwin is arm64, which is what the two presets name and what
+    /// PawPrint's CI and its developers' machines are.
+    /// </remarks>
+    let machineArchitecture (platform : SimulatedUnixPlatform) : MachineArchitecture =
+        match platform.Flavour with
+        | SimulatedUnixFlavour.Linux -> MachineArchitecture.X86_64
+        | SimulatedUnixFlavour.Darwin -> MachineArchitecture.Arm64
 
     /// The `utsname.release` string this platform reports, i.e. exactly what
     /// `uname -r` would print. Part of PawPrint's replay contract: changing a

@@ -401,6 +401,7 @@ module AssemblyBinding =
     /// The binder proper, once the caches have been consulted.
     let private bindUncached
         (loggerFactory : ILoggerFactory)
+        (processArchitecture : ImageArchitecture)
         (dotnetRuntimeDirs : string seq)
         (request : AssemblyLoadRequest)
         (assemblies : LoadedAssemblies)
@@ -427,25 +428,20 @@ module AssemblyBinding =
         let describe = $"binding '%s{request.SimpleName}'"
 
         // The candidate's own architecture, which CoreCLR validates on every load
-        // (`Assembly::Init`), requested or not. PawPrint hosts processor-agnostic IL: an
-        // image built for a 32-bit architecture is `BadImageFormatException` on every 64-bit
-        // platform it simulates, and one built for a 64-bit architecture loads only on a
-        // runtime of that architecture -- the native runtime's own identity, which PawPrint
-        // does not model (see `PEImageKind.peKindAndMachine` on ReadyToRun images).
-        let requireAgnostic (candidate : DumpedAssembly) : unit =
+        // (`Assembly::Init`), requested or not: an image built for a machine other than the
+        // one executing it is `BadImageFormatException`, which is not an outcome this binder
+        // reports. Processor-agnostic IL loads anywhere. The executing machine is the
+        // emulated platform's, since a runtime built for that platform is what runs there.
+        let requireLoadable (candidate : DumpedAssembly) : unit =
             match
                 PEImageKind.peKindAndMachine describe candidate.PEImageHeaders
                 |> PEImageKind.architectureOfImage describe
             with
             | ImageArchitecture.Msil -> ()
-            | ImageArchitecture.I386
-            | ImageArchitecture.Arm as found ->
+            | found when found = processArchitecture -> ()
+            | found ->
                 failwith
-                    $"TODO: %s{describe} found %s{candidate.Name.FullName} built for %O{found}, which CoreCLR refuses with BadImageFormatException on a 64-bit runtime; that exception is not one this binder raises"
-            | ImageArchitecture.Amd64
-            | ImageArchitecture.Arm64 as found ->
-                failwith
-                    $"TODO: %s{describe} found %s{candidate.Name.FullName} built for %O{found}; whether that loads depends on the architecture of the executing runtime, which PawPrint does not model"
+                    $"TODO: %s{describe} found %s{candidate.Name.FullName} built for %O{found} on a %O{processArchitecture} platform, which CoreCLR refuses with BadImageFormatException; that exception is not one this binder raises"
 
         // afPA_Mask: the `ProcessorArchitecture` the request names, if any. The field is read
         // the way CoreCLR reads a manifest's (`GetProcessorArchitectureFromAssemblyFlags`),
@@ -460,21 +456,21 @@ module AssemblyBinding =
             else Some ImageArchitecture.Amd64
 
         // `IsValidArchitecture`, which `BindByName` asks before it looks at any candidate:
-        // MSIL and none outright, otherwise only the architecture of the process itself.
-        // Every platform PawPrint simulates is 64-bit, so x86 is never valid, and a miss
-        // before anything is read.
-        if requestedArchitecture = Some ImageArchitecture.I386 then
-            AssemblyBindResult.NotFound
-        else
-
-        // `TestCandidateRefMatchesDef` then compares a valid request with the candidate's own
-        // architecture, which `requireAgnostic` has pinned to MSIL: AMD64 never matches it.
-        // Measured, x86 and AMD64 are both misses against the framework's agnostic images.
-        let architectureAccepts : bool =
+        // MSIL and none outright, otherwise only the architecture of the process itself, and
+        // the candidate's own architecture is not compared against a valid request after
+        // that. Measured on .NET 10: x86 is a miss on both an arm64 and an x64 host, AMD64
+        // is a miss on arm64 and binds the framework's assemblies on x64, and MSIL binds on
+        // both. So a request for the platform's own machine is honoured and any other named
+        // machine is a miss before anything is read.
+        let architectureIsValid : bool =
             match requestedArchitecture with
             | None
             | Some ImageArchitecture.Msil -> true
-            | Some _ -> false
+            | Some requested -> requested = processArchitecture
+
+        if not architectureIsValid then
+            AssemblyBindResult.NotFound
+        else
 
         let sameName (candidate : DumpedAssembly) : bool =
             String.Equals (candidate.Name.Name, request.SimpleName, StringComparison.OrdinalIgnoreCase)
@@ -519,12 +515,9 @@ module AssemblyBinding =
             // context holds one assembly per simple name, so an incompatible one is a miss
             // rather than a reason to probe for another.
             requireDefaultContentType candidate
-            requireAgnostic candidate
+            requireLoadable candidate
 
-            if
-                architectureAccepts
-                && isCompatibleVersion request.Version (foundVersion candidate)
-            then
+            if isCompatibleVersion request.Version (foundVersion candidate) then
                 AssemblyBindResult.Bound (assemblies, candidate)
             else
                 AssemblyBindResult.NotFound
@@ -536,15 +529,13 @@ module AssemblyBinding =
             // CoreCLR initialises the image before it compares identities, so an image it
             // cannot load fails as such whatever its manifest says.
             requireDefaultContentType read
-            requireAgnostic read
+            requireLoadable read
 
             // The file was chosen by its name; the *manifest* must agree
             // (`TestCandidateRefMatchesDef`): `Alias.dll` declaring itself `Real` does not
             // answer to `Alias`, and a file found in a culture's subdirectory must declare that
             // culture.
             if not (sameName read && sameCulture read) then
-                AssemblyBindResult.NotFound
-            elif not architectureAccepts then
                 AssemblyBindResult.NotFound
             elif not (isCompatibleVersion request.Version (foundVersion read)) then
                 AssemblyBindResult.NotFound
@@ -559,9 +550,12 @@ module AssemblyBinding =
     /// whose failure key missed before misses again, and otherwise an assembly already loaded
     /// under that simple name and culture wins if its version satisfies the request, else the
     /// runtime directories are probed. The returned cache remembers the outcome.
+    /// <paramref name="processArchitecture"/> is the machine the emulated runtime executes as,
+    /// which decides which requested architectures are valid and which images can load.
     /// </summary>
     let tryBind
         (loggerFactory : ILoggerFactory)
+        (processArchitecture : ImageArchitecture)
         (dotnetRuntimeDirs : string seq)
         (request : AssemblyLoadRequest)
         (assemblies : LoadedAssemblies)
@@ -586,7 +580,7 @@ module AssemblyBinding =
             cache, AssemblyBindResult.NotFound
         else
 
-        match bindUncached loggerFactory dotnetRuntimeDirs request assemblies with
+        match bindUncached loggerFactory processArchitecture dotnetRuntimeDirs request assemblies with
         | AssemblyBindResult.Bound (loaded, bound) ->
             let readFromDisk = not (assemblies.ContainsDefinition bound.Name)
 

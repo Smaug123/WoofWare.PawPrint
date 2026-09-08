@@ -59,6 +59,7 @@
     <Compile Include="TestSocketEventRegistration.fs" />
     <Compile Include="TestSockaddrField.fs" />
     <Compile Include="TestSockaddrLayoutAgainstHost.fs" />
+    <Compile Include="TestMachineArchitecture.fs" />
   </ItemGroup>
 
   <ItemGroup>
