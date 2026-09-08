@@ -730,6 +730,7 @@ module internal IntrinsicHelpers =
     let spanHelpersSequenceEqual
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (currentThread : ThreadId)
+        (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState
@@ -777,7 +778,7 @@ module internal IntrinsicHelpers =
 
         state
         |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
+        |> advanceCaller
 
     let popPointerBackedSpanConstructorArgs
         (currentThread : ThreadId)
@@ -846,6 +847,7 @@ module internal IntrinsicHelpers =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
         (currentThread : ThreadId)
+        (advanceCaller : IlMachineState -> IlMachineState)
         (wasConstructing : ConstructionState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
@@ -939,7 +941,7 @@ module internal IntrinsicHelpers =
                 state
                 |> IlMachineState.pushToEvalStack (CliType.ValueType constructed.Contents) currentThread
 
-        state |> IlMachineState.advanceProgramCounter currentThread
+        state |> advanceCaller
 
     let charOfCliType (operation : string) (value : CliType) : char =
         match CliType.unwrapPrimitiveLikeDeep value with
@@ -1078,6 +1080,7 @@ module internal IntrinsicHelpers =
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<_>)
         (currentThread : ThreadId)
+        (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState
@@ -1134,11 +1137,12 @@ module internal IntrinsicHelpers =
 
         state
         |> IlMachineState.pushToEvalStack (CliType.ObjectRef (Some stringAddr)) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
+        |> advanceCaller
 
     let memoryExtensionsEquals
         (baseClassTypes : BaseClassTypes<_>)
         (currentThread : ThreadId)
+        (advanceCaller : IlMachineState -> IlMachineState)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (state : IlMachineState)
         : IlMachineState
@@ -1183,7 +1187,7 @@ module internal IntrinsicHelpers =
 
         state
         |> IlMachineState.pushToEvalStack (CliType.ofBool result) currentThread
-        |> IlMachineState.advanceProgramCounter currentThread
+        |> advanceCaller
 
     /// The size operand of `initblk` (ECMA-335 III.3.36) and of `cpblk` (III.3.30) is an
     /// *unsigned* int32, so the int32 evaluation-stack slot is reinterpreted rather than
@@ -1331,6 +1335,7 @@ module internal IntrinsicHelpers =
     let executeSpanHelpersMemmove
         (baseClassTypes : BaseClassTypes<_>)
         (currentThread : ThreadId)
+        (advanceCaller : IlMachineState -> IlMachineState)
         (operation : string)
         (state : IlMachineState)
         : IlMachineState
@@ -1389,11 +1394,12 @@ module internal IntrinsicHelpers =
                     sourcePtr
                     byteCount
 
-        state |> IlMachineState.advanceProgramCounter currentThread
+        state |> advanceCaller
 
     let executeSpanHelpersClearWithoutReferences
         (baseClassTypes : BaseClassTypes<_>)
         (currentThread : ThreadId)
+        (advanceCaller : IlMachineState -> IlMachineState)
         (operation : string)
         (state : IlMachineState)
         : IlMachineState
@@ -1423,4 +1429,4 @@ module internal IntrinsicHelpers =
                     failwith $"%s{operation}: refusing nonzero byte clear of null destination"
                 | _ -> CellAwareMemOps.clear baseClassTypes operation state destPtr byteCount
 
-        state |> IlMachineState.advanceProgramCounter currentThread
+        state |> advanceCaller
