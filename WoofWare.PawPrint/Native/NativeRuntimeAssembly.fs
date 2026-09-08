@@ -359,6 +359,411 @@ module NativeRuntimeAssembly =
             NativeHandlerResult.completed state |> Some
         | _ -> None
 
+    /// <summary>
+    /// How the QCall's caller encoded the type names it passed.
+    /// </summary>
+    /// <remarks>
+    /// The two entry points differ in their marshalling as well as their casing: the UTF-8 one is
+    /// handed a copy in a <c>localloc</c> buffer, the UTF-16 one a pointer pinned into the guest's
+    /// own <c>System.String</c>. Both are NUL-terminated, so both are read the same way once the
+    /// element width is known.
+    /// </remarks>
+    [<RequireQualifiedAccess>]
+    type private TypeNameEncoding =
+        | Utf8
+        | Utf16
+
+    /// <summary>
+    /// The body shared by <c>AssemblyNative_GetTypeCore</c> and
+    /// <c>AssemblyNative_GetTypeCoreIgnoreCase</c>, which are the same walk over
+    /// <c>vm/assemblynative.cpp</c>'s loop with the case sensitivity of the lookups swapped.
+    /// </summary>
+    let private executeGetTypeCore
+        (operation : string)
+        (encoding : TypeNameEncoding)
+        (ignoreCase : bool)
+        (ctx : NativeCallContext)
+        : NativeHandlerResult option
+        =
+        let state = ctx.State
+        let instruction = ctx.Instruction
+
+        let readName (state : IlMachineState) (ptr : ManagedPointerSource) : string =
+            match encoding with
+            | TypeNameEncoding.Utf8 -> NativeCall.readNullTerminatedUtf8 operation ctx.BaseClassTypes state ptr
+            | TypeNameEncoding.Utf16 -> NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state ptr
+
+        // A case-insensitive lookup PawPrint will not answer is a hard stop rather than a miss.
+        // Answering `null` would be indistinguishable, to the guest, from "no such type" — and the
+        // real runtime does find one here, so a silent null is the wrong answer rather than an
+        // incomplete one.
+        let orRefuse (what : string) (result : Result<'a option, CaseInsensitiveLookupRefusal>) : 'a option =
+            match result with
+            | Ok found -> found
+            | Error refusal -> failwith $"%s{operation}: %s{what}: %O{refusal}"
+
+        // ECMA-335 II.22.37: the first `TypeDef` row is the pseudo-class that parents an assembly's
+        // module-scope functions and variables. `ClassLoader::PopulateAvailableClassHashTable`
+        // skips it, so it is in no table the class loader searches and `Assembly.GetType` never
+        // answers with it — measured: real .NET answers `null` for `<Module>` at either casing,
+        // and `GetTypes()` omits it too. Identified by its row rather than its name, because the
+        // name is a legal identifier that a hand-written assembly could also give a real type.
+        let isModulePseudoType (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : bool =
+            System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeInfo.TypeDefHandle
+            ) = 1
+
+        let topLevelTypeDef
+            (assembly : DumpedAssembly)
+            (ns : string)
+            (name : string)
+            : TypeInfo<GenericParamFromMetadata, TypeDefn> option
+            =
+            if ignoreCase then
+                // The exclusion goes *into* the scan rather than onto its result: two names
+                // collide only among the candidates the class loader would have searched, so
+                // filtering afterwards could refuse a query as ambiguous with a row that is not a
+                // candidate at all.
+                assembly.TryGetTopLevelTypeDefIgnoreCase ns name (isModulePseudoType >> not)
+                |> orRefuse $"looking up %s{ns}.%s{name} in %s{assembly.Name.Name}"
+            else
+                // Exact lookup has at most one hit, so there is no collision for the pseudo-row to
+                // take part in and filtering the answer is the same thing.
+                assembly.TryGetTopLevelTypeDef ns name
+                |> Option.filter (isModulePseudoType >> not)
+
+        let topLevelExportedType
+            (assembly : DumpedAssembly)
+            (ns : string)
+            (name : string)
+            : WoofWare.PawPrint.ExportedType option
+            =
+            if ignoreCase then
+                assembly.TryGetTopLevelExportedTypeIgnoreCase (Some ns) name
+                |> orRefuse $"looking up exported type %s{ns}.%s{name} in %s{assembly.Name.Name}"
+            else
+                assembly.TryGetTopLevelExportedType (Some ns) name
+
+        let nestedTypeDef
+            (assembly : DumpedAssembly)
+            (declaring : System.Reflection.Metadata.TypeDefinitionHandle)
+            (name : string)
+            : TypeInfo<GenericParamFromMetadata, TypeDefn> option
+            =
+            if ignoreCase then
+                assembly.TryGetNestedTypeDefIgnoreCase declaring name
+                |> orRefuse $"looking up nested type %s{name} in %s{assembly.Name.Name}"
+            else
+                assembly.TryGetNestedTypeDef declaring name
+
+
+        if instruction.Arguments.Length <> 5 then
+            failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
+
+        let assemblyFullName =
+            instruction.Arguments.[0]
+            |> NativeCall.qCallAssemblyToAssemblyFullName operation state
+
+        let typeNamePtr =
+            NativeCall.managedPointerOfPointerArgument operation "typeName" instruction.Arguments.[1]
+
+        let nestedNamesPtr =
+            NativeCall.managedPointerOfPointerArgument operation "nestedTypeNames" instruction.Arguments.[2]
+
+        let nestedCount = NativeCall.int32Argument operation instruction.Arguments.[3]
+
+        let retType =
+            NativeCall.objectHandleOnStackTarget operation state "retType" instruction.Arguments.[4]
+
+        if nestedCount < 0 then
+            failwith $"%s{operation}: nested type count %d{nestedCount} is negative"
+
+        match typeNamePtr with
+        | ManagedPointerSource.Null ->
+            failwith $"TODO: %s{operation} with null typeName should throw ArgumentNullException"
+        | ManagedPointerSource.NativeIntPlaceholder bits ->
+            failwith
+                $"%s{operation}: cannot read typeName through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+        | ManagedPointerSource.Byref _ -> ()
+
+        if nestedCount > 0 then
+            match nestedNamesPtr with
+            | ManagedPointerSource.Null ->
+                failwith
+                    $"%s{operation}: nestedTypeNames pointer was null but nestedCount=%d{nestedCount} (caller invariant violated)"
+            | ManagedPointerSource.NativeIntPlaceholder bits ->
+                failwith
+                    $"%s{operation}: cannot read nestedTypeNames through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
+            | ManagedPointerSource.Byref _ -> ()
+
+        let typeName = readName state typeNamePtr
+
+        let assembly =
+            state.LoadedAssembly assemblyFullName
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
+
+        let nestedNames =
+            if nestedCount = 0 then
+                []
+            else
+                // sizeof<nativeint> matches CoreCLR's IntPtr ABI on the
+                // host. PawPrint's interpreter is a 64-bit-only host today.
+                let intPtrStride = sizeof<nativeint>
+
+                let byteConcreteType =
+                    let h =
+                        AllConcreteTypes.findExistingNonGenericConcreteType
+                            state.ConcreteTypes
+                            ctx.BaseClassTypes.Byte.Identity
+                        |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
+
+                    AllConcreteTypes.lookup h state.ConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith $"%s{operation}: concrete System.Byte handle %O{h} not found"
+                    )
+
+                [
+                    for i in 0 .. nestedCount - 1 do
+                        let entryPtr =
+                            ManagedPointerByteView.addByteOffset
+                                state
+                                byteConcreteType
+                                (i * intPtrStride)
+                                nestedNamesPtr
+
+                        // Read an IntPtr-sized native int from the cell.
+                        let entry =
+                            IlMachineState.readManagedByrefBytesAs
+                                ctx.BaseClassTypes
+                                state
+                                entryPtr
+                                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
+
+                        let stringPtr =
+                            NativeCall.managedPointerOfPointerArgument operation $"nestedTypeNames[{i}]" entry
+
+                        yield readName state stringPtr
+                ]
+
+        let ns, simple = splitAtLastDot typeName
+
+        // The asking assembly's class loader consults the manifest's `ExportedType` rows when
+        // it has no `TypeDef` of that name, so a forwarder is followed here and the answer is
+        // the type as the assembly that *defines* it declares it. That assembly is then also
+        // where any nested names are looked up: a nested type lives in the same module as its
+        // declaring type, so re-following a forwarder chain for it would be meaningless
+        // (vm/assemblynative.cpp:387-393 re-roots `pClassLoader` for exactly that reason).
+        // A chain that does not arrive is not a crash here. `Assembly.GetType(name,
+        // throwOnError: false)` answers `null` for both ways of not arriving, and
+        // `throwOnError: true` distinguishes them — so the two are reported differently and
+        // CoreLib decides what the guest sees.
+        let definedHere = topLevelTypeDef assembly ns simple
+
+        // Under `ignoreCase` these are one table in CoreCLR (`m_pAvailableClassesCaseIns`), not
+        // two consulted in order, so a definition here does not get to win by being looked at
+        // first — measured: a facade that defines `N.TARGET` and forwards `N.Target` answers a
+        // folded query with the *forwarded* type, in preference to its own exact match. Which of
+        // two folded matches CoreCLR picks is the same unspecified hash ordering that makes two
+        // colliding definitions ambiguous, so this is refused on the same terms.
+        let forwardedFromHere =
+            if ignoreCase || definedHere.IsNone then
+                topLevelExportedType assembly ns simple
+            else
+                None
+
+        match definedHere, forwardedFromHere with
+        | Some definition, Some export when ignoreCase ->
+            let definitionName = $"%s{definition.Namespace}.%s{definition.Name}"
+
+            let exportNs = export.Namespace |> Option.defaultValue ""
+            let exportName = $"%s{exportNs}.%s{export.Name}"
+
+            failwith
+                $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} in %s{assembly.Name.Name} is ambiguous between the type it defines (%s{definitionName}) and the one it forwards (%s{exportName})"
+        | _ ->
+
+        let miss, state, topLevel =
+            match definedHere with
+            | Some typeDef -> ForwarderMiss.AnswerNull, state, Some (assembly, typeDef)
+            | None ->
+
+            match forwardedFromHere with
+            | None -> ForwarderMiss.AnswerNull, state, None
+            | Some export ->
+
+            match
+                IlMachineTypeResolution.tryResolveTypeFromExport
+                    ctx.LoggerFactory
+                    assembly
+                    export
+                    ImmutableArray.Empty
+                    state
+            with
+            | state, ExportedTypeResolution.Forwarded (definingAssembly, forwarded) ->
+                // The walk asked the far side for the forwarder row's own spelling, exactly. Under
+                // `ignoreCase` that is not the question CoreCLR asked: it carries the fold across
+                // the hop, so a target declaring a folded sibling of the row can answer with the
+                // sibling instead. Measured: a facade forwarding `N.TARGET` into a target that
+                // declares both `N.Target` and `N.TARGET` answers `N.Target`. Ask the folded
+                // question too, and stop unless it has the same answer — silently returning a
+                // different type from the real runtime is the worst way to be wrong.
+                if ignoreCase then
+                    let exportNs = export.Namespace |> Option.defaultValue ""
+
+                    match
+                        definingAssembly.TryGetTopLevelTypeDefIgnoreCase
+                            exportNs
+                            export.Name
+                            (isModulePseudoType >> not)
+                    with
+                    | Error refusal ->
+                        failwith
+                            $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, where the folded name does not have one answer: %O{refusal}"
+                    | Ok (Some folded) when folded.TypeDefHandle = forwarded.TypeDefHandle ->
+                        // The row's own declaration is the only thing on the far side folding to
+                        // it, so the exact walk and the folded question have the same answer.
+                        ()
+                    | Ok found ->
+                        // Defensive, and believed unreachable: the walk arrived *through* a
+                        // declaration of the row's own spelling, which necessarily folds to the
+                        // folded query too — so anything else that folds alike makes two
+                        // candidates and comes back as `Error Ambiguous` above, and a lone
+                        // different answer cannot arise. Kept because "cannot arise" is an
+                        // argument rather than a check, and stopping is cheap.
+                        let foundName =
+                            match found with
+                            | None -> "nothing"
+                            | Some found -> $"%s{found.Namespace}.%s{found.Name}"
+
+                        failwith
+                            $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, where the row's own spelling names %s{forwarded.Namespace}.%s{forwarded.Name} but the folded name names %s{foundName}. Folding is not yet carried across a forwarder hop."
+
+                // Back to the type as its own metadata declares it: no generic arguments were
+                // supplied above, so nothing was substituted, and the allocation below wants
+                // the declared generic parameters rather than an instantiation of them.
+                ForwarderMiss.AnswerNull,
+                state,
+                Some (definingAssembly, definingAssembly.TypeDefs.[forwarded.TypeDefHandle])
+            | state, ExportedTypeResolution.TypeAbsent miss when ignoreCase ->
+                // The forwarder row matched by folding, and then the walk looked the row's own
+                // spelling up *exactly* in the target. Measured: CoreCLR carries the fold across
+                // the hop, so where the target declares a differently-cased name it still
+                // resolves. Answering `null` here would be answering a question we did not ask.
+                failwith
+                    $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder out of %s{assembly.Name.Name}, and the target does not declare that name under the forwarder's own spelling: %O{miss}. Folding is not yet carried across a forwarder hop."
+            | state, ExportedTypeResolution.TypeAbsent _ ->
+                // Every assembly in the chain bound, and none declares the type. CoreCLR's
+                // loader hands back a null TypeHandle, and `TypeNameResolver` is what turns
+                // that into a `TypeLoadException` when the caller asked to be thrown at — so
+                // reporting absence here is reporting it at the right layer.
+                ForwarderMiss.AnswerNull, state, None
+            | state, ExportedTypeResolution.AssemblyUnavailable reference ->
+                // The chain named an assembly nothing supplies. CoreCLR raises
+                // `FileNotFoundException` out of the QCall, and `RuntimeAssembly.GetTypeCore`
+                // catches it `when (!throwOnFileNotFound)` — so raising it is what lets
+                // `throwOnError: false` answer null while `throwOnError: true` throws.
+                ForwarderMiss.AssemblyUnavailable reference, state, None
+            | state, ExportedTypeResolution.BaseTypeAbsent typeMiss ->
+                // The type was found; something in its base chain is not declared where the
+                // metadata says. That is a load failure of a *type*, not of an assembly, so the
+                // catch in `RuntimeAssembly.GetTypeCore` does not apply and the guest sees it
+                // either way.
+                ForwarderMiss.BaseTypeAbsent typeMiss, state, None
+
+        let resolved =
+            match topLevel with
+            | None -> None
+            | Some (definingAssembly, top) ->
+                let rec walk
+                    (parent : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+                    (rest : string list)
+                    : TypeInfo<GenericParamFromMetadata, TypeDefn> option
+                    =
+                    match rest with
+                    | [] -> Some parent
+                    | name :: rest ->
+                        // Each nested entry is normally a simple name; keep
+                        // the same split-at-last-'.' rule as CoreCLR uses
+                        // when consumers smuggle a dotted name through.
+                        let _, nestedSimple = splitAtLastDot name
+
+                        match nestedTypeDef definingAssembly parent.TypeDefHandle nestedSimple with
+                        | None -> None
+                        | Some child -> walk child rest
+
+                walk top nestedNames
+
+        match resolved with
+        | None ->
+            match miss with
+            | ForwarderMiss.AnswerNull ->
+                // Caller's local was preinitialized to null (Type? type = null);
+                // leaving retType untouched preserves that.
+                NativeHandlerResult.completed state |> Some
+            | ForwarderMiss.AssemblyUnavailable reference ->
+                // `FileName` stays null where the real runtime names the assembly: this channel
+                // runs the parameterless constructor and can then set only `_message`.
+                //
+                // Elsewhere PawPrint declines to write a message it cannot pair with the field
+                // that agrees with it (`_paramName`, `_className`), because a half-populated
+                // exception invites a guest to trust one half. The reasoning does not reach
+                // here: the alternative is not a duller exception but no exception, i.e. the
+                // host abort this replaced, which diverges from the real runtime in the
+                // *control flow* a guest can actually branch on. Under `throwOnError: false`,
+                // the overwhelmingly common caller, CoreLib swallows this whole and neither
+                // half is observable at all.
+                NativeHandlerResult.raiseExceptionWithMessage
+                    ctx.BaseClassTypes.FileNotFoundException
+                    (Some $"Could not load file or assembly '%s{reference.Name.FullName}'.")
+                    state
+                |> Some
+            | ForwarderMiss.BaseTypeAbsent typeMiss ->
+                // Wording measured off .NET 10, which reports the *base* type's name and the
+                // assembly that was supposed to declare it. `TypeName` is that same name there
+                // and stays null here, for the reason given on the sibling arm above.
+                let message =
+                    match typeMiss with
+                    | TypeResolutionMiss.TopLevelTypeAbsent (searchedIn, missNs, missName) ->
+                        let qualified =
+                            match missNs with
+                            | None
+                            | Some "" -> missName
+                            | Some missNs -> $"%s{missNs}.%s{missName}"
+
+                        $"Could not load type '%s{qualified}' from assembly '%s{searchedIn}'."
+                    | TypeResolutionMiss.NestedTypeAbsent (searchedIn, declaringType, missName) ->
+                        $"Could not load type '%s{declaringType}+%s{missName}' from assembly '%s{searchedIn}'."
+
+                NativeHandlerResult.raiseExceptionWithMessage ctx.BaseClassTypes.TypeLoadException (Some message) state
+                |> Some
+        | Some typeInfo ->
+            let runtimeTypeAddr, state =
+                if typeInfo.Generics.IsEmpty then
+                    NativeRuntimeType.getOrAllocateNonGenericRuntimeType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        typeInfo
+                else
+                    // Generic type definition: matches typeof(List<>) — the
+                    // RuntimeType represents the open generic, not a
+                    // construction. Constructed generics arrive via
+                    // Type.MakeGenericType, not here.
+                    IlMachineState.getOrAllocateType
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        (RuntimeTypeHandleTarget.OpenGenericTypeDefinition typeInfo.Identity)
+                        state
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    retType
+                    (CliType.ObjectRef (Some runtimeTypeAddr))
+
+            NativeHandlerResult.completed state |> Some
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -1359,246 +1764,18 @@ module NativeRuntimeAssembly =
                                              "ObjectHandleOnStack",
                                              objectHandleGenerics) ],
           MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
-            let operation = "AssemblyNative_GetTypeCore"
-
-            if instruction.Arguments.Length <> 5 then
-                failwith $"%s{operation}: expected five native arguments, got %d{instruction.Arguments.Length}"
-
-            let assemblyFullName =
-                instruction.Arguments.[0]
-                |> NativeCall.qCallAssemblyToAssemblyFullName operation state
-
-            let typeNamePtr =
-                NativeCall.managedPointerOfPointerArgument operation "typeName" instruction.Arguments.[1]
-
-            let nestedNamesPtr =
-                NativeCall.managedPointerOfPointerArgument operation "nestedTypeNames" instruction.Arguments.[2]
-
-            let nestedCount = NativeCall.int32Argument operation instruction.Arguments.[3]
-
-            let retType =
-                NativeCall.objectHandleOnStackTarget operation state "retType" instruction.Arguments.[4]
-
-            if nestedCount < 0 then
-                failwith $"%s{operation}: nested type count %d{nestedCount} is negative"
-
-            match typeNamePtr with
-            | ManagedPointerSource.Null ->
-                failwith $"TODO: %s{operation} with null typeName should throw ArgumentNullException"
-            | ManagedPointerSource.NativeIntPlaceholder bits ->
-                failwith
-                    $"%s{operation}: cannot read typeName through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-            | ManagedPointerSource.Byref _ -> ()
-
-            if nestedCount > 0 then
-                match nestedNamesPtr with
-                | ManagedPointerSource.Null ->
-                    failwith
-                        $"%s{operation}: nestedTypeNames pointer was null but nestedCount=%d{nestedCount} (caller invariant violated)"
-                | ManagedPointerSource.NativeIntPlaceholder bits ->
-                    failwith
-                        $"%s{operation}: cannot read nestedTypeNames through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
-                | ManagedPointerSource.Byref _ -> ()
-
-            let typeName =
-                NativeCall.readNullTerminatedUtf8 operation ctx.BaseClassTypes state typeNamePtr
-
-            let assembly =
-                state.LoadedAssembly assemblyFullName
-                |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
-
-            let nestedNames =
-                if nestedCount = 0 then
-                    []
-                else
-                    // sizeof<nativeint> matches CoreCLR's IntPtr ABI on the
-                    // host. PawPrint's interpreter is a 64-bit-only host today.
-                    let intPtrStride = sizeof<nativeint>
-
-                    let byteConcreteType =
-                        let h =
-                            AllConcreteTypes.findExistingNonGenericConcreteType
-                                state.ConcreteTypes
-                                ctx.BaseClassTypes.Byte.Identity
-                            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.Byte is not concretized")
-
-                        AllConcreteTypes.lookup h state.ConcreteTypes
-                        |> Option.defaultWith (fun () ->
-                            failwith $"%s{operation}: concrete System.Byte handle %O{h} not found"
-                        )
-
-                    [
-                        for i in 0 .. nestedCount - 1 do
-                            let entryPtr =
-                                ManagedPointerByteView.addByteOffset
-                                    state
-                                    byteConcreteType
-                                    (i * intPtrStride)
-                                    nestedNamesPtr
-
-                            // Read an IntPtr-sized native int from the cell.
-                            let entry =
-                                IlMachineState.readManagedByrefBytesAs
-                                    ctx.BaseClassTypes
-                                    state
-                                    entryPtr
-                                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L)))
-
-                            let stringPtr =
-                                NativeCall.managedPointerOfPointerArgument operation $"nestedTypeNames[{i}]" entry
-
-                            yield NativeCall.readNullTerminatedUtf8 operation ctx.BaseClassTypes state stringPtr
-                    ]
-
-            let ns, simple = splitAtLastDot typeName
-
-            // The asking assembly's class loader consults the manifest's `ExportedType` rows when
-            // it has no `TypeDef` of that name, so a forwarder is followed here and the answer is
-            // the type as the assembly that *defines* it declares it. That assembly is then also
-            // where any nested names are looked up: a nested type lives in the same module as its
-            // declaring type, so re-following a forwarder chain for it would be meaningless
-            // (vm/assemblynative.cpp:387-393 re-roots `pClassLoader` for exactly that reason).
-            // A chain that does not arrive is not a crash here. `Assembly.GetType(name,
-            // throwOnError: false)` answers `null` for both ways of not arriving, and
-            // `throwOnError: true` distinguishes them — so the two are reported differently and
-            // CoreLib decides what the guest sees.
-            let miss, state, topLevel =
-                match assembly.TryGetTopLevelTypeDef ns simple with
-                | Some typeDef -> ForwarderMiss.AnswerNull, state, Some (assembly, typeDef)
-                | None ->
-
-                match assembly.TryGetTopLevelExportedType (Some ns) simple with
-                | None -> ForwarderMiss.AnswerNull, state, None
-                | Some export ->
-
-                match
-                    IlMachineTypeResolution.tryResolveTypeFromExport
-                        ctx.LoggerFactory
-                        assembly
-                        export
-                        ImmutableArray.Empty
-                        state
-                with
-                | state, ExportedTypeResolution.Forwarded (definingAssembly, forwarded) ->
-                    // Back to the type as its own metadata declares it: no generic arguments were
-                    // supplied above, so nothing was substituted, and the allocation below wants
-                    // the declared generic parameters rather than an instantiation of them.
-                    ForwarderMiss.AnswerNull,
-                    state,
-                    Some (definingAssembly, definingAssembly.TypeDefs.[forwarded.TypeDefHandle])
-                | state, ExportedTypeResolution.TypeAbsent _ ->
-                    // Every assembly in the chain bound, and none declares the type. CoreCLR's
-                    // loader hands back a null TypeHandle, and `TypeNameResolver` is what turns
-                    // that into a `TypeLoadException` when the caller asked to be thrown at — so
-                    // reporting absence here is reporting it at the right layer.
-                    ForwarderMiss.AnswerNull, state, None
-                | state, ExportedTypeResolution.AssemblyUnavailable reference ->
-                    // The chain named an assembly nothing supplies. CoreCLR raises
-                    // `FileNotFoundException` out of the QCall, and `RuntimeAssembly.GetTypeCore`
-                    // catches it `when (!throwOnFileNotFound)` — so raising it is what lets
-                    // `throwOnError: false` answer null while `throwOnError: true` throws.
-                    ForwarderMiss.AssemblyUnavailable reference, state, None
-                | state, ExportedTypeResolution.BaseTypeAbsent typeMiss ->
-                    // The type was found; something in its base chain is not declared where the
-                    // metadata says. That is a load failure of a *type*, not of an assembly, so the
-                    // catch in `RuntimeAssembly.GetTypeCore` does not apply and the guest sees it
-                    // either way.
-                    ForwarderMiss.BaseTypeAbsent typeMiss, state, None
-
-            let resolved =
-                match topLevel with
-                | None -> None
-                | Some (definingAssembly, top) ->
-                    let rec walk
-                        (parent : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-                        (rest : string list)
-                        : TypeInfo<GenericParamFromMetadata, TypeDefn> option
-                        =
-                        match rest with
-                        | [] -> Some parent
-                        | name :: rest ->
-                            // Each nested entry is normally a simple name; keep
-                            // the same split-at-last-'.' rule as CoreCLR uses
-                            // when consumers smuggle a dotted name through.
-                            let _, nestedSimple = splitAtLastDot name
-
-                            match definingAssembly.TryGetNestedTypeDef parent.TypeDefHandle nestedSimple with
-                            | None -> None
-                            | Some child -> walk child rest
-
-                    walk top nestedNames
-
-            match resolved with
-            | None ->
-                match miss with
-                | ForwarderMiss.AnswerNull ->
-                    // Caller's local was preinitialized to null (Type? type = null);
-                    // leaving retType untouched preserves that.
-                    NativeHandlerResult.completed state |> Some
-                | ForwarderMiss.AssemblyUnavailable reference ->
-                    // `FileName` stays null where the real runtime names the assembly: this channel
-                    // runs the parameterless constructor and can then set only `_message`.
-                    //
-                    // Elsewhere PawPrint declines to write a message it cannot pair with the field
-                    // that agrees with it (`_paramName`, `_className`), because a half-populated
-                    // exception invites a guest to trust one half. The reasoning does not reach
-                    // here: the alternative is not a duller exception but no exception, i.e. the
-                    // host abort this replaced, which diverges from the real runtime in the
-                    // *control flow* a guest can actually branch on. Under `throwOnError: false`,
-                    // the overwhelmingly common caller, CoreLib swallows this whole and neither
-                    // half is observable at all.
-                    NativeHandlerResult.raiseExceptionWithMessage
-                        ctx.BaseClassTypes.FileNotFoundException
-                        (Some $"Could not load file or assembly '%s{reference.Name.FullName}'.")
-                        state
-                    |> Some
-                | ForwarderMiss.BaseTypeAbsent typeMiss ->
-                    // Wording measured off .NET 10, which reports the *base* type's name and the
-                    // assembly that was supposed to declare it. `TypeName` is that same name there
-                    // and stays null here, for the reason given on the sibling arm above.
-                    let message =
-                        match typeMiss with
-                        | TypeResolutionMiss.TopLevelTypeAbsent (searchedIn, missNs, missName) ->
-                            let qualified =
-                                match missNs with
-                                | None
-                                | Some "" -> missName
-                                | Some missNs -> $"%s{missNs}.%s{missName}"
-
-                            $"Could not load type '%s{qualified}' from assembly '%s{searchedIn}'."
-                        | TypeResolutionMiss.NestedTypeAbsent (searchedIn, declaringType, missName) ->
-                            $"Could not load type '%s{declaringType}+%s{missName}' from assembly '%s{searchedIn}'."
-
-                    NativeHandlerResult.raiseExceptionWithMessage
-                        ctx.BaseClassTypes.TypeLoadException
-                        (Some message)
-                        state
-                    |> Some
-            | Some typeInfo ->
-                let runtimeTypeAddr, state =
-                    if typeInfo.Generics.IsEmpty then
-                        NativeRuntimeType.getOrAllocateNonGenericRuntimeType
-                            ctx.LoggerFactory
-                            ctx.BaseClassTypes
-                            state
-                            typeInfo
-                    else
-                        // Generic type definition: matches typeof(List<>) — the
-                        // RuntimeType represents the open generic, not a
-                        // construction. Constructed generics arrive via
-                        // Type.MakeGenericType, not here.
-                        IlMachineState.getOrAllocateType
-                            ctx.LoggerFactory
-                            ctx.BaseClassTypes
-                            (RuntimeTypeHandleTarget.OpenGenericTypeDefinition typeInfo.Identity)
-                            state
-
-                let state =
-                    IlMachineState.writeManagedByrefWithBase
-                        ctx.BaseClassTypes
-                        state
-                        retType
-                        (CliType.ObjectRef (Some runtimeTypeAddr))
-
-                NativeHandlerResult.completed state |> Some
+            executeGetTypeCore "AssemblyNative_GetTypeCore" TypeNameEncoding.Utf8 false ctx
+        | "AssemblyNative_GetTypeCoreIgnoreCase",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallAssembly", qCallAssemblyGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt16)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr)
+            ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when qCallAssemblyGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            executeGetTypeCore "AssemblyNative_GetTypeCoreIgnoreCase" TypeNameEncoding.Utf16 true ctx
         | _ -> None
