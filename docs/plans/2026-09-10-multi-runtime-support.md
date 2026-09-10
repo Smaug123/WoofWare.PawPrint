@@ -242,7 +242,16 @@ fact — "the framework under test" — resolved in one place and consulted by:
   interpreter and oracle both follow the publish with no further selection;
 * the fixtures that read `typeof<obj>.Assembly.Location` to obtain a CoreLib image for
   PawPrint's own reader. Those are parsing whatever the *test host* runs on; under selection
-  they should read the selected framework's CoreLib from disk instead.
+  they should read the selected framework's CoreLib from disk instead;
+* the fabricated-guest emitters. `TestFabricatedCpblk` and its siblings construct
+  `PersistedAssemblyBuilder` with `typeof<obj>.Assembly` as the core assembly, so the emitted
+  image references the *host's* CoreLib version — and `FabricatedGuest.runOnBoth` then
+  compiles a Roslyn driver against it, which on the older leg would reference an assembly
+  demanding a newer CoreLib than the driver's own (review reproduced this as CS1705 before
+  either runtime runs the guest). The emitters must take their core assembly from the
+  selected framework — `PersistedAssemblyBuilder` accepts a `MetadataLoadContext`-loaded
+  core assembly for exactly this — so the stage-6 census covers Reflection.Emit core-assembly
+  references alongside `DllImport` and host-reflection oracles.
 
 ### In-process host oracles cannot be selected
 
