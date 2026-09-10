@@ -102,7 +102,8 @@ module EvalStackValueComparisons =
         | _, EvalStackValue.Int32 (Int32Source.NativeIntByte _) ->
             failwith $"Clt instruction invalid for ordering a byte of an unmodelled native int, %O{var1} vs %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 < 0
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 < var2
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            EvalStackFloat.toDouble var1 < EvalStackFloat.toDouble var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->
             failwith $"Clt instruction invalid for comparing object refs, {var1} vs {var2}"
@@ -110,8 +111,8 @@ module EvalStackValueComparisons =
             failwith $"Clt instruction invalid for comparing object refs, {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
         | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
-        | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
-        | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
+        | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %O{i} vs %O{other}"
+        | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %O{i}"
         | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
         | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
@@ -155,7 +156,8 @@ module EvalStackValueComparisons =
         | _, EvalStackValue.Int32 (Int32Source.NativeIntByte _) ->
             failwith $"Cgt instruction invalid for ordering a byte of an unmodelled native int, %O{var1} vs %O{var2}"
         | EvalStackValue.Int64 var1, EvalStackValue.Int64 var2 -> Int64Source.compareSigned var1 var2 > 0
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 > var2
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            EvalStackFloat.toDouble var1 > EvalStackFloat.toDouble var2
         | EvalStackValue.NullObjectRef, _
         | _, EvalStackValue.NullObjectRef ->
             failwith $"Cgt instruction invalid for comparing object refs, {var1} vs {var2}"
@@ -163,8 +165,8 @@ module EvalStackValueComparisons =
             failwith $"Cgt instruction invalid for comparing object refs, {var1} vs {var2}"
         | EvalStackValue.ObjectRef var1, other -> failwith $"invalid comparison, ref %O{var1} vs %O{other}"
         | other, EvalStackValue.ObjectRef var2 -> failwith $"invalid comparison, %O{other} vs ref %O{var2}"
-        | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %f{i} vs %O{other}"
-        | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %f{i}"
+        | EvalStackValue.Float i, other -> failwith $"invalid comparison, float %O{i} vs %O{other}"
+        | other, EvalStackValue.Float i -> failwith $"invalid comparison, %O{other} vs float %O{i}"
         | EvalStackValue.Int64 i, other -> failwith $"invalid comparison, int64 %O{i} vs %O{other}"
         | other, EvalStackValue.Int64 i -> failwith $"invalid comparison, %O{other} vs int64 %O{i}"
         | EvalStackValue.Int32 (Int32Source.Verbatim var1), EvalStackValue.Int32 (Int32Source.Verbatim var2) ->
@@ -200,7 +202,8 @@ module EvalStackValueComparisons =
         // wrong (`not cgt` is the *unordered* ble, since `cgt(NaN, _)` is false), so the
         // Float × Float arm overrides explicitly. Cross-type (Float vs Int / NativeInt) is
         // inherited from `cgt`'s "invalid comparison" failwith.
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 <= var2
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            EvalStackFloat.toDouble var1 <= EvalStackFloat.toDouble var2
         | _ -> not (cgt var1 var2)
 
     /// Ordered "greater than or equal". Float × Float uses IEEE `>=` (NaN ⇒ false).
@@ -208,7 +211,8 @@ module EvalStackValueComparisons =
         match var1, var2 with
         // Mirrors `cle`: other types defer to `not (clt v1 v2)`, with the Float × Float
         // arm overriding explicitly. Cross-type guards are inherited from `clt`.
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 >= var2
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            EvalStackFloat.toDouble var1 >= EvalStackFloat.toDouble var2
         | _ -> not (clt var1 var2)
 
     let rec cgtUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
@@ -298,7 +302,8 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
             failwith
                 $"Cgt.un cannot order an int32 that has no numeric value against a native int: %O{var1} vs %O{var2}"
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 <= var2)
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            not (EvalStackFloat.toDouble var1 <= EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Cgt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
             cgtUn (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) var2
@@ -387,7 +392,8 @@ module EvalStackValueComparisons =
         | EvalStackValue.NativeInt _, EvalStackValue.Int32 _ ->
             failwith
                 $"Clt.un cannot order an int32 that has no numeric value against a native int: %O{var1} vs %O{var2}"
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 >= var2)
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            not (EvalStackFloat.toDouble var1 >= EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Clt.un invalid for comparing %O{var1} with %O{var2}"
         | EvalStackValue.ManagedPointer var1, EvalStackValue.NativeInt _ ->
             cltUn (EvalStackValue.NativeInt (NativeIntSource.ManagedPointer var1)) var2
@@ -408,14 +414,16 @@ module EvalStackValueComparisons =
 
     let cgeUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 < var2)
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            not (EvalStackFloat.toDouble var1 < EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
         | _, EvalStackValue.Float _ -> failwith $"Bge.un invalid for comparing %O{var1} with %O{var2}"
         | _ -> not (cltUn var1 var2)
 
     let cleUn (var1 : EvalStackValue) (var2 : EvalStackValue) : bool =
         match var1, var2 with
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> not (var1 > var2)
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            not (EvalStackFloat.toDouble var1 > EvalStackFloat.toDouble var2)
         | EvalStackValue.Float _, _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
         | _, EvalStackValue.Float _ -> failwith $"Ble.un invalid for comparing %O{var1} with %O{var2}"
         | _ -> not (cgtUn var1 var2)
@@ -500,7 +508,8 @@ module EvalStackValueComparisons =
         | EvalStackValue.Int64 (Int64Source.OpaqueHashBits _),
           EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) -> false
         | EvalStackValue.Int64 _, _ -> failwith $"bad ceq: Int64 vs {var2}"
-        | EvalStackValue.Float var1, EvalStackValue.Float var2 -> var1 = var2
+        | EvalStackValue.Float var1, EvalStackValue.Float var2 ->
+            EvalStackFloat.toDouble var1 = EvalStackFloat.toDouble var2
         | EvalStackValue.Float _, _ -> failwith $"bad ceq: Float vs {var2}"
         | EvalStackValue.NativeInt var1, EvalStackValue.NativeInt var2 ->
             NativeIntSourceComparison.equalsForCli counters var1 var2

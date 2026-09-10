@@ -54,7 +54,8 @@ module TestNullaryIlOp =
         | Int32Value of int32
         | Int64Value of int64
         | NativeIntValue of NativeIntNegInput
-        | FloatValue of float
+        | Float32Value of float32
+        | Float64Value of float
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
@@ -272,10 +273,23 @@ module TestNullaryIlOp =
                     Double.NaN
                 ]
 
-        Gen.frequency [ 8, finite ; 2, edges ] |> Gen.map NegCase.FloatValue
+        Gen.frequency [ 8, finite ; 2, edges ] |> Gen.map NegCase.Float64Value
+
+    /// Any float32 bit pattern at all, so NaN payloads (signalling ones included) and both
+    /// zeros are exercised: `neg` on a `Single` must stay single and only flip the sign bit.
+    let private genFloat32NegCase : Gen<NegCase> =
+        Gen.choose (Int32.MinValue, Int32.MaxValue)
+        |> Gen.map (fun bits -> NegCase.Float32Value (BitConverter.Int32BitsToSingle bits))
 
     let private genNegCase : Gen<NegCase> =
-        Gen.oneof [ genInt32NegCase ; genInt64NegCase ; genNativeIntNegCase ; genFloatNegCase ]
+        Gen.oneof
+            [
+                genInt32NegCase
+                genInt64NegCase
+                genNativeIntNegCase
+                genFloatNegCase
+                genFloat32NegCase
+            ]
 
     let private genInt64DivUnCase : Gen<Int64DivUnCase> =
         gen {
@@ -314,13 +328,21 @@ module TestNullaryIlOp =
             | NativeIntNegInput.ManagedPointerNull ->
                 EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null),
                 EvalStackValue.NativeInt (NativeIntSource.Verbatim 0L)
-        | NegCase.FloatValue value -> EvalStackValue.Float value, EvalStackValue.Float (-value)
+        | NegCase.Float32Value value ->
+            EvalStackValue.Float (EvalStackFloat.Single value), EvalStackValue.Float (EvalStackFloat.Single (-value))
+        | NegCase.Float64Value value ->
+            EvalStackValue.Float (EvalStackFloat.Double value), EvalStackValue.Float (EvalStackFloat.Double (-value))
 
     let private assertEvalStackValueEqual (expected : EvalStackValue) (actual : EvalStackValue) : unit =
         match expected, actual with
-        | EvalStackValue.Float expected, EvalStackValue.Float actual ->
+        | EvalStackValue.Float (EvalStackFloat.Double expected), EvalStackValue.Float (EvalStackFloat.Double actual) ->
             BitConverter.DoubleToInt64Bits actual
             |> shouldEqual (BitConverter.DoubleToInt64Bits expected)
+        | EvalStackValue.Float (EvalStackFloat.Single expected), EvalStackValue.Float (EvalStackFloat.Single actual) ->
+            BitConverter.SingleToInt32Bits actual
+            |> shouldEqual (BitConverter.SingleToInt32Bits expected)
+        | EvalStackValue.Float expected, EvalStackValue.Float actual ->
+            failwith $"expected a float of width %O{expected}, got %O{actual}"
         | _ -> actual |> shouldEqual expected
 
     let private negEdgeCases : NegCase list =
@@ -360,15 +382,22 @@ module TestNullaryIlOp =
                 )
             )
             NegCase.NativeIntValue NativeIntNegInput.ManagedPointerNull
-            NegCase.FloatValue 0.0
-            NegCase.FloatValue -0.0
-            NegCase.FloatValue Double.Epsilon
-            NegCase.FloatValue -Double.Epsilon
-            NegCase.FloatValue Double.MaxValue
-            NegCase.FloatValue -Double.MaxValue
-            NegCase.FloatValue Double.PositiveInfinity
-            NegCase.FloatValue Double.NegativeInfinity
-            NegCase.FloatValue Double.NaN
+            NegCase.Float64Value 0.0
+            NegCase.Float64Value -0.0
+            NegCase.Float64Value Double.Epsilon
+            NegCase.Float64Value -Double.Epsilon
+            NegCase.Float64Value Double.MaxValue
+            NegCase.Float64Value -Double.MaxValue
+            NegCase.Float64Value Double.PositiveInfinity
+            NegCase.Float64Value Double.NegativeInfinity
+            NegCase.Float64Value Double.NaN
+            NegCase.Float32Value 0.0f
+            NegCase.Float32Value -0.0f
+            NegCase.Float32Value Single.Epsilon
+            NegCase.Float32Value Single.MaxValue
+            NegCase.Float32Value Single.PositiveInfinity
+            NegCase.Float32Value Single.NaN
+            NegCase.Float32Value (BitConverter.Int32BitsToSingle 0x7F800001)
         ]
 
     let private executeNegCase (case : NegCase) : unit =
@@ -770,7 +799,7 @@ module TestNullaryIlOp =
         | ConvOvfICase.Int32Value value -> EvalStackValue.Int32 (Int32Source.Verbatim value)
         | ConvOvfICase.Int64Value value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
         | ConvOvfICase.NativeIntVerbatim value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
-        | ConvOvfICase.FloatValue value -> EvalStackValue.Float value
+        | ConvOvfICase.FloatValue value -> EvalStackValue.Float (EvalStackFloat.Double value)
         | ConvOvfICase.Int64CrossArrayOffset offset ->
             EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset offset)
         | ConvOvfICase.NativeIntCrossArrayOffset offset ->
@@ -986,7 +1015,7 @@ module TestNullaryIlOp =
         use _loggerFactoryResource = loggerFactory
 
         // 2^63 is the smallest double greater than Int64.MaxValue.
-        let input = EvalStackValue.Float 9223372036854775808.0
+        let input = EvalStackValue.Float (EvalStackFloat.Double 9223372036854775808.0)
         let state, thread = stateWithNullary loggerFactory NullaryIlOp.Conv_ovf_i input
 
         match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_ovf_i with
@@ -1081,7 +1110,7 @@ module TestNullaryIlOp =
         | ConvOvfIUnCase.Int32Value value -> EvalStackValue.Int32 (Int32Source.Verbatim value)
         | ConvOvfIUnCase.Int64Value value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
         | ConvOvfIUnCase.NativeIntVerbatim value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
-        | ConvOvfIUnCase.FloatValue value -> EvalStackValue.Float value
+        | ConvOvfIUnCase.FloatValue value -> EvalStackValue.Float (EvalStackFloat.Double value)
         | ConvOvfIUnCase.Int64CrossArrayOffset offset ->
             EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset offset)
         | ConvOvfIUnCase.NativeIntCrossArrayOffset offset ->
@@ -1359,7 +1388,7 @@ module TestNullaryIlOp =
         | ConvOvfU2Case.Int32Value value -> EvalStackValue.Int32 (Int32Source.Verbatim value)
         | ConvOvfU2Case.Int64Value value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
         | ConvOvfU2Case.NativeIntVerbatim value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
-        | ConvOvfU2Case.FloatValue value -> EvalStackValue.Float value
+        | ConvOvfU2Case.FloatValue value -> EvalStackValue.Float (EvalStackFloat.Double value)
         | ConvOvfU2Case.NativeIntManagedPointerNull ->
             EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
 
@@ -2516,8 +2545,9 @@ module TestNullaryIlOp =
         let bytes = BitConverter.GetBytes 2.0
 
         match runLdindOverCell NullaryIlOp.Ldind_r4 cell with
-        | EvalStackValue.Float actual -> actual |> shouldEqual (float (BitConverter.ToSingle (bytes, 0)))
-        | other -> failwith $"Expected a float from ldind.r4, got %O{other}"
+        | EvalStackValue.Float (EvalStackFloat.Single actual) ->
+            actual |> shouldEqual (BitConverter.ToSingle (bytes, 0))
+        | other -> failwith $"Expected a single-precision float from ldind.r4, got %O{other}"
 
         runLdindOverCell NullaryIlOp.Ldind_i4 cell
         |> int32Value "ldind.i4"

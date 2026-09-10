@@ -36,7 +36,16 @@ module IlMachineStateExecution =
                 ImmutableArray.Empty
                 ImmutableArray.Empty
         | EvalStackValue.NativeInt nativeIntSource -> failwith "todo"
-        | EvalStackValue.Float _ ->
+        | EvalStackValue.Float (EvalStackFloat.Single _) ->
+            DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Single
+            |> IlMachineState.concretizeType
+                loggerFactory
+                baseClassTypes
+                state
+                baseClassTypes.Corelib.DefinitionFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+        | EvalStackValue.Float (EvalStackFloat.Double _) ->
             DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies baseClassTypes.Double
             |> IlMachineState.concretizeType
                 loggerFactory

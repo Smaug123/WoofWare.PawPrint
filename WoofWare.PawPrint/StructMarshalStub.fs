@@ -398,7 +398,8 @@ module StructMarshalStub =
         frame.EvaluationStack.Values
         |> List.map (fun v ->
             match v with
-            | EvalStackValue.Float f -> f
+            // Every conversion helper the stub calls today returns a `double` (an OA date).
+            | EvalStackValue.Float (EvalStackFloat.Double f) -> f
             | other ->
                 failwith
                     $"struct-marshal stub: expected only conversion results on the stub's own evaluation stack, found %O{other}"

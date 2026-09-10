@@ -126,7 +126,10 @@ type IArithmeticOperation =
     abstract Int32NativeInt : int32 -> nativeint -> nativeint
     abstract NativeIntInt32 : nativeint -> int32 -> nativeint
     abstract Int64Int64 : int64 -> int64 -> int64
-    abstract FloatFloat : float -> float -> float
+    /// Both operands single precision: the result is rounded to float32, as CoreCLR's JIT does.
+    abstract Float32Float32 : float32 -> float32 -> float32
+    /// At least one operand double precision; a float32 operand has already been widened.
+    abstract Float64Float64 : float -> float -> float
     abstract NativeIntNativeInt : nativeint -> nativeint -> nativeint
 
     /// This int64 return type should be wrapped in NativeIntSource or Int64Source, for example, as soon
@@ -441,7 +444,8 @@ module ArithmeticOperation =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "add" a b : int32 #)
             member _.Int64Int64 a b = (# "add" a b : int64 #)
-            member _.FloatFloat a b = (# "add" a b : float #)
+            member _.Float32Float32 a b = (# "add" a b : float32 #)
+            member _.Float64Float64 a b = (# "add" a b : float #)
             member _.NativeIntNativeInt a b = (# "add" a b : nativeint #)
             member _.Int32NativeInt a b = (# "add" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "add" a b : nativeint #)
@@ -475,7 +479,10 @@ module ArithmeticOperation =
             member _.Int64Int64 a b =
                 hostFaultingArith (fun () -> (# "add.ovf" a b : int64 #))
 
-            member _.FloatFloat a b =
+            member _.Float32Float32 a b =
+                hostFaultingArith (fun () -> (# "add.ovf" a b : float32 #))
+
+            member _.Float64Float64 a b =
                 hostFaultingArith (fun () -> (# "add.ovf" a b : float #))
 
             member _.NativeIntNativeInt a b =
@@ -819,7 +826,8 @@ module ArithmeticOperation =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "sub" a b : int32 #)
             member _.Int64Int64 a b = (# "sub" a b : int64 #)
-            member _.FloatFloat a b = (# "sub" a b : float #)
+            member _.Float32Float32 a b = (# "sub" a b : float32 #)
+            member _.Float64Float64 a b = (# "sub" a b : float #)
             member _.NativeIntNativeInt a b = (# "sub" a b : nativeint #)
             member _.Int32NativeInt a b = (# "sub" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "sub" a b : nativeint #)
@@ -852,7 +860,10 @@ module ArithmeticOperation =
             // ECMA-335 III.3.68: sub.ovf takes int32, int64, native int and &.
             // Floats have no overflow trap, so a verifier would reject float
             // operands here; reaching this arm means the IL was malformed.
-            member _.FloatFloat a b =
+            member _.Float32Float32 a b =
+                failwith $"refusing to sub.ovf float values: %f{a} and %f{b}"
+
+            member _.Float64Float64 a b =
                 failwith $"refusing to sub.ovf float values: %f{a} and %f{b}"
 
             member _.NativeIntNativeInt a b =
@@ -890,7 +901,8 @@ module ArithmeticOperation =
         { new IArithmeticOperation with
             member _.Int32Int32 a b = (# "mul" a b : int32 #)
             member _.Int64Int64 a b = (# "mul" a b : int64 #)
-            member _.FloatFloat a b = (# "mul" a b : float #)
+            member _.Float32Float32 a b = (# "mul" a b : float32 #)
+            member _.Float64Float64 a b = (# "mul" a b : float #)
             member _.NativeIntNativeInt a b = (# "mul" a b : nativeint #)
             member _.Int32NativeInt a b = (# "mul" a b : nativeint #)
             member _.NativeIntInt32 a b = (# "mul" a b : nativeint #)
@@ -918,7 +930,10 @@ module ArithmeticOperation =
             member _.Int64Int64 a b =
                 hostFaultingArith (fun () -> (# "rem" a b : int64 #))
 
-            member _.FloatFloat a b =
+            member _.Float32Float32 a b =
+                hostFaultingArith (fun () -> (# "rem" a b : float32 #))
+
+            member _.Float64Float64 a b =
                 hostFaultingArith (fun () -> (# "rem" a b : float #))
 
             member _.NativeIntNativeInt a b =
@@ -955,7 +970,10 @@ module ArithmeticOperation =
             member _.Int64Int64 a b =
                 hostFaultingArith (fun () -> (# "rem.un" a b : int64 #))
 
-            member _.FloatFloat a b =
+            member _.Float32Float32 a b =
+                failwith $"refusing to rem.un float values: %f{a} and %f{b}"
+
+            member _.Float64Float64 a b =
                 failwith $"refusing to rem.un float values: %f{a} and %f{b}"
 
             member _.NativeIntNativeInt a b =
@@ -992,7 +1010,10 @@ module ArithmeticOperation =
             member _.Int64Int64 a b =
                 hostFaultingArith (fun () -> (# "mul.ovf" a b : int64 #))
 
-            member _.FloatFloat a b =
+            member _.Float32Float32 a b =
+                hostFaultingArith (fun () -> (# "mul.ovf" a b : float32 #))
+
+            member _.Float64Float64 a b =
                 hostFaultingArith (fun () -> (# "mul.ovf" a b : float #))
 
             member _.NativeIntNativeInt a b =
@@ -1032,7 +1053,10 @@ module ArithmeticOperation =
             member _.Int64Int64 a b =
                 hostFaultingArith (fun () -> (# "mul.ovf.un" a b : int64 #))
 
-            member _.FloatFloat a b =
+            member _.Float32Float32 a b =
+                failwith $"refusing to mul.ovf.un float values: %f{a} and %f{b}"
+
+            member _.Float64Float64 a b =
                 failwith $"refusing to mul.ovf.un float values: %f{a} and %f{b}"
 
             member _.NativeIntNativeInt a b =
@@ -1069,7 +1093,10 @@ module ArithmeticOperation =
             member _.Int64Int64 a b =
                 hostFaultingArith (fun () -> (# "div" a b : int64 #))
 
-            member _.FloatFloat a b =
+            member _.Float32Float32 a b =
+                hostFaultingArith (fun () -> (# "div" a b : float32 #))
+
+            member _.Float64Float64 a b =
                 hostFaultingArith (fun () -> (# "div" a b : float #))
 
             member _.NativeIntNativeInt a b =
@@ -1382,7 +1409,9 @@ module BinaryArithmetic =
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NativeInt _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Float val1, EvalStackValue.Float val2 ->
-            op.FloatFloat val1 val2 |> EvalStackValue.Float |> withState
+            EvalStackFloat.map2 op.Float32Float32 op.Float64Float64 val1 val2
+            |> EvalStackValue.Float
+            |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             match op.ManagedPtrManagedPtr baseClassTypes state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState

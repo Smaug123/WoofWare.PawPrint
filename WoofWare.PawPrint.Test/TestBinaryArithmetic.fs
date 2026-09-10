@@ -2237,3 +2237,119 @@ module TestBinaryArithmetic =
         | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ])
         | ManagedPointerSource.Byref (_, []) -> expected |> shouldEqual 0
         | other -> failwith $"expected a byte cursor or a bare slot pointer, got %O{other}"
+
+    /// A finite or infinite float32 from its bit pattern, so every magnitude and both zeros
+    /// appear. NaN inputs are excluded: which operand's NaN payload survives `NaN op NaN`
+    /// is a host CPU matter, so a NaN input could make the oracle disagree with itself.
+    let private genFloat32NotNaN : Gen<float32> =
+        Gen.choose (System.Int32.MinValue, System.Int32.MaxValue)
+        |> Gen.map System.BitConverter.Int32BitsToSingle
+        |> Gen.filter (fun f -> not (System.Single.IsNaN f))
+
+    let private genFloat64NotNaN : Gen<float> =
+        Gen.choose (System.Int32.MinValue, System.Int32.MaxValue)
+        |> Gen.two
+        |> Gen.map (fun (hi, lo) -> (int64 hi <<< 32) ||| int64 (uint32 lo) |> System.BitConverter.Int64BitsToDouble)
+        |> Gen.filter (fun f -> not (System.Double.IsNaN f))
+
+    let private single (f : float32) : EvalStackValue =
+        EvalStackValue.Float (EvalStackFloat.Single f)
+
+    let private double (f : float) : EvalStackValue =
+        EvalStackValue.Float (EvalStackFloat.Double f)
+
+    let private singleBits (operation : string) (value : EvalStackValue) : int32 =
+        match value with
+        | EvalStackValue.Float (EvalStackFloat.Single f) -> System.BitConverter.SingleToInt32Bits f
+        | other -> failwith $"%s{operation}: expected a single-precision result, got %O{other}"
+
+    let private doubleBits (operation : string) (value : EvalStackValue) : int64 =
+        match value with
+        | EvalStackValue.Float (EvalStackFloat.Double f) -> System.BitConverter.DoubleToInt64Bits f
+        | other -> failwith $"%s{operation}: expected a double-precision result, got %O{other}"
+
+    [<Test>]
+    let ``chained float32 arithmetic rounds to float32 after every operation`` () : unit =
+        // The oracle is the host's own float32 arithmetic, which CoreCLR's JIT evaluates in
+        // single precision. Each check chains two operations without a store in between, so
+        // an interpreter that widened the first result to double would be caught (a single
+        // operation cannot tell: double rounding is innocuous for + - * / on its own).
+        let property (a : float32, b : float32, c : float32) : unit =
+            let state = state ()
+
+            let mulThenAdd =
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (execute ArithmeticOperation.mul state (single a) (single b))
+                    (single c)
+
+            singleBits "a * b + c" mulThenAdd
+            |> shouldEqual (System.BitConverter.SingleToInt32Bits (a * b + c))
+
+            let subThenSub =
+                execute
+                    ArithmeticOperation.sub
+                    state
+                    (execute ArithmeticOperation.sub state (single a) (single b))
+                    (single c)
+
+            singleBits "a - b - c" subThenSub
+            |> shouldEqual (System.BitConverter.SingleToInt32Bits (a - b - c))
+
+            let divThenDiv =
+                executeFaultingOk
+                    ArithmeticOperation.div
+                    state
+                    (executeFaultingOk ArithmeticOperation.div state (single a) (single b))
+                    (single c)
+
+            singleBits "a / b / c" divThenDiv
+            |> shouldEqual (System.BitConverter.SingleToInt32Bits (a / b / c))
+
+            let remThenAdd =
+                execute
+                    ArithmeticOperation.add
+                    state
+                    (executeFaultingOk ArithmeticOperation.rem state (single a) (single b))
+                    (single c)
+
+            singleBits "a % b + c" remThenAdd
+            |> shouldEqual (System.BitConverter.SingleToInt32Bits (a % b + c))
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.three genFloat32NotNaN)) property)
+
+    [<Test>]
+    let ``the chained add that separates single from double intermediates`` () : unit =
+        // 16777217 is not a float32. `16777216f + 1f` rounds to 16777216f, so adding another
+        // 1f rounds to 16777216f again; a double intermediate would hold 16777217 exactly and
+        // round the final 16777218 into the float32 store.
+        let state = state ()
+
+        let sum =
+            execute
+                ArithmeticOperation.add
+                state
+                (execute ArithmeticOperation.add state (single 16777216f) (single 1f))
+                (single 1f)
+
+        singleBits "16777216f + 1f + 1f" sum
+        |> shouldEqual (System.BitConverter.SingleToInt32Bits 16777216f)
+
+    [<Test>]
+    let ``a float32 operand against a double operand is computed in double`` () : unit =
+        // CoreCLR's importer widens the float32 side of a mixed pair before the operation,
+        // so the result is a double and the float32 contributes its exact value.
+        let property (a : float32, d : float) : unit =
+            let state = state ()
+
+            doubleBits "single + double" (execute ArithmeticOperation.add state (single a) (double d))
+            |> shouldEqual (System.BitConverter.DoubleToInt64Bits (float a + d))
+
+            doubleBits "double * single" (execute ArithmeticOperation.mul state (double d) (single a))
+            |> shouldEqual (System.BitConverter.DoubleToInt64Bits (d * float a))
+
+            doubleBits "double - double" (execute ArithmeticOperation.sub state (double d) (double (float a)))
+            |> shouldEqual (System.BitConverter.DoubleToInt64Bits (d - float a))
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen (Gen.zip genFloat32NotNaN genFloat64NotNaN)) property)

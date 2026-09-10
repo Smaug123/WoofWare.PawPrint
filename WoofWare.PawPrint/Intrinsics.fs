@@ -41,7 +41,7 @@ module Intrinsics =
         // `impImplicitR4orR8Cast` converts only between R4 and R8.
         | EvalStackValue.Float f ->
             failwith
-                $"%s{operation}: refusing to coerce float %f{f} into the int32 value argument; the CLI coerces integers at a call boundary, not floats"
+                $"%s{operation}: refusing to coerce float %O{f} into the int32 value argument; the CLI coerces integers at a call boundary, not floats"
         | _ ->
             match EvalStackValue.tryExactIntegerBits value with
             | ValueSome bits -> int32 bits
@@ -1131,7 +1131,7 @@ module Intrinsics =
             let result =
                 match arg with
                 | EvalStackValue.Float f ->
-                    BitConverter.SingleToInt32Bits (float32<float> f)
+                    BitConverter.SingleToInt32Bits (EvalStackFloat.toSingle f)
                     |> Int32Source.Verbatim
                     |> EvalStackValue.Int32
                 | _ -> failwith "TODO"
@@ -1169,7 +1169,7 @@ module Intrinsics =
 
             let arg =
                 match arg with
-                | EvalStackValue.Float i -> i
+                | EvalStackValue.Float i -> EvalStackFloat.toDouble i
                 | _ -> failwith $"TODO: BitConverter.DoubleToUInt64Bits of a non-float argument: %O{arg}"
 
             let result =
@@ -1232,7 +1232,9 @@ module Intrinsics =
             let result =
                 match arg with
                 | EvalStackValue.Float f ->
-                    BitConverter.DoubleToInt64Bits f |> Int64Source.Verbatim |> EvalStackValue.Int64
+                    BitConverter.DoubleToInt64Bits (EvalStackFloat.toDouble f)
+                    |> Int64Source.Verbatim
+                    |> EvalStackValue.Int64
                 | _ -> failwith "TODO"
 
             state
@@ -1250,7 +1252,7 @@ module Intrinsics =
             let result =
                 match arg with
                 | EvalStackValue.Float f ->
-                    BitConverter.SingleToUInt32Bits (float32<float> f)
+                    BitConverter.SingleToUInt32Bits (EvalStackFloat.toSingle f)
                     |> int<uint32>
                     |> Int32Source.Verbatim
                     |> EvalStackValue.Int32
@@ -1272,7 +1274,7 @@ module Intrinsics =
                 match arg with
                 | EvalStackValue.Int32 (Int32Source.Verbatim f) ->
                     BitConverter.UInt32BitsToSingle (uint32<int> f)
-                    |> float<float32>
+                    |> EvalStackFloat.Single
                     |> EvalStackValue.Float
                 | _ -> failwith "TODO"
 
@@ -1441,7 +1443,7 @@ module Intrinsics =
 
             let asFloat (name : string) (value : EvalStackValue) : float =
                 match value with
-                | EvalStackValue.Float f -> f
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
                 | _ -> failwith $"Math.Pow: unexpected eval stack value for %s{name}: %O{value}"
 
             let result =
@@ -1473,7 +1475,7 @@ module Intrinsics =
 
             let argument =
                 match argument with
-                | EvalStackValue.Float f -> f
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
                 | _ -> failwith $"Math.Cos: unexpected eval stack value: %O{argument}"
 
             let result = DeterministicMath.cos argument
@@ -1504,7 +1506,7 @@ module Intrinsics =
 
             let argument =
                 match argument with
-                | EvalStackValue.Float f -> f
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
                 | _ -> failwith $"Math.Sin: unexpected eval stack value: %O{argument}"
 
             let result = DeterministicMath.sin argument
@@ -1542,7 +1544,7 @@ module Intrinsics =
 
             let argument =
                 match argument with
-                | EvalStackValue.Float f -> f
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
                 | _ -> failwith $"Math.Sqrt: unexpected eval stack value: %O{argument}"
 
             let result = DeterministicMath.sqrt argument
@@ -1578,7 +1580,7 @@ module Intrinsics =
 
             let argument =
                 match argument with
-                | EvalStackValue.Float f -> f
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
                 | _ -> failwith $"Math.Ceiling: unexpected eval stack value: %O{argument}"
 
             let result = DeterministicMath.ceiling argument
@@ -1623,7 +1625,7 @@ module Intrinsics =
 
             let argument =
                 match argument with
-                | EvalStackValue.Float f -> f
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
                 | _ -> failwith $"Math.Round: unexpected eval stack value: %O{argument}"
 
             let result = DeterministicMath.round argument
@@ -1667,7 +1669,7 @@ module Intrinsics =
 
             let argument =
                 match argument with
-                | EvalStackValue.Float f -> f
+                | EvalStackValue.Float f -> EvalStackFloat.toDouble f
                 | _ -> failwith $"Math.Truncate: unexpected eval stack value: %O{argument}"
 
             let result = DeterministicMath.truncate argument
