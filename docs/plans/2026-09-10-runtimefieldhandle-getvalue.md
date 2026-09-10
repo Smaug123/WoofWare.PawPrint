@@ -123,5 +123,26 @@ side's fixture exists — no guest can see it under `IsFastPathSupported = false
 for a lazy initialiser leaves both the result slot and the out-cell untouched; one test per refusal
 arm. The fixture helpers are shared with the SetValue fixture rather than copied.
 
-Mutations, each against the Guest fixtures matching `Name~ReflectionField` plus the two unit
-fixtures, recorded in the Outcome section once run.
+## Outcome
+
+The guest passed under PawPrint on the handler's first run. One shape moved out of it: `GetField`
+on a closed generic type that declares a *static* field never reaches this QCall, because
+`RuntimeType.PopulateRtFields` (RuntimeType.CoreCLR.cs:916) calls the InternalCall
+`RuntimeFieldHandle.GetStaticFieldForGenericType` for every static field of such a type before any
+read. That is a separate primitive, so `sourcesPure/ReflectionFieldGetValueGenericStatic.cs`
+records the shape and is parked on the measured message.
+
+`TypeMakeByRefType.cs` gained the two checks its comment had recorded as unobservable: the
+`TypeLoadException`'s `_resourceId` (6063) and `_messageArg` (null), read through reflection.
+
+Mutants, each run against the two unit fixtures (`Name~TestNativeRuntimeFieldHandle`) and the
+Guest fixtures matching `Name~ReflectionField`, with the tree restored and rebuilt afterwards:
+
+| mutant | outcome | died at |
+| --- | --- | --- |
+| m1: out-cell always written as 0 | killed | both fixtures' "reports the declaring class as initialised" tests |
+| m2: out-cell written even when the caller passed `true` | killed | both fixtures' "leaves the out-cell alone" tests (recomputed 0 for a type never entered in `TypeInitTable`) |
+| m3: box through `boxValueType`, skipping the `Nullable<T>` rule | killed | guest, at the `Nullable<int>` field: `boxValueType` refuses a `Nullable`1` handle |
+| m4: static reads answer the field's zero, ignoring stored storage | killed | guest check 28, the precise-init static (0 instead of 7) |
+| m5: reference/value-type split inverted | killed | unit fixture (an `int` cell reported as a reference-typed field's) and guest |
+| m6: class-init suspension swallowed, read proceeds | killed | both fixtures' "suspends" tests, and guest check 28 (read before the initialiser ran) |
