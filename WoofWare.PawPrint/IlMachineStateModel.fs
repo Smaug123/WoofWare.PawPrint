@@ -39,6 +39,29 @@ type ResolvedMemberReference =
         TargetTypeGenerics : ImmutableArray<TypeDefn>
     }
 
+/// What `IlMachineState` memoises a method concretisation under: the definition, and the
+/// concrete generic arguments it is instantiated at.
+type ConcreteMethodKey =
+    {
+        /// Identity of the definition that declares the method.
+        DeclaringType : ResolvedTypeIdentity
+        /// Which method of that definition: its MethodDef row and its synthesised kind, one of
+        /// which is set, exactly as `MethodInfo.IdentityKey` pairs them.
+        MethodRow : int option
+        Synthesised : SynthesisedMethod option
+        /// The declaring type's generic arguments.
+        TypeGenerics : ConcreteTypeHandle list
+        /// The method's own generic arguments.
+        MethodGenerics : ConcreteTypeHandle list
+    }
+
+/// `ExecutionConcretization.concretizeMethodWithAllGenerics`'s answer for a `ConcreteMethodKey`.
+type ConcretisedMethod =
+    {
+        Method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        DeclaringTypeHandle : ConcreteTypeHandle
+    }
+
 type IlMachineState =
     {
         ConcreteTypes : AllConcreteTypes
@@ -125,6 +148,32 @@ type IlMachineState =
         ///
         /// Add through `WithMemberResolution`, never by assignment.
         _MemberResolutions : Map<MemberResolutionKey, ResolvedMemberReference>
+        /// Memo of `ExecutionConcretization.concretizeMethodWithAllGenerics`, keyed on the
+        /// definition and the concrete generic arguments.
+        ///
+        /// Every call concretises its callee otherwise: concretising the declaring type, the
+        /// signature, the locals and the method generics against the instantiation. Measured on
+        /// a `NonBacktracking` regex construction: 1,021,532 frames over 1,268 distinct concrete
+        /// methods, with the concretisation 7% of everything the run allocated.
+        ///
+        /// A hit and a miss agree for the reason `_VirtualSlotTables` gives: the answer is a
+        /// function of the definition's metadata and the handles, a miss's side effects on the
+        /// state (assemblies loaded, concrete types registered) are idempotent and persist, so a
+        /// hit that skips them changes nothing, and nothing invalidates an entry.
+        ///
+        /// Add through `WithConcretisedMethod`, never by assignment.
+        _ConcretisedMethods : Map<ConcreteMethodKey, ConcretisedMethod>
+        /// Memo of `IlMachineTypeResolution.cliTypeZeroOfHandle`: the zero value of each
+        /// concrete type, which is what every parameter, local, `initobj` and `newarr` cell of
+        /// that type starts as. A value type's zero is built by walking its fields, and the walk
+        /// ran again for every call's parameters and every allocation.
+        ///
+        /// Sound for the same reason as `_ConcretisedMethods`: the zero is a function of the
+        /// type's layout, which is fixed once the handle exists, and the handles the walk mints
+        /// for field types persist from the miss that minted them.
+        ///
+        /// Add through `WithZeroValue`, never by assignment.
+        _ZeroValues : Map<ConcreteTypeHandle, CliType>
         /// The definition identity of the assembly whose entry point this run was started from:
         /// CoreCLR's "root assembly" for the AppDomain, which is what `Assembly.GetEntryAssembly`
         /// reports. Recorded at `IlMachineState.initial` rather than derived, because neither
@@ -296,6 +345,16 @@ type IlMachineState =
     member this.WithMemberResolution (key : MemberResolutionKey) (resolved : ResolvedMemberReference) =
         { this with
             _MemberResolutions = this._MemberResolutions |> Map.add key resolved
+        }
+
+    member this.WithConcretisedMethod (key : ConcreteMethodKey) (concretised : ConcretisedMethod) =
+        { this with
+            _ConcretisedMethods = this._ConcretisedMethods |> Map.add key concretised
+        }
+
+    member this.WithZeroValue (handle : ConcreteTypeHandle) (zero : CliType) =
+        { this with
+            _ZeroValues = this._ZeroValues |> Map.add handle zero
         }
 
     member this.WithLoadedAssembly (value : DumpedAssembly) =
