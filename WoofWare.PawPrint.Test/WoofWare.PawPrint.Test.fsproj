@@ -139,6 +139,8 @@
     <Compile Include="TestSignatureComparison.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
+    <Compile Include="NativeRuntimeFieldHandleFixture.fs" />
+    <Compile Include="TestNativeRuntimeFieldHandleGetValue.fs" />
     <Compile Include="TestNativeRuntimeFieldHandleSetValue.fs" />
     <Compile Include="TestManifestResources.fs" />
     <Compile Include="TestAssemblyNativeQCalls.fs" />
