@@ -259,8 +259,8 @@ module TestUnaryConstIlOp =
             { state with
                 ThreadState = Map.empty |> Map.add thread (ThreadState.New methodState)
             }
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value1) thread
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float value2) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float (EvalStackFloat.Double value1)) thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float (EvalStackFloat.Double value2)) thread
 
         let state, whatWeDid = UnaryConstIlOp.execute baseClassTypes state thread op
 
