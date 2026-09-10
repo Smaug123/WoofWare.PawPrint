@@ -263,7 +263,7 @@ module DeterministicMath =
     /// produces the negative quiet NaN (which is what `Double.NaN` is), Arm the positive
     /// one — so a host-independent runtime has to pick. This is IEEE 754's own
     /// recommendation, and the one Arm produces.
-    let private quietNaN : float = BitConverter.UInt64BitsToDouble 0x7FF8000000000000UL
+    let quietNaN : float = BitConverter.UInt64BitsToDouble 0x7FF8000000000000UL
 
     /// A NaN operand may not be handed back unchanged: IEEE 754 requires an operation given a
     /// *signaling* NaN to raise the invalid-operation exception and deliver a quiet one, so
@@ -272,8 +272,25 @@ module DeterministicMath =
     /// for a freshly generated NaN it does not vary between platforms, so matching it costs
     /// nothing in determinism. Setting the quiet bit cannot turn a NaN into an infinity: the
     /// remaining payload bits are what made it a NaN, and they are untouched.
-    let private quieted (x : float) : float =
+    let quieted (x : float) : float =
         BitConverter.UInt64BitsToDouble (BitConverter.DoubleToUInt64Bits x ||| 0x0008000000000000UL)
+
+    /// The NaN a binary float opcode (`add`, `sub`, `mul`, `div`, `rem`) delivers, made
+    /// independent of the host CPU that computed `result`.
+    ///
+    /// A NaN operand is propagated with its sign and payload, quieted; every platform does
+    /// that for a lone NaN operand. When both operands are NaN the first is chosen, which is
+    /// what x64 hardware does for the operand order the IL states, and arm64 unless only the
+    /// second is signalling; the JIT's freedom to commute the operands is what makes the real
+    /// runtime's answer unspecified there. A NaN made from non-NaN operands (`0 / 0`,
+    /// `inf - inf`, `0 * inf`, `x % 0`, `inf % x`) is `quietNaN`: x64 would deliver the
+    /// negative one and arm64 the positive, so a recorded run would otherwise replay
+    /// differently across hosts. A result that is not NaN is returned as it is.
+    let binaryOpcodeNaN (a : float) (b : float) (result : float) : float =
+        if not (Double.IsNaN result) then result
+        elif Double.IsNaN a then quieted a
+        elif Double.IsNaN b then quieted b
+        else quietNaN
 
     /// A NaN whose leading significand bit is clear: IEEE 754's *signaling* NaN, the one an
     /// operation must not silently swallow.

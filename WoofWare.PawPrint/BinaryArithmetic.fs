@@ -1382,7 +1382,12 @@ module BinaryArithmetic =
             failwith "" |> EvalStackValue.ObjectRef |> withState
         | EvalStackValue.NativeInt _, EvalStackValue.NullObjectRef -> failwith ""
         | EvalStackValue.Float val1, EvalStackValue.Float val2 ->
-            op.FloatFloat val1 val2 |> EvalStackValue.Float |> withState
+            // The host CPU computes the operation; the payload of a NaN result is then
+            // PawPrint's choice rather than the CPU's, see `DeterministicMath.binaryOpcodeNaN`.
+            op.FloatFloat val1 val2
+            |> DeterministicMath.binaryOpcodeNaN val1 val2
+            |> EvalStackValue.Float
+            |> withState
         | EvalStackValue.ManagedPointer val1, EvalStackValue.NativeInt (NativeIntSource.ManagedPointer val2) ->
             match op.ManagedPtrManagedPtr baseClassTypes state val1 val2 with
             | Choice1Of2 result -> EvalStackValue.ManagedPointer result |> withState

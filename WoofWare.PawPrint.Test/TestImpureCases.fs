@@ -760,6 +760,19 @@ module TestImpureCases =
             currentDirectoryCase longCurrentDirectory
             currentDirectoryCase multiByteCurrentDirectory
             {
+                // PawPrint's contract for the NaN a float opcode makes from non-NaN operands,
+                // and for which of two NaN operands it propagates. Impure because the real
+                // runtime's answer is the host CPU's: x64 delivers the negative quiet NaN
+                // where PawPrint fixes the positive one, so an x64 oracle would disagree.
+                FileName = "NaNGeneratedPayloadCanonical.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Pins the PawPrint-side contract of `ExceptionNative_GetFrozenStackTrace`.
                 // Impure because the claim is about interpreter state (the token and the frame
                 // table behind it), which the real runtime has no analogue of — its equivalent
