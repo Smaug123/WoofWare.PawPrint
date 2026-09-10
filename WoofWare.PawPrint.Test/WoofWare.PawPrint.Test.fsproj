@@ -24,6 +24,7 @@
     <Compile Include="TestTypeDefnRendering.fs" />
     <Compile Include="TestArrayShapeGuard.fs" />
     <Compile Include="TestMemberResolutionMemo.fs" />
+    <Compile Include="TestFrameSetupMemo.fs" />
     <Compile Include="TestPersistentVector.fs" />
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
