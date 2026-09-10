@@ -217,7 +217,36 @@ fact — "the framework under test" — resolved in one place and consulted by:
 * Roslyn's metadata references (guests compile against the selected framework's assemblies);
 * `GuestConfig.DotnetRuntimeDirs` (the interpreter loads the same assemblies);
 * the `RealRuntime` oracle (the guest's generated `runtimeconfig.json` requests the selected
-  version; the combined muxer resolves it).
+  version; the combined muxer resolves it);
+* `TestFSharpPureCases`' publish. This path bypasses all three of the above: `publishOnce`
+  publishes `--self-contained`, the interpreter's search list starts with the publish
+  directory, and the oracle runs the bundled apphost. It needs one publish per supported
+  version — selected TFM, pinned runtime version, separate output directories — after which
+  interpreter and oracle both follow the publish with no further selection;
+* the fixtures that read `typeof<obj>.Assembly.Location` to obtain a CoreLib image for
+  PawPrint's own reader. Those are parsing whatever the *test host* runs on; under selection
+  they should read the selected framework's CoreLib from disk instead.
+
+### In-process host oracles cannot be selected
+
+A separate class of fixture compares PawPrint against the host CLR *in process* —
+`TestVirtualMethodSlots` reflects onto the host's own `RuntimeMethodHandle.GetSlot`, and
+`TestPosixSignalPal` P/Invokes the host's `libSystem.Native` — and no environment variable
+can change what those answer: they speak for the framework the test executable itself runs
+on, which after stage 6 is the newest supported version. On the leg whose selected version is
+not the host's, each such fixture must do one of three things, chosen per fixture when the
+census (a stage-6 task: sweep the test project for `DllImport` and host-reflection oracles)
+classifies it:
+
+* assert only facts that hold across the supported majors (the differential-tests-assert-only-
+  cross-runtime-facts discipline, applied across versions rather than flavours);
+* run only on the leg whose version matches the host, ignoring itself elsewhere;
+* move the oracle out of process, launched on the selected framework through the combined
+  muxer — the `RealRuntime` shape.
+
+Whichever is chosen, the model side of the comparison must use the versioned rows for the
+version the oracle actually answers for — pairing net10 table rows with a net11 host answer
+is precisely the mismatch the spike measured for `GetPlatformSignalNumber`.
 
 The selection mechanism follows the existing flavour precedent: an environment variable naming
 the framework directory, defaulting to the host's own when unset so a non-Nix checkout still
@@ -231,7 +260,7 @@ would break the differential claim. One compilation per (guest, version), both c
 each image identical — the existing one-image-both-runtimes discipline, now indexed by
 version.
 
-### The unimplemented set becomes version-aware
+### Parking becomes version-aware, in both suite halves
 
 `TestPureCases.unimplemented` is a set of file names. Under two versions, a guest can pass on
 net10 and be blocked on net11 (everything in the table above starts out that way), so parking
@@ -239,6 +268,14 @@ must record *which versions* a case is parked for. Smallest sufficient change: t
 a list of (file, parked-on-versions) with today's entries parked everywhere, and the fixture
 consults the active version. The parking comments' discipline (why parked, un-park condition,
 verified-on-real-.NET) carries over unchanged per version.
+
+That set only reaches the Guest fixtures. A *non-guest* fixture blocked on one version — the
+flavour sentinel in `TestLinuxCoreLibFlavour` is the known instance, and the host-oracle
+census above may find more — is parked with a per-version `Assert.Ignore`, the mechanism the
+flavour tests already use when `DOTNET_LINUX_FRAMEWORK_DIR` is unset, carrying the same
+why/un-park-when comment discipline. Without this, a net11 leg cannot come up green at all:
+the default suite is a per-version signal too, and excluding it (rather than parking within
+it) would hide exactly what we want measured.
 
 ### CI
 
@@ -283,15 +320,21 @@ mutation-testing skill applies to each table/classifier they introduce.
    `check-move-is-rename-only`-style diff discipline applies); versioned PAL rows where the
    spike measured changes. All rows still net10-only in effect.
 6. **The flake and CI grow the net11 pin set** (preview or RC, whichever nixpkgs then
-   carries), the combined devshell, the framework-under-test selection, and the version-aware
-   unimplemented set with every net11-blocked guest parked. The net11 legs come up red-free
-   because everything not yet implemented is parked, and the four-arg `Setup` arm plus the
-   stage-4/5 net11 rows land here against a real image. TFMs of the executable projects move
-   to the newest supported framework; the published libraries stay `net8.0`.
+   carries), the combined devshell, the framework-under-test selection (including the
+   per-version `TestFSharpPureCases` publish), and version-aware parking in both suite
+   halves: every net11-blocked guest parked in the versioned `unimplemented` set, every
+   net11-blocked non-guest fixture parked with a per-version `Assert.Ignore` — the flavour
+   sentinel among them if its replacement has not landed first. This stage also runs the
+   host-oracle census and classifies each in-process oracle fixture, since this is the stage
+   at which the test host's own framework stops matching the older leg. The net11 legs come
+   up green because everything not yet implemented is *parked, visibly*, and the four-arg
+   `Setup` arm plus the stage-4/5 net11 rows land here against a real image. TFMs of the
+   executable projects move to the newest supported framework; the published libraries stay
+   `net8.0`.
 7. **Walk the net11 blockers one at a time** — thin-lock addressing, the thread-static seed,
-   the new QCalls, the vtable slots, the flavour sentinel — each PR un-parking its guests on
-   the net11 leg, exactly the incremental discipline `AGENTS.md` already prescribes for
-   frontier work.
+   the new QCalls, the vtable slots, the flavour sentinel — each PR un-parking its cases
+   (guest or non-guest) on the net11 leg, exactly the incremental discipline `AGENTS.md`
+   already prescribes for frontier work.
 8. **When the window moves** (net12 preview lands in nixpkgs): add its pin set and rows;
    retire net10's in one cleanup PR.
 
