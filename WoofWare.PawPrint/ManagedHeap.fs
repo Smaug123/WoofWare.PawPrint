@@ -502,7 +502,7 @@ module ManagedHeap =
                                 $"TODO: raise IndexOutOfRangeException: array index %d{offset} >= length %d{arr.Shape.Length} on array at %O{alloc}"
 
                         { arr with
-                            Elements = arr.Elements.SetItem (offset, v)
+                            Elements = PersistentVector.set offset v arr.Elements
                         }
                         |> Some
                 )

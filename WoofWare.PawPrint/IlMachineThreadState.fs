@@ -640,8 +640,7 @@ module IlMachineThreadState =
                 $"allocateArray: length %d{len} violates the precondition that it %s{SzArrayAllocation.describe err}. A guest-supplied length must be classified with SzArrayAllocation.checkLength at the boundary and turned into a guest exception there; reaching here means a caller skipped that."
         | None -> ()
 
-        let initialisation =
-            (fun _ -> zeroOfType ()) |> Seq.init len |> ImmutableArray.CreateRange
+        let initialisation = PersistentVector.init len (fun _ -> zeroOfType ())
 
         // The element zero defines both the stride and the cell shape, so it is taken from
         // the factory rather than sampled off a cell: an empty array has no cell to sample
@@ -698,8 +697,7 @@ module IlMachineThreadState =
                     $"allocateMultiDimArray: %s{MultiDimArrayAllocation.describe err}, violating the precondition that CoreCLR would allocate these dimensions. Guest-supplied lengths must be classified with MultiDimArrayAllocation.totalElements at the boundary and turned into a guest exception there; reaching here means a caller skipped that."
             | Ok totalLength -> totalLength
 
-        let initialisation =
-            (fun _ -> zeroOfType ()) |> Seq.init totalLength |> ImmutableArray.CreateRange
+        let initialisation = PersistentVector.init totalLength (fun _ -> zeroOfType ())
 
         // See `allocateArray`: the element zero comes from the factory, not from a cell.
         let elementZero = zeroOfType ()
