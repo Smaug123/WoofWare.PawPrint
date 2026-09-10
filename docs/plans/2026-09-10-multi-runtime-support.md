@@ -64,10 +64,17 @@ neither structure does. The mitigation is the machinery this repo already runs:
 * the pins (`expectedRuntimeVersion`, `dotnet-runtime-src`, the `runtime-version-pin` flake
   check, the `TestEmulatedRuntime` drift test), kept per supported version, catch skew between
   what we claim to emulate and what the devshell actually runs;
-* an *unknown* CoreLib version is refused loudly at load, never approximated. "Supported"
-  means pinned, drift-checked, and CI-run — nothing else. This is the correctness-over-
-  availability rule: we can state the guarantee for a pinned version and cannot for an
-  unpinned one, so an unpinned one does not run.
+* refusal operates at two granularities, and the guarantee must be stated at both. An
+  unsupported *major* is refused at CoreLib resolution, naming the majors supported. Within
+  a supported major, any servicing or preview build is admitted: within-major internal
+  stability is the design's premise, and demanding the exact pinned build at the door would
+  make the shipped package unusable on any machine whose servicing release differs from
+  ours, for no gain. Exactness is instead enforced where a servicing build could actually
+  hurt: the shape classifiers refuse an unrecognised `Setup` signature or stub layout at the
+  point of use, naming what was found, so a build that silently changed an internal shape
+  stops loudly instead of running wrong. What "supported" *additionally* promises — pinned,
+  drift-checked, CI-run — is a claim about which build our validation was measured against,
+  not a load-time admission check.
 
 ## Design
 
@@ -105,15 +112,25 @@ Two placements were considered:
   everything else in that record) and already threaded everywhere — but `BaseClassTypes` lives
   in `WoofWare.PawPrint.Domain`, a published package, and `EmulatedRuntime` is a main-library
   concept. Moving it down or widening Domain's API for this is avoidable churn.
-* **A field on `IlMachineState`, set by `IlMachineState.initial`. Chosen.** `initial` already
-  takes the corelib, so the version is discoverable exactly there; `NativeCallContext` already
-  carries `State`, so every native handler can see it; the intrinsic gate and
-  `AppContextSeed.prepareCall` already have the state in hand. No published API changes.
+* **A field on `IlMachineState`, established when CoreLib resolves. Chosen.**
+  `NativeCallContext` already carries `State`, so every native handler can see it; the
+  intrinsic gate and `AppContextSeed.prepareCall` already have the state in hand. No
+  published API changes.
 
-`initial` reads the loaded CoreLib's `AssemblyVersion`, looks the major up in the allowlist,
-and stores the matched `EmulatedRuntime`. No match is a loud refusal naming the version found
-and the versions supported. The drift test stops comparing against a constant and instead
-asserts that the *loaded* runtime's servicing version matches the pin for its major.
+The establishment point is CoreLib *resolution*, not state construction:
+`IlMachineState.initial` takes the entry assembly, and CoreLib is resolved afterwards during
+`Program.beginStartup` — the same point that produces `BaseClassTypes`. The field is set
+exactly once, there, from the resolved CoreLib's `AssemblyVersion`; an unsupported major is
+refused at that moment, naming the major found and the majors supported. Every consumer of
+the field runs strictly after CoreLib resolution (no native call, intrinsic check, or host
+startup call happens without `BaseClassTypes` in hand), so a read before establishment is a
+PawPrint bug and fails loudly rather than being a reachable guest state. Whether the field is
+set-once or the state-construction API is reshaped to take the resolved CoreLib is stage 3's
+call; the contract is "established at resolution, refused on unsupported major, assigned
+once".
+
+The drift test stops comparing against a constant and instead asserts that the *loaded*
+runtime's servicing version matches the pin for its major.
 
 ### Two kinds of version-sensitive fact, two mechanisms
 
@@ -269,7 +286,12 @@ a list of (file, parked-on-versions) with today's entries parked everywhere, and
 consults the active version. The parking comments' discipline (why parked, un-park condition,
 verified-on-real-.NET) carries over unchanged per version.
 
-That set only reaches the Guest fixtures. A *non-guest* fixture blocked on one version — the
+That set only reaches `TestPureCases`. All six guest-running fixtures (the `Guest`-category
+list in `AGENTS.md`) maintain their own case registrations, and the version dimension applies
+to each: `TestScheduleFork`, for instance, runs `InvertedMonitorDeadlock.cs`, whose `lock`
+statement is blocked on the stage-7 thin-lock work, so its cases need per-version parking
+exactly as `TestPureCases`' do — likewise `TestImpureCases`' explicit registrations and
+`TestFSharpPureCases`' own list. A *non-guest* fixture blocked on one version — the
 flavour sentinel in `TestLinuxCoreLibFlavour` is the known instance, and the host-oracle
 census above may find more — is parked with a per-version `Assert.Ignore`, the mechanism the
 flavour tests already use when `DOTNET_LINUX_FRAMEWORK_DIR` is unset, carrying the same
@@ -305,10 +327,10 @@ mutation-testing skill applies to each table/classifier they introduce.
    the package. Prerequisite for anything net11 touching a real runtime directory.
 2. **Fix the intrinsic-gate-versus-native-dispatch ordering on net10** (the
    `FastAllocateString` finding). Version-agnostic; testable today.
-3. **De-singleton `EmulatedRuntime`.** Delete `current`; `IlMachineState.initial` classifies
-   the loaded CoreLib's major against the allowlist (of one, at this stage) and stores the
-   match; unknown majors are refused with the supported set named. Drift test re-keys onto the
-   loaded runtime. `NativeDispatch`'s comment becomes code: the handler list is selected by
+3. **De-singleton `EmulatedRuntime`.** Delete `current`; CoreLib resolution in
+   `Program.beginStartup` classifies the resolved image's major against the allowlist (of
+   one, at this stage) and establishes the state's runtime field; unknown majors are refused
+   with the supported set named. Drift test re-keys onto the loaded runtime. `NativeDispatch`'s comment becomes code: the handler list is selected by
    the state's runtime, with one list to select from.
 4. **Shape classifications on net10.** `SetupShape` (three-arg arm live, four-arg arm refused
    as unrecognised until stage 6 adds it) and the `RuntimeFieldInfoStub` layout classifier
