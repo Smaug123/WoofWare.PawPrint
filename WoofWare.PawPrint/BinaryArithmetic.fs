@@ -361,18 +361,37 @@ module ArithmeticOperation =
             // function pointers, which have no view type that could honestly describe them —
             // where the stride is still well defined even though byte-granular access is not.
             let anchored =
-                match ManagedPointerByteView.anchorByteViewIfPlainArrayByref baseClassTypes state plain with
-                | ManagedPointerSource.Byref (_, []) ->
+                match ManagedPointerByteView.arrayElementHandle state arr with
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
+                    // The anchor declines these by design: no type can honestly describe a cell
+                    // holding pointer provenance. The stride is recorded on the array all the
+                    // same, so a `System.Byte` cursor moves the pointer correctly, and any
+                    // attempt to *read* through it refuses loudly at the access.
                     let byteType = byteConcreteType baseClassTypes state
                     ManagedPointerByteView.addByteOffset state byteType 0 plain
+                | _ ->
+
+                match ManagedPointerByteView.anchorByteViewIfPlainArrayByref baseClassTypes state plain with
+                | ManagedPointerSource.Byref (_, []) ->
+                    // Every other decline is a lookup that should have succeeded — a concrete
+                    // element type missing from `AllConcreteTypes`, or `System.Object` missing
+                    // when a jagged array needs it as the surrogate for its cells' shape.
+                    // Falling back to a byte view would paper over that; say so instead.
+                    failwith
+                        $"array %O{arr} has element handle %O{ManagedPointerByteView.arrayElementHandle state arr}, which should have a byte-view anchor, but none could be built"
                 | anchored -> anchored
 
             let advanced =
                 try
                     ManagedPointerByteView.addByteOffsetToByteView state v anchored
                 with :? System.OverflowException ->
-                    // The only arithmetic in there is this pointer's own, so an overflow can
-                    // mean nothing else.
+                    // The only arithmetic in there is this pointer's own cell index. `anchored`
+                    // never carries a `ByteOffset` — it was just built at offset zero — so the
+                    // int64 offset merge in `ManagedPointerSource.appendProjection`, which has
+                    // its own named failure, is not on this path. Should that stop holding, this
+                    // message would start claiming the wrong cause.
                     failwith
                         $"managed pointer arithmetic (array index) overflowed int32 offset model: element %d{index} of %O{arr} advanced by %d{v} bytes"
 

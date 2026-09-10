@@ -155,6 +155,11 @@ module TestBinaryArithmetic =
     let private cellViewPointer : ManagedHeapAddress -> int -> int -> EvalStackValue =
         byteViewPointerAs int32Type
 
+    let private pointerOf (actual : EvalStackValue) : ManagedPointerSource =
+        match actual with
+        | EvalStackValue.ManagedPointer ptr -> ptr
+        | other -> failwith $"expected a managed pointer, got %O{other}"
+
     let private expectArrayPointer
         (expectedArr : ManagedHeapAddress)
         (expectedIndex : int)
@@ -1420,8 +1425,9 @@ module TestBinaryArithmetic =
             // Stepping back the same number of bytes returns to the same address. It does not
             // always return the same *representation*: once a mid-cell step has made the byref a
             // byte cursor, coming back to a cell boundary leaves the cursor in place rather than
-            // recovering the bare element byref. The two denote one address, which the
-            // subtraction below shows.
+            // recovering the bare element byref. What must hold is what a guest can observe, so
+            // this asks `ceq` rather than pinning the representation — the same standard the
+            // whole-slot round trip below is held to.
             let backAgain =
                 execute
                     ArithmeticOperation.sub
@@ -1429,10 +1435,23 @@ module TestBinaryArithmetic =
                     afterFirst
                     (EvalStackValue.Int32 (Int32Source.Verbatim firstBytes))
 
-            if case.Residue = 0 then
-                backAgain |> shouldEqual ptr
-            else
-                backAgain |> shouldEqual (cellViewPointer arr case.Index 0)
+            let normalise (p : ManagedPointerSource) : NormalisedManagedPointerSource =
+                ManagedPointerSource.normaliseForComparison
+                    (ManagedPointerByteView.normalisationContextForPointer state p)
+                    p
+
+            let backPointer = pointerOf backAgain
+            let startPointer = pointerOf ptr
+
+            ManagedPointerSource.ceqNormalised "array byref round trip" (normalise backPointer) (normalise startPointer)
+            |> shouldEqual true
+
+            // And it really is back at the boundary rather than merely comparing equal under
+            // some looser rule: no byte offset survives.
+            match backPointer with
+            | ManagedPointerSource.Byref (_, [])
+            | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ]) -> ()
+            | other -> failwith $"expected the round trip to leave no byte offset behind, got %O{other}"
 
             // Subtracting the two byrefs reports the byte distance. Only the whole-cell case is
             // asked here: subtracting a bare element byref from a byte cursor over the same array

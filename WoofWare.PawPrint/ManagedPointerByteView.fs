@@ -2,8 +2,15 @@ namespace WoofWare.PawPrint
 
 [<RequireQualifiedAccess>]
 module ManagedPointerByteView =
-    let private arrayElementHandle : ArrayShape -> ConcreteTypeHandle =
+    let private arrayElementHandleOfShape : ArrayShape -> ConcreteTypeHandle =
         ArrayElementType.ofShape
+
+    /// The handle naming what the cells of `arr` hold. Callers that need to know *why*
+    /// `anchorByteViewIfPlainArrayByref` declined a byref can ask this: it declines exactly the
+    /// `Byref`, `Pointer` and `FunctionPointer` handles, for which no type can honestly describe
+    /// a cell, and every other decline is a lookup that should have succeeded.
+    let arrayElementHandle (state : IlMachineState) (arr : ManagedHeapAddress) : ConcreteTypeHandle =
+        arrayElementHandleOfShape (ManagedHeap.getArrayShape arr state.ManagedHeap)
 
     /// The byte stride between cells of the array at `arr`, recorded at
     /// allocation (`ArrayShape.ElementStride`).
@@ -20,7 +27,8 @@ module ManagedPointerByteView =
         (arr : ManagedHeapAddress)
         : ConcreteType<ConcreteTypeHandle> option
         =
-        let handle = arrayElementHandle (ManagedHeap.getArrayShape arr state.ManagedHeap)
+        let handle =
+            arrayElementHandleOfShape (ManagedHeap.getArrayShape arr state.ManagedHeap)
 
         AllConcreteTypes.lookup handle state.ConcreteTypes
 
@@ -81,7 +89,9 @@ module ManagedPointerByteView =
 
     /// Anchor a byte-view on a plain byref (array-element or string-char), naming the type that
     /// later reads and writes through the pointer should view its target as. Apply at the
-    /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`).
+    /// byref-to-native-pointer transition (`Conv_U`, `Conv_I`), and wherever else a plain byref
+    /// is about to become a byte cursor — `BinaryArithmetic`'s array arm does it too, so that the
+    /// cursor `add`/`sub` leaves behind names the same view type a `fixed` block would have.
     ///
     /// The anchor does not decide the *stride*. `add` and `sub` against a byref are byte
     /// arithmetic whether or not it carries one (ECMA-335 §III.1.5), and `BinaryArithmetic`
@@ -117,7 +127,8 @@ module ManagedPointerByteView =
 
         match ptr with
         | ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, _), []) ->
-            let handle = arrayElementHandle (ManagedHeap.getArrayShape arr state.ManagedHeap)
+            let handle =
+                arrayElementHandleOfShape (ManagedHeap.getArrayShape arr state.ManagedHeap)
 
             match handle with
             | ConcreteTypeHandle.Concrete _ ->
