@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -198,6 +199,18 @@ module IlMachineMemberResolution =
         =
         let executing = state.ThreadState.[currentThread].MethodState.ExecutingMethod
 
+        let key : MemberResolutionKey =
+            {
+                Assembly = assy.DefinitionFullName
+                MemberRow = MetadataTokens.GetRowNumber (MemberReferenceHandle.op_Implicit m : EntityHandle)
+                DeclaringTypeGenerics = List.ofSeq executing.DeclaringTypeGenerics
+                MethodGenerics = List.ofSeq executing.Generics
+            }
+
+        match Map.tryFind key state._MemberResolutions with
+        | Some resolved -> state, resolved.DeclaringAssembly, resolved.Member, resolved.TargetTypeGenerics
+        | None ->
+
         let toTypeDefn (handle : ConcreteTypeHandle) : TypeDefn =
             Concretization.concreteHandleToTypeDefn baseClassTypes handle state.ConcreteTypes state._LoadedAssemblies
 
@@ -209,4 +222,22 @@ module IlMachineMemberResolution =
         let methodGenerics =
             executing.Generics |> Seq.map toTypeDefn |> ImmutableArray.CreateRange
 
-        resolveMemberWithGenerics loggerFactory baseClassTypes currentThread assy typeGenerics methodGenerics m state
+        let state, declaringAssembly, member', targetTypeGenerics =
+            resolveMemberWithGenerics
+                loggerFactory
+                baseClassTypes
+                currentThread
+                assy
+                typeGenerics
+                methodGenerics
+                m
+                state
+
+        let resolved : ResolvedMemberReference =
+            {
+                DeclaringAssembly = declaringAssembly
+                Member = member'
+                TargetTypeGenerics = targetTypeGenerics
+            }
+
+        state.WithMemberResolution key resolved, declaringAssembly, member', targetTypeGenerics

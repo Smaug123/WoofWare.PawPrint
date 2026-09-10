@@ -8,6 +8,37 @@ open Microsoft.Extensions.Logging
 open Microsoft.FSharp.Core
 open WoofWare.PosixKernel
 
+/// What `IlMachineState` memoises a MemberRef resolution under: the row, and the generic
+/// context the frame reading it was executing in. Two frames of the same method body with
+/// different instantiations read the same row to different members, so the context is part of
+/// the key.
+type MemberResolutionKey =
+    {
+        /// Definition identity of the assembly whose MemberRef table holds the row.
+        Assembly : string
+        /// The MemberRef row number.
+        MemberRow : int
+        /// The executing method's declaring type's generic arguments.
+        DeclaringTypeGenerics : ConcreteTypeHandle list
+        /// The executing method's own generic arguments.
+        MethodGenerics : ConcreteTypeHandle list
+    }
+
+/// What a MemberRef row resolves to: `IlMachineMemberResolution.resolveMember`'s answer, kept
+/// so the row need not be resolved again on the next instruction that names it.
+type ResolvedMemberReference =
+    {
+        /// The assembly the member is declared in.
+        DeclaringAssembly : AssemblyName
+        Member :
+            Choice<
+                WoofWare.PawPrint.MethodInfo<TypeDefn, GenericParamFromMetadata, TypeDefn>,
+                WoofWare.PawPrint.FieldInfo<TypeDefn, TypeDefn>
+             >
+        /// The generic arguments of the type the row's parent named, as the row spells them.
+        TargetTypeGenerics : ImmutableArray<TypeDefn>
+    }
+
 type IlMachineState =
     {
         ConcreteTypes : AllConcreteTypes
@@ -77,6 +108,23 @@ type IlMachineState =
         /// Add through `WithVirtualSlotTable`, never by assignment: an entry that disagreed with the
         /// walk would be undetectable, every later read taking the memo's word for it.
         _VirtualSlotTables : Map<ResolvedTypeIdentity, DispatchTable>
+        /// Memo of `IlMachineMemberResolution.resolveMember`, keyed on the row and the generic
+        /// context it is read in.
+        ///
+        /// Every `ldfld`, `stfld`, `call` and `callvirt` whose token is a MemberRef resolves it
+        /// afresh otherwise, and resolving means rebuilding the parent type's `TypeInfo` under
+        /// the row's instantiation and comparing signatures against each same-named member.
+        /// Measured on a `NonBacktracking` regex construction: 675,675 resolutions over 1,141
+        /// distinct keys, 15% of everything the run allocated.
+        ///
+        /// A hit and a miss agree for the reason `_VirtualSlotTables` gives: the answer is a
+        /// function of metadata and of which assemblies are loaded, and a miss's side effects on
+        /// the state (assemblies bound, concrete types registered) are idempotent and persist,
+        /// so a hit that skips them changes nothing. Nothing invalidates an entry: no unloading,
+        /// no EnC.
+        ///
+        /// Add through `WithMemberResolution`, never by assignment.
+        _MemberResolutions : Map<MemberResolutionKey, ResolvedMemberReference>
         /// The definition identity of the assembly whose entry point this run was started from:
         /// CoreCLR's "root assembly" for the AppDomain, which is what `Assembly.GetEntryAssembly`
         /// reports. Recorded at `IlMachineState.initial` rather than derived, because neither
@@ -243,6 +291,11 @@ type IlMachineState =
     member this.WithVirtualSlotTable (definition : ResolvedTypeIdentity) (table : DispatchTable) =
         { this with
             _VirtualSlotTables = this._VirtualSlotTables |> Map.add definition table
+        }
+
+    member this.WithMemberResolution (key : MemberResolutionKey) (resolved : ResolvedMemberReference) =
+        { this with
+            _MemberResolutions = this._MemberResolutions |> Map.add key resolved
         }
 
     member this.WithLoadedAssembly (value : DumpedAssembly) =
