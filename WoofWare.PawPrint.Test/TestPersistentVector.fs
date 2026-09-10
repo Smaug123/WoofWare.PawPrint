@@ -233,6 +233,40 @@ module TestPersistentVector =
         if equalCases < 30 || unequalCases < 30 then
             failwith $"saw %d{equalCases} equal and %d{unequalCases} unequal pairs; the generator is not exploring both"
 
+    /// Equal hashes for unequal vectors are legal, so the structural test above cannot tell a
+    /// hash that reads the elements from one that reads only the length. This can: two
+    /// same-length vectors differing in one element hash apart in all but a negligible
+    /// fraction of cases.
+    [<Test>]
+    let ``Vectors that differ in one element almost always hash differently`` () =
+        let mutable pairs = 0
+        let mutable collisions = 0
+
+        let gen =
+            gen {
+                let! regime = Gen.elements [ Regime.Leaf ; Regime.OneBranch ; Regime.TwoBranch ]
+                let! length = lengthOf regime
+                let! source = Gen.arrayOfLength length (Gen.choose (-5, 5))
+                let! index = Gen.choose (0, length - 1)
+                let other = Array.copy source
+                // Outside the alphabet, so the pair is guaranteed unequal.
+                other.[index] <- 100
+                return source, other
+            }
+
+        let property (source : int[], other : int[]) : unit =
+            pairs <- pairs + 1
+
+            if (PersistentVector.ofArray source).GetHashCode () = (PersistentVector.ofArray other).GetHashCode () then
+                collisions <- collisions + 1
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen gen) property)
+
+        // `HashCode` mixes every element, so a collision is a 2^-32 event; a hash that ignored
+        // the elements would collide on every pair.
+        if collisions * 10 > pairs then
+            failwith $"%d{collisions} of %d{pairs} one-element-different pairs hashed alike"
+
     /// The reason the structure exists: a replacement copies one root-to-leaf path and shares
     /// every other node by reference. Observed through the internal node type, since the
     /// public API cannot distinguish sharing from copying.

@@ -86,9 +86,9 @@ module internal PersistentVectorNode =
 
 /// An immutable fixed-length vector with O(log32 n) element read and element replacement,
 /// where replacement shares all but the replaced element's root-to-leaf path with the
-/// original. That is what makes it the backing store for a guest array: `ImmutableArray`'s
-/// `SetItem` copies every cell, so a guest loop storing into a 65536-element array copied
-/// half a megabyte per store.
+/// original. That is what a guest array's backing store needs: the heap is a value, so every
+/// store into an array produces a new array, and a guest loop that stores into each cell of a
+/// 65536-element array must not pay for the whole array on each store.
 ///
 /// Equality and hashing are structural over the elements, in index order.
 [<Sealed>]
