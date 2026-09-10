@@ -146,3 +146,24 @@ Guest fixtures matching `Name~ReflectionField`, with the tree restored and rebui
 | m4: static reads answer the field's zero, ignoring stored storage | killed | guest check 28, the precise-init static (0 instead of 7) |
 | m5: reference/value-type split inverted | killed | unit fixture (an `int` cell reported as a reference-typed field's) and guest |
 | m6: class-init suspension swallowed, read proceeds | killed | both fixtures' "suspends" tests, and guest check 28 (read before the initialiser ran) |
+
+### Codex review: signalling-NaN bits through the box
+
+Codex observed that boxing a `float` cell goes `CliType.Float32` → `EvalStackValue.Float`
+(a float64) → `float32` again, so a signalling NaN payload would be quieted where CoreCLR's
+`CopyValueClass` copies bytes. Measured with a guest that stores `0x7f800001` through
+`BitConverter.Int32BitsToSingle` and reads the bits back four ways (direct field read, `ldfld`
++ `box`, `FieldInfo.GetValue` on the instance field, the same on a static):
+
+| runtime | direct | `box` | `GetValue` |
+| --- | --- | --- | --- |
+| real .NET 10, Debug build | `7f800001` | `7f800001` | `7f800001` |
+| real .NET 10, Release build | `7fc00001` | `7fc00001` | `7fc00001` |
+| PawPrint (arm64 host) | `7fc00001` | `7fc00001` | `7fc00001` |
+
+Two things follow. The quieting is a property of the eval stack's float representation and
+reaches every path a float32 takes, the plain `ldfld` included; the reflective read has exactly
+the `box` opcode's behaviour, which is what decision 1 chose, and giving it a bit-preserving path
+of its own would make the two routes to the same box disagree. And real .NET's own answer is
+build-dependent: with optimisation on, even the direct read comes back quieted. So the handler is
+unchanged, and the model-wide gap is filed as its own issue (#1437) rather than patched at one call site.
