@@ -369,11 +369,13 @@ module StackShapeOfMethod =
         false
 #endif
 
-    /// Check the frame about to execute an instruction against its body's stack shape,
-    /// computing the shape on the body's first execution, which is the moment CoreCLR would JIT
-    /// it. In a Debug build the runtime stack must have the analysis's depth for the instruction,
-    /// with a float in every slot the analysis says is one and in no other; an instruction the
-    /// analysis found invalid on every path stops the run rather than executing.
+    /// Apply the body's stack shape to the frame about to execute an instruction, computing the
+    /// shape on the body's first execution, which is the moment CoreCLR would JIT it. A float32
+    /// arriving in a slot the analysis promotes is widened to double, as CoreCLR's importer casts
+    /// it on arrival at a join it has typed as double. In a Debug build the runtime stack must
+    /// then have the analysis's depth for the instruction, with a float of the analysis's width
+    /// in every slot it says is a float and in no other; an instruction the analysis found
+    /// invalid on every path stops the run rather than executing.
     let beforeInstruction
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
@@ -437,28 +439,53 @@ module StackShapeOfMethod =
                         $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) is executing offset %d{frame.IlOpIndex}, which the analysis found unreachable"
         | Some expected ->
 
+        // The cast CoreCLR's importer inserts on a float32 predecessor of a slot it has typed as
+        // double: a `Single` arriving in a promoted slot becomes the same value as a `Double`.
+        let state =
+            match Map.tryFind frame.IlOpIndex shape.Promotions with
+            | None -> state
+            | Some slots ->
+                IlMachineState.mapFrame
+                    thread
+                    state.ThreadState.[thread].ActiveMethodState
+                    (fun frame ->
+                        let values =
+                            frame.EvaluationStack.Values
+                            |> List.mapi (fun slot value ->
+                                match value with
+                                | EvalStackValue.Float (EvalStackFloat.Single f) when List.contains slot slots ->
+                                    EvalStackValue.Float (EvalStackFloat.Double (float<float32> f))
+                                | other -> other
+                            )
+
+                        { frame with
+                            EvaluationStack =
+                                { frame.EvaluationStack with
+                                    Values = values
+                                }
+                        }
+                    )
+                    state
+
         if isDebugBuild then
-            let actual = frame.EvaluationStack.Values
+            let actual = state.ThreadState.[thread].MethodState.EvaluationStack.Values
 
             if List.length actual <> expected.Length then
                 failwith
                     $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) at offset %d{frame.IlOpIndex} has %d{List.length actual} value(s) on its evaluation stack, but the analysis expects %d{expected.Length} (%O{expected}); the stack is %O{actual}"
 
-            // The width of a float is not yet a fact the stack carries, so only its kind is
-            // checked: a float where the analysis says one, and nowhere else.
+            // A float of the analysis's width where it says a float, and no float anywhere else.
             List.zip actual expected
             |> List.iteri (fun slot (value, shape) ->
-                let isFloat =
-                    match value with
-                    | EvalStackValue.Float _ -> true
-                    | _ -> false
+                let agrees =
+                    match value, shape with
+                    | EvalStackValue.Float (EvalStackFloat.Single _), SlotShape.Float FloatWidth.Single
+                    | EvalStackValue.Float (EvalStackFloat.Double _), SlotShape.Float FloatWidth.Double -> true
+                    | EvalStackValue.Float _, _
+                    | _, SlotShape.Float _ -> false
+                    | _, SlotShape.Other -> true
 
-                let saysFloat =
-                    match shape with
-                    | SlotShape.Float _ -> true
-                    | SlotShape.Other -> false
-
-                if isFloat <> saysFloat then
+                if not agrees then
                     failwith
                         $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) at offset %d{frame.IlOpIndex} has %O{value} in slot %d{slot} from the top, but the analysis says %O{shape}; the stack is %O{actual}, expected %O{expected}"
             )
