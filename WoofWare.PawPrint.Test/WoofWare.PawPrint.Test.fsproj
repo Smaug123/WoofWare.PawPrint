@@ -23,6 +23,9 @@
     <Compile Include="TestIlDumpRendering.fs" />
     <Compile Include="TestTypeDefnRendering.fs" />
     <Compile Include="TestArrayShapeGuard.fs" />
+    <Compile Include="TestMemberResolutionMemo.fs" />
+    <Compile Include="TestFrameSetupMemo.fs" />
+    <Compile Include="TestPersistentVector.fs" />
     <Compile Include="TestFriendAssemblies.fs" />
     <Compile Include="TestAccessCheck.fs" />
     <Compile Include="TestFatalErrorCode.fs" />
@@ -138,6 +141,8 @@
     <Compile Include="TestSignatureComparison.fs" />
     <Compile Include="TestNativeSignature.fs" />
     <Compile Include="TestNativeCustomAttribute.fs" />
+    <Compile Include="NativeRuntimeFieldHandleFixture.fs" />
+    <Compile Include="TestNativeRuntimeFieldHandleGetValue.fs" />
     <Compile Include="TestNativeRuntimeFieldHandleSetValue.fs" />
     <Compile Include="TestManifestResources.fs" />
     <Compile Include="TestAssemblyNativeQCalls.fs" />
@@ -337,6 +342,6 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1"/>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0"/>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.6" />
-    <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.5.4"/>
+    <PackageReference Include="WoofWare.DotnetRuntimeLocator" Version="0.5.5"/>
   </ItemGroup>
 </Project>

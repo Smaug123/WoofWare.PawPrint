@@ -437,7 +437,7 @@ module NativeRuntimeAssembly =
                     // implemented. CoreCLR follows the AssemblyRef chain, as
                     // used by satellite/resource-carrier assemblies.
                     failwith
-                        $"TODO: %s{operation} does not support assembly-forwarded manifest resource %s{actualResourceName} in %s{assemblyFullName} forwarded to %s{assemblyReference.Name.FullName}"
+                        $"TODO: %s{operation} does not support assembly-forwarded manifest resource %s{actualResourceName} in %s{assemblyFullName} forwarded to %s{assemblyReference.FullName}"
 
             NativeHandlerResult.completed state |> Some
         | "AssemblyNative_GetCodeBase",
@@ -1549,7 +1549,7 @@ module NativeRuntimeAssembly =
                     // half is observable at all.
                     NativeHandlerResult.raiseExceptionWithMessage
                         ctx.BaseClassTypes.FileNotFoundException
-                        (Some $"Could not load file or assembly '%s{reference.Name.FullName}'.")
+                        (Some $"Could not load file or assembly '%s{reference.FullName}'.")
                         state
                     |> Some
                 | ForwarderMiss.BaseTypeAbsent typeMiss ->

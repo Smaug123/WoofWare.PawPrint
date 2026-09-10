@@ -79,10 +79,10 @@ module TestBinaryArithmetic =
         concreteTypeFor baseClassTypes.Int32
 
     let private allocatedIntArray (values : int list) : AllocatedArray =
-        let elements : ImmutableArray<CliType> =
+        let elements : PersistentVector<CliType> =
             values
             |> Seq.map (fun i -> CliType.Numeric (CliNumericType.Int32 i))
-            |> ImmutableArray.CreateRange
+            |> PersistentVector.ofSeq
 
         {
             Shape =
