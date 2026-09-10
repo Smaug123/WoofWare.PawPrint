@@ -142,6 +142,55 @@ Mutation, for (A): (m1) keep the element-denominated arithmetic — the fabricat
 (m2) divide by the wrong element size; (m3) drop the normalisation so a whole-cell advance stays
 a byte view — check whether any guest can see it, and say so honestly if none can.
 
+## Outcome of (A)
+
+Landed as its own change, with three corrections found after the plan was written.
+
+**The floor division and the overflow guard were both deleted, by mutation.** A mutant replacing
+the arm's hand-rolled floor division with truncation survived: the byte-view normalisation the
+result passes through already floors, so the arithmetic was unobservable. A later mutant
+hardcoding the element stride also survived: the stride was reaching only a predictive int32
+overflow guard, whose threshold was approximate (truncating where the advance floors) and
+unobservable, sitting within one cell of `Int32.MaxValue`. Normalisation's own file is `Checked`
+and traps at the right point with the right stride, so that trap is caught and named instead.
+
+**The cursor is anchored on the element's shape, not `System.Byte`.** Codex found that
+`ldarg.0; ldc.i4.1; add; ldc.i4.1; sub; ldind.ref` on a `string[]` refused: the mid-cell step made
+the byref a byte cursor, the step back left the view in place at offset zero, and an object
+reference cannot be read through a byte view. Anchoring on the element's shape is what
+`Conv_I`/`Conv_U` already do, and for the same reason — a cell-aligned access then takes the
+identity-preserving short-circuit.
+
+**The plan's framing of decisions 1 and 2 was wrong about novelty.** A second opinion (Fable)
+established, and this was then measured on `main`, that a cell-aligned byte cursor over an array
+element is *not* a new representation: `Conv_U`/`Conv_I`, `Unsafe.As` and
+`MemoryMarshal.GetArrayDataReference` all already produce it. So the two shapes that regress on
+this branch —
+
+* `(p + 1 - 1) - p` on an `int[]`, which is defect (B); and
+* `*(p + 1 - 1)` on an `int*[]`, a whole-cell read of a pointer cell through a byte view
+
+— are pre-existing consumer gaps that this change merely makes reachable from `ldelema; add;
+sub`. Both are parked as guests (`MixedArrayByrefSubtraction.cs`,
+`PointerArrayCellThroughByteView.cs`), each measured on `main` first; the second is stated
+outright as future work in the prose of two guests that already exist. Consequently the
+alternative of collapsing a cell-aligned cursor back to a bare byref, which was tempting as a
+one-line fix for both symptoms, is wrong: it would hide the gaps for this one producer while
+leaving them open for the three that already exist. It would also strip `Conv_U`'s anchor on the
+*first* `p + 1` of a `fixed` block, not merely on a round trip.
+
+## Remaining work
+
+1. **(B), the two mixed subtraction arms for array roots.** This is what unblocks rung J, and it
+   un-parks `MixedArrayByrefSubtraction.cs`.
+2. **(C), `RuntimePointer` paired with a `NativeInt` template** in `readArrayBytesAs`'s whole-cell
+   short-circuit, matching what `destinationNeedsWholeCellStore` already accepts on the write side
+   and what a bare `ldind.i` already does. Un-parks `PointerArrayCellThroughByteView.cs`.
+3. **(D), optional.** `IntrinsicHelpers.offsetManagedPointerByElements` refuses a bare array byref
+   whose element size differs from `T`, which is the *only* thing `Conv_U`'s anchor buys. Making
+   it total the way this arm now is would leave that anchor carrying no information, after which
+   collapsing a cell-aligned cursor becomes the safe simplification it is not today.
+
 ## Ladder
 
-To be filled in: re-run `run-ladder.sh -o DIR RungJ` with `LADDER_FLAVOUR=linux` after (B).
+To be filled in after (B): re-run `run-ladder.sh -o DIR RungJ` with `LADDER_FLAVOUR=linux`.
