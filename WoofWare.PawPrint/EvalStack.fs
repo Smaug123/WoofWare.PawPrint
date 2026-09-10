@@ -588,6 +588,56 @@ module EvalStackValue =
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R8" value
 
+    /// Correctly rounded `uint64 -> float32`, rounding once.
+    ///
+    /// Rounding to double and then to float32 rounds twice, and the two disagree whenever the
+    /// double lands exactly on a float32 tie the integer was not on. Above 2^53 the integer's
+    /// low bits are folded into a sticky bit, so that the double is exact and the one rounding
+    /// still knows whether anything lay below it.
+    let float32OfUInt64 (u : uint64) : float32 =
+        if u < (1UL <<< 53) then
+            // Exact as a double, so the conversion to float32 is the only rounding.
+            float32<float> (float<uint64> u)
+        else
+            let significantBits = 64 - System.Numerics.BitOperations.LeadingZeroCount u
+            let shift = significantBits - 53
+            let dropped = u &&& ((1UL <<< shift) - 1UL)
+            let kept = (u >>> shift) ||| (if dropped <> 0UL then 1UL else 0UL)
+            // `kept` has 53 significant bits and the scale is a power of two, so both the
+            // conversion and the multiplication are exact.
+            float32<float> (float<uint64> kept * float<uint64> (1UL <<< shift))
+
+    /// `conv.r.un` immediately followed by `conv.r4`: an unsigned source converted to float32
+    /// with a single rounding. CoreCLR's importer (`CEE_CONV_R_UN` in importer.cpp) types the
+    /// `conv.r.un` result as float32 when the next opcode is `conv.r4`, because there is no
+    /// `conv.r4.un` and compilers emit that pair for an unsigned-to-float32 cast; the `conv.r4`
+    /// then finds a float32 and changes nothing.
+    let convUnsignedToFloat32 (value : EvalStackValue) : float32 =
+        match value with
+        | EvalStackValue.Int32 int32Source ->
+            let i = Int32Source.value "Conv_R_un" int32Source
+            // Every uint32 is exact as a double, so the conversion to float32 is the only rounding.
+            float32<float> (float<uint32> (uint32<int32> i))
+        | EvalStackValue.Int64 (Int64Source.Verbatim i) -> float32OfUInt64 (uint64<int64> i)
+        | EvalStackValue.Int64 (Int64Source.SyntheticCrossArrayOffset _) ->
+            failwith "Refusing to convert byte offset to float"
+        | EvalStackValue.Int64 (Int64Source.WidenedNativeInt (src, _)) ->
+            failwith $"Refusing to convert widened native int %O{src} to float"
+        | EvalStackValue.Int64 (Int64Source.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} to float"
+        | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
+            failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
+        | EvalStackValue.NativeInt src ->
+            nativeIntBitsForFloatConversion "Conv_R_Un" src
+            |> uint64<int64>
+            |> float32OfUInt64
+        | EvalStackValue.Float _ -> failwith "Conv_R_Un: refusing to convert an existing float as unsigned integer"
+        | EvalStackValue.ManagedPointer _
+        | EvalStackValue.NullObjectRef
+        | EvalStackValue.ObjectRef _
+        | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R_Un" value
+
+    /// `conv.r.un` not followed by `conv.r4`: an unsigned source converted to double.
     let convUnsignedToFloat (value : EvalStackValue) : float =
         match value with
         | EvalStackValue.Int32 int32Source ->
