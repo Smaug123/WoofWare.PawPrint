@@ -63,9 +63,10 @@ module TestNullaryIlOp =
             ConcreteTypes = concreteTypes
         }
 
-    let private methodWithNullary
+    /// A frame whose body is exactly `ops`, laid out consecutively from offset 0.
+    let private methodWithNullaries
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
-        (op : NullaryIlOp)
+        (ops : NullaryIlOp list)
         (state : IlMachineState)
         : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
@@ -83,12 +84,18 @@ module TestNullaryIlOp =
                 ImmutableArray.Empty
                 objectToString.Signature
 
-        let op = IlOp.Nullary op
+        let laidOut : (IlOp * int) list =
+            (0, ops)
+            ||> List.mapFold (fun offset op ->
+                let op = IlOp.Nullary op
+                (op, offset), offset + IlOp.NumberOfBytes op
+            )
+            |> fst
 
         let instructions : MethodInstructions<ConcreteTypeHandle> =
             { MethodInstructions.onlyRet () with
-                Instructions = [ op, 0 ]
-                Locations = Map.empty |> Map.add 0 op
+                Instructions = laidOut
+                Locations = laidOut |> List.map (fun (op, offset) -> offset, op) |> Map.ofList
             }
 
         let method =
@@ -99,13 +106,23 @@ module TestNullaryIlOp =
 
         state, method
 
-    let private stateWithNullary
+    let private methodWithNullary
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
         (op : NullaryIlOp)
+        (state : IlMachineState)
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        methodWithNullaries loggerFactory [ op ] state
+
+    /// A frame whose body is `ops`, with `stackValue` pushed and the program counter at the first.
+    let private stateWithNullaries
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (ops : NullaryIlOp list)
         (stackValue : EvalStackValue)
         : IlMachineState * ThreadId
         =
-        let state, method = initialState loggerFactory |> methodWithNullary loggerFactory op
+        let state, method =
+            initialState loggerFactory |> methodWithNullaries loggerFactory ops
 
         let methodState =
             match
@@ -132,6 +149,14 @@ module TestNullaryIlOp =
             |> IlMachineState.pushToEvalStack' stackValue thread
 
         state, thread
+
+    let private stateWithNullary
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : NullaryIlOp)
+        (stackValue : EvalStackValue)
+        : IlMachineState * ThreadId
+        =
+        stateWithNullaries loggerFactory [ op ] stackValue
 
     /// `stateWithNullary`, but for the binary opcodes. `val1` goes on first, so the opcode pops
     /// `val2` as its right-hand operand — the divisor, for the four divisions.
@@ -2916,3 +2941,92 @@ module TestNullaryIlOp =
             | _ -> false
 
         Check.One (config.WithMaxTest 50, Prop.forAll (Arb.fromGen (Gen.choose (0, 64))) property)
+
+    /// The whole 64-bit range, which the default generator does not reach.
+    let private genUInt64 : Gen<uint64> =
+        Gen.two (Gen.choose (Int32.MinValue, Int32.MaxValue))
+        |> Gen.map (fun (hi, lo) -> (uint64 (uint32 hi) <<< 32) ||| uint64 (uint32 lo))
+
+    [<Test>]
+    let ``float32OfUInt64 rounds once, as the host's own ulong-to-float cast does`` () : unit =
+        // The host JIT fuses `conv.r.un; conv.r4` into one rounding, so `float32 u` on the host
+        // is the oracle. The crafted values sit just above a float32 tie with the excess below a
+        // double's precision, which is exactly where rounding through a double goes wrong.
+        let property (u : uint64) : unit =
+            BitConverter.SingleToInt32Bits (EvalStackValue.float32OfUInt64 u)
+            |> shouldEqual (BitConverter.SingleToInt32Bits (float32 u))
+
+        let crafted =
+            genUInt64
+            |> Gen.map (fun r ->
+                let top24 = (r >>> 40) ||| 0x800000UL
+                let low11 = (r &&& 0x7FFUL) ||| 1UL
+                let full = (top24 <<< 40) ||| (1UL <<< 39) ||| low11
+                full >>> int ((r >>> 24) % 11UL)
+            )
+
+        let edges =
+            Gen.elements
+                [
+                    0UL
+                    1UL
+                    0xFFFFFFFFUL
+                    (1UL <<< 53) - 1UL
+                    1UL <<< 53
+                    (1UL <<< 53) + 1UL
+                    1UL <<< 63
+                    0x8000008000000001UL
+                    UInt64.MaxValue
+                    UInt64.MaxValue - 1UL
+                ]
+
+        Check.One (config, Prop.forAll (Arb.fromGen (Gen.frequency [ 5, crafted ; 4, genUInt64 ; 1, edges ])) property)
+
+    /// Execute `conv.r.un` alone in a body of `conv.r.un` followed by `following`, and return
+    /// what it pushed. The following opcode is present as bytes only: the handler looks at it
+    /// but does not run it.
+    let private convRUnBefore (following : NullaryIlOp option) (input : EvalStackValue) : EvalStackValue =
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let ops = NullaryIlOp.Conv_r_un :: Option.toList following
+        let state, thread = stateWithNullaries loggerFactory ops input
+
+        match NullaryIlOp.execute loggerFactory baseClassTypes state thread NullaryIlOp.Conv_r_un with
+        | ExecutionResult.Stepped (state, whatWeDid, _) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+
+            match state.ThreadState.[thread].MethodState.EvaluationStack.Values with
+            | [ result ] -> result
+            | other -> failwith $"Expected one stack value after conv.r.un, got %O{other}"
+        | other -> failwith $"Expected conv.r.un to step, got %O{other}"
+
+    let private floatBits (value : EvalStackValue) : int64 =
+        match value with
+        | EvalStackValue.Float f -> BitConverter.DoubleToInt64Bits f
+        | other -> failwith $"Expected a float, got %O{other}"
+
+    [<Test>]
+    let ``conv.r.un followed by conv.r4 rounds the unsigned source to float32 once`` () : unit =
+        // 2^63 + 2^39 + 1. Through a double the +1 is lost and the float32 tie rounds to even
+        // (0x5F000000); rounded once it is 0x5F000001, which is what CoreCLR produces.
+        let expected =
+            BitConverter.DoubleToInt64Bits (float (BitConverter.Int32BitsToSingle 0x5F000001))
+
+        convRUnBefore (Some NullaryIlOp.Conv_R4) (EvalStackValue.Int64 (Int64Source.Verbatim 0x8000008000000001L))
+        |> floatBits
+        |> shouldEqual expected
+
+        // The same source through the native-int slot, which `conv.u` leaves behind.
+        convRUnBefore
+            (Some NullaryIlOp.Conv_R4)
+            (EvalStackValue.NativeInt (NativeIntSource.Verbatim 0x8000008000000001L))
+        |> floatBits
+        |> shouldEqual expected
+
+    [<Test>]
+    let ``conv.r.un not followed by conv.r4 converts the unsigned source to double`` () : unit =
+        let input = EvalStackValue.Int64 (Int64Source.Verbatim 0x8000008000000001L)
+
+        for following in [ None ; Some NullaryIlOp.Conv_R8 ; Some NullaryIlOp.Pop ] do
+            convRUnBefore following input |> floatBits |> shouldEqual 0x43E0000010000000L

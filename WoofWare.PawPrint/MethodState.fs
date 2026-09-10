@@ -201,6 +201,18 @@ and MethodState =
 
         MethodState.jumpProgramCounter (IlOp.NumberOfBytes instruction) state
 
+    /// The instruction laid out immediately after the current one in the IL stream, which is
+    /// what a linear execution would run next; `None` when the current instruction ends the
+    /// body. Branch targets are not considered: this answers what the bytes say, which is the
+    /// question CoreCLR's importer asks when it looks one opcode ahead.
+    static member peekNextInstruction (state : MethodState) : IlOp option =
+        match state.ExecutingMethod.Body with
+        | MethodBody.Il instr ->
+            let current = instr.Locations.[state.IlOpIndex]
+            instr.Locations |> Map.tryFind (state.IlOpIndex + IlOp.NumberOfBytes current)
+        | other ->
+            failwith $"peekNextInstruction: executing method %O{state.ExecutingMethod} has no IL body (Body=%A{other})"
+
     static member peekEvalStack (state : MethodState) : EvalStackValue option = EvalStack.Peek state.EvaluationStack
 
     static member clearEvalStack (state : MethodState) : MethodState =

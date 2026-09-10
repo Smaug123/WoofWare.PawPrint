@@ -3524,7 +3524,15 @@ module NullaryIlOp =
         | Break -> failwith "TODO: Break unimplemented"
         | Conv_r_un ->
             let popped, state = IlMachineState.popEvalStack currentThread state
-            let conv = EvalStackValue.convUnsignedToFloat popped
+
+            // The width of the result depends on the opcode that follows; see
+            // `EvalStackValue.convUnsignedToFloat32`. The float32 result is pushed widened,
+            // which is exact, and the `conv.r4` that follows rounds it to itself.
+            let conv =
+                match MethodState.peekNextInstruction state.ThreadState.[currentThread].MethodState with
+                | Some (IlOp.Nullary NullaryIlOp.Conv_R4) ->
+                    EvalStackValue.convUnsignedToFloat32 popped |> float<float32>
+                | _ -> EvalStackValue.convUnsignedToFloat popped
 
             let state =
                 state
