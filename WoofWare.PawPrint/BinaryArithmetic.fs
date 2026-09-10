@@ -338,10 +338,76 @@ module ArithmeticOperation =
             ManagedPointerSource.Byref (ByrefRoot.NativeMemoryByte (block, byteOffset), [])
             |> Choice1Of2
         | ArithmeticTarget.ArrayTarget (arr, index) ->
-            let index = checkedAddInt32 "array index" index v
+            // ECMA-335 III.1.5 makes `&` +/- `int` byte arithmetic, whatever the byref's pointee
+            // is, so `v` is a byte count and a cell index cannot simply absorb it. The three
+            // sibling arms above and below already read it that way. Measured against the real
+            // runtime (`TestFabricatedArrayByrefAdd`) that `ldelema char; ldc.i4.4; add;
+            // ldind.u2` reads element 2, not element 4.
+            //
+            // Converting the count into cells is left to the byte-view normalisation below,
+            // which does it — floor semantics and all — for every byte cursor anyway, and which
+            // traps on the int32 overflow of the resulting cell index because its file is
+            // `Checked`. Predicting that overflow here would need a second copy of the stride
+            // arithmetic that could disagree with the one that matters, so the trap is caught
+            // and named instead.
+            let plain = ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
 
-            ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arr, index), [])
-            |> Choice1Of2
+            // The byte cursor is anchored on the *element's* shape rather than on `System.Byte`,
+            // which is what `Conv_I`/`Conv_U` do through `anchorByteViewIfPlainArrayByref` and for
+            // the same reason: a cell-aligned read or write through the result then routes
+            // through the identity-preserving short-circuits, so a cursor that steps out to a
+            // mid-cell address and back can still dereference an `object[]` cell. `System.Byte`
+            // is the fallback for the element shapes that anchor declines — pointers, byrefs and
+            // function pointers, which have no view type that could honestly describe them —
+            // where the stride is still well defined even though byte-granular access is not.
+            let anchored =
+                match ManagedPointerByteView.arrayElementHandle state arr with
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
+                    // The anchor declines these by design: no type can honestly describe a cell
+                    // holding pointer provenance. The stride is recorded on the array all the
+                    // same, so a `System.Byte` cursor moves the pointer correctly, and any
+                    // attempt to *read* through it refuses loudly at the access.
+                    let byteType = byteConcreteType baseClassTypes state
+                    ManagedPointerByteView.addByteOffset state byteType 0 plain
+                | _ ->
+
+                match ManagedPointerByteView.anchorByteViewIfPlainArrayByref baseClassTypes state plain with
+                | ManagedPointerSource.Byref (_, []) ->
+                    // Every other decline is a lookup that should have succeeded — a concrete
+                    // element type missing from `AllConcreteTypes`, or `System.Object` missing
+                    // when a jagged array needs it as the surrogate for its cells' shape.
+                    // Falling back to a byte view would paper over that; say so instead.
+                    failwith
+                        $"array %O{arr} has element handle %O{ManagedPointerByteView.arrayElementHandle state arr}, which should have a byte-view anchor, but none could be built"
+                | anchored -> anchored
+
+            let advanced =
+                try
+                    ManagedPointerByteView.addByteOffsetToByteView state v anchored
+                with :? System.OverflowException ->
+                    // The only arithmetic in there is this pointer's own cell index. `anchored`
+                    // never carries a `ByteOffset` — it was just built at offset zero — so the
+                    // int64 offset merge in `ManagedPointerSource.appendProjection`, which has
+                    // its own named failure, is not on this path. Should that stop holding, this
+                    // message would start claiming the wrong cause.
+                    failwith
+                        $"managed pointer arithmetic (array index) overflowed int32 offset model: element %d{index} of %O{arr} advanced by %d{v} bytes"
+
+            match advanced with
+            | ManagedPointerSource.Byref (root, [ ByrefProjection.ReinterpretAs _ ]) ->
+                // The whole advance folded into the cell index with nothing left over, so the
+                // address is a cell boundary and the byte view can go. That matters beyond
+                // tidiness: the cells of a reference array have no byte image, so a cursor left
+                // over one could not be dereferenced, and `&a[1]` on an `object[]` is an
+                // ordinary managed pointer on the real runtime.
+                ManagedPointerSource.Byref (root, []) |> Choice1Of2
+            | _ ->
+                // Mid-cell, so a byte cursor is the honest representation. Whether those bytes
+                // can be read is a question for the access, which refuses cells holding
+                // references.
+                Choice1Of2 advanced
         | ArithmeticTarget.StringTarget (str, charIndex) ->
             let charType = charConcreteType baseClassTypes state
 
