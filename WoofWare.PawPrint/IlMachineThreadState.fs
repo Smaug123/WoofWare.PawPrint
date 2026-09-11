@@ -356,6 +356,7 @@ module IlMachineThreadState =
                 PointerHashState = PointerHashState.empty
                 Kernel = EmulatedKernel.initial
                 FrozenStackTraces = Map.empty
+                StackShapes = Map.empty
                 Scheduling = SchedulerState.RoundRobin
             }
 

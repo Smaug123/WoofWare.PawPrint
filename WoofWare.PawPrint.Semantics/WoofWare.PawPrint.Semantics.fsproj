@@ -19,6 +19,8 @@
     <ItemGroup>
         <Compile Include="ContextSwitchPrior.fs" />
         <Compile Include="OpcodeFaults.fs" />
+        <Compile Include="StackShape.fs" />
+        <Compile Include="StackShapeTokens.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 

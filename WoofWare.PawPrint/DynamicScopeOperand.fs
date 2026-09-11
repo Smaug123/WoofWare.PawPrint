@@ -670,7 +670,8 @@ module internal DynamicScopeOperand =
 
     /// <summary>
     /// The dynamic method named by entry <paramref name="scopeIndex"/>, or the object to mint if it
-    /// has not been minted yet.
+    /// has not been minted yet. An entry that holds neither is reported rather than crashed
+    /// on, for a caller that reads ahead of execution and must not decide for it.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -708,35 +709,33 @@ module internal DynamicScopeOperand =
     /// obvious rule — "not a <c>DynamicMethod</c>, so bad token" — is *false*:
     /// <c>ResolveToken</c> resolves a <c>RuntimeMethodHandle</c>, a <c>GenericMethodInfo</c> and a
     /// <c>VarArgMethod</c> in method position perfectly happily, so a guest exception here would
-    /// diverge from real .NET the day the reflection primitive lands. Crashing with the found kind
-    /// named is the honest answer until one of these becomes reachable.
+    /// diverge from real .NET the day the reflection primitive lands. <c>dynamicMethod</c> crashes with the found
+    /// kind named, the honest answer for the instruction executing through it, until one of these
+    /// becomes reachable.
     /// </para>
     /// </remarks>
-    let dynamicMethod
+    let tryDynamicMethod
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (scopeIndex : int)
         (state : IlMachineState)
         (handle : DynamicMethodHandle)
-        : DynamicMethodResolution
+        : Result<DynamicMethodResolution, string>
         =
-        let entry =
-            match entryObject operation scopeIndex state handle with
-            | ScopeEntryLookup.Found entry -> entry
-            | ScopeEntryLookup.Absent ->
-                failwith
-                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which is null or does not exist; real .NET raises InvalidProgramException, but no guest can reach this today so PawPrint does not fabricate it"
-            | ScopeEntryLookup.PastEnd ->
-                failwith
-                    $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which is exactly at the end of the scope's token list; real .NET raises ArgumentOutOfRangeException, but no guest can reach this today so PawPrint does not fabricate it"
+        match entryObject operation scopeIndex state handle with
+        | ScopeEntryLookup.Absent ->
+            Error
+                $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which is null or does not exist; real .NET raises InvalidProgramException, but no guest can reach this today so PawPrint does not fabricate it"
+        | ScopeEntryLookup.PastEnd ->
+            Error
+                $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which is exactly at the end of the scope's token list; real .NET raises ArgumentOutOfRangeException, but no guest can reach this today so PawPrint does not fabricate it"
+        | ScopeEntryLookup.Found entry ->
 
         // The entry's type before it is dereferenced, for the reason `closedType` gives: a slot can
         // hold an array (a signature blob is a `byte[]`), which `ManagedHeap.get` refuses.
-        let entryType =
-            match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
-            | Some concreteType -> concreteType
-            | None ->
-                failwith $"%s{operation}: DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
+        match ManagedHeap.tryGetObjectConcreteType entry state.ManagedHeap with
+        | None -> Error $"%s{operation}: DynamicScope entry %d{scopeIndex} is at %O{entry}, which is not on the heap"
+        | Some entryType ->
 
         // `ILGenerator.EmitCall` wraps whatever it was given in a `VarArgMethod`, unconditionally
         // (`GetMemberRefToken`, `DynamicILGenerator.cs:396-443`), so an ordinary
@@ -747,41 +746,44 @@ module internal DynamicScopeOperand =
         // else, `DynamicMethod.cs:227`), so `GetMemberRefToken` would have thrown had the call site
         // tried to add optional parameter types, and the wrapper's signature is therefore always
         // the callee's own.
-        let entry, entryType =
+        let unwrapped : Result<ManagedHeapAddress * ConcreteTypeHandle, string> =
             if isCorelibType baseClassTypes.VarArgMethod state entryType then
                 let wrapper = ManagedHeap.get entry state.ManagedHeap
 
-                let inner =
-                    match
-                        AllocatedNonArrayObject.DereferenceField "m_dynamicMethod" wrapper
-                        |> CliType.unwrapPrimitiveLikeDeep
-                    with
-                    | CliType.ObjectRef (Some inner) -> inner
-                    | CliType.ObjectRef None ->
-                        // A wrapper round a *reflected* method, which `ResolveToken` resolves
-                        // through `m_method`. Unreachable today: only `EmitCall` builds this
-                        // wrapper, and `EmitCall` with a reflected method stops during the emit
-                        // itself, at `Signature.GetParameterOffsetInternal` for a non-FIELD calling
-                        // convention (measured). Plain `Emit(OpCodes.Call, reflectedMethodInfo)`
-                        // does get through, but stores the bare `RuntimeMethodHandle` rather than a
-                        // wrapper, so it lands below rather than here.
-                        failwith
-                            $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a VarArgMethod whose m_dynamicMethod is null, so it wraps a reflected method; PawPrint resolves only dynamic methods in method position"
-                    | other ->
-                        failwith
-                            $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s VarArgMethod.m_dynamicMethod to be a reference, got %O{other}"
-
-                match ManagedHeap.tryGetObjectConcreteType inner state.ManagedHeap with
-                | Some innerType -> inner, innerType
-                | None ->
-                    failwith
-                        $"%s{operation}: DynamicScope entry %d{scopeIndex}'s VarArgMethod.m_dynamicMethod is at %O{inner}, which is not on the heap"
+                match
+                    AllocatedNonArrayObject.DereferenceField "m_dynamicMethod" wrapper
+                    |> CliType.unwrapPrimitiveLikeDeep
+                with
+                | CliType.ObjectRef (Some inner) ->
+                    match ManagedHeap.tryGetObjectConcreteType inner state.ManagedHeap with
+                    | Some innerType -> Ok (inner, innerType)
+                    | None ->
+                        Error
+                            $"%s{operation}: DynamicScope entry %d{scopeIndex}'s VarArgMethod.m_dynamicMethod is at %O{inner}, which is not on the heap"
+                | CliType.ObjectRef None ->
+                    // A wrapper round a *reflected* method, which `ResolveToken` resolves
+                    // through `m_method`. Unreachable today: only `EmitCall` builds this
+                    // wrapper, and `EmitCall` with a reflected method stops during the emit
+                    // itself, at `Signature.GetParameterOffsetInternal` for a non-FIELD calling
+                    // convention (measured). Plain `Emit(OpCodes.Call, reflectedMethodInfo)`
+                    // does get through, but stores the bare `RuntimeMethodHandle` rather than a
+                    // wrapper, so it lands below rather than here.
+                    Error
+                        $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, a VarArgMethod whose m_dynamicMethod is null, so it wraps a reflected method; PawPrint resolves only dynamic methods in method position"
+                | other ->
+                    Error
+                        $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s VarArgMethod.m_dynamicMethod to be a reference, got %O{other}"
             else
-                entry, entryType
+                Ok (entry, entryType)
+
+        match unwrapped with
+        | Error why -> Error why
+        | Ok (entry, entryType) ->
 
         if not (isCorelibType baseClassTypes.DynamicMethod state entryType) then
-            failwith
+            Error
                 $"TODO: %s{operation} names DynamicScope entry %d{scopeIndex}, which holds a %O{entryType} rather than a System.Reflection.Emit.DynamicMethod; PawPrint resolves only dynamic methods in method position, and neither the reflected kinds real .NET also accepts there nor real .NET's BadImageFormatException for the rest is implemented"
+        else
 
         let dm = ManagedHeap.get entry state.ManagedHeap
 
@@ -809,7 +811,7 @@ module internal DynamicScopeOperand =
             // `entry`, not the scope slot: where the slot held a `VarArgMethod` this is the
             // unwrapped `m_dynamicMethod`, which is exactly what `ResolveToken` mints in that case
             // (`DynamicILGenerator.cs:827`).
-            DynamicMethodResolution.NeedsMinting entry
+            Ok (DynamicMethodResolution.NeedsMinting entry)
         | Some stub ->
 
         let registryId =
@@ -823,13 +825,27 @@ module internal DynamicScopeOperand =
                     $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s RuntimeMethodInfoStub.m_value to carry a method registry id, got %O{other}"
 
         match MethodHandleRegistry.resolveMethodFromId registryId state.MethodHandles with
-        | Some (MethodHandle.FromDynamic handle) -> DynamicMethodResolution.Resolved handle
+        | Some (MethodHandle.FromDynamic handle) -> Ok (DynamicMethodResolution.Resolved handle)
         | Some (MethodHandle.FromMetadata identity) ->
             failwith
                 $"%s{operation}: DynamicScope entry %d{scopeIndex} is a DynamicMethod whose _methodHandle names the metadata method %O{identity.GetMethodDefinitionHandle ()}; only mintDynamicMethod may populate that field"
         | None ->
             failwith
                 $"%s{operation}: DynamicScope entry %d{scopeIndex} is a DynamicMethod whose _methodHandle carries registry id %d{registryId}, which is not registered"
+
+    /// `tryDynamicMethod`, crashing with the found kind named where the entry is not a dynamic
+    /// method: the honest answer for an instruction that must execute through it.
+    let dynamicMethod
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (scopeIndex : int)
+        (state : IlMachineState)
+        (handle : DynamicMethodHandle)
+        : DynamicMethodResolution
+        =
+        match tryDynamicMethod baseClassTypes operation scopeIndex state handle with
+        | Ok resolution -> resolution
+        | Error why -> failwith why
 
     /// <summary>
     /// Push a frame that mints <paramref name="callee"/>, an as-yet-unminted <c>DynamicMethod</c>
