@@ -99,6 +99,7 @@
     <Compile Include="CellAwareMemOps.fs" />
     <Compile Include="IntrinsicHelpers.fsi" />
     <Compile Include="IntrinsicHelpers.fs" />
+    <Compile Include="TypeofIntrinsicFold.fs" />
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="StructMarshalStub.fs" />

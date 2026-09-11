@@ -499,9 +499,11 @@ module IntrinsicMethodKeys =
             // `Type.IsValueType` is the same shape as `IsPrimitive` above: a non-virtual
             // property whose `[Intrinsic]` getter is `ldarg.0; callvirt Type::IsValueTypeImpl();
             // ret`, with the attribute present only for the JIT's `typeof(X)` constant-fold
-            // (`NI_System_Type_get_IsValueType`, importercalls.cpp:4045). The getter is always
-            // the call target, so its `callvirt` is the only thing that selects an
-            // implementation — a `TypeDelegator` or a guest `Type` subclass must answer from
+            // (`NI_System_Type_get_IsValueType`, importercalls.cpp:4045). PawPrint performs that
+            // fold too, at the `ldtoken` that begins `typeof(X).IsValueType`
+            // (`TypeofIntrinsicFold`), so this entry is what runs for every other receiver. The
+            // getter is always the call target, so its `callvirt` is the only thing that selects
+            // an implementation — a `TypeDelegator` or a guest `Type` subclass must answer from
             // its own override. (`IsEnum` needs no entry at all: it is itself virtual and
             // `RuntimeType` overrides the whole property, so a `callvirt` never lands on an
             // `[Intrinsic]` body.)
