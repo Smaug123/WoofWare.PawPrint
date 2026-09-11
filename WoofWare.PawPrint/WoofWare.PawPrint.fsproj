@@ -46,6 +46,7 @@
     <Compile Include="TypeHandleRegistry.fs" />
     <Compile Include="FieldHandleRegistry.fs" />
     <Compile Include="MethodHandleRegistry.fs" />
+    <Compile Include="StackShapeKey.fs" />
     <Compile Include="ManagedHeapTypes.fs" />
     <Compile Include="ManagedHeap.fsi" />
     <Compile Include="ManagedHeap.fs" />
@@ -190,6 +191,7 @@
     <Compile Include="Native\NativeCryptoNative.fs" />
     <Compile Include="Native\NativeDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
+    <Compile Include="StackShapeOfMethod.fs" />
     <Compile Include="AbstractMachine.fs" />
     <Compile Include="AppContextSeed.fs" />
     <Compile Include="CommandLineArgsInit.fs" />

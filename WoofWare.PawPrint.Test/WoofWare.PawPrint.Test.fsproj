@@ -92,6 +92,8 @@
     <Compile Include="TestByrefOrdering.fs" />
     <Compile Include="TestContextSwitchPrior.fs" />
     <Compile Include="TestOpcodeFaults.fs" />
+    <Compile Include="TestStackShape.fs" />
+    <Compile Include="TestStackShapeDynamicScope.fs" />
     <Compile Include="TestNullaryIlOp.fs" />
     <Compile Include="TestByrefAlignmentAgainstHost.fs" />
     <Compile Include="TestIlDecoding.fs" />

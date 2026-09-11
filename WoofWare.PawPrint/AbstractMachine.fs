@@ -474,6 +474,8 @@ module AbstractMachine =
         | MethodBody.PInvoke -> dispatchNative ()
         | MethodBody.Il instructions ->
 
+        let state = StackShapeOfMethod.beforeInstruction baseClassTypes thread state
+
         match instructions.Locations.TryGetValue instruction.IlOpIndex with
         | false, _ ->
             failwith

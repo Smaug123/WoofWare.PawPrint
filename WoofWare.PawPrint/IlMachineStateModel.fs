@@ -269,6 +269,9 @@ type IlMachineState =
         /// collecting GC must make this table weak-keyed.
         FrozenStackTraces :
             Map<ManagedHeapAddress, ExceptionStackFrame<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> list>
+        /// The stack shape of every IL body that has executed, keyed by definition, computed on
+        /// the body's first execution. See `StackShapeOfMethod`.
+        StackShapes : Map<StackShapeKey, StackShape>
         /// Scheduling policy state. `RoundRobin` reproduces the legacy
         /// deterministic ordering and is the default for runs that don't
         /// request fuzzing; `Pct _` carries the live priority assignment
