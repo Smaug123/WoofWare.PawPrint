@@ -68,3 +68,9 @@ module TestStackShapeDynamicScope =
         // but a guest can put one there afterwards. PawPrint refuses the call when it executes; a
         // call that never executes must not be refused ahead of it.
         run "DynamicScopeSwappedAfterMint.cs"
+
+    [<Test>]
+    let ``a field of the declaring type's parameter takes the shape of the closed type's argument`` () : unit =
+        // `Box<float>.Item` is declared `!0`; loaded through a scope entry naming the field on
+        // `Box<float>`, it is a float32, and may meet a float32 literal at a join.
+        run "DynamicFieldOnGenericType.cs"

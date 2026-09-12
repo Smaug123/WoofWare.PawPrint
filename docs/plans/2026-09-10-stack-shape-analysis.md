@@ -36,7 +36,7 @@ primitive. That is where the design decisions with blast radius live, so it
 comes second, on top of a depth analysis that the Guest suite has already
 checked against every interpreted instruction.
 
-### Stage 1 (this PR): depths
+### Stage 1 (#1443, merged): depths
 
 `WoofWare.PawPrint.Semantics/StackShape.fs` computes the stack depth on entry
 to every instruction reachable from the method's entry or a handler entry,
@@ -73,7 +73,7 @@ which is the correct degraded answer for depth; a wrong answer is impossible,
 because two arms that agree on depth deliver the same depth whichever the
 importer imports.
 
-### Stage 2: float widths at joins
+### Stage 2 (this PR): float widths at joins
 
 On top of stage 1, each slot gets a shape (`Float Single`, `Float Double`,
 `Other`), joined over CoreCLR's spill cliques rather than per target
@@ -82,7 +82,12 @@ predecessor/successor relation shares one temp. `Promotions` are the offsets
 and slots at which a float32 still arrives where the clique settled as double,
 which are exactly the edges CoreCLR casts.
 
-Decisions for that stage, recorded here so the PR does not relitigate them:
+The Debug assertion grows a slot-kind check: a float in every slot the analysis
+says is one and in no other, which the Guest suite checks against every
+interpreted instruction. The width itself is not yet a fact the stack carries,
+so it is checked in stage 3.
+
+Decisions for this stage, agreed before it was built:
 
 * A `TypeRef` named `System.Single` or `System.Double` is the primitive when
   its resolution scope is a framework assembly, judged by name, exactly as the
@@ -93,9 +98,29 @@ Decisions for that stage, recorded here so the PR does not relitigate them:
 * Branches on a literal of the same basic block are folded as the importer
   folds them (`gtFoldExpr` runs at Tier-0 too; only debuggable code and MinOpts
   skip it), because otherwise a folded-away double arm widens a join CoreCLR
-  keeps single. Folding of intrinsics, `typeof` comparisons and inlined
-  constants is *not* modelled: an emitted mixed-width join under such a branch
-  keeps path-local width, and that bound is stated rather than chased.
+  keeps single. An integer a block pushes as a literal, or computes from
+  literals it pushed, is a constant of that block; a value that crosses a block
+  boundary (a branch target, a handler entry, the instruction after a
+  conditional branch) is a spill temp to the importer, and no constant survives
+  one; a `br` to the very next instruction is no boundary, since the JIT merges
+  the blocks before importing. Folding is off, as it is in the JIT, for a method
+  marked `NoOptimization` and for every method of an assembly stamped
+  `DebuggableAttribute(DisableOptimizations)`, dynamic methods it hosts included:
+  a Debug build, which is what the test harness compiles its guests as. A
+  dynamic method, and a method marked `AggressiveOptimization`, is fully
+  optimised from the start, where `dup` of a non-zero constant spills it to a
+  temp the importer no longer folds; every other method is compiled at Tier-0
+  first, and the analysis follows that first compilation: a later re-JIT at a
+  higher tier may type a join differently, and that is not modelled. Folding of intrinsics, `typeof` comparisons and inlined constants is
+  *not* modelled: an emitted mixed-width join under such a branch keeps
+  path-local width, and that bound is stated rather than chased.
+* Slots are joined over CoreCLR's spill cliques rather than per target. The
+  clique is a property of the importer's flow graph: it spans blocks the
+  importer never imports, so the two successors of a dead conditional share a
+  temp, transitively, and it lacks the edge a folded branch discards. A
+  conflict (a depth mismatch, a float meeting a non-float) makes the join
+  unknown, as in stage 1, together with every offset sharing one of its spill
+  temps: they share the temp whose type is undecidable.
 * Shapes are per instantiation (an argument of type `T` is a float32 in
   `M<float>`), so the cache key grows the generic arguments.
 
