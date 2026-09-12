@@ -1,5 +1,6 @@
 namespace WoofWare.PawPrint
 
+open System.Collections.Immutable
 open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 
@@ -15,26 +16,68 @@ module StackShapeOfMethod =
             let row =
                 MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit facts.Handle : EntityHandle)
 
-            Some (StackShapeKey.Metadata (method.DeclaringAssemblyFullName, row))
+            Some (
+                StackShapeKey.Metadata (
+                    method.DeclaringAssemblyFullName,
+                    row,
+                    List.ofSeq method.DeclaringTypeGenerics,
+                    List.ofSeq method.Generics
+                )
+            )
         | MethodInfo.Synthesised (_, SynthesisedMethod.DynamicMethod handle) -> Some (StackShapeKey.Dynamic handle)
         | MethodInfo.Synthesised (_, SynthesisedMethod.StructMarshalStub)
         | MethodInfo.Synthesised (_, SynthesisedMethod.EntryPointPlaceholder) -> None
 
+    let private shapeOfConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : SlotShape =
+        match handle with
+        | ConcretePrimitive state.ConcreteTypes PrimitiveType.Single -> SlotShape.Float FloatWidth.Single
+        | ConcretePrimitive state.ConcreteTypes PrimitiveType.Double -> SlotShape.Float FloatWidth.Double
+        | _ -> SlotShape.Other
+
+    /// The instantiation the body is running under, as the shapes of its generic parameters.
+    let private bindingOf
+        (state : IlMachineState)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        : GenericBinding
+        =
+        let bind (generics : ImmutableArray<ConcreteTypeHandle>) (index : int) : SlotShape =
+            if index >= 0 && index < generics.Length then
+                shapeOfConcreteType state generics.[index]
+            else
+                SlotShape.Other
+
+        {
+            TypeParameter = bind method.DeclaringTypeGenerics
+            MethodParameter = bind method.Generics
+        }
+
     let private inputsOf
+        (assembly : DumpedAssembly)
+        (binding : GenericBinding)
         (isStatic : bool)
+        (mode : CompilationMode)
         (signature : TypeMethodSignature<TypeDefn>)
         (body : MethodInstructions<TypeDefn>)
         (tokens : Map<int, TokenShape>)
         : StackShapeInputs
         =
+        let declared =
+            signature.ParameterTypes
+            |> List.map (StackShapeTokens.shapeOfTypeDefn assembly binding)
+
         {
-            Arguments = signature.ParameterTypes.Length + (if isStatic then 0 else 1)
+            Arguments = ImmutableArray.CreateRange (if isStatic then declared else SlotShape.Other :: declared)
             Locals =
                 match body.LocalVars with
-                | None -> 0
-                | Some vars -> vars.Length
-            ReturnsValue = StackShapeTokens.returnsValue signature.ReturnType
+                | None -> ImmutableArray.Empty
+                | Some vars ->
+                    vars
+                    |> Seq.map (StackShapeTokens.shapeOfTypeDefn assembly binding)
+                    |> ImmutableArray.CreateRange
+            ReturnsValue =
+                (StackShapeTokens.returnShape assembly binding GenericSubstitution.None signature.ReturnType).IsSome
             Tokens = tokens
+            Mode = mode
         }
 
     /// A body from a PE image: everything comes from the owning assembly's metadata.
@@ -60,11 +103,23 @@ module StackShapeOfMethod =
                 failwith
                     $"stack shape: executing method %s{method.Name} has an IL body, but its definition in %s{assembly.DefinitionFullName} has none"
 
+        let binding = bindingOf state method
+
         // Only what control can reach is read, as CoreCLR's importer reads only what it
         // imports: a token on dead code may name what cannot be resolved.
-        let tokens = StackShapeTokens.ofBody assembly (StackShape.reachable body) body
+        let tokens =
+            StackShapeTokens.ofBody assembly binding (StackShape.reachable body) body
 
-        StackShape.analyse (inputsOf definition.IsStatic definition.Signature body tokens) body
+        StackShape.analyse
+            (inputsOf
+                assembly
+                binding
+                definition.IsStatic
+                (StackShapeTokens.compilationModeOf assembly facts.Handle)
+                definition.Signature
+                body
+                tokens)
+            body
 
     /// The signature of a `DynamicMethod` that has not yet been minted, read from the guest
     /// object itself: its `_parameterTypes` array and `_returnType`.
@@ -87,12 +142,12 @@ module StackShapeOfMethod =
                 Ok (ManagedHeap.getArrayShape parameterTypes state.ManagedHeap).Length
             | other -> Error $"%s{operation}: DynamicMethod._parameterTypes is %O{other}, not an array reference"
 
-        let returnsValue =
+        let returns =
             match
                 AllocatedNonArrayObject.DereferenceField "_returnType" dm
                 |> CliType.unwrapPrimitiveLikeDeep
             with
-            | CliType.ObjectRef None -> Ok false
+            | CliType.ObjectRef None -> Ok None
             | CliType.ObjectRef (Some returnType) ->
                 match
                     NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef
@@ -101,14 +156,20 @@ module StackShapeOfMethod =
                         (EvalStackValue.ObjectRef returnType)
                 with
                 | RuntimeTypeHandleTarget.Closed handle ->
-                    match IlMachineState.tryGetConcreteTypeInfo state handle with
-                    | Some (concreteType, _) -> Ok (concreteType.Identity <> baseClassTypes.Void.Identity)
-                    | None -> Ok true
-                | _ -> Ok true
+                    let isVoid =
+                        match IlMachineState.tryGetConcreteTypeInfo state handle with
+                        | Some (concreteType, _) -> concreteType.Identity = baseClassTypes.Void.Identity
+                        | None -> false
+
+                    if isVoid then
+                        Ok None
+                    else
+                        Ok (Some (shapeOfConcreteType state handle))
+                | _ -> Ok (Some SlotShape.Other)
             | other -> Error $"%s{operation}: DynamicMethod._returnType is %O{other}, not a reference"
 
-        match arguments, returnsValue with
-        | Ok arguments, Ok returnsValue -> Ok (TokenShape.Callee (arguments, returnsValue))
+        match arguments, returns with
+        | Ok arguments, Ok returns -> Ok (TokenShape.Callee (arguments, returns))
         | Error e, _
         | _, Error e -> Error e
 
@@ -150,7 +211,15 @@ module StackShapeOfMethod =
                         (definition.GetSignature () |> Seq.toArray)
                     |> TypeMethodSignature.make
 
-                Ok (Some (StackShapeTokens.calleeShape signature))
+                Ok (
+                    Some (
+                        StackShapeTokens.calleeShape
+                            scopeAssembly
+                            GenericBinding.AtDefinition
+                            GenericSubstitution.None
+                            signature
+                    )
+                )
             | Ok (DynamicMethodResolution.NeedsMinting callee) ->
                 unmintedCalleeShape baseClassTypes operation state callee |> Result.map Some
         | UnaryMetadataTokenIlOp.Callvirt
@@ -162,10 +231,50 @@ module StackShapeOfMethod =
             failwith
                 $"BUG: %O{op} with a DynamicScope operand reached the stack-shape analysis, but IlDecoding refuses such a body at mint"
         | UnaryMetadataTokenIlOp.Ldfld
-        | UnaryMetadataTokenIlOp.Ldsfld
+        | UnaryMetadataTokenIlOp.Ldsfld ->
+            match DynamicScopeOperand.field baseClassTypes operation index state handle with
+            | Error (_, why) -> Error why
+            | Ok field ->
+                let assembly =
+                    state.LoadedAssembly (field.GetAssemblyFullName ())
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"%s{operation}: assembly %s{field.GetAssemblyFullName ()} of a scope field is not loaded"
+                    )
+
+                match assembly.Fields.TryGetValue (field.GetFieldDefinitionHandle().Get) with
+                | false, _ ->
+                    Error $"%s{operation}: the scope field's definition row is not in %s{assembly.DefinitionFullName}"
+                | true, fieldInfo ->
+
+                // The handle names the field on a closed type, so a field whose declared type is
+                // the declaring type's parameter takes the shape of that argument.
+                let typeParameter (index : int) : SlotShape =
+                    match field.GetDeclaringTypeHandle () with
+                    | RuntimeTypeHandleTarget.Closed declaring ->
+                        match IlMachineState.tryGetConcreteTypeInfo state declaring with
+                        | Some (concreteType, _) when index >= 0 && index < concreteType.Generics.Length ->
+                            shapeOfConcreteType state concreteType.Generics.[index]
+                        | _ -> SlotShape.Other
+                    | _ -> SlotShape.Other
+
+                Ok (
+                    Some (
+                        TokenShape.Field (
+                            StackShapeTokens.shapeOfTypeDefnBinding
+                                assembly
+                                typeParameter
+                                (fun _ -> SlotShape.Other)
+                                fieldInfo.Signature
+                        )
+                    )
+                )
         | UnaryMetadataTokenIlOp.Ldobj
         | UnaryMetadataTokenIlOp.Unbox_Any
-        | UnaryMetadataTokenIlOp.Ldelem
+        | UnaryMetadataTokenIlOp.Ldelem ->
+            match DynamicScopeOperand.closedType baseClassTypes operation index state handle with
+            | Error (_, why) -> Error why
+            | Ok closed -> Ok (Some (TokenShape.Type (shapeOfConcreteType state closed)))
         | UnaryMetadataTokenIlOp.Castclass
         | UnaryMetadataTokenIlOp.Isinst
         | UnaryMetadataTokenIlOp.Newarr
@@ -245,7 +354,11 @@ module StackShapeOfMethod =
                     | Ok None -> None
                     | Ok (Some shape) -> Some (offset, shape)
                 | IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata sourced) ->
-                    StackShapeTokens.ofMetadataToken (sourceAssembly sourced) op sourced.Token
+                    StackShapeTokens.ofMetadataToken
+                        (sourceAssembly sourced)
+                        GenericBinding.AtDefinition
+                        op
+                        sourced.Token
                     |> Option.map (fun shape -> offset, shape)
                 | IlOp.Nullary _
                 | IlOp.UnaryConst _
@@ -254,8 +367,17 @@ module StackShapeOfMethod =
             )
             |> Map.ofList
 
-        // A dynamic method is always static.
-        StackShape.analyse (inputsOf true signature body tokens) body
+        // A dynamic method is always static, and is compiled the way its scope's module is.
+        StackShape.analyse
+            (inputsOf
+                scopeAssembly
+                GenericBinding.AtDefinition
+                true
+                (StackShapeTokens.dynamicCompilationModeOf scopeAssembly)
+                signature
+                body
+                tokens)
+            body
 
     let private isDebugBuild : bool =
 #if DEBUG
@@ -266,9 +388,9 @@ module StackShapeOfMethod =
 
     /// Check the frame about to execute an instruction against its body's stack shape,
     /// computing the shape on the body's first execution, which is the moment CoreCLR would JIT
-    /// it. In a Debug build the runtime stack depth must equal the analysis's prediction for the
-    /// instruction; an instruction the analysis found invalid on every path stops the run rather
-    /// than executing.
+    /// it. In a Debug build the runtime stack must have the analysis's depth for the instruction,
+    /// with a float in every slot the analysis says is one and in no other; an instruction the
+    /// analysis found invalid on every path stops the run rather than executing.
     let beforeInstruction
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
@@ -328,10 +450,29 @@ module StackShapeOfMethod =
         | Some expected ->
 
         if isDebugBuild then
-            let actual = List.length frame.EvaluationStack.Values
+            let actual = frame.EvaluationStack.Values
 
-            if actual <> expected then
+            if List.length actual <> expected.Length then
                 failwith
-                    $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) at offset %d{frame.IlOpIndex} has %d{actual} value(s) on its evaluation stack, but the analysis expects %d{expected}; the stack is %O{frame.EvaluationStack.Values}"
+                    $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) at offset %d{frame.IlOpIndex} has %d{List.length actual} value(s) on its evaluation stack, but the analysis expects %d{expected.Length} (%O{expected}); the stack is %O{actual}"
+
+            // The width of a float is not yet a fact the stack carries, so only its kind is
+            // checked: a float where the analysis says one, and nowhere else.
+            List.zip actual expected
+            |> List.iteri (fun slot (value, shape) ->
+                let isFloat =
+                    match value with
+                    | EvalStackValue.Float _ -> true
+                    | _ -> false
+
+                let saysFloat =
+                    match shape with
+                    | SlotShape.Float _ -> true
+                    | SlotShape.Other -> false
+
+                if isFloat <> saysFloat then
+                    failwith
+                        $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) at offset %d{frame.IlOpIndex} has %O{value} in slot %d{slot} from the top, but the analysis says %O{shape}; the stack is %O{actual}, expected %O{expected}"
+            )
 
         state
