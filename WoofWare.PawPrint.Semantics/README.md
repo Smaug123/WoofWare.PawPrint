@@ -18,10 +18,11 @@ What lives here:
 * `OpcodeFaults` — which exceptions an instruction can raise by itself, as opposed to which reach it
   from a callee. Consumed by the interpreter, which raises through it and checks itself against it,
   and readable by an analyser that never runs anything.
-* `StackShape` — the depth of the evaluation stack on entry to every instruction of a body, joined
-  over every path that reaches it. What a call does to the stack comes in as data
-  (`StackShapeTokens` reads it from a PE module's own signature blobs); the interpreter checks its
-  own stack depth against the analysis in Debug builds.
+* `StackShape` — the shape of the evaluation stack on entry to every instruction of a body, joined
+  over every path that reaches it, and the control-flow joins at which CoreCLR's importer widens a
+  float32 slot to double because another path delivers a double there. What a token-bearing
+  instruction does to the stack comes in as data (`StackShapeTokens` reads it from a PE module's
+  own signature blobs); the interpreter checks its own stack against the analysis in Debug builds.
 
 The dependency direction is the invariant: this library sees `WoofWare.PawPrint.Domain` and never
 `WoofWare.PawPrint`, so nothing in here can reach the interpreter's mutable machine state. That is
