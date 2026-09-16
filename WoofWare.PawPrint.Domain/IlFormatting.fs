@@ -131,7 +131,7 @@ module IlFormatting =
         let entityHandle : EntityHandle = TypeDefinitionHandle.op_Implicit handle
         let token = MetadataTokens.GetToken entityHandle
 
-        if identity.AssemblyFullName = assembly.Name.FullName then
+        if identity.AssemblyFullName = assembly.DefinitionFullName then
             match assembly.TypeDefs.TryGetValue handle with
             | true, typeInfo -> qualifyTypeName assembly.TypeDefs typeInfo
             | false, _ -> $"TypeDef(0x%08X{token})"
@@ -307,7 +307,7 @@ module IlFormatting =
                 match typeSpec.Signature with
                 | TypeDefn.GenericInstantiation (TypeDefn.FromDefinition (identity, _), _)
                 | TypeDefn.FromDefinition (identity, _) ->
-                    if identity.AssemblyFullName = assembly.Name.FullName then
+                    if identity.AssemblyFullName = assembly.DefinitionFullName then
                         ofTypeDefHandle identity.TypeDefinition.Get
                     else
                         GenericScope.unknown

@@ -104,7 +104,7 @@ module TestSyncBlockMonitor =
                         ElementStride = sizeof<int32>
                         ElementZero = CliType.Numeric (CliNumericType.Int32 0)
                     }
-                Elements = ImmutableArray.Empty
+                Elements = PersistentVector.empty
             }
 
         let addr, heap = state.ManagedHeap |> ManagedHeap.allocateArray stub

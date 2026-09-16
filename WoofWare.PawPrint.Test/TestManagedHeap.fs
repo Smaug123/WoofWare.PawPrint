@@ -96,13 +96,13 @@ module TestManagedHeap =
         let intArray : AllocatedArray =
             {
                 Shape = int32ShapeOf intArrayHandle 0
-                Elements = ImmutableArray.Empty
+                Elements = PersistentVector.empty
             }
 
         let stringArray : AllocatedArray =
             {
                 Shape = shapeOf stringArrayHandle (CliType.ObjectRef None) (ImmutableArray.Create 0)
-                Elements = ImmutableArray.Empty
+                Elements = PersistentVector.empty
             }
 
         let intArrayAddr, heap = ManagedHeap.allocateArray intArray ManagedHeap.empty
@@ -122,7 +122,7 @@ module TestManagedHeap =
         let array : AllocatedArray =
             {
                 Shape = int32ShapeOf arrayHandle 0
-                Elements = ImmutableArray.Empty
+                Elements = PersistentVector.empty
             }
 
         let arrayAddr, heap = ManagedHeap.allocateArray array ManagedHeap.empty
@@ -448,7 +448,7 @@ module TestManagedHeap =
     let private stubArray (length : int) : AllocatedArray =
         {
             Shape = int32ShapeOf (ConcreteTypeHandle.OneDimArrayZero (ConcreteTypeHandle.Concrete 1)) length
-            Elements = Seq.replicate length int32Zero |> ImmutableArray.CreateRange
+            Elements = Seq.replicate length int32Zero |> PersistentVector.ofSeq
         }
 
     /// A placeholder non-array object whose payload is never inspected by the
@@ -618,7 +618,7 @@ module TestManagedHeap =
         let allocation : AllocatedArray =
             {
                 Shape = shapeOf arrayHandle int32Zero lengths
-                Elements = Seq.replicate 12 int32Zero |> ImmutableArray.CreateRange
+                Elements = Seq.replicate 12 int32Zero |> PersistentVector.ofSeq
             }
 
         let addr, heap = ManagedHeap.allocateArray allocation ManagedHeap.empty
@@ -687,7 +687,7 @@ module TestManagedHeap =
                             (ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 1, lengths.Length))
                             int32Zero
                             (ImmutableArray.CreateRange lengths)
-                    Elements = Seq.replicate total int32Zero |> ImmutableArray.CreateRange
+                    Elements = Seq.replicate total int32Zero |> PersistentVector.ofSeq
                 }
 
             let addr, heap = ManagedHeap.allocateArray allocation ManagedHeap.empty
@@ -1016,7 +1016,7 @@ module TestManagedHeap =
         // `IndexOutOfRangeException` from beneath the interpreter.
         let tooFew : AllocatedArray =
             { stubArray 3 with
-                Elements = Seq.replicate 2 int32Zero |> ImmutableArray.CreateRange
+                Elements = Seq.replicate 2 int32Zero |> PersistentVector.ofSeq
             }
 
         let exn =
@@ -1037,7 +1037,7 @@ module TestManagedHeap =
                     { int32ShapeOf (ConcreteTypeHandle.Array (ConcreteTypeHandle.Concrete 1, 2)) 6 with
                         Lengths = ImmutableArray.CreateRange [ 2 ; 4 ]
                     }
-                Elements = Seq.replicate 6 int32Zero |> ImmutableArray.CreateRange
+                Elements = Seq.replicate 6 int32Zero |> PersistentVector.ofSeq
             }
 
         let exn =

@@ -64,8 +64,8 @@ module IlMachineRuntimeMetadata =
         =
         let state, runtimeType =
             TypeDefn.FromDefinition (
-                ResolvedTypeIdentity.ofTypeDefinition
-                    baseClassTypes.Corelib.Name
+                ResolvedTypeIdentity.ofDefinitionInAssembly
+                    baseClassTypes.Corelib.DefinitionFullName
                     baseClassTypes.RuntimeType.TypeDefHandle,
                 SignatureTypeKind.Class
             )
@@ -113,8 +113,8 @@ module IlMachineRuntimeMetadata =
         =
         let state, runtimeFieldInfoStub =
             TypeDefn.FromDefinition (
-                ResolvedTypeIdentity.ofTypeDefinition
-                    baseClassTypes.Corelib.Name
+                ResolvedTypeIdentity.ofDefinitionInAssembly
+                    baseClassTypes.Corelib.DefinitionFullName
                     baseClassTypes.RuntimeFieldInfoStub.TypeDefHandle,
                 SignatureTypeKind.Class
             )
@@ -153,8 +153,8 @@ module IlMachineRuntimeMetadata =
         =
         let state, runtimeMethodInfoStub =
             TypeDefn.FromDefinition (
-                ResolvedTypeIdentity.ofTypeDefinition
-                    baseClassTypes.Corelib.Name
+                ResolvedTypeIdentity.ofDefinitionInAssembly
+                    baseClassTypes.Corelib.DefinitionFullName
                     baseClassTypes.RuntimeMethodInfoStub.TypeDefHandle,
                 SignatureTypeKind.Class
             )

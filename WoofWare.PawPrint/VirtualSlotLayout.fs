@@ -808,7 +808,7 @@ module VirtualSlotLayout =
             // comparison is needed or wanted: the row *is* the identity, and `Placed` is keyed on it.
             // Absent from `Placed` means the row names something that holds no vtable slot -- an
             // interface method of this same assembly, or a non-virtual -- so it is not a vtable write.
-            let target = assembly.Name.FullName, (Some handle, None)
+            let target = assembly.DefinitionFullName, (Some handle, None)
 
             state,
             (match
@@ -830,7 +830,7 @@ module VirtualSlotLayout =
             let state, parentIdentity =
                 match memberRef.Parent with
                 | MetadataToken.TypeDefinition handle ->
-                    state, Some (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.Name.FullName handle)
+                    state, Some (ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName handle)
                 | MetadataToken.TypeReference handle ->
                     let state, _, resolved =
                         IlMachineTypeResolution.resolveTypeFromRef
@@ -1129,7 +1129,7 @@ module VirtualSlotLayout =
                 let body =
                     table.Placed
                     |> List.tryFind (fun (slot, _) ->
-                        (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = (assembly.Name.FullName,
+                        (slot.DeclaredBy.AssemblyFullName, slot.Method.IdentityKey) = (assembly.DefinitionFullName,
                                                                                        (Some bodyHandle, None))
                     )
                     // "Body's parent must be this class": upstream reads the body token's parent and

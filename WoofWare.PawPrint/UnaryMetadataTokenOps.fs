@@ -627,10 +627,12 @@ module internal UnaryMetadataTokenOps =
 
             state, LdtokenTarget.Type target
 
+        let operand = ctx.LdtokenOperand
+
         // Classify first, push second. Every refusal below is stated once, and the pushes that
         // follow cannot ask a question this has not answered.
         let state, target: IlMachineState * LdtokenTarget =
-            match ctx.LdtokenOperand with
+            match operand with
             | ResolvedLdtokenOperand.FromScope target ->
                 // Nothing to resolve and nothing to narrow. The entry *is* a `RuntimeTypeHandle`
                 // the guest already holds, so unlike the metadata arms below there is no token to
@@ -732,6 +734,27 @@ module internal UnaryMetadataTokenOps =
             | _ ->
                 // ECMA-335 III.4.17 admits exactly the kinds handled above.
                 failwith $"Unexpected metadata token %O{metadataToken} in LdToken"
+
+        // `typeof(X).IsValueType` is folded to its answer here, at the `ldtoken`, as the JIT folds
+        // it; see `TypeofIntrinsicFold`. Only a metadata token names a closed type the two calls
+        // after it can be read against: a `DynamicScope` operand's neighbours name scope entries.
+        let state, folded =
+            match target, operand with
+            | LdtokenTarget.Type (RuntimeTypeHandleTarget.Closed handle),
+              ResolvedLdtokenOperand.FromMetadata (activeAssy, _) ->
+                TypeofIntrinsicFold.tryFoldIsValueType
+                    loggerFactory
+                    baseClassTypes
+                    thread
+                    activeAssy
+                    currentMethod
+                    handle
+                    state
+            | _ -> state, false
+
+        if folded then
+            state, WhatWeDid.Executed
+        else
 
         let state =
             match target with

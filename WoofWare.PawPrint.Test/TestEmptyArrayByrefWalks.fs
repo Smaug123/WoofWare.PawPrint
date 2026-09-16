@@ -154,7 +154,7 @@ module TestEmptyArrayByrefWalks =
                         ElementStride = stride
                         ElementZero = elementZero
                     }
-                Elements = ImmutableArray.Empty
+                Elements = PersistentVector.empty
             }
 
         ManagedHeap.allocateArray allocation heap

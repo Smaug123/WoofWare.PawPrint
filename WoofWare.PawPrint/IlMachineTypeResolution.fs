@@ -671,6 +671,10 @@ module IlMachineTypeResolution =
         (handle : ConcreteTypeHandle)
         : CliType * IlMachineState
         =
+        match Map.tryFind handle state._ZeroValues with
+        | Some zero -> zero, state
+        | None ->
+
         let zero, updatedConcreteTypes, updatedAssemblies =
             CliType.zeroOf
                 (loader state.LoggerFactory state)
@@ -685,7 +689,7 @@ module IlMachineTypeResolution =
                 _LoadedAssemblies = updatedAssemblies
             }
 
-        zero, newState
+        zero, newState.WithZeroValue handle zero
 
     /// Concretize a ConcreteType<TypeDefn> to get a ConcreteTypeHandle for static field access
     let concretizeFieldDeclaringType

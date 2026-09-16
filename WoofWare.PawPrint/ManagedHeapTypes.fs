@@ -185,5 +185,5 @@ type AllocatedArray =
         /// Backing store in row-major order. For multi-dim arrays the element at
         /// `(i_0, ..., i_{n-1})` lives at flat offset
         /// `((((i_0)*d_1)+i_1)*d_2 + i_2)*...*d_{n-1} + i_{n-1}`, where `d_k = Lengths.[k]`.
-        Elements : ImmutableArray<CliType>
+        Elements : PersistentVector<CliType>
     }

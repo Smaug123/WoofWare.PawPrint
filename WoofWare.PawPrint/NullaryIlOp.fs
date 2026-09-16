@@ -2443,11 +2443,12 @@ module NullaryIlOp =
             let popped, state = IlMachineState.popEvalStack currentThread state
             let converted = EvalStackValue.toNativeInt popped
 
-            // Crossing from byref-world to native-pointer-world: subsequent
-            // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
-            // so anchor a `ReinterpretAs T` projection on plain array
-            // byrefs. Plain byrefs (no anchor) keep element-stride
-            // arithmetic to match `Unsafe.Add<T>`.
+            // Crossing from byref-world to native-pointer-world: anchor a
+            // `ReinterpretAs T` projection on plain array byrefs, naming the
+            // view later reads and writes should use and telling the
+            // `Unsafe.*` intrinsics they are looking at a byte cursor. The
+            // stride does not depend on it: `add`/`sub` on a byref is byte
+            // arithmetic either way, per ECMA-335 §III.1.5.
             let conv =
                 match converted with
                 | NativeIntSource.ManagedPointer ptr ->
@@ -2548,11 +2549,12 @@ module NullaryIlOp =
                 match converted with
                 | UnsignedNativeIntSource.Verbatim conv -> int64 conv |> NativeIntSource.Verbatim
                 | UnsignedNativeIntSource.FromManagedPointer ptr ->
-                    // Crossing from byref-world to native-pointer-world: subsequent
-                    // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
-                    // so anchor a `ReinterpretAs T` projection on plain array
-                    // byrefs. Plain byrefs (no anchor) keep element-stride
-                    // arithmetic to match `Unsafe.Add<T>`.
+                    // Crossing from byref-world to native-pointer-world: anchor a
+                    // `ReinterpretAs T` projection on plain array byrefs, naming the
+                    // view later reads and writes should use and telling the
+                    // `Unsafe.*` intrinsics they are looking at a byte cursor. The
+                    // stride does not depend on it: `add`/`sub` on a byref is byte
+                    // arithmetic either way, per ECMA-335 §III.1.5.
                     ManagedPointerByteView.anchorByteViewIfPlainArrayByref corelib state ptr
                     |> NativeIntSource.ManagedPointer
                 | UnsignedNativeIntSource.FromSyntheticCrossArrayStorage i ->
@@ -2999,11 +3001,12 @@ module NullaryIlOp =
 
             match convOvfIUn popped with
             | Ok conv ->
-                // Crossing from byref-world to native-pointer-world: subsequent
-                // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
-                // so anchor a `ReinterpretAs T` projection on plain array
-                // byrefs. Plain byrefs (no anchor) keep element-stride
-                // arithmetic to match `Unsafe.Add<T>`.
+                // Crossing from byref-world to native-pointer-world: anchor a
+                // `ReinterpretAs T` projection on plain array byrefs, naming the
+                // view later reads and writes should use and telling the
+                // `Unsafe.*` intrinsics they are looking at a byte cursor. The
+                // stride does not depend on it: `add`/`sub` on a byref is byte
+                // arithmetic either way, per ECMA-335 §III.1.5.
                 let conv =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
@@ -3063,11 +3066,12 @@ module NullaryIlOp =
 
             match convOvfI popped with
             | Ok conv ->
-                // Crossing from byref-world to native-pointer-world: subsequent
-                // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
-                // so anchor a `ReinterpretAs T` projection on plain array
-                // byrefs. Plain byrefs (no anchor) keep element-stride
-                // arithmetic to match `Unsafe.Add<T>`.
+                // Crossing from byref-world to native-pointer-world: anchor a
+                // `ReinterpretAs T` projection on plain array byrefs, naming the
+                // view later reads and writes should use and telling the
+                // `Unsafe.*` intrinsics they are looking at a byte cursor. The
+                // stride does not depend on it: `add`/`sub` on a byref is byte
+                // arithmetic either way, per ECMA-335 §III.1.5.
                 let conv =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->
@@ -3090,11 +3094,12 @@ module NullaryIlOp =
 
             match convOvfU popped with
             | Ok conv ->
-                // Crossing from byref-world to native-pointer-world: subsequent
-                // pointer arithmetic must be byte-stride per ECMA-335 §III.1.5,
-                // so anchor a `ReinterpretAs T` projection on plain array
-                // byrefs. Plain byrefs (no anchor) keep element-stride
-                // arithmetic to match `Unsafe.Add<T>`.
+                // Crossing from byref-world to native-pointer-world: anchor a
+                // `ReinterpretAs T` projection on plain array byrefs, naming the
+                // view later reads and writes should use and telling the
+                // `Unsafe.*` intrinsics they are looking at a byte cursor. The
+                // stride does not depend on it: `add`/`sub` on a byref is byte
+                // arithmetic either way, per ECMA-335 §III.1.5.
                 let conv =
                     match conv with
                     | NativeIntSource.ManagedPointer ptr ->

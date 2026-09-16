@@ -727,7 +727,7 @@ type AssemblyLoadFailure =
         | AssemblyLoadFailure.LoadingNotPermitted reference ->
             let referencedIn = snd reference.Handle
 
-            $"Assembly %s{reference.Name.FullName}, referenced by %s{referencedIn.FullName}, is not loaded, and this context is not permitted to load it."
+            $"Assembly %s{reference.FullName}, referenced by %s{referencedIn.FullName}, is not loaded, and this context is not permitted to load it."
 
     /// The reference that did not bind, whichever way it failed to.
     member this.Reference : WoofWare.PawPrint.AssemblyReference =
@@ -2133,7 +2133,7 @@ module Concretization =
         | unexpected ->
             failwithf
                 "Unexpected TypeDefn shape while resolving base type from %s: %O"
-                sourceAssembly.Name.FullName
+                sourceAssembly.DefinitionFullName
                 unexpected
 
     /// <remarks>

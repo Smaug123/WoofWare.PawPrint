@@ -893,7 +893,7 @@ type LoadedAssemblies =
     /// have, and fail outright for one that was never written to disk.
     /// </remarks>
     member this.TryResolveReference (reference : WoofWare.PawPrint.AssemblyReference) : DumpedAssembly option =
-        let refFullName = reference.Name.FullName
+        let refFullName = reference.FullName
 
         match this.Bindings.TryGetValue refFullName with
         | true, definitionName -> this.TryByDefinitionName definitionName
@@ -913,7 +913,7 @@ type LoadedAssemblies =
     /// carries — see <c>DumpedAssembly.HasSameContentAs</c>.
     /// </remarks>
     member private this.Canonicalise (assy : DumpedAssembly) (describeRequester : unit -> string) : DumpedAssembly =
-        match this.ByDefinition.TryGetValue assy.Name.FullName with
+        match this.ByDefinition.TryGetValue assy.DefinitionFullName with
         | false, _ -> assy
         | true, existing ->
             // The content comparison only runs when two non-reference-equal instances
@@ -921,7 +921,7 @@ type LoadedAssemblies =
             if not (existing.HasSameContentAs assy) then
                 failwithf
                     "Two different assemblies both claim definition identity %s (module version IDs %O and %O, and their metadata differs). Refusing to guess which one %s refers to."
-                    assy.Name.FullName
+                    assy.DefinitionFullName
                     existing.ModuleVersionId
                     assy.ModuleVersionId
                     (describeRequester ())
@@ -953,8 +953,8 @@ type LoadedAssemblies =
 
         if Object.ReferenceEquals (canonical, assy) then
             { this with
-                ByDefinition = this.ByDefinition.SetItem (assy.Name.FullName, assy)
-                LoadOrder = this.LoadOrderWith assy.Name.FullName
+                ByDefinition = this.ByDefinition.SetItem (assy.DefinitionFullName, assy)
+                LoadOrder = this.LoadOrderWith assy.DefinitionFullName
             }
         else
             this
@@ -970,13 +970,13 @@ type LoadedAssemblies =
         (assy : DumpedAssembly)
         : LoadedAssemblies * DumpedAssembly
         =
-        let definitionName = assy.Name.FullName
-        let canonical = this.Canonicalise assy (fun () -> reference.Name.FullName)
+        let definitionName = assy.DefinitionFullName
+        let canonical = this.Canonicalise assy (fun () -> reference.FullName)
 
         let result =
             {
                 ByDefinition = this.ByDefinition.SetItem (definitionName, canonical)
-                Bindings = this.Bindings.SetItem (reference.Name.FullName, definitionName)
+                Bindings = this.Bindings.SetItem (reference.FullName, definitionName)
                 LoadOrder = this.LoadOrderWith definitionName
             }
 
@@ -1019,7 +1019,7 @@ module LoadedAssemblies =
             failwithf
                 "While resolving %s: loaded %s (referenced by %s), but it is still not bound afterwards. Retrying would loop forever; the load context has probably filed it under the wrong identity."
                 context
-                reference.Name.FullName
+                reference.FullName
                 (snd reference.Handle).FullName
 
 /// <summary>
@@ -1058,9 +1058,9 @@ type TypeResolutionResult =
 
     override this.ToString () : string =
         match this with
-        | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.Name.FullName})"
+        | TypeResolutionResult.FirstLoadAssy a -> $"FirstLoadAssy(%s{a.FullName})"
         | TypeResolutionResult.Resolved (assy, identity, ty) ->
-            $"Resolved(%s{assy.Name.FullName}: %O{identity} {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
+            $"Resolved(%s{assy.DefinitionFullName}: %O{identity} {string<TypeInfo<TypeDefn, TypeDefn>> ty})"
         | TypeResolutionResult.NotFound miss -> $"NotFound(%O{miss})"
 
 [<RequireQualifiedAccess>]
@@ -1559,7 +1559,7 @@ module Assembly =
             |> checkedManifestResourceRelativeVirtualAddress resourceName
 
         {
-            AssemblyFullName = assy.Name.FullName
+            AssemblyFullName = assy.DefinitionFullName
             Name = resourceName
             PayloadRelativeVirtualAddress = payloadRva
             PayloadLength = payloadLength
@@ -1606,7 +1606,7 @@ module Assembly =
                     // AssemblyNative_GetResource implementation can make that policy, including
                     // File row flag checks, explicit.
                     {
-                        AssemblyFullName = assy.Name.FullName
+                        AssemblyFullName = assy.DefinitionFullName
                         Name = name
                         FileName = fileName
                         Offset = resource.Offset
@@ -1692,7 +1692,7 @@ module Assembly =
         =
         TypeResolutionResult.Resolved (
             assy,
-            ResolvedTypeIdentity.ofTypeDefinition assy.Name ty.TypeDefHandle,
+            ResolvedTypeIdentity.ofDefinitionInAssembly assy.DefinitionFullName ty.TypeDefHandle,
             TypeInfo.applyGenericArgs genericArgs ty
         )
 
@@ -1701,11 +1701,11 @@ module Assembly =
         (identity : ResolvedTypeIdentity)
         : TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        if assy.Name.FullName <> identity.AssemblyFullName then
+        if assy.DefinitionFullName <> identity.AssemblyFullName then
             failwithf
                 "ResolvedTypeIdentity points at assembly %s but attempted lookup used assembly %s"
                 identity.AssemblyFullName
-                assy.Name.FullName
+                assy.DefinitionFullName
 
         match assy.TypeDefs.TryGetValue identity.TypeDefinition.Get with
         | true, defn -> defn
@@ -1713,7 +1713,7 @@ module Assembly =
             failwithf
                 "ResolvedTypeIdentity points at missing type definition handle %A in assembly %s"
                 identity.TypeDefinition.Get
-                assy.Name.FullName
+                assy.DefinitionFullName
 
     let rec fullName (assy : DumpedAssembly) (identity : ResolvedTypeIdentity) : string =
         resolveTypeIdentityDefinition assy identity
@@ -1735,7 +1735,7 @@ module Assembly =
             match assy.TryGetTopLevelExportedType ns name with
             | Some export -> resolveTypeFromExport assy assemblies genericArgs export
             | None ->
-                TypeResolutionMiss.TopLevelTypeAbsent (assy.Name.FullName, ns, name)
+                TypeResolutionMiss.TopLevelTypeAbsent (assy.DefinitionFullName, ns, name)
                 |> TypeResolutionResult.NotFound
 
     // No exported-type fallback is needed here (unlike resolveTopLevelTypeInAssembly).
@@ -1756,7 +1756,7 @@ module Assembly =
         match assy.TryGetNestedTypeDef declaringType.TypeDefinition.Get childName with
         | Some typeDef -> resolveDefinedType genericArgs assy typeDef
         | None ->
-            TypeResolutionMiss.NestedTypeAbsent (assy.Name.FullName, fullName assy declaringType, childName)
+            TypeResolutionMiss.NestedTypeAbsent (assy.DefinitionFullName, fullName assy declaringType, childName)
             |> TypeResolutionResult.NotFound
 
     and private resolveTypeRefInAssembly
@@ -1779,11 +1779,11 @@ module Assembly =
         | Some parent ->
             match targetAssembly.TryGetNestedTypeDef parent.TypeDefinition.Get exportedType.Name with
             | Some nested ->
-                ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name nested.TypeDefHandle
+                ResolvedTypeIdentity.ofDefinitionInAssembly targetAssembly.DefinitionFullName nested.TypeDefHandle
                 |> Ok
             | None ->
                 TypeResolutionMiss.NestedTypeAbsent (
-                    targetAssembly.Name.FullName,
+                    targetAssembly.DefinitionFullName,
                     fullName targetAssembly parent,
                     exportedType.Name
                 )
@@ -1793,11 +1793,11 @@ module Assembly =
 
             match targetAssembly.TryGetTopLevelTypeDef nsString exportedType.Name with
             | Some topLevel ->
-                ResolvedTypeIdentity.ofTypeDefinition targetAssembly.Name topLevel.TypeDefHandle
+                ResolvedTypeIdentity.ofDefinitionInAssembly targetAssembly.DefinitionFullName topLevel.TypeDefHandle
                 |> Ok
             | None ->
                 TypeResolutionMiss.TopLevelTypeAbsent (
-                    targetAssembly.Name.FullName,
+                    targetAssembly.DefinitionFullName,
                     exportedType.Namespace,
                     exportedType.Name
                 )
@@ -1835,7 +1835,7 @@ module Assembly =
             failwithf
                 "AssemblyFile exported types are not yet supported while resolving %A from %s"
                 ty.Handle
-                fromAssembly.Name.FullName
+                fromAssembly.DefinitionFullName
 
     and resolveTypeRef
         (assemblies : LoadedAssemblies)
@@ -1851,7 +1851,7 @@ module Assembly =
                 failwithf
                     "AssemblyReferenceHandle %A not found in assembly %s. Available references: %A"
                     r
-                    referencedInAssembly.Name.FullName
+                    referencedInAssembly.DefinitionFullName
                     (referencedInAssembly.AssemblyReferences.Keys |> Seq.toList)
             | true, assemblyRef ->
 
@@ -1879,7 +1879,7 @@ module Assembly =
                 "ModuleRef type resolution is not yet supported for type %s.%s in assembly %s via module ref %A"
                 target.Namespace
                 target.Name
-                referencedInAssembly.Name.FullName
+                referencedInAssembly.DefinitionFullName
                 moduleRef
 
     and resolveTopLevelTypeFromName
@@ -1911,7 +1911,7 @@ module DumpedAssembly =
         | TypeResolutionResult.FirstLoadAssy _ ->
             failwith "seems pretty unlikely that we could have constructed this object without loading its base type"
         | TypeResolutionResult.NotFound miss ->
-            failwithf "Base type reference from %s does not resolve: %O" a.Name.FullName miss
+            failwithf "Base type reference from %s does not resolve: %O" a.DefinitionFullName miss
 
     let private getTypeSpec
         (loadedAssemblies : LoadedAssemblies)
@@ -1936,18 +1936,18 @@ module DumpedAssembly =
                 | TypeResolutionResult.FirstLoadAssy assyRef ->
                     failwithf
                         "Base type traversal unexpectedly needed to load assembly %s while resolving %O from %s"
-                        assyRef.Name.FullName
+                        assyRef.FullName
                         signature
-                        a.Name.FullName
+                        a.DefinitionFullName
                 | TypeResolutionResult.NotFound miss ->
-                    failwithf "Base type traversal could not resolve %O from %s: %O" signature a.Name.FullName miss
+                    failwithf "Base type traversal could not resolve %O from %s: %O" signature a.DefinitionFullName miss
                 | TypeResolutionResult.Resolved (resolvedAssembly, _, resolvedType) ->
                     resolvedAssembly, resolvedType.TypeDefHandle
             | unexpected ->
                 failwithf
                     "Unexpected TypeSpec base type shape while resolving %O from %s: %O"
                     signature
-                    a.Name.FullName
+                    a.DefinitionFullName
                     unexpected
 
         go a signature

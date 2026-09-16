@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
@@ -127,7 +128,32 @@ module ExecutionConcretization =
           WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
           ConcreteTypeHandle
         =
-        // Now concretize the entire method
+        // `Concretization.concretizeMethod` reads the definition's metadata, the two handle
+        // lists, and of the declaring type only its identity and its generic *arity*; so that
+        // is the key. A dynamic method has no declaring type and is not memoised.
+        let key : ConcreteMethodKey option =
+            match methodToCall.Owner with
+            | MethodOwner.DynamicMethodsClass _ -> None
+            | MethodOwner.DeclaredOn declaringType ->
+                let row, synthesised = methodToCall.IdentityKey
+
+                Some
+                    {
+                        DeclaringType = declaringType.Identity
+                        MethodRow =
+                            row
+                            |> Option.map (fun h ->
+                                MetadataTokens.GetRowNumber (MethodDefinitionHandle.op_Implicit h : EntityHandle)
+                            )
+                        Synthesised = synthesised
+                        TypeGenerics = List.ofSeq typeGenerics
+                        MethodGenerics = List.ofSeq methodGenerics
+                    }
+
+        match key |> Option.bind (fun key -> Map.tryFind key state._ConcretisedMethods) with
+        | Some hit -> state, hit.Method, hit.DeclaringTypeHandle
+        | None ->
+
         let concretizedMethod, newConcreteTypes, newAssemblies =
             Concretization.concretizeMethod
                 state.ConcreteTypes
@@ -144,7 +170,6 @@ module ExecutionConcretization =
                 _LoadedAssemblies = newAssemblies
             }
 
-        // Get the handle for the declaring type
         let declaringTypeHandle =
             match
                 AllConcreteTypes.findExistingConcreteType
@@ -154,6 +179,17 @@ module ExecutionConcretization =
             with
             | Some handle -> handle
             | None -> failwith "Concretized method's declaring type not found in ConcreteTypes"
+
+        let state =
+            match key with
+            | None -> state
+            | Some key ->
+                state.WithConcretisedMethod
+                    key
+                    {
+                        Method = concretizedMethod
+                        DeclaringTypeHandle = declaringTypeHandle
+                    }
 
         state, concretizedMethod, declaringTypeHandle
 

@@ -98,10 +98,17 @@ static class Program
             }
 
             // The EE's four-argument constructor also stores the mscorrc resource id of the
-            // message's format string (6063 here) and a null message argument. No guest can read
-            // them yet: `GetObjectData` also reports `TargetSite`, which needs
-            // `ExceptionNative_GetMethodFromStackTrace`, and `FieldInfo.GetValue` on the private
-            // fields needs `RuntimeFieldHandle_GetValue`; PawPrint implements neither.
+            // message's format string and a null message argument. Reflection is the one way a
+            // guest can read them: `GetObjectData` would report them too, but it also reports
+            // `TargetSite`, which needs `ExceptionNative_GetMethodFromStackTrace`.
+            BindingFlags privateInstance = BindingFlags.NonPublic | BindingFlags.Instance;
+            object resourceId = typeof(TypeLoadException).GetField("_resourceId", privateInstance).GetValue(e);
+            if ((int)resourceId != 6063)
+            {
+                Console.Error.WriteLine($"_resourceId: {resourceId}");
+                return 27;
+            }
+            if (typeof(TypeLoadException).GetField("_messageArg", privateInstance).GetValue(e) != null) return 28;
         }
 
         return null;

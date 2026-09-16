@@ -250,16 +250,132 @@ module NativeRuntimeFieldHandle =
     /// recorded when the guest asked for the handle, rather than the `m_declaringType` view the
     /// managed caller also passes. The registry's target *is* the field's identity — a closed
     /// instantiation and its open definition allocate distinct ids — so binding the cctor check
-    /// and the storage key to it cannot drift from the field we are about to write.
+    /// and the storage key to it cannot drift from the field we are about to read or write.
     let private declaringTypeOfFieldHandle (operation : string) (fieldHandle : FieldHandle) : ConcreteTypeHandle =
         match fieldHandle.GetDeclaringTypeHandle () with
         | RuntimeTypeHandleTarget.Closed handle -> handle
         | notClosed ->
             // `FieldAccessor`'s constructor routes a declaring type with generic parameters to
             // `FieldAccessorType.NoInvoke` (FieldAccessor.cs:22-27), which throws before any QCall
-            // runs, so no guest reaches this through `FieldInfo.SetValue`.
+            // runs, so no guest reaches this through `FieldInfo.GetValue` or `SetValue`.
             failwith
                 $"%s{operation}: declaring type %O{notClosed} is not closed; CoreCLR raises NotSupportedException for a declaring type shared by generic instantiations (invokeutil.cpp:777), and the managed caller refuses one containing generic parameters before reaching here"
+
+    /// The `bool` a `[MarshalAs(UnmanagedType.Bool)] ref bool` argument addresses, which reaches
+    /// us as a four-byte cell.
+    let private readIsClassInitialized
+        (ctx : NativeCallContext)
+        (operation : string)
+        (isClassInitializedPtr : ManagedPointerSource)
+        (state : IlMachineState)
+        : bool
+        =
+        match IlMachineState.readManagedByref ctx.BaseClassTypes state isClassInitializedPtr with
+        | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
+        | other -> failwith $"%s{operation}: expected Int32 in pIsClassInitialized, got %O{other}"
+
+    /// The object an `ObjectHandleOnStack` argument addresses.
+    let private objectHandleOnStackContents
+        (ctx : NativeCallContext)
+        (operation : string)
+        (argName : string)
+        (arg : CliType)
+        (state : IlMachineState)
+        : ManagedHeapAddress option
+        =
+        let ptr = NativeCall.objectHandleOnStackTarget operation state argName arg
+
+        // An `ObjectHandleOnStack` names a slot holding an object reference, so this wants the
+        // object-aware reader rather than the byte-view one.
+        match IlMachineState.readManagedByref ctx.BaseClassTypes state ptr with
+        | CliType.ObjectRef addr -> addr
+        | other -> failwith $"%s{operation}: expected ObjectRef in %s{argName} ObjectHandleOnStack, got %O{other}"
+
+    /// Run the declaring type's class initialiser if the caller has not vouched that it has run.
+    /// `Choice2Of2` is the handler's early return: the initialiser has been pushed as a frame (or
+    /// is blocked on another thread's run of it), and the handler will be re-entered from the top
+    /// once it completes.
+    ///
+    /// As an *input* the flag means "the caller has already established the class is
+    /// initialised, so skip the check"; `FieldAccessor`'s permanent `SlowPath` state passes
+    /// `true` (FieldAccessor.cs:193, :329) and its first-call state passes `false` (:177, :301).
+    /// CoreCLR guards the cctor run on exactly this (invokeutil.cpp:785, :1010).
+    let private ensureDeclaringClassInitialised
+        (ctx : NativeCallContext)
+        (operation : string)
+        (declaringTypeHandle : ConcreteTypeHandle)
+        (incomingIsClassInitialized : bool)
+        (state : IlMachineState)
+        : Choice<IlMachineState, NativeHandlerResult>
+        =
+        if incomingIsClassInitialized then
+            Choice1Of2 state
+        else
+            match TypeInitTable.tryGet declaringTypeHandle state.TypeInitTable with
+            | Some (TypeInitState.Failed _) ->
+                // Refusing here rather than delegating is deliberate. CoreCLR catches a
+                // failing initialiser and throws a *fresh* `TargetInvocationException`
+                // wrapping the `TypeInitializationException` (`CreateTargetExcept`,
+                // invokeutil.cpp:803, :1028) — unlike `ReflectionInvocation_RunClassConstructor`,
+                // which lets it through unwrapped. `ensureTypeInitialised` dispatches the
+                // cached exception itself, so once it has returned there is nothing left
+                // to wrap; catching the already-failed state is the only interception
+                // point we have. See docs/divergences.md for the sibling case — an
+                // initialiser that fails *during* this call — which is not interceptable
+                // at all today.
+                failwith
+                    $"TODO: %s{operation} on a field of %O{declaringTypeHandle}, whose class initialiser has already failed; CoreCLR wraps the cached TypeInitializationException in a TargetInvocationException, which PawPrint cannot yet construct from here"
+            | _ ->
+
+            // If the initialiser has to run, it is pushed as a frame and this native
+            // frame stays on the stack; when it returns we are re-entered and
+            // `ensureTypeInitialised` answers `Executed`.
+            let state, whatWeDid =
+                IlMachineStateExecution.ensureTypeInitialised
+                    ctx.LoggerFactory
+                    ctx.BaseClassTypes
+                    ctx.Thread
+                    declaringTypeHandle
+                    state
+
+            match NativeHandlerResult.tryEarlyReturn ctx.Thread (state, whatWeDid) with
+            | Some earlyReturn -> Choice2Of2 earlyReturn
+            | None -> Choice1Of2 state
+
+    /// Whether the *initialiser has completed*, which is what CoreCLR reports
+    /// (`pDeclMT->IsClassInited()`, invokeutil.cpp:791, :1016) and what the write side's init-only
+    /// gate reads (:811). `InProgress` is deliberately not "initialised": that is what makes
+    /// reflectively setting a static readonly field from inside its own declaring type's
+    /// initialiser legal, exactly as on real .NET.
+    let private declaringClassIsInitialised (declaringTypeHandle : ConcreteTypeHandle) (state : IlMachineState) : bool =
+        match TypeInitTable.tryGet declaringTypeHandle state.TypeInitTable with
+        | Some TypeInitState.Initialized -> true
+        | Some (TypeInitState.InProgress _)
+        | Some (TypeInitState.Failed _)
+        | None -> false
+
+    /// The out-parameter half of `pIsClassInitialized`.
+    let private writeBackIsClassInitialized
+        (ctx : NativeCallContext)
+        (isClassInitializedPtr : ManagedPointerSource)
+        (incomingIsClassInitialized : bool)
+        (classIsInitialised : bool)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        if incomingIsClassInitialized then
+            // CoreCLR writes this cell only inside its `if (*pIsClassInitialized == FALSE)`
+            // block (invokeutil.cpp:785-794, :1010-1019), leaving the caller's `true` alone
+            // otherwise. Recomputing it would answer "not initialised" for a type the caller
+            // vouched for but which has no `TypeInitTable` entry of ours — a worse answer than
+            // the one it supplied, and not one it asked us to revisit.
+            state
+        else
+            IlMachineState.writeManagedByrefWithBase
+                ctx.BaseClassTypes
+                state
+                isClassInitializedPtr
+                (CliType.Numeric (CliNumericType.Int32 (if classIsInitialised then 1 else 0)))
 
     /// The value to store in a field of type `fieldTypeHandle`, given the `object?` the managed
     /// caller boxed it into. Mirrors the split in `InvokeUtil::SetValidField`
@@ -322,6 +438,57 @@ module NativeRuntimeFieldHandle =
 
         state, EvalStackValue.toCliTypeCoerced zero (EvalStackValue.ofCliType contents)
 
+    /// The `object?` to hand back for the cell of a field of type `fieldTypeHandle`. Mirrors the
+    /// switch in `InvokeUtil::GetFieldValue` (invokeutil.cpp:1035-1137): the reference-typed arms
+    /// answer the `OBJECTREF` itself, and every value-typed arm allocates a box of the *field's*
+    /// type and copies the cell into it — so an enum field answers a boxed enum, not a boxed
+    /// integer — with `Nullable::NormalizeBox` then turning a `Nullable<T>` box into null or a
+    /// boxed `T`. `Boxing.boxValue` is that whole rule, shared with the `box` opcode.
+    let private valueToReturn
+        (ctx : NativeCallContext)
+        (operation : string)
+        (fieldTypeHandle : ConcreteTypeHandle)
+        (cell : CliType)
+        (state : IlMachineState)
+        : IlMachineState * CliType
+        =
+        match fieldTypeHandle with
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            // CoreCLR's `ELEMENT_TYPE_PTR` arm answers a `System.Reflection.Pointer` around the raw
+            // address, and its `ELEMENT_TYPE_FNPTR` arm a boxed `IntPtr` holding it (measured:
+            // `typeof(P).GetField("Ptr").GetValue(p).GetType()` is `System.Reflection.Pointer`).
+            // PawPrint's pointer cell carries provenance rather than an address to wrap, and the
+            // `box` opcode refuses a pointer type for the same reason (`executeBox`).
+            failwith
+                $"TODO: %s{operation} on a field of pointer type %O{fieldTypeHandle}; CoreCLR answers a System.Reflection.Pointer (or a boxed IntPtr for a function pointer) around the raw address, which PawPrint's provenance-tracked pointer cannot supply"
+        | ConcreteTypeHandle.Byref _ ->
+            // A `ref` field lives only in a ref struct, which cannot be boxed, so no instance can
+            // reach `FieldInfo.GetValue` with one.
+            failwith
+                $"BUG: %s{operation} on a field of byref type %O{fieldTypeHandle}; only a ref struct declares one, and a ref struct instance cannot be handed to reflection"
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Concrete _ ->
+
+        if IlMachineState.isReferenceTypeHandle ctx.BaseClassTypes operation state fieldTypeHandle then
+            match cell with
+            | CliType.ObjectRef _ -> state, cell
+            | other ->
+                failwith
+                    $"BUG: %s{operation}: the cell of a field of reference type %O{fieldTypeHandle} holds %O{other} rather than an object reference"
+        else
+
+        let boxed, state =
+            Boxing.boxValue ctx.LoggerFactory ctx.BaseClassTypes fieldTypeHandle (EvalStackValue.ofCliType cell) state
+
+        match boxed with
+        | EvalStackValue.ObjectRef addr -> state, CliType.ObjectRef (Some addr)
+        | EvalStackValue.NullObjectRef -> state, CliType.ObjectRef None
+        | other ->
+            failwith
+                $"BUG: %s{operation}: boxing the cell of a field of type %O{fieldTypeHandle} produced %O{other}, expected an object reference"
+
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
         let instruction = ctx.Instruction
@@ -334,6 +501,127 @@ module NativeRuntimeFieldHandle =
             instruction.ExecutingMethod.Signature.ParameterTypes,
             instruction.ExecutingMethod.Signature.ReturnType
         with
+        | "RuntimeFieldHandle_GetValue",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeFieldHandle",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", instanceGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", fieldTypeGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", declaringTypeGenerics)
+            ConcretePointer (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "ObjectHandleOnStack", resultGenerics) ],
+          MethodReturnType.Void when
+            instanceGenerics.IsEmpty
+            && fieldTypeGenerics.IsEmpty
+            && declaringTypeGenerics.IsEmpty
+            && resultGenerics.IsEmpty
+            ->
+            // CoreCLR's `RuntimeFieldHandle_GetValue` (reflectioninvocation.cpp:28), which is
+            // `InvokeUtil::GetFieldValue` (invokeutil.cpp:972) once the arguments are unpacked.
+            // This is the primitive under every `FieldInfo.GetValue`: `FieldAccessor` reaches its
+            // address-based fast paths only when `IsFastPathSupported` says a raw offset exists,
+            // and PawPrint answers `false` there, so *all* reflective field reads land here.
+            let operation = "RuntimeFieldHandle_GetValue"
+
+            let fieldHandle =
+                fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
+
+            let _declaringAssy, fieldInfo =
+                FieldRvaData.fieldForHandle operation fieldHandle state
+
+            let declaringTypeHandle = declaringTypeOfFieldHandle operation fieldHandle
+
+            let isClassInitializedPtr =
+                NativeCall.managedPointerOfPointerArgument operation "pIsClassInitialized" instruction.Arguments.[4]
+
+            let incomingIsClassInitialized =
+                readIsClassInitialized ctx operation isClassInitializedPtr state
+
+            match
+                ensureDeclaringClassInitialised ctx operation declaringTypeHandle incomingIsClassInitialized state
+            with
+            | Choice2Of2 result -> Some result
+            | Choice1Of2 state ->
+
+            let classIsInitialised = declaringClassIsInitialised declaringTypeHandle state
+
+            let fieldTypeHandle =
+                NativeCall.qCallTypeHandleToConcreteTypeHandle
+                    operation
+                    state
+                    (EvalStackValue.ofCliType instruction.Arguments.[2])
+
+            let isStatic = fieldInfo.Attributes.HasFlag FieldAttributes.Static
+
+            let cell, state =
+                if isStatic then
+                    if fieldInfo.HasFieldRVA then
+                        // An RVA-backed static's storage is the PE image's own bytes, which
+                        // `ldsflda` reads (`peByteRangeForFieldRva`, UnaryMetadataFieldOps.fs)
+                        // while `ldsfld` reads the ordinary static slot no store has touched. The
+                        // write side refuses this shape for the same asymmetry; answering here
+                        // would mean picking one of the two readings the opcodes disagree on.
+                        failwith
+                            $"TODO: %s{operation} on the RVA-backed static field %s{fieldInfo.Name}; its storage is the PE byte range that `ldsflda` reads, which `getStatic` does not see"
+
+                    // A `[ThreadStatic]` field reads the calling thread's own slot, as `ldsfld`
+                    // does; that is also the one field kind for which CoreCLR itself answers
+                    // `IsFastPathSupported = false`, so both runtimes reach this by the same route.
+                    match
+                        IlMachineState.getStatic
+                            (StaticOwner.forField ctx.Thread fieldInfo)
+                            declaringTypeHandle
+                            (ComparableFieldDefinitionHandle.Make fieldInfo.Handle)
+                            state
+                    with
+                    | Some cell -> cell, state
+                    | None ->
+                        // Storage no `stsfld` has touched holds the field type's zero, which is
+                        // what `ldsfld` answers (and stores back; a read need not).
+                        IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes fieldTypeHandle
+                else
+
+                let target =
+                    match objectHandleOnStackContents ctx operation "instance" instruction.Arguments.[1] state with
+                    | Some addr -> addr
+                    | None ->
+                        // Managed `VerifyTarget` (FieldAccessor.cs:351) has already thrown
+                        // `TargetException` for a null instance, so this cannot arrive.
+                        failwith
+                            $"%s{operation}: null instance for the instance field %s{fieldInfo.Name}; the managed caller checks this before the QCall"
+
+                let fieldId = FieldId.metadata declaringTypeHandle fieldInfo.Handle fieldInfo.Name
+
+                // The same two-step read as `ldfld` on an object reference: a field whose
+                // canonical storage lies outside the field map (`String._firstChar`,
+                // `RawArrayData::Length`) is projected, and everything else is looked up. A
+                // boxed-struct target is an ordinary non-array object keyed by the same
+                // `FieldId`s, so `FieldInfo.GetValue(boxedStruct)` reads out of the box.
+                match RuntimeFieldProjection.tryProjectFieldLoad ctx.BaseClassTypes fieldInfo target state with
+                | Some cell -> cell, state
+                | None ->
+                    AllocatedNonArrayObject.DereferenceFieldById fieldId (ManagedHeap.get target state.ManagedHeap),
+                    state
+
+            let state, result = valueToReturn ctx operation fieldTypeHandle cell state
+
+            let resultPtr =
+                NativeCall.objectHandleOnStackTarget operation state "result" instruction.Arguments.[5]
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state resultPtr result
+
+            let state =
+                writeBackIsClassInitialized
+                    ctx
+                    isClassInitializedPtr
+                    incomingIsClassInitialized
+                    classIsInitialised
+                    state
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeFieldHandle_SetValue",
           "System.Private.CoreLib",
           "System",
@@ -370,65 +658,15 @@ module NativeRuntimeFieldHandle =
                 NativeCall.managedPointerOfPointerArgument operation "pIsClassInitialized" instruction.Arguments.[5]
 
             let incomingIsClassInitialized =
-                // `[MarshalAs(UnmanagedType.Bool)] ref bool` reaches us as a four-byte cell.
-                match IlMachineState.readManagedByref ctx.BaseClassTypes state isClassInitializedPtr with
-                | CliType.Numeric (CliNumericType.Int32 i) -> i <> 0
-                | other -> failwith $"%s{operation}: expected Int32 in pIsClassInitialized, got %O{other}"
+                readIsClassInitialized ctx operation isClassInitializedPtr state
 
-            // As an *input* the flag means "the caller has already established the class is
-            // initialised, so skip the check"; `FieldAccessor`'s permanent `SlowPath` state passes
-            // `true` (FieldAccessor.cs:329) and its first-call state passes `false` (:301).
-            // CoreCLR guards the cctor run on exactly this (invokeutil.cpp:785).
-            let classInitOutcome : Choice<IlMachineState, NativeHandlerResult> =
-                if incomingIsClassInitialized then
-                    Choice1Of2 state
-                else
-                    match TypeInitTable.tryGet declaringTypeHandle state.TypeInitTable with
-                    | Some (TypeInitState.Failed _) ->
-                        // Refusing here rather than delegating is deliberate. CoreCLR catches a
-                        // failing initialiser and throws a *fresh* `TargetInvocationException`
-                        // wrapping the `TypeInitializationException` (`CreateTargetExcept`,
-                        // invokeutil.cpp:803) — unlike `ReflectionInvocation_RunClassConstructor`,
-                        // which lets it through unwrapped. `ensureTypeInitialised` dispatches the
-                        // cached exception itself, so once it has returned there is nothing left
-                        // to wrap; catching the already-failed state is the only interception
-                        // point we have. See docs/divergences.md for the sibling case — an
-                        // initialiser that fails *during* this call — which is not interceptable
-                        // at all today.
-                        failwith
-                            $"TODO: %s{operation} on a field of %O{declaringTypeHandle}, whose class initialiser has already failed; CoreCLR wraps the cached TypeInitializationException in a TargetInvocationException, which PawPrint cannot yet construct from here"
-                    | _ ->
-
-                    // If the initialiser has to run, it is pushed as a frame and this native
-                    // frame stays on the stack; when it returns we are re-entered and
-                    // `ensureTypeInitialised` answers `Executed`.
-                    let state, whatWeDid =
-                        IlMachineStateExecution.ensureTypeInitialised
-                            ctx.LoggerFactory
-                            ctx.BaseClassTypes
-                            ctx.Thread
-                            declaringTypeHandle
-                            state
-
-                    match NativeHandlerResult.tryEarlyReturn ctx.Thread (state, whatWeDid) with
-                    | Some earlyReturn -> Choice2Of2 earlyReturn
-                    | None -> Choice1Of2 state
-
-            match classInitOutcome with
+            match
+                ensureDeclaringClassInitialised ctx operation declaringTypeHandle incomingIsClassInitialized state
+            with
             | Choice2Of2 result -> Some result
             | Choice1Of2 state ->
 
-            // Whether the *initialiser has completed*, which is what CoreCLR reports
-            // (`pDeclMT->IsClassInited()`, invokeutil.cpp:791) and what the init-only gate below
-            // reads (:811). `InProgress` is deliberately not "initialised": that is what makes
-            // reflectively setting a static readonly field from inside its own declaring type's
-            // initialiser legal, exactly as on real .NET.
-            let classIsInitialised =
-                match TypeInitTable.tryGet declaringTypeHandle state.TypeInitTable with
-                | Some TypeInitState.Initialized -> true
-                | Some (TypeInitState.InProgress _)
-                | Some (TypeInitState.Failed _)
-                | None -> false
+            let classIsInitialised = declaringClassIsInitialised declaringTypeHandle state
 
             let isStatic = fieldInfo.Attributes.HasFlag FieldAttributes.Static
 
@@ -452,18 +690,8 @@ module NativeRuntimeFieldHandle =
                     state
                     (EvalStackValue.ofCliType instruction.Arguments.[3])
 
-            let readObjectHandle (argName : string) (index : int) : ManagedHeapAddress option =
-                let ptr =
-                    NativeCall.objectHandleOnStackTarget operation state argName instruction.Arguments.[index]
-
-                // An `ObjectHandleOnStack` names a slot holding an object reference, so this wants
-                // the object-aware reader rather than the byte-view one.
-                match IlMachineState.readManagedByref ctx.BaseClassTypes state ptr with
-                | CliType.ObjectRef addr -> addr
-                | other ->
-                    failwith $"%s{operation}: expected ObjectRef in %s{argName} ObjectHandleOnStack, got %O{other}"
-
-            let value = readObjectHandle "value" 2
+            let value =
+                objectHandleOnStackContents ctx operation "value" instruction.Arguments.[2] state
 
             let state, toStore = valueToStore ctx operation fieldTypeHandle value state
 
@@ -499,7 +727,7 @@ module NativeRuntimeFieldHandle =
                 else
 
                 let target =
-                    match readObjectHandle "instance" 1 with
+                    match objectHandleOnStackContents ctx operation "instance" instruction.Arguments.[1] state with
                     | Some addr -> addr
                     | None ->
                         // Managed `VerifyTarget` (FieldAccessor.cs:351) has already thrown
@@ -527,19 +755,12 @@ module NativeRuntimeFieldHandle =
                     }
 
             let state =
-                if incomingIsClassInitialized then
-                    // CoreCLR writes this cell only inside its `if (*pIsClassInitialized == FALSE)`
-                    // block (invokeutil.cpp:785-794), leaving the caller's `true` alone otherwise.
-                    // Recomputing it would answer "not initialised" for a type the caller vouched
-                    // for but which has no `TypeInitTable` entry of ours — a worse answer than the
-                    // one it supplied, and not one it asked us to revisit.
+                writeBackIsClassInitialized
+                    ctx
+                    isClassInitializedPtr
+                    incomingIsClassInitialized
+                    classIsInitialised
                     state
-                else
-                    IlMachineState.writeManagedByrefWithBase
-                        ctx.BaseClassTypes
-                        state
-                        isClassInitializedPtr
-                        (CliType.Numeric (CliNumericType.Int32 (if classIsInitialised then 1 else 0)))
 
             NativeHandlerResult.completed state |> Some
         | "RuntimeFieldHandle_GetRVAFieldInfo",

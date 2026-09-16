@@ -31,18 +31,6 @@ module NativeMarshal =
         | "System.Private.CoreLib",
           "System.Runtime.InteropServices",
           "Marshal",
-          "GetLastSystemError",
-          [],
-          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
-            state
-            |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int32 (Int32Source.Verbatim (EmulatedKernel.lastSystemErrorFor ctx.Thread state.Kernel)))
-                ctx.Thread
-            |> NativeHandlerResult.completed
-            |> Some
-        | "System.Private.CoreLib",
-          "System.Runtime.InteropServices",
-          "Marshal",
           "SetLastPInvokeError",
           [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
           MethodReturnType.Void ->
@@ -50,18 +38,6 @@ module NativeMarshal =
                 NativeCall.int32Argument "Marshal.SetLastPInvokeError" instruction.Arguments.[0]
 
             state.MapKernel (EmulatedKernel.withLastPInvokeError ctx.Thread error)
-            |> NativeHandlerResult.completed
-            |> Some
-        | "System.Private.CoreLib",
-          "System.Runtime.InteropServices",
-          "Marshal",
-          "SetLastSystemError",
-          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ],
-          MethodReturnType.Void ->
-            let error =
-                NativeCall.int32Argument "Marshal.SetLastSystemError" instruction.Arguments.[0]
-
-            state.MapKernel (EmulatedKernel.withLastSystemError ctx.Thread error)
             |> NativeHandlerResult.completed
             |> Some
         | _ -> None

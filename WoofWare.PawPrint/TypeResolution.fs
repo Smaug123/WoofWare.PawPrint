@@ -278,12 +278,12 @@ module TypeResolution =
         | _, ExportedTypeResolution.AssemblyUnavailable reference ->
             failwith $"Could not find a readable DLL in any runtime dir with name %s{reference.Name.Name}.dll"
         | _, ExportedTypeResolution.TypeAbsent miss ->
-            failwithf "Type forwarder %s from %s does not arrive: %O" ty.Name fromAssembly.Name.FullName miss
+            failwithf "Type forwarder %s from %s does not arrive: %O" ty.Name fromAssembly.DefinitionFullName miss
         | _, ExportedTypeResolution.BaseTypeAbsent miss ->
             failwithf
                 "Type forwarder %s from %s arrives at a type whose base chain is broken: %O"
                 ty.Name
-                fromAssembly.Name.FullName
+                fromAssembly.DefinitionFullName
                 miss
 
     let rec internal resolveTypeFromRef
@@ -302,7 +302,7 @@ module TypeResolution =
             failwithf
                 "Type reference %s from %s does not resolve: %O"
                 target.Name
-                referencedInAssembly.Name.FullName
+                referencedInAssembly.DefinitionFullName
                 miss
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             let assemblies, _, _ =

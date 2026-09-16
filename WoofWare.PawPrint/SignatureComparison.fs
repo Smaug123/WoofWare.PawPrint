@@ -86,7 +86,7 @@ module SignatureComparison =
                         }
                 | false, _ ->
                     failwith
-                        $"%s{operation}: type reference %s{typeRef.Name} in %s{nominal.Module.Name.FullName} is scoped to a TypeRef row that assembly does not contain"
+                        $"%s{operation}: type reference %s{typeRef.Name} in %s{nominal.Module.DefinitionFullName} is scoped to a TypeRef row that assembly does not contain"
             | TypeRefResolutionScope.Assembly _
             | TypeRefResolutionScope.ModuleDef _
             | TypeRefResolutionScope.ModuleRef _ -> None
@@ -100,7 +100,7 @@ module SignatureComparison =
                         }
                 | false, _ ->
                     failwith
-                        $"%s{operation}: type definition %s{typeDef.Name} in %s{nominal.Module.Name.FullName} names an enclosing type that assembly does not contain"
+                        $"%s{operation}: type definition %s{typeDef.Name} in %s{nominal.Module.DefinitionFullName} names an enclosing type that assembly does not contain"
             else
                 None
 
@@ -145,11 +145,11 @@ module SignatureComparison =
         =
         if depth > maxNestingDepth then
             failwith
-                $"%s{operation}: %O{nameOf left} in %s{left.Module.Name.FullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
+                $"%s{operation}: %O{nameOf left} in %s{left.Module.DefinitionFullName} is nested more than %d{maxNestingDepth} deep; its enclosing chain is cyclic"
 
         match left.Token, right.Token with
         | NominalToken.Reference lRef, NominalToken.Reference rRef when
-            left.Module.Name.FullName = right.Module.Name.FullName
+            left.Module.DefinitionFullName = right.Module.DefinitionFullName
             && lRef.Handle = rRef.Handle
             ->
             // `tk1 == tk2` within one module, answered before anything is resolved. That step
@@ -312,7 +312,7 @@ module SignatureComparison =
                 // signature no longer knows. So refuse every pair that reaches here, including one whose
                 // parameter counts differ, rather than trying to predict it.
                 failwith
-                    $"%s{operation}: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s{leftAssembly.Name.FullName} against %s{rightAssembly.Name.FullName}); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
+                    $"%s{operation}: comparing two function pointer signatures that spell the same GENERIC calling convention and the same generic-parameter count (in %s{leftAssembly.DefinitionFullName} against %s{rightAssembly.DefinitionFullName}); from here CoreCLR compares elements read at a one-integer offset into each blob, reinterpreting the parameter-count byte as an element type, which cannot be reproduced from a decoded signature"
             elif List.length l.ParameterTypes <> List.length r.ParameterTypes then
                 // For a non-GENERIC signature this *is* CoreCLR's `argCnt` comparison: the integer it
                 // reads after the calling-convention byte is the parameter count. A GENERIC one never
@@ -443,7 +443,7 @@ module SignatureComparison =
         : LoadedAssemblies * bool
         =
         if
-            leftAssembly.Name.FullName = rightAssembly.Name.FullName
+            leftAssembly.DefinitionFullName = rightAssembly.DefinitionFullName
             && leftBytes = rightBytes
         then
             assemblies, true
