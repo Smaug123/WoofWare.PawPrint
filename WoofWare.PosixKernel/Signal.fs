@@ -297,6 +297,45 @@ module Signal =
         | Signal.SIGABRT
         | Signal.SIGURG -> false
 
+    /// Whether repeated generation of this signal queues multiple pending
+    /// instances (a real-time signal), rather than coalescing into at most one
+    /// per pending set (a standard signal).
+    ///
+    /// Linux's real-time signals are signos 32 to 64; Darwin has none at all.
+    /// A number that is not a signal under the numbering is not a real-time
+    /// signal either.
+    let isRealTimeUnder (numbering : SignalNumbering) (signal : Signal) : bool =
+        // Measured on Linux 6.18.5 / glibc 2.41: three generations of
+        // SIGRTMIN+2 (glibc's 34+2 = 36) while blocked deliver three times,
+        // via sigqueue and via kill alike, where three of SIGUSR1 deliver
+        // once; and on Darwin 25.6.0, where SIGUSR1 likewise delivers once.
+        // The range's lower end is the kernel's own threshold (its
+        // legacy_queue test is `sig < SIGRTMIN` with the kernel's SIGRTMIN of
+        // 32); its exact position is not observable through glibc, whose
+        // wrappers screen 32 and 33 — its reserved pair — out of every mask
+        // and sigaction, so those two rows follow the kernel's rule rather
+        // than a measurement.
+        match canonicalUnder numbering signal with
+        | Signal.Other rawSignal ->
+            match numbering with
+            | SignalNumbering.Linux -> rawSignal >= 32 && rawSignal <= highestSignoUnder numbering
+            | SignalNumbering.Darwin -> false
+        | Signal.SIGHUP
+        | Signal.SIGINT
+        | Signal.SIGQUIT
+        | Signal.SIGTERM
+        | Signal.SIGCHLD
+        | Signal.SIGCONT
+        | Signal.SIGWINCH
+        | Signal.SIGTSTP
+        | Signal.SIGTTIN
+        | Signal.SIGTTOU
+        | Signal.SIGPIPE
+        | Signal.SIGUSR1
+        | Signal.SIGUSR2
+        | Signal.SIGABRT
+        | Signal.SIGURG -> false
+
     /// <summary>
     /// The kernel-level default disposition for <c>signal</c>, read under the
     /// chosen platform's numbering.
