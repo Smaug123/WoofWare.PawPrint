@@ -42,14 +42,17 @@ module TestSignalDispatcherThread =
 
     [<Test>]
     let ``empty SignalState has no signal thread`` () : unit =
-        let empty : SignalState<ThreadId, SignalHandler> = SignalState.empty
+        let empty : SignalState<ThreadId, SignalHandler> =
+            SignalState.initial SignalNumbering.Linux
 
         empty |> SignalState.signalThread |> shouldEqual None
 
     [<Test>]
     let ``markInitialized records the dispatcher ThreadId`` () : unit =
         let dispatcher = ThreadId 7
-        let empty : SignalState<ThreadId, SignalHandler> = SignalState.empty
+
+        let empty : SignalState<ThreadId, SignalHandler> =
+            SignalState.initial SignalNumbering.Linux
 
         empty
         |> SignalState.markInitialized dispatcher

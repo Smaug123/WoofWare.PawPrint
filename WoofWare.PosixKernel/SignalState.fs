@@ -29,7 +29,7 @@ type PendingSignal<'Task> =
 [<RequireQualifiedAccess>]
 type SignalInitState<'Task> =
     /// Signal handling has not yet been set up; no dispatcher thread
-    /// exists. `SignalState.empty` starts here.
+    /// exists. `SignalState.initial` starts here.
     | NotInitialized
     /// The client has initialised signal handling at least
     /// `SystemNative_InitializeTerminalAndSignalHandling` at least
@@ -66,9 +66,23 @@ type SignalInitState<'Task> =
 /// polls it for deliverable signals and dispatches out of it; the data shape
 /// is exercised by property tests against a structurally-different reference
 /// oracle.
+///
+/// Every `Signal` stored here is canonical under `Numbering`, and every
+/// operation canonicalises the signal it is handed before touching the state:
+/// `Signal.Other` is a second spelling for a named signal's number, and a
+/// state that kept both spellings would let `enable (Other 17)` and
+/// `isEnabled SIGCHLD` disagree about one Linux signal. The operations are
+/// the only route in (the representation is private), so the sets and queue
+/// never hold an `Other` that names a case, an unblockable signal in a mask,
+/// or a number that is not a signal under the numbering at all.
 type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality> =
     private
         {
+            /// Whose `<signal.h>` this process's signals are read under. Fixed
+            /// at construction, like the platform it is derived from: 17 is
+            /// SIGCHLD on Linux and SIGSTOP on Darwin, so no operation on this
+            /// state is meaningful without it.
+            Numbering : SignalNumbering
             Init : SignalInitState<'Task>
             Enabled : Set<Signal>
             Blocked : Map<'Task, Set<Signal>>
@@ -86,14 +100,42 @@ type SignalState<'Task, 'Handler when 'Task : comparison and 'Handler : equality
 
 [<RequireQualifiedAccess>]
 module SignalState =
-    let empty : SignalState<'Task, 'Handler> =
+    /// The signal state a freshly-execed process starts with: nothing enabled,
+    /// nothing blocked, nothing pending. `numbering` is the platform's — see
+    /// `SimulatedUnixPlatform.signalNumbering` — and is fixed for the state's
+    /// life; `UnixSystem.checkInvariants` refuses a system whose process reads
+    /// signals under a numbering other than its machine's.
+    let initial (numbering : SignalNumbering) : SignalState<'Task, 'Handler> =
         {
+            Numbering = numbering
             Init = SignalInitState.NotInitialized
             Enabled = Set.empty
             Blocked = Map.empty
             Pending = []
             Handler = None
         }
+
+    /// The numbering every signal in this state is read under, as given to
+    /// `initial`.
+    let numbering (state : SignalState<'Task, 'Handler>) : SignalNumbering = state.Numbering
+
+    /// Validate and canonicalise a signal at the operation boundary: the named
+    /// spelling if `signal` is an `Other` carrying a named signal's number,
+    /// and a loud failure if it is not a signal under this state's numbering
+    /// at all. `Signal.Other` is public and enforces nothing, so a client can
+    /// hand this state a number no kernel mask or disposition table could
+    /// hold; the callers that produced a raw signo honestly went through
+    /// `Signal.ofRawSignoUnder`, which refuses those, so reaching this
+    /// failure means a client built an `Other` some other way.
+    let private parse (operation : string) (state : SignalState<'Task, 'Handler>) (signal : Signal) : Signal =
+        match signal with
+        | Signal.Other rawSignal ->
+            match Signal.ofRawSignoUnder state.Numbering rawSignal with
+            | ValueSome canonical -> canonical
+            | ValueNone ->
+                failwith
+                    $"SignalState.%s{operation}: %d{rawSignal} is not a signal under the %O{state.Numbering} numbering (signos run 1..%d{Signal.highestSignoUnder state.Numbering}); a raw signo should have been refused at the caller's own boundary, via Signal.ofRawSignoUnder."
+        | named -> named
 
     let isInitialized (state : SignalState<'Task, 'Handler>) : bool =
         match state.Init with
@@ -144,8 +186,10 @@ module SignalState =
             Handler = Some handler
         }
 
-    let isEnabled (signal : Signal) (state : SignalState<'Task, 'Handler>) : bool = Set.contains signal state.Enabled
+    let isEnabled (signal : Signal) (state : SignalState<'Task, 'Handler>) : bool =
+        Set.contains (parse "isEnabled" state signal) state.Enabled
 
+    /// The enabled set, every member in its canonical spelling.
     let enabled (state : SignalState<'Task, 'Handler>) : Set<Signal> = state.Enabled
 
     /// Mark `signal` as enabled for managed dispatch. Idempotent: a second
@@ -153,7 +197,20 @@ module SignalState =
     /// `SystemNative_EnablePosixSignalHandling` on the C side, which flips
     /// a per-signo enable bit; the actual handler dictionary lives on the
     /// simulated managed heap.
+    ///
+    /// Fails loud on a signal `sigaction(2)` refuses to install a handler
+    /// for: the enable bit stands for a disposition the kernel holds, and no
+    /// kernel can hold one for SIGKILL or SIGSTOP. The client's own shim
+    /// refuses those with EINVAL before any state changes (as PawPrint's
+    /// `SystemNative_EnablePosixSignalHandling` arm does), so reaching this
+    /// failure means the client skipped its own `sigaction` screening.
     let enable (signal : Signal) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
+        let signal = parse "enable" state signal
+
+        if Signal.isUncatchableUnder state.Numbering signal then
+            failwith
+                $"SignalState.enable: no kernel disposition can exist for %O{signal} under the %O{state.Numbering} numbering — sigaction(2) refuses it with EINVAL, and the client should have refused it there."
+
         if Set.contains signal state.Enabled then
             state
         else
@@ -165,7 +222,14 @@ module SignalState =
     /// entries for the signal remain queued (a future `enable` makes them
     /// deliverable) but `tryDeliverable` will not dispatch them in the
     /// meantime.
+    ///
+    /// Unlike `enable`, an uncatchable signal is *not* refused here: it is
+    /// provably absent from the enabled set (`enable` cannot admit one), so
+    /// it falls into the ordinary not-enabled no-op, and a client sweeping
+    /// "disable everything" need not restate the sigaction screening.
     let disable (signal : Signal) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
+        let signal = parse "disable" state signal
+
         if Set.contains signal state.Enabled then
             { state with
                 Enabled = Set.remove signal state.Enabled
@@ -174,6 +238,8 @@ module SignalState =
             state
 
     let isBlocked (thread : 'Task) (signal : Signal) (state : SignalState<'Task, 'Handler>) : bool =
+        let signal = parse "isBlocked" state signal
+
         match Map.tryFind thread state.Blocked with
         | None -> false
         | Some set -> Set.contains signal set
@@ -182,6 +248,7 @@ module SignalState =
     let blockedTasks (state : SignalState<'Task, 'Handler>) : Set<'Task> =
         state.Blocked |> Map.toSeq |> Seq.map fst |> Set.ofSeq
 
+    /// `thread`'s sigprocmask, every member in its canonical spelling.
     let blockedFor (thread : 'Task) (state : SignalState<'Task, 'Handler>) : Set<Signal> =
         match Map.tryFind thread state.Blocked with
         | None -> Set.empty
@@ -191,7 +258,20 @@ module SignalState =
     /// of an already-blocked signal is a no-op. The thread does not need to
     /// be live; masks for non-live threads are harmless because dispatch
     /// already filters to the live set.
+    ///
+    /// A signal the kernel refuses to let a thread block — SIGKILL and
+    /// SIGSTOP, plus the two glibc screens out on Linux; see
+    /// `Signal.isUnblockableUnder` — is silently dropped, which is
+    /// `sigprocmask(2)`'s own shape: the call succeeds and the mask is simply
+    /// missing the signal. Not a loud failure, because a real caller cannot
+    /// tell either way except by reading the mask back.
     let block (thread : 'Task) (signal : Signal) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
+        let signal = parse "block" state signal
+
+        if Signal.isUnblockableUnder state.Numbering signal then
+            state
+        else
+
         let existing =
             match Map.tryFind thread state.Blocked with
             | None -> Set.empty
@@ -214,6 +294,8 @@ module SignalState =
         (state : SignalState<'Task, 'Handler>)
         : SignalState<'Task, 'Handler>
         =
+        let signal = parse "unblock" state signal
+
         match Map.tryFind thread state.Blocked with
         | None -> state
         | Some set ->
@@ -232,16 +314,22 @@ module SignalState =
                     Blocked = blocked
                 }
 
-    /// Append a signal to the back of the pending queue. Two enqueues of the
-    /// same signal are not coalesced; POSIX allows duplicates for real-time
-    /// signals and we preserve identity here so callers can detect collapse
-    /// elsewhere if they want it.
+    /// Append a signal to the back of the pending queue, canonicalising its
+    /// spelling first. Two enqueues of the same signal are not coalesced;
+    /// POSIX allows duplicates for real-time signals and we preserve identity
+    /// here so callers can detect collapse elsewhere if they want it.
     let enqueue (entry : PendingSignal<'Task>) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
+        let entry =
+            { entry with
+                Signal = parse "enqueue" state entry.Signal
+            }
+
         { state with
             Pending = state.Pending @ [ entry ]
         }
 
-    /// Snapshot of the pending queue, in FIFO order (head = next candidate).
+    /// Snapshot of the pending queue, in FIFO order (head = next candidate),
+    /// every entry's signal in its canonical spelling.
     let pending (state : SignalState<'Task, 'Handler>) : PendingSignal<'Task> list = state.Pending
 
     /// Walk the pending queue in FIFO order and return the first entry that

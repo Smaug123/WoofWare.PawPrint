@@ -83,7 +83,8 @@ module TestSignalHandler =
 
     [<Test>]
     let ``empty SignalState has no handler installed`` () : unit =
-        let empty : SignalState<ThreadId, SignalHandler> = SignalState.empty
+        let empty : SignalState<ThreadId, SignalHandler> =
+            SignalState.initial SignalNumbering.Linux
 
         empty |> SignalState.handler |> shouldEqual None
 
@@ -93,7 +94,9 @@ module TestSignalHandler =
         let handler = SignalHandler.ofMethodInfo method
 
         let installed =
-            SignalState.empty |> SignalState.setHandler handler |> SignalState.handler
+            SignalState.initial SignalNumbering.Linux
+            |> SignalState.setHandler handler
+            |> SignalState.handler
 
         match installed with
         | Some h -> h |> shouldEqual handler
@@ -143,12 +146,12 @@ module TestSignalHandler =
         let _, methodB = concretizeObjectMethod state "GetHashCode"
 
         let stateA =
-            SignalState.empty
+            SignalState.initial SignalNumbering.Linux
             |> SignalState.markInitialized (ThreadId 42)
             |> SignalState.setHandler (SignalHandler.ofMethodInfo methodA)
 
         let stateB =
-            SignalState.empty
+            SignalState.initial SignalNumbering.Linux
             |> SignalState.markInitialized (ThreadId 42)
             |> SignalState.setHandler (SignalHandler.ofMethodInfo methodB)
 
@@ -161,11 +164,11 @@ module TestSignalHandler =
         let _, toString = concretizeObjectMethod state "ToString"
 
         let stateA =
-            SignalState.empty
+            SignalState.initial SignalNumbering.Linux
             |> SignalState.setHandler (SignalHandler.ofMethodInfo getHashCode)
 
         let stateB =
-            SignalState.empty
+            SignalState.initial SignalNumbering.Linux
             |> SignalState.setHandler (SignalHandler.ofMethodInfo toString)
 
         stateA |> shouldNotEqual stateB
@@ -183,7 +186,7 @@ module TestSignalHandler =
         let handlerB = SignalHandler.ofMethodInfo toString
 
         let installed =
-            SignalState.empty
+            SignalState.initial SignalNumbering.Linux
             |> SignalState.setHandler handlerA
             |> SignalState.setHandler handlerB
             |> SignalState.handler
