@@ -178,7 +178,7 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
-        /// so the field stays at `SignalState.empty` across every run today.
+        /// so the field stays at `SignalState.initial` across every run today.
         /// Held on `EmulatedKernel` (rather than per-thread) because POSIX
         /// signal disposition is process-wide; the per-thread piece lives
         /// inside `SignalState.Blocked`.

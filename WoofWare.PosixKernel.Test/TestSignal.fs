@@ -281,6 +281,59 @@ module TestSignal =
         |> shouldEqual false
 
     [<Test>]
+    let ``isUnblockableUnder flags exactly the signos the mask calls silently drop`` () : unit =
+        // Measured by setting each signo's bit directly (bypassing
+        // sigaddset's own screening), blocking via pthread_sigmask and
+        // sigprocmask, and reading the mask back: SIGKILL and SIGSTOP on
+        // both (POSIX), plus glibc's reserved 32 and 33 on Linux — the raw
+        // rt_sigprocmask syscall accepts those two, so that pair is the
+        // libc's screening, not the kernel's. `TestSignalMaskAgainstHost`
+        // repeats the measurement on whichever flavour runs the suite.
+        let dropped (numbering : SignalNumbering) : int list =
+            match numbering with
+            | SignalNumbering.Linux -> [ 9 ; 19 ; 32 ; 33 ]
+            | SignalNumbering.Darwin -> [ 9 ; 17 ]
+
+        for numbering in everyNumbering do
+            for signo in 1 .. Signal.highestSignoUnder numbering do
+                let signal =
+                    match Signal.ofRawSignoUnder numbering signo with
+                    | ValueSome signal -> signal
+                    | ValueNone -> failwith $"%O{numbering}: signo %d{signo} is within range"
+
+                Signal.isUnblockableUnder numbering signal
+                |> shouldEqual (List.contains signo (dropped numbering))
+
+            // Every named case can be blocked: none of them is SIGKILL or
+            // SIGSTOP, whose numbers name no case.
+            for signal, _ in column numbering do
+                Signal.isUnblockableUnder numbering signal |> shouldEqual false
+
+    /// SIGSTOP is 17 on Darwin and 19 on Linux, so each of those numbers is
+    /// unblockable under exactly one numbering — the same divergence as
+    /// `isUncatchableUnder`'s, but a separately-measured fact.
+    [<Test>]
+    let ``SIGSTOP's number is unblockable under its own numbering only`` () : unit =
+        Signal.isUnblockableUnder SignalNumbering.Darwin (Signal.Other 17)
+        |> shouldEqual true
+
+        Signal.isUnblockableUnder SignalNumbering.Linux (Signal.Other 17)
+        |> shouldEqual false
+
+        Signal.isUnblockableUnder SignalNumbering.Linux (Signal.Other 19)
+        |> shouldEqual true
+
+        Signal.isUnblockableUnder SignalNumbering.Darwin (Signal.Other 19)
+        |> shouldEqual false
+
+    [<Test>]
+    let ``isUnblockableUnder reads an Other carrying a named signal's number as that signal`` () : unit =
+        for numbering in everyNumbering do
+            for signal, signo in column numbering do
+                Signal.isUnblockableUnder numbering (Signal.Other signo)
+                |> shouldEqual (Signal.isUnblockableUnder numbering signal)
+
+    [<Test>]
     let ``defaultDispositionUnder classifies every named signal the same way everywhere`` () : unit =
         // POSIX default for these signals is Terminate (some with a core
         // dump, but PawPrint collapses both into a single Terminate case

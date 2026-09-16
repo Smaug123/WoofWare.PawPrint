@@ -16,11 +16,19 @@ open WoofWare.PosixKernel
 /// oracle uses index-based scanning over an array; the production module
 /// uses a recursive accumulator-threaded walk. A regression in either side
 /// surfaces as a divergence the property catches.
+///
+/// Everything runs under both numberings, because the state's contract is
+/// stated *under a numbering*: `Other 17` is `SIGCHLD` to a Linux process
+/// and `SIGSTOP` to a Darwin one, and several tests below assert exactly
+/// that divergence.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSignalState =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
+
+    let private everyNumbering : SignalNumbering list =
+        [ SignalNumbering.Linux ; SignalNumbering.Darwin ]
 
     /// Stand-in for whatever a client uses to identify a task. Deliberately a
     /// nominal type of this test's own rather than `int`: the point of these
@@ -35,12 +43,19 @@ module TestSignalState =
     /// which this test cannot see and must not need to.
     type TestHandler = | TestHandler of string
 
-    /// `empty` at this test's instantiation. Named because the
-    /// generic `empty` constrains neither parameter, so every bare use would
+    /// `initial` at this test's instantiation. Named because the
+    /// generic `initial` constrains neither parameter, so every bare use would
     /// infer `obj` for the handler -- which `FS3559` rejects, correctly: an
     /// `obj` handler would make the equality constraint vacuous and the tests
     /// below would stop saying anything about it.
-    let private empty : SignalState<TestTask, TestHandler> = SignalState.empty
+    let private initial (numbering : SignalNumbering) : SignalState<TestTask, TestHandler> =
+        SignalState.initial numbering
+
+    /// Most of the operations' behaviour does not depend on the numbering at
+    /// all; those tests run on this instance and rely on the property test to
+    /// cover the other numbering.
+    let private empty : SignalState<TestTask, TestHandler> =
+        initial SignalNumbering.Linux
 
     let private t0 : TestTask = TestTask 0
     let private t1 : TestTask = TestTask 1
@@ -48,7 +63,7 @@ module TestSignalState =
 
     let private allThreads : TestTask list = [ t0 ; t1 ; t2 ]
 
-    let private allSignals : Signal list =
+    let private namedSignals : Signal list =
         [
             Signal.SIGHUP
             Signal.SIGINT
@@ -64,22 +79,59 @@ module TestSignalState =
             Signal.SIGUSR1
             Signal.SIGUSR2
             Signal.SIGABRT
-            Signal.Other 99
+            Signal.SIGURG
         ]
+
+    /// SIGKILL's number and SIGSTOP's under this numbering, plus (on Linux)
+    /// the two glibc reserves for itself: what `block` must silently drop.
+    let private unblockableSpellings (numbering : SignalNumbering) : Signal list =
+        match numbering with
+        | SignalNumbering.Linux -> [ Signal.Other 9 ; Signal.Other 19 ; Signal.Other 32 ; Signal.Other 33 ]
+        | SignalNumbering.Darwin -> [ Signal.Other 9 ; Signal.Other 17 ]
+
+    /// Signals that exist under the numbering but name no case: blockable and
+    /// catchable, so they flow through every operation like a named one.
+    let private unnamedSignals (numbering : SignalNumbering) : Signal list =
+        match numbering with
+        // 5 is SIGTRAP on both; 40 is a real-time signal, which Darwin does
+        // not have.
+        | SignalNumbering.Linux -> [ Signal.Other 5 ; Signal.Other 40 ]
+        | SignalNumbering.Darwin -> [ Signal.Other 5 ]
+
+    /// Every spelling the state can legally be handed under this numbering:
+    /// the named cases, each named case respelt as `Other` carrying its
+    /// number, the unnamed signals, and the unblockable ones.
+    let private allSignals (numbering : SignalNumbering) : Signal list =
+        let otherSpellings =
+            namedSignals
+            |> List.map (fun signal -> Signal.Other (Signal.toRawSignoUnder numbering signal))
+
+        namedSignals
+        @ otherSpellings
+        @ unnamedSignals numbering
+        @ unblockableSpellings numbering
+
+    /// The subset of `allSignals` that `enable` accepts: everything
+    /// `sigaction` would install a handler for.
+    let private enableableSignals (numbering : SignalNumbering) : Signal list =
+        allSignals numbering
+        |> List.filter (fun signal -> not (Signal.isUncatchableUnder numbering signal))
 
     let private liveThreads (threads : TestTask list) : ImmutableArray<TestTask> = threads |> ImmutableArray.CreateRange
 
     // ------------------------- Unit tests ------------------------- //
 
     [<Test>]
-    let ``empty has nothing enabled, nothing blocked, nothing pending`` () : unit =
-        let s = empty
-        SignalState.isInitialized s |> shouldEqual false
-        SignalState.isEnabled Signal.SIGINT s |> shouldEqual false
-        SignalState.isBlocked t0 Signal.SIGINT s |> shouldEqual false
-        SignalState.blockedFor t0 s |> shouldEqual Set.empty
-        SignalState.pending s |> Seq.toList |> shouldEqual []
-        SignalState.enabled s |> shouldEqual Set.empty
+    let ``initial has nothing enabled, nothing blocked, nothing pending`` () : unit =
+        for numbering in everyNumbering do
+            let s = initial numbering
+            SignalState.numbering s |> shouldEqual numbering
+            SignalState.isInitialized s |> shouldEqual false
+            SignalState.isEnabled Signal.SIGINT s |> shouldEqual false
+            SignalState.isBlocked t0 Signal.SIGINT s |> shouldEqual false
+            SignalState.blockedFor t0 s |> shouldEqual Set.empty
+            SignalState.pending s |> Seq.toList |> shouldEqual []
+            SignalState.enabled s |> shouldEqual Set.empty
 
     [<Test>]
     let ``markInitialized is idempotent and structurally stable`` () : unit =
@@ -123,7 +175,7 @@ module TestSignalState =
         s |> shouldEqual empty
 
     [<Test>]
-    let ``enable then disable collapses to the empty state`` () : unit =
+    let ``enable then disable collapses to the initial state`` () : unit =
         // Mirrors the unblock/empty-mask collapse: an enable followed by a
         // matching disable must be structurally identical to never having
         // enabled. Without this, state dedup in the debugger would
@@ -194,7 +246,7 @@ module TestSignalState =
         SignalState.blockedFor t0 s |> shouldEqual Set.empty
 
     [<Test>]
-    let ``unblock collapses empty mask back to the empty state`` () : unit =
+    let ``unblock collapses empty mask back to the initial state`` () : unit =
         // A state that had a signal blocked and then unblocked must
         // be structurally identical to a state that never blocked it. Without
         // collapsing the empty mask, equality would distinguish two
@@ -211,6 +263,183 @@ module TestSignalState =
     let ``unblock of an unblocked signal is a no-op`` () : unit =
         let s = empty |> SignalState.unblock t0 Signal.SIGINT
         s |> shouldEqual empty
+
+    // ------------------- Canonical identity ------------------- //
+
+    [<Test>]
+    let ``a named signal and its Other spelling are one signal to every operation`` () : unit =
+        for numbering in everyNumbering do
+            for signal in namedSignals do
+                let spelt = Signal.Other (Signal.toRawSignoUnder numbering signal)
+
+                // Block via the raw spelling, observe via the name — and the
+                // state is structurally identical to one built via the name.
+                let blocked = initial numbering |> SignalState.block t0 spelt
+                SignalState.isBlocked t0 signal blocked |> shouldEqual true
+                SignalState.blockedFor t0 blocked |> shouldEqual (Set.singleton signal)
+                blocked |> shouldEqual (initial numbering |> SignalState.block t0 signal)
+
+                // And the other way round: block the name, query the spelling.
+                SignalState.isBlocked t0 spelt blocked |> shouldEqual true
+
+                // Unblocking via the other spelling collapses back to initial.
+                blocked |> SignalState.unblock t0 signal |> shouldEqual (initial numbering)
+
+                if not (Signal.isUncatchableUnder numbering spelt) then
+                    let enabled = initial numbering |> SignalState.enable spelt
+                    SignalState.isEnabled signal enabled |> shouldEqual true
+                    SignalState.enabled enabled |> shouldEqual (Set.singleton signal)
+                    enabled |> SignalState.disable signal |> shouldEqual (initial numbering)
+
+    [<Test>]
+    let ``enqueue stores the canonical spelling`` () : unit =
+        for numbering in everyNumbering do
+            for signal in namedSignals do
+                let spelt = Signal.Other (Signal.toRawSignoUnder numbering signal)
+
+                let viaSpelling =
+                    initial numbering
+                    |> SignalState.enqueue
+                        {
+                            Signal = spelt
+                            Target = ValueSome t1
+                        }
+
+                let viaName =
+                    initial numbering
+                    |> SignalState.enqueue
+                        {
+                            Signal = signal
+                            Target = ValueSome t1
+                        }
+
+                viaSpelling |> shouldEqual viaName
+
+                SignalState.pending viaSpelling
+                |> List.map (fun entry -> entry.Signal)
+                |> shouldEqual [ signal ]
+
+    [<Test>]
+    let ``the same Other payload is a different signal under each numbering`` () : unit =
+        // 17 is SIGCHLD to a Linux process: blockable, catchable, and one
+        // signal with the named case.
+        let linux = initial SignalNumbering.Linux |> SignalState.block t0 (Signal.Other 17)
+
+        SignalState.blockedFor t0 linux |> shouldEqual (Set.singleton Signal.SIGCHLD)
+
+        // The same number is SIGSTOP to a Darwin process: the block is
+        // silently dropped, exactly as sigprocmask drops it.
+        let darwin =
+            initial SignalNumbering.Darwin |> SignalState.block t0 (Signal.Other 17)
+
+        darwin |> shouldEqual (initial SignalNumbering.Darwin)
+
+        // And 19 the other way round: SIGSTOP to Linux, SIGCONT to Darwin.
+        initial SignalNumbering.Linux
+        |> SignalState.block t0 (Signal.Other 19)
+        |> shouldEqual (initial SignalNumbering.Linux)
+
+        initial SignalNumbering.Darwin
+        |> SignalState.block t0 (Signal.Other 19)
+        |> SignalState.blockedFor t0
+        |> shouldEqual (Set.singleton Signal.SIGCONT)
+
+    // ------------------- Unblockable and uncatchable signals ------------------- //
+
+    [<Test>]
+    let ``block silently drops every signal the mask calls refuse to hold`` () : unit =
+        for numbering in everyNumbering do
+            for signal in unblockableSpellings numbering do
+                let s = initial numbering |> SignalState.block t0 signal
+                // sigprocmask's own shape: success, but the mask is unchanged
+                // — structurally the initial state, not merely equivalent.
+                s |> shouldEqual (initial numbering)
+                SignalState.isBlocked t0 signal s |> shouldEqual false
+
+    [<Test>]
+    let ``a block-everything sweep holds every signal but the unblockable ones`` () : unit =
+        // The mask a thread ends up with after trying to block everything is
+        // everything *blockable* — which is exactly what a real thread's mask
+        // reads back as after the same sweep.
+        for numbering in everyNumbering do
+            let s =
+                (initial numbering, allSignals numbering)
+                ||> List.fold (fun s signal -> SignalState.block t0 signal s)
+
+            let expected =
+                allSignals numbering
+                |> List.filter (fun signal -> not (Signal.isUnblockableUnder numbering signal))
+                |> List.map (Signal.canonicalUnder numbering)
+                |> Set.ofList
+
+            SignalState.blockedFor t0 s |> shouldEqual expected
+
+            for signal in unblockableSpellings numbering do
+                SignalState.isBlocked t0 signal s |> shouldEqual false
+
+    [<Test>]
+    let ``enable refuses a signal sigaction cannot install a handler for`` () : unit =
+        for numbering in everyNumbering do
+            for signal in unblockableSpellings numbering do
+                // The unblockable spellings are exactly the uncatchable ones
+                // today (SIGKILL, SIGSTOP, glibc's 32/33), so they double as
+                // the enable-refusal cases.
+                Signal.isUncatchableUnder numbering signal |> shouldEqual true
+
+                Assert.Throws (fun () -> initial numbering |> SignalState.enable signal |> ignore<SignalState<_, _>>)
+                |> ignore<exn>
+
+    [<Test>]
+    let ``disable of an uncatchable signal is the ordinary not-enabled no-op`` () : unit =
+        for numbering in everyNumbering do
+            for signal in unblockableSpellings numbering do
+                initial numbering
+                |> SignalState.disable signal
+                |> shouldEqual (initial numbering)
+
+    [<Test>]
+    let ``every operation refuses a number that is not a signal under the numbering`` () : unit =
+        let notASignal (numbering : SignalNumbering) : int list =
+            match numbering with
+            | SignalNumbering.Linux -> [ 0 ; -1 ; 65 ; 99 ]
+            // 40 is a real-time signal on Linux and nothing at all on Darwin.
+            | SignalNumbering.Darwin -> [ 0 ; -1 ; 32 ; 40 ; 99 ]
+
+        for numbering in everyNumbering do
+            for raw in notASignal numbering do
+                let signal = Signal.Other raw
+                let s = initial numbering
+
+                Assert.Throws (fun () -> SignalState.enable signal s |> ignore<SignalState<_, _>>)
+                |> ignore<exn>
+
+                Assert.Throws (fun () -> SignalState.disable signal s |> ignore<SignalState<_, _>>)
+                |> ignore<exn>
+
+                Assert.Throws (fun () -> SignalState.isEnabled signal s |> ignore<bool>)
+                |> ignore<exn>
+
+                Assert.Throws (fun () -> SignalState.block t0 signal s |> ignore<SignalState<_, _>>)
+                |> ignore<exn>
+
+                Assert.Throws (fun () -> SignalState.unblock t0 signal s |> ignore<SignalState<_, _>>)
+                |> ignore<exn>
+
+                Assert.Throws (fun () -> SignalState.isBlocked t0 signal s |> ignore<bool>)
+                |> ignore<exn>
+
+                Assert.Throws (fun () ->
+                    SignalState.enqueue
+                        {
+                            Signal = signal
+                            Target = ValueNone
+                        }
+                        s
+                    |> ignore<SignalState<_, _>>
+                )
+                |> ignore<exn>
+
+    // ------------------- Queue and delivery ------------------- //
 
     [<Test>]
     let ``enqueue appends to the back of the pending queue`` () : unit =
@@ -460,7 +689,10 @@ module TestSignalState =
         | DrainOne of live : TestTask list
 
     /// Reference implementation: simple lists / sets / maps, completely
-    /// independent of the production module's internal representation.
+    /// independent of the production module's internal representation. Every
+    /// signal is stored canonically, via `Signal.canonicalUnder` — whose two
+    /// columns `TestSignal` pins independently — so a production module that
+    /// forgot to canonicalise diverges from it on the first `Other` spelling.
     type private ReferenceState =
         {
             Initialized : bool
@@ -553,11 +785,14 @@ module TestSignalState =
     /// observable state alone cannot always distinguish a divergence in
     /// which entry was dequeued).
     let private stepBoth
+        (numbering : SignalNumbering)
         (op : Op)
         (s : SignalState<TestTask, TestHandler>)
         (r : ReferenceState)
         : SignalState<TestTask, TestHandler> * ReferenceState
         =
+        let canonical (signal : Signal) : Signal = Signal.canonicalUnder numbering signal
+
         match op with
         | Op.MarkInitialized ->
             SignalState.markInitialized propertyDispatcher s,
@@ -567,32 +802,37 @@ module TestSignalState =
         | Op.Enable sig0 ->
             SignalState.enable sig0 s,
             { r with
-                Enabled = Set.add sig0 r.Enabled
+                Enabled = Set.add (canonical sig0) r.Enabled
             }
         | Op.Disable sig0 ->
             SignalState.disable sig0 s,
             { r with
-                Enabled = Set.remove sig0 r.Enabled
+                Enabled = Set.remove (canonical sig0) r.Enabled
             }
         | Op.Block (tid, sig0) ->
-            let existing : Set<Signal> =
-                match Map.tryFind tid r.Blocked with
-                | None -> Set.empty
-                | Some set -> set
+            let reference =
+                if Signal.isUnblockableUnder numbering sig0 then
+                    r
+                else
+                    let existing : Set<Signal> =
+                        match Map.tryFind tid r.Blocked with
+                        | None -> Set.empty
+                        | Some set -> set
 
-            SignalState.block tid sig0 s,
-            { r with
-                Blocked = Map.add tid (Set.add sig0 existing) r.Blocked
-            }
+                    { r with
+                        Blocked = Map.add tid (Set.add (canonical sig0) existing) r.Blocked
+                    }
+
+            SignalState.block tid sig0 s, reference
         | Op.Unblock (tid, sig0) ->
             let r' : ReferenceState =
                 match Map.tryFind tid r.Blocked with
                 | None -> r
                 | Some set ->
-                    if not (Set.contains sig0 set) then
+                    if not (Set.contains (canonical sig0) set) then
                         r
                     else
-                        let set' = Set.remove sig0 set
+                        let set' = Set.remove (canonical sig0) set
 
                         let blocked =
                             if Set.isEmpty set' then
@@ -608,7 +848,13 @@ module TestSignalState =
         | Op.Enqueue e ->
             SignalState.enqueue e s,
             { r with
-                Pending = r.Pending @ [ e ]
+                Pending =
+                    r.Pending
+                    @ [
+                        { e with
+                            Signal = canonical e.Signal
+                        }
+                    ]
             }
         | Op.DrainOne live ->
             let actual = SignalState.tryDeliverable (liveThreads live) s
@@ -623,22 +869,30 @@ module TestSignalState =
             | a, b -> failwith $"tryDeliverable disagreed: actual=%A{a}, reference=%A{b}"
 
     /// Compare every observable accessor; the accessors are the contract.
-    let private assertEquivalent (s : SignalState<TestTask, TestHandler>) (r : ReferenceState) : unit =
+    /// Queries run over every legal spelling, so a production module that
+    /// canonicalised its stores but not its reads diverges here.
+    let private assertEquivalent
+        (numbering : SignalNumbering)
+        (s : SignalState<TestTask, TestHandler>)
+        (r : ReferenceState)
+        : unit
+        =
         SignalState.isInitialized s |> shouldEqual r.Initialized
         SignalState.enabled s |> shouldEqual r.Enabled
         SignalState.pending s |> Seq.toList |> shouldEqual r.Pending
 
-        for sig0 in allSignals do
-            SignalState.isEnabled sig0 s |> shouldEqual (Set.contains sig0 r.Enabled)
+        for sig0 in allSignals numbering do
+            SignalState.isEnabled sig0 s
+            |> shouldEqual (Set.contains (Signal.canonicalUnder numbering sig0) r.Enabled)
 
         for tid in allThreads do
-            for sig0 in allSignals do
+            for sig0 in allSignals numbering do
                 let actualBlocked = SignalState.isBlocked tid sig0 s
 
                 let expectedBlocked =
                     match Map.tryFind tid r.Blocked with
                     | None -> false
-                    | Some set -> Set.contains sig0 set
+                    | Some set -> Set.contains (Signal.canonicalUnder numbering sig0) set
 
                 if actualBlocked <> expectedBlocked then
                     failwith
@@ -654,20 +908,22 @@ module TestSignalState =
 
             actualMask |> shouldEqual expectedMask
 
-    let private randomOp (rng : System.Random) : Op =
+    let private randomOp (numbering : SignalNumbering) (rng : System.Random) : Op =
         let pick (xs : 'a list) : 'a = xs.[rng.Next xs.Length]
         let kind = rng.Next 100
 
         if kind < 5 then
             Op.MarkInitialized
         elif kind < 25 then
-            Op.Enable (pick allSignals)
+            // Only what sigaction would accept: `enable` fails loud on the
+            // rest, and the refusal has its own unit test.
+            Op.Enable (pick (enableableSignals numbering))
         elif kind < 32 then
-            Op.Disable (pick allSignals)
+            Op.Disable (pick (allSignals numbering))
         elif kind < 47 then
-            Op.Block (pick allThreads, pick allSignals)
+            Op.Block (pick allThreads, pick (allSignals numbering))
         elif kind < 57 then
-            Op.Unblock (pick allThreads, pick allSignals)
+            Op.Unblock (pick allThreads, pick (allSignals numbering))
         elif kind < 80 then
             let target =
                 if rng.Next 2 = 0 then
@@ -677,7 +933,7 @@ module TestSignalState =
 
             Op.Enqueue
                 {
-                    Signal = pick allSignals
+                    Signal = pick (allSignals numbering)
                     Target = target
                 }
         else
@@ -689,23 +945,24 @@ module TestSignalState =
 
             Op.DrainOne threads
 
-    [<Test>]
-    let ``random op sequences agree with the reference oracle on every observable`` () : unit =
+    let private checkAgainstOracle (numbering : SignalNumbering) : unit =
         let mutable observedDeliveries = 0
         let mutable observedSkipThenDeliver = 0
         let mutable observedDrainOfEmpty = 0
         let mutable observedDrainNoneNonEmpty = 0
+        let mutable observedNonCanonicalSpellings = 0
+        let mutable observedUnblockableBlocks = 0
 
         let property (NonNegativeInt seed : NonNegativeInt) : unit =
             let rng = System.Random seed
             let steps = rng.Next (10, 80)
 
-            let mutable s = empty
+            let mutable s = initial numbering
             let mutable r = referenceEmpty
-            assertEquivalent s r
+            assertEquivalent numbering s r
 
             for _ in 1..steps do
-                let op = randomOp rng
+                let op = randomOp numbering rng
 
                 // Distribution telemetry collected before the step so we can
                 // see what shape the random walk drove the model into.
@@ -720,12 +977,26 @@ module TestSignalState =
                         | _ -> ()
                     | None when r.Pending.IsEmpty -> observedDrainOfEmpty <- observedDrainOfEmpty + 1
                     | None -> observedDrainNoneNonEmpty <- observedDrainNoneNonEmpty + 1
+                | Op.Enable signal
+                | Op.Disable signal
+                | Op.Block (_, signal)
+                | Op.Unblock (_, signal)
+                | Op.Enqueue {
+                                 Signal = signal
+                             } ->
+                    if Signal.canonicalUnder numbering signal <> signal then
+                        observedNonCanonicalSpellings <- observedNonCanonicalSpellings + 1
+                | Op.MarkInitialized -> ()
+
+                match op with
+                | Op.Block (_, signal) when Signal.isUnblockableUnder numbering signal ->
+                    observedUnblockableBlocks <- observedUnblockableBlocks + 1
                 | _ -> ()
 
-                let s', r' = stepBoth op s r
+                let s', r' = stepBoth numbering op s r
                 s <- s'
                 r <- r'
-                assertEquivalent s r
+                assertEquivalent numbering s r
 
         Check.One (propertyConfig, property)
 
@@ -739,6 +1010,16 @@ module TestSignalState =
         observedSkipThenDeliver |> shouldBeGreaterThan 20
         observedDrainOfEmpty |> shouldBeGreaterThan 20
         observedDrainNoneNonEmpty |> shouldBeGreaterThan 20
+        observedNonCanonicalSpellings |> shouldBeGreaterThan 100
+        observedUnblockableBlocks |> shouldBeGreaterThan 20
+
+    [<Test>]
+    let ``random op sequences agree with the reference oracle on every observable, under Linux numbering`` () : unit =
+        checkAgainstOracle SignalNumbering.Linux
+
+    [<Test>]
+    let ``random op sequences agree with the reference oracle on every observable, under Darwin numbering`` () : unit =
+        checkAgainstOracle SignalNumbering.Darwin
 
     /// The handler slot, which nothing else in this file exercises.
     ///

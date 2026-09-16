@@ -35,6 +35,7 @@
     <Compile Include="TestFileDescriptorRegistry.fs" />
     <Compile Include="TestSignal.fs" />
     <Compile Include="TestSignalAgainstHost.fs" />
+    <Compile Include="TestSignalMaskAgainstHost.fs" />
     <Compile Include="TestSignalState.fs" />
     <Compile Include="TestDirectoryEnumeration.fs" />
     <Compile Include="TestPathCursor.fs" />

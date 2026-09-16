@@ -255,6 +255,48 @@ module Signal =
         | Signal.SIGABRT
         | Signal.SIGURG -> false
 
+    /// Whether a thread's attempt to add this signal to its own signal mask is
+    /// silently ignored: `sigprocmask(2)` and `pthread_sigmask(3)` succeed but
+    /// leave the signal out of the resulting mask. Note the shape, which is not
+    /// `sigaction`'s EINVAL refusal: the mask calls report success, so a model
+    /// of `block` drops the signal silently rather than failing.
+    ///
+    /// SIGKILL and SIGSTOP on both flavours, as POSIX requires. On Linux,
+    /// glibc's wrappers additionally screen 32 and 33 (SIGCANCEL and
+    /// SIGSETXID, reserved for its thread machinery) out of every set they are
+    /// handed.
+    let isUnblockableUnder (numbering : SignalNumbering) (signal : Signal) : bool =
+        // Measured on Linux 6.18.5 / glibc 2.41 and Darwin 25.6.0 by setting
+        // each signo's bit directly (bypassing sigaddset's own screening),
+        // blocking, and reading the mask back, for every number up to past the
+        // ceiling, through pthread_sigmask, sigprocmask and (Linux) the raw
+        // rt_sigprocmask syscall. The raw syscall accepts 32 and 33 and
+        // refuses only 9 and 19, so that pair is glibc's screening, not the
+        // kernel's. The same sets as `isUncatchableUnder`, as it happens — but
+        // those are different facts (what sigaction refuses loudly, and what
+        // the mask calls drop silently), separately measured, with no reason
+        // they must stay in step.
+        match canonicalUnder numbering signal with
+        | Signal.Other rawSignal ->
+            match numbering with
+            | SignalNumbering.Linux -> rawSignal = 9 || rawSignal = 19 || rawSignal = 32 || rawSignal = 33
+            | SignalNumbering.Darwin -> rawSignal = 9 || rawSignal = 17
+        | Signal.SIGHUP
+        | Signal.SIGINT
+        | Signal.SIGQUIT
+        | Signal.SIGTERM
+        | Signal.SIGCHLD
+        | Signal.SIGCONT
+        | Signal.SIGWINCH
+        | Signal.SIGTSTP
+        | Signal.SIGTTIN
+        | Signal.SIGTTOU
+        | Signal.SIGPIPE
+        | Signal.SIGUSR1
+        | Signal.SIGUSR2
+        | Signal.SIGABRT
+        | Signal.SIGURG -> false
+
     /// <summary>
     /// The kernel-level default disposition for <c>signal</c>, read under the
     /// chosen platform's numbering.

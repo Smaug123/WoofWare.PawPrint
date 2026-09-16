@@ -148,6 +148,12 @@ type UnixSystemDefect<'Task> =
     /// A pending signal is directed at a task the table does not hold, so it
     /// can never be delivered and sits in the queue for the rest of the run.
     | PendingSignalTargetWithoutTask of task : 'Task * signal : Signal
+    /// The process's signal state reads signals under a numbering other than
+    /// its machine's platform assigns, so the same `Signal.Other` payload
+    /// means one signal to the kernel and another to the signal tables.
+    /// `initial` derives the one from the other, so this is a state assembled
+    /// some other way.
+    | SignalNumberingMismatch of signals : SignalNumbering * platform : SignalNumbering
     /// The machine's mount claims a filesystem type its flavour cannot report,
     /// so `fstatfs` on a file would answer a fact no such machine could tell.
     | FileSystemTypeNotReportable of flavour : SimulatedUnixFlavour * fileSystemType : EmulatedFileSystemType
@@ -542,9 +548,23 @@ module UnixSystem =
             )
 
         // The signal state against the task table: every task it names must
-        // be one, or the delivery that reads it has nowhere to go.
+        // be one, or the delivery that reads it has nowhere to go. And against
+        // the machine's platform: the state canonicalises every signal under
+        // the numbering it was built with, so a state built under the wrong
+        // one holds tables the kernel would read as different signals.
         let signals =
             let signals = system.Process.Signals
+
+            let numberings =
+                let stateNumbering = SignalState.numbering signals
+
+                let platformNumbering =
+                    SimulatedUnixPlatform.signalNumbering system.Machine.UnixPlatform
+
+                if stateNumbering = platformNumbering then
+                    []
+                else
+                    [ UnixSystemDefect.SignalNumberingMismatch (stateNumbering, platformNumbering) ]
 
             let dispatcher =
                 match SignalState.signalThread signals with
@@ -569,7 +589,7 @@ module UnixSystem =
                     | ValueNone -> None
                 )
 
-            dispatcher @ masks @ targets
+            numberings @ dispatcher @ masks @ targets
 
         let fileSystemType =
             let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
@@ -799,7 +819,7 @@ module UnixSystem =
                     UserId = defaultUserId flavour
                     GroupId = defaultGroupId flavour
                     Umask = defaultUmask
-                    Signals = SignalState.empty
+                    Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform)
                 }
             Tasks = Map.empty
         }

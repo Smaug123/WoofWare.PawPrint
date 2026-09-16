@@ -596,13 +596,13 @@ module TestUnixSystemInvariants =
     let ``a dispatcher that is not a task is a defect`` () : unit =
         system
         |> withTask None
-        |> withSignals (SignalState.empty |> SignalState.markInitialized 77)
+        |> withSignals (SignalState.initial SignalNumbering.Linux |> SignalState.markInitialized 77)
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.SignalDispatcherWithoutTask 77 ]
 
         system
         |> withTask None
-        |> withSignals (SignalState.empty |> SignalState.markInitialized task)
+        |> withSignals (SignalState.initial SignalNumbering.Linux |> SignalState.markInitialized task)
         |> UnixSystem.checkInvariants
         |> shouldEqual []
 
@@ -610,20 +610,23 @@ module TestUnixSystemInvariants =
     let ``a signal mask for a task the table does not hold is a defect`` () : unit =
         system
         |> withTask None
-        |> withSignals (SignalState.empty |> SignalState.block 42 Signal.SIGINT)
+        |> withSignals (SignalState.initial SignalNumbering.Linux |> SignalState.block 42 Signal.SIGINT)
         |> UnixSystem.checkInvariants
         |> shouldEqual [ UnixSystemDefect.SignalMaskWithoutTask 42 ]
 
         system
         |> withTask None
-        |> withSignals (SignalState.empty |> SignalState.block task Signal.SIGINT)
+        |> withSignals (
+            SignalState.initial SignalNumbering.Linux
+            |> SignalState.block task Signal.SIGINT
+        )
         |> UnixSystem.checkInvariants
         |> shouldEqual []
 
     [<Test>]
     let ``a pending signal directed at a task the table does not hold is a defect`` () : unit =
         let directedAt (target : int voption) : SignalState<int, string> =
-            SignalState.empty
+            SignalState.initial SignalNumbering.Linux
             |> SignalState.enqueue
                 {
                     Signal = Signal.SIGCHLD
@@ -646,6 +649,24 @@ module TestUnixSystemInvariants =
         system
         |> withTask None
         |> withSignals (directedAt ValueNone)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual []
+
+    [<Test>]
+    let ``a signal state reading signals under a foreign numbering is a defect`` () : unit =
+        // Reachable only by assembling the state by hand: `initial` derives
+        // the signal state's numbering from the platform it is given.
+        system
+        |> withSignals (SignalState.initial SignalNumbering.Darwin)
+        |> UnixSystem.checkInvariants
+        |> shouldEqual
+            [
+                UnixSystemDefect.SignalNumberingMismatch (SignalNumbering.Darwin, SignalNumbering.Linux)
+            ]
+
+        // The control: the numbering `initial` derived is sound.
+        system
+        |> withSignals (SignalState.initial SignalNumbering.Linux)
         |> UnixSystem.checkInvariants
         |> shouldEqual []
 
