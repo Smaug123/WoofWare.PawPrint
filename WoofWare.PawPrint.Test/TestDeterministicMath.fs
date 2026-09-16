@@ -2315,3 +2315,95 @@ module TestDeterministicMath =
                 Some $"host round(%.17g{x}): expected bits %016x{expected}, got %016x{host}"
         )
         |> reportFailures
+
+    /// Every double bit pattern, so NaNs of both signs, signalling and quiet, with payloads,
+    /// arrive as operands at about the rate of any other exponent.
+    let private genAnyDouble : Gen<float> =
+        Gen.two (Gen.choose (Int32.MinValue, Int32.MaxValue))
+        |> Gen.map (fun (hi, lo) -> BitConverter.Int64BitsToDouble ((int64 hi <<< 32) ||| int64 (uint32 lo)))
+
+    /// Operands that make the host generate a NaN: infinities and zeros, mixed with NaNs.
+    let private genNaNMaker : Gen<float> =
+        Gen.elements
+            [
+                0.0
+                -0.0
+                Double.PositiveInfinity
+                Double.NegativeInfinity
+                1.0
+                Double.NaN
+                BitConverter.Int64BitsToDouble 0x7FF8000000001234L
+                BitConverter.Int64BitsToDouble 0x7FF0000000001234L
+            ]
+
+    let private binaryOps : (string * (float -> float -> float)) list =
+        [
+            "add", (fun a b -> a + b)
+            "sub", (fun a b -> a - b)
+            "mul", (fun a b -> a * b)
+            "div", (fun a b -> a / b)
+            "rem", (fun a b -> a % b)
+        ]
+
+    [<Test>]
+    let ``binaryOpcodeNaN leaves a non-NaN result alone and fixes every NaN result`` () : unit =
+        let property (a : float, b : float) : unit =
+            for name, op in binaryOps do
+                let hostResult = op a b
+                let actual = DeterministicMath.binaryOpcodeNaN a b hostResult
+                let actualBits = BitConverter.DoubleToInt64Bits actual
+
+                let expectedBits =
+                    if not (Double.IsNaN hostResult) then
+                        BitConverter.DoubleToInt64Bits hostResult
+                    elif Double.IsNaN a then
+                        BitConverter.DoubleToInt64Bits a ||| 0x0008000000000000L
+                    elif Double.IsNaN b then
+                        BitConverter.DoubleToInt64Bits b ||| 0x0008000000000000L
+                    else
+                        0x7FF8000000000000L
+
+                if actualBits <> expectedBits then
+                    failwith
+                        $"%s{name} %016x{BitConverter.DoubleToInt64Bits a} %016x{BitConverter.DoubleToInt64Bits b}: got %016x{actualBits}, expected %016x{expectedBits}"
+
+                // The rule never turns a NaN result into a number or a number into a NaN.
+                Double.IsNaN actual |> shouldEqual (Double.IsNaN hostResult)
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll
+                (Arb.fromGen (
+                    Gen.zip
+                        (Gen.frequency [ 1, genAnyDouble ; 1, genNaNMaker ])
+                        (Gen.frequency [ 1, genAnyDouble ; 1, genNaNMaker ])
+                ))
+                property
+        )
+
+    [<Test>]
+    let ``a NaN generated from non-NaN operands is the positive quiet NaN`` () : unit =
+        let canonical = 0x7FF8000000000000L
+        let inf = Double.PositiveInfinity
+
+        for a, b, result in
+            [
+                0.0, 0.0, 0.0 / 0.0
+                inf, inf, inf - inf
+                0.0, inf, 0.0 * inf
+                1.0, 0.0, 1.0 % 0.0
+                inf, 1.0, inf % 1.0
+            ] do
+            BitConverter.DoubleToInt64Bits (DeterministicMath.binaryOpcodeNaN a b result)
+            |> shouldEqual canonical
+
+    [<Test>]
+    let ``the first NaN operand wins, quieted`` () : unit =
+        let first = BitConverter.Int64BitsToDouble 0xFFF0000000000AAAL
+        let second = BitConverter.Int64BitsToDouble 0x7FF8000000000BBBL
+
+        BitConverter.DoubleToInt64Bits (DeterministicMath.binaryOpcodeNaN first second (first + second))
+        |> shouldEqual 0xFFF8000000000AAAL
+
+        BitConverter.DoubleToInt64Bits (DeterministicMath.binaryOpcodeNaN second first (second + first))
+        |> shouldEqual 0x7FF8000000000BBBL
