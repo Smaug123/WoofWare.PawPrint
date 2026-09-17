@@ -71,9 +71,11 @@ receives it); on Darwin it is discarded at generation despite the block
 (never pending, and never delivered however the disposition changes before
 the unblock). Both columns measured 2026-09-16 on Linux 6.18.5 and Darwin
 25.6.0, two runs each, with SIG_IGN'd SIGUSR1, default-ignored SIGWINCH, and
-a SIG_DFL SIGUSR2 control that stayed pending on both; the rule goes through
-`SimulatedUnixPlatform` with a host-equality test owning the rows, per the
-`emulated-posix-kernel` skill. This fixes misalignments 1 and 2 in one
+a SIG_DFL SIGUSR2 control that stayed pending on both — process-directed and
+thread-directed generation alike. The rows are probe-pinned in `TestSignal`
+rather than host-equality-measured, for the reason `TestSignalAgainstHost`'s
+header gives for the sigaction facts: asking in-process means changing the
+test host's own dispositions. This fixes misalignments 1 and 2 in one
 shape, and per-signal handlers are what `sigaction` actually holds.
 
 Cost: the largest API change; `SystemNative_EnablePosixSignalHandling`'s arm

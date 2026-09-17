@@ -223,10 +223,10 @@ module TestSignalDispatch =
         dispatcherTs.MethodStates.Count |> shouldEqual 0
 
     [<Test>]
-    let ``trySpawnHandler is a no-op when the only pending signal is disabled`` () : unit =
-        // Pending entry exists but its signal hasn't been `enable`d. The
-        // real native side enable bit gates dispatch; our model does the
-        // same in `tryDeliverable`, so the entry must stay queued.
+    let ``trySpawnHandler holds a pending signal with no eligible receiver`` () : unit =
+        // Pending entry exists but the only thread in the state is the
+        // dispatcher itself, which is never a candidate receiver — so the
+        // entry stays queued whatever its disposition is.
         let state, dispatcher, _ = preparedState ()
 
         let state =
@@ -260,6 +260,84 @@ module TestSignalDispatch =
                     Target = ValueNone
                 }
             ]
+
+    [<Test>]
+    let ``trySpawnHandler refuses a receivable signal whose kernel default it cannot apply yet`` () : unit =
+        // A receivable pending signal nobody `enable`d falls to its kernel
+        // default — Terminate, for SIGINT — which nothing wires up until
+        // the kill(2) stage of the signal-model plan. Until then the
+        // dispatch poll must refuse it loudly rather than leave it queued
+        // forever (the shape #1380 objected to) or half-apply it.
+        let state, _dispatcher, _ = preparedState ()
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add (ThreadId 99) (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGINT
+                                        Target = ValueNone
+                                    }
+                        }
+                }
+            )
+
+        let exn =
+            Assert.Throws (fun () -> SignalDispatch.trySpawnHandler baseClassTypes state |> ignore<IlMachineState>)
+
+        exn.Message |> shouldContainText "kernel default"
+
+    [<Test>]
+    let ``trySpawnHandler discards a receivable ignored signal and persists the discard`` () : unit =
+        // SIGCHLD's kernel default is Ignore, and the test kernel simulates
+        // Linux, so the non-enabled entry survives generation and it is the
+        // delivery scan that discards it. The scan produces no action — the
+        // dispatcher must stay Parked — but its state change must be kept,
+        // or the next poll would discard the same entry forever.
+        let state, dispatcher, _ = preparedState ()
+
+        let state =
+            { state with
+                ThreadState =
+                    state.ThreadState
+                    |> Map.add (ThreadId 99) (stubThreadState ThreadStatus.Runnable)
+            }
+
+        let state =
+            state.MapKernel (fun kernel ->
+                { kernel with
+                    Process =
+                        { kernel.Process with
+                            Signals =
+                                kernel.Signals
+                                |> SignalState.enqueue
+                                    {
+                                        Signal = Signal.SIGCHLD
+                                        Target = ValueNone
+                                    }
+                        }
+                }
+            )
+
+        state.Kernel.Signals |> SignalState.pending |> List.length |> shouldEqual 1
+
+        let state' = SignalDispatch.trySpawnHandler baseClassTypes state
+
+        let dispatcherTs = state'.ThreadState |> Map.find dispatcher
+        dispatcherTs.Status |> shouldEqual ThreadStatus.Parked
+        dispatcherTs.MethodStates.Count |> shouldEqual 0
+        state'.Kernel.Signals |> SignalState.pending |> shouldEqual []
 
     [<Test>]
     let ``trySpawnHandler is a no-op when the dispatcher is busy`` () : unit =
