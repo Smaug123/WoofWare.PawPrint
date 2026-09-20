@@ -64,13 +64,14 @@ plan and were caught exactly that way.
 
 | probe | produces |
 | --- | --- |
-| `darwin-which-names-bind.c` | §1.1, Darwin half of §1.5 |
+| `darwin-which-names-bind.c` | §1.1, Darwin half of §1.6 |
 | `darwin-utf8-is-not-the-rule.c` | §1.1's refutation of "strict UTF-8" and of "not a noncharacter" |
 | `darwin-admissibility-is-not-per-codepoint.c` | §1.1's combining-sequence limit, which descopes Stage 7 |
 | `darwin-where-the-check-applies.c` | §1.2 |
 | `darwin-rule-ordering.c` | §1.3, Darwin rows of §1.4 |
 | `darwin-name-max-vs-permission.c` | §1.3's two-by-two |
 | `darwin-lookup-vs-name-max.c` | §1.4's lookup claim |
+| `darwin-length-scan-is-structural.c` | §1.5 |
 | `linux-names-are-bytes.py` | the Linux column throughout |
 
 ### 1.1 Which byte strings can be a directory entry name?
@@ -217,7 +218,47 @@ confirms the skip — on Darwin,
 'a', O_RDONLY)` is **ENAMETOOLONG**. A non-decodable component never reaches the
 length rule at all.
 
-### 1.5 The things that are just bytes everywhere
+### 1.5 Darwin's length scanner is structural, not strict
+
+§1.4 says `Utf16CodeUnits` is only ever asked about a decodable name. That is
+true of *strict* decodability only by accident: Darwin's scanner is laxer, and
+the two predicates disagree on real inputs
+(`darwin-length-scan-is-structural.c`). At 300 repetitions, so far past NAME_MAX
+that a length check must fire if one happens at all:
+
+| unit | structurally well-formed? | strict UTF-8? | Darwin `open` |
+| --- | --- | --- | --- |
+| `ED A0 80` (surrogate encoding) | yes | no | **ENAMETOOLONG** |
+| `E0 80 81` (overlong 3-byte) | yes | no | **ENAMETOOLONG** |
+| `F5 80 80 80` (above U+10FFFF) | yes | no | **ENAMETOOLONG** |
+| `C0 80` (overlong 2-byte) | lead byte is never valid | no | ENOENT |
+| `FF`, `FE`, `80` | not a lead byte | no | ENOENT |
+| `E4 B8` (truncated) | incomplete | no | ENOENT |
+| `a`, `E4 B8 AD` | yes | yes | ENAMETOOLONG |
+
+Control: at 10 repetitions every row is ENOENT (or EILSEQ for `mkdir`), so what
+differs above is the length check and not admissibility.
+
+So the scanner assigns a UTF-16 length to any sequence with a valid lead byte and
+the right number of continuation bytes, whatever it encodes — and `C0`/`C1`,
+which can only ever begin an overlong form, are not valid lead bytes.
+
+**Consequence for §2.3(2): the skip cannot be keyed on `tryToString`.** Two ways
+to go, and the first is recommended:
+
+- **Model the structural scan.** It is about twenty lines — lead byte to expected
+  continuation count, reject `C0`/`C1`, require completeness — and it is the rule
+  that was actually measured. Unlike APFS's *admissibility* predicate (§1.1),
+  this one is fully characterised by the table above, so it is not a rabbithole.
+  `NameLengthLimit.Utf16CodeUnits` measures with it and skips only what it cannot
+  scan.
+- **Or make it a divergence too**, keying the skip on strict decodability and
+  recording that PawPrint answers ENOENT where macOS answers ENAMETOOLONG for
+  the first three rows. The direction of error is mild — the name is unbound
+  either way, so only the errno differs — but it is a third Darwin divergence to
+  carry, and the first option costs less than documenting it.
+
+### 1.6 The things that are just bytes everywhere
 
 | | Linux / ext4 | Darwin / APFS |
 | --- | --- | --- |
@@ -313,9 +354,19 @@ characters, and would double the backslash in any name containing one.
 
 `pathOfDirectory` therefore migrates to **byte** concatenation — join the names'
 bytes with the separator byte and build the `AbsoluteUnixPath` from those — in
-the same stage that makes `DirectoryEntryName` byte-valued. Before applying the
-`toString` → `toEscaped` rewrite anywhere, audit each site for this shape: the
-question is whether the result is *read by a human* or *parsed back into a path*.
+the same stage that makes `DirectoryEntryName` byte-valued.
+
+`UnixNamespace.readdir` is the same shape and is easier to miss, because from
+PawPrint's side it already looks byte-valued: `ReadDirAnswer.Entry` carries an
+`ImmutableArray<byte>`. But it *builds* those bytes with
+`UnixPathText.utf8.GetBytes (name.ToString ())`, so it is a string round-trip
+wearing a byte-shaped coat. It becomes a raw byte read.
+
+Before applying the `toString` → `toEscaped` rewrite anywhere, audit each site:
+the question is whether the result is *read by a human* or *handed back to the
+guest / parsed into a path*. Three sites are known to be the latter —
+`pathOfDirectory`, `readdir`, and the `getcwd`/`GetProcessPath` pair — and the
+audit exists because that list was wrong twice while this plan was reviewed.
 
 `tryToString` has exactly two real consumers, and they are the two places a .NET
 string is genuinely required: the differential oracle materialising a seed onto
@@ -366,13 +417,20 @@ same fact rather than two rules:
    **The skip belongs to `NameLengthLimit.Utf16CodeUnits`, not to the walk and
    not to the flavour.** A `Bytes` limit can measure any byte string and must
    always do so: §1.4 measured Linux answering ENAMETOOLONG for a 256-byte
-   `0xFF` component, so a walk that skipped undecodable names outright would get
+   `0xFF` component, so a walk that skipped unscannable names outright would get
    Linux wrong. Put it inside `PathLimits.nameWithinLimit`'s `Utf16CodeUnits`
    arm — the arm that needs a UTF-16 length and, for such a name, has none.
 
-   Note also that the skip is keyed on *decodability*, which is a strictly
-   weaker condition than admissibility: U+FFFF is decodable, so it is
-   length-checked normally and only then refused at binding.
+   **And the skip's condition is the structural scan of §1.5, not
+   `tryToString`.** Measured, Darwin length-checks `ED A0 80` repeated — a
+   surrogate encoding that strict decoding refuses — and does not length-check
+   `C0 80` or a truncated sequence. So `Utf16CodeUnits` carries its own
+   structural scan and skips only what that cannot measure.
+
+   Note the skip's condition is weaker than admissibility in *both* directions
+   now: U+FFFF is scannable and decodable, so it is length-checked and only then
+   refused at binding; `ED A0 80` is scannable but not decodable, so it is
+   length-checked and also refused at binding.
 
 Like `pathLimits`, this is really a property of the *mount* rather than the
 kernel, and it goes in `SimulatedUnixPlatform` for the same stated reason: PawPrint
@@ -416,8 +474,15 @@ This is a net deletion in several places.
   impedance mismatch in the resolution walk.
 - **`getcwd` and `GetProcessPath`** stop going
   `AbsoluteUnixPath.toString |> allocateNativeHeapNullTerminatedUtf8` and hand
-  over `AbsoluteUnixPath.toUtf8` directly. (`readlink` and `readdir` already do
-  the right thing — they were written against `toUtf8` from the start.)
+  over `AbsoluteUnixPath.toUtf8` directly. (`readlink` already does the right
+  thing; it was written against `SymlinkTarget.toUtf8` from the start.)
+- **`UnixNamespace.readdir` is a third non-diagnostic `toString` consumer**, and
+  the least obvious of them: it looks byte-shaped from PawPrint's side, since
+  `ReadDirAnswer.Entry` already carries an `ImmutableArray<byte>`, but it builds
+  those bytes with `UnixPathText.utf8.GetBytes (name.ToString ())`, and
+  `DirectoryStreamName.ToString` delegates to `DirectoryEntryName.toString`. So
+  enumeration cannot preserve a non-UTF-8 name today, and `toEscaped` there would
+  hand the guest literal backslashes. It becomes a raw byte read.
 
 ### 2.5 What deliberately stays a .NET string
 
@@ -576,10 +641,17 @@ but it is the honest way to avoid the window.
   than crashing. A test at the `parseGuestPathBytes` level, replacing
   `TestGuestPathBytes`'s "cannot be represented names the caller" case, which is
   about a refusal that no longer exists.
-- `pathOfDirectory` round-trips: for a directory whose name is `\xff\xfe`,
-  `getcwd` answers those bytes rather than an escaped rendering. This is the
-  §2.2 audit made executable, and it fails loudly if the `toEscaped` rewrite was
-  applied blindly.
+- **Byte round-trips through all three non-diagnostic sites**, which is the §2.2
+  audit made executable and fails loudly if the `toEscaped` rewrite was applied
+  blindly:
+  - `pathOfDirectory`: a directory named `\xff\xfe` makes `getcwd` answer those
+    bytes;
+  - `readdir`: enumerating a directory holding `\xff` and `\xe4\xb8` yields
+    exactly those bytes in `d_name`, which Linux is measured to do (§1.1);
+  - `readlink`: unchanged, and asserted so.
+- `NameLengthLimit.Utf16CodeUnits`'s structural scan matches §1.5's table: the
+  three scannable-but-undecodable units are measured for length, the four
+  unscannable ones are skipped.
 - The Darwin placeholder is reachable and crashes: `mkdir` of an undecodable
   name on a `macOsArm64` kernel hits the Stage 7 `failwith`, rather than
   succeeding.
@@ -593,7 +665,7 @@ but it is the honest way to avoid the window.
 
 **Dependencies**: Stage 3.
 
-**Implements**: §1.5, §2.1.
+**Implements**: §1.6, §2.1.
 
 Smaller and self-contained: a target is opaque bytes on *both* flavours
 (measured), so there is no flavour rule and no ordering question.
@@ -602,7 +674,7 @@ Smaller and self-contained: a target is opaque bytes on *both* flavours
 **Correctness oracle**:
 
 - Property: `symlink` then `readlink` round-trips the exact bytes, for every
-  non-empty NUL-free byte string. Measured on both hosts (§1.5) as the reference.
+  non-empty NUL-free byte string. Measured on both hosts (§1.6) as the reference.
 - Property: `lstat`'s `st_size` for a link equals its target's byte length —
   which for a non-UTF-8 target is now a different number from anything the old
   model could produce.
@@ -629,7 +701,7 @@ oracle gains:
 - Property: `AbsoluteUnixPath.parse >> toUtf8` round-trips for every byte string
   satisfying the absolute-path shape.
 - **Differential, and only now expressible**: `chdir` into a directory whose name
-  is `\xff\xfe`, then `getcwd`, yields those bytes (§1.5).
+  is `\xff\xfe`, then `getcwd`, yields those bytes (§1.6).
 
   This one needs care about *which* Linux. `$DOTNET_LINUX_FRAMEWORK_DIR` will
   not do: it changes only which managed assemblies PawPrint interprets, and the
@@ -735,12 +807,15 @@ there are more.
   NUL-free byte string. Both shipped flavours are `AnyBytes`, so this is the
   whole behavioural claim of the stage, and it is what says the structure is
   inert.
-- The §1.3 two-by-two, all four cells, against a **synthetic**
-  `BindableEntryNames` value rather than either shipped flavour. The ordering is
-  measured and worth encoding even with no flavour using it — and three of the
-  four cells are indistinguishable if NAME_MAX and the encoding check are
-  implemented as adjacent steps, which is exactly how an earlier draft of this
-  plan got it wrong.
+- **The §1.3 two-by-two is deferred to the fidelity project, not asserted here.**
+  It needs a rule that actually *rejects* something, and after the descope no
+  constructible `BindableEntryNames` does: `AnyBytes` cannot produce the
+  writable-parent EILSEQ cell, and building `AppleUnicode` is the very thing
+  this stage does not do. Adding a test-only rejecting case would mean inventing
+  a rule no kernel has, so the ordering stays recorded in §1.3 — where the
+  fidelity project will find it, along with the warning that three of its four
+  cells are indistinguishable if NAME_MAX and the encoding check are implemented
+  as adjacent steps. An earlier draft of this plan got exactly that wrong.
 - `UnixError.EILSEQ` round-trips through `toRawErrnoUnder` as 84 on Linux and 92
   on Darwin, and through the PAL as `0x10019`.
 - Extend `TestVirtualFileSystemAgainstHost` with `byte[]`-declared P/Invokes so
@@ -759,7 +834,7 @@ there are more.
   considered … but it differs only above the BMP and buys nothing a test could
   observe". After Stage 3 the order **is** byte order, so that passage is
   rewritten — and its own argument now favours what we have.
-- A new `docs/divergences.md` entry for §1.1–§1.3, with the measured tables, and
+- A new `docs/divergences.md` entry for §1.1–§1.5, with the measured tables, and
   a second recording Stage 7's deliberate over-admission on the Darwin flavour.
   The second matters more: it is a standing divergence, not a description of
   agreement.
