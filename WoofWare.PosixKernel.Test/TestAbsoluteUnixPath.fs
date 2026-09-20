@@ -59,7 +59,7 @@ module TestAbsoluteUnixPath =
         | Ok path -> path
         | Error error -> failwith $"expected %s{candidate} to parse, but: %s{AbsoluteUnixPath.describe error}"
 
-    let private parseError (candidate : string) : AbsoluteUnixPathError =
+    let private parseError (candidate : string) : GetcwdResultParseError =
         match AbsoluteUnixPath.parse candidate with
         | Ok path -> failwith $"expected %s{candidate} to be rejected, but it parsed as %O{path}"
         | Error error -> error
@@ -128,8 +128,8 @@ module TestAbsoluteUnixPath =
 
     [<Test>]
     let ``Null and empty are rejected as Empty`` () : unit =
-        parseError null |> shouldEqual AbsoluteUnixPathError.Empty
-        parseError "" |> shouldEqual AbsoluteUnixPathError.Empty
+        parseError null |> shouldEqual GetcwdResultParseError.Empty
+        parseError "" |> shouldEqual GetcwdResultParseError.Empty
 
     [<Test>]
     let ``A path not starting with the separator is rejected as NotRooted`` () : unit =
@@ -140,7 +140,7 @@ module TestAbsoluteUnixPath =
             let relative = candidate.Substring 1
 
             if not (String.IsNullOrEmpty relative) then
-                parseError relative |> shouldEqual AbsoluteUnixPathError.NotRooted
+                parseError relative |> shouldEqual GetcwdResultParseError.NotRooted
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
 
@@ -169,7 +169,7 @@ module TestAbsoluteUnixPath =
             }
 
         let property (withNul : string, index : int) : unit =
-            parseError withNul |> shouldEqual (AbsoluteUnixPathError.ContainsNul index)
+            parseError withNul |> shouldEqual (GetcwdResultParseError.ContainsNul index)
 
         Check.One (config, Prop.forAll (Arb.fromGen withNulGen) property)
 
@@ -184,9 +184,9 @@ module TestAbsoluteUnixPath =
         // different branch from "successor is not a low surrogate".
         let highAtEnd = System.String [| '/' ; 'a' ; char 0xD83D |]
 
-        parseError highOnly |> shouldEqual (AbsoluteUnixPathError.UnpairedSurrogate 2)
-        parseError lowOnly |> shouldEqual (AbsoluteUnixPathError.UnpairedSurrogate 2)
-        parseError highAtEnd |> shouldEqual (AbsoluteUnixPathError.UnpairedSurrogate 2)
+        parseError highOnly |> shouldEqual (GetcwdResultParseError.UnpairedSurrogate 2)
+        parseError lowOnly |> shouldEqual (GetcwdResultParseError.UnpairedSurrogate 2)
+        parseError highAtEnd |> shouldEqual (GetcwdResultParseError.UnpairedSurrogate 2)
 
         // A well-formed pair in the same position must *not* be rejected, and
         // in particular the low half must not be reported as unpaired.
@@ -194,34 +194,34 @@ module TestAbsoluteUnixPath =
 
     [<Test>]
     let ``A repeated separator is rejected as an empty segment`` () : unit =
-        parseError "/a//b" |> shouldEqual (AbsoluteUnixPathError.EmptySegment 3)
-        parseError "//a" |> shouldEqual (AbsoluteUnixPathError.EmptySegment 1)
+        parseError "/a//b" |> shouldEqual (GetcwdResultParseError.EmptySegment 3)
+        parseError "//a" |> shouldEqual (GetcwdResultParseError.EmptySegment 1)
         // "//" trips both rules; the trailing-separator check runs first, so
         // that is what it reports. Either would be a truthful diagnosis.
-        parseError "//" |> shouldEqual AbsoluteUnixPathError.TrailingSeparator
+        parseError "//" |> shouldEqual GetcwdResultParseError.TrailingSeparator
 
     [<Test>]
     let ``A trailing separator is rejected on every path but the root`` () : unit =
         let property (candidate : string) : unit =
             if candidate <> "/" then
                 parseError (candidate + "/")
-                |> shouldEqual AbsoluteUnixPathError.TrailingSeparator
+                |> shouldEqual GetcwdResultParseError.TrailingSeparator
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
 
     [<Test>]
     let ``Dot and dot-dot segments are rejected, at their own index`` () : unit =
         parseError "/."
-        |> shouldEqual (AbsoluteUnixPathError.UnresolvedSegment (".", 1))
+        |> shouldEqual (GetcwdResultParseError.UnresolvedSegment (".", 1))
 
         parseError "/.."
-        |> shouldEqual (AbsoluteUnixPathError.UnresolvedSegment ("..", 1))
+        |> shouldEqual (GetcwdResultParseError.UnresolvedSegment ("..", 1))
 
         parseError "/a/./b"
-        |> shouldEqual (AbsoluteUnixPathError.UnresolvedSegment (".", 3))
+        |> shouldEqual (GetcwdResultParseError.UnresolvedSegment (".", 3))
 
         parseError "/a/../b"
-        |> shouldEqual (AbsoluteUnixPathError.UnresolvedSegment ("..", 3))
+        |> shouldEqual (GetcwdResultParseError.UnresolvedSegment ("..", 3))
         // Segments that merely *start* with a dot are ordinary hidden files.
         parseOk "/a/.b/..c" |> AbsoluteUnixPath.toString |> shouldEqual "/a/.b/..c"
 
