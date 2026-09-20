@@ -5,6 +5,7 @@
  * Measured: Darwin 25.6.0 / macOS 26.6, APFS.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -29,7 +30,26 @@ static void try_symlink(const char *label, const char *target) {
     } else printf("%-28s symlink FAIL errno=%d (%s)\n", label, errno, strerror(errno));
 }
 
+
+/* Every probe runs inside a fresh mkdtemp directory and removes only that, so
+   re-running one cannot touch anything the caller owns. */
+static char probeDir[64];
+static void enterProbeDir(void) {
+    strcpy (probeDir, "/tmp/pawprint-path-probe.XXXXXX");
+    if (mkdtemp (probeDir) == NULL) { perror ("mkdtemp"); exit (1); }
+    if (chdir (probeDir) != 0) { perror ("chdir"); exit (1); }
+    printf ("probe directory: %s\n", probeDir);
+}
+static void leaveProbeDir(void) {
+    char cmd[256];
+    if (chdir ("/tmp") != 0) { perror ("chdir /tmp"); return; }
+    /* u+w first: some probes deliberately create mode-0555 directories. */
+    snprintf (cmd, sizeof cmd, "chmod -R u+w '%s' >/dev/null 2>&1; rm -rf '%s'", probeDir, probeDir);
+    if (system (cmd) != 0) fprintf (stderr, "warning: could not clean up %s\n", probeDir);
+}
+
 int main(void) {
+    enterProbeDir ();
     try_create("ascii", "probe-ok");
     try_create("lone 0xFF", "probe-\xff");
     try_create("truncated UTF-8 (0xE4 0xB8)", "probe-\xe4\xb8");
@@ -38,5 +58,6 @@ int main(void) {
     try_create("valid CJK", "probe-\xe4\xb8\xad");
     try_symlink("target lone 0xFF", "/tmp/\xff");
     try_symlink("target truncated", "/tmp/\xe4\xb8");
+    leaveProbeDir ();
     return 0;
 }

@@ -5,6 +5,7 @@
  * Measured: Darwin 25.6.0 / macOS 26.6, APFS.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -15,7 +16,26 @@
   if (r >= 0) printf("%-46s OK (%ld)\n", label, r); \
   else printf("%-46s errno=%-3d %s\n", label, errno, strerror(errno)); } while (0)
 
+
+/* Every probe runs inside a fresh mkdtemp directory and removes only that, so
+   re-running one cannot touch anything the caller owns. */
+static char probeDir[64];
+static void enterProbeDir(void) {
+    strcpy (probeDir, "/tmp/pawprint-path-probe.XXXXXX");
+    if (mkdtemp (probeDir) == NULL) { perror ("mkdtemp"); exit (1); }
+    if (chdir (probeDir) != 0) { perror ("chdir"); exit (1); }
+    printf ("probe directory: %s\n", probeDir);
+}
+static void leaveProbeDir(void) {
+    char cmd[256];
+    if (chdir ("/tmp") != 0) { perror ("chdir /tmp"); return; }
+    /* u+w first: some probes deliberately create mode-0555 directories. */
+    snprintf (cmd, sizeof cmd, "chmod -R u+w '%s' >/dev/null 2>&1; rm -rf '%s'", probeDir, probeDir);
+    if (system (cmd) != 0) fprintf (stderr, "warning: could not clean up %s\n", probeDir);
+}
+
 int main(void) {
+    enterProbeDir ();
     mkdir("d", 0755);
     int fd = open("d/f", O_CREAT|O_WRONLY, 0644); if (fd>=0) close(fd);
 
@@ -51,6 +71,6 @@ int main(void) {
     puts("-- chdir --");
     R("chdir(\"d/\\xff\")", chdir("d/\xff"));
 
-    unlink("d/f"); rmdir("d");
+    leaveProbeDir ();
     return 0;
 }

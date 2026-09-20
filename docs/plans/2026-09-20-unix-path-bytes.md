@@ -55,10 +55,22 @@ PawPrint models. Nothing here is inferred.
 - **Linux 6.18.5, ext4** (`statfs f_type = 0xef53`), via `container run
   python:3-slim` with `bytes` paths.
 
-The probe sources are in `docs/plans/2026-09-20-unix-path-bytes/`, one per
-subsection below, each carrying the platform it was run on and the command to
-re-run it. Re-run them rather than trusting the tables if a stage's result
-disagrees.
+The probe sources are in `docs/plans/2026-09-20-unix-path-bytes/`, each carrying
+the platform it was run on and the command to re-run it. Each runs entirely
+inside its own `mkdtemp` directory and removes only that, so re-running one from
+anywhere is safe. Re-run them rather than trusting the tables if a stage's
+result disagrees — two of these tables were wrong in the first draft of this
+plan and were caught exactly that way.
+
+| probe | produces |
+| --- | --- |
+| `darwin-which-names-bind.c` | §1.1, Darwin half of §1.5 |
+| `darwin-utf8-is-not-the-rule.c` | §1.1's refutation of both closed forms |
+| `darwin-where-the-check-applies.c` | §1.2 |
+| `darwin-rule-ordering.c` | §1.3, Darwin rows of §1.4 |
+| `darwin-name-max-vs-permission.c` | §1.3's two-by-two |
+| `darwin-lookup-vs-name-max.c` | §1.4's lookup claim |
+| `linux-names-are-bytes.py` | the Linux column throughout |
 
 ### 1.1 Which byte strings can be a directory entry name?
 
@@ -68,15 +80,38 @@ disagrees.
 | `mkdir("d/\xe4\xb8")` (truncated UTF-8) | **OK** | **EILSEQ** |
 | `symlink("t", "d/\xc0\x80")` (overlong) | **OK** | **EILSEQ** |
 | `open("d/\xed\xa0\x80", O_CREAT)` (surrogate encoding) | *not probed* | **EILSEQ** |
+| `mkdir("d/\xef\xbf\xbf")` (U+FFFF, **valid** UTF-8) | *not probed* | **EILSEQ** |
 | `readdir` round-trip of the above | exact bytes (`FF`, `E4 B8`, `C0 80`) | n/a |
 
-APFS demands **strict** UTF-8: it refuses truncated sequences, overlong forms and
-CESU-8 surrogate encodings alike. ext4 stores bytes and asks no questions.
+ext4 stores bytes and asks no questions. APFS demands more than valid UTF-8, and
+**how much more is not determined**.
 
-This matters more than it looks, because .NET's strict decoder
-(`UTF8Encoding(false, true)` — already `UnixPathText.utf8`) rejects exactly those
-same three classes. **`tryToString` succeeding and APFS accepting the name are
-the same predicate.** One function, two consumers; see §2.3.
+It certainly refuses everything a strict UTF-8 decoder refuses — truncated
+sequences, overlong forms, CESU-8 surrogate encodings. But it also refuses byte
+strings that decode perfectly well. Probed (`darwin-utf8-is-not-the-rule.c`):
+
+| code point | class | APFS |
+| --- | --- | --- |
+| U+FDCF, U+FDF0, U+FFFD, U+E000, U+200B, U+1F600, U+10000 | ordinary | accept |
+| U+FDD0, U+FDEF, U+FFFE, U+FFFF, U+1FFFE, U+1FFFF, U+10FFFE, U+10FFFF | Unicode noncharacter | **EILSEQ** |
+| U+10FFFD | private use, plane 16 | accept |
+| U+1FFFD | **unassigned**, plane 1 | **EILSEQ** |
+
+"APFS accepts iff the name is not a Unicode noncharacter" fits sixteen of those
+seventeen and is **refuted** by the last: U+1FFFD is not a noncharacter and is
+refused, while the unassigned U+FDCF is accepted.
+
+Two consequences for the design, and the second is the important one.
+
+- `tryToString` succeeding and APFS accepting a name are **not** the same
+  predicate. An earlier draft of this plan claimed they were and built §2.3 on
+  it; the U+FFFF row is the counterexample. Do not re-derive one from the other.
+- **The Darwin predicate is not yet known well enough to implement.** Stage 7
+  therefore begins by mapping it, which is tractable by brute force: sweep all
+  1,114,112 code points through `mkdir` and record the accepted set. Until that
+  sweep exists, the Darwin arm must refuse the region it cannot speak for rather
+  than guess — this is "correctness over availability" applied to a filesystem
+  rule.
 
 ### 1.2 Where does APFS apply that check?
 
@@ -103,21 +138,37 @@ cannot be bound and therefore is absent by construction.
 
 ### 1.3 Ordering against the other rules
 
-Darwin, creating operations, each row measured against a control:
+Darwin, creating operations. Every row is measured against a control, because an
+ordering claim means nothing without one:
 
-| step | errno | evidence |
-| --- | --- | --- |
-| PATH_MAX (at `getname`) | ENAMETOOLONG | 2047-byte path containing `\xff` → ENAMETOOLONG, not EILSEQ |
-| walk to the parent | ENOENT / ENOTDIR | `open("d/nodir/\xff", O_CREAT)` → ENOENT |
-| parent's write permission | EACCES | `mkdir("ro/\xff")` → EACCES (control `mkdir("ro/plain")` → EACCES) |
-| **encoding** | **EILSEQ** | `mkdir(300 × 0xff)` → EILSEQ (control `mkdir(300 × 'a')` → ENAMETOOLONG) |
-| NAME_MAX | ENAMETOOLONG | control above |
-| the operation | — | |
+| # | step | errno | evidence |
+| --- | --- | --- | --- |
+| 1 | PATH_MAX (at `getname`) | ENAMETOOLONG | 2047-byte path containing `\xff` → ENAMETOOLONG, not EILSEQ |
+| 2 | walk to the parent | ENOENT / ENOTDIR | `mkdir("nodir/" + 300×'a')` → ENOENT, not ENAMETOOLONG |
+| 3 | NAME_MAX — **decodable names only** | ENAMETOOLONG | `mkdir("ro/" + 300×'a')` → ENAMETOOLONG on an unwritable parent, beating step 4 |
+| 4 | parent's write permission | EACCES | `mkdir("ro/" + 300×0xff)` → EACCES, i.e. step 3 was skipped and step 5 did not run |
+| 5 | **encoding** | **EILSEQ** | `mkdir("d/" + 300×0xff)` → EILSEQ on a *writable* parent |
+| 6 | the operation | — | |
 
-The fourth row is the load-bearing one: a name that is *both* over-long *and*
-invalid reports EILSEQ, so the encoding check strictly precedes NAME_MAX. And
-the third row bounds it from the other side: an unwritable parent reports EACCES,
-so it strictly follows the permission check.
+Rows 3–5 are the subtle ones, and they only separate under a two-by-two:
+writable/unwritable parent against decodable/undecodable name.
+
+| parent | name | result | why |
+| --- | --- | --- | --- |
+| writable `d` | 300 × `'a'` | ENAMETOOLONG | row 3 |
+| writable `d` | 300 × `0xFF` | **EILSEQ** | row 3 skipped, row 4 passes, row 5 fires |
+| unwritable `ro` | 300 × `'a'` | **ENAMETOOLONG** | row 3 fires *before* row 4 |
+| unwritable `ro` | 300 × `0xFF` | **EACCES** | row 3 skipped, row 4 fires *before* row 5 |
+
+So NAME_MAX precedes the permission check and the encoding check follows it —
+they are not adjacent, and an implementation that puts them together will get one
+of those four cells wrong. This also matches where the code already is:
+`PathWalk` checks NAME_MAX during the walk, while the permission check lives in
+the verdict files, so the encoding check is a new *last* step of the verdict and
+NAME_MAX does not move at all.
+
+Row 3's "decodable names only" is the same skip §1.2 established for lookups:
+an undecodable component is never measured for length, on either path.
 
 Linux has no encoding step at all. Its order is unchanged.
 
@@ -137,9 +188,12 @@ which are not UTF-8 at all, Linux's limit is a **raw byte count**. Rename it
 `NameLengthLimit.Bytes`.
 
 `NameLengthLimit.Utf16CodeUnits` survives, and is now *better defined than it
-was*: it can only ever be asked about a name APFS would accept, because §1.2 and
-§1.3 put the encoding check in front of it on both the creating path (EILSEQ) and
-the lookup path (ENOENT). Measured, a lookup confirms this — on Darwin,
+was*: it can only ever be asked about a **decodable** name, because both the
+lookup path (§1.2) and the creating path (§1.3 row 3) skip the length rule
+entirely for a name that has no UTF-16 form. Note this is the *decodability*
+skip, not the APFS-admissibility rule — U+FFFF has a perfectly good UTF-16
+length and is measured for it, then refused at row 5. Measured, a lookup
+confirms the skip — on Darwin,
 `open(300 × 0xff, O_RDONLY)` is **ENOENT**, where the valid control `open(300 ×
 'a', O_RDONLY)` is **ENAMETOOLONG**. A non-decodable component never reaches the
 length rule at all.
@@ -215,8 +269,9 @@ readers with different jobs:
 
 ```fsharp
 /// The .NET string this names, if it has one.
-/// `None` exactly when the bytes are not strict UTF-8 — which is also exactly
-/// when APFS refuses to bind them as a name (measured; see §1.1).
+/// `None` exactly when the bytes are not strict UTF-8. This is *not* the same
+/// question as "may APFS bind this as a name" — APFS refuses names this
+/// accepts (§1.1) — so do not use it for that.
 val tryToString : UnixByteString -> string option
 
 /// Total. Valid UTF-8 runs verbatim; any other byte as `\xNN`; a literal
@@ -240,30 +295,41 @@ the differential oracle materialising a seed onto the *host* filesystem
 One new accessor, stating one fact:
 
 ```fsharp
-/// Which entry names this flavour's filesystem can bind.
-val entryNameEncoding : SimulatedUnixPlatform -> EntryNameEncoding
+/// Which entry names this flavour's filesystem is willing to bind.
+val bindableEntryNames : SimulatedUnixPlatform -> BindableEntryNames
 
 [<RequireQualifiedAccess>]
-type EntryNameEncoding =
+type BindableEntryNames =
     /// Any NUL-free byte string. Linux/ext4.
     | AnyBytes
-    /// Strict UTF-8 only; anything else is EILSEQ on binding. Darwin/APFS.
-    | StrictUtf8
+    /// The set APFS admits, which is narrower than strict UTF-8 and whose
+    /// boundary Stage 7 maps by sweep. Anything outside it is EILSEQ *on
+    /// binding only*. Darwin/APFS.
+    | AppleUnicode
 ```
+
+`AppleUnicode` rather than `StrictUtf8`: the rule is Apple's, it is narrower than
+UTF-8, and naming it after an encoding would invite exactly the
+`tryToString`-shaped shortcut §1.1 refutes.
 
 It has **two** measured consequences, and they are different consequences of the
 same fact rather than two rules:
 
-1. *Binding* an unrepresentable name is refused with EILSEQ, at the position
-   §1.3 measured (after EACCES, before NAME_MAX). This lands in
-   `CreatingOpenRules`, `MkDirRules` and `RenameRules` — the files that already
+1. *Binding* an inadmissible name is refused with EILSEQ, as the **last** step
+   of the verdict — after the permission check, per §1.3 row 5. This lands in
+   `CreatingOpenRules`, `MkDirRules` and `RenameRules`, the files that already
    exist to hold exactly this kind of ordered rule table. `RemovalRules` needs
-   nothing: measured, removal of a bad name is plain ENOENT.
-2. *Looking up* an unrepresentable name misses, and its length is never examined.
-   In the model this needs no code at all on the happy path — such a name cannot
-   be in the `Map`, so the lookup misses naturally — but `PathWalk` must skip its
-   NAME_MAX check for it, because §1.4 measured `open(300 × 0xff, O_RDONLY)` as
-   ENOENT where the valid control is ENAMETOOLONG.
+   nothing: measured, removal of such a name is plain ENOENT. **NAME_MAX does
+   not move**; it stays in `PathWalk` where it is, which §1.3 row 3 confirms is
+   the right side of the permission check.
+2. *Looking up* an inadmissible name misses, and its length is never examined.
+   This needs no code on the happy path — such a name cannot be in the `Map`, so
+   the lookup misses naturally — but `PathWalk` must skip its NAME_MAX check for
+   a name with no UTF-16 form, because §1.4 measured `open(300 × 0xff,
+   O_RDONLY)` as ENOENT where the valid control is ENAMETOOLONG. Note the skip
+   is keyed on *decodability*, which is a narrower condition than
+   inadmissibility: U+FFFF is decodable, so it is length-checked and only then
+   refused at binding.
 
 Like `pathLimits`, this is really a property of the *mount* rather than the
 kernel, and it goes in `SimulatedUnixPlatform` for the same stated reason: PawPrint
@@ -401,11 +467,12 @@ The big one. `UnixPath`, `DirectoryEntryName` and `PathCursor` wrap
 `toString` in a diagnostic becomes `toEscaped`. `parseOrFail : string -> _`
 survives on both types so the test corpus does not churn.
 
-`PathWalk`'s NAME_MAX check gains the §2.3(2) skip — but on `AnyBytes` only,
-since there is no `StrictUtf8` flavour rule until Stage 7. On Darwin this stage
-therefore leaves the walk measuring a non-UTF-8 name in UTF-16 units, which is
-undefined; it must `failwith` naming Stage 7, not guess. That is reachable only
-through a seed until Stage 7 lands.
+`PathWalk`'s NAME_MAX check gains the §2.3(2) decodability skip. That skip is
+correct on **both** flavours and does not depend on Stage 7 — it is what stops
+`NameLengthLimit.Utf16CodeUnits` being asked for the UTF-16 length of something
+that has none. Until Stage 7 lands, a Darwin-flavour filesystem simply cannot
+acquire an inadmissible name except through a seed, exactly as it cannot
+acquire an over-long one.
 
 **Correctness oracle**:
 
@@ -465,9 +532,17 @@ string.
   absolute-path shape.
 - **Differential, and only now expressible**: `chdir` into a directory whose name
   is `\xff\xfe`, then `getcwd`, yields those bytes. Measured on Linux (§1.5:
-  `2F 77 6F 72 6B 2F 64 2F FF FE`). Linux-only — the directory cannot exist on
-  APFS — so this is a `container`-hosted or `$DOTNET_LINUX_FRAMEWORK_DIR` test,
-  and it must `Assert.Ignore` where it cannot run.
+  `2F 77 6F 72 6B 2F 64 2F FF FE`).
+
+  This one needs care about *which* Linux. `$DOTNET_LINUX_FRAMEWORK_DIR` will
+  not do: it changes only which managed assemblies PawPrint interprets, and the
+  host filesystem underneath is still APFS, which cannot hold the directory —
+  the same oracle limit `AGENTS.md` states for `RealRuntime`. So either run it
+  on a genuine Linux host or container (CI is Linux), or make it a
+  PawPrint-only test against an explicitly `linuxX64` simulated platform with
+  no host side at all. The PawPrint-only form is the cheaper one and is enough
+  for this stage, since what is being asserted is that bytes survive the model;
+  the host comparison belongs to Stage 7, which already needs a Linux runner.
 - Existing `TestAbsoluteUnixPath`, `TestProcessPath`,
   `TestEmulatedKernelCurrentDirectory` pass with only the `UnpairedSurrogate`
   cases removed.
@@ -506,29 +581,48 @@ sides were seeded differently is worse than one that does not run.
 
 The modelling gap that becomes real once bytes are representable.
 
+**Do the sweep first.** §1.1 establishes that APFS's admissible set is narrower
+than strict UTF-8 and that the obvious closed form (Unicode noncharacters) is
+refuted by U+1FFFD. Nothing here can be implemented against a predicate nobody
+has written down, so this stage opens by generating one: `mkdir` every one of
+the 1,114,112 code points on an APFS volume, record the accepted set, and commit
+the result as a data table beside the probes. Only then decide how to *represent*
+it — a range list is the obvious candidate, and the sweep will say how many
+ranges it takes.
+
+If the sweep turns out to be more than a day's work, split it into its own stage
+and land Linux's `AnyBytes` arm alone first; `AnyBytes` is fully known and the
+Darwin arm can `failwith` in the meantime. What must not happen is a Darwin arm
+that guesses.
+
 - `UnixError.EILSEQ`, `platformDependent 84 92` — the numbers are already
   written down in `UnixError.fs`'s own comment on `EOVERFLOW` ("raw 84 is
   `EOVERFLOW` on Darwin and `EILSEQ` on Linux"). The PAL mapping is
   `Error_EILSEQ = 0x10019`, which exists upstream
   (`pal_error_common.h:62`), so `UnixErrorPal` needs one arm.
 - `SimulatedUnixPlatform.entryNameEncoding`, per §2.3.
-- The rule at its measured position in `CreatingOpenRules`, `MkDirRules`,
-  `RenameRules`. Nothing in `RemovalRules`.
-- `PathWalk`'s NAME_MAX skip from Stage 3 becomes real rather than a `failwith`.
+- The rule as the last step of the verdict in `CreatingOpenRules`,
+  `MkDirRules`, `RenameRules`. Nothing in `RemovalRules`, and nothing moves in
+  `PathWalk`.
 
 **Correctness oracle** — this stage has a genuine host oracle on *both*
 platforms, which is rare here, so use it:
 
-- The §1.3 ordering table, as a test per row, each with its stated control. The
-  controls are what make the rows load-bearing: `mkdir(300 × 0xff)` → EILSEQ is
-  only meaningful next to `mkdir(300 × 'a')` → ENAMETOOLONG.
-- The §1.2 table: every listed lookup/removal is ENOENT on a `StrictUtf8`
+- **The §1.3 two-by-two, all four cells.** This is the one that matters: three
+  of the four are indistinguishable if NAME_MAX and the encoding check are
+  implemented as adjacent steps, and the fourth (unwritable parent, undecodable
+  name → EACCES) is what separates them. An earlier draft of this plan got this
+  ordering wrong in exactly that way.
+- The §1.2 table: every listed lookup/removal is ENOENT on an `AppleUnicode`
   flavour, and every listed binding is EILSEQ.
 - Property: on an `AnyBytes` flavour, no operation ever reports EILSEQ, for any
   NUL-free byte string.
-- Property: `EntryNameEncoding.StrictUtf8` admits a name iff
-  `UnixByteString.tryToString` returns `Some` — the §1.1 claim that these are one
-  predicate, asserted rather than assumed.
+- Property: the modelled `AppleUnicode` predicate agrees with the committed
+  sweep table at every code point. **Not** with `tryToString`, which §1.1
+  refutes.
+- At least one regression test per refuted shortcut, so neither comes back: a
+  valid-UTF-8 name APFS refuses (U+FFFF), and a name that is not a Unicode
+  noncharacter yet APFS refuses (U+1FFFD).
 - Extend `TestVirtualFileSystemAgainstHost` with `byte[]`-declared P/Invokes so
   the host comparison covers non-UTF-8 names. This is the stage that pays that
   cost.

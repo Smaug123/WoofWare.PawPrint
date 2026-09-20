@@ -18,9 +18,26 @@
   if (r >= 0) printf("%-52s OK (%ld)\n", label, r); \
   else printf("%-52s errno=%-3d %s\n", label, errno, strerror(errno)); } while (0)
 
+
+/* Every probe runs inside a fresh mkdtemp directory and removes only that, so
+   re-running one cannot touch anything the caller owns. */
+static char probeDir[64];
+static void enterProbeDir(void) {
+    strcpy (probeDir, "/tmp/pawprint-path-probe.XXXXXX");
+    if (mkdtemp (probeDir) == NULL) { perror ("mkdtemp"); exit (1); }
+    if (chdir (probeDir) != 0) { perror ("chdir"); exit (1); }
+    printf ("probe directory: %s\n", probeDir);
+}
+static void leaveProbeDir(void) {
+    char cmd[256];
+    if (chdir ("/tmp") != 0) { perror ("chdir /tmp"); return; }
+    /* u+w first: some probes deliberately create mode-0555 directories. */
+    snprintf (cmd, sizeof cmd, "chmod -R u+w '%s' >/dev/null 2>&1; rm -rf '%s'", probeDir, probeDir);
+    if (system (cmd) != 0) fprintf (stderr, "warning: could not clean up %s\n", probeDir);
+}
+
 int main(void) {
-    system("rm -rf p3 && mkdir p3");
-    chdir("p3");
+    enterProbeDir ();
     mkdir("d", 0755);
     int fd = open("d/f", O_CREAT|O_WRONLY, 0644); if (fd>=0) close(fd);
 
@@ -54,6 +71,6 @@ int main(void) {
     puts("-- O_CREAT on an invalid name that ALSO has a bad parent --");
     R("open(\"d/nodir/\\xff\", O_CREAT)", open("d/nodir/\xff", O_CREAT|O_WRONLY, 0644));
 
-    chdir(".."); system("chmod -R u+w p3 && rm -rf p3");
+    leaveProbeDir ();
     return 0;
 }

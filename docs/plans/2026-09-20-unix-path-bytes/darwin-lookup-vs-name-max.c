@@ -14,7 +14,26 @@
 #include <sys/stat.h>
 #include <stdlib.h>
 #define R(l,e) do{errno=0;long r=(long)(e); if(r>=0)printf("%-56s OK\n",l); else printf("%-56s errno=%-3d %s\n",l,errno,strerror(errno));}while(0)
+
+/* Every probe runs inside a fresh mkdtemp directory and removes only that, so
+   re-running one cannot touch anything the caller owns. */
+static char probeDir[64];
+static void enterProbeDir(void) {
+    strcpy (probeDir, "/tmp/pawprint-path-probe.XXXXXX");
+    if (mkdtemp (probeDir) == NULL) { perror ("mkdtemp"); exit (1); }
+    if (chdir (probeDir) != 0) { perror ("chdir"); exit (1); }
+    printf ("probe directory: %s\n", probeDir);
+}
+static void leaveProbeDir(void) {
+    char cmd[256];
+    if (chdir ("/tmp") != 0) { perror ("chdir /tmp"); return; }
+    /* u+w first: some probes deliberately create mode-0555 directories. */
+    snprintf (cmd, sizeof cmd, "chmod -R u+w '%s' >/dev/null 2>&1; rm -rf '%s'", probeDir, probeDir);
+    if (system (cmd) != 0) fprintf (stderr, "warning: could not clean up %s\n", probeDir);
+}
+
 int main(void){
+    enterProbeDir ();
     system("rm -rf p4 && mkdir p4"); chdir("p4"); mkdir("d",0755);
     char bad[600], good[600], badmid[600];
     strcpy(bad ,"d/"); memset(bad +2,0xff,300); bad [302]=0;   // 300 invalid bytes, final comp
