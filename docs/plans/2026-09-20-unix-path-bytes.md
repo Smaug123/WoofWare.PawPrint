@@ -369,10 +369,18 @@ in `NativeSystemNative`'s `readdir` handler.
 
 This is a net deletion in several places.
 
-- **`UnixPathTextDefect.UnpairedSurrogate` disappears**, and with it most of
-  `UnixPathText.firstDefect` — the function exists to find the two ways a .NET
-  string fails to be a byte string, and one of those ways stops existing. What is
-  left is a NUL scan.
+- **`UnixPathTextDefect.UnpairedSurrogate` stops being a rule about *paths***
+  and becomes a rule about *encoding a .NET string*. It cannot simply be
+  deleted: §2.5 keeps `parseOrFail : string -> _` for host configuration, and
+  such a caller can still pass `"/\uD800"`, which has no UTF-8 encoding at all.
+  Dropping the check would make the strict encoder throw
+  `EncoderFallbackException` from inside a function whose contract is that it
+  returns an error instead (`TestAbsoluteUnixPath`'s "parse never throws"), and
+  a *lenient* encoder would silently substitute U+FFFD and create a differently
+  named file. So the check survives on the string-taking constructors only; the
+  byte-taking ones have no such failure mode, because bytes are already bytes.
+  What does go is its presence in the *path* types' own invariants — after this
+  work a `UnixPath` is NUL-free bytes and nothing else.
 - **`PathArgumentRefusal.NotUtf8` disappears entirely**, and with it both
   `failwith`s quoted at the top of this document. `PathArgumentRefusal` becomes a
   single case, `InteriorNul` — which is an interpreter bug, never a guest input —
@@ -413,12 +421,20 @@ This is a net deletion in several places.
 Implement this plan with each stage on its own branch, stacked as necessary on
 previous branches, so that a reviewer can review each branch in isolation.
 
-A note on ordering: **`UnixPath` and `DirectoryEntryName` must move together**
-(Stage 3). `PathCursor.next` slices a `DirectoryEntryName` straight out of the
-path's buffer, so one cannot be bytes while the other is a string without an
-encode/decode in the middle of the resolution walk — which is the thing this
-refactor exists to delete. `SymlinkTarget` and `AbsoluteUnixPath` are genuinely
-separable and get their own stages.
+A note on ordering: **three of the four types must move together** (Stage 3),
+because each pair is joined by a function that would otherwise have to encode or
+decode in the middle.
+
+- `PathCursor.next` slices a `DirectoryEntryName` straight out of a `UnixPath`'s
+  buffer, so those two cannot differ.
+- `VirtualFileSystem.pathOfDirectory` — which *is* `getcwd` — collects
+  `DirectoryEntryName`s and returns an `AbsoluteUnixPath`, so that pair cannot
+  differ either: a string-backed return type cannot carry a byte-valued name,
+  whatever the concatenation does.
+
+`SymlinkTarget` is the one that genuinely separates, and it gets its own stage.
+Measured, a target is opaque bytes on both flavours and nothing turns one into
+an `AbsoluteUnixPath`.
 
 PR #1449 renames `AbsoluteUnixPathError` to `GetcwdResultParseError` and touches
 the same DU that Stage 5 rewrites. Whichever lands first, the other rebases; the
@@ -475,15 +491,16 @@ because the docstring is being edited next to its declaration.
 
 ---
 
-### Stage 3: `UnixPath` and `DirectoryEntryName` become bytes
+### Stage 3: `UnixPath`, `DirectoryEntryName` and `AbsoluteUnixPath` become bytes
 
 **Dependencies**: Stage 1.
 
-**Implements**: §2.1, §2.2, §2.4 (the `UnixPathText`, `PathArgumentRefusal` and
-`PathCursor` deletions).
+**Implements**: §2.1, §2.2, §2.4 (the `UnixPathText`, `PathArgumentRefusal`,
+`PathCursor` and `AbsoluteUnixPathError` changes).
 
-The big one. `UnixPath`, `DirectoryEntryName` and `PathCursor` wrap
-`UnixByteString`; `PathArgument.parse` stops decoding and
+The big one, and it is big on purpose — see the ordering note above for why
+these cannot be separated. `UnixPath`, `DirectoryEntryName`, `AbsoluteUnixPath`
+and `PathCursor` wrap `UnixByteString`; `PathArgument.parse` stops decoding and
 `PathArgumentRefusal.NotUtf8` is deleted along with both of PawPrint's
 `failwith`s for it; `UnixPathTextDefect.UnpairedSurrogate` is deleted; every
 `toString` in a diagnostic becomes `toEscaped`. `parseOrFail : string -> _`
@@ -562,20 +579,24 @@ Smaller and self-contained: a target is opaque bytes on *both* flavours
 
 ---
 
-### Stage 5: `AbsoluteUnixPath` becomes bytes
+### Stage 5: (folded into Stage 3)
 
-**Dependencies**: Stage 3.
+`AbsoluteUnixPath` was originally its own stage. It is not separable:
+`VirtualFileSystem.pathOfDirectory` — which *is* `getcwd` — collects
+`DirectoryEntryName`s and **returns an `AbsoluteUnixPath`**, so the moment
+Stage 3 makes entry names byte-valued, that function cannot preserve them
+through a string-backed return type no matter how its concatenation is written.
+Leaving the two apart would mean a window in which `getcwd` has to crash on a
+name a guest can legitimately create.
 
-**Implements**: §2.4 (`AbsoluteUnixPathError`), §2.5.
+Its content moves into Stage 3: `AbsoluteUnixPathError` loses
+`UnpairedSurrogate` from the byte-taking path (keeping it on the string-taking
+one, per §2.4); `ContainsNul` carries a byte offset; `getcwd` and
+`SystemNative_GetProcessPath` stop round-tripping through a string. Stage 3's
+oracle gains:
 
-`AbsoluteUnixPathError` loses `UnpairedSurrogate`; `ContainsNul` carries a byte
-offset. `getcwd` and `SystemNative_GetProcessPath` stop round-tripping through a
-string.
-
-**Correctness oracle**:
-
-- Property: `parse >> toUtf8` round-trips for every byte string satisfying the
-  absolute-path shape.
+- Property: `AbsoluteUnixPath.parse >> toUtf8` round-trips for every byte string
+  satisfying the absolute-path shape.
 - **Differential, and only now expressible**: `chdir` into a directory whose name
   is `\xff\xfe`, then `getcwd`, yields those bytes (§1.5).
 
@@ -588,15 +609,19 @@ string.
   no host side at all. The PawPrint-only form is the cheaper one and is enough
   for this stage, since what is being asserted is that bytes survive the model;
   the host comparison belongs to Stage 7, which already needs a Linux runner.
-- Existing `TestAbsoluteUnixPath`, `TestProcessPath`,
-  `TestEmulatedKernelCurrentDirectory` pass with only the `UnpairedSurrogate`
-  cases removed.
+- Existing `TestAbsoluteUnixPath`, `TestProcessPath` and
+  `TestEmulatedKernelCurrentDirectory` pass unchanged — including the
+  `UnpairedSurrogate` cases, which §2.4 keeps on the string-taking constructors.
+
+`SymlinkTarget` (Stage 4) stays its own stage: measured, a target is opaque
+bytes on both flavours and nothing converts one into an `AbsoluteUnixPath`, so
+it carries none of this coupling.
 
 ---
 
 ### Stage 6: the oracle and the seed learn to refuse
 
-**Dependencies**: Stages 3–5.
+**Dependencies**: Stages 3 and 4.
 
 **Implements**: §2.2 (`tryToString`'s real consumers).
 
@@ -620,7 +645,7 @@ sides were seeded differently is worse than one that does not run.
 
 ### Stage 7: APFS refuses to bind a non-UTF-8 name
 
-**Dependencies**: Stages 3–5. (Independent of Stage 6.)
+**Dependencies**: Stages 3 and 4. (Independent of Stage 6.)
 
 **Implements**: §1.1, §1.2, §1.3, §2.3.
 
@@ -710,9 +735,11 @@ specifically for this, and Stage 3 mutation-tests them. Do not skip that.
 (`UnixPath`, `DirectoryEntryName`, `SymlinkTarget`, `AbsoluteUnixPath`) plus
 `PathCursor.bufferOf`.
 
-**Stage 3 is large and cannot usefully be split.** The mitigation is that the
-`string`-taking `parseOrFail` constructors survive, so the 202 test call sites
-that pass literals do not change at all; the diff is concentrated in the library.
+**Stage 3 is large and cannot usefully be split.** Three of the four types move
+in it, for the reasons in §3's ordering note — this was tried as two stages and
+the split does not exist. The mitigation is that the `string`-taking
+`parseOrFail` constructors survive, so the 202 test call sites that pass
+literals do not change at all; the diff is concentrated in the library.
 If it still comes out unreviewable, the fallback is to land `UnixByteString`
 behind the existing string API first (Stage 1 + an adapter) and flip the
 representation in a second pass — but that is two migrations where one will do,
