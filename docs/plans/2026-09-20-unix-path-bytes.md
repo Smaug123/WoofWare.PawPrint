@@ -65,7 +65,8 @@ plan and were caught exactly that way.
 | probe | produces |
 | --- | --- |
 | `darwin-which-names-bind.c` | §1.1, Darwin half of §1.5 |
-| `darwin-utf8-is-not-the-rule.c` | §1.1's refutation of both closed forms |
+| `darwin-utf8-is-not-the-rule.c` | §1.1's refutation of "strict UTF-8" and of "not a noncharacter" |
+| `darwin-admissibility-is-not-per-codepoint.c` | §1.1's combining-sequence limit, which descopes Stage 7 |
 | `darwin-where-the-check-applies.c` | §1.2 |
 | `darwin-rule-ordering.c` | §1.3, Darwin rows of §1.4 |
 | `darwin-name-max-vs-permission.c` | §1.3's two-by-two |
@@ -100,6 +101,24 @@ strings that decode perfectly well. Probed (`darwin-utf8-is-not-the-rule.c`):
 "APFS accepts iff the name is not a Unicode noncharacter" fits sixteen of those
 seventeen and is **refuted** by the last: U+1FFFD is not a noncharacter and is
 refused, while the unassigned U+FDCF is accepted.
+
+And admissibility is not a per-code-point property **at all**. APFS limits a
+*combining sequence* — a base character plus its combining marks — to 32
+characters (`darwin-admissibility-is-not-per-codepoint.c`):
+
+| name | bytes | APFS |
+| --- | --- | --- |
+| 32 × U+0301 (bare combining acute) | 64 | accept |
+| 33 × U+0301 | 66 | **EILSEQ** |
+| `b` + 31 × U+0301 | 63 | accept |
+| `b` + 32 × U+0301 | 65 | **EILSEQ** |
+| 33 × U+0308 (a different mark) | 66 | **EILSEQ** |
+| 33 × U+4E2D (ordinary, non-combining) | 99 | accept |
+
+So the limit is 32 characters *per combining sequence*, independent of the
+mark, and unrelated to byte length or NAME_MAX. This is XNU's decomposition
+limit. **No table of admissible code points can express it**, which is what
+descopes Stage 7 — see there.
 
 Two consequences for the design, and the second is the important one.
 
@@ -316,15 +335,17 @@ val bindableEntryNames : SimulatedUnixPlatform -> BindableEntryNames
 type BindableEntryNames =
     /// Any NUL-free byte string. Linux/ext4.
     | AnyBytes
-    /// The set APFS admits, which is narrower than strict UTF-8 and whose
-    /// boundary Stage 7 maps by sweep. Anything outside it is EILSEQ *on
-    /// binding only*. Darwin/APFS.
+    /// The set APFS admits. **Not implemented** — §1.1 shows it is not a
+    /// per-code-point property (a combining sequence is capped at 32
+    /// characters), so it needs XNU's conversion transcribed rather than a
+    /// table. Stage 7 ships Darwin as `AnyBytes` and records the gap as a
+    /// divergence; this case is the shape the fix would take.
     | AppleUnicode
 ```
 
 `AppleUnicode` rather than `StrictUtf8`: the rule is Apple's, it is narrower than
-UTF-8, and naming it after an encoding would invite exactly the
-`tryToString`-shaped shortcut §1.1 refutes.
+UTF-8 in at least two unrelated ways, and naming it after an encoding would
+invite exactly the `tryToString`-shaped shortcut §1.1 refutes.
 
 It has **two** measured consequences, and they are different consequences of the
 same fact rather than two rules:
@@ -463,9 +484,16 @@ reference implementation for the ASCII subset and against raw bytes elsewhere:
   `Array.compareWith compare` on the unsigned bytes.
 - **`Map` round-trip**: for all lists of distinct byte arrays, inserting each as
   a key and looking each up through freshly-built values retrieves every one.
-- `tryToString` agrees with `UTF8Encoding(false, true).GetString` — `Some` iff
-  that call does not throw — and round-trips: `tryToString >> Option.map ofString
-  = Some << id`.
+- `tryToString` agrees with `UTF8Encoding(false, true).GetString`: `Some` iff
+  that call does not throw. Two separate properties, because one equation cannot
+  cover both halves of the domain —
+  - over byte strings that **are** valid UTF-8:
+    `tryToString >> Option.map ofString = Some`, i.e. it round-trips;
+  - over byte strings that are **not**: `tryToString` is `None`.
+
+  Stating the round-trip over the whole NUL-free domain would be unsatisfiable:
+  for bytes containing `0xFF` the left side is `None` and the right side is
+  `Some`, so a correct implementation would fail it.
 - `toEscaped` is **total** (never throws, for every NUL-free byte array) and
   **injective** (for all pairs of distinct byte strings, the renderings differ).
 - `assertValid` rejects `Unchecked.defaultof<UnixByteString>` with a message
@@ -502,8 +530,11 @@ The big one, and it is big on purpose — see the ordering note above for why
 these cannot be separated. `UnixPath`, `DirectoryEntryName`, `AbsoluteUnixPath`
 and `PathCursor` wrap `UnixByteString`; `PathArgument.parse` stops decoding and
 `PathArgumentRefusal.NotUtf8` is deleted along with both of PawPrint's
-`failwith`s for it; `UnixPathTextDefect.UnpairedSurrogate` is deleted; every
-`toString` in a diagnostic becomes `toEscaped`. `parseOrFail : string -> _`
+`failwith`s for it; `UnixPathTextDefect.UnpairedSurrogate` is **kept**, but
+demoted to a rule the *string-taking* constructors apply (§2.4) rather than part
+of any path type's invariant — the byte-taking constructors have no such failure
+mode; every `toString` in a diagnostic becomes `toEscaped`, with the
+`pathOfDirectory` exception §2.2 names. `parseOrFail : string -> _`
 survives on both types so the test corpus does not churn.
 
 `NameLengthLimit.Utf16CodeUnits` gains the §2.3(2) decodability skip — inside
@@ -643,7 +674,7 @@ sides were seeded differently is worse than one that does not run.
 
 ---
 
-### Stage 7: APFS refuses to bind a non-UTF-8 name
+### Stage 7: the EILSEQ structure, and Darwin's gap as a documented divergence
 
 **Dependencies**: Stages 3 and 4. (Independent of Stage 6.)
 
@@ -651,51 +682,71 @@ sides were seeded differently is worse than one that does not run.
 
 The modelling gap that becomes real once bytes are representable.
 
-**Do the sweep first.** §1.1 establishes that APFS's admissible set is narrower
-than strict UTF-8 and that the obvious closed form (Unicode noncharacters) is
-refuted by U+1FFFD. Nothing here can be implemented against a predicate nobody
-has written down, so this stage opens by generating one: `mkdir` every one of
-the 1,114,112 code points on an APFS volume, record the accepted set, and commit
-the result as a data table beside the probes. Only then decide how to *represent*
-it — a range list is the obvious candidate, and the sweep will say how many
-ranges it takes.
+**Descoped, deliberately: this stage does not model APFS's predicate.** An
+earlier draft had it sweep all 1,114,112 code points and build a table. §1.1
+killed that method: admissibility is not a per-code-point property, because the
+32-character combining-sequence limit is a fact about the whole name. Modelling
+APFS faithfully means transcribing XNU's UTF-8 conversion including its
+normalisation behaviour — and having found two unrelated rules by probing, the
+honest expectation is that there are more. That is the rabbithole `AGENTS.md`
+says to stay out of.
 
-If the sweep turns out to be more than a day's work, split it into its own stage
-and land Linux's `AnyBytes` arm alone first; `AnyBytes` is fully known and the
-Darwin arm can `failwith` in the meantime. What must not happen is a Darwin arm
-that guesses.
+So this stage lands the **structure and the Linux arm**, and records the Darwin
+gap as a divergence rather than a crash:
+
+- `BindableEntryNames.AnyBytes` for Linux, which is fully known and fully
+  measured.
+- The Darwin arm is **also** `AnyBytes` for now, with a `docs/divergences.md`
+  entry stating precisely what that over-admits: PawPrint's Darwin flavour binds
+  names APFS refuses (invalid UTF-8, noncharacters, over-long combining
+  sequences), with §1.1's two tables as the evidence.
+- The EILSEQ vocabulary still lands, because it costs almost nothing and is what
+  any later fidelity work needs.
+
+Why a documented divergence rather than a `failwith`: a crash here would fire on
+*ordinary* filenames. `é` typed as NFD is a combining sequence, and a guest doing
+perfectly normal things on the Darwin flavour would meet it. Refusing to answer
+is right when the alternative is a *wrong* answer a guest can act on; here the
+alternative is being more permissive than one of two flavours, in a direction
+that cannot corrupt anything, on the flavour neither CI nor production uses.
+
+**If fidelity is wanted later**, the shape is a `BindableEntryNames.AppleUnicode`
+arm carrying a transcription of XNU's `utf8_decodestr`, validated against a
+macOS host oracle. That is its own project, and it should start by reading the
+XNU source rather than by probing — probing here found two rules and suggests
+there are more.
 
 - `UnixError.EILSEQ`, `platformDependent 84 92` — the numbers are already
   written down in `UnixError.fs`'s own comment on `EOVERFLOW` ("raw 84 is
   `EOVERFLOW` on Darwin and `EILSEQ` on Linux"). The PAL mapping is
   `Error_EILSEQ = 0x10019`, which exists upstream
   (`pal_error_common.h:62`), so `UnixErrorPal` needs one arm.
-- `SimulatedUnixPlatform.entryNameEncoding`, per §2.3.
-- The rule as the last step of the verdict in `CreatingOpenRules`,
-  `MkDirRules`, `RenameRules`. Nothing in `RemovalRules`, and nothing moves in
-  `PathWalk`.
+- `SimulatedUnixPlatform.bindableEntryNames`, per §2.3 — with the rule applied
+  as the last step of the verdict in `CreatingOpenRules`, `MkDirRules` and
+  `RenameRules`, so §1.3's measured position is encoded in the structure even
+  though both flavours currently answer `AnyBytes`. Nothing in `RemovalRules`,
+  and nothing moves in `PathWalk`.
+- Stage 3's temporary Darwin `failwith` is removed, the answer now being "allow,
+  and document the divergence" rather than "crash".
 
-**Correctness oracle** — this stage has a genuine host oracle on *both*
-platforms, which is rare here, so use it:
+**Correctness oracle**:
 
-- **The §1.3 two-by-two, all four cells.** This is the one that matters: three
-  of the four are indistinguishable if NAME_MAX and the encoding check are
-  implemented as adjacent steps, and the fourth (unwritable parent, undecodable
-  name → EACCES) is what separates them. An earlier draft of this plan got this
-  ordering wrong in exactly that way.
-- The §1.2 table: every listed lookup/removal is ENOENT on an `AppleUnicode`
-  flavour, and every listed binding is EILSEQ.
 - Property: on an `AnyBytes` flavour, no operation ever reports EILSEQ, for any
-  NUL-free byte string.
-- Property: the modelled `AppleUnicode` predicate agrees with the committed
-  sweep table at every code point. **Not** with `tryToString`, which §1.1
-  refutes.
-- At least one regression test per refuted shortcut, so neither comes back: a
-  valid-UTF-8 name APFS refuses (U+FFFF), and a name that is not a Unicode
-  noncharacter yet APFS refuses (U+1FFFD).
+  NUL-free byte string. Both shipped flavours are `AnyBytes`, so this is the
+  whole behavioural claim of the stage, and it is what says the structure is
+  inert.
+- The §1.3 two-by-two, all four cells, against a **synthetic**
+  `BindableEntryNames` value rather than either shipped flavour. The ordering is
+  measured and worth encoding even with no flavour using it — and three of the
+  four cells are indistinguishable if NAME_MAX and the encoding check are
+  implemented as adjacent steps, which is exactly how an earlier draft of this
+  plan got it wrong.
+- `UnixError.EILSEQ` round-trips through `toRawErrnoUnder` as 84 on Linux and 92
+  on Darwin, and through the PAL as `0x10019`.
 - Extend `TestVirtualFileSystemAgainstHost` with `byte[]`-declared P/Invokes so
-  the host comparison covers non-UTF-8 names. This is the stage that pays that
-  cost.
+  the host comparison covers non-UTF-8 names **on Linux**, where the model now
+  claims to agree. It must not make that comparison against an APFS host; the
+  divergence entry is why.
 
 ---
 
@@ -708,7 +759,10 @@ platforms, which is rare here, so use it:
   considered … but it differs only above the BMP and buys nothing a test could
   observe". After Stage 3 the order **is** byte order, so that passage is
   rewritten — and its own argument now favours what we have.
-- A new `docs/divergences.md` entry for §1.1–§1.3, with the measured tables.
+- A new `docs/divergences.md` entry for §1.1–§1.3, with the measured tables, and
+  a second recording Stage 7's deliberate over-admission on the Darwin flavour.
+  The second matters more: it is a standing divergence, not a description of
+  agreement.
 - `WoofWare.PosixKernel/README.md` and `AGENTS.md`: the library's model of a
   filename is bytes, not characters. `PathArgumentRefusal`'s "This kernel models
   a filename as a string of characters (where real Linux models it just as a
@@ -751,7 +805,11 @@ will, on the Darwin flavour, get EILSEQ. Both are corrections, but they are
 behaviour changes and belong in `docs/divergences.md` (Stage 8) rather than only
 in a commit message.
 
-**The `Utf16CodeUnits` limit is only well-defined because of the ordering.** If a
-future change lets a non-decodable name reach `PathLimits.nameWithinLimit` on a
-`StrictUtf8` flavour, the function has no answer. It should `failwith` saying so
-rather than pick one — measured, the real kernel never asks.
+**`Utf16CodeUnits` must skip an undecodable name, not crash on one.** An
+undecodable name reaching `PathLimits.nameWithinLimit` is *expected* — an
+ordinary `open("d/\xff", O_RDONLY)` on a Darwin-flavour kernel walks straight
+into it — so that arm answers "within the limit" and lets the lookup miss, which
+§1.2 measures as ENOENT. An earlier draft of this plan said to `failwith` there
+instead; doing that would recreate exactly the guest-triggerable crash this
+whole refactor exists to remove. The `Bytes` arm, by contrast, measures
+everything and never skips.
