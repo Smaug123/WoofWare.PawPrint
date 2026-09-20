@@ -203,7 +203,7 @@ length rule at all.
 | | Linux / ext4 | Darwin / APFS |
 | --- | --- | --- |
 | `symlink("/tmp/\xff", "d/lnk")` (bad **target**) | OK, `readlink` → `2F 74 6D 70 2F FF` | **OK**, exact round-trip |
-| `getcwd` inside a directory named `\xff\xfe` | `2F 77 6F 72 6B 2F 64 2F FF FE` | n/a (cannot be created) |
+| `getcwd` inside a directory named `\xff\xfe` | raw bytes, ending `… 2F 64 2F FF FE` | n/a (cannot be created) |
 
 A symlink *target* is opaque bytes even on APFS — it is file content, not a
 name. `SymlinkTarget` therefore gets no flavour rule at all, and `getcwd` returns
@@ -284,11 +284,25 @@ Escaping the backslash matters: without it a diagnostic cannot distinguish the
 four-byte name `a\x41` from the two-byte name `aA`, and error messages in this
 repo are routinely compared against each other.
 
-Every current `toString` site becomes `toEscaped`. `tryToString` has exactly two
-real consumers, and they are the two places a .NET string is genuinely required:
-the differential oracle materialising a seed onto the *host* filesystem
-(`RealRuntime.materialiseSeed`, which calls `File.WriteAllBytes(path : string,
-…)`), and any host-supplied configuration round-tripping back out.
+Most current `toString` sites become `toEscaped` — but **not all of them, and
+the exception matters**. `VirtualFileSystem.pathOfDirectory` is `getcwd`'s
+implementation: it climbs to the root collecting `DirectoryEntryName`s, then
+`List.map DirectoryEntryName.toString` and concatenates them with separators
+into an `AbsoluteUnixPath`. That is path *reconstruction*, not diagnostics.
+Rewriting it to `toEscaped` would make `getcwd` answer `\xff` as six literal
+characters, and would double the backslash in any name containing one.
+
+`pathOfDirectory` therefore migrates to **byte** concatenation — join the names'
+bytes with the separator byte and build the `AbsoluteUnixPath` from those — in
+the same stage that makes `DirectoryEntryName` byte-valued. Before applying the
+`toString` → `toEscaped` rewrite anywhere, audit each site for this shape: the
+question is whether the result is *read by a human* or *parsed back into a path*.
+
+`tryToString` has exactly two real consumers, and they are the two places a .NET
+string is genuinely required: the differential oracle materialising a seed onto
+the *host* filesystem (`RealRuntime.materialiseSeed`, which calls
+`File.WriteAllBytes(path : string, …)`), and any host-supplied configuration
+round-tripping back out.
 
 ### 2.3 The flavour rule
 
@@ -324,12 +338,20 @@ same fact rather than two rules:
    the right side of the permission check.
 2. *Looking up* an inadmissible name misses, and its length is never examined.
    This needs no code on the happy path — such a name cannot be in the `Map`, so
-   the lookup misses naturally — but `PathWalk` must skip its NAME_MAX check for
-   a name with no UTF-16 form, because §1.4 measured `open(300 × 0xff,
-   O_RDONLY)` as ENOENT where the valid control is ENAMETOOLONG. Note the skip
-   is keyed on *decodability*, which is a narrower condition than
-   inadmissibility: U+FFFF is decodable, so it is length-checked and only then
-   refused at binding.
+   the lookup misses naturally — but the NAME_MAX check must be skipped for a
+   name with no UTF-16 form, because §1.4 measured `open(300 × 0xff, O_RDONLY)`
+   as ENOENT where the valid control is ENAMETOOLONG.
+
+   **The skip belongs to `NameLengthLimit.Utf16CodeUnits`, not to the walk and
+   not to the flavour.** A `Bytes` limit can measure any byte string and must
+   always do so: §1.4 measured Linux answering ENAMETOOLONG for a 256-byte
+   `0xFF` component, so a walk that skipped undecodable names outright would get
+   Linux wrong. Put it inside `PathLimits.nameWithinLimit`'s `Utf16CodeUnits`
+   arm — the arm that needs a UTF-16 length and, for such a name, has none.
+
+   Note also that the skip is keyed on *decodability*, which is a strictly
+   weaker condition than admissibility: U+FFFF is decodable, so it is
+   length-checked normally and only then refused at binding.
 
 Like `pathLimits`, this is really a property of the *mount* rather than the
 kernel, and it goes in `SimulatedUnixPlatform` for the same stated reason: PawPrint
@@ -467,12 +489,29 @@ The big one. `UnixPath`, `DirectoryEntryName` and `PathCursor` wrap
 `toString` in a diagnostic becomes `toEscaped`. `parseOrFail : string -> _`
 survives on both types so the test corpus does not churn.
 
-`PathWalk`'s NAME_MAX check gains the §2.3(2) decodability skip. That skip is
-correct on **both** flavours and does not depend on Stage 7 — it is what stops
-`NameLengthLimit.Utf16CodeUnits` being asked for the UTF-16 length of something
-that has none. Until Stage 7 lands, a Darwin-flavour filesystem simply cannot
-acquire an inadmissible name except through a seed, exactly as it cannot
-acquire an over-long one.
+`NameLengthLimit.Utf16CodeUnits` gains the §2.3(2) decodability skip — inside
+that arm only, never in the walk, since the `Bytes` arm must keep measuring
+undecodable names.
+
+**This stage opens a hole that Stage 7 closes, and it must be plugged meanwhile.**
+Deleting `PathArgumentRefusal.NotUtf8` removes the only thing standing between a
+Darwin-flavour kernel and a name APFS would refuse: after this stage
+`mkdir("/tmp/\xff")` runs through `MkDirRules.verdict` into
+`VirtualFileSystem.createDirectory`, neither of which checks encoding, and the
+new skip removes the incidental length obstacle. Stages 4–6 would then model a
+macOS kernel creating files macOS cannot hold — silently, and in a way the Linux
+tests would never show.
+
+So Stage 3 adds a **temporary refusal** on the Darwin creating path: a
+`failwith` naming Stage 7, at exactly the point in the verdict where Stage 7's
+real rule goes. A crash is the right placeholder rather than "allow it for now",
+per correctness over availability — and siting it where the real rule lands
+means Stage 7 replaces it rather than hunting for it.
+
+If that placeholder feels like enough friction to be worth avoiding, the
+alternative is to reorder: land Stage 7's structure before Stage 3. That costs
+more (Stage 7 wants byte-valued names to be *useful*) and is not recommended,
+but it is the honest way to avoid the window.
 
 **Correctness oracle**:
 
@@ -489,6 +528,13 @@ acquire an over-long one.
   than crashing. A test at the `parseGuestPathBytes` level, replacing
   `TestGuestPathBytes`'s "cannot be represented names the caller" case, which is
   about a refusal that no longer exists.
+- `pathOfDirectory` round-trips: for a directory whose name is `\xff\xfe`,
+  `getcwd` answers those bytes rather than an escaped rendering. This is the
+  §2.2 audit made executable, and it fails loudly if the `toEscaped` rewrite was
+  applied blindly.
+- The Darwin placeholder is reachable and crashes: `mkdir` of an undecodable
+  name on a `macOsArm64` kernel hits the Stage 7 `failwith`, rather than
+  succeeding.
 - Mutation-test the structural-equality property from Stage 1 by reverting
   `UnixByteString` to `ImmutableArray`'s own `Equals` and confirming the
   directory tests go red. (See the `mutation-testing` skill.)
@@ -531,8 +577,7 @@ string.
 - Property: `parse >> toUtf8` round-trips for every byte string satisfying the
   absolute-path shape.
 - **Differential, and only now expressible**: `chdir` into a directory whose name
-  is `\xff\xfe`, then `getcwd`, yields those bytes. Measured on Linux (§1.5:
-  `2F 77 6F 72 6B 2F 64 2F FF FE`).
+  is `\xff\xfe`, then `getcwd`, yields those bytes (§1.5).
 
   This one needs care about *which* Linux. `$DOTNET_LINUX_FRAMEWORK_DIR` will
   not do: it changes only which managed assemblies PawPrint interprets, and the

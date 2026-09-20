@@ -4,7 +4,7 @@
 # with 255 x 0xFF), and getcwd returns the raw bytes of a non-UTF-8 directory.
 # Run: container run --rm -v "$PWD:/src:ro" -w /work python:3-slim python3 /src/linux-names-are-bytes.py
 # Measured: Linux 6.18.5, ext4 (statfs f_type = 0xef53).
-import os, errno, ctypes, sys
+import os, errno, ctypes, sys, tempfile, shutil
 libc = ctypes.CDLL("libc.so.6", use_errno=True)
 
 def R(label, fn):
@@ -14,11 +14,17 @@ def R(label, fn):
     except OSError as e:
         print(f"{label:<48} errno={e.errno:<3} {errno.errorcode.get(e.errno)} ({e.strerror})")
 
+# Runs entirely inside a fresh temporary directory and removes only that, so
+# re-running from anywhere is safe and cannot pick up a previous run's entries.
+probe_dir = tempfile.mkdtemp(prefix="pawprint-path-probe.")
+os.chdir(probe_dir)
+print("probe directory:", probe_dir)
+
 buf = ctypes.create_string_buffer(4096*4)
 libc.statfs(b".", buf)
 print("statfs f_type =", hex(int.from_bytes(buf.raw[0:8], 'little')), "(ext4=0xef53 overlay=0x794c7630 tmpfs=0x1021994)")
 
-os.makedirs(b"d", exist_ok=True)
+os.mkdir(b"d")
 open(b"d/f", "wb").close()
 
 print("-- creating a binding with a non-UTF-8 name --")
@@ -50,3 +56,6 @@ print("-- getcwd of a non-UTF-8 directory --")
 os.mkdir(b"d/\xff\xfe"); os.chdir(b"d/\xff\xfe")
 print("   cwd bytes:", " ".join(f"{c:02X}" for c in os.getcwdb()))
 print("   uname:", os.uname().release)
+
+os.chdir("/")
+shutil.rmtree(probe_dir)

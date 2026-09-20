@@ -40,6 +40,6 @@ int main(void){
     char nv[600]; strcpy(nv,"nodir/"); memset(nv+6,'a',300); nv[306]=0;
     R("mkdir(nodir/ 300 x 'a') [ENOENT or ENAMETOOLONG?]", mkdir(nv,0755));
 
-    chdir("/tmp"); { char cmd[256]; snprintf(cmd,sizeof cmd,"chmod -R u+w '%s' && rm -rf '%s'",dir,dir); system(cmd);} 
+    chdir("/tmp"); { char cmd[256]; snprintf(cmd,sizeof cmd,"chmod -R u+w '%s' && rm -rf '%s'",dir,dir); system(cmd);}
     return 0;
 }
