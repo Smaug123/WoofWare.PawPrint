@@ -71,7 +71,8 @@ plan and were caught exactly that way.
 | `darwin-rule-ordering.c` | §1.3, Darwin rows of §1.4 |
 | `darwin-name-max-vs-permission.c` | §1.3's two-by-two |
 | `darwin-lookup-vs-name-max.c` | §1.4's lookup claim |
-| `darwin-length-scan-is-structural.c` | §1.5 |
+| `darwin-name-max-boundary-per-unit.c` | §1.5's boundary table |
+| `darwin-name-max-which-unit.c` | §1.5's classification |
 | `linux-names-are-bytes.py` | the Linux column throughout |
 
 ### 1.1 Which byte strings can be a directory entry name?
@@ -207,56 +208,76 @@ Two conclusions.
 which are not UTF-8 at all, Linux's limit is a **raw byte count**. Rename it
 `NameLengthLimit.Bytes`.
 
-`NameLengthLimit.Utf16CodeUnits` survives, and is now *better defined than it
-was*: it can only ever be asked about a **decodable** name, because both the
-lookup path (§1.2) and the creating path (§1.3 row 3) skip the length rule
-entirely for a name that has no UTF-16 form. Note this is the *decodability*
-skip, not the APFS-admissibility rule — U+FFFF has a perfectly good UTF-16
-length and is measured for it, then refused at row 5. Measured, a lookup
-confirms the skip — on Darwin,
+`NameLengthLimit.Utf16CodeUnits` survives, but it is only half of Darwin's
+rule: §1.5 shows an undecodable name is measured against a 765-byte cap instead
+of being exempt. Note the split is on *decodability*, not on
+APFS-admissibility — U+FFFF has a perfectly good UTF-16 length, is measured in
+units, and is only then refused at §1.3 row 5. Measured, a lookup shows the
+split — on Darwin,
 `open(300 × 0xff, O_RDONLY)` is **ENOENT**, where the valid control `open(300 ×
 'a', O_RDONLY)` is **ENAMETOOLONG**. A non-decodable component never reaches the
 length rule at all.
 
-### 1.5 Darwin's length scanner is structural, not strict
+### 1.5 Darwin has *two* NAME_MAX limits, not one
 
-§1.4 says `Utf16CodeUnits` is only ever asked about a decodable name. That is
-true of *strict* decodability only by accident: Darwin's scanner is laxer, and
-the two predicates disagree on real inputs
-(`darwin-length-scan-is-structural.c`). At 300 repetitions, so far past NAME_MAX
-that a length check must fire if one happens at all:
+§1.4 said `Utf16CodeUnits` is only ever asked about a decodable name, and that
+an undecodable one is skipped. The first half is right; the second is wrong.
+An undecodable name is not skipped — it gets a **different limit**.
 
-| unit | structurally well-formed? | strict UTF-8? | Darwin `open` |
-| --- | --- | --- | --- |
-| `ED A0 80` (surrogate encoding) | yes | no | **ENAMETOOLONG** |
-| `E0 80 81` (overlong 3-byte) | yes | no | **ENAMETOOLONG** |
-| `F5 80 80 80` (above U+10FFFF) | yes | no | **ENAMETOOLONG** |
-| `C0 80` (overlong 2-byte) | lead byte is never valid | no | ENOENT |
-| `FF`, `FE`, `80` | not a lead byte | no | ENOENT |
-| `E4 B8` (truncated) | incomplete | no | ENOENT |
-| `a`, `E4 B8 AD` | yes | yes | ENAMETOOLONG |
+Bisecting, per repeated unit, the count at which a lookup flips ENOENT →
+ENAMETOOLONG (`darwin-name-max-boundary-per-unit.c`):
 
-Control: at 10 repetitions every row is ENOENT (or EILSEQ for `mkdir`), so what
-differs above is the length check and not admissibility.
+| unit | bytes/unit | flips at | = bytes | = UTF-16 units |
+| --- | --- | --- | --- | --- |
+| `a` | 1 | 256 | 256 | **256** |
+| `E4 B8 AD` (CJK) | 3 | 256 | 768 | **256** |
+| `F0 9F 98 80` (emoji) | 4 | 128 | 512 | **256** |
+| `ED A0 80` (surrogate enc) | 3 | 256 | **768** | 256 |
+| `E0 80 81` (overlong 3-byte) | 3 | 256 | **768** | 256 |
+| `F5 80 80 80` (> U+10FFFF) | 4 | 192 | **768** | 384 |
+| `C0 80` (overlong 2-byte) | 2 | 383 | **766** | 383 |
+| `E4 B8` (truncated) | 2 | 383 | **766** | 383 |
+| `FF`, `80` | 1 | 766 | **766** | 766 |
 
-So the scanner assigns a UTF-16 length to any sequence with a valid lead byte and
-the right number of continuation bytes, whatever it encodes — and `C0`/`C1`,
-which can only ever begin an overlong form, are not valid lead bytes.
+The emoji row is what proves a unit count exists at all: 512 bytes is nowhere
+near any byte cap, so the limit that bound it counts UTF-16 units. The bottom
+rows cluster at 766 bytes, which is a raw byte cap of **765** — and 765 = 255 ×
+3, so it reads as the conversion buffer's bound.
 
-**Consequence for §2.3(2): the skip cannot be keyed on `tryToString`.** Two ways
-to go, and the first is recommended:
+A 3-byte unit cannot tell the two apart, since 255 units and 765 bytes flip at
+the same count. Prefixing 300 ASCII characters breaks the tie — 301 characters
+is over the unit cap while ~303 bytes is far under the byte cap
+(`darwin-name-max-which-unit.c`):
 
-- **Model the structural scan.** It is about twenty lines — lead byte to expected
-  continuation count, reject `C0`/`C1`, require completeness — and it is the rule
-  that was actually measured. Unlike APFS's *admissibility* predicate (§1.1),
-  this one is fully characterised by the table above, so it is not a rabbithole.
-  `NameLengthLimit.Utf16CodeUnits` measures with it and skips only what it cannot
-  scan.
-- **Or make it a divergence too**, keying the skip on strict decodability and
-  recording that PawPrint answers ENOENT where macOS answers ENAMETOOLONG for
-  the first three rows. The direction of error is mild — the name is unbound
-  either way, so only the errno differs — but it is a third Darwin divergence to
-  carry, and the first option costs less than documenting it.
+| name | counted in |
+| --- | --- |
+| 300 × `a` + `E4 B8 AD` | **units** (ENAMETOOLONG) |
+| 300 × `a` + `F0 9F 98 80` | **units** |
+| 300 × `a` + `EF BF BF` (U+FFFF) | **units** |
+| 300 × `a` + `ED A0 80` | bytes (ENOENT) |
+| 300 × `a` + `E0 80 81` | bytes |
+| 300 × `a` + `C0 80` | bytes |
+| 300 × `a` + `F5 80 80 80` | bytes |
+| 300 × `a` + `FF` | bytes |
+| 300 × `a` + `E4 B8` | bytes |
+
+So the unit-counted set is **exactly strictly-valid UTF-8**, and everything else
+falls back to 765 raw bytes. Note U+FFFF is counted in units even though §1.1
+measures APFS refusing to *bind* it: the length rule and the admissibility rule
+are independent, and only the latter is the rabbithole.
+
+**Consequence for §2.3(2).** There is no skip. `NameLengthLimit` gains a Darwin
+shape carrying both numbers — 255 UTF-16 units for valid UTF-8, else 765 bytes —
+and `nameWithinLimit` picks between them on strict decodability. This is a
+smaller and better-defined change than the "skip" an earlier draft proposed, and
+unlike that skip it cannot silently admit an over-long undecodable name.
+
+*(An earlier draft of this section claimed the scanner was a lax "structural"
+one that counted `ED A0 80` in units. That was measured at 300 repetitions,
+where the name is 900 bytes and already over the byte cap — the probe confounded
+the two limits. The bisection above is what separates them. See the
+`probe-methodology` skill: a probe that varies two things at once measures
+neither.)*
 
 ### 1.6 The things that are just bytes everywhere
 
@@ -408,29 +429,29 @@ same fact rather than two rules:
    nothing: measured, removal of such a name is plain ENOENT. **NAME_MAX does
    not move**; it stays in `PathWalk` where it is, which §1.3 row 3 confirms is
    the right side of the permission check.
-2. *Looking up* an inadmissible name misses, and its length is never examined.
-   This needs no code on the happy path — such a name cannot be in the `Map`, so
-   the lookup misses naturally — but the NAME_MAX check must be skipped for a
-   name with no UTF-16 form, because §1.4 measured `open(300 × 0xff, O_RDONLY)`
-   as ENOENT where the valid control is ENAMETOOLONG.
+2. *Looking up* an inadmissible name misses. This needs no code on the happy
+   path — such a name cannot be in the `Map`, so the lookup misses naturally.
 
-   **The skip belongs to `NameLengthLimit.Utf16CodeUnits`, not to the walk and
-   not to the flavour.** A `Bytes` limit can measure any byte string and must
-   always do so: §1.4 measured Linux answering ENAMETOOLONG for a 256-byte
-   `0xFF` component, so a walk that skipped unscannable names outright would get
-   Linux wrong. Put it inside `PathLimits.nameWithinLimit`'s `Utf16CodeUnits`
-   arm — the arm that needs a UTF-16 length and, for such a name, has none.
+   What *does* need code is the length rule, and §1.5 is the correction here:
+   Darwin has **two** NAME_MAX limits rather than one plus an exemption. So
+   `NameLengthLimit` grows a shape carrying both numbers, and
+   `PathLimits.nameWithinLimit` picks between them on strict decodability:
 
-   **And the skip's condition is the structural scan of §1.5, not
-   `tryToString`.** Measured, Darwin length-checks `ED A0 80` repeated — a
-   surrogate encoding that strict decoding refuses — and does not length-check
-   `C0 80` or a truncated sequence. So `Utf16CodeUnits` carries its own
-   structural scan and skips only what that cannot measure.
+   ```fsharp
+   /// 255 UTF-16 code units for a strictly-valid-UTF-8 name; 765 raw bytes
+   /// for anything else. Darwin/APFS — see §1.5 for the bisection.
+   | Utf16CodeUnitsOrBytes of units : int * fallbackBytes : int
+   ```
 
-   Note the skip's condition is weaker than admissibility in *both* directions
-   now: U+FFFF is scannable and decodable, so it is length-checked and only then
-   refused at binding; `ED A0 80` is scannable but not decodable, so it is
-   length-checked and also refused at binding.
+   This lives entirely in `PathLimits`, not in the walk and not in the flavour
+   dispatch. Linux's `Bytes` arm is unaffected: it measures every byte string
+   the same way, which §1.4 measures (a 256-byte `0xFF` component is
+   ENAMETOOLONG there).
+
+   Note the decodability split is independent of admissibility in both
+   directions: U+FFFF is decodable, so it is measured in units and *then*
+   refused at binding; `ED A0 80` is undecodable, so it is measured in bytes and
+   also refused at binding.
 
 Like `pathLimits`, this is really a property of the *mount* rather than the
 kernel, and it goes in `SimulatedUnixPlatform` for the same stated reason: PawPrint
@@ -649,9 +670,11 @@ but it is the honest way to avoid the window.
   - `readdir`: enumerating a directory holding `\xff` and `\xe4\xb8` yields
     exactly those bytes in `d_name`, which Linux is measured to do (§1.1);
   - `readlink`: unchanged, and asserted so.
-- `NameLengthLimit.Utf16CodeUnits`'s structural scan matches §1.5's table: the
-  three scannable-but-undecodable units are measured for length, the four
-  unscannable ones are skipped.
+- `nameWithinLimit` reproduces §1.5's classification table: every unit measured
+  in units there is, and every unit measured in bytes there is. The emoji row is
+  mandatory — it is the only one that distinguishes a unit count from a byte
+  count — and so is the `300 × 'a'` prefix form, which is the only thing that
+  separates the two limits for a 3-byte unit.
 - The Darwin placeholder is reachable and crashes: `mkdir` of an undecodable
   name on a `macOsArm64` kernel hits the Stage 7 `failwith`, rather than
   succeeding.
@@ -674,7 +697,12 @@ Smaller and self-contained: a target is opaque bytes on *both* flavours
 **Correctness oracle**:
 
 - Property: `symlink` then `readlink` round-trips the exact bytes, for every
-  non-empty NUL-free byte string. Measured on both hosts (§1.6) as the reference.
+  non-empty NUL-free byte string **the host will accept as a target**. The bound
+  is not incidental: measured on Darwin, a 1023-byte target succeeds and a
+  1024-byte one is ENAMETOOLONG, so an unrestricted generator would produce
+  targets that never get created and a property that cannot hold. Either
+  restrict the generator to the flavour's `PathMaxBytes - 1`, or state the
+  unrestricted form against `VirtualFileSystem.createSymlink` with no host side.
 - Property: `lstat`'s `st_size` for a link equals its target's byte length —
   which for a non-UTF-8 target is now a different number from anything the old
   model could produce.
