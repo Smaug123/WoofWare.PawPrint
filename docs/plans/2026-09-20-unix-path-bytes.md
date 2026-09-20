@@ -127,12 +127,12 @@ Two consequences for the design, and the second is the important one.
 - `tryToString` succeeding and APFS accepting a name are **not** the same
   predicate. An earlier draft of this plan claimed they were and built §2.3 on
   it; the U+FFFF row is the counterexample. Do not re-derive one from the other.
-- **The Darwin predicate is not yet known well enough to implement.** Stage 7
-  therefore begins by mapping it, which is tractable by brute force: sweep all
-  1,114,112 code points through `mkdir` and record the accepted set. Until that
-  sweep exists, the Darwin arm must refuse the region it cannot speak for rather
-  than guess — this is "correctness over availability" applied to a filesystem
-  rule.
+- **The Darwin predicate is not known well enough to implement, and a
+  code-point sweep would not establish it either** — the combining-sequence
+  limit below is a fact about the whole name, not about any code point. Stage 7
+  therefore does not model it at all: it ships Darwin as `AnyBytes` and records
+  the over-admission as a divergence. See Stage 7 for why a `failwith` is the
+  wrong placeholder here.
 
 ### 1.2 Where does APFS apply that check?
 
@@ -167,7 +167,7 @@ ordering claim means nothing without one:
 | 1 | PATH_MAX (at `getname`) | ENAMETOOLONG | 2047-byte path containing `\xff` → ENAMETOOLONG, not EILSEQ |
 | 2 | walk to the parent | ENOENT / ENOTDIR | `mkdir("nodir/" + 300×'a')` → ENOENT, not ENAMETOOLONG |
 | 3 | NAME_MAX — **decodable names only** | ENAMETOOLONG | `mkdir("ro/" + 300×'a')` → ENAMETOOLONG on an unwritable parent, beating step 4 |
-| 4 | parent's write permission | EACCES | `mkdir("ro/" + 300×0xff)` → EACCES, i.e. step 3 was skipped and step 5 did not run |
+| 4 | parent's write permission | EACCES | `mkdir("ro/" + 300×0xff)` → EACCES, i.e. step 3 passed under the byte limit and step 5 did not run |
 | 5 | **encoding** | **EILSEQ** | `mkdir("d/" + 300×0xff)` → EILSEQ on a *writable* parent |
 | 6 | the operation | — | |
 
@@ -177,9 +177,9 @@ writable/unwritable parent against decodable/undecodable name.
 | parent | name | result | why |
 | --- | --- | --- | --- |
 | writable `d` | 300 × `'a'` | ENAMETOOLONG | row 3 |
-| writable `d` | 300 × `0xFF` | **EILSEQ** | row 3 skipped, row 4 passes, row 5 fires |
+| writable `d` | 300 × `0xFF` | **EILSEQ** | row 3 passes (300 < 765 bytes), row 4 passes, row 5 fires |
 | unwritable `ro` | 300 × `'a'` | **ENAMETOOLONG** | row 3 fires *before* row 4 |
-| unwritable `ro` | 300 × `0xFF` | **EACCES** | row 3 skipped, row 4 fires *before* row 5 |
+| unwritable `ro` | 300 × `0xFF` | **EACCES** | row 3 passes, row 4 fires *before* row 5 |
 
 So NAME_MAX precedes the permission check and the encoding check follows it —
 they are not adjacent, and an implementation that puts them together will get one
@@ -188,8 +188,10 @@ of those four cells wrong. This also matches where the code already is:
 the verdict files, so the encoding check is a new *last* step of the verdict and
 NAME_MAX does not move at all.
 
-Row 3's "decodable names only" is the same skip §1.2 established for lookups:
-an undecodable component is never measured for length, on either path.
+Row 3 says "decodable names only" because an undecodable component is measured
+against a *different* limit — 765 raw bytes rather than 255 UTF-16 units — which
+§1.5 bisects. At 300 × `0xFF` (300 bytes) that limit is not reached, which is why
+rows 4 and 5 get to run at all.
 
 Linux has no encoding step at all. Its order is unchanged.
 
@@ -623,16 +625,17 @@ mode; every `toString` in a diagnostic becomes `toEscaped`, with the
 `pathOfDirectory` exception §2.2 names. `parseOrFail : string -> _`
 survives on both types so the test corpus does not churn.
 
-`NameLengthLimit.Utf16CodeUnits` gains the §2.3(2) decodability skip — inside
-that arm only, never in the walk, since the `Bytes` arm must keep measuring
-undecodable names.
+`NameLengthLimit` gains Darwin's second limit, per §2.3(2) and §1.5: 255 UTF-16
+units for a strictly-valid-UTF-8 name, 765 raw bytes for anything else. Both
+numbers live in `PathLimits`; nothing changes in the walk, and Linux's `Bytes`
+arm measures every byte string exactly as it does today.
 
 **This stage opens a hole that Stage 7 closes, and it must be plugged meanwhile.**
 Deleting `PathArgumentRefusal.NotUtf8` removes the only thing standing between a
 Darwin-flavour kernel and a name APFS would refuse: after this stage
 `mkdir("/tmp/\xff")` runs through `MkDirRules.verdict` into
 `VirtualFileSystem.createDirectory`, neither of which checks encoding, and the
-new skip removes the incidental length obstacle. Stages 4–6 would then model a
+and 765 bytes is a long way above an ordinary name. Stages 4–6 would then model a
 macOS kernel creating files macOS cannot hold — silently, and in a way the Linux
 tests would never show.
 
@@ -800,8 +803,10 @@ gap as a divergence rather than a crash:
   entry stating precisely what that over-admits: PawPrint's Darwin flavour binds
   names APFS refuses (invalid UTF-8, noncharacters, over-long combining
   sequences), with §1.1's two tables as the evidence.
-- The EILSEQ vocabulary still lands, because it costs almost nothing and is what
-  any later fidelity work needs.
+- The EILSEQ vocabulary still lands — `UnixError.EILSEQ` and its PAL arm —
+  because it costs almost nothing and is what any later fidelity work needs.
+  **Nothing in either shipped flavour returns it**, and that is the stage's
+  acceptance test rather than a gap in it.
 
 Why a documented divergence rather than a `failwith`: a crash here would fire on
 *ordinary* filenames. `é` typed as NFD is a combining sequence, and a guest doing
@@ -908,11 +913,12 @@ will, on the Darwin flavour, get EILSEQ. Both are corrections, but they are
 behaviour changes and belong in `docs/divergences.md` (Stage 8) rather than only
 in a commit message.
 
-**`Utf16CodeUnits` must skip an undecodable name, not crash on one.** An
-undecodable name reaching `PathLimits.nameWithinLimit` is *expected* — an
-ordinary `open("d/\xff", O_RDONLY)` on a Darwin-flavour kernel walks straight
-into it — so that arm answers "within the limit" and lets the lookup miss, which
-§1.2 measures as ENOENT. An earlier draft of this plan said to `failwith` there
-instead; doing that would recreate exactly the guest-triggerable crash this
-whole refactor exists to remove. The `Bytes` arm, by contrast, measures
-everything and never skips.
+**An undecodable name must be measured, not skipped and not crashed on.** Such
+a name reaching `PathLimits.nameWithinLimit` is *expected* — an ordinary
+`open("d/\xff", O_RDONLY)` on a Darwin-flavour kernel walks straight into it.
+Two earlier drafts of this plan got this wrong in opposite directions: one said
+to `failwith` there, which would recreate the very guest-triggerable crash this
+refactor exists to remove; the other said to treat the name as within the limit,
+which would admit a 766-byte `0xFF` component that §1.5 measures as
+ENAMETOOLONG. The answer is the 765-byte fallback limit, and the test that keeps
+it honest is the boundary at 765/766.
