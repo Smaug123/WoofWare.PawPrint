@@ -153,25 +153,26 @@ module RealRuntime =
 }}
 """
 
-    /// A seed name as the host path component `System.IO` needs. Every name
-    /// the differential tests seed is valid UTF-8; one that is not has no
-    /// `string` to hand the host, so this refuses it rather than naming a
-    /// different file.
-    let private hostName (name : DirectoryEntryName) : string =
+    /// A seed name as the host path component `System.IO` needs. `validateSeedForOracle`
+    /// refuses a name that is not valid UTF-8, since it has no `string` to hand the
+    /// host; this refuses it too rather than naming a different file. `parent` names
+    /// the directory holding the entry, for the message.
+    let private hostName (parent : string) (name : DirectoryEntryName) : string =
         match DirectoryEntryName.tryToString name with
         | Some text -> text
         | None ->
             failwith
-                $"The filesystem seed holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is not valid UTF-8, so this oracle cannot create it on the host through System.IO."
+                $"The filesystem seed declares the entry %s{parent}/%s{DirectoryEntryName.toEscaped name}, whose name is not valid UTF-8, so this oracle cannot create it on the host through System.IO. Declare the case with a UTF-8 name, or test it against PawPrint alone."
 
     /// A seed symlink target as the string `System.IO` needs, refusing one that
-    /// is not valid UTF-8 for the reason `hostName` gives.
-    let private hostTarget (target : SymlinkTarget) : string =
+    /// is not valid UTF-8 for the reason `hostName` gives. `link` names the
+    /// symlink, for the message.
+    let private hostTarget (link : string) (target : SymlinkTarget) : string =
         match SymlinkTarget.tryToString target with
         | Some text -> text
         | None ->
             failwith
-                $"The filesystem seed holds a symlink whose target \"%s{SymlinkTarget.toEscaped target}\" is not valid UTF-8, so this oracle cannot create it on the host through System.IO."
+                $"The filesystem seed declares the symlink %s{link} with the target \"%s{SymlinkTarget.toEscaped target}\", which is not valid UTF-8, so this oracle cannot create it on the host through System.IO. Declare the case with a UTF-8 target, or test it against PawPrint alone."
 
     /// The host locates `<name>.runtimeconfig.json` from the assembly's *file* name, so the two
     /// have to agree; use the image's own assembly name so the guest also sees the name it was
@@ -401,7 +402,8 @@ module RealRuntime =
                     $"The filesystem seed gives %s{what} the mode %o{PermissionBits.toInt permissions}, whose set-user-ID/set-group-ID/sticky bits (%o{special}) this oracle refuses. A host `chmod` may silently drop them — Linux drops S_ISGID for a caller outside the file's group — so the two runtimes would disagree about the harness rather than about themselves. Move the case to sourcesImpure, which materialises nothing."
 
         let rec go (prefix : string) (depth : int) (entries : Map<DirectoryEntryName, SeedEntry>) : unit =
-            let names = entries |> Map.toList |> List.map (fun (name, _) -> hostName name)
+            let names =
+                entries |> Map.toList |> List.map (fun (name, _) -> hostName prefix name)
 
             for name in names do
                 requireFoldable $"The filesystem seed's entry %s{prefix}/%s{name}" name
@@ -425,7 +427,7 @@ module RealRuntime =
                 hostNames |> List.tryFind (fun existing -> fold existing = fold candidate)
 
             for KeyValue (name, entry) in entries do
-                let name = hostName name
+                let name = hostName prefix name
 
                 if depth = 0 then
                     match reserved |> List.tryFind (fun r -> fold r = fold name) with
@@ -440,6 +442,9 @@ module RealRuntime =
                     requireOraclePermissions $"%s{prefix}/%s{name}" true permissions
                     go (prefix + "/" + name) (depth + 1) children
                 | SeedEntry.Symlink target ->
+                    // First, so that a target of several components is refused
+                    // for the reason no rewrite of it could fix.
+                    hostTarget $"%s{prefix}/%s{name}" target |> ignore<string>
                     let raw = SymlinkTarget.toEscaped target
 
                     let refuse (why : string) : unit =
@@ -461,7 +466,7 @@ module RealRuntime =
                         // host would fold it onto a sibling — or onto the guest
                         // image — that PawPrint does not match exactly, one
                         // side has a target and the other does not.
-                        let only = hostName only
+                        let only = hostName prefix only
 
                         // `foldsOntoHost` below folds this, so it is subject to
                         // the same alphabet: a target of "ss" beside a sibling
@@ -538,6 +543,10 @@ module RealRuntime =
     /// it cannot honour is a bug worth a failure, but a *test case* that simply
     /// cannot run here wants to be skipped. One predicate, so the two answers
     /// cannot drift apart.
+    ///
+    /// True for a seed whose names or targets are not valid UTF-8: no host can
+    /// take one through System.IO, so skipping would retire the case everywhere
+    /// without a word. `validateSeedForOracle` refuses it instead.
     let rec canMaterialise (seed : Map<DirectoryEntryName, SeedEntry>) : bool =
         if not (RuntimeInformation.IsOSPlatform OSPlatform.Windows) then
             true
@@ -587,7 +596,7 @@ module RealRuntime =
     /// from a host tree and a seed that someone kept in step by hand.
     let rec private materialiseSeed (directory : string) (entries : Map<DirectoryEntryName, SeedEntry>) : unit =
         for KeyValue (name, entry) in entries do
-            let path = Path.Combine (directory, hostName name)
+            let path = Path.Combine (directory, hostName directory name)
 
             match entry with
             | SeedEntry.File (contents, permissions) ->
@@ -609,7 +618,8 @@ module RealRuntime =
             // Verbatim, and deliberately not checked for existence: a seeded
             // symlink may dangle, and `File.CreateSymbolicLink` is happy to
             // create one that does.
-            | SeedEntry.Symlink target -> File.CreateSymbolicLink (path, hostTarget target) |> ignore<FileSystemInfo>
+            | SeedEntry.Symlink target ->
+                File.CreateSymbolicLink (path, hostTarget path target) |> ignore<FileSystemInfo>
 
     /// Run a single-file guest image as its own process on the real .NET
     /// runtime, with `seed` materialised into its working directory, and report

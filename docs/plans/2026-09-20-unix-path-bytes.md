@@ -864,21 +864,29 @@ it carries none of this coupling.
 
 **Implements**: §2.2 (`tryToString`'s real consumers).
 
-`RealRuntime.validateSeedForOracle` and `canMaterialise` must now refuse a seed
-they cannot put on the host: `File.WriteAllBytes` takes a `string`, so a seed
-entry whose name has no `tryToString` cannot be materialised. This is the stage
+`RealRuntime.validateSeedForOracle` must now refuse a seed it cannot put on the
+host: `File.WriteAllBytes` takes a `string`, so a seed entry whose name or
+symlink target has no `tryToString` cannot be materialised. This is the stage
 where `tryToString` earns its existence.
 
 Refuse, loudly, rather than silently skipping: a differential test whose two
-sides were seeded differently is worse than one that does not run.
+sides were seeded differently is worse than one that does not run. So
+`canMaterialise`, whose `false` skips a case, stays about what *this host* can
+do (Windows and Unix modes). No host takes a non-UTF-8 name through
+`System.IO`, so skipping would retire such a case everywhere without a word.
 
 **Correctness oracle**:
 
-- A seed containing a non-UTF-8 name is rejected by `canMaterialise`, and the
-  rejection names the entry (via `toEscaped`) and says why.
+- A seed holding a non-UTF-8 entry name (at the root or nested) or symlink
+  target (of one component or several) is refused by `validateSeedForOracle`.
+  The message names the entry via `toEscaped` and says the bytes are not UTF-8.
+  It must say so explicitly: the ASCII-alphabet rule refuses these names too, so
+  a check for the refusal alone would pass against an oracle that decoded
+  leniently.
+- `canMaterialise` is `true` for such seeds.
 - Every existing oracle-backed test still materialises and still agrees.
-- Mutation test: make `canMaterialise` return `true` unconditionally and confirm
-  a new non-UTF-8-seeded case fails rather than passing vacuously.
+- Mutation tests: decode leniently in `hostName`, and drop the up-front target
+  check; each must turn a test red.
 
 ---
 

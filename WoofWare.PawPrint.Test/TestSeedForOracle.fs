@@ -35,6 +35,22 @@ module TestSeedForOracle =
     let private bytes (s : string) : ImmutableArray<byte> =
         System.Text.Encoding.UTF8.GetBytes s |> ImmutableArray.CreateRange
 
+    let private byteString (raw : byte list) : UnixByteString =
+        match UnixByteString.ofBytes (ImmutableArray.CreateRange raw) with
+        | Ok value -> value
+        | Error defect -> failwith $"test bytes %s{UnixByteString.describe defect}"
+
+    /// A name of arbitrary bytes, which a `string` literal cannot spell.
+    let private nameOfBytes (raw : byte list) : DirectoryEntryName =
+        match DirectoryEntryName.ofByteString (byteString raw) with
+        | Ok value -> value
+        | Error error -> failwith $"test name: %s{DirectoryEntryName.describe error}"
+
+    let private targetOfBytes (raw : byte list) : SymlinkTarget =
+        match SymlinkTarget.ofByteString (byteString raw) with
+        | Ok value -> value
+        | Error error -> failwith $"test target: %s{SymlinkTarget.describe error}"
+
     [<Test>]
     let ``the oracle refuses a seed a real directory cannot stand in for`` () : unit =
         // Each refused shape is a way the differential comparison would still be
@@ -223,3 +239,64 @@ module TestSeedForOracle =
             RealRuntime.validateSeedForOracle
                 reserved
                 (Map.ofList [ name "f", SeedEntry.File (bytes "x", mode ordinary) ])
+
+    /// A seed name or symlink target that is not valid UTF-8 has no `string`
+    /// for `System.IO` to create on the host. Such a seed is the test's mistake
+    /// rather than a limitation of the host it happens to run on, so it is
+    /// refused loudly instead of the case being skipped.
+    [<Test>]
+    let ``the oracle refuses a seed whose names are not UTF-8, naming the entry`` () : unit =
+        let reserved = [ "Guest.dll" ; "Guest.runtimeconfig.json" ]
+
+        let refused (seed : Map<DirectoryEntryName, SeedEntry>) : string =
+            let failure =
+                Assert.Throws (fun () -> RealRuntime.validateSeedForOracle reserved seed)
+
+            failure.Message
+
+        // Every assertion checks "not valid UTF-8": the alphabet rule above
+        // refuses these names too, so a check for the refusal alone would pass
+        // against an oracle that decoded leniently and refused the result for
+        // the wrong reason.
+        let undecodable = nameOfBytes [ byte 'a' ; 0xFFuy ]
+
+        let atRoot = refused (Map.ofList [ undecodable, SeedEntry.file (bytes "x") ])
+        atRoot |> shouldContainText "not valid UTF-8"
+        atRoot |> shouldContainText "/a\\xFF"
+
+        // ...nested, where the message names the directory holding it.
+        let nested =
+            refused (
+                Map.ofList
+                    [
+                        name "d", SeedEntry.directory (Map.ofList [ undecodable, SeedEntry.file (bytes "x") ])
+                    ]
+            )
+
+        nested |> shouldContainText "not valid UTF-8"
+        nested |> shouldContainText "/d/a\\xFF"
+
+        // ...and a directory, whose children are never reached.
+        refused (Map.ofList [ undecodable, SeedEntry.directory Map.empty ])
+        |> shouldContainText "not valid UTF-8"
+
+        // A symlink target, whether or not it would pass the single-component
+        // rule: the message names the link and its target.
+        for target in [ [ 0xFFuy ] ; [ byte 'd' ; byte '/' ; 0xFFuy ] ] do
+            let message =
+                refused (Map.ofList [ name "l", SeedEntry.Symlink (targetOfBytes target) ])
+
+            message |> shouldContainText "not valid UTF-8"
+            message |> shouldContainText "symlink /l"
+
+    [<Test>]
+    let ``a seed whose names are not UTF-8 is refused rather than skipped`` () : unit =
+        // `canMaterialise` answers whether *this host* can stand in for a seed,
+        // and a case it rejects is skipped. No host can take a non-UTF-8 name
+        // through System.IO, so skipping would silently retire the case on
+        // every machine; the refusal above is what should fire instead.
+        RealRuntime.canMaterialise (Map.ofList [ nameOfBytes [ 0xFFuy ], SeedEntry.file (bytes "x") ])
+        |> shouldEqual true
+
+        RealRuntime.canMaterialise (Map.ofList [ name "l", SeedEntry.Symlink (targetOfBytes [ 0xFFuy ]) ])
+        |> shouldEqual true
