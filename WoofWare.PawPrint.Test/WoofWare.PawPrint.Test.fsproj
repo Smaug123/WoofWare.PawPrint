@@ -200,6 +200,7 @@
     <Compile Include="TestBufferRangeFit.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestDeterministicMath.fs" />
+    <Compile Include="TestFloatToInteger.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestEvalStackBoxedPrimitiveView.fs" />

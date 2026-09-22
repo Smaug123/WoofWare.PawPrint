@@ -192,23 +192,11 @@ module EvalStackValue =
         let converted = (# "conv.i" value : nativeint #)
         int64<nativeint> converted
 
-    let private convIFromFloat (value : float) : int64 =
-        let converted = (# "conv.i" value : nativeint #)
-        int64<nativeint> converted
-
-    let private convUFromFloat (value : float) : uint64 =
-        let converted = (# "conv.u" value : unativeint #)
-        uint64<unativeint> converted
-
     let private convI1FromInt64 (value : int64) : int32 =
         let converted = (# "conv.i1" value : int8 #)
         int32<int8> converted
 
     let private convI1FromInt32 (value : int32) : int32 =
-        let converted = (# "conv.i1" value : int8 #)
-        int32<int8> converted
-
-    let private convI1FromFloat (value : float) : int32 =
         let converted = (# "conv.i1" value : int8 #)
         int32<int8> converted
 
@@ -220,25 +208,13 @@ module EvalStackValue =
         let converted = (# "conv.i2" value : int16 #)
         int32<int16> converted
 
-    let private convI2FromFloat (value : float) : int32 =
-        let converted = (# "conv.i2" value : int16 #)
-        int32<int16> converted
-
     let private convI4FromInt64 (value : int64) : int32 = (# "conv.i4" value : int32 #)
-
-    let private convI4FromFloat (value : float) : int32 = (# "conv.i4" value : int32 #)
-
-    let private convI8FromFloat (value : float) : int64 = (# "conv.i8" value : int64 #)
 
     let private convU1FromInt64 (value : int64) : int32 =
         let converted = (# "conv.u1" value : uint8 #)
         int32<uint8> converted
 
     let private convU1FromInt32 (value : int32) : int32 =
-        let converted = (# "conv.u1" value : uint8 #)
-        int32<uint8> converted
-
-    let private convU1FromFloat (value : float) : int32 =
         let converted = (# "conv.u1" value : uint8 #)
         int32<uint8> converted
 
@@ -250,10 +226,6 @@ module EvalStackValue =
         let converted = (# "conv.u2" value : uint16 #)
         int32<uint16> converted
 
-    let private convU2FromFloat (value : float) : int32 =
-        let converted = (# "conv.u2" value : uint16 #)
-        int32<uint16> converted
-
     let private convU4FromInt64 (value : int64) : int32 =
         let converted = (# "conv.u4" value : uint32 #)
         int32<uint32> converted
@@ -261,14 +233,6 @@ module EvalStackValue =
     let private convU4FromInt32 (value : int32) : int32 =
         let converted = (# "conv.u4" value : uint32 #)
         int32<uint32> converted
-
-    let private convU4FromFloat (value : float) : int32 =
-        let converted = (# "conv.u4" value : uint32 #)
-        int32<uint32> converted
-
-    let private convU8FromFloat (value : float) : int64 =
-        let converted = (# "conv.u8" value : uint64 #)
-        int64<uint64> converted
 
     let private convR4FromInt32 (value : int32) : float32 = (# "conv.r4" value : float32 #)
 
@@ -358,7 +322,10 @@ module EvalStackValue =
             | NativeIntSource.MetadataImportHandle moduleName ->
                 failwith $"Conv_U: refusing to convert metadata import handle %s{moduleName} to unsigned native int"
             | NativeIntSource.OpaqueHashBits bits -> UnsignedNativeIntSource.FromOpaqueHashBits bits
-        | EvalStackValue.Float f -> convUFromFloat (EvalStackFloat.toDouble f) |> UnsignedNativeIntSource.Verbatim
+        | EvalStackValue.Float f ->
+            EvalStackFloat.toDouble f
+            |> FloatToInteger.toUInt64
+            |> UnsignedNativeIntSource.Verbatim
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource
         | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer
@@ -384,7 +351,7 @@ module EvalStackValue =
             let i = Int32Source.value "Conv_I" int32Source
             i |> convIFromInt32 |> NativeIntSource.Verbatim
         | EvalStackValue.NativeInt src -> src
-        | EvalStackValue.Float f -> EvalStackFloat.toDouble f |> convIFromFloat |> NativeIntSource.Verbatim
+        | EvalStackValue.Float f -> EvalStackFloat.toDouble f |> FloatToInteger.toInt64 |> NativeIntSource.Verbatim
         | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
         | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer
         | EvalStackValue.ObjectRef _
@@ -418,7 +385,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I1" src counters
             convI1FromInt64 bits, counters
-        | EvalStackValue.Float f -> convI1FromFloat (EvalStackFloat.toDouble f), counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toInt8 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -437,7 +404,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I2" src counters
             convI2FromInt64 bits, counters
-        | EvalStackValue.Float f -> convI2FromFloat (EvalStackFloat.toDouble f), counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toInt16 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -474,7 +441,8 @@ module EvalStackValue =
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I4" src counters
             convI4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         | EvalStackValue.Float f ->
-            convI4FromFloat (EvalStackFloat.toDouble f)
+            EvalStackFloat.toDouble f
+            |> FloatToInteger.toInt32
             |> Int32Source.Verbatim
             |> EvalStackValue.Int32,
             counters
@@ -496,7 +464,7 @@ module EvalStackValue =
             // get wrapped so their provenance survives the
             // `Conv.I8 → … → Conv.I` round-trip.
             Int64Source.widenedNativeInt src true
-        | EvalStackValue.Float f -> convI8FromFloat (EvalStackFloat.toDouble f) |> Int64Source.Verbatim
+        | EvalStackValue.Float f -> EvalStackFloat.toDouble f |> FloatToInteger.toInt64 |> Int64Source.Verbatim
         | EvalStackValue.ManagedPointer ptr ->
             // Same rationale as the NativeInt arm: keep the pointer's provenance
             // as a widened-native-int so a subsequent `Conv.U` / `Conv.I`
@@ -515,7 +483,9 @@ module EvalStackValue =
             int64 (uint32 i) |> Int64Source.Verbatim
         | EvalStackValue.Int64 i -> i
         | EvalStackValue.NativeInt src -> Int64Source.widenedNativeInt src false
-        | EvalStackValue.Float f -> convU8FromFloat (EvalStackFloat.toDouble f) |> Int64Source.Verbatim
+        | EvalStackValue.Float f ->
+            (EvalStackFloat.toDouble f |> FloatToInteger.toUInt64 |> int64)
+            |> Int64Source.Verbatim
         | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false
         | EvalStackValue.NullObjectRef ->
             Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) false
@@ -536,7 +506,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U1" src counters
             convU1FromInt64 bits, counters
-        | EvalStackValue.Float f -> convU1FromFloat (EvalStackFloat.toDouble f), counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toUInt8 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -556,7 +526,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U2" src counters
             convU2FromInt64 bits, counters
-        | EvalStackValue.Float f -> convU2FromFloat (EvalStackFloat.toDouble f), counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toUInt16 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -588,7 +558,7 @@ module EvalStackValue =
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U4" src counters
             convU4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
         | EvalStackValue.Float f ->
-            convU4FromFloat (EvalStackFloat.toDouble f)
+            (EvalStackFloat.toDouble f |> FloatToInteger.toUInt32 |> int32)
             |> Int32Source.Verbatim
             |> EvalStackValue.Int32,
             counters
