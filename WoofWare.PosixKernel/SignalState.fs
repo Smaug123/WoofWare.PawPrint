@@ -65,6 +65,21 @@ type SignalDelivery<'Task, 'Handler> =
     /// handler delivery.
     | DefaultContinue of Signal
 
+/// What generating a signal does to the process at once, as decided by
+/// `SignalState.generate`. Anything else it does happens later, through the
+/// pending queue and `SignalState.nextDelivery`.
+[<RequireQualifiedAccess>]
+type SignalGeneration =
+    /// The process carries on. The signal is pending, or coalesced into an
+    /// instance already pending, or discarded because it is ignored.
+    | ProcessContinues
+    /// The signal terminates the process: no handler claims it, its kernel
+    /// default is to terminate, and some live thread could receive it.
+    | ProcessTerminated of Signal
+    /// The signal stops the whole process: no handler claims it, its kernel
+    /// default is to stop, and some live thread could receive it.
+    | ProcessStopped of Signal
+
 /// Pure, deterministic model of the simulator's signal-handling state.
 ///
 /// The shape is deliberately small:
@@ -406,6 +421,76 @@ module SignalState =
                 Pending = state.Pending @ [ entry ]
             }
 
+    /// Whether a live thread could take `entry` now: its target, if it names
+    /// one, is live and not blocking the signal; or, for a process-directed
+    /// signal, some live thread is not blocking it. The receiver is the target,
+    /// or the lowest-ordered eligible thread.
+    let private receiverFor
+        (liveThreads : ImmutableArray<'Task>)
+        (entry : PendingSignal<'Task>)
+        (state : SignalState<'Task, 'Handler>)
+        : 'Task option
+        =
+        let blocks (thread : 'Task) : bool =
+            match Map.tryFind thread state.Blocked with
+            | None -> false
+            | Some set -> Set.contains entry.Signal set
+
+        match entry.Target with
+        | ValueSome target ->
+            if liveThreads.Contains target && not (blocks target) then
+                Some target
+            else
+                None
+        | ValueNone ->
+            liveThreads
+            |> Seq.filter (fun t -> not (blocks t))
+            |> Seq.sortWith compare
+            |> Seq.tryHead
+
+    /// Generate `entry`: decide what it does to the process at once, and queue
+    /// it (see `enqueue`) if its effect, if any, comes later.
+    ///
+    /// A signal that no handler claims, whose kernel default is to terminate or
+    /// to stop the process, and which some thread in `liveThreads` could
+    /// receive, terminates or stops the process here rather than being queued.
+    /// Every other signal is queued, including one that every thread blocks,
+    /// which takes effect once a thread can receive it.
+    let generate
+        (liveThreads : ImmutableArray<'Task>)
+        (entry : PendingSignal<'Task>)
+        (state : SignalState<'Task, 'Handler>)
+        : SignalGeneration * SignalState<'Task, 'Handler>
+        =
+        let entry =
+            { entry with
+                Signal = parse "generate" state entry.Signal
+            }
+
+        // Linux decides this at generation (`complete_signal` takes the whole
+        // thread group down for a fatal signal as soon as it has found a thread
+        // that wants it), and SIGKILL is immediate on Darwin too. For any other
+        // fatal or stopping signal, both kernels act when the receiving thread
+        // next returns to user mode, which for a self-directed signal is the
+        // return from the very call that generated it. They differ only in what
+        // *other* threads could run in between, which this approximates as
+        // nothing.
+        let claimedByHandler = Set.contains entry.Signal state.Enabled
+
+        let immediate =
+            if claimedByHandler || (receiverFor liveThreads entry state).IsNone then
+                None
+            else
+                match Signal.defaultDispositionUnder state.Numbering entry.Signal with
+                | DefaultDisposition.Terminate -> Some (SignalGeneration.ProcessTerminated entry.Signal)
+                | DefaultDisposition.Stop -> Some (SignalGeneration.ProcessStopped entry.Signal)
+                | DefaultDisposition.Ignore
+                | DefaultDisposition.Continue -> None
+
+        match immediate with
+        | Some effect -> effect, state
+        | None -> SignalGeneration.ProcessContinues, enqueue entry state
+
     /// Snapshot of the pending queue, in FIFO order (head = next candidate),
     /// every entry's signal in its canonical spelling.
     let pending (state : SignalState<'Task, 'Handler>) : PendingSignal<'Task> list = state.Pending
@@ -450,18 +535,7 @@ module SignalState =
         (state : SignalState<'Task, 'Handler>)
         : SignalDelivery<'Task, 'Handler> option * SignalState<'Task, 'Handler>
         =
-        let liveSet : Set<'Task> = liveThreads |> Seq.toList |> Set.ofList
-
-        let sortedLive : 'Task list = liveThreads |> Seq.toList |> List.sort
-
-        let pickReceiver (entry : PendingSignal<'Task>) : 'Task option =
-            match entry.Target with
-            | ValueSome tid ->
-                if Set.contains tid liveSet && not (isBlocked tid entry.Signal state) then
-                    Some tid
-                else
-                    None
-            | ValueNone -> sortedLive |> List.tryFind (fun tid -> not (isBlocked tid entry.Signal state))
+        let pickReceiver (entry : PendingSignal<'Task>) : 'Task option = receiverFor liveThreads entry state
 
         let rec scan
             (skipped : PendingSignal<'Task> list)

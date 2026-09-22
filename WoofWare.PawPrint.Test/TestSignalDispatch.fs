@@ -265,10 +265,11 @@ module TestSignalDispatch =
     [<Test>]
     let ``trySpawnHandler refuses a receivable signal whose kernel default it cannot apply yet`` () : unit =
         // A receivable pending signal nobody `enable`d falls to its kernel
-        // default — Terminate, for SIGINT — which nothing wires up until
-        // the kill(2) stage of the signal-model plan. Until then the
-        // dispatch poll must refuse it loudly rather than leave it queued
-        // forever (the shape #1380 objected to) or half-apply it.
+        // default — Terminate, for SIGINT. Generation applies that default
+        // when a thread can receive the signal, so it can reach the poll only
+        // by becoming receivable later; the poll must refuse it loudly rather
+        // than leave it queued forever (the shape #1380 objected to) or
+        // half-apply it.
         let state, _dispatcher, _ = preparedState ()
 
         let state =

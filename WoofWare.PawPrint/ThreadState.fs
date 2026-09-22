@@ -334,6 +334,33 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnSleep _ -> false
         | ThreadStatus.BlockedInSyscall -> false
 
+    /// True iff a thread in this status is one the kernel could deliver a
+    /// process-directed signal to: its OS thread exists and has not exited.
+    ///
+    /// `NotStarted` has no OS thread yet, `Terminated` has none any more (its
+    /// frames are retained for `Join` and the debugger), and `Parked` is
+    /// PawPrint's own auxiliary thread, the signal dispatcher, which runs
+    /// handlers *for* a receiver and is never one itself.
+    let canReceiveSignal (status : ThreadStatus) : bool =
+        // Fully enumerated, like `hasNoActiveFrame` above, so a new
+        // `ThreadStatus` forces an answer here.
+        match status with
+        | ThreadStatus.NotStarted -> false
+        | ThreadStatus.Parked -> false
+        | ThreadStatus.Terminated -> false
+        | ThreadStatus.Runnable -> true
+        | ThreadStatus.WaitingForForegroundThreads -> true
+        | ThreadStatus.BlockedOnJoin _ -> true
+        | ThreadStatus.BlockedOnClassInit _ -> true
+        | ThreadStatus.BlockedOnMonitorAcquire _ -> true
+        | ThreadStatus.BlockedOnMonitorWait _ -> true
+        | ThreadStatus.BlockedOnSyncBlockAcquire _ -> true
+        | ThreadStatus.BlockedOnSyncBlockWait _ -> true
+        | ThreadStatus.BlockedOnWaitHandle _ -> true
+        | ThreadStatus.BlockedOnWaitHandles _ -> true
+        | ThreadStatus.BlockedOnSleep _ -> true
+        | ThreadStatus.BlockedInSyscall -> true
+
     /// True iff a thread in this status parked with its program counter already advanced
     /// *past* the call that blocked it, so the active frame's `IlOpIndex` names the
     /// instruction after the blocking call rather than the call itself.
