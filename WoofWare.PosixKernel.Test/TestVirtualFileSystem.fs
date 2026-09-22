@@ -4228,7 +4228,10 @@ module TestCreatingOpenRules =
                 vfs
         with
         | Error error -> CreatingOpenVerdict.Refuse error
-        | Ok resolution -> CreatingOpenRules.verdict rules privilege true exclusive resolution vfs
+        // Every name these rows bind is ASCII, which both flavours' rule admits;
+        // the encoding rule's own rows are in `TestUnixPathBytes`.
+        | Ok resolution ->
+            CreatingOpenRules.verdict rules BindableEntryNames.AnyBytes privilege true exclusive resolution vfs
 
     [<Test>]
     let ``a path that consumed no component diverges between the two kernels`` () : unit =
@@ -4339,11 +4342,27 @@ module TestCreatingOpenRules =
             | Error error -> failwith $"could not resolve %s{candidate}: %O{error}"
 
         for rules in [ linux ; darwin ] do
-            match CreatingOpenRules.verdict rules CallerPrivilege.Unprivileged false false (resolveFor "/d") tree with
+            match
+                CreatingOpenRules.verdict
+                    rules
+                    BindableEntryNames.AnyBytes
+                    CallerPrivilege.Unprivileged
+                    false
+                    false
+                    (resolveFor "/d")
+                    tree
+            with
             | CreatingOpenVerdict.OpenExisting _ -> ()
             | other -> failwith $"a non-creating open of a directory must open it, got %A{other}"
 
-            CreatingOpenRules.verdict rules CallerPrivilege.Unprivileged false false (resolveFor "/nx") tree
+            CreatingOpenRules.verdict
+                rules
+                BindableEntryNames.AnyBytes
+                CallerPrivilege.Unprivileged
+                false
+                false
+                (resolveFor "/nx")
+                tree
             |> shouldEqual (CreatingOpenVerdict.Refuse UnixError.ENOENT)
 
     [<Test>]
@@ -4509,7 +4528,9 @@ module TestMkDirRules =
                 vfs
         with
         | Error error -> MkDirVerdict.Refuse error
-        | Ok resolution -> MkDirRules.verdict privilege resolution vfs
+        // Every name these rows bind is ASCII, which both flavours' rule admits;
+        // the encoding rule's own rows are in `TestUnixPathBytes`.
+        | Ok resolution -> MkDirRules.verdict BindableEntryNames.AnyBytes privilege resolution vfs
 
     /// The name a verdict binds, so a row can say *what* was created rather than
     /// only that something was.

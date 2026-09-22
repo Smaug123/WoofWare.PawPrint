@@ -265,6 +265,18 @@ type UnixError =
     /// </remarks>
     | EOVERFLOW
     /// <summary>
+    /// Illegal byte sequence.
+    /// </summary>
+    /// <example>
+    /// Darwin answers this for binding a name that APFS will not hold: a creating <c>open</c>,
+    /// <c>mkdir</c> or <c>rename</c> whose final name is not valid UTF-8. Linux binds such a name.
+    /// </example>
+    /// <remarks>
+    /// This is one of the many errnos with an integer value that's not portable.
+    /// Linux numbers it 84; Darwin numbers it 92.
+    /// </remarks>
+    | EILSEQ
+    /// <summary>
     /// Address family not supported.
     /// </summary>
     /// <remarks>
@@ -455,6 +467,7 @@ module UnixError =
             UnixError.ENOTEMPTY
             UnixError.EAGAIN
             UnixError.EOVERFLOW
+            UnixError.EILSEQ
             UnixError.EAFNOSUPPORT
             UnixError.EPROTOTYPE
             UnixError.EPROTONOSUPPORT
@@ -537,6 +550,8 @@ module UnixError =
         // Raw 75 is EOVERFLOW on Linux and EPROGMISMATCH on
         // Darwin; raw 84 is EOVERFLOW on Darwin and EILSEQ on Linux.
         | UnixError.EOVERFLOW -> platformDependent 75 84
+        // Raw 92 is EILSEQ on Darwin and ENOPROTOOPT on Linux.
+        | UnixError.EILSEQ -> platformDependent 84 92
         // Raw 97 is EAFNOSUPPORT on Linux and ENOLINK on
         // Darwin; raw 47 is EAFNOSUPPORT on Darwin and EL3RST on Linux.
         | UnixError.EAFNOSUPPORT -> platformDependent 97 47
