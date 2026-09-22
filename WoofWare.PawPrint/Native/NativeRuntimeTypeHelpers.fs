@@ -2826,7 +2826,8 @@ type UninitializedObjectRejection =
     /// `pMT->IsAbstract()`, which includes interfaces and static classes.
     | Abstract
     /// `ContainsGenericVariables()` on a type that has a MethodTable: an open generic type
-    /// definition, or an open construction such as `IComparable<T>`.
+    /// definition, or an open construction such as `IComparable<T>`. Also reported for an open
+    /// type that is abstract, which CoreCLR rejects one check earlier with the same exception.
     | ContainsGenericVariables
     /// `pMT->IsByRefLike()`, since this QCall passes `allowByRefLike: false`.
     | ByRefLike
@@ -2932,9 +2933,6 @@ module UninitializedObjectInfo =
         let typeInfoOfIdentity (identity : ResolvedTypeIdentity) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
             state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
 
-        let isAbstract (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : bool =
-            typeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract
-
         match target with
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
@@ -2946,17 +2944,15 @@ module UninitializedObjectInfo =
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             // Neither `void` nor `String` is generic, and a type with a MethodTable is not a
-            // TypeDesc, so the delegate and abstract checks are the only ones that can pre-empt
-            // the generic-variables one.
-            let typeInfo = typeInfoOfIdentity identity
-
+            // TypeDesc, so the delegate check is the only one that can pre-empt the
+            // generic-variables one with a different exception. The abstract check between them
+            // can pre-empt it too, but throws the same `MemberAccessException`, differing only in
+            // a message PawPrint does not carry.
             let state, isDelegate =
-                definitionIsDelegate loggerFactory baseClassTypes typeInfo state
+                definitionIsDelegate loggerFactory baseClassTypes (typeInfoOfIdentity identity) state
 
             if isDelegate then
                 state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Delegate
-            elif isAbstract typeInfo then
-                state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Abstract
             else
                 state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.ContainsGenericVariables
         | RuntimeTypeHandleTarget.Closed handle ->
@@ -2987,7 +2983,7 @@ module UninitializedObjectInfo =
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Delegate
         elif TypeInfo.NominallyEqual typeInfo baseClassTypes.String then
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.VariableLength
-        elif isAbstract typeInfo then
+        elif typeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract then
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Abstract
         elif DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
             state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.ByRefLike
