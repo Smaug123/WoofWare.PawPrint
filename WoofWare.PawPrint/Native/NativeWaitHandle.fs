@@ -579,18 +579,20 @@ module NativeWaitHandle =
             let id = waitHandleOfArgument operation instruction.Arguments.[0]
 
             let timeout = NativeCall.int32Argument operation instruction.Arguments.[1]
-            // `useTrivialWaits` only affects async-context teardown ordering
-            // (whether `Wait` may run APC-style callbacks); PawPrint does not
-            // model that ordering, so we decode the argument for shape
-            // validation but otherwise ignore it.
-            let _useTrivialWaits =
-                boolOfBoolArgument operation "useTrivialWaits" instruction.Arguments.[2]
+            // CoreCLR waits with `WaitMode_None` rather than `WaitMode_Alertable` when
+            // `useTrivialWaits` is set (comwaithandle.cpp), which is what decides whether the
+            // parked thread reports `WaitSleepJoin`.
+            let alertability =
+                if boolOfBoolArgument operation "useTrivialWaits" instruction.Arguments.[2] then
+                    WaitAlertability.NonAlertable
+                else
+                    WaitAlertability.Alertable
 
             let state, ret =
                 dispatchWait
                     operation
                     timeout
-                    (WaitHandle.waitOne ctx.Thread id)
+                    (WaitHandle.waitOne ctx.Thread id alertability)
                     (WaitHandle.tryWaitOne ctx.Thread id)
                     state
 

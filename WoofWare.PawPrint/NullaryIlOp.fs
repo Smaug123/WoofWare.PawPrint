@@ -612,7 +612,8 @@ module NullaryIlOp =
                 |> NativeIntSource.OpaqueHashBits
                 |> EvalStackValue.NativeInt,
                 counters
-        | EvalStackValue.Float value -> -value |> EvalStackValue.Float, counters
+        | EvalStackValue.Float value ->
+            EvalStackFloat.map (fun f -> -f) (fun f -> -f) value |> EvalStackValue.Float, counters
         | EvalStackValue.ManagedPointer ptr -> failwith $"Neg: refusing to negate managed pointer %O{ptr}"
         | EvalStackValue.NullObjectRef -> failwith "Neg: refusing to negate null object reference"
         | EvalStackValue.ObjectRef addr -> failwith $"Neg: refusing to negate object reference %O{addr}"
@@ -648,6 +649,8 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i4_un from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // ECMA-335 III.3.27: for a floating-point source, the `_un` suffix has
             // no effect — floats are signed by construction, so there is no source
             // bit-pattern to reinterpret. Behaviour matches `conv.ovf.i4`: truncate
@@ -692,6 +695,8 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i4 from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // Truncate toward zero, then check the truncated integer fits in
             // `[Int32.MinValue, Int32.MaxValue]`. `2147483648.0` (= 2^31) is exactly
             // representable and is the smallest double > Int32.MaxValue;
@@ -738,6 +743,8 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0u
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u4 from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // Truncate toward zero, then check the truncated integer fits in
             // `[0, UInt32.MaxValue]`. `4294967296.0` (= 2^32) is exactly
             // representable and is the smallest double > UInt32.MaxValue. Doubles
@@ -786,6 +793,8 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0y
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_i1 from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // Truncate toward zero, then check the truncated integer fits in
             // `[SByte.MinValue, SByte.MaxValue]`. Both bounds are exactly
             // representable in double. Doubles strictly between `-129.0` and
@@ -834,6 +843,8 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0uy
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u1 from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // Truncate toward zero, then check the truncated integer fits in
             // `[0, 255]`. `256.0` is exactly representable. NaN guard separate.
             if Double.IsNaN f || f >= 256.0 || f <= -1.0 then
@@ -880,6 +891,8 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0us
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u2 from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // Truncate toward zero, then check the truncated integer fits in
             // `[0, 65535]`. `65536.0` is exactly representable and is the smallest
             // double above UInt16.MaxValue. Doubles strictly between `-1.0` and
@@ -931,6 +944,8 @@ module NullaryIlOp =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) -> Ok 0uy
         | EvalStackValue.NativeInt src -> failwith $"TODO: Conv_ovf_u1_un from non-verbatim native int source %O{src}"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // For float sources the `_un` suffix is a no-op: floats are signed by
             // construction. Truncate toward zero, then check the truncated integer
             // fits in `[0, 255]`. `256.0` is exactly representable. NaN guard
@@ -1037,6 +1052,8 @@ module NullaryIlOp =
             | NativeIntSource.MetadataImportHandle moduleName ->
                 failwith $"Conv_ovf_u: refusing to convert metadata import handle %s{moduleName} to unsigned native int"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // `conv.ovf.u` truncates the float toward zero and overflows if
             // the truncated integer does not fit in `[0, UInt64.MaxValue]`
             // (on a 64-bit interpreter). So `-0.5` is in range (truncates to
@@ -1133,6 +1150,8 @@ module NullaryIlOp =
             | NativeIntSource.MetadataImportHandle moduleName ->
                 failwith $"Conv_ovf_i: refusing to convert metadata import handle %s{moduleName} to signed native int"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // `conv.ovf.i` truncates the float toward zero and overflows if the
             // truncated integer does not fit in `[Int64.MinValue,
             // Int64.MaxValue]` (on a 64-bit interpreter). `2^63` is exactly
@@ -1280,6 +1299,8 @@ module NullaryIlOp =
                 failwith
                     $"Conv_ovf_i_un: refusing to convert metadata import handle %s{moduleName} to signed native int"
         | EvalStackValue.Float f ->
+            let f = EvalStackFloat.toDouble f
+
             // ECMA-335 Partition III, `conv.ovf.<to type>.un`: the `.un` suffix
             // describes how to read an *integer* source, so it has no effect on
             // a float, which is signed by construction — the host agrees, and
@@ -2519,7 +2540,7 @@ module NullaryIlOp =
 
             let state =
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Float (EvalStackFloat.Single conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -2530,7 +2551,7 @@ module NullaryIlOp =
 
             let state =
                 state
-                |> IlMachineState.pushToEvalStack' (EvalStackValue.Float conv) currentThread
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.Float (EvalStackFloat.Double conv)) currentThread
 
             let state = state |> IlMachineState.advanceProgramCounter currentThread
 
@@ -3159,7 +3180,7 @@ module NullaryIlOp =
                 | EvalStackValue.ManagedPointer _
                 | EvalStackValue.NullObjectRef
                 | EvalStackValue.ObjectRef _ -> failwith "refusing to negate a pointer"
-                | EvalStackValue.Float f -> failwith $"Not is not defined on floating-point values; got %f{f}"
+                | EvalStackValue.Float f -> failwith $"Not is not defined on floating-point values; got %O{f}"
                 | EvalStackValue.UserDefinedValueType vt -> failwith $"TODO: Not on a user-defined value type: %O{vt}"
 
             state
@@ -3531,13 +3552,13 @@ module NullaryIlOp =
             let popped, state = IlMachineState.popEvalStack currentThread state
 
             // The width of the result depends on the opcode that follows; see
-            // `EvalStackValue.convUnsignedToFloat32`. The float32 result is pushed widened,
-            // which is exact, and the `conv.r4` that follows rounds it to itself.
+            // `EvalStackValue.convUnsignedToFloat32`. The `conv.r4` that follows finds a
+            // `Single` and leaves it as it is.
             let conv =
                 match MethodState.peekNextInstruction state.ThreadState.[currentThread].MethodState with
                 | Some (IlOp.Nullary NullaryIlOp.Conv_R4) ->
-                    EvalStackValue.convUnsignedToFloat32 popped |> float<float32>
-                | _ -> EvalStackValue.convUnsignedToFloat popped
+                    EvalStackFloat.Single (EvalStackValue.convUnsignedToFloat32 popped)
+                | _ -> EvalStackFloat.Double (EvalStackValue.convUnsignedToFloat popped)
 
             let state =
                 state

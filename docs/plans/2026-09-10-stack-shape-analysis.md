@@ -73,7 +73,7 @@ which is the correct degraded answer for depth; a wrong answer is impossible,
 because two arms that agree on depth deliver the same depth whichever the
 importer imports.
 
-### Stage 2 (this PR): float widths at joins
+### Stage 2 (#1445, merged): float widths at joins
 
 On top of stage 1, each slot gets a shape (`Float Single`, `Float Double`,
 `Other`), joined over CoreCLR's spill cliques rather than per target
@@ -133,8 +133,12 @@ Decisions for this stage, agreed before it was built:
 * Shapes are per instantiation (an argument of type `T` is a float32 in
   `M<float>`), so the cache key grows the generic arguments.
 
-### Stage 3: apply the promotions
+### Stage 3 (this PR): apply the promotions
 
-#1429 rebased onto stage 2: on arriving at a promotion point with a
-`EvalStackFloat.Single` in a promoted slot, widen it, and extend the Debug
-assertion to widths. #1430 (`conv.r.un; conv.r4` fusion) sits under it.
+#1429 on top of stage 2 and #1430 (`conv.r.un; conv.r4` fusion, merged): the
+stack float carries its width, and on arriving at a promotion point with an
+`EvalStackFloat.Single` in a promoted slot the interpreter widens it. The Debug
+assertion checks widths too: a float of the analysis's width in every slot it
+says is a float. An offset the analysis leaves unknown (a conflict, or what
+follows a refused join) gets no promotion and no check, so it keeps the width
+of whichever path executed.

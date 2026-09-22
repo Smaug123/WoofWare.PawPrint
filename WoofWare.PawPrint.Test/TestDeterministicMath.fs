@@ -2407,3 +2407,94 @@ module TestDeterministicMath =
 
         BitConverter.DoubleToInt64Bits (DeterministicMath.binaryOpcodeNaN second first (second + first))
         |> shouldEqual 0x7FF8000000000BBBL
+
+    /// Every float32 bit pattern, so NaNs of both signs, signalling and quiet, with payloads,
+    /// arrive as operands at about the rate of any other exponent.
+    let private genAnySingle : Gen<float32> =
+        Gen.choose (Int32.MinValue, Int32.MaxValue)
+        |> Gen.map BitConverter.Int32BitsToSingle
+
+    /// Operands that make the host generate a float32 NaN: infinities and zeros, mixed with NaNs.
+    let private genNaNMaker32 : Gen<float32> =
+        Gen.elements
+            [
+                0.0f
+                -0.0f
+                Single.PositiveInfinity
+                Single.NegativeInfinity
+                1.0f
+                Single.NaN
+                BitConverter.Int32BitsToSingle 0x7FC01234
+                BitConverter.Int32BitsToSingle 0x7F801234
+            ]
+
+    let private binaryOps32 : (string * (float32 -> float32 -> float32)) list =
+        [
+            "add", (fun a b -> a + b)
+            "sub", (fun a b -> a - b)
+            "mul", (fun a b -> a * b)
+            "div", (fun a b -> a / b)
+            "rem", (fun a b -> a % b)
+        ]
+
+    [<Test>]
+    let ``binaryOpcodeNaN32 leaves a non-NaN result alone and fixes every NaN result`` () : unit =
+        let property (a : float32, b : float32) : unit =
+            for name, op in binaryOps32 do
+                let hostResult = op a b
+                let actual = DeterministicMath.binaryOpcodeNaN32 a b hostResult
+                let actualBits = BitConverter.SingleToInt32Bits actual
+
+                let expectedBits =
+                    if not (Single.IsNaN hostResult) then
+                        BitConverter.SingleToInt32Bits hostResult
+                    elif Single.IsNaN a then
+                        BitConverter.SingleToInt32Bits a ||| 0x00400000
+                    elif Single.IsNaN b then
+                        BitConverter.SingleToInt32Bits b ||| 0x00400000
+                    else
+                        0x7FC00000
+
+                if actualBits <> expectedBits then
+                    failwith
+                        $"%s{name} %08x{BitConverter.SingleToInt32Bits a} %08x{BitConverter.SingleToInt32Bits b}: got %08x{actualBits}, expected %08x{expectedBits}"
+
+                // The rule never turns a NaN result into a number or a number into a NaN.
+                Single.IsNaN actual |> shouldEqual (Single.IsNaN hostResult)
+
+        Check.One (
+            propertyConfig,
+            Prop.forAll
+                (Arb.fromGen (
+                    Gen.zip
+                        (Gen.frequency [ 1, genAnySingle ; 1, genNaNMaker32 ])
+                        (Gen.frequency [ 1, genAnySingle ; 1, genNaNMaker32 ])
+                ))
+                property
+        )
+
+    [<Test>]
+    let ``a float32 NaN generated from non-NaN operands is the positive quiet NaN`` () : unit =
+        let inf = Single.PositiveInfinity
+
+        for a, b, result in
+            [
+                0.0f, 0.0f, 0.0f / 0.0f
+                inf, inf, inf - inf
+                0.0f, inf, 0.0f * inf
+                1.0f, 0.0f, 1.0f % 0.0f
+                inf, 1.0f, inf % 1.0f
+            ] do
+            BitConverter.SingleToInt32Bits (DeterministicMath.binaryOpcodeNaN32 a b result)
+            |> shouldEqual 0x7FC00000
+
+    [<Test>]
+    let ``the first float32 NaN operand wins, quieted`` () : unit =
+        let first = BitConverter.Int32BitsToSingle (int 0xFF800AAAu)
+        let second = BitConverter.Int32BitsToSingle 0x7FC00BBB
+
+        BitConverter.SingleToInt32Bits (DeterministicMath.binaryOpcodeNaN32 first second (first + second))
+        |> shouldEqual (int 0xFFC00AAAu)
+
+        BitConverter.SingleToInt32Bits (DeterministicMath.binaryOpcodeNaN32 second first (second + first))
+        |> shouldEqual 0x7FC00BBB

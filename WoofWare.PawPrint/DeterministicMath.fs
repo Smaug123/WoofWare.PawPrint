@@ -292,6 +292,17 @@ module DeterministicMath =
         elif Double.IsNaN b then quieted b
         else quietNaN
 
+    /// `binaryOpcodeNaN` for an opcode whose operands are both float32, which the JIT computes
+    /// in single precision: the same rule, with float32's quiet bit and positive quiet NaN.
+    let binaryOpcodeNaN32 (a : float32) (b : float32) (result : float32) : float32 =
+        let quieted32 (x : float32) : float32 =
+            BitConverter.UInt32BitsToSingle (BitConverter.SingleToUInt32Bits x ||| 0x00400000u)
+
+        if not (Single.IsNaN result) then result
+        elif Single.IsNaN a then quieted32 a
+        elif Single.IsNaN b then quieted32 b
+        else BitConverter.UInt32BitsToSingle 0x7FC00000u
+
     /// A NaN whose leading significand bit is clear: IEEE 754's *signaling* NaN, the one an
     /// operation must not silently swallow.
     let private isSignallingNaN (x : float) : bool =

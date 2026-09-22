@@ -198,7 +198,8 @@ module Program =
     /// subsystem's fire function to invoke.
     let private waitDeadline (status : ThreadStatus) : (FiredDeadline * int64) option =
         match status with
-        | ThreadStatus.BlockedOnWaitHandle (handle, Some deadline) -> Some (FiredDeadline.WaitHandle handle, deadline)
+        | ThreadStatus.BlockedOnWaitHandle (handle, Some deadline, _) ->
+            Some (FiredDeadline.WaitHandle handle, deadline)
         | ThreadStatus.BlockedOnMonitorWait (monitor, Some deadline) ->
             Some (FiredDeadline.MonitorWait monitor, deadline)
         | ThreadStatus.BlockedOnSyncBlockWait (lockObject, Some deadline) ->
@@ -209,7 +210,7 @@ module Program =
         | ThreadStatus.BlockedOnSleep (Some deadline) -> Some (FiredDeadline.SleepTimeout, deadline)
         | ThreadStatus.BlockedOnWaitHandles (_, _, Some deadline) -> Some (FiredDeadline.WaitHandlesTimeout, deadline)
         | ThreadStatus.BlockedOnWaitHandles (_, _, None)
-        | ThreadStatus.BlockedOnWaitHandle (_, None)
+        | ThreadStatus.BlockedOnWaitHandle (_, None, _)
         | ThreadStatus.BlockedOnMonitorWait (_, None)
         | ThreadStatus.BlockedOnSyncBlockWait (_, None)
         | ThreadStatus.BlockedOnSyncBlockAcquire (_, None)

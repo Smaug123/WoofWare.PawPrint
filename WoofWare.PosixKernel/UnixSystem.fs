@@ -203,6 +203,11 @@ type CurrentDirectoryFault =
     /// have mounted: `stat` of the name would answer ENAMETOOLONG while
     /// `readdir` listed it.
     | SeedNameTooLong of name : DirectoryEntryName * flavour : SimulatedUnixFlavour
+    /// The seed holds a directory entry whose name this flavour's filesystem
+    /// will not bind (see `SimulatedUnixPlatform.bindableEntryNames`): on
+    /// Darwin, a name that is not valid UTF-8. No kernel of that flavour could
+    /// have created it, and a guest there could not create it either.
+    | SeedNameNotBindable of name : DirectoryEntryName * flavour : SimulatedUnixFlavour
 
 [<RequireQualifiedAccess>]
 module UnixSystem =
@@ -931,12 +936,15 @@ module UnixSystem =
                 $"UnixSystem.withFileSystemAndCurrentDirectory: the process still holds %d{List.length stranded} handle(s) onto the current filesystem (%s{listed}). Replacing the filesystem would leave them naming a graph that no longer exists, or silently naming whatever the new one gives the same inode number. This is a boot-time operation; close them first, or build the system with the filesystem it is to run on."
 
         let limits = SimulatedUnixPlatform.pathLimits platform
+        let bindable = SimulatedUnixPlatform.bindableEntryNames platform
+        let flavour = SimulatedUnixPlatform.flavour platform
 
-        // Every name in the seed, under this flavour's NAME_MAX, before the
-        // graph is built: a name a kernel could never have created is not one
-        // its filesystem can hold. The first offender in `Map` order, which is
-        // the order the seed is realised in.
-        let rec firstOverlongName (entries : Map<DirectoryEntryName, SeedEntry>) : DirectoryEntryName option =
+        // Every name in the seed, under this flavour's NAME_MAX and then its
+        // rule for which names it binds -- the order a binding checks them in --
+        // before the graph is built: a name a kernel could never have created
+        // is not one its filesystem can hold. The first offender in `Map`
+        // order, which is the order the seed is realised in.
+        let rec firstImpossibleName (entries : Map<DirectoryEntryName, SeedEntry>) : CurrentDirectoryFault option =
             entries
             |> Map.toSeq
             |> Seq.tryPick (fun (name, entry) ->
@@ -947,16 +955,18 @@ module UnixSystem =
                     DirectoryEntryName.assertValid "UnixSystem.withFileSystemAndCurrentDirectory seed" name
 
                 if not (PathLimits.nameWithinLimit limits name) then
-                    Some name
+                    Some (CurrentDirectoryFault.SeedNameTooLong (name, flavour))
+                elif not (BindableEntryNames.admits bindable name) then
+                    Some (CurrentDirectoryFault.SeedNameNotBindable (name, flavour))
                 else
                     match entry with
-                    | SeedEntry.Directory (children, _) -> firstOverlongName children
+                    | SeedEntry.Directory (children, _) -> firstImpossibleName children
                     | SeedEntry.File _
                     | SeedEntry.Symlink _ -> None
             )
 
-        match firstOverlongName seed with
-        | Some name -> Error (CurrentDirectoryFault.SeedNameTooLong (name, SimulatedUnixPlatform.flavour platform))
+        match firstImpossibleName seed with
+        | Some fault -> Error fault
         | None ->
 
         let filesystem = VirtualFileSystem.ofFileSystemSeed createdAt seed
