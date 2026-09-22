@@ -244,7 +244,7 @@ module PathLimits =
         // Bytes throughout, never UTF-16 code units — measured with CJK, and
         // the distinction matters because `nameWithinLimit` next door
         // legitimately *does* count code units on Darwin.
-        let targetBytes = UnixPathText.utf8.GetByteCount (SymlinkTarget.toString target)
+        let targetBytes = UnixByteString.length (SymlinkTarget.toByteString target)
 
         // The rule transcribes XNU's `linklen + ni_pathlen > MAXPATHLEN`, where
         // `linklen` is the target's raw byte length and `ni_pathlen` counts the

@@ -753,8 +753,10 @@ module TestVirtualFileSystem =
 
         match VirtualFileSystem.tryGetContent link vfs with
         | Some (InodeContent.Symlink stored) ->
-            SymlinkTarget.toString stored |> shouldEqual raw
-            SymlinkTarget.toUtf8 stored |> Seq.length |> shouldEqual raw.Length
+            PathText.ofTarget stored |> shouldEqual raw
+
+            UnixByteString.length (SymlinkTarget.toByteString stored)
+            |> shouldEqual raw.Length
             // The traversal view keeps the spelling too — `UnixPath` is verbatim
             // for the same reason this is, so converting one to the other loses
             // nothing. Only `components` collapses, and only where the kernel

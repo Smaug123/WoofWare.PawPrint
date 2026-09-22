@@ -801,13 +801,16 @@ Smaller and self-contained: a target is opaque bytes on *both* flavours
 
 **Correctness oracle**:
 
-- Property: `symlink` then `readlink` round-trips the exact bytes, for every
-  non-empty NUL-free byte string **the host will accept as a target**. The bound
-  is not incidental: measured on Darwin, a 1023-byte target succeeds and a
-  1024-byte one is ENAMETOOLONG, so an unrestricted generator would produce
-  targets that never get created and a property that cannot hold. Either
-  restrict the generator to the flavour's `PathMaxBytes - 1`, or state the
-  unrestricted form against `VirtualFileSystem.createSymlink` with no host side.
+- Property: a link seeded with any non-empty NUL-free target reads back
+  through `readlink` as exactly those bytes, on both flavours. There is no
+  `symlink` syscall (see Stage 7's oracle), so a seed is the only way to make a
+  link, and a seed's target is not length-checked, so the generator needs no
+  PATH_MAX bound.
+- A walk through a link splices the target's own bytes: a link to a directory
+  named `\xff` resolves to it.
+- Darwin's splice limit counts the target's bytes. Test it with units that a
+  lenient decode shortens (`E4 B8` becomes one U+FFFD); with `0xFF`, bytes and
+  characters agree and the test proves nothing.
 - Property: `lstat`'s `st_size` for a link equals its target's byte length —
   which for a non-UTF-8 target is now a different number from anything the old
   model could produce.

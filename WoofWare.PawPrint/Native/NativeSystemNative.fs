@@ -3492,7 +3492,7 @@ module NativeSystemNative =
             // `ArrayPool` while `result == buffer.Length`, so a short buffer is
             // how the BCL *sizes* its allocation; a handler that refused to
             // truncate would break `FileInfo.LinkTarget` for every target of
-            // 256 bytes or more. `SymlinkTarget.toUtf8` is already the bytes
+            // 256 bytes or more. `SymlinkTarget.toByteString` is already the bytes
             // this hands back, and already documented as such.
             //
             // The order below is the C's, and every step of it is observable
