@@ -49,6 +49,17 @@ type internal DynamicMethodResolution =
     | NeedsMinting of ManagedHeapAddress
 
 /// <summary>
+/// Why a field-position <c>DynamicScope</c> entry names no field.
+/// </summary>
+[<RequireQualifiedAccess>]
+type internal ScopeFieldRefusal =
+    /// Real .NET raises this exception from the instruction naming the entry, with this reason.
+    | GuestException of TypeInfo<GenericParamFromMetadata, TypeDefn> * string
+    /// A shape PawPrint does not implement. An instruction executing through the entry crashes on
+    /// it; a caller reading ahead of execution must leave that to the instruction.
+    | Unsupported of string
+
+/// <summary>
 /// Resolving an operand that names an entry in the executing method's <c>DynamicScope</c>, at the
 /// moment the instruction runs.
 /// </summary>
@@ -501,8 +512,8 @@ module internal DynamicScopeOperand =
             )
 
     /// <summary>
-    /// The field named by entry <paramref name="scopeIndex"/>, or a description of why the entry
-    /// does not name one — which the caller turns into the guest's exception.
+    /// The field named by entry <paramref name="scopeIndex"/>, or why the entry does not name one:
+    /// the guest's exception, or a shape PawPrint does not implement.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -525,7 +536,8 @@ module internal DynamicScopeOperand =
     /// keys on the declaring <c>RuntimeTypeHandleTarget</c> itself
     /// (<c>NativeRuntimeTypeHelpers.fs:140-144</c> preserves the <c>Closed</c> /
     /// <c>OpenGenericTypeDefinition</c> distinction), so the context is redundant information here.
-    /// A disagreement crashes rather than picking a side. Two things stop a guest producing one:
+    /// A disagreement is <c>Unsupported</c> rather than a side picked. Two things stop a guest
+    /// producing one:
     /// <c>DynamicMethodBody.read</c> refuses a <c>DynamicILInfo</c>-built resolver by its non-null
     /// <c>m_exceptionHeader</c>, and rewriting <c>m_tokens</c> by reflection needs
     /// <c>RuntimeFieldHandle_GetValue</c>, an unimplemented QCall. Real .NET, measured through
@@ -542,22 +554,22 @@ module internal DynamicScopeOperand =
     /// instance field never meets it.
     /// </para>
     /// </remarks>
-    let field
+    let tryField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (scopeIndex : int)
         (state : IlMachineState)
         (handle : DynamicMethodHandle)
-        : Result<FieldHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
+        : Result<FieldHandle, ScopeFieldRefusal>
         =
         // The exception each refusal carries is the one `closedType` measured for the same shape:
         // these are properties of `ResolveToken`'s dispatch and of `DynamicScope`'s indexer, neither
         // of which looks at what kind of thing the entry is.
         let badImage (why : string) =
-            Error (baseClassTypes.BadImageFormatException, why)
+            Error (ScopeFieldRefusal.GuestException (baseClassTypes.BadImageFormatException, why))
 
         let invalidProgram (why : string) =
-            Error (baseClassTypes.InvalidProgramException, why)
+            Error (ScopeFieldRefusal.GuestException (baseClassTypes.InvalidProgramException, why))
 
         /// The `FieldHandle` a `System.RuntimeFieldHandle`-shaped value names, given its `m_ptr`.
         let ofHandleValue (what : string) (value : CliType) =
@@ -581,8 +593,10 @@ module internal DynamicScopeOperand =
         match entryObject operation scopeIndex state handle with
         | ScopeEntryLookup.PastEnd ->
             Error (
-                baseClassTypes.ArgumentOutOfRangeException,
-                $"DynamicScope entry %d{scopeIndex} is exactly at the end of the scope's token list"
+                ScopeFieldRefusal.GuestException (
+                    baseClassTypes.ArgumentOutOfRangeException,
+                    $"DynamicScope entry %d{scopeIndex} is exactly at the end of the scope's token list"
+                )
             )
         | ScopeEntryLookup.Absent -> invalidProgram $"DynamicScope entry %d{scopeIndex} is null, so it names no field"
         | ScopeEntryLookup.Found entry ->
@@ -652,8 +666,10 @@ module internal DynamicScopeOperand =
                     if context = fieldHandle.GetDeclaringTypeHandle () then
                         Ok ()
                     else
-                        failwith
-                            $"TODO: %s{operation}: DynamicScope entry %d{scopeIndex} is a GenericFieldInfo whose m_context names %O{context}, but its m_fieldHandle was allocated against declaring type %O{fieldHandle.GetDeclaringTypeHandle ()}. `ILGenerator.Emit` writes both halves from one FieldInfo, so this needs the scope to have been rewritten. Real .NET resolves by the handle and ignores the context (measured through DynamicILInfo.GetTokenFor); PawPrint has no test for that because the rewrite is unreachable here"
+                        Error (
+                            ScopeFieldRefusal.Unsupported
+                                $"TODO: %s{operation}: DynamicScope entry %d{scopeIndex} is a GenericFieldInfo whose m_context names %O{context}, but its m_fieldHandle was allocated against declaring type %O{fieldHandle.GetDeclaringTypeHandle ()}. `ILGenerator.Emit` writes both halves from one FieldInfo, so this needs the scope to have been rewritten. Real .NET resolves by the handle and ignores the context (measured through DynamicILInfo.GetTokenFor); PawPrint has no test for that because the rewrite is unreachable here"
+                        )
                 | other ->
                     failwith
                         $"%s{operation}: expected DynamicScope entry %d{scopeIndex}'s GenericFieldInfo.m_context to be a RuntimeTypeHandle referencing a RuntimeType, got %O{other}"
@@ -667,6 +683,21 @@ module internal DynamicScopeOperand =
         | notClosed ->
             invalidProgram
                 $"DynamicScope entry %d{scopeIndex} names a field of %O{notClosed}, whose declaring type is not a closed type"
+
+    /// `tryField`, crashing where PawPrint does not implement the entry's shape: the honest answer
+    /// for an instruction that must execute through it.
+    let field
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (scopeIndex : int)
+        (state : IlMachineState)
+        (handle : DynamicMethodHandle)
+        : Result<FieldHandle, TypeInfo<GenericParamFromMetadata, TypeDefn> * string>
+        =
+        match tryField baseClassTypes operation scopeIndex state handle with
+        | Ok field -> Ok field
+        | Error (ScopeFieldRefusal.GuestException (exceptionType, why)) -> Error (exceptionType, why)
+        | Error (ScopeFieldRefusal.Unsupported why) -> failwith why
 
     /// <summary>
     /// The dynamic method named by entry <paramref name="scopeIndex"/>, or the object to mint if it

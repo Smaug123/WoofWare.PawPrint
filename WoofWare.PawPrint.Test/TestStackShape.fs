@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
+#nowarn "9" // `fixed`, to hand a byte array to a BlobReader
+
 open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
@@ -7,8 +9,9 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// Tests for the stack-shape analysis: the evaluation stack's depth at the entry of every
-/// instruction, joined over every path that reaches it.
+/// Tests for the stack-shape analysis: the evaluation stack's shape at the entry of every
+/// instruction, joined over every path that reaches it, and the offsets at which a float32 must
+/// be widened because CoreCLR's importer types the slot as double over every incoming path.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStackShape =
@@ -61,13 +64,21 @@ module TestStackShape =
         // Index in the list -> offset, for tests that want to name an instruction by position.
         instructions, offsets |> List.indexed |> Map.ofList
 
-    let private inputs (arguments : int) (locals : int) (returnsValue : bool) : StackShapeInputs =
+    let private single : SlotShape = SlotShape.Float FloatWidth.Single
+    let private double : SlotShape = SlotShape.Float FloatWidth.Double
+    let private other : SlotShape = SlotShape.Other
+
+    let private inputs (arguments : SlotShape list) (locals : SlotShape list) (returnsValue : bool) : StackShapeInputs =
         {
-            Arguments = arguments
-            Locals = locals
+            Arguments = ImmutableArray.CreateRange arguments
+            Locals = ImmutableArray.CreateRange locals
             ReturnsValue = returnsValue
             Tokens = Map.empty
         }
+
+    /// Read CoreLib, whose metadata every token-reader test judges types against.
+    let private corelib () : DumpedAssembly =
+        Assembly.readFile (LoggerFactory.makeTest () |> snd) typeof<obj>.Assembly.Location
 
     /// Analyse, and fail if any reachable instruction could not be typed.
     let private analyseOrFail (inputs : StackShapeInputs) (body : MethodInstructions<TypeDefn>) : StackShape =
@@ -79,6 +90,9 @@ module TestStackShape =
         shape
 
     let private ldc : IlOp = IlOp.Nullary NullaryIlOp.LdcI4_1
+    let private ldcI4 : IlOp = ldc
+    let private ldcR4 : IlOp = IlOp.UnaryConst (UnaryConstIlOp.Ldc_R4 1.0f)
+    let private ldcR8 : IlOp = IlOp.UnaryConst (UnaryConstIlOp.Ldc_R8 1.0)
     let private add : IlOp = IlOp.Nullary NullaryIlOp.Add
     let private dup : IlOp = IlOp.Nullary NullaryIlOp.Dup
     let private nop : IlOp = IlOp.Nullary NullaryIlOp.Nop
@@ -123,10 +137,10 @@ module TestStackShape =
     [<Test>]
     let ``straight-line code is entered at the depth its predecessor leaves`` () : unit =
         let body, at = layOut [] [ ldc ; ldc ; add ; dup ; pop ; pop ; ret ]
-        let shape = analyseOrFail (inputs 0 0 false) body
+        let shape = analyseOrFail (inputs [] [] false) body
 
         [ 0..6 ]
-        |> List.map (fun i -> shape.Entry.[at.[i]])
+        |> List.map (fun i -> shape.Entry.[at.[i]].Length)
         |> shouldEqual [ 0 ; 1 ; 2 ; 1 ; 2 ; 1 ; 0 ]
 
         shape.Reachable |> shouldEqual (Set.ofSeq at.Values)
@@ -136,23 +150,23 @@ module TestStackShape =
         // `ldarg0; brtrue L; ldc; br J; L: ldc; ldc; add; J: pop; ret`
         let ops = [ ldarg0 ; brtrue 0 ; ldc ; br 0 ; ldc ; ldc ; add ; pop ; ret ]
         let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 7 ]
-        let shape = analyseOrFail (inputs 1 0 false) body
+        let shape = analyseOrFail (inputs [ other ] [] false) body
 
-        shape.Entry.[at.[4]] |> shouldEqual 0
-        shape.Entry.[at.[6]] |> shouldEqual 2
-        shape.Entry.[at.[7]] |> shouldEqual 1
-        shape.Entry.[at.[8]] |> shouldEqual 0
+        shape.Entry.[at.[4]].Length |> shouldEqual 0
+        shape.Entry.[at.[6]].Length |> shouldEqual 2
+        shape.Entry.[at.[7]].Length |> shouldEqual 1
+        shape.Entry.[at.[8]].Length |> shouldEqual 0
 
     [<Test>]
     let ``a loop's back edge delivers the depth its head already has`` () : unit =
         // `ldc; HEAD: dup; brtrue HEAD; pop; ret`
         let ops = [ ldc ; dup ; brtrue 0 ; pop ; ret ]
         let body, at = layOutWithBranches [] ops [ 2, 1 ]
-        let shape = analyseOrFail (inputs 0 0 false) body
+        let shape = analyseOrFail (inputs [] [] false) body
 
-        shape.Entry.[at.[1]] |> shouldEqual 1
-        shape.Entry.[at.[2]] |> shouldEqual 2
-        shape.Entry.[at.[3]] |> shouldEqual 1
+        shape.Entry.[at.[1]].Length |> shouldEqual 1
+        shape.Entry.[at.[2]].Length |> shouldEqual 2
+        shape.Entry.[at.[3]].Length |> shouldEqual 1
 
     [<Test>]
     let ``two paths of different depth at a join is a conflict, and what follows only from it is untyped`` () : unit =
@@ -161,7 +175,7 @@ module TestStackShape =
         // everything past it is neither typed nor invalid.
         let ops = [ ldarg0 ; brtrue 0 ; br 0 ; ldc ; br 0 ; nop ; ret ]
         let body, at = layOutWithBranches [] ops [ 1, 3 ; 2, 5 ; 4, 5 ]
-        let shape = StackShape.analyse (inputs 1 0 true) body
+        let shape = StackShape.analyse (inputs [ other ] [] true) body
 
         match Map.tryFind at.[5] shape.Invalid with
         | Some (StackShapeError.DepthMismatch (_, 0, 1) as error) -> error.IsConflict |> shouldEqual true
@@ -171,8 +185,8 @@ module TestStackShape =
         shape.Entry.ContainsKey at.[5] |> shouldEqual false
         shape.Entry.ContainsKey at.[6] |> shouldEqual false
         shape.Reachable.Contains at.[6] |> shouldEqual true
-        shape.Entry.[at.[3]] |> shouldEqual 0
-        shape.Entry.[at.[4]] |> shouldEqual 1
+        shape.Entry.[at.[3]].Length |> shouldEqual 0
+        shape.Entry.[at.[4]].Length |> shouldEqual 1
 
     [<Test>]
     let ``an arrival at a join that already failed on another arm makes it a conflict`` () : unit =
@@ -182,7 +196,7 @@ module TestStackShape =
         // never imports.
         let ops = [ ldarg0 ; brtrue 0 ; br 0 ; ldc ; br 0 ; ret ]
         let body, at = layOutWithBranches [] ops [ 1, 3 ; 2, 5 ; 4, 5 ]
-        let shape = StackShape.analyse (inputs 1 0 true) body
+        let shape = StackShape.analyse (inputs [ other ] [] true) body
 
         shape.Invalid.[at.[5]].IsConflict |> shouldEqual true
         shape.Entry.ContainsKey at.[5] |> shouldEqual false
@@ -222,19 +236,19 @@ module TestStackShape =
             )
 
         let body, at = layOutWithBranches [] ops [ 3, 8 ; 5, 8 ; 7, 9 ]
-        let shape = StackShape.analyse (inputs 1 0 true) body
+        let shape = StackShape.analyse (inputs [ other ] [] true) body
 
         shape.Invalid.[at.[8]].IsConflict |> shouldEqual true
         shape.Invalid.ContainsKey at.[9] |> shouldEqual false
         shape.Entry.ContainsKey at.[9] |> shouldEqual false
         shape.Reachable.Contains at.[9] |> shouldEqual true
-        shape.Entry.[at.[6]] |> shouldEqual 0
+        shape.Entry.[at.[6]].Length |> shouldEqual 0
 
     [<Test>]
     let ``popping an empty stack is invalid IL`` () : unit =
         let body, _ = layOut [] [ pop ; ret ]
 
-        match Map.tryFind 0 (StackShape.analyse (inputs 0 0 false) body).Invalid with
+        match Map.tryFind 0 (StackShape.analyse (inputs [] [] false) body).Invalid with
         | Some (StackShapeError.StackUnderflow (0, _, 0) as error) -> error.IsConflict |> shouldEqual false
         | other -> failwith $"expected StackUnderflow at offset 0, got %O{other}"
 
@@ -244,10 +258,10 @@ module TestStackShape =
         // against BAD alone; the other arm is typed, and what follows BAD is untyped.
         let ops = [ ldarg0 ; brtrue 0 ; ldc ; ret ; pop ; ret ]
         let body, at = layOutWithBranches [] ops [ 1, 4 ]
-        let shape = StackShape.analyse (inputs 1 0 true) body
+        let shape = StackShape.analyse (inputs [ other ] [] true) body
 
-        shape.Entry.[at.[2]] |> shouldEqual 0
-        shape.Entry.[at.[3]] |> shouldEqual 1
+        shape.Entry.[at.[2]].Length |> shouldEqual 0
+        shape.Entry.[at.[3]].Length |> shouldEqual 1
 
         match Map.tryFind at.[4] shape.Invalid with
         | Some (StackShapeError.StackUnderflow _) -> ()
@@ -261,7 +275,7 @@ module TestStackShape =
     [<Test>]
     let ``a branch outside the body is invalid at the branch`` () : unit =
         let body, at = layOut [] [ ldarg0 ; brtrue 1000 ; ret ]
-        let shape = StackShape.analyse (inputs 1 0 false) body
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
 
         match Map.tryFind at.[1] shape.Invalid with
         | Some (StackShapeError.BranchOutsideBody (_, target)) -> target |> shouldEqual 1000
@@ -274,15 +288,15 @@ module TestStackShape =
     let ``an argument or local beyond the signature is invalid at the load`` () : unit =
         let body, _ = layOut [] [ IlOp.Nullary NullaryIlOp.LdArg1 ; ret ]
 
-        match Map.tryFind 0 (StackShape.analyse (inputs 1 0 false) body).Invalid with
+        match Map.tryFind 0 (StackShape.analyse (inputs [ other ] [] false) body).Invalid with
         | Some (StackShapeError.ArgumentOutOfRange (0, 1)) -> ()
         | other -> failwith $"expected ArgumentOutOfRange, got %O{other}"
 
-        analyseOrFail (inputs 2 0 false) body |> ignore
+        analyseOrFail (inputs [ other ; other ] [] false) body |> ignore
 
         let body, _ = layOut [] [ IlOp.UnaryConst (UnaryConstIlOp.Stloc_s 2uy) ; ret ]
 
-        match Map.tryFind 0 (StackShape.analyse (inputs 0 2 false) body).Invalid with
+        match Map.tryFind 0 (StackShape.analyse (inputs [] [ other ; other ] false) body).Invalid with
         | Some (StackShapeError.LocalOutOfRange (0, 2)) -> ()
         | other -> failwith $"expected LocalOutOfRange, got %O{other}"
 
@@ -326,10 +340,10 @@ module TestStackShape =
             ]
 
         let body, at = layOutWithBranches regions ops [ 1, 8 ; 6, 8 ]
-        let shape = analyseOrFail (inputs 0 0 false) body
+        let shape = analyseOrFail (inputs [] [] false) body
 
         [ 0..8 ]
-        |> List.map (fun i -> shape.Entry.[at.[i]])
+        |> List.map (fun i -> shape.Entry.[at.[i]].Length)
         |> shouldEqual [ 0 ; 1 ; 1 ; 0 ; 1 ; 1 ; 0 ; 0 ; 0 ]
 
     [<Test>]
@@ -356,11 +370,11 @@ module TestStackShape =
             )
 
         let body, at = layOut [] ops
-        let shape = analyseOrFail (inputs 1 0 false) body
+        let shape = analyseOrFail (inputs [ other ] [] false) body
 
-        shape.Entry.[at.[3]] |> shouldEqual 1
-        shape.Entry.[at.[5]] |> shouldEqual 1
-        shape.Entry.[at.[6]] |> shouldEqual 0
+        shape.Entry.[at.[3]].Length |> shouldEqual 1
+        shape.Entry.[at.[5]].Length |> shouldEqual 1
+        shape.Entry.[at.[6]].Length |> shouldEqual 0
 
     [<Test>]
     let ``a call pops its arguments and pushes its return value`` () : unit =
@@ -378,21 +392,21 @@ module TestStackShape =
         let body, at = layOut [] ops
 
         let withCall (shape : TokenShape) : StackShapeInputs =
-            { inputs 0 0 false with
+            { inputs [] [] false with
                 Tokens = Map.ofList [ at.[2], shape ]
             }
 
-        let shape = analyseOrFail (withCall (TokenShape.Callee (2, true))) body
-        shape.Entry.[at.[3]] |> shouldEqual 1
-        shape.Entry.[at.[5]] |> shouldEqual 1
+        let shape = analyseOrFail (withCall (TokenShape.Callee (2, Some other))) body
+        shape.Entry.[at.[3]].Length |> shouldEqual 1
+        shape.Entry.[at.[5]].Length |> shouldEqual 1
 
-        let shape = StackShape.analyse (withCall (TokenShape.Callee (2, false))) body
+        let shape = StackShape.analyse (withCall (TokenShape.Callee (2, None))) body
 
         match Map.tryFind at.[4] shape.Invalid with
         | Some (StackShapeError.StackUnderflow (_, _, 1)) -> ()
         | other -> failwith $"expected the add after a void call to underflow, got %O{other}"
 
-        match Map.tryFind at.[2] (StackShape.analyse (inputs 0 0 false) body).Invalid with
+        match Map.tryFind at.[2] (StackShape.analyse (inputs [] [] false) body).Invalid with
         | Some (StackShapeError.MissingTokenShape (offset, _) as error) ->
             offset |> shouldEqual at.[2]
             error.IsConflict |> shouldEqual false
@@ -413,7 +427,7 @@ module TestStackShape =
             ]
 
         let body, at = layOutWithBranches [] ops [ 1, 3 ; 2, 4 ]
-        let shape = StackShape.analyse (inputs 1 0 true) body
+        let shape = StackShape.analyse (inputs [ other ] [] true) body
 
         match Map.tryFind at.[3] shape.Invalid with
         | Some (StackShapeError.MissingTokenShape _) -> ()
@@ -426,21 +440,20 @@ module TestStackShape =
     [<Test>]
     let ``a call token that does not name a method has no shape`` () : unit =
         // Invalid IL the instruction refuses if it executes; nothing is claimed ahead of that.
-        let corelib =
-            Assembly.readFile (LoggerFactory.makeTest () |> snd) typeof<obj>.Assembly.Location
+        let corelib = corelib ()
 
         let field =
             MetadataToken.FieldDefinition (System.Reflection.Metadata.Ecma335.MetadataTokens.FieldDefinitionHandle 1)
 
-        StackShapeTokens.ofMetadataToken corelib UnaryMetadataTokenIlOp.Call field
+        StackShapeTokens.ofMetadataToken corelib GenericBinding.AtDefinition UnaryMetadataTokenIlOp.Call field
         |> shouldEqual None
 
-        StackShapeTokens.ofMetadataToken corelib UnaryMetadataTokenIlOp.Newobj field
+        StackShapeTokens.ofMetadataToken corelib GenericBinding.AtDefinition UnaryMetadataTokenIlOp.Newobj field
         |> shouldEqual None
 
         // Rows the tables do not have, and a signature row that is not there to decode.
         let absent (token : MetadataToken) : unit =
-            StackShapeTokens.ofMetadataToken corelib UnaryMetadataTokenIlOp.Call token
+            StackShapeTokens.ofMetadataToken corelib GenericBinding.AtDefinition UnaryMetadataTokenIlOp.Call token
             |> shouldEqual None
 
         absent (
@@ -472,7 +485,11 @@ module TestStackShape =
         for KeyValue (handle, reference) in test.Members do
             match reference.Signature with
             | MemberSignature.Field _ ->
-                StackShapeTokens.ofMetadataToken test UnaryMetadataTokenIlOp.Call (MetadataToken.MemberReference handle)
+                StackShapeTokens.ofMetadataToken
+                    test
+                    GenericBinding.AtDefinition
+                    UnaryMetadataTokenIlOp.Call
+                    (MetadataToken.MemberReference handle)
                 |> shouldEqual None
             | MemberSignature.Method _ -> ()
 
@@ -481,8 +498,7 @@ module TestStackShape =
         // CoreLib's standalone signatures are its `calli` targets and its locals signatures;
         // for every one the full decoder accepts, the arity reader must agree, and a locals
         // signature is no call at all.
-        let corelib =
-            Assembly.readFile (LoggerFactory.makeTest () |> snd) typeof<obj>.Assembly.Location
+        let corelib = corelib ()
 
         let reader =
             System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader corelib.PeReader
@@ -506,6 +522,7 @@ module TestStackShape =
             let actual =
                 StackShapeTokens.ofMetadataToken
                     corelib
+                    GenericBinding.AtDefinition
                     UnaryMetadataTokenIlOp.Calli
                     (MetadataToken.StandaloneSignature handle)
 
@@ -515,7 +532,7 @@ module TestStackShape =
                 let expected =
                     signature.DecodeMethodSignature (TypeDefn.typeProvider corelib.Name, ())
                     |> TypeMethodSignature.make
-                    |> StackShapeTokens.calleeShape
+                    |> StackShapeTokens.calleeShape corelib GenericBinding.AtDefinition GenericSubstitution.None
 
                 actual |> shouldEqual (Some expected)
             else
@@ -538,26 +555,27 @@ module TestStackShape =
         let body, at = layOut [] ops
 
         let withTokens =
-            { inputs 0 0 false with
-                Tokens = Map.ofList [ at.[2], TokenShape.Callee (1, false) ; at.[3], TokenShape.Callee (0, false) ]
+            { inputs [] [] false with
+                Tokens = Map.ofList [ at.[2], TokenShape.Callee (1, None) ; at.[3], TokenShape.Callee (0, None) ]
             }
 
         let shape = analyseOrFail withTokens body
-        shape.Entry.[at.[3]] |> shouldEqual 0
-        shape.Entry.[at.[4]] |> shouldEqual 1
+        shape.Entry.[at.[3]].Length |> shouldEqual 0
+        shape.Entry.[at.[4]].Length |> shouldEqual 1
 
     [<Test>]
     let ``ret pops the return value exactly when the method returns one`` () : unit =
         let body, _ = layOut [] [ ldc ; ret ]
-        analyseOrFail (inputs 0 0 true) body |> ignore
+        analyseOrFail (inputs [] [] true) body |> ignore
 
         // A value left on the stack at `ret` is not an underflow, and the analysis does not
         // police it; only the pop can fail, and it does not here.
-        (StackShape.analyse (inputs 0 0 false) body).Invalid.IsEmpty |> shouldEqual true
+        (StackShape.analyse (inputs [] [] false) body).Invalid.IsEmpty
+        |> shouldEqual true
 
         let body, _ = layOut [] [ ret ]
 
-        match Map.tryFind 0 (StackShape.analyse (inputs 0 0 true) body).Invalid with
+        match Map.tryFind 0 (StackShape.analyse (inputs [] [] true) body).Invalid with
         | Some (StackShapeError.StackUnderflow (0, _, 0)) -> ()
         | other -> failwith $"expected StackUnderflow at ret, got %O{other}"
 
@@ -590,13 +608,17 @@ module TestStackShape =
                     IsRequired = true
                 }
 
-        StackShapeTokens.returnsValue (MethodReturnType.Returns modifiedVoid)
-        |> shouldEqual false
+        let corelib = corelib ()
 
-        StackShapeTokens.returnsValue (MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Single))
-        |> shouldEqual true
+        let returnShape (returnType : MethodReturnType<TypeDefn>) : SlotShape option =
+            StackShapeTokens.returnShape corelib GenericBinding.AtDefinition GenericSubstitution.None returnType
 
-        StackShapeTokens.returnsValue MethodReturnType.Void |> shouldEqual false
+        returnShape (MethodReturnType.Returns modifiedVoid) |> shouldEqual None
+
+        returnShape (MethodReturnType.Returns (TypeDefn.PrimitiveType PrimitiveType.Single))
+        |> shouldEqual (Some single)
+
+        returnShape MethodReturnType.Void |> shouldEqual None
 
     [<Test>]
     let ``an explicit this is a parameter, not an extra slot`` () : unit =
@@ -622,19 +644,29 @@ module TestStackShape =
                 ReturnType = MethodReturnType.Void
             }
 
-        StackShapeTokens.calleeShape (
-            signature (
+        StackShapeTokens.calleeShape
+            (corelib ())
+            GenericBinding.AtDefinition
+            GenericSubstitution.None
+            (signature (
                 System.Reflection.Metadata.SignatureAttributes.Instance
                 ||| System.Reflection.Metadata.SignatureAttributes.ExplicitThis
-            )
-        )
-        |> shouldEqual (TokenShape.Callee (2, false))
+            ))
+        |> shouldEqual (TokenShape.Callee (2, None))
 
-        StackShapeTokens.calleeShape (signature System.Reflection.Metadata.SignatureAttributes.Instance)
-        |> shouldEqual (TokenShape.Callee (3, false))
+        StackShapeTokens.calleeShape
+            (corelib ())
+            GenericBinding.AtDefinition
+            GenericSubstitution.None
+            (signature System.Reflection.Metadata.SignatureAttributes.Instance)
+        |> shouldEqual (TokenShape.Callee (3, None))
 
-        StackShapeTokens.calleeShape (signature System.Reflection.Metadata.SignatureAttributes.None)
-        |> shouldEqual (TokenShape.Callee (2, false))
+        StackShapeTokens.calleeShape
+            (corelib ())
+            GenericBinding.AtDefinition
+            GenericSubstitution.None
+            (signature System.Reflection.Metadata.SignatureAttributes.None)
+        |> shouldEqual (TokenShape.Callee (2, None))
 
     [<Test>]
     let ``reachability follows branches and handler entries but not dead code`` () : unit =
@@ -669,9 +701,851 @@ module TestStackShape =
         |> shouldEqual (Set.ofList [ at.[0] ; at.[2] ; at.[3] ; at.[4] ])
 
         // The dead call has no token shape, and no one asks for it.
-        let shape = analyseOrFail (inputs 0 0 false) body
+        let shape = analyseOrFail (inputs [] [] false) body
         shape.Entry.ContainsKey at.[1] |> shouldEqual false
-        shape.Entry.[at.[3]] |> shouldEqual 1
+        shape.Entry.[at.[3]].Length |> shouldEqual 1
+
+    // ---------- Widths: what a float32 becomes at a join ----------
+
+    [<Test>]
+    let ``straight-line float32 arithmetic stays single and needs no promotion`` () : unit =
+        let body, at = layOut [] [ ldcR4 ; ldcR4 ; add ; ldcR4 ; add ; pop ; ret ]
+        let shape = analyseOrFail (inputs [] [] false) body
+
+        shape.Entry.[at.[2]] |> shouldEqual [ single ; single ]
+        shape.Entry.[at.[3]] |> shouldEqual [ single ]
+        shape.Entry.[at.[4]] |> shouldEqual [ single ; single ]
+        shape.Entry.[at.[5]] |> shouldEqual [ single ]
+        shape.Promotions |> shouldEqual Map.empty
+
+    [<Test>]
+    let ``a float32 arm meeting a double arm makes the join double and promotes the float32 arm`` () : unit =
+        // The finding's shape: select 16777216f or 16777216d, then `ldc.r4 1; add; ldc.r4 1; add`.
+        // CoreCLR types the joined slot double, so the float32 arm is cast on arrival and the
+        // additions happen in double.
+        let ops =
+            [
+                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                brtrue 0 // 1 -> single arm
+                ldcR8 // 2
+                br 0 // 3 -> join
+                ldcR4 // 4  single arm
+                ldcR4 // 5  join
+                add // 6
+                ldcR4 // 7
+                add // 8
+                pop // 9
+                ret // 10
+            ]
+
+        let _, at = layOut [] ops
+
+        let ops =
+            ops
+            |> List.mapi (fun i op ->
+                match i with
+                | 1 -> brtrue at.[4]
+                | 3 -> br at.[5]
+                | _ -> op
+            )
+
+        let body, at = layOut [] ops
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[5]] |> shouldEqual [ double ]
+        shape.Entry.[at.[6]] |> shouldEqual [ single ; double ]
+        shape.Entry.[at.[7]] |> shouldEqual [ double ]
+        shape.Entry.[at.[9]] |> shouldEqual [ double ]
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[5], [ 0 ] ])
+
+    [<Test>]
+    let ``the arm order does not matter`` () : unit =
+        let ops =
+            [
+                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                brtrue 0 // 1 -> double arm
+                ldcR4 // 2
+                br 0 // 3 -> join
+                ldcR8 // 4
+                pop // 5 join
+                ret // 6
+            ]
+
+        let _, at = layOut [] ops
+
+        let ops =
+            ops
+            |> List.mapi (fun i op ->
+                match i with
+                | 1 -> brtrue at.[4]
+                | 3 -> br at.[5]
+                | _ -> op
+            )
+
+        let body, at = layOut [] ops
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[5]] |> shouldEqual [ double ]
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[5], [ 0 ] ])
+
+    [<Test>]
+    let ``two float32 arms need no promotion`` () : unit =
+        let ops =
+            [
+                IlOp.Nullary NullaryIlOp.LdArg0
+                brtrue 0
+                ldcR4
+                br 0
+                ldcR4
+                pop
+                ret
+            ]
+
+        let _, at = layOut [] ops
+
+        let ops =
+            ops
+            |> List.mapi (fun i op ->
+                match i with
+                | 1 -> brtrue at.[4]
+                | 3 -> br at.[5]
+                | _ -> op
+            )
+
+        let body, at = layOut [] ops
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[5]] |> shouldEqual [ single ]
+        shape.Promotions |> shouldEqual Map.empty
+
+    [<Test>]
+    let ``a loop whose back edge delivers a double widens the loop head`` () : unit =
+        // `ldc.r4; L: ldc.r8; mul; br L`: the head first sees a float32, then a double from the
+        // back edge, so the slot is double and the first arrival is promoted.
+        let ops = [ ldcR4 ; ldcR8 ; IlOp.Nullary NullaryIlOp.Mul ; br 0 ]
+        let _, at = layOut [] ops
+        let ops = ops |> List.mapi (fun i op -> if i = 3 then br at.[1] else op)
+        let body, at = layOut [] ops
+        let shape = analyseOrFail (inputs [] [] false) body
+
+        shape.Entry.[at.[1]] |> shouldEqual [ double ]
+        shape.Entry.[at.[2]] |> shouldEqual [ double ; double ]
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[1], [ 0 ] ])
+
+    [<Test>]
+    let ``a float meeting a non-float at a join is a conflict, and what follows only from it is unknown`` () : unit =
+        let ops =
+            [
+                IlOp.Nullary NullaryIlOp.LdArg0
+                brtrue 0
+                ldcR4
+                br 0
+                ldcI4
+                pop
+                ret
+            ]
+
+        let _, at = layOut [] ops
+
+        let ops =
+            ops
+            |> List.mapi (fun i op ->
+                match i with
+                | 1 -> brtrue at.[4]
+                | 3 -> br at.[5]
+                | _ -> op
+            )
+
+        let body, at = layOut [] ops
+
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        match Map.tryFind at.[5] shape.Invalid with
+        | Some (StackShapeError.FloatMergedWithOther (offset, 0)) -> offset |> shouldEqual at.[5]
+        | other -> failwith $"expected FloatMergedWithOther at the join, got %O{other}"
+
+        // The join and what only it leads to are untyped; the arms before it are typed. Both
+        // stay reachable, so an interpreter can tell them from dead code.
+        shape.Invalid.[at.[5]].IsConflict |> shouldEqual true
+        shape.Entry.ContainsKey at.[5] |> shouldEqual false
+        shape.Entry.ContainsKey at.[6] |> shouldEqual false
+        shape.Entry.ContainsKey at.[4] |> shouldEqual true
+        shape.Reachable.Contains at.[5] |> shouldEqual true
+        shape.Reachable.Contains at.[6] |> shouldEqual true
+
+    [<Test>]
+    let ``conv.r.un is single only when conv.r4 follows it`` () : unit =
+        let body1, at1 =
+            layOut
+                []
+                [
+                    ldcI4
+                    IlOp.Nullary NullaryIlOp.Conv_r_un
+                    IlOp.Nullary NullaryIlOp.Conv_R4
+                    pop
+                    ret
+                ]
+
+        let shape1 = analyseOrFail (inputs [] [] false) body1
+        shape1.Entry.[at1.[2]] |> shouldEqual [ single ]
+        shape1.Entry.[at1.[3]] |> shouldEqual [ single ]
+
+        let body2, at2 =
+            layOut [] [ ldcI4 ; IlOp.Nullary NullaryIlOp.Conv_r_un ; pop ; ret ]
+
+        let shape2 = analyseOrFail (inputs [] [] false) body2
+        shape2.Entry.[at2.[2]] |> shouldEqual [ double ]
+
+    [<Test>]
+    let ``a generic parameter takes the shape of the argument the call site binds it to`` () : unit =
+        // `flag ? Id<float>(1f) : 2f`: the MethodSpec binds `!!0` to float32, so the call pushes a
+        // single and the join with the literal is valid. Unbound, or bound to the caller's own
+        // parameter, it is `Other`.
+        let corelib = corelib ()
+
+        let bound =
+            { GenericSubstitution.None with
+                MethodArguments = Some (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Single))
+            }
+
+        StackShapeTokens.shapeOfTypeDefnWith
+            corelib
+            GenericBinding.AtDefinition
+            bound
+            (TypeDefn.GenericMethodParameter 0)
+        |> shouldEqual single
+
+        StackShapeTokens.shapeOfTypeDefnWith
+            corelib
+            GenericBinding.AtDefinition
+            GenericSubstitution.None
+            (TypeDefn.GenericMethodParameter 0)
+        |> shouldEqual other
+
+        let boundToCallers =
+            { GenericSubstitution.None with
+                TypeArguments = Some (ImmutableArray.Create (TypeDefn.GenericMethodParameter 0))
+            }
+
+        StackShapeTokens.shapeOfTypeDefnWith
+            corelib
+            GenericBinding.AtDefinition
+            boundToCallers
+            (TypeDefn.GenericTypeParameter 0)
+        |> shouldEqual other
+
+        let boundType =
+            { GenericSubstitution.None with
+                TypeArguments = Some (ImmutableArray.Create (TypeDefn.PrimitiveType PrimitiveType.Double))
+            }
+
+        StackShapeTokens.shapeOfTypeDefnWith
+            corelib
+            GenericBinding.AtDefinition
+            boundType
+            (TypeDefn.GenericTypeParameter 0)
+        |> shouldEqual double
+
+        // A method's own parameter is not the type's: the wrong table does not bind it.
+        StackShapeTokens.shapeOfTypeDefnWith
+            corelib
+            GenericBinding.AtDefinition
+            boundType
+            (TypeDefn.GenericMethodParameter 0)
+        |> shouldEqual other
+
+    [<Test>]
+    let ``a parameter no token binds takes the shape of the running instantiation`` () : unit =
+        // In `M<float>`, `ldarg` of a `T` argument pushes a float32; a token's `!!0` bound to the
+        // caller's `!0` is read through the same instantiation.
+        let corelib = corelib ()
+
+        let running =
+            {
+                TypeParameter = fun i -> if i = 0 then single else other
+                MethodParameter = fun i -> if i = 0 then double else other
+            }
+
+        StackShapeTokens.shapeOfTypeDefn corelib running (TypeDefn.GenericTypeParameter 0)
+        |> shouldEqual single
+
+        StackShapeTokens.shapeOfTypeDefn corelib running (TypeDefn.GenericMethodParameter 0)
+        |> shouldEqual double
+
+        StackShapeTokens.shapeOfTypeDefn corelib running (TypeDefn.GenericTypeParameter 1)
+        |> shouldEqual other
+
+        let boundToCallers =
+            { GenericSubstitution.None with
+                MethodArguments = Some (ImmutableArray.Create (TypeDefn.GenericTypeParameter 0))
+            }
+
+        StackShapeTokens.shapeOfTypeDefnWith corelib running boundToCallers (TypeDefn.GenericMethodParameter 0)
+        |> shouldEqual single
+
+    [<Test>]
+    let ``every block a predecessor shares with a widened block is widened too`` () : unit =
+        // A delivers a float32 to both B (fall-through) and C (branch); D delivers a double to C.
+        // CoreCLR gives A's successors one spill temp, so B is typed double as well, and the
+        // float32 arriving there is promoted.
+        let ops =
+            [
+                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                brtrue 0 // 1 -> D
+                ldcR4 // 2  A
+                IlOp.Nullary NullaryIlOp.LdArg0 // 3
+                brtrue 0 // 4 -> C
+                pop // 5  B
+                ret // 6
+                ldcR8 // 7  D
+                br 0 // 8 -> C
+                pop // 9  C
+                ret // 10
+            ]
+
+        let _, at = layOut [] ops
+
+        let ops =
+            ops
+            |> List.mapi (fun i op ->
+                match i with
+                | 1 -> brtrue at.[7]
+                | 4 -> brtrue at.[9]
+                | 8 -> br at.[9]
+                | _ -> op
+            )
+
+        let body, at = layOut [] ops
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[5]] |> shouldEqual [ double ]
+        shape.Entry.[at.[9]] |> shouldEqual [ double ]
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[5], [ 0 ] ; at.[9], [ 0 ] ])
+
+    [<Test>]
+    let ``a late branch joining two settled cliques requeues the one it widens`` () : unit =
+        // M2 is first reached alone with a float32 and fully processed; M1 is reached with a
+        // double. A later branch has M1 and M2 as its two successors, which makes them one
+        // clique typed double, so M2 and everything after it must be redone.
+        let ops =
+            [
+                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                brtrue 0 // 1 -> L1
+                ldcR4 // 2
+                br 0 // 3 -> M2
+                IlOp.Nullary NullaryIlOp.LdArg0 // 4  L1
+                brtrue 0 // 5 -> L2
+                ldcR8 // 6
+                br 0 // 7 -> M1
+                ldcR4 // 8  L2
+                IlOp.Nullary NullaryIlOp.LdArg0 // 9
+                brtrue 0 // 10 -> M1, fall through to M2
+                IlOp.Nullary NullaryIlOp.Neg // 11 M2
+                pop // 12
+                ret // 13
+                pop // 14 M1
+                ret // 15
+            ]
+
+        let _, at = layOut [] ops
+
+        let ops =
+            ops
+            |> List.mapi (fun i op ->
+                match i with
+                | 1 -> brtrue at.[4]
+                | 3 -> br at.[11]
+                | 5 -> brtrue at.[8]
+                | 7 -> br at.[14]
+                | 10 -> brtrue at.[14]
+                | _ -> op
+            )
+
+        let body, at = layOut [] ops
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[11]] |> shouldEqual [ double ]
+        shape.Entry.[at.[12]] |> shouldEqual [ double ]
+        shape.Entry.[at.[14]] |> shouldEqual [ double ]
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[11], [ 0 ] ; at.[14], [ 0 ] ])
+
+    [<Test>]
+    let ``a reference named System.Single is the primitive only when scoped to a framework assembly`` () : unit =
+        // A facade forwards the primitive; a guest's own `System.Single` is a struct to the JIT.
+        // The test assembly references both kinds of assembly.
+        let test =
+            Assembly.readFile (LoggerFactory.makeTest () |> snd) typeof<RunResult>.Assembly.Location
+
+        let scope (assemblyName : string) : System.Reflection.Metadata.AssemblyReferenceHandle =
+            test.AssemblyReferences
+            |> Seq.pick (fun (KeyValue (handle, reference)) ->
+                if reference.Name.Name = assemblyName then
+                    Some handle
+                else
+                    None
+            )
+
+        let reference (name : string) (scope : System.Reflection.Metadata.AssemblyReferenceHandle) : TypeDefn =
+            TypeDefn.FromReference (
+                {
+                    Handle =
+                        ComparableTypeReferenceHandle.Make (
+                            System.Reflection.Metadata.Ecma335.MetadataTokens.TypeReferenceHandle 1
+                        )
+                    Name = name
+                    Namespace = "System"
+                    ResolutionScope = TypeRefResolutionScope.Assembly scope
+                },
+                System.Reflection.Metadata.SignatureTypeKind.ValueType
+            )
+
+        let shapeOf (ty : TypeDefn) : SlotShape =
+            StackShapeTokens.shapeOfTypeDefn test GenericBinding.AtDefinition ty
+
+        shapeOf (reference "Single" (scope "System.Runtime")) |> shouldEqual single
+        shapeOf (reference "Double" (scope "System.Runtime")) |> shouldEqual double
+        shapeOf (reference "Single" (scope "FsCheck")) |> shouldEqual other
+        shapeOf (reference "Vector" (scope "System.Runtime")) |> shouldEqual other
+
+        // A reference into a scope the table does not have is no primitive either.
+        shapeOf (reference "Single" (System.Reflection.Metadata.Ecma335.MetadataTokens.AssemblyReferenceHandle 0xFFFF))
+        |> shouldEqual other
+
+    [<Test>]
+    let ``a conflict at one successor leaves the sibling sharing its spill temps unknown`` () : unit =
+        // `ldarg0; brtrue J; ldc.r4; ldarg0; brtrue K; K': pop; ret; K: pop; ret; J: ldc.r4;
+        // ldc.r4; br K`. K and K' are the two successors of one branch, so their slots share
+        // spill temps; J then reaches K two deep where the branch reached both one deep. K is a
+        // conflict, and K', which shares K's temp, is unknown too rather than typed from the
+        // branch alone.
+        let ops =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> J
+                ldcR4 // 2
+                ldarg0 // 3
+                brtrue 0 // 4 -> K
+                pop // 5 K'
+                ret // 6
+                pop // 7 K
+                ret // 8
+                ldcR4 // 9 J
+                ldcR4 // 10
+                br 0 // 11 -> K
+            ]
+
+        let body, at = layOutWithBranches [] ops [ 1, 9 ; 4, 7 ; 11, 7 ]
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        shape.Invalid.[at.[7]].IsConflict |> shouldEqual true
+        shape.Entry.ContainsKey at.[5] |> shouldEqual false
+        shape.Invalid.ContainsKey at.[5] |> shouldEqual false
+        shape.Reachable.Contains at.[5] |> shouldEqual true
+
+    [<Test>]
+    let ``a late branch joining two settled cliques that cannot meet leaves both unknown`` () : unit =
+        // The shape of the test above, with M1 reached by an integer instead of a double: the
+        // late branch makes M1 and M2 one clique, which cannot meet, so both sides and all that
+        // follows them are unknown, not just the side the branch delivered to second.
+        let ops =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> L1
+                ldcR4 // 2
+                br 0 // 3 -> M2
+                ldarg0 // 4  L1
+                brtrue 0 // 5 -> L2
+                ldcI4 // 6
+                br 0 // 7 -> M1
+                ldcR4 // 8  L2
+                ldarg0 // 9
+                brtrue 0 // 10 -> M1, fall through to M2
+                IlOp.Nullary NullaryIlOp.Neg // 11 M2
+                pop // 12
+                ret // 13
+                pop // 14 M1
+                ret // 15
+            ]
+
+        let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 11 ; 5, 8 ; 7, 14 ; 10, 14 ]
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        for i in [ 11 ; 12 ; 13 ; 14 ; 15 ] do
+            shape.Entry.ContainsKey at.[i] |> shouldEqual false
+
+        shape.Invalid
+        |> Map.filter (fun _ e -> e.IsConflict)
+        |> Map.isEmpty
+        |> shouldEqual false
+
+        shape.Promotions |> shouldEqual Map.empty
+
+    [<Test>]
+    let ``a calli return encoded as a type token is judged like any other type`` () : unit =
+        // `valuetype System.Single` (ELEMENT_TYPE_VALUETYPE then a TypeDefOrRef) is a valid way
+        // to return the primitive; the arity reader judges the token by name and scope.
+        let corelib = corelib ()
+
+        let singleHandle =
+            corelib.TypeDefs
+            |> Seq.pick (fun (KeyValue (handle, typeInfo)) ->
+                if typeInfo.Namespace = "System" && typeInfo.Name = "Single" then
+                    Some handle
+                else
+                    None
+            )
+
+        let blob (returnEncoding : System.Reflection.Metadata.BlobBuilder -> unit) : byte[] =
+            let builder = System.Reflection.Metadata.BlobBuilder ()
+            builder.WriteByte 0uy // default calling convention, static
+            builder.WriteCompressedInteger 1 // one parameter
+            returnEncoding builder
+            builder.WriteByte 0x08uy // ELEMENT_TYPE_I4 parameter
+            builder.ToArray ()
+
+        let shapeOf (bytes : byte[]) : TokenShape option =
+            use pinned = fixed bytes
+            let reader = System.Reflection.Metadata.BlobReader (pinned, bytes.Length)
+            StackShapeTokens.calliShapeOfBlob corelib GenericBinding.AtDefinition reader
+
+        let typeDef (builder : System.Reflection.Metadata.BlobBuilder) : unit =
+            builder.WriteByte 0x11uy // ELEMENT_TYPE_VALUETYPE
+
+            System.Reflection.Metadata.Ecma335.CodedIndex.TypeDefOrRef (
+                System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit singleHandle
+                : System.Reflection.Metadata.EntityHandle
+            )
+            |> builder.WriteCompressedInteger
+
+        shapeOf (blob typeDef)
+        |> shouldEqual (Some (TokenShape.Callee (1, Some single)))
+
+        shapeOf (blob (fun b -> b.WriteByte 0x0Duy)) // ELEMENT_TYPE_R8
+        |> shouldEqual (Some (TokenShape.Callee (1, Some double)))
+
+        shapeOf (blob (fun b -> b.WriteByte 0x01uy)) // ELEMENT_TYPE_VOID
+        |> shouldEqual (Some (TokenShape.Callee (1, None)))
+
+        // A blob that ends before its return type is no call.
+        shapeOf [| 0uy ; 1uy |] |> shouldEqual None
+
+    [<Test>]
+    let ``a sibling is unknown whichever order the conflict and the branch arrive in`` () : unit =
+        // The sibling test with a `nop` before the branch, so that J reaches K two deep before
+        // the branch delivers one value to K and K'. K is already unknown when the branch
+        // arrives; K' shares its temp all the same.
+        let ops =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> J
+                ldcR4 // 2
+                ldarg0 // 3
+                nop // 4
+                brtrue 0 // 5 -> K
+                pop // 6 K'
+                ret // 7
+                pop // 8 K
+                ret // 9
+                ldcR4 // 10 J
+                ldcR4 // 11
+                br 0 // 12 -> K
+            ]
+
+        let body, at = layOutWithBranches [] ops [ 1, 10 ; 5, 8 ; 12, 8 ]
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        shape.Invalid.[at.[8]].IsConflict |> shouldEqual true
+        shape.Entry.ContainsKey at.[6] |> shouldEqual false
+        shape.Invalid.ContainsKey at.[6] |> shouldEqual false
+
+    [<Test>]
+    let ``a handler entry and the method entry share no spill temp`` () : unit =
+        // try { ldarg0; brtrue L; leave END; L: ldc.r4; leave END } catch { pop; leave END }
+        // END: ret. The catch handler's exception slot is its own temp: it is untyped by no
+        // conflict, and the method entry is typed as ever.
+        let ops =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> L
+                IlOp.UnaryConst (UnaryConstIlOp.Leave 0) // 2 -> END
+                ldcR4 // 3 L
+                IlOp.UnaryConst (UnaryConstIlOp.Leave 0) // 4 -> END
+                pop // 5 handler
+                IlOp.UnaryConst (UnaryConstIlOp.Leave 0) // 6 -> END
+                ret // 7 END
+            ]
+
+        let _, at = layOut [] ops
+
+        let regions =
+            [
+                ExceptionRegion.Catch (
+                    ExceptionCatchType.FromMetadata (MetadataToken.ofInt 0x01000001),
+                    {
+                        TryOffset = at.[0]
+                        TryLength = at.[5] - at.[0]
+                        HandlerOffset = at.[5]
+                        HandlerLength = at.[7] - at.[5]
+                    }
+                )
+            ]
+
+        let body, at = layOutWithBranches regions ops [ 1, 3 ; 2, 7 ; 4, 7 ; 6, 7 ]
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[0]] |> shouldEqual []
+        shape.Entry.[at.[5]] |> shouldEqual [ other ]
+        shape.Entry.[at.[7]] |> shouldEqual []
+
+    [<TestCase(false)>]
+    [<TestCase(true)>]
+    let ``the two successors of a dead conditional share a temp, so a live single meets a live double``
+        (literalCondition : bool)
+        : unit
+        =
+        // `ldarg0; brtrue C_ARM; ldc.r4; br B; C_ARM: ldc.r8; br C; DEAD: ldarg0; brtrue C; B: pop;
+        // ret; C: pop; ret`: nothing reaches DEAD, but the JIT walks its two successors B and C
+        // into one spill clique, so B's float32 is a double, and cast on arrival. A branch on a
+        // literal that nothing reaches is never imported, so never folded either.
+        let ops =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> C_ARM
+                ldcR4 // 2
+                br 0 // 3 -> B
+                ldcR8 // 4 C_ARM
+                br 0 // 5 -> C
+                (if literalCondition then ldc else ldarg0) // 6 DEAD
+                brtrue 0 // 7 -> C, falls through to B
+                pop // 8 B
+                ret // 9
+                pop // 10 C
+                ret // 11
+            ]
+
+        let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 8 ; 5, 10 ; 7, 10 ]
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[8]] |> shouldEqual [ double ]
+        shape.Entry.[at.[10]] |> shouldEqual [ double ]
+        shape.Entry.ContainsKey at.[6] |> shouldEqual false
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[8], [ 0 ] ])
+
+    /// The refusals in `shape.Invalid`, each at its offset with the branch it names, failing on
+    /// any other error. `StackShapeError` carries an `IlOp`, which has no equality.
+    let private refusalsOf (shape : StackShape) : Map<int, int> =
+        shape.Invalid
+        |> Map.map (fun offset error ->
+            match error with
+            | StackShapeError.WidthDependsOnFoldedBranch (at, branch) when at = offset -> branch
+            | other -> failwith $"expected only refusals, got %O{other} at offset %d{offset}"
+        )
+
+    /// `COND; brtrue A; ldc.r4; br J; A: ldc.r8; J: pop; ret`, with `COND` the listed instructions.
+    let private literalJoin (condition : IlOp list) : MethodInstructions<TypeDefn> * Map<int, int> * int * int =
+        let ops =
+            condition
+            @ [
+                brtrue 0 // B -> A
+                ldcR4
+                br 0 // -> J
+                ldcR8 // A
+                pop // J
+                ret
+            ]
+
+        let b = condition.Length
+        let body, at = layOutWithBranches [] ops [ b, b + 3 ; b + 2, b + 4 ]
+        body, at, at.[b], at.[b + 4]
+
+    [<TestCase(0, true)>]
+    [<TestCase(1, true)>]
+    [<TestCase(2, true)>]
+    [<TestCase(3, false)>]
+    [<TestCase(4, false)>]
+    let ``a float32 meeting a double downstream of a branch on literals is refused, and one on a runtime value is promoted``
+        (conditionIndex : int, literal : bool)
+        : unit
+        =
+        let condition =
+            [
+                [ ldc ]
+                [ ldc ; ldc ; add ]
+                [ IlOp.Nullary NullaryIlOp.LdNull ]
+                [ ldarg0 ]
+                [ ldarg0 ; ldc ; add ]
+            ].[conditionIndex]
+
+        let body, at, branch, join = literalJoin condition
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        if literal then
+            refusalsOf shape |> shouldEqual (Map.ofList [ join, branch ])
+            shape.Invalid.[join].IsConflict |> shouldEqual false
+            shape.Entry.ContainsKey join |> shouldEqual false
+            // What follows only from the join is unknown, neither typed nor refused.
+            shape.Entry.ContainsKey at.[condition.Length + 5] |> shouldEqual false
+            shape.Invalid.ContainsKey at.[condition.Length + 5] |> shouldEqual false
+            shape.Promotions |> shouldEqual Map.empty
+        else
+            shape.Invalid.IsEmpty |> shouldEqual true
+            shape.Entry.[join] |> shouldEqual [ double ]
+            shape.Promotions |> shouldEqual (Map.ofList [ join, [ 0 ] ])
+
+        // The arms themselves are typed either way.
+        shape.Entry.[at.[condition.Length + 1]] |> shouldEqual []
+        shape.Entry.[at.[condition.Length + 3]] |> shouldEqual []
+
+    [<Test>]
+    let ``a join of one width downstream of a branch on literals is typed`` () : unit =
+        // `ldc.i4.1; brtrue A; ldc.r4; br J; A: ldc.r4; J: pop; ret`: whichever arm the JIT
+        // imports, the join is single.
+        let ops = [ ldc ; brtrue 0 ; ldcR4 ; br 0 ; ldcR4 ; pop ; ret ]
+        let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 5 ]
+        let shape = analyseOrFail (inputs [] [] false) body
+
+        shape.Entry.[at.[5]] |> shouldEqual [ single ]
+        shape.Promotions |> shouldEqual Map.empty
+
+    [<Test>]
+    let ``every promotion sharing a spill temp with a successor of a branch on literals is refused`` () : unit =
+        // B = `ldc.r8; ldc.i4.1; brtrue T1` falls through to T2, and P = `ldc.r4; ldarg0; brtrue T1`
+        // falls through to S: T1, T2 and S share a temp, which is double only if B's arms are
+        // imported. S is no successor of B, but its float32 arrival is refused all the same; T2
+        // receives only a double, so has no width to decide, but shares the undecided temp.
+        let ops (condition : IlOp) =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> PP
+                ldcR8 // 2
+                condition // 3
+                brtrue 0 // 4 B -> T1
+                pop // 5 T2
+                ret // 6
+                ldcR4 // 7 PP
+                ldarg0 // 8
+                brtrue 0 // 9 P -> T1
+                pop // 10 S
+                ret // 11
+                pop // 12 T1
+                ret // 13
+            ]
+
+        let branches = [ 1, 7 ; 4, 12 ; 9, 12 ]
+
+        let body, at = layOutWithBranches [] (ops ldc) branches
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        refusalsOf shape
+        |> shouldEqual (Map.ofList [ at.[10], at.[4] ; at.[12], at.[4] ])
+
+        shape.Entry.ContainsKey at.[5] |> shouldEqual false
+        shape.Promotions |> shouldEqual Map.empty
+
+        // On a runtime condition every arm is imported: the temp is double, and both float32
+        // arrivals are cast.
+        let body, at = layOutWithBranches [] (ops ldarg0) branches
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+        shape.Entry.[at.[5]] |> shouldEqual [ double ]
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[10], [ 0 ] ; at.[12], [ 0 ] ])
+
+    [<TestCase(false)>]
+    [<TestCase(true)>]
+    let ``a literal arriving at a block's first instruction is a spill temp, not a literal`` (boundary : bool) : unit =
+        // `ldc.r4; ldc.i4.1; X; X; brtrue J; pop; ldc.r8; J: pop; ret`, where `X; X` is
+        // `ldarg0; brtrue NEXT` (a conditional branch, after which a block starts) or `nop; nop`.
+        let separator : IlOp list =
+            if boundary then [ ldarg0 ; brtrue 0 ] else [ nop ; nop ]
+
+        let ops = [ ldcR4 ; ldc ] @ separator @ [ brtrue 0 ; pop ; ldcR8 ; pop ; ret ]
+
+        let branches = (if boundary then [ 3, 4 ] else []) @ [ 4, 7 ]
+
+        let body, at = layOutWithBranches [] ops branches
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        // The branch's fall-through shares J's temp, so its float32 is cast too.
+        if boundary then
+            shape.Invalid.IsEmpty |> shouldEqual true
+            shape.Promotions |> shouldEqual (Map.ofList [ at.[5], [ 0 ] ; at.[7], [ 0 ] ])
+        else
+            refusalsOf shape |> shouldEqual (Map.ofList [ at.[5], at.[4] ; at.[7], at.[4] ])
+
+    [<Test>]
+    let ``a br to the next instruction starts no block, so a literal survives it`` () : unit =
+        // `ldc.i4.1; br NEXT; brtrue A; ...`: the JIT merges the two blocks before importing.
+        let ops = [ ldc ; br 0 ; brtrue 0 ; ldcR4 ; br 0 ; ldcR8 ; pop ; ret ]
+        let body, at = layOutWithBranches [] ops [ 1, 2 ; 2, 5 ; 4, 6 ]
+        let shape = StackShape.analyse (inputs [] [] false) body
+
+        refusalsOf shape |> shouldEqual (Map.ofList [ at.[6], at.[2] ])
+
+    [<Test>]
+    let ``a spill clique spans successors of dead conditionals transitively`` () : unit =
+        // Dead conditionals with successor pairs (A, C) and (C, B): A and B share a temp through
+        // C, which nothing reaches.
+        let ops =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> BARM
+                ldcR4 // 2
+                br 0 // 3 -> A
+                ldcR8 // 4 BARM
+                br 0 // 5 -> B
+                ldarg0 // 6 DEAD1
+                brtrue 0 // 7 -> C, falls through to A
+                pop // 8 A
+                ret // 9
+                ldarg0 // 10 DEAD2
+                brtrue 0 // 11 -> B, falls through to C
+                pop // 12 C
+                ret // 13
+                pop // 14 B
+                ret // 15
+            ]
+
+        let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 8 ; 5, 14 ; 7, 12 ; 11, 14 ]
+        let shape = analyseOrFail (inputs [ other ] [] false) body
+
+        shape.Entry.[at.[8]] |> shouldEqual [ double ]
+        shape.Entry.[at.[14]] |> shouldEqual [ double ]
+        shape.Entry.ContainsKey at.[12] |> shouldEqual false
+        shape.Promotions |> shouldEqual (Map.ofList [ at.[8], [ 0 ] ])
+
+    [<Test>]
+    let ``a conflict at an empty join makes its whole component unknown`` () : unit =
+        // J is reached empty (`br J`) and, from a later arm, one deep: a conflict at depth zero.
+        // K is J's sibling under P and shares its temps, so K is unknown too, and so is M after it.
+        let ops =
+            [
+                ldarg0 // 0
+                brtrue 0 // 1 -> P
+                br 0 // 2 -> J (empty)
+                ldarg0 // 3 P
+                brtrue 0 // 4 -> J, falls through to K
+                ldcR4 // 5 K
+                br 0 // 6 -> M
+                ldarg0 // 7 J
+                brtrue 0 // 8 -> DEEP
+                pop // 9
+                ret // 10
+                ldcR8 // 11 DEEP
+                ldcR8 // 12
+                pop // 13
+                br 0 // 14 -> J, one deep
+                pop // 15 M
+                ret // 16
+            ]
+
+        let body, at =
+            layOutWithBranches [] ops [ 1, 3 ; 2, 7 ; 4, 7 ; 6, 15 ; 8, 11 ; 14, 7 ]
+
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        shape.Invalid.[at.[7]].IsConflict |> shouldEqual true
+        shape.Entry.ContainsKey at.[5] |> shouldEqual false
+        shape.Entry.ContainsKey at.[15] |> shouldEqual false
+        shape.Promotions |> shouldEqual Map.empty
 
     // ---------- Property: the dataflow agrees with simulating each path ----------
 
@@ -752,14 +1626,14 @@ module TestStackShape =
                    |> List.map (fun i -> armStart i + case.Arms.[i], joinIndex))
 
             let body, at = layOutWithBranches [] ops branches
-            let shape = StackShape.analyse (inputs 1 0 false) body
+            let shape = StackShape.analyse (inputs [ other ] [] false) body
 
             shape.Reachable |> shouldEqual (Set.ofSeq at.Values)
 
             // Each arm's own instructions are typed whatever the join does.
             for i in 0 .. armCount - 1 do
                 for k in 0 .. case.Arms.[i] do
-                    shape.Entry.[at.[armStart i + k]] |> shouldEqual k
+                    shape.Entry.[at.[armStart i + k]].Length |> shouldEqual k
 
             // Tail instruction `k`, with `k = Tail.Length` being the `ret`.
             let tailAt (k : int) : int = at.[joinIndex + k]
@@ -775,7 +1649,7 @@ module TestStackShape =
                         | Some (StackShapeError.StackUnderflow (_, _, d)) -> d |> shouldEqual depth
                         | other -> failwith $"expected an underflow at tail instruction %d{k}, got %O{other}"
                     else
-                        shape.Entry.[tailAt k] |> shouldEqual depth
+                        shape.Entry.[tailAt k].Length |> shouldEqual depth
                 )
 
                 match underflow with
@@ -793,3 +1667,334 @@ module TestStackShape =
                     shape.Invalid.ContainsKey (tailAt k) |> shouldEqual false
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen genArmsAndTail) property)
+
+    // ---------- Property: the shapes at a join and after it agree with enumerating the paths ----------
+
+    /// Arms that each push one float literal and then meet at a common join, followed by a
+    /// straight-line tail of float operations. Every path through this shape is one arm then
+    /// the tail, so the expected shape at each tail instruction is computable by hand: run the
+    /// tail once per arm and join the results slot by slot.
+    type private WidthArmsAndTail =
+        {
+            Arms : FloatWidth list
+            Tail : IlOp list
+        }
+
+    let private genWidthTailOp : Gen<IlOp> =
+        Gen.elements
+            [
+                ldcR4
+                ldcR8
+                add
+                IlOp.Nullary NullaryIlOp.Mul
+                IlOp.Nullary NullaryIlOp.Conv_R4
+                IlOp.Nullary NullaryIlOp.Conv_R8
+                IlOp.Nullary NullaryIlOp.Neg
+                IlOp.Nullary NullaryIlOp.Dup
+            ]
+
+    /// A tail that never underflows, checked by simulating depths.
+    let private genWidthArmsAndTail : Gen<WidthArmsAndTail> =
+        gen {
+            let! armCount = Gen.choose (1, 4)
+            let! arms = Gen.listOfLength armCount (Gen.elements [ FloatWidth.Single ; FloatWidth.Double ])
+            let! tailLength = Gen.choose (0, 8)
+            let! tail = Gen.listOfLength tailLength genWidthTailOp
+
+            let survives =
+                (Some 1, tail)
+                ||> List.fold (fun depth op ->
+                    match depth with
+                    | None -> None
+                    | Some depth ->
+                        match op with
+                        | IlOp.UnaryConst _ -> Some (depth + 1)
+                        | IlOp.Nullary NullaryIlOp.Dup -> if depth >= 1 then Some (depth + 1) else None
+                        | IlOp.Nullary NullaryIlOp.Add
+                        | IlOp.Nullary NullaryIlOp.Mul -> if depth >= 2 then Some (depth - 1) else None
+                        | _ -> if depth >= 1 then Some depth else None
+                )
+
+            return!
+                match survives with
+                | Some _ ->
+                    Gen.constant
+                        {
+                            Arms = arms
+                            Tail = tail
+                        }
+                | None ->
+                    Gen.constant
+                        {
+                            Arms = arms
+                            Tail = []
+                        }
+        }
+
+    /// One path's stack, top first, at the entry of each tail instruction, computed by the
+    /// rules stated in ECMA-335 and the importer rather than by the analysis under test.
+    let private pathStacks (arm : FloatWidth) (tail : IlOp list) : SlotShape list list =
+        let step (stack : SlotShape list) (op : IlOp) : SlotShape list =
+            match op, stack with
+            | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R4 _), _ -> single :: stack
+            | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R8 _), _ -> double :: stack
+            | IlOp.Nullary NullaryIlOp.Dup, top :: rest -> top :: top :: rest
+            | IlOp.Nullary NullaryIlOp.Conv_R4, _ :: rest -> single :: rest
+            | IlOp.Nullary NullaryIlOp.Conv_R8, _ :: rest -> double :: rest
+            | IlOp.Nullary NullaryIlOp.Neg, top :: rest -> top :: rest
+            | IlOp.Nullary NullaryIlOp.Add, a :: b :: rest
+            | IlOp.Nullary NullaryIlOp.Mul, a :: b :: rest ->
+                let result =
+                    match a, b with
+                    | SlotShape.Float FloatWidth.Single, SlotShape.Float FloatWidth.Single -> single
+                    | _ -> double
+
+                result :: rest
+            | _ -> failwith $"generator produced an underflowing tail: %O{op} on %O{stack}"
+
+        tail |> List.scan step [ SlotShape.Float arm ] |> List.take tail.Length
+
+    let private joinShapes (a : SlotShape) (b : SlotShape) : SlotShape =
+        match a, b with
+        | SlotShape.Float FloatWidth.Single, SlotShape.Float FloatWidth.Single -> single
+        | SlotShape.Float _, SlotShape.Float _ -> double
+        | _ -> failwith "the generator only makes floats"
+
+    [<Test>]
+    let ``the join of every arm's path is what the analysis reports, and only the join is promoted`` () : unit =
+        let property (case : WidthArmsAndTail) : unit =
+            // arm i: `ldarg0; ldc.i4 i; beq -> arm i` would need integer comparisons; a chain
+            // of `brtrue` on ldarg0 suffices since only the *shapes* matter, and an argument is
+            // never a literal, so no branch on it can be folded.
+            let armCount = case.Arms.Length
+
+            let prefix =
+                [
+                    for _ in 1 .. armCount - 1 do
+                        yield IlOp.Nullary NullaryIlOp.LdArg0
+                        yield brtrue 0
+                ]
+
+            let armOps =
+                case.Arms
+                |> List.mapi (fun i width ->
+                    let literal =
+                        match width with
+                        | FloatWidth.Single -> ldcR4
+                        | FloatWidth.Double -> ldcR8
+
+                    if i = armCount - 1 then [ literal ] else [ literal ; br 0 ]
+                )
+
+            let tailOps = case.Tail @ [ pop ; ret ]
+            let allOps = prefix @ List.concat armOps @ tailOps
+            let _, at = layOut [] allOps
+
+            // Offsets of each arm's first instruction and of the join.
+            let armStart (i : int) : int =
+                let before = prefix.Length + (armOps |> List.take i |> List.sumBy List.length)
+                at.[before]
+
+            let joinIndex = prefix.Length + (armOps |> List.sumBy List.length)
+            let join = at.[joinIndex]
+
+            let allOps =
+                let mutable branchSeen = 0
+
+                allOps
+                |> List.mapi (fun i op ->
+                    match op with
+                    | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _) when i < prefix.Length ->
+                        branchSeen <- branchSeen + 1
+                        // The k-th brtrue (1-based) jumps to arm k; the fall-through after the last
+                        // is arm 0... keep it simple: brtrue k -> arm k, fall-through -> arm 0.
+                        brtrue (armStart branchSeen)
+                    | IlOp.UnaryConst (UnaryConstIlOp.Br _) -> br join
+                    | other -> other
+                )
+
+            let body, at = layOut [] allOps
+            let shape = analyseOrFail (inputs [ other ] [] false) body
+
+            let expectedAtTail =
+                case.Arms
+                |> List.map (fun arm -> pathStacks arm case.Tail)
+                |> List.reduce (fun a b -> List.map2 (List.map2 joinShapes) a b)
+
+            for i in 0 .. case.Tail.Length - 1 do
+                shape.Entry.[at.[joinIndex + i]] |> shouldEqual expectedAtTail.[i]
+
+            let mixed =
+                case.Arms |> List.exists ((=) FloatWidth.Single)
+                && case.Arms |> List.exists ((=) FloatWidth.Double)
+
+            // Only the join itself is a promotion point: after it every path carries the same
+            // shapes, so nothing downstream ever sees a float32 where a double is expected.
+            let expectedPromotions = if mixed then Map.ofList [ join, [ 0 ] ] else Map.empty
+
+            shape.Promotions |> shouldEqual expectedPromotions
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen genWidthArmsAndTail) property)
+
+    // ---------- Property: every typed answer is the one the folded program gets ----------
+
+    /// One statement of a generated body, each leaving one float on the stack. A branch names
+    /// its target by statement index.
+    [<RequireQualifiedAccess>]
+    type private Statement =
+        /// `conv.r4`.
+        | ToSingle
+        /// `conv.r8`.
+        | ToDouble
+        /// `ldc.i4.0; brtrue` or `ldc.i4.1; brtrue`, which the JIT may fold.
+        | LiteralBranch of taken : bool * target : int
+        /// `ldarg.0; brtrue`, which no JIT folds.
+        | RuntimeBranch of target : int
+        | Jump of target : int
+        | Return
+
+    let private genStatements : Gen<Statement list> =
+        gen {
+            let! count = Gen.choose (2, 12)
+
+            // Mostly forward branches; some backward, for loops.
+            let genTarget (from : int) : Gen<int> =
+                Gen.frequency [ 4, Gen.choose (min (from + 1) count, count) ; 1, Gen.choose (0, from) ]
+
+            let genStatement (index : int) : Gen<Statement> =
+                Gen.frequency
+                    [
+                        3, Gen.constant Statement.ToSingle
+                        3, Gen.constant Statement.ToDouble
+                        3,
+                        Gen.map2
+                            (fun taken target -> Statement.LiteralBranch (taken, target))
+                            (Gen.elements [ true ; false ])
+                            (genTarget index)
+                        3, Gen.map Statement.RuntimeBranch (genTarget index)
+                        2, Gen.map Statement.Jump (genTarget index)
+                        1, Gen.constant Statement.Return
+                    ]
+
+            let! statements = [ 1 .. count - 1 ] |> List.map genStatement |> Gen.sequenceToList
+            return Statement.ToSingle :: statements @ [ Statement.Return ]
+        }
+
+    /// Lay out the statements, rewriting to `nop; br` (the target, or the next instruction) each
+    /// literal branch in `folded`: the program the JIT imports once it has folded them. Every
+    /// statement occupies the same bytes either way.
+    let private layOutStatements
+        (folded : Set<int>)
+        (statements : Statement list)
+        : MethodInstructions<TypeDefn> * Map<int, int>
+        =
+        let opsOf (index : int) (statement : Statement) : IlOp list =
+            match statement with
+            // The body's first statement has nothing to convert, so pushes instead.
+            | Statement.ToSingle when index = 0 -> [ ldcR4 ]
+            | Statement.ToSingle -> [ IlOp.Nullary NullaryIlOp.Conv_R4 ]
+            | Statement.ToDouble -> [ IlOp.Nullary NullaryIlOp.Conv_R8 ]
+            | Statement.LiteralBranch (taken, _) when folded.Contains index ->
+                ignore taken
+                [ nop ; br 0 ]
+            | Statement.LiteralBranch (taken, _) ->
+                [ (if taken then ldc else IlOp.Nullary NullaryIlOp.LdcI4_0) ; brtrue 0 ]
+            | Statement.RuntimeBranch _ -> [ ldarg0 ; brtrue 0 ]
+            | Statement.Jump _ -> [ br 0 ]
+            | Statement.Return -> [ ret ]
+
+        let perStatement = statements |> List.mapi opsOf
+        let firstOp = perStatement |> List.scan (fun acc ops -> acc + List.length ops) 0
+        let ops = List.concat perStatement
+
+        let branches =
+            statements
+            |> List.indexed
+            |> List.choose (fun (i, statement) ->
+                match statement with
+                | Statement.LiteralBranch (taken, target) when folded.Contains i ->
+                    Some (firstOp.[i] + 1, (if taken then firstOp.[target] else firstOp.[i + 1]))
+                | Statement.LiteralBranch (_, target)
+                | Statement.RuntimeBranch target -> Some (firstOp.[i] + 1, firstOp.[target])
+                | Statement.Jump target -> Some (firstOp.[i], firstOp.[target])
+                | _ -> None
+            )
+
+        let body, at = layOutWithBranches [] ops branches
+        body, (statements |> List.mapi (fun i _ -> i, at.[firstOp.[i]]) |> Map.ofList)
+
+    /// The literal branches the JIT imports: those reached from the entry when every literal
+    /// branch it imports goes only the way its literal says.
+    let private importedLiteralBranches (statements : Statement list) : Set<int> =
+        let statements = Array.ofList statements
+
+        let rec walk (seen : Set<int>) (pending : int list) : Set<int> =
+            match pending with
+            | [] -> seen
+            | i :: rest when seen.Contains i || i >= statements.Length -> walk seen rest
+            | i :: rest ->
+                let next =
+                    match statements.[i] with
+                    | Statement.LiteralBranch (true, target) -> [ target ]
+                    | Statement.LiteralBranch (false, _) -> [ i + 1 ]
+                    | Statement.RuntimeBranch target -> [ target ; i + 1 ]
+                    | Statement.Jump target -> [ target ]
+                    | Statement.Return -> []
+                    | Statement.ToSingle
+                    | Statement.ToDouble -> [ i + 1 ]
+
+                walk (Set.add i seen) (next @ rest)
+
+        walk Set.empty [ 0 ]
+        |> Set.filter (fun i ->
+            match statements.[i] with
+            | Statement.LiteralBranch _ -> true
+            | _ -> false
+        )
+
+    [<Test>]
+    let ``every join the analysis types has the shape and promotion the folded program gets`` () : unit =
+        let mutable refusals = 0
+        let mutable comparedPromotions = 0
+
+        let property (statements : Statement list) : unit =
+            // Offsets are compared at statement starts only: within a rewritten literal branch the
+            // folded program has not pushed the literal.
+            let body, starts = layOutStatements Set.empty statements
+            let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+            let foldedBody, _ = layOutStatements (importedLiteralBranches statements) statements
+
+            let folded = StackShape.analyse (inputs [ other ] [] false) foldedBody
+
+            // Debuggable code imports every arm, which is the analysis's own graph: the refusals
+            // aside, it answers as it would with no literal anywhere.
+            let refused =
+                shape.Invalid
+                |> Map.filter (fun _ error ->
+                    match error with
+                    | StackShapeError.WidthDependsOnFoldedBranch _ -> true
+                    | _ -> false
+                )
+
+            refusals <- refusals + refused.Count
+
+            for offset in starts.Values do
+                match Map.tryFind offset shape.Entry, Map.tryFind offset folded.Entry with
+                | None, _
+                | _, None -> ()
+                | Some entry, Some foldedEntry ->
+                    entry |> shouldEqual foldedEntry
+
+                    let promotion = Map.tryFind offset shape.Promotions
+
+                    if promotion.IsSome then
+                        comparedPromotions <- comparedPromotions + 1
+
+                    promotion |> shouldEqual (Map.tryFind offset folded.Promotions)
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 2000, Prop.forAll (Arb.fromGen genStatements) property)
+
+        // The generator reaches both kinds of join the property is about.
+        refusals |> shouldBeGreaterThan 0
+        comparedPromotions |> shouldBeGreaterThan 0
