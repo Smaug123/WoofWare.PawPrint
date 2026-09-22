@@ -336,6 +336,29 @@ module Signal =
         | Signal.SIGABRT
         | Signal.SIGURG -> false
 
+    /// Whether a signal generated while its disposition is "ignore" (SIG_IGN,
+    /// or SIG_DFL with a default of Ignore) survives as pending when the
+    /// receiving thread is blocking it: on Linux it stays pending — and is
+    /// delivered if a handler is installed before the unblock — where Darwin
+    /// discards it at generation despite the block. A signal that is ignored
+    /// and *not* blocked is discarded on both.
+    let blockedIgnoredSignalStaysPendingUnder (numbering : SignalNumbering) : bool =
+        // Measured 2026-09-16 on Linux 6.18.5 / glibc 2.41 and Darwin 25.6.0,
+        // two runs each: SIG_IGN'd SIGUSR1 and default-ignored SIGWINCH,
+        // generated both process-directed (kill) and thread-directed
+        // (pthread_kill) while blocked. On Linux all four shapes read back
+        // from sigpending and were delivered to a handler installed before
+        // the unblock; on Darwin none was pending and none was delivered. A
+        // SIG_DFL SIGUSR2 control stayed pending and delivered on both.
+        //
+        // Not measurable as a host-equality test: asking means installing
+        // dispositions in the test host's own process, which is why the
+        // sigaction facts in this file are probe-pinned too (see
+        // TestSignalAgainstHost's header).
+        match numbering with
+        | SignalNumbering.Linux -> true
+        | SignalNumbering.Darwin -> false
+
     /// <summary>
     /// The kernel-level default disposition for <c>signal</c>, read under the
     /// chosen platform's numbering.

@@ -32,19 +32,21 @@ open WoofWare.PosixKernel
 ///     to `Parked` so the next deliverable signal can wake it again.
 ///
 /// The dispatcher is the *recipient* the runtime hands the signal to — never
-/// itself a candidate recipient of the next signal: `tryDeliverable` is
+/// itself a candidate recipient of the next signal: `nextDelivery` is
 /// called with the live-thread set with the dispatcher removed, so a
 /// process-directed signal whose mask is vacuously empty on the dispatcher
 /// cannot pick the dispatcher as its receiver. The receiver chosen by
-/// `tryDeliverable` is intentionally discarded today; this module models the
+/// `nextDelivery` is intentionally discarded today; this module models the
 /// "handler runs on the kernel-owned dispatcher thread" branch (which matches
 /// CoreCLR's `SignalHandlerLoop`). When PawPrint grows the
 /// `pthread_kill`-style branch where the receiver thread itself takes the
 /// hit, the receiver id will be needed and this discard goes away.
 ///
 /// The handler's `int` return value (real CoreCLR's "0 = run default
-/// disposition, 1 = consumed") is dropped on the floor; modelling default
-/// dispositions is a later slice.
+/// disposition, 1 = consumed") is dropped on the floor; the
+/// `SignalDelivery.Default*` cases a queue with no handler produces are
+/// refused loudly until the kill(2) stage of the signal-model plan wires
+/// them.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
@@ -169,15 +171,6 @@ module SignalDispatch =
             state
         | Some dispatcher ->
 
-        match SignalState.handler state.Kernel.Signals with
-        | None ->
-            // No managed handler installed yet. Real CoreCLR ignores
-            // delivered signals while `g_posixSignalHandler == NULL` and
-            // PawPrint mirrors that: pending entries stay queued so a
-            // later `SetPosixSignalHandler` plus `enable` can drain them.
-            state
-        | Some handler ->
-
         let dispatcherStatus =
             match Map.tryFind dispatcher state.ThreadState with
             | Some ts -> ts.Status
@@ -199,13 +192,45 @@ module SignalDispatch =
 
         let liveThreads = liveExcludingDispatcher dispatcher state
 
-        match SignalState.tryDeliverable liveThreads state.Kernel.Signals with
+        let delivery, signalsAfter =
+            SignalState.nextDelivery liveThreads state.Kernel.Signals
+
+        // Persist the scan's state whether or not it produced an action:
+        // discarding a receivable ignored signal is a state change with no
+        // delivery, and dropping it would replay the discard every tick.
+        let state =
+            if signalsAfter = state.Kernel.Signals then
+                state
+            else
+                state.MapKernel (fun kernel ->
+                    { kernel with
+                        Process =
+                            { kernel.Process with
+                                Signals = signalsAfter
+                            }
+                    }
+                )
+
+        match delivery with
         | None ->
-            // Nothing deliverable now (queue empty, signal disabled, target
-            // dead/blocking, or — for a process-directed signal — no
-            // eligible live thread).
+            // Nothing receivable now (queue empty, no handler installed for
+            // an enabled entry, target dead/blocking, or — for a
+            // process-directed signal — no eligible live thread).
             state
-        | Some (entry, _receiver, signalsAfter) ->
+        | Some (SignalDelivery.DefaultTerminate signal)
+        | Some (SignalDelivery.DefaultStop signal)
+        | Some (SignalDelivery.DefaultContinue signal) ->
+            // A pending signal with no handler enabled for it, whose kernel
+            // default is to terminate, stop or continue the process. No
+            // production path can generate one yet — nothing calls `enqueue`
+            // until a kill(2)-shaped boundary lands — so this is a test
+            // driving the queue by hand, and it is refused rather than
+            // half-modelled. The kill(2) stage of
+            // docs/plans/2026-09-16-signal-state-kernel-model.md wires
+            // DefaultTerminate to ExecutionResult.SignalTerminated.
+            failwith
+                $"SignalDispatch.trySpawnHandler: pending %O{signal} has no enabled handler and its kernel default is not Ignore; applying default dispositions is not wired up yet (see the kill(2) stage of the signal-model plan)."
+        | Some (SignalDelivery.RunHandler (entry, _receiver, handler)) ->
 
         let mi = SignalHandler.methodInfo handler
         validateHandlerSignature state.ConcreteTypes mi
@@ -241,16 +266,6 @@ module SignalDispatch =
             | Error _ ->
                 failwith
                     $"SignalDispatch.trySpawnHandler: failed to build MethodState for handler %s{mi.Name} on type %s{MethodOwner.describe mi.Owner}."
-
-        let state =
-            state.MapKernel (fun kernel ->
-                { kernel with
-                    Process =
-                        { kernel.Process with
-                            Signals = signalsAfter
-                        }
-                }
-            )
 
         IlMachineState.startParkedDispatcher dispatcher newMethodState state
 
