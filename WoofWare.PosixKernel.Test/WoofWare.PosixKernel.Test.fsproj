@@ -29,6 +29,7 @@
     <Compile Include="TestWithFileSystemAndCurrentDirectory.fs" />
     <Compile Include="TestInodeLifetime.fs" />
     <Compile Include="TestUnixError.fs" />
+    <Compile Include="TestUnixByteString.fs" />
     <Compile Include="TestUnixPath.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
