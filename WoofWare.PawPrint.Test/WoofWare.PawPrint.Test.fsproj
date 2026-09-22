@@ -172,6 +172,7 @@
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestForwarderResolutionOutcomes.fs" />
+    <Compile Include="TestCaseInsensitiveTypeLookup.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
@@ -235,6 +236,7 @@
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
     <Compile Include="TestNativeThreadYield.fs" />
+    <Compile Include="TestNativeWaitOneCore.fs" />
     <Compile Include="TestNativeThreadSpinWait.fs" />
     <Compile Include="TestNativeEventSource.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />

@@ -182,6 +182,24 @@ class Program
         // specific to following the forwarder, not a wholesale refusal to look anything up.
         if (facade.GetType("TypeForwardFacade.Marker", throwOnError: false) is null) return 4;
 
+        // Folded, the same bind fails the same way: with the first hop missing, there is no far
+        // side whose folded candidates could answer instead.
+        if (facade.GetType("typeforwardcross.target", throwOnError: false, ignoreCase: true) is not null) return 5;
+
+        try
+        {
+            facade.GetType("typeforwardcross.target", throwOnError: true, ignoreCase: true);
+            return 6;
+        }
+        catch (FileNotFoundException)
+        {
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("unexpected: " + e.GetType().FullName);
+            return 7;
+        }
+
         return 0;
     }
 }
@@ -333,6 +351,330 @@ public class Stranger
                     ]
             ]
 
+    [<Test>]
+    let ``a case-insensitive lookup folds ASCII, through a forwarder and without one`` () : unit =
+        {
+            Assemblies =
+                assemblies
+                    """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+
+        // The control: without ignoreCase, a folded name finds nothing, so the rows below are
+        // testing the folding rather than some accident of exact matching.
+        if (facade.GetType("typeforwardcross.target", throwOnError: false) is not null) return 1;
+
+        // Folded, through the forwarder: namespace and name both differ in case from the metadata.
+        Type t = facade.GetType("typeforwardcross.target", throwOnError: false, ignoreCase: true);
+        if (t is null) return 2;
+        if (t.FullName != "TypeForwardCross.Target") return 3;
+        if (t.Assembly.GetName().Name != "TypeForward.Lib") return 4;
+
+        // Upper-case and mixed-case spellings land on the same type.
+        if (!ReferenceEquals(facade.GetType("TYPEFORWARDCROSS.TARGET", false, true), t)) return 5;
+        if (!ReferenceEquals(facade.GetType("tYpEfOrWaRdCrOsS.tArGeT", false, true), t)) return 6;
+
+        // And the facade's own type, which is a plain TypeDef rather than a forwarder row: the
+        // folding is in the lookup, not in the forwarding.
+        Type marker = facade.GetType("typeforwardfacade.marker", false, true);
+        if (marker is null) return 7;
+        if (!ReferenceEquals(marker, typeof(TypeForwardFacade.Marker))) return 8;
+
+        // A folded name that matches nothing is still a miss.
+        if (facade.GetType("typeforwardcross.nosuchtype", false, true) is not null) return 9;
+
+        // Case-insensitivity does not make an arity-mangled generic name match without its arity.
+        if (facade.GetType("typeforwardcross.gen", false, true) is not null) return 10;
+        if (facade.GetType("typeforwardcross.gen`1", false, true) is null) return 11;
+
+        // A character outside ASCII is the host's casing table's business, but no name in scope
+        // has this one's length, so nothing could fold to it and the answer is a plain miss.
+        if (facade.GetType("typeforwardcross.nöSuchType", false, true) is not null) return 12;
+
+        return 0;
+    }
+}
+"""
+            EntryAssemblyName = "TypeForward.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest
+
+    [<Test>]
+    let ``a forwarder into a case-colliding target is refused`` () : unit =
+        // The walk asks the far side for the forwarder row's own spelling, exactly; CoreCLR
+        // carries the fold across the hop instead. Measured on .NET 10: a facade forwarding
+        // `TARGET` into a library declaring both `Target` and `TARGET` answers with `Target` — for
+        // the shouty query too, even though that one matches a declaration exactly. PawPrint would
+        // otherwise answer `TARGET` silently, which is a different type rather than a missing one.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "FoldCollide.Lib"
+                        []
+                        [
+                            """
+namespace FoldCollide
+{
+    public class Target { }
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "FoldCollide.Facade"
+                        [ "FoldCollide.Lib" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+// The shouty one specifically, so the row's own spelling is a real declaration on the far side
+// and the "target does not declare this" refusal cannot be what fires.
+[assembly: TypeForwardedTo(typeof(FoldCollide.TARGET))]
+
+namespace FoldCollideFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "FoldCollide.Entry"
+                        [ "FoldCollide.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(FoldCollideFacade.Marker).Assembly;
+
+        // Exact: the forwarder row's own spelling, and it resolves to that declaration.
+        Type exact = facade.GetType("FoldCollide.TARGET", throwOnError: false);
+        if (exact is null) return 1;
+        if (exact.FullName != "FoldCollide.TARGET") return 2;
+
+        // Folded: the same query answers with the *other* declaration.
+        Type folded = facade.GetType("FoldCollide.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 3;
+        if (folded.FullName != "FoldCollide.Target") return 4;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "FoldCollide.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [
+                "followed a forwarder into"
+                "does not have one answer"
+                "FoldCollide.Target"
+            ]
+            []
+            []
+
+    [<Test>]
+    let ``the module pseudo-type is not something GetType can name`` () : unit =
+        // ECMA-335 II.22.37's first `TypeDef` row parents an assembly's module-scope functions and
+        // variables. `ClassLoader::PopulateAvailableClassHashTable` skips it, so it is in none of
+        // the tables `Assembly.GetType` searches. Measured: real .NET answers null at either
+        // casing, and `GetTypes()` omits it too.
+        {
+            Assemblies =
+                assemblies
+                    """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+
+        foreach (string name in new[] { "<Module>", "<module>" })
+        {
+            foreach (bool ignoreCase in new[] { false, true })
+            {
+                if (facade.GetType(name, throwOnError: false, ignoreCase) is not null) return 1;
+            }
+        }
+
+        // It is genuinely in the metadata — this is the lookup declining to name it, not the
+        // assembly lacking the row.
+        if (Array.Exists(facade.GetTypes(), t => t.Name == "<Module>")) return 2;
+
+        // A real type in the same assembly still resolves, so the exclusion is that row and not
+        // the whole table.
+        if (facade.GetType("TypeForwardFacade.Marker", throwOnError: false) is null) return 3;
+
+        return 0;
+    }
+}
+"""
+            EntryAssemblyName = "TypeForward.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest
+
+    /// A facade that both *defines* a type and *forwards* a differently-cased one of the same
+    /// folded name. Legal, and Roslyn emits it happily.
+    let private collidingFacadeSources =
+        [
+            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(TypeForwardCross.Target))]
+
+namespace TypeForwardCross
+{
+    // Folds to the same name as the forwarded TypeForwardCross.Target.
+    public class TARGET
+    {
+    }
+}
+
+namespace TypeForwardFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+        ]
+
+    let private collidingAssemblies (entrySource : string) =
+        [
+            CrossAssemblySpec.library "TypeForward.Base" [] baseSources
+            CrossAssemblySpec.library "TypeForward.Lib" [ "TypeForward.Base" ] libSources
+            CrossAssemblySpec.library
+                "TypeForward.Facade"
+                [ "TypeForward.Lib" ; "TypeForward.Base" ]
+                collidingFacadeSources
+            CrossAssemblySpec.entryPoint "TypeForward.Entry" [ "TypeForward.Facade" ] [ entrySource ]
+        ]
+
+    [<Test>]
+    let ``a folded name matching both a definition and a forwarder is refused`` () : unit =
+        // Measured on .NET 10: with the facade defining `N.TARGET` and forwarding `N.Target`, a
+        // case-insensitive query answers with the *forwarded* type — in preference to the facade's
+        // own type even when that one matches exactly. Under `ignoreCase` CoreCLR has one table,
+        // not two consulted in order, so which of two folded matches comes back is the same
+        // unspecified hash ordering that makes two colliding definitions ambiguous. The guest
+        // below records what the real runtime answers; PawPrint declines to guess it.
+        {
+            Assemblies =
+                collidingAssemblies
+                    """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+
+        // Exact lookups are unaffected: each name means the row that spells it that way.
+        Type exact = facade.GetType("TypeForwardCross.TARGET", throwOnError: false);
+        if (exact is null) return 1;
+        if (exact.Assembly.GetName().Name != "TypeForward.Facade") return 2;
+
+        // Folded, the forwarded type wins over the facade's own exact match.
+        Type folded = facade.GetType("TypeForwardCross.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 3;
+        if (folded.Assembly.GetName().Name != "TypeForward.Lib") return 4;
+        if (folded.FullName != "TypeForwardCross.Target") return 5;
+
+        return 0;
+    }
+}
+"""
+            EntryAssemblyName = "TypeForward.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [ "is ambiguous between the type it defines" ; "TypeForwardCross.TARGET" ]
+            []
+            []
+
+    [<Test>]
+    let ``a folded lookup that must cross a forwarder hop is refused`` () : unit =
+        // Measured on .NET 10: with the library replaced by a build that declares the type under a
+        // different casing, a case-insensitive query still resolves — CoreCLR carries the fold
+        // across the hop. PawPrint follows the forwarder row's own spelling exactly on the far
+        // side, so it would answer null; it stops instead.
+        {
+            Assemblies =
+                assemblies
+                    """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+
+        // The exact spelling the forwarder row carries is gone from the target.
+        if (facade.GetType("TypeForwardCross.Target", throwOnError: false) is not null) return 1;
+
+        // Folded, the real runtime finds the differently-cased declaration on the far side.
+        Type t = facade.GetType("TypeForwardCross.Target", throwOnError: false, ignoreCase: true);
+        if (t is null) return 2;
+        if (t.FullName != "TypeForwardCross.TARGET") return 3;
+        if (t.Assembly.GetName().Name != "TypeForward.Lib") return 4;
+
+        return 0;
+    }
+}
+"""
+            EntryAssemblyName = "TypeForward.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [
+                "followed a forwarder out of"
+                "Folding is not yet carried across a forwarder hop"
+            ]
+            []
+            [
+                // Same assembly name, declaring the forwarded type under a different casing.
+                CrossAssemblySpec.library
+                    "TypeForward.Lib"
+                    []
+                    [
+                        """
+namespace TypeForwardCross;
+
+public sealed class TARGET
+{
+}
+
+public sealed class Bystander
+{
+}
+"""
+                    ]
+            ]
+
     // Parked on a hole that has nothing to do with forwarding, and which no `GetTypeCore` caller
     // can dodge: a nested name reaches the QCall as `ReadOnlySpan<string> nestedTypeNames`, and
     // the `LibraryImport` stub that marshals it reads each destination slot of its `localloc`
@@ -383,6 +725,48 @@ class Program
         }
         |> CrossAssemblyHarness.runTest
 
+
+    // Parked on the same stub as the case above: `AssemblyNative_GetTypeCoreIgnoreCase` is handed
+    // its nested names through the same `ReadOnlySpan<string>` marshalling, UTF-16 rather than
+    // UTF-8, so no nested lookup reaches it either.
+    [<Explicit "blocked on reading an uninitialised localloc buffer in the span-marshalling stub">]
+    [<Test>]
+    let ``a nested name folds too, under a forwarded type`` () : unit =
+        {
+            Assemblies =
+                assemblies
+                    """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+
+        // Both levels spelled in the wrong case: the top-level name through the forwarder row, and
+        // the nested one against a TypeDef that exists only in the library.
+        Type inner = facade.GetType("typeforwardcross.OUTER+inner", throwOnError: false, ignoreCase: true);
+        if (inner is null) return 1;
+        if (inner.FullName != "TypeForwardCross.Outer+Inner") return 2;
+        if (inner.Assembly.GetName().Name != "TypeForward.Lib") return 3;
+
+        // The control: the nested name is not folded without ignoreCase.
+        if (facade.GetType("TypeForwardCross.Outer+inner", throwOnError: false) is not null) return 4;
+
+        // A folded nested name that matches nothing is still a miss.
+        if (facade.GetType("typeforwardcross.outer+absent", false, true) is not null) return 5;
+
+        return 0;
+    }
+}
+"""
+            EntryAssemblyName = "TypeForward.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest
+
     [<Test>]
     let ``a forwarded generic type resolves to its generic type definition`` () : unit =
         {
@@ -417,15 +801,62 @@ class Program
         |> CrossAssemblyHarness.runTest
 
     [<Test>]
-    let ``the module pseudo-type is not something GetType can name`` () : unit =
-        // ECMA-335 II.22.37's first `TypeDef` row parents an assembly's module-scope functions and
-        // variables. `ClassLoader::PopulateAvailableClassHashTable` skips it, so it is in none of
-        // the tables `Assembly.GetType` searches. Measured: real .NET answers null, and
-        // `GetTypes()` omits it too.
+    let ``a forwarder into an assembly that both defines and forwards the folded name is refused`` () : unit =
+        // The far side of a hop can collide with itself the same way the asking assembly can:
+        // `DeepCollide.Mid` defines `TARGET` and forwards `Target`, which fold alike, so the folded
+        // query CoreCLR carries across the hop matches both. The exact walk arrives at `TARGET`, and
+        // checking only the far side's definitions would accept it.
         {
             Assemblies =
-                assemblies
-                    """
+                [
+                    CrossAssemblySpec.library
+                        "DeepCollide.Lib"
+                        []
+                        [
+                            """
+namespace DeepCollide
+{
+    public class Target { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "DeepCollide.Mid"
+                        [ "DeepCollide.Lib" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(DeepCollide.Target))]
+
+namespace DeepCollide
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "DeepCollide.Facade"
+                        [ "DeepCollide.Mid" ; "DeepCollide.Lib" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(DeepCollide.TARGET))]
+
+namespace DeepCollideFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "DeepCollide.Entry"
+                        [ "DeepCollide.Facade" ]
+                        [
+                            """
 using System;
 using System.Reflection;
 
@@ -433,23 +864,361 @@ class Program
 {
     static int Main()
     {
-        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+        Assembly facade = typeof(DeepCollideFacade.Marker).Assembly;
 
-        if (facade.GetType("<Module>", throwOnError: false) is not null) return 1;
+        // Exact: the forwarder row's own spelling, defined in the middle assembly.
+        Type exact = facade.GetType("DeepCollide.TARGET", throwOnError: false);
+        if (exact is null) return 1;
+        if (exact.Assembly.GetName().Name != "DeepCollide.Mid") return 2;
 
-        // It is genuinely in the metadata — this is the lookup declining to name it, not the
-        // assembly lacking the row.
-        if (Array.Exists(facade.GetTypes(), t => t.Name == "<Module>")) return 2;
-
-        // A real type in the same assembly still resolves, so the exclusion is that row and not
-        // the whole table.
-        if (facade.GetType("TypeForwardFacade.Marker", throwOnError: false) is null) return 3;
+        // Folded: the middle assembly's forwarded type, not its own definition.
+        Type folded = facade.GetType("DeepCollide.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 3;
+        if (folded.Assembly.GetName().Name == "DeepCollide.Mid") return 4;
+        if (folded.FullName != "DeepCollide.Target") return 5;
 
         return 0;
     }
 }
 """
-            EntryAssemblyName = "TypeForward.Entry"
+                        ]
+                ]
+            EntryAssemblyName = "DeepCollide.Entry"
             ExpectedReturnCode = 0
         }
-        |> CrossAssemblyHarness.runTest
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [
+                "followed a forwarder into DeepCollide.Mid"
+                "both defines DeepCollide.TARGET and forwards DeepCollide.Target"
+            ]
+            []
+            []
+
+    [<Test>]
+    let ``a folded collision on the far side of a hop is refused even when one side's base chain is broken`` () : unit =
+        // The exact walk arrives at `TARGET`, whose base class is gone, and loading that base chain
+        // fails before any folded question is asked. CoreCLR asks the folded question first, and
+        // picks one of `Target` and `TARGET` by its internal hash ordering. Measured on .NET 10:
+        // here it picks `TARGET` and throws, whereas in the `FoldCollide` case, of the same shape
+        // apart from its names and this base class, it picks `Target` — so reporting the broken
+        // base chain would agree with it only by luck. The collision has to be noticed before the
+        // base chain is loaded.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "FoldBroken.Base"
+                        []
+                        [
+                            """
+namespace FoldBrokenBase
+{
+    public class Root { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "FoldBroken.Lib"
+                        [ "FoldBroken.Base" ]
+                        [
+                            """
+namespace FoldBroken
+{
+    public class Target { }
+    public class TARGET : FoldBrokenBase.Root { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "FoldBroken.Facade"
+                        [ "FoldBroken.Lib" ; "FoldBroken.Base" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(FoldBroken.TARGET))]
+
+namespace FoldBrokenFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "FoldBroken.Entry"
+                        [ "FoldBroken.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(FoldBrokenFacade.Marker).Assembly;
+
+        // Exact: the row's own spelling, whose base class the replaced base assembly lacks.
+        try
+        {
+            facade.GetType("FoldBroken.TARGET", throwOnError: false);
+            return 1;
+        }
+        catch (TypeLoadException)
+        {
+        }
+
+        // Folded: CoreCLR picks `TARGET` from the two, and so throws too.
+        try
+        {
+            facade.GetType("FoldBroken.TARGET", throwOnError: false, ignoreCase: true);
+            return 2;
+        }
+        catch (TypeLoadException)
+        {
+        }
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "FoldBroken.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [
+                "followed a forwarder into FoldBroken.Lib"
+                "does not have one answer"
+                "FoldBroken.Target"
+            ]
+            []
+            [
+                // Same assembly name, no longer declaring the base class `TARGET` derives from.
+                CrossAssemblySpec.library
+                    "FoldBroken.Base"
+                    []
+                    [
+                        """
+namespace FoldBrokenBase
+{
+    public class Unrelated { }
+}
+"""
+                    ]
+            ]
+
+    [<Test>]
+    let ``a folded lookup whose forwarder chain has more than one hop is refused`` () : unit =
+        // Only the far end of a chain has its folded candidates checked, and an intermediate
+        // assembly can collide too: here `HopCollide.Mid` defines `Target` and forwards `TARGET`
+        // onwards, so CoreCLR's folded question at `Mid` has two answers while the exact walk
+        // passes straight through it. Measured on .NET 10: CoreCLR follows the forwarder, but which
+        // of two folded matches it takes is the hash ordering that makes any such pair ambiguous,
+        // so agreeing with it here would be luck. Roslyn always points a forwarder at the defining assembly, so
+        // the chain is made by compiling the facade against one `Mid` and running it against
+        // another.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "HopCollide.Lib"
+                        []
+                        [
+                            """
+namespace HopCollide
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopCollide.Mid"
+                        []
+                        [
+                            """
+namespace HopCollide
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopCollide.Facade"
+                        [ "HopCollide.Mid" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopCollide.TARGET))]
+
+namespace HopCollideFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "HopCollide.Entry"
+                        [ "HopCollide.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(HopCollideFacade.Marker).Assembly;
+
+        // Exact: two hops, to the library's declaration.
+        Type exact = facade.GetType("HopCollide.TARGET", throwOnError: false);
+        if (exact is null) return 1;
+        if (exact.Assembly.GetName().Name != "HopCollide.Lib") return 2;
+
+        // Folded: CoreCLR follows `Mid`'s forwarder rather than answering with `Mid`'s own `Target`.
+        Type folded = facade.GetType("HopCollide.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 3;
+        if (folded.Assembly.GetName().Name != "HopCollide.Lib") return 4;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "HopCollide.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [ "more than one forwarder hop" ]
+            []
+            [
+                // Same assembly name, now forwarding `TARGET` on to the library and defining a type
+                // that folds alike with it.
+                CrossAssemblySpec.library
+                    "HopCollide.Mid"
+                    [ "HopCollide.Lib" ]
+                    [
+                        """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopCollide.TARGET))]
+
+namespace HopCollide
+{
+    public class Target { }
+}
+"""
+                    ]
+            ]
+
+    [<Test>]
+    let ``a folded lookup whose forwarder chain fails past its first hop is refused`` () : unit =
+        // As the multi-hop case above, but with the far end of the chain missing, so the exact walk
+        // stops at an unavailable assembly having passed through `HopMissing.Mid` unchecked. There
+        // `Mid`'s own `Target` folds alike with the row it forwards onwards, so which of the two
+        // CoreCLR takes decides between a type and a missing assembly. Measured on .NET 10: it
+        // takes `Target` here, where PawPrint's exact walk would answer null.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "HopMissing.Lib"
+                        []
+                        [
+                            """
+namespace HopMissing
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopMissing.Mid"
+                        []
+                        [
+                            """
+namespace HopMissing
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopMissing.Facade"
+                        [ "HopMissing.Mid" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopMissing.TARGET))]
+
+namespace HopMissingFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "HopMissing.Entry"
+                        [ "HopMissing.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(HopMissingFacade.Marker).Assembly;
+
+        // Exact: the chain ends at an assembly that is not there.
+        if (facade.GetType("HopMissing.TARGET", throwOnError: false) is not null) return 1;
+
+        // Folded: CoreCLR answers with `Mid`'s own `Target` rather than following the forwarder.
+        Type folded = facade.GetType("HopMissing.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 2;
+        if (folded.Assembly.GetName().Name != "HopMissing.Mid") return 3;
+        if (folded.FullName != "HopMissing.Target") return 4;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "HopMissing.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [ "more than one forwarder hop" ]
+            [ "HopMissing.Lib" ]
+            [
+                // Same assembly name, now forwarding `TARGET` on to the (absent) library and
+                // defining a type that folds alike with it.
+                CrossAssemblySpec.library
+                    "HopMissing.Mid"
+                    [ "HopMissing.Lib" ]
+                    [
+                        """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopMissing.TARGET))]
+
+namespace HopMissing
+{
+    public class Target { }
+}
+"""
+                    ]
+            ]
