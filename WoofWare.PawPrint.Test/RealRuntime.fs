@@ -164,6 +164,15 @@ module RealRuntime =
             failwith
                 $"The filesystem seed holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is not valid UTF-8, so this oracle cannot create it on the host through System.IO."
 
+    /// A seed symlink target as the string `System.IO` needs, refusing one that
+    /// is not valid UTF-8 for the reason `hostName` gives.
+    let private hostTarget (target : SymlinkTarget) : string =
+        match SymlinkTarget.tryToString target with
+        | Some text -> text
+        | None ->
+            failwith
+                $"The filesystem seed holds a symlink whose target \"%s{SymlinkTarget.toEscaped target}\" is not valid UTF-8, so this oracle cannot create it on the host through System.IO."
+
     /// The host locates `<name>.runtimeconfig.json` from the assembly's *file* name, so the two
     /// have to agree; use the image's own assembly name so the guest also sees the name it was
     /// compiled with.
@@ -431,7 +440,7 @@ module RealRuntime =
                     requireOraclePermissions $"%s{prefix}/%s{name}" true permissions
                     go (prefix + "/" + name) (depth + 1) children
                 | SeedEntry.Symlink target ->
-                    let raw = SymlinkTarget.toString target
+                    let raw = SymlinkTarget.toEscaped target
 
                     let refuse (why : string) : unit =
                         failwith
@@ -600,9 +609,7 @@ module RealRuntime =
             // Verbatim, and deliberately not checked for existence: a seeded
             // symlink may dangle, and `File.CreateSymbolicLink` is happy to
             // create one that does.
-            | SeedEntry.Symlink target ->
-                File.CreateSymbolicLink (path, SymlinkTarget.toString target)
-                |> ignore<FileSystemInfo>
+            | SeedEntry.Symlink target -> File.CreateSymbolicLink (path, hostTarget target) |> ignore<FileSystemInfo>
 
     /// Run a single-file guest image as its own process on the real .NET
     /// runtime, with `seed` materialised into its working directory, and report

@@ -228,6 +228,89 @@ module TestUnixPathBytes =
         |> completed
         |> ignore<UnixSystem<int, string>>
 
+    // -------------------------------------------------------- symlink targets
+
+    let private targetOf (bytes : byte seq) : SymlinkTarget =
+        match SymlinkTarget.ofByteString (byteString bytes) with
+        | Ok target -> target
+        | Error error -> failwith $"test target: %s{SymlinkTarget.describe error}"
+
+    let private epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
+
+    /// `system` with its filesystem replaced by `seed`, and the root as its
+    /// current directory. There is no `symlink` syscall, so seeding is how a
+    /// link comes to exist.
+    let private seeded (seed : (DirectoryEntryName * SeedEntry) list) (system : UnixSystem<int, string>) =
+        match UnixSystem.withFileSystemAndCurrentDirectory epoch (Map.ofList seed) AbsoluteUnixPath.root system with
+        | Ok system -> system
+        | Error fault -> failwith $"seeding failed: %A{fault}"
+
+    /// Non-empty, NUL-free, and mixing valid UTF-8 with bytes that are not.
+    let private targetBytesGen : Gen<byte list> =
+        Gen.frequency
+            [
+                3, Gen.elements [ slash ; byte '.' ; byte 'a' ]
+                2, (ArbMap.defaults |> ArbMap.generate<byte> |> Gen.filter (fun b -> b <> 0uy))
+                1, Gen.constant 0xE4uy
+                1, Gen.constant 0xB8uy
+            ]
+        |> Gen.nonEmptyListOf
+
+    [<Test>]
+    let ``readlink and lstat report a seeded target byte for byte`` () : unit =
+        let property (bytes : byte list) : unit =
+            for system in [ linux ; darwin ] do
+                let system =
+                    seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf bytes) ] system
+
+                match UnixNamespace.readlink (pathOf [ slash ; byte 'l' ]) UserBuffer.Mapped 8192 system with
+                | Ok (ReadLinkAnswer.Reported reported) -> List.ofSeq reported |> shouldEqual bytes
+                | other -> failwith $"expected a target, got %A{other}"
+
+                match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (pathOf [ slash ; byte 'l' ]) system with
+                | FileStatusAnswer.Reported status -> status.Size |> shouldEqual (int64 bytes.Length)
+                | other -> failwith $"expected a status, got %A{other}"
+
+        Check.One (config, Prop.forAll (Arb.fromGen targetBytesGen) property)
+
+    [<Test>]
+    let ``a walk through a link follows the target's bytes`` () : unit =
+        // A directory named 0xFF and a link to it: only a walk that splices the
+        // target's own bytes, rather than some rendering of them, arrives.
+        let system =
+            seeded
+                [
+                    nameOf [ 0xFFuy ], SeedEntry.directory Map.empty
+                    nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf [ 0xFFuy ])
+                ]
+                linux
+
+        match UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte '.' ]) system with
+        | FileStatusAnswer.Reported status -> status.Mode &&& 0o170000 |> shouldEqual 0o040000
+        | other -> failwith $"expected the directory, got %A{other}"
+
+    [<Test>]
+    let ``Darwin's splice limit counts a target's bytes, not what it would decode to`` () : unit =
+        // Darwin refuses a splice when target + remainder + NUL exceeds 1024
+        // bytes. Through "/l/a" the remainder is "/a", so a 1021-byte target
+        // fits and a 1022-byte one does not. `E4 B8` is two bytes that a lenient
+        // decode makes into one character, and an escaped rendering into eight,
+        // so a count taken from either lands on the wrong side.
+        let target (length : int) : byte list =
+            let body = List.replicate 300 [ 0xE4uy ; 0xB8uy ; slash ] |> List.concat
+            body @ List.replicate (length - body.Length) (byte 'a')
+
+        let lookup (length : int) : FileStatusAnswer =
+            let system =
+                seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length)) ] darwin
+
+            UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte 'a' ]) system
+
+        // Fits, so the walk proceeds into the target, whose first component
+        // does not exist.
+        lookup 1021 |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+        lookup 1022 |> shouldEqual (FileStatusAnswer.Failed UnixError.ENAMETOOLONG)
+
     // ------------------------------------------------------------ PathCursor
 
     /// Bytes weighted towards the ones the walk treats specially.

@@ -560,7 +560,7 @@ module TestVirtualFileSystemAgainstHost =
         | Ok inode ->
 
         match VirtualFileSystem.tryGetContent inode vfs with
-        | Some (InodeContent.Symlink target) -> Outcome.Symlink (SymlinkTarget.toString target)
+        | Some (InodeContent.Symlink target) -> Outcome.Symlink (PathText.ofTarget target)
         | Some _ -> Outcome.NotASymlink
         | None -> failwith $"the model resolved %s{relative} to inode %O{inode}, which it does not contain"
 

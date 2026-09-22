@@ -501,7 +501,7 @@ module UnixNamespace =
         | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
         | UserBuffer.Mapped ->
 
-        let all = SymlinkTarget.toUtf8 target
+        let all = UnixByteString.toBytes (SymlinkTarget.toByteString target)
 
         // Truncated in *bytes*, not in characters: a symlink target is a byte
         // string, and truncating by character count would write two bytes where

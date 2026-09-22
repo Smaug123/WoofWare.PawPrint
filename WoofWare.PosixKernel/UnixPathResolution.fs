@@ -315,7 +315,7 @@ module UnixPathResolution =
             | InodeContent.RegularFile (contents, _) -> int64 contents.Length
             // `readlink` reports the target's byte length as the link's size,
             // and a guest can see it through a file-length API.
-            | InodeContent.Symlink target -> int64 (SymlinkTarget.toUtf8 target).Length
+            | InodeContent.Symlink target -> int64 (UnixByteString.length (SymlinkTarget.toByteString target))
             // Invented, and the only field here that is: this kernel has no
             // block allocator, so a directory has no natural size. 4096 is what
             // ext4 reports for a small directory, i.e. the least surprising
