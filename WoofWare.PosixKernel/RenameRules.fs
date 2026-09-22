@@ -539,14 +539,30 @@ module RenameRules =
     /// `SimulatedUnixPlatform.renameRules`' `TrailingSeparator` and
     /// `SymlinkPolicy.NoFollowFinal`, which is what makes the trailing-separator
     /// arms above mean what they say.
+    ///
+    /// Last of all, a move onto a destination name `bindable` does not admit is
+    /// EILSEQ. Measured on Darwin by `darwin-eilseq-is-last.c` in
+    /// `docs/plans/2026-09-20-unix-path-bytes/`: a missing source, an
+    /// unwritable parent or moved directory, a trailing separator over a file,
+    /// and a move into the source's own subtree each beat it. The source name is
+    /// only looked up, so it is never refused this way.
     let verdict
         (flavour : SimulatedUnixFlavour)
+        (bindable : BindableEntryNames)
         (privilege : CallerPrivilege)
         (source : Resolution)
         (destination : Resolution)
         (vfs : VirtualFileSystem)
         : RenameVerdict
         =
-        match flavour with
-        | SimulatedUnixFlavour.Linux -> linuxVerdict privilege source destination vfs
-        | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege source destination vfs
+        let verdict =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> linuxVerdict privilege source destination vfs
+            | SimulatedUnixFlavour.Darwin -> darwinVerdict privilege source destination vfs
+
+        match verdict with
+        | RenameVerdict.Move (_, _, _, destinationName) when not (BindableEntryNames.admits bindable destinationName) ->
+            RenameVerdict.Refuse UnixError.EILSEQ
+        | RenameVerdict.Move _
+        | RenameVerdict.NoOp
+        | RenameVerdict.Refuse _ -> verdict

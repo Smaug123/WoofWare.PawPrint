@@ -171,28 +171,6 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
 [<RequireQualifiedAccess>]
 module UnixNamespace =
 
-    /// Crash, rather than bind a name the platform's filesystem would refuse.
-    /// Called once a verdict has decided to bind, which is where the real
-    /// refusal belongs, since it comes after every other check.
-    ///
-    /// Stage 7 of docs/plans/2026-09-20-unix-path-bytes.md replaces this with
-    /// the EILSEQ a real APFS answers.
-    let private refuseUnbindableUntilModelled
-        (operation : string)
-        (platform : SimulatedUnixPlatform)
-        (name : DirectoryEntryName)
-        : unit
-        =
-        match SimulatedUnixPlatform.bindableEntryNames platform with
-        | BindableEntryNames.AnyBytes -> ()
-        | BindableEntryNames.StrictUtf8 ->
-
-        match DirectoryEntryName.tryToString name with
-        | Some _ -> ()
-        | None ->
-            failwith
-                $"UnixNamespace.%s{operation}: the guest asked to bind \"%s{DirectoryEntryName.toEscaped name}\", which is not valid UTF-8, on a platform whose filesystem only binds valid UTF-8 names. A real APFS answers EILSEQ here; that answer is not modelled yet."
-
     /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
     /// descriptor onto what it names.
     ///
@@ -264,11 +242,18 @@ module UnixNamespace =
         | Error error -> SyscallAnswer.Failed error, system
         | Ok resolution ->
 
-        match CreatingOpenRules.verdict rules privilege flags.Create exclusive resolution system.Machine.FileSystem with
+        match
+            CreatingOpenRules.verdict
+                rules
+                (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
+                privilege
+                flags.Create
+                exclusive
+                resolution
+                system.Machine.FileSystem
+        with
         | CreatingOpenVerdict.Refuse error -> SyscallAnswer.Failed error, system
         | CreatingOpenVerdict.Create (directory, name) ->
-            refuseUnbindableUntilModelled "openPath" system.Machine.UnixPlatform name
-
             let permissions =
                 CreatingOpenRules.createdPermissions rules system.Process.Umask mode
 
@@ -640,12 +625,14 @@ module UnixNamespace =
         | Ok resolution ->
 
         match
-            MkDirRules.verdict (UnixProcessState.callerPrivilege system.Process) resolution system.Machine.FileSystem
+            MkDirRules.verdict
+                (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
+                (UnixProcessState.callerPrivilege system.Process)
+                resolution
+                system.Machine.FileSystem
         with
         | MkDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
         | MkDirVerdict.Create (directory, name, parentPermissions) ->
-
-        refuseUnbindableUntilModelled "mkdir" system.Machine.UnixPlatform name
 
         let permissions =
             MkDirRules.createdPermissions rules parentPermissions system.Process.Umask mode
@@ -962,6 +949,7 @@ module UnixNamespace =
         match
             RenameRules.verdict
                 (SimulatedUnixPlatform.flavour system.Machine.UnixPlatform)
+                (SimulatedUnixPlatform.bindableEntryNames system.Machine.UnixPlatform)
                 (UnixProcessState.callerPrivilege system.Process)
                 sourceResolution
                 destinationResolution
@@ -974,8 +962,6 @@ module UnixNamespace =
         // would have to invent a no-op stamp to express it.
         | RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
         | RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName) ->
-
-        refuseUnbindableUntilModelled "rename" system.Machine.UnixPlatform destinationName
 
         let now = UnixMachineState.fileTimestamp system.Machine
 

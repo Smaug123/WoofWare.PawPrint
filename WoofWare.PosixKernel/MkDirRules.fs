@@ -66,11 +66,12 @@ type MkDirVerdict =
 module MkDirRules =
     /// Decide what a `mkdir(2)` owes, given how its path resolved.
     ///
-    /// Takes no `MkDirRules`, and that is the point: every rule below is
-    /// measured *identical* on both platforms. Everything `mkdir` diverges about
-    /// is spent earlier, in the walk `MkDirRules.TrailingSeparator` selects, or
-    /// later, in `createdPermissions`. Contrast `CreatingOpenRules.verdict`,
-    /// which genuinely reads two of its fields.
+    /// Takes no `MkDirRules`, and that is the point: every rule below except the
+    /// last is measured *identical* on both platforms, and the last reads only
+    /// `bindable`. Everything else `mkdir` diverges about is spent earlier, in
+    /// the walk `MkDirRules.TrailingSeparator` selects, or later, in
+    /// `createdPermissions`. Contrast `CreatingOpenRules.verdict`, which
+    /// genuinely reads two of its fields.
     ///
     /// The order of the refusals is measured, and each beats the ones below it:
     ///
@@ -86,6 +87,9 @@ module MkDirRules =
     ///  * Binding a new name needs write on the directory that will hold it:
     ///    measured, 0o333 and 0o300 succeed while 0o555 and 0o644 are EACCES.
     ///    Root bypasses it.
+    ///  * Last, a name `bindable` does not admit is EILSEQ: measured on Darwin,
+    ///    `mkdir("ro/" + 300 × 0xFF)` is EACCES and the same name in a writable
+    ///    directory is EILSEQ.
     ///
     /// The holding directory's *search* bit is needed as well — and needed
     /// earlier, since without it the final name cannot be looked up at all, so
@@ -98,7 +102,13 @@ module MkDirRules =
     /// creating `open` disagree about a resolution of the same shape: `open`
     /// owes it ENOENT on Darwin.
     ///
-    let verdict (privilege : CallerPrivilege) (resolution : Resolution) (vfs : VirtualFileSystem) : MkDirVerdict =
+    let verdict
+        (bindable : BindableEntryNames)
+        (privilege : CallerPrivilege)
+        (resolution : Resolution)
+        (vfs : VirtualFileSystem)
+        : MkDirVerdict
+        =
         match resolution.Target with
         | ResolvedTarget.Directory _ -> MkDirVerdict.Refuse UnixError.EEXIST
         | ResolvedTarget.Entry (directory, name, existing) ->
@@ -137,6 +147,8 @@ module MkDirRules =
 
         if PermissionBits.deniedTo privilege AccessRequest.Write parentPermissions then
             MkDirVerdict.Refuse UnixError.EACCES
+        elif not (BindableEntryNames.admits bindable name) then
+            MkDirVerdict.Refuse UnixError.EILSEQ
         else
             MkDirVerdict.Create (directory, name, parentPermissions)
 

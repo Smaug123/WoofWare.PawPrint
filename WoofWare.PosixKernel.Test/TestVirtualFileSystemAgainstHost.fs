@@ -1073,7 +1073,16 @@ module TestVirtualFileSystemAgainstHost =
         // At the host's own privilege: the corpus *does* contain directories
         // whose owner bits are clear, so this arm is reachable and the two
         // worlds would disagree under a root host if it were hardcoded.
-        match CreatingOpenRules.verdict rules (hostPrivilege ()) true exclusive resolution vfs with
+        match
+            CreatingOpenRules.verdict
+                rules
+                (SimulatedUnixPlatform.bindableEntryNames (hostPlatform ()))
+                (hostPrivilege ())
+                true
+                exclusive
+                resolution
+                vfs
+        with
         | CreatingOpenVerdict.Refuse error -> CreatingOutcome.Failed (hostErrno error)
         | CreatingOpenVerdict.Create _ -> CreatingOutcome.Created
         | CreatingOpenVerdict.OpenExisting _ -> CreatingOutcome.Opened
@@ -1558,7 +1567,13 @@ module TestVirtualFileSystemAgainstHost =
         // At the host's own privilege, for the same reason as the creating-open
         // comparison: the corpus contains directories this caller may not write
         // or search, so the answer depends on who is asking.
-        match MkDirRules.verdict (hostPrivilege ()) resolution vfs with
+        match
+            MkDirRules.verdict
+                (SimulatedUnixPlatform.bindableEntryNames (hostPlatform ()))
+                (hostPrivilege ())
+                resolution
+                vfs
+        with
         | MkDirVerdict.Refuse error -> MkDirOutcome.Failed (hostErrno error)
         | MkDirVerdict.Create _ -> MkDirOutcome.Created
 

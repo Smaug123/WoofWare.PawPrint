@@ -74,6 +74,7 @@ module UnixErrorPal =
         | UnixError.ENOTEMPTY -> 0x1003A
         | UnixError.EAGAIN -> 0x10006
         | UnixError.EOVERFLOW -> 0x10040
+        | UnixError.EILSEQ -> 0x10019
         | UnixError.EAFNOSUPPORT -> 0x10005
         | UnixError.EPROTOTYPE -> 0x10046
         | UnixError.EPROTONOSUPPORT -> 0x10045

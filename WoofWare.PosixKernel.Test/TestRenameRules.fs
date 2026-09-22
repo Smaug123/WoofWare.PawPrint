@@ -208,6 +208,7 @@ module TestRenameRules =
 
         RenameRules.verdict
             (SimulatedUnixPlatform.flavour platform)
+            (SimulatedUnixPlatform.bindableEntryNames platform)
             privilege
             sourceResolution
             destinationResolution

@@ -165,75 +165,7 @@ module TestUnixPathBytes =
         PathLimits.nameWithinLimit limits (repeated [ 0xFFuy ] 255) |> shouldEqual true
         PathLimits.nameWithinLimit limits (repeated [ 0xFFuy ] 256) |> shouldEqual false
 
-    // ----------------------------------------------- binding on Darwin, for now
-
-    let private creating : OpenFlags =
-        {
-            Access = FileAccessMode.WriteOnly
-            Create = true
-            Exclusive = false
-            Truncate = false
-            NoFollow = false
-            CloseOnExec = false
-            Synchronous = false
-        }
-
-    let private undecodable : byte list = [ slash ; 0xFFuy ]
-
-    let private refusesToBind (operation : string) (bind : unit -> unit) : unit =
-        let exn = Assert.Throws<Exception> (fun () -> bind ())
-        exn.Message |> shouldContainText operation
-        exn.Message |> shouldContainText "EILSEQ"
-
-    [<Test>]
-    let ``Darwin will not bind a name that is not UTF-8`` () : unit =
-        // A placeholder for the EILSEQ a real APFS answers: the model crashes
-        // rather than build a filesystem that macOS could not hold.
-        refusesToBind
-            "mkdir"
-            (fun () ->
-                UnixNamespace.mkdir (pathOf undecodable) 0o777 darwin
-                |> ignore<SyscallAnswer * _>
-            )
-
-        refusesToBind
-            "openPath"
-            (fun () ->
-                UnixNamespace.openPath creating (pathOf undecodable) 0o666 darwin
-                |> ignore<SyscallAnswer * _>
-            )
-
-        let withFile =
-            UnixNamespace.mkdir (pathOf [ slash ; byte 'f' ]) 0o777 darwin |> completed
-
-        refusesToBind
-            "rename"
-            (fun () ->
-                UnixNamespace.rename
-                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange [ slash ; byte 'f' ]))
-                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange undecodable))
-                    withFile
-                |> ignore<Result<SyscallAnswer * _, PathArgumentRefusal>>
-            )
-
-    [<Test>]
-    let ``Darwin binds a name that is UTF-8, and Linux binds either`` () : unit =
-        // The controls: without them the rows above would pass for a model that
-        // crashed on every name.
-        UnixNamespace.mkdir (pathOf (PathText.bytes "/é")) 0o777 darwin
-        |> completed
-        |> ignore<UnixSystem<int, string>>
-
-        UnixNamespace.mkdir (pathOf undecodable) 0o777 linux
-        |> completed
-        |> ignore<UnixSystem<int, string>>
-
-    // -------------------------------------------------------- symlink targets
-
-    let private targetOf (bytes : byte seq) : SymlinkTarget =
-        match SymlinkTarget.ofByteString (byteString bytes) with
-        | Ok target -> target
-        | Error error -> failwith $"test target: %s{SymlinkTarget.describe error}"
+    // ------------------------------------------- binding a name that is not UTF-8
 
     let private epoch : UnixTimestamp = UnixTimestamp.ofMillisecondsSinceEpoch 0L
 
@@ -244,6 +176,156 @@ module TestUnixPathBytes =
         match UnixSystem.withFileSystemAndCurrentDirectory epoch (Map.ofList seed) AbsoluteUnixPath.root system with
         | Ok system -> system
         | Error fault -> failwith $"seeding failed: %A{fault}"
+
+    let private text : string -> byte list = BindingProbes.text
+
+    [<Test>]
+    let ``Darwin refuses to bind a name that is not UTF-8, after every other refusal`` () : unit =
+        // Run as `UnixSystem.initial`'s unprivileged caller, as the probes were.
+        let system = seeded (Map.toList BindingProbes.tree) darwin
+
+        for description, call, expected in BindingProbes.rows do
+            let actual = BindingProbes.runModel call system
+
+            if actual <> expected then
+                failwith $"Darwin %s{description}: expected %A{expected}, got %A{actual}"
+
+    [<Test>]
+    let ``nothing is bound inside a removed directory, whatever the name`` () : unit =
+        // Measured on Darwin by `darwin-eilseq-is-last.c`: the orphan's ENOENT
+        // beats the encoding for all three binding calls. Not a row of
+        // `BindingProbes`, because it needs a current directory the host test
+        // cannot give its own process.
+        let orphaned =
+            seeded (Map.toList BindingProbes.tree) darwin
+            |> UnixNamespace.mkdir (pathOf (text "/gone")) 0o777
+            |> completed
+            |> UnixPathResolution.chdir (pathOf (text "/gone"))
+            |> completed
+            |> UnixNamespace.rmdir (pathOf (text "../gone"))
+            |> completed
+
+        let creating : OpenFlags =
+            {
+                Access = FileAccessMode.WriteOnly
+                Create = true
+                Exclusive = false
+                Truncate = false
+                NoFollow = false
+                CloseOnExec = false
+                Synchronous = false
+            }
+
+        for name in [ text "g" ; [ 0xFFuy ] ] do
+            fst (UnixNamespace.mkdir (pathOf name) 0o777 orphaned)
+            |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
+
+            fst (UnixNamespace.openPath creating (pathOf name) 0o666 orphaned)
+            |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
+
+            match
+                UnixNamespace.rename
+                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange (text "/d/f")))
+                    (PathArgumentBytes.Bytes (ImmutableArray.CreateRange name))
+                    orphaned
+            with
+            | Ok (answer, _) -> answer |> shouldEqual (SyscallAnswer.Failed UnixError.ENOENT)
+            | Error refusal -> failwith $"rename refused its arguments: %A{refusal}"
+
+    /// A name made of units that mix valid UTF-8 with sequences that are not,
+    /// with no separator, no NUL, and never "." or "..".
+    let private nameBytesGen : Gen<byte list> =
+        Gen.elements
+            [
+                text "a"
+                text "é"
+                text "中"
+                text "😀"
+                [ 0xFFuy ]
+                [ 0x80uy ]
+                [ 0xE4uy ; 0xB8uy ]
+                [ 0xC0uy ; 0x80uy ]
+                [ 0xEDuy ; 0xA0uy ; 0x80uy ]
+            ]
+        |> Gen.nonEmptyListOf
+        |> Gen.map List.concat
+
+    /// The three ways to bind a free name in the writable root.
+    let private bindings (name : byte list) : (string * BindingProbeCall) list =
+        [
+            "mkdir", BindingProbeCall.Mkdir name
+            "open(O_CREAT)", BindingProbeCall.OpenCreate name
+            "rename", BindingProbeCall.Rename (text "f", name)
+        ]
+
+    let private withFile (system : UnixSystem<int, string>) : UnixSystem<int, string> =
+        seeded
+            [
+                DirectoryEntryName.parseOrFail "test" "f", SeedEntry.file ImmutableArray.Empty
+            ]
+            system
+
+    [<Test>]
+    let ``Linux never answers EILSEQ`` () : unit =
+        let system = withFile linux
+
+        let property (name : byte list) : unit =
+            for operation, call in bindings name do
+                match BindingProbes.runModel call system with
+                | Some UnixError.EILSEQ -> failwith $"Linux %s{operation} answered EILSEQ"
+                | Some UnixError.ENAMETOOLONG when name.Length > 255 -> ()
+                | None when name.Length <= 255 -> ()
+                | other -> failwith $"Linux %s{operation} of a %d{name.Length}-byte name answered %A{other}"
+
+        Check.One (config, Prop.forAll (Arb.fromGen nameBytesGen) property)
+
+    [<Test>]
+    let ``Darwin refuses a binding every earlier rule permits iff the name is not UTF-8`` () : unit =
+        // The model's rule, not APFS's: strictly-valid UTF-8 over-admits (plan
+        // §1.1.1, and the test below). The precondition is not decoration --
+        // EILSEQ is the last check, so an over-long or unwritable case answers
+        // something else whatever the bytes.
+        let system = withFile darwin
+        let limits = SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.macOsArm64
+
+        let property (bytes : byte list) : unit =
+            let name = nameOf bytes
+
+            if PathLimits.nameWithinLimit limits name then
+                let expected =
+                    match DirectoryEntryName.tryToString name with
+                    | Some _ -> None
+                    | None -> Some UnixError.EILSEQ
+
+                for operation, call in bindings bytes do
+                    let actual = BindingProbes.runModel call system
+
+                    if actual <> expected then
+                        failwith
+                            $"Darwin %s{operation} of \"%s{DirectoryEntryName.toEscaped name}\": expected %A{expected}, got %A{actual}"
+
+        Check.One (config, Prop.forAll (Arb.fromGen nameBytesGen) property)
+
+    [<Test>]
+    let ``Darwin binds the valid UTF-8 that APFS refuses, by choice`` () : unit =
+        // Plan §1.1.1: the model admits every strictly-valid UTF-8 name, and
+        // APFS refuses these three classes of them. Pinned so that a change to
+        // either side is a decision rather than an accident; a faithful model
+        // (a `BindableEntryNames.AppleUnicode` case) is what would flip them.
+        let system = withFile darwin
+
+        for description, name in BindingProbes.overAdmitted do
+            for operation, call in bindings name do
+                match BindingProbes.runModel call system with
+                | None -> ()
+                | other -> failwith $"Darwin %s{operation} of %s{description}: expected success, got %A{other}"
+
+    // -------------------------------------------------------- symlink targets
+
+    let private targetOf (bytes : byte seq) : SymlinkTarget =
+        match SymlinkTarget.ofByteString (byteString bytes) with
+        | Ok target -> target
+        | Error error -> failwith $"test target: %s{SymlinkTarget.describe error}"
 
     /// Non-empty, NUL-free, and mixing valid UTF-8 with bytes that are not.
     let private targetBytesGen : Gen<byte list> =

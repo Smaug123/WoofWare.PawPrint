@@ -291,6 +291,22 @@ module TestUnixError =
         UnixError.ofRawErrnoUnder RawErrnoNumbering.Darwin 40
         |> shouldEqual (Some UnixError.EMSGSIZE)
 
+    /// The host header checks only this machine's half; this pins both, and the
+    /// collisions each number has on the other platform.
+    [<Test>]
+    let ``EILSEQ is 84 on Linux and 92 on Darwin`` () : unit =
+        UnixError.toRawErrnoUnder RawErrnoNumbering.Linux UnixError.EILSEQ
+        |> shouldEqual 84
+
+        UnixError.toRawErrnoUnder RawErrnoNumbering.Darwin UnixError.EILSEQ
+        |> shouldEqual 92
+
+        // Darwin's 84 is EOVERFLOW, and Linux's 92 (ENOPROTOOPT) is not modelled.
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Darwin 84
+        |> shouldEqual (Some UnixError.EOVERFLOW)
+
+        UnixError.ofRawErrnoUnder RawErrnoNumbering.Linux 92 |> shouldEqual None
+
     [<Test>]
     let ``ofRawErrno declines a platform-dependent errno`` () : unit =
         UnixError.ofRawErrno 39 |> shouldEqual None
