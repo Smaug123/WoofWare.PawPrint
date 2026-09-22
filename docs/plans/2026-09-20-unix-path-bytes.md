@@ -74,6 +74,7 @@ plan and were caught exactly that way.
 | `darwin-name-max-boundary-per-unit.c` | §1.5's boundary table |
 | `darwin-name-max-which-unit.c` | §1.5's classification |
 | `linux-names-are-bytes.py` | the Linux column throughout |
+| `fsharp-immutablearray-semantics.fsx` | §2.1's F# equality/comparison table |
 
 ### 1.1 Which byte strings can be a directory entry name?
 
@@ -335,23 +336,55 @@ type UnixByteString =
 
 All four path types wrap this rather than a `string`. Two options were weighed:
 
-- **Each type carries `ImmutableArray<byte>` itself.** Rejected. `ImmutableArray<T>`
-  implements `IEquatable<ImmutableArray<T>>` as *reference equality on the
-  underlying array*, and implements no `IComparable` at all. So a
-  `DirectoryEntryName` wrapping one naively would make `Map<DirectoryEntryName,
-  InodeNumber>` — which is what a directory **is** — fail to find a name that was
-  looked up through different bytes. Defusing that per-type means writing the
-  same custom `Equals`/`GetHashCode`/`CompareTo` four times.
+- **Each type carries `ImmutableArray<byte>` itself.** Rejected, for the reason
+  measured below: `ImmutableArray<T>`'s comparison is unusable as a `Map` key, and
+  a directory **is** a `Map<DirectoryEntryName, InodeNumber>`. Defusing that
+  per-type means writing the same `CompareTo` four times, and the four types also
+  want one shared home for `tryToString`, `toEscaped` and the NUL-free invariant.
 - **Keep `string`, store bytes as PEP-383-style surrogate escapes.** Rejected.
   Much the smaller diff, since every `Map` key, ordering and `%s` format keeps
   working — but that is exactly the problem: they keep working and are *almost*
   right. It also makes `UnixPathText`'s "an unpaired surrogate is illegal" rule
   a lie, which is the rule the whole module exists to state.
 
-The chosen shape puts the landmine in one place and defuses it once.
+#### What `ImmutableArray<byte>` actually does under F# (measured)
 
-**Comparison is lexicographic on the bytes, unsigned.** `GetHashCode` is computed
-on demand rather than stored: F# `Map` is a balanced tree and uses comparison, not
+Measured with `dotnet fsi` on this repo's toolchain, because this is the premise
+the whole primitive rests on and it is not what one would guess:
+
+| operation | result |
+| --- | --- |
+| `=`, same length | structural — `True` |
+| `=`, different lengths | structural — `False` |
+| `hash` | structural |
+| `compare`, **same length** | works, `-1` |
+| `compare`, **different lengths** | **throws `ArgumentException`** |
+| `Map` with same-length keys | works |
+| `Map` with **different-length** keys | **throws `ArgumentException`** |
+| `Set` with different-length elements | **throws `ArgumentException`** |
+| `List.sort` | **throws `InvalidOperationException`** |
+
+So equality and hashing are fine — `ImmutableArray<T>` implements
+`IStructuralEquatable`, which F#'s generic equality honours, and the
+`IEquatable<ImmutableArray<T>>` reference comparison never gets a look in.
+**Comparison is the problem.** `IStructuralComparable` delegates to
+`Array`'s, which refuses two arrays of unequal length outright.
+
+A `Map` keyed on a bare `ImmutableArray<byte>` therefore throws the moment a
+directory holds two names of different lengths — which is to say, immediately.
+That is a loud failure rather than a silent one, but it is fatal and entirely
+non-obvious, and it is why `UnixByteString` writes its own `CompareTo`.
+
+*(An earlier draft of this section asserted from memory that the landmine was
+`ImmutableArray`'s reference equality silently breaking `Map` lookups. Measuring
+it showed equality is structural and fine, and that the real hazard is comparison
+throwing. Worse, the first probe of it used two 3-byte keys and "passed" — the
+bug needs unequal lengths to show. Two lessons already in the `probe-methodology`
+skill: measure instead of asserting, and make sure the probe can fail.)*
+
+**Comparison is therefore lexicographic on the bytes, unsigned, and total across
+lengths** — a shorter proper prefix sorts first. `GetHashCode` is computed on
+demand rather than stored: F# `Map` is a balanced tree and uses comparison, not
 hashing, so nothing in the hot path hashes a name, and a stored hash is one more
 field a forged `Unchecked.defaultof` could make inconsistent.
 
@@ -599,11 +632,15 @@ reference implementation for the ASCII subset and against raw bytes elsewhere:
 - `ofBytes >> toBytes = id` for every NUL-free byte array.
 - **Equality is structural**: for all byte arrays `b`, two independently
   constructed `UnixByteString`s over copies of `b` are equal and hash equally.
-  *This is the property that would have caught the `ImmutableArray` landmine.*
-- **Comparison is a total order** consistent with equality, and agrees with
-  `Array.compareWith compare` on the unsigned bytes.
-- **`Map` round-trip**: for all lists of distinct byte arrays, inserting each as
-  a key and looking each up through freshly-built values retrieves every one.
+- **Comparison is a total order** consistent with equality, total **across
+  differing lengths**, and agreeing with `Array.compareWith compare` on the
+  unsigned bytes. The generator must produce unequal lengths, and must include a
+  proper-prefix pair (`[1]` vs `[1; 0]`): §2.1's table shows that is precisely
+  the case a bare `ImmutableArray` throws on, and a same-length generator passes
+  against the broken implementation.
+- **`Map`, `Set` and `List.sort` round-trip**: for all lists of distinct byte
+  arrays **of differing lengths**, inserting each as a key and looking each up
+  through freshly-built values retrieves every one, and sorting does not throw.
 - `tryToString` agrees with `UTF8Encoding(false, true).GetString`: `Some` iff
   that call does not throw. Two separate properties, because one equation cannot
   cover both halves of the domain —
@@ -713,9 +750,12 @@ into the EILSEQ a real APFS would have given.
 - The Darwin placeholder is reachable and crashes: `mkdir` of an undecodable
   name on a `macOsArm64` kernel hits the Stage 7 `failwith`, rather than
   succeeding.
-- Mutation-test the structural-equality property from Stage 1 by reverting
-  `UnixByteString` to `ImmutableArray`'s own `Equals` and confirming the
-  directory tests go red. (See the `mutation-testing` skill.)
+- Mutation-test the comparison by deleting `UnixByteString`'s `CompareTo` and
+  letting `ImmutableArray`'s `IStructuralComparable` take over: the directory
+  tests must go red with `ArgumentException`, not merely fail an assertion. Per
+  §2.1 this is the mutation that matters — reverting `Equals` instead would *not*
+  go red, because `ImmutableArray`'s structural equality is already correct.
+  (See the `mutation-testing` skill.)
 
 ---
 
@@ -911,10 +951,14 @@ of every `rg -i "utf-?8"` hit in `docs/` and in the two `AGENTS.md` files.
 
 ## 4. Risks
 
-**The `ImmutableArray` equality landmine is silent.** It does not fail to
-compile, and it does not throw; a directory simply stops finding its own
-entries. Stage 1's structural-equality and `Map`-round-trip properties exist
-specifically for this, and Stage 3 mutation-tests them. Do not skip that.
+**The `ImmutableArray` hazard is comparison, not equality, and it throws.**
+§2.1 measures it: equality and hashing are structural and fine, but `compare` on
+two arrays of *different lengths* raises `ArgumentException`, so a `Map`, `Set`
+or `List.sort` over bare `ImmutableArray<byte>` keys fails the moment the lengths
+differ. Stage 1's comparison property must therefore generate unequal lengths —
+a same-length generator passes against the broken implementation — and Stage 3
+mutation-tests it by deleting `CompareTo` rather than `Equals`. Do not skip
+either; this plan asserted the opposite hazard from memory for several drafts.
 
 **`Unchecked.defaultof` changes shape.** Today a forged value holds a null
 `string` and `assertValid` matches on it; tomorrow it holds a default
