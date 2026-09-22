@@ -460,16 +460,117 @@ module TestSignalState =
         SignalState.pending s |> Seq.toList |> shouldEqual [ a ; b ]
 
     [<Test>]
-    let ``enqueue does not coalesce duplicates`` () : unit =
-        let e =
+    let ``enqueue coalesces a standard signal already pending in the same set`` () : unit =
+        // A kernel holds at most one pending instance of a standard signal
+        // per pending set: measured, three process-directed SIGUSR1 while
+        // blocked deliver once, on both platforms. The discarded duplicate
+        // leaves the state structurally identical, not merely equivalent.
+        for target in [ ValueNone ; ValueSome t1 ] do
+            let e =
+                {
+                    Signal = Signal.SIGINT
+                    Target = target
+                }
+
+            let once = empty |> SignalState.enqueue e
+            let twice = once |> SignalState.enqueue e
+
+            twice |> shouldEqual once
+            SignalState.pending twice |> shouldEqual [ e ]
+
+    [<Test>]
+    let ``enqueue coalesces across spellings of one signal`` () : unit =
+        // The coalescing key is the canonical signal: SIGCHLD pending and a
+        // second generation spelt as its raw number are one signal.
+        for numbering in everyNumbering do
+            let spelt = Signal.Other (Signal.toRawSignoUnder numbering Signal.SIGCHLD)
+
+            let s =
+                initial numbering
+                |> SignalState.enqueue
+                    {
+                        Signal = Signal.SIGCHLD
+                        Target = ValueNone
+                    }
+                |> SignalState.enqueue
+                    {
+                        Signal = spelt
+                        Target = ValueNone
+                    }
+
+            SignalState.pending s
+            |> shouldEqual
+                [
+                    {
+                        Signal = Signal.SIGCHLD
+                        Target = ValueNone
+                    }
+                ]
+
+    [<Test>]
+    let ``enqueue keeps separate pending sets separate`` () : unit =
+        // Measured: a process-directed plus a thread-directed instance of one
+        // standard signal deliver twice (Linux, and a two-thread Darwin
+        // process), so ValueNone and each ValueSome are distinct sets — as
+        // are two different threads' own sets.
+        let processDirected =
             {
                 Signal = Signal.SIGINT
                 Target = ValueNone
             }
 
-        let s = empty |> SignalState.enqueue e |> SignalState.enqueue e
+        let atT0 =
+            {
+                Signal = Signal.SIGINT
+                Target = ValueSome t0
+            }
 
-        SignalState.pending s |> Seq.toList |> shouldEqual [ e ; e ]
+        let atT1 =
+            {
+                Signal = Signal.SIGINT
+                Target = ValueSome t1
+            }
+
+        let s =
+            empty
+            |> SignalState.enqueue processDirected
+            |> SignalState.enqueue atT0
+            |> SignalState.enqueue atT1
+            // And a redundant round: each is already pending in its own set.
+            |> SignalState.enqueue processDirected
+            |> SignalState.enqueue atT0
+
+        SignalState.pending s |> shouldEqual [ processDirected ; atT0 ; atT1 ]
+
+    [<Test>]
+    let ``a real-time signal queues without coalescing under Linux numbering`` () : unit =
+        // Measured on Linux 6.18.5: three generations of signo 36 while
+        // blocked deliver three times, via sigqueue and via kill alike.
+        let rt =
+            {
+                Signal = Signal.Other 36
+                Target = ValueNone
+            }
+
+        let s =
+            initial SignalNumbering.Linux
+            |> SignalState.enqueue rt
+            |> SignalState.enqueue rt
+            |> SignalState.enqueue rt
+
+        SignalState.pending s |> shouldEqual [ rt ; rt ; rt ]
+
+        // And each queued instance delivers separately.
+        let s = s |> SignalState.enable (Signal.Other 36)
+
+        let s =
+            match SignalState.tryDeliverable (liveThreads [ t0 ]) s with
+            | Some (e, _, s') ->
+                e |> shouldEqual rt
+                s'
+            | None -> failwith "expected the first real-time instance to deliver"
+
+        SignalState.pending s |> shouldEqual [ rt ; rt ]
 
     [<Test>]
     let ``structural equality survives a non-empty pending queue`` () : unit =
@@ -846,16 +947,24 @@ module TestSignalState =
 
             SignalState.unblock tid sig0 s, r'
         | Op.Enqueue e ->
-            SignalState.enqueue e s,
-            { r with
-                Pending =
-                    r.Pending
-                    @ [
-                        { e with
-                            Signal = canonical e.Signal
-                        }
-                    ]
-            }
+            let entry =
+                { e with
+                    Signal = canonical e.Signal
+                }
+
+            let alreadyPendingInSet =
+                r.Pending
+                |> List.exists (fun p -> p.Signal = entry.Signal && p.Target = entry.Target)
+
+            let reference =
+                if alreadyPendingInSet && not (Signal.isRealTimeUnder numbering entry.Signal) then
+                    r
+                else
+                    { r with
+                        Pending = r.Pending @ [ entry ]
+                    }
+
+            SignalState.enqueue e s, reference
         | Op.DrainOne live ->
             let actual = SignalState.tryDeliverable (liveThreads live) s
             let expected = referenceTryDeliverable live r
@@ -952,6 +1061,8 @@ module TestSignalState =
         let mutable observedDrainNoneNonEmpty = 0
         let mutable observedNonCanonicalSpellings = 0
         let mutable observedUnblockableBlocks = 0
+        let mutable observedCoalescedEnqueues = 0
+        let mutable observedQueuedRealTimeDuplicates = 0
 
         let property (NonNegativeInt seed : NonNegativeInt) : unit =
             let rng = System.Random seed
@@ -991,6 +1102,18 @@ module TestSignalState =
                 match op with
                 | Op.Block (_, signal) when Signal.isUnblockableUnder numbering signal ->
                     observedUnblockableBlocks <- observedUnblockableBlocks + 1
+                | Op.Enqueue e ->
+                    let alreadyPendingInSet =
+                        r.Pending
+                        |> List.exists (fun p ->
+                            p.Signal = Signal.canonicalUnder numbering e.Signal && p.Target = e.Target
+                        )
+
+                    if alreadyPendingInSet then
+                        if Signal.isRealTimeUnder numbering e.Signal then
+                            observedQueuedRealTimeDuplicates <- observedQueuedRealTimeDuplicates + 1
+                        else
+                            observedCoalescedEnqueues <- observedCoalescedEnqueues + 1
                 | _ -> ()
 
                 let s', r' = stepBoth numbering op s r
@@ -1012,6 +1135,13 @@ module TestSignalState =
         observedDrainNoneNonEmpty |> shouldBeGreaterThan 20
         observedNonCanonicalSpellings |> shouldBeGreaterThan 100
         observedUnblockableBlocks |> shouldBeGreaterThan 20
+        observedCoalescedEnqueues |> shouldBeGreaterThan 20
+
+        // Only Linux numbering has real-time signals in the pool (`Other 40`),
+        // so only there can the walk exercise the queue-not-coalesce arm.
+        match numbering with
+        | SignalNumbering.Linux -> observedQueuedRealTimeDuplicates |> shouldBeGreaterThan 5
+        | SignalNumbering.Darwin -> observedQueuedRealTimeDuplicates |> shouldEqual 0
 
     [<Test>]
     let ``random op sequences agree with the reference oracle on every observable, under Linux numbering`` () : unit =
