@@ -6,12 +6,6 @@ using System.Reflection;
 // CoreCLR takes `pMeth->GetSingleCallableAddrOfVirtualizedCode(&gc.target, ownerType)` for a vtable
 // method (reflectioninvocation.cpp:417-424) rather than the method's own entry point.
 //
-// Split out of `sourcesPure/ReflectionInvokeMethod.cs` because it is blocked on something with no
-// connection to reflection *invocation*: `RuntimeType.RuntimeTypeCache.PopulateMethods` calls
-// `RuntimeMethodHandle.GetSlot` for every virtual method it enumerates (RuntimeType.CoreCLR.cs:685),
-// so merely calling `GetMethod` on a type that declares one reaches that unimplemented InternalCall.
-// The blocker therefore fires at the *lookup*, before any invocation happens.
-//
 // As in the sibling files, each MethodInfo is invoked exactly once: after the first invocation
 // `MethodInvokerCommon.DetermineStrategy_*` switches to a Reflection.Emit delegate and stops
 // exercising this QCall.
