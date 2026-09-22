@@ -301,14 +301,19 @@ module CrossAssemblyHarness =
                 if pawPrintResult <> realResult then
                     failwith $"PawPrint returned %d{pawPrintResult}, but the real runtime returned %d{realResult}."
             | PawPrintExpectation.Refuses required ->
-                let refusal =
+                let outcome =
                     try
-                        let ran = executeWithPawPrint entryPath entryBytes
+                        executeWithPawPrint entryPath entryBytes |> Ok
+                    with e ->
+                        Error e
 
+                let refusal =
+                    match outcome with
+                    | Ok ran ->
                         failwithf
                             "Expected PawPrint to refuse this guest, but it ran it and returned %d. If PawPrint has learned to answer, this case should become a plain differential one."
                             ran
-                    with e ->
+                    | Error e ->
                         // The whole chain: a refusal deep in the interpreter arrives wrapped.
                         let rec messages (e : exn) =
                             if isNull e.InnerException then

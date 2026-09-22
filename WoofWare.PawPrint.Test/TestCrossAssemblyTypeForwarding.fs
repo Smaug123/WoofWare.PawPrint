@@ -375,6 +375,10 @@ class Program
         if (facade.GetType("typeforwardcross.gen", false, true) is not null) return 10;
         if (facade.GetType("typeforwardcross.gen`1", false, true) is null) return 11;
 
+        // A character outside ASCII is the host's casing table's business, but no name in scope
+        // has this one's length, so nothing could fold to it and the answer is a plain miss.
+        if (facade.GetType("typeforwardcross.nöSuchType", false, true) is not null) return 12;
+
         return 0;
     }
 }
@@ -690,6 +694,48 @@ class Program
         // A nested name that does not exist under a forwarded parent is a miss, not a fall back to
         // some top-level type of that name.
         if (facade.GetType("TypeForwardCross.Outer+Absent", throwOnError: false) is not null) return 6;
+
+        return 0;
+    }
+}
+"""
+            EntryAssemblyName = "TypeForward.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest
+
+
+    // Parked on the same stub as the case above: `AssemblyNative_GetTypeCoreIgnoreCase` is handed
+    // its nested names through the same `ReadOnlySpan<string>` marshalling, UTF-16 rather than
+    // UTF-8, so no nested lookup reaches it either.
+    [<Explicit "blocked on reading an uninitialised localloc buffer in the span-marshalling stub">]
+    [<Test>]
+    let ``a nested name folds too, under a forwarded type`` () : unit =
+        {
+            Assemblies =
+                assemblies
+                    """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+
+        // Both levels spelled in the wrong case: the top-level name through the forwarder row, and
+        // the nested one against a TypeDef that exists only in the library.
+        Type inner = facade.GetType("typeforwardcross.OUTER+inner", throwOnError: false, ignoreCase: true);
+        if (inner is null) return 1;
+        if (inner.FullName != "TypeForwardCross.Outer+Inner") return 2;
+        if (inner.Assembly.GetName().Name != "TypeForward.Lib") return 3;
+
+        // The control: the nested name is not folded without ignoreCase.
+        if (facade.GetType("TypeForwardCross.Outer+inner", throwOnError: false) is not null) return 4;
+
+        // A folded nested name that matches nothing is still a miss.
+        if (facade.GetType("typeforwardcross.outer+absent", false, true) is not null) return 5;
 
         return 0;
     }
