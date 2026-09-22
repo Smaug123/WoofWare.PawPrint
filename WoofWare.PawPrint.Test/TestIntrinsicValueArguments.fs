@@ -182,7 +182,7 @@ module TestIntrinsicValueArguments =
         // float-to-integer coercion at a call boundary to honour.
         let exn =
             Assert.Throws<System.Exception> (fun () ->
-                Intrinsics.int32ValueArgument "Interlocked.Add" (EvalStackValue.Float 1.5)
+                Intrinsics.int32ValueArgument "Interlocked.Add" (EvalStackValue.Float (EvalStackFloat.Double 1.5))
                 |> ignore
             )
 
@@ -267,7 +267,7 @@ module TestIntrinsicValueArguments =
     let ``int64 value argument refuses non-integer shapes`` () : unit =
         for value in
             [
-                EvalStackValue.Float 1.5
+                EvalStackValue.Float (EvalStackFloat.Double 1.5)
                 EvalStackValue.ObjectRef (ManagedHeapAddress.ManagedHeapAddress 11)
             ] do
             let exn =

@@ -2000,7 +2000,7 @@ module NativeSystemNative =
                 ptr
                 (ImmutableArray.CreateRange (Array.zeroCreate<byte> 24))
                 state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float 0.0) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float (EvalStackFloat.Double 0.0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetLowResolutionTimestamp",
@@ -2798,11 +2798,9 @@ module NativeSystemNative =
 
             if nameBytes.Length + 1 > directoryNameBufferBytes then
                 // No name either kernel can store reaches this: Linux bounds a
-                // component at 255 bytes and Darwin at 255 UTF-16 code units,
-                // which is at most 765 bytes. A longer one can only have come
-                // from a seed, which bypasses `NAME_MAX` — and such a name is
-                // unreachable by every other syscall, because the walk checks
-                // the limit before each lookup.
+                // component at 255 bytes and Darwin at 765, and a seed is held
+                // to the same `NAME_MAX` as a binding is. So this is an
+                // assertion that nothing has put a longer name in the graph.
                 //
                 // The buffer's size is the ABI's rather than the kernel's, which
                 // is why this check is here and not in `UnixNamespace.readdir`.

@@ -206,6 +206,76 @@ module TestWithFileSystemAndCurrentDirectory =
             | Ok _ -> ()
             | Error fault -> failwith $"a 255-byte name is within NAME_MAX, but the seed answered %O{fault}."
 
+    let private nameOfBytes (raw : byte list) : DirectoryEntryName =
+        match UnixByteString.ofBytes (ImmutableArray.CreateRange raw) with
+        | Error defect -> failwith $"test bytes %s{UnixByteString.describe defect}"
+        | Ok bytes ->
+
+        match DirectoryEntryName.ofByteString bytes with
+        | Ok name -> name
+        | Error error -> failwith $"test name: %s{DirectoryEntryName.describe error}"
+
+    /// A seed name the flavour's filesystem would not bind describes a
+    /// filesystem no kernel of that flavour could have built, as an over-long
+    /// one does: on Darwin, a name that is not UTF-8.
+    [<Test>]
+    let ``a seed name the flavour will not bind is refused, wherever it sits`` () : unit =
+        let undecodable = nameOfBytes [ byte 'a' ; 0xFFuy ]
+
+        let atRoot = Map.ofList [ undecodable, SeedEntry.file noBytes ]
+
+        let nested =
+            Map.ofList
+                [
+                    name "outer",
+                    SeedEntry.directory (Map.ofList [ undecodable, SeedEntry.directory FileSystemSeed.empty ])
+                ]
+
+        // A symlink's own name is bound like any other; its target is not a name.
+        let asLink = Map.ofList [ undecodable, SeedEntry.Symlink (target "outer") ]
+
+        for entries in [ atRoot ; nested ; asLink ] do
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute "/")
+            |> shouldEqual (
+                Error (CurrentDirectoryFault.SeedNameNotBindable (undecodable, SimulatedUnixFlavour.Darwin))
+            )
+
+            // Linux binds any NUL-free bytes, so the same seed is a filesystem it could hold.
+            match
+                UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64
+                |> UnixSystem.withFileSystemAndCurrentDirectory createdAt entries (absolute "/")
+            with
+            | Ok _ -> ()
+            | Error fault -> failwith $"Linux binds any bytes, but the seed answered %O{fault}."
+
+    [<Test>]
+    let ``Darwin's seed admits the valid UTF-8 its model binds, and checks NAME_MAX first`` () : unit =
+        // The seed applies the model's rule, strictly-valid UTF-8, which
+        // admits U+FFFF though APFS does not (docs/divergences.md): a seed may
+        // hold whatever a guest of the same flavour could have created.
+        let nonCharacter =
+            Map.ofList [ name (string (char 0xFFFF)), SeedEntry.file noBytes ]
+
+        match
+            UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+            |> UnixSystem.withFileSystemAndCurrentDirectory createdAt nonCharacter (absolute "/")
+        with
+        | Ok _ -> ()
+        | Error fault -> failwith $"the model's Darwin binds U+FFFF, but the seed answered %O{fault}."
+
+        // Both rules broken at once: 766 bytes of 0xFF is past the 765-byte
+        // limit for a name that is not UTF-8. NAME_MAX is reported, as the
+        // walk would reach it before the encoding.
+        let both = nameOfBytes (List.replicate 766 0xFFuy)
+
+        UnixSystem.initial<int, string> SimulatedUnixPlatform.macOsArm64
+        |> UnixSystem.withFileSystemAndCurrentDirectory
+            createdAt
+            (Map.ofList [ both, SeedEntry.file noBytes ])
+            (absolute "/")
+        |> shouldEqual (Error (CurrentDirectoryFault.SeedNameTooLong (both, SimulatedUnixFlavour.Darwin)))
+
     /// A forged seed name is refused with the seed's context before it is
     /// measured, as it was before the length rule stood in front of the graph.
     [<Test>]
@@ -304,6 +374,11 @@ module TestWithFileSystemAndCurrentDirectory =
                     SimulatedUnixPlatform.macOsArm64
                     (Map.ofList [ name "l", SeedEntry.Symlink (target (String.replicate 400 "/ab")) ])
                     "/l"
+                // A seed name no Darwin filesystem would bind.
+                startAt
+                    SimulatedUnixPlatform.macOsArm64
+                    (Map.ofList [ nameOfBytes [ 0xFFuy ], SeedEntry.file noBytes ])
+                    "/"
             ]
             |> List.choose (fun result ->
                 match result with

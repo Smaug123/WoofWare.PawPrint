@@ -155,6 +155,7 @@
     <Compile Include="TestMethodOwner.fs" />
     <Compile Include="TestDynamicMethodMintOutcome.fs" />
     <Compile Include="TestDynamicMethodTracing.fs" />
+    <Compile Include="TestFloatWidthJoin.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestLdtokenMemberTokens.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />

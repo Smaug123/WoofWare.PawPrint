@@ -1059,6 +1059,9 @@ module EmulatedKernel =
         | Error (CurrentDirectoryFault.SeedNameTooLong (name, flavour)) ->
             failwith
                 $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in KernelConfig.FileSystem, or configure the flavour whose limit admits it."
+        | Error (CurrentDirectoryFault.SeedNameNotBindable (name, flavour)) ->
+            failwith
+                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which %O{flavour}'s filesystem will not bind (on Darwin, a name that is not valid UTF-8), so no filesystem that flavour could mount holds it. Rename the entry in KernelConfig.FileSystem, or configure the flavour that binds it."
 
 
 

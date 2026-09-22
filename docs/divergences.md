@@ -1277,8 +1277,8 @@ three, which macOS would refuse. The Linux flavour binds any NUL-free bytes, as 
 EILSEQ falls among the other refusals is modelled as measured: last, after `NAME_MAX` and the parent's
 write permission.
 
-A host's filesystem seed bypasses the rule on both flavours, as it already bypasses `NAME_MAX`: a
-seeded Darwin filesystem can hold a name APFS could not.
+A host's filesystem seed is held to the same rule as a binding, as it is to `NAME_MAX`: a Darwin seed
+holding a name that is not UTF-8 is refused with `CurrentDirectoryFault.SeedNameNotBindable`.
 
 **Spec status**: POSIX guarantees only its portable filename character set. Which other names a
 filesystem accepts is up to the filesystem.
