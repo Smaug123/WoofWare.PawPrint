@@ -17,7 +17,10 @@ type StructMarshalFieldKind =
     /// CoreCLR's `MARSHAL_TYPE_DATE` (mlinfo.cpp:1747): a `System.DateTime` field becomes an
     /// 8-byte little-endian IEEE-754 double holding `dt.ToOADate()`, *not* the managed
     /// `ulong _dateData` image. The conversion is `ILDateMarshaler::EmitConvertContentsCLRToNative`
-    /// (ilmarshalers.cpp:1241), which calls managed `StubHelpers.DateMarshaler.ConvertToNative`.
+    /// (ilmarshalers.cpp:1241), which calls managed `StubHelpers.DateMarshaler.ConvertToNative`;
+    /// its inverse (ilmarshalers.cpp:1251) calls `DateMarshaler.ConvertToManaged` and constructs the
+    /// field with `DateTime(long ticks)`, so a round trip keeps only whole milliseconds and always
+    /// comes back with `DateTimeKind.Unspecified`.
     | OADate
 
 /// One field's contribution to the unmanaged image: where it goes, how it gets there, and the
@@ -54,13 +57,12 @@ type StructMarshalPlan =
 /// `NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed …)` holds it, `calli` needs no
 /// special case, and `AbstractMachine` dispatches it beside the delegate constructor and `Invoke`.
 ///
-/// `MARSHAL_TYPE_DATE` needs `DateTime.ToOADate`, whose behaviour (a zero special case, a VB
-/// compatibility fixup, and a guest-visible `OverflowException` below `OADateMinAsTicks`) belongs
-/// to the guest's CoreLib — so the stub calls the guest's own
-/// `StubHelpers.DateMarshaler.ConvertToNative`, once per conversion field, by pushing it as a
-/// callee and not returning its own frame; the result lands on the stub's own evaluation stack.
-/// Nothing is written to the destination until every conversion has completed, so a resumption
-/// never observes a half-written image.
+/// `MARSHAL_TYPE_DATE` needs `DateTime.ToOADate` one way and `DateTime.DoubleDateToTicks` and
+/// `DateTime(long)` the other, whose behaviour (a zero special case, a VB compatibility fixup, and
+/// guest-visible exceptions for dates outside the OLE Automation range) belongs to the guest's
+/// CoreLib — so the stub calls the guest's own `StubHelpers.DateMarshaler` and `DateTime`
+/// constructor, once per conversion field, by pushing each as a callee and not returning its own
+/// frame; the result lands on the stub's own evaluation stack.
 [<RequireQualifiedAccess>]
 module StructMarshalStub =
 
@@ -383,7 +385,7 @@ module StructMarshalStub =
         | Unmarshal
         | Cleanup
 
-    /// The conversion results a part-way-through stub invocation has accumulated.
+    /// The conversion results a part-way-through `Marshal` invocation of the stub has accumulated.
     ///
     /// Each conversion the stub needs pushes a managed callee and leaves the program counter put,
     /// so the stub is re-entered when that callee returns with its result on the stub's *own*
@@ -393,7 +395,8 @@ module StructMarshalStub =
     /// A conversion helper that returns *void* pushes nothing, so the count never advances and
     /// the stub would re-enter forever. CoreLib has several such marshallers
     /// (`CSTRMarshaler.ConvertFixedToNative`, `FixedWSTRMarshaler`); implementing one requires
-    /// pushing a sentinel of our own first.
+    /// pushing a sentinel of our own first, as the `Unmarshal` direction does for the void
+    /// `DateTime` constructor.
     ///
     /// Result *i* is attributed to conversion *i* of a plan that is recomputed on every pass, so
     /// the attribution is sound only while the plan's step order is a deterministic function of
@@ -427,7 +430,7 @@ module StructMarshalStub =
         | EvalStackValue.NativeInt (NativeIntSource.ManagedPointer src) -> src
         | other -> failwith $"%s{operation}: expected %s{what} to be a managed pointer, got %O{other}"
 
-    /// `System.Byte` as a concrete type, for forming byte-view byrefs into the destination. Same
+    /// `System.Byte` as a concrete type, for forming byte-view byrefs into the native image. Same
     /// derivation as `CellAwareMemOps`, whose own copy is private.
     let private byteType
         (operation : string)
@@ -442,14 +445,17 @@ module StructMarshalStub =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
 
-    /// The guest's `StubHelpers.DateMarshaler.ConvertToNative(DateTime) -> double`, which is what
-    /// CoreCLR's own date marshaller calls (ilmarshalers.cpp:1241).
-    let private dateConvertToNative
+    /// One of the guest's `StubHelpers.DateMarshaler` conversions, both of which are static and
+    /// take one argument: `ConvertToNative(DateTime) -> double`, which CoreCLR's date marshaller
+    /// calls on the way out (ilmarshalers.cpp:1247), and `ConvertToManaged(double) -> long`, which
+    /// it calls on the way back (ilmarshalers.cpp:1260).
+    let private dateMarshalerMethod
         (operation : string)
+        (name : string)
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
         =
         let declaringType =
             baseClassTypes.Corelib.TypeDefs
@@ -465,12 +471,12 @@ module StructMarshalStub =
 
         let method =
             declaringType.Methods
-            |> List.tryFind (fun m -> m.Name = "ConvertToNative" && m.IsStatic && MethodInfo.arity m = 1)
+            |> List.tryFind (fun m -> m.Name = name && m.IsStatic && MethodInfo.arity m = 1)
             |> Option.defaultWith (fun () ->
-                failwith $"%s{operation}: System.StubHelpers.DateMarshaler.ConvertToNative(DateTime) not found"
+                failwith $"%s{operation}: static System.StubHelpers.DateMarshaler.%s{name} of one argument not found"
             )
 
-        let state, concretized, declaringTypeHandle =
+        let state, concretized, _ =
             ExecutionConcretization.concretizeMethodWithAllGenerics
                 loggerFactory
                 baseClassTypes
@@ -479,7 +485,49 @@ module StructMarshalStub =
                 ImmutableArray.Empty
                 state
 
-        state, concretized, declaringTypeHandle
+        state, concretized
+
+    /// The guest's `System.DateTime::.ctor(long ticks)`, which CoreCLR's date marshaller calls on
+    /// the field's managed home with the tick count `DateMarshaler.ConvertToManaged` produced
+    /// (`METHOD__DATE_TIME__LONG_CTOR`, ilmarshalers.cpp:1262).
+    let private dateTimeTicksCtor
+        (operation : string)
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+        =
+        let method =
+            baseClassTypes.DateTime.Methods
+            |> List.tryFind (fun m ->
+                m.Name = ".ctor"
+                && not m.IsStatic
+                && (MethodInfo.requireRawSignature operation m).ParameterTypes = [
+                    TypeDefn.PrimitiveType PrimitiveType.Int64
+                ]
+            )
+            |> Option.defaultWith (fun () -> failwith $"%s{operation}: System.DateTime::.ctor(long) not found")
+
+        let state, concretized, _ =
+            ExecutionConcretization.concretizeMethodWithAllGenerics
+                loggerFactory
+                baseClassTypes
+                ImmutableArray.Empty
+                method
+                ImmutableArray.Empty
+                state
+
+        state, concretized
+
+    /// Whether a byref's projection chain addresses the whole of its root's value: the empty
+    /// chain, or a type view over the whole payload — optionally with an explicit zero byte
+    /// offset, which is the same address.
+    let private addressesWholeValue (projections : ByrefProjection list) : bool =
+        match List.rev projections with
+        | []
+        | [ ByrefProjection.ReinterpretAs _ ]
+        | [ ByrefProjection.ByteOffset 0 ; ByrefProjection.ReinterpretAs _ ] -> true
+        | _ -> false
 
     /// Read the struct the stub is to marshal, given the byref CoreLib passed as the stub's first
     /// argument.
@@ -505,15 +553,6 @@ module StructMarshalStub =
         (state : IlMachineState)
         : CliType
         =
-        let addressesWholeValue (projections : ByrefProjection list) : bool =
-            // A whole-value view is the empty chain, or a type view over the whole payload —
-            // optionally with an explicit zero byte offset, which is the same address.
-            match List.rev projections with
-            | []
-            | [ ByrefProjection.ReinterpretAs _ ]
-            | [ ByrefProjection.ByteOffset 0 ; ByrefProjection.ReinterpretAs _ ] -> true
-            | _ -> false
-
         match source with
         | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, projections) when addressesWholeValue projections ->
             CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
@@ -532,8 +571,11 @@ module StructMarshalStub =
     /// A conversion field is handled by pushing the guest's own marshaller as a callee and
     /// *not* returning the frame. The dispatch loop runs the callee, whose result lands on this
     /// frame's evaluation stack, and re-enters here on a later step with one more result in hand.
-    /// Nothing is written to the destination until every conversion has completed, so a resumption
-    /// never observes a half-written image.
+    /// `Marshal` writes nothing to the native image until every conversion has completed, so a
+    /// resumption never observes a half-written image. `Unmarshal` stores each field into the box
+    /// as it goes, in declaration order, which is what CoreCLR's stub does too; the box is the
+    /// fresh one `Marshal.PtrToStructure` allocated, and it is dropped unseen if a conversion
+    /// throws.
     let executeStubCall
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -555,8 +597,6 @@ module StructMarshalStub =
             )
 
         let frameId = state.ThreadState.[thread].ActiveMethodState
-        let completed = completedConversions (IlMachineState.getFrame thread frameId state)
-        let completedCount = List.length completed
 
         if instruction.Arguments.Length <> 4 then
             failwith
@@ -564,28 +604,64 @@ module StructMarshalStub =
 
         let op = operationOf operation (EvalStackValue.ofCliType instruction.Arguments.[2])
 
-        let destination =
-            managedPointerOf operation "the destination pointer" (EvalStackValue.ofCliType instruction.Arguments.[1])
+        // The managed struct (a byref onto a box's payload) and its native image. Which is read
+        // and which written depends on the operation.
+        let managed =
+            managedPointerOf
+                operation
+                "the managed struct reference"
+                (EvalStackValue.ofCliType instruction.Arguments.[0])
 
-        let source =
-            managedPointerOf operation "the source reference" (EvalStackValue.ofCliType instruction.Arguments.[0])
+        let nativeImage =
+            managedPointerOf operation "the native image pointer" (EvalStackValue.ofCliType instruction.Arguments.[1])
 
-        /// The stub's work is done: drop the conversion results it accumulated, pop its frame, and
-        /// hand control back to CoreLib.
-        ///
-        /// The results have to go first: they are this frame's scratch state, and the stub returns
-        /// void, so leaving them would trip `returnStackFrame`'s check that a void method returns
-        /// an empty stack.
+        /// The stub's work is done: pop its frame and hand control back to CoreLib. The stub returns
+        /// void, so its evaluation stack must be empty by now, which `returnStackFrame` checks.
         let finish (state : IlMachineState) : ExecutionResult =
-            let mutable state = state
-
-            for _ in 1..completedCount do
-                let _, next = IlMachineState.popEvalStack thread state
-                state <- next
-
             match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
             | ReturnFrameResult.NormalReturn state -> ExecutionResult.stepped (state, WhatWeDid.Executed)
             | result -> failwith $"%s{operation}: unexpected ReturnFrameResult returning from stub frame: %A{result}"
+
+        /// Call a guest method whose arguments are already on this frame's evaluation stack, without
+        /// returning this frame. The dispatch loop runs the callee, whose result (if any) lands on
+        /// this frame's evaluation stack, and then re-enters the stub.
+        ///
+        /// `callMethodWithCommitment` arms the callee's class initialiser on the callee's frame; the
+        /// dispatch loop runs it as that frame's prologue.
+        let callGuest
+            (callee : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+            (state : IlMachineState)
+            : ExecutionResult
+            =
+            let threadState = state.ThreadState.[thread]
+
+            let state, commitment =
+                IlMachineStateExecution.callMethodWithCommitment
+                    loggerFactory
+                    baseClassTypes
+                    None
+                    ConstructionState.NotConstructing
+                    false
+                    false
+                    false // this frame has no program counter to advance
+                    IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                    callee.Generics
+                    callee
+                    thread
+                    threadState
+                    None
+                    ReturnValueDisposition.PushToCaller
+                    false // wrapExceptionInTargetInvocation
+                    state
+
+            match commitment with
+            | IlMachineStateExecution.CallCommitment.Aborted fatal ->
+                ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
+            | IlMachineStateExecution.CallCommitment.Committed
+            | IlMachineStateExecution.CallCommitment.Raised ->
+                // Either a callee frame or an exception constructor is now on top of us; in both
+                // cases our frame stays put and the dispatch loop takes it from here.
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
 
         /// The plan for the stub's type, derived from `value`. `nativeSizeOnly` callers pass the
         /// type's zero because they need only the total.
@@ -602,10 +678,19 @@ module StructMarshalStub =
 
         let byteView = byteType operation baseClassTypes state
 
-        /// The address of byte `nativeOffset` of the destination, as a byte-view byref — the same
-        /// shape the guest's own pointer arithmetic produces before a `stind`.
+        /// The address of byte `nativeOffset` of the native image, as a byte-view byref — the same
+        /// shape the guest's own pointer arithmetic produces before a `stind` or `ldind`.
         let addressOf (nativeOffset : int) (state : IlMachineState) : ManagedPointerSource =
-            ManagedPointerByteView.addByteOffset state byteView nativeOffset destination
+            ManagedPointerByteView.addByteOffset state byteView nativeOffset nativeImage
+
+        /// The native image is a raw buffer the guest sized from `Marshal.SizeOf`, so the plan's
+        /// own total is the only bound we can check a field against. A step that ran past it would
+        /// touch memory outside what the guest allocated.
+        let checkInsideImage (plan : StructMarshalPlan) : unit =
+            for step in plan.Steps do
+                if step.Placement.NativeOffset + step.Placement.NativeSize.Size > plan.NativeSize.Size then
+                    failwith
+                        $"%s{operation}: field %s{step.Placement.Field.Name} occupies offset %d{step.Placement.NativeOffset} for %d{step.Placement.NativeSize.Size} byte(s), past the %d{plan.NativeSize.Size}-byte unmanaged image of %O{typeHandle}"
 
         let writeAt (nativeOffset : int) (value : CliType) (state : IlMachineState) : IlMachineState =
             IlMachineState.writeManagedByrefWithBase baseClassTypes state (addressOf nativeOffset state) value
@@ -699,11 +784,129 @@ module StructMarshalStub =
 
             finish (clearImage (planFor zero) state)
         | Operation.Unmarshal ->
-            failwith
-                $"TODO %s{operation}: native-to-managed direction (MarshalOperation.Unmarshal, reached via Marshal.PtrToStructure) is not implemented for type %O{typeHandle}"
+            // CoreCLR's Unmarshal stream converts each field from its native form and stores it
+            // into the field's managed home, in declaration order, so that under explicit layout
+            // a later-declared field overwrites an earlier one it overlaps. The managed homes are
+            // the fields of the box `PtrToStructureHelper` handed us (Marshal.CoreCLR.cs:291).
+            //
+            // A `CopyBytes` field is a load of its native bytes and a store to its home. An
+            // `OADate` field is `ldflda home; ldind.r8 native; call DateMarshaler.ConvertToManaged;
+            // call DateTime::.ctor(long)` (ilmarshalers.cpp:1251), so each takes two guest calls,
+            // and the stub is re-entered after each. Progress is kept on this frame's evaluation
+            // stack, which nothing but this code pushes to. Top first, it holds one of:
+            //
+            //   (empty)                       no field has been unmarshalled yet;
+            //   k                             fields 0..k-1 have been unmarshalled;
+            //   ticks; &home; k               field k-1 is a DateTime whose tick count is in hand,
+            //                                 and whose constructor is next.
+            //
+            // The counter is sound only while the plan's step order is a deterministic function
+            // of the type, which `planFor` below makes it: it is computed from the type's zero,
+            // never from the box's current contents.
+            let box =
+                match managed with
+                | ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, projections) when
+                    addressesWholeValue projections
+                    ->
+                    addr
+                | other ->
+                    failwith
+                        $"%s{operation}: expected the managed struct reference to address a whole box, which is what `RuntimeHelpers.GetRawData` produces, but got %O{other}"
+
+            match (ManagedHeap.get box state.ManagedHeap).Contents with
+            | boxed when boxed.Declared = typeHandle -> ()
+            | boxed ->
+                failwith
+                    $"%s{operation}: expected the managed struct reference to address a box of %O{typeHandle}, which is the type the stub was minted for, but it holds a %O{boxed.Declared}"
+
+            let zero, state = IlMachineState.cliTypeZeroOfHandle state baseClassTypes typeHandle
+            let plan = planFor zero
+            checkInsideImage plan
+            let steps = Array.ofList plan.Steps
+
+            let homeOf (step : StructMarshalStep) : ManagedPointerSource =
+                ManagedPointerSource.Byref (ByrefRoot.HeapValue box, [ ByrefProjection.Field step.Placement.Field.Id ])
+
+            let frame = IlMachineState.getFrame thread frameId state
+
+            match frame.EvaluationStack.Values with
+            | [ EvalStackValue.Int64 _
+                EvalStackValue.ManagedPointer home
+                EvalStackValue.Int32 (Int32Source.Verbatim k) ] ->
+                let inProgress =
+                    if 0 < k && k <= steps.Length then
+                        Some steps.[k - 1]
+                    else
+                        None
+
+                match inProgress with
+                | Some step when step.Kind = StructMarshalFieldKind.OADate && home = homeOf step -> ()
+                | _ ->
+                    failwith
+                        $"%s{operation}: unmarshalling %O{typeHandle}, found a tick count for field %d{k - 1} addressed at %O{home}, which is not the home of a DateTime field of that index"
+
+                let state, ctor = dateTimeTicksCtor operation loggerFactory baseClassTypes state
+                callGuest ctor state
+            | stack ->
+
+            let resumeAt, state =
+                match stack with
+                | [] -> 0, state
+                | [ EvalStackValue.Int32 (Int32Source.Verbatim k) ] when 0 < k && k <= steps.Length ->
+                    let _, state = IlMachineState.popEvalStack thread state
+                    k, state
+                | other ->
+                    failwith
+                        $"%s{operation}: unmarshalling %O{typeHandle}, expected this frame's evaluation stack to hold the stub's own progress record, but it holds %O{other}"
+
+            let rec unmarshalFrom (index : int) (state : IlMachineState) : ExecutionResult =
+                if index = steps.Length then
+                    finish state
+                else
+
+                let step = steps.[index]
+                let native = addressOf step.Placement.NativeOffset state
+
+                match step.Kind with
+                | StructMarshalFieldKind.CopyBytes ->
+                    // CoreCLR's copy marshaler is an `ldobj` and `stobj` of the field's own type,
+                    // so read as that type rather than as the plan's value, which the Marshal
+                    // direction unwraps (an `IntPtr` field's step holds a bare native int).
+                    // `readManagedByrefAs` takes a pointer cell as it is, provenance included.
+                    let value =
+                        IlMachineState.readManagedByrefAs
+                            baseClassTypes
+                            state
+                            (CliType.ZeroLike step.Placement.Field.Contents)
+                            native
+
+                    let state =
+                        IlMachineState.writeManagedByrefWithBase baseClassTypes state (homeOf step) value
+
+                    unmarshalFrom (index + 1) state
+                | StructMarshalFieldKind.OADate ->
+                    let oaDate =
+                        IlMachineState.readManagedByrefAs
+                            baseClassTypes
+                            state
+                            (CliType.Numeric (CliNumericType.Float64 0.0))
+                            native
+
+                    let state, convertToManaged =
+                        dateMarshalerMethod operation "ConvertToManaged" loggerFactory baseClassTypes state
+
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 (index + 1))) thread
+                    |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer (homeOf step)) thread
+                    |> IlMachineState.pushToEvalStack oaDate thread
+                    |> callGuest convertToManaged
+
+            unmarshalFrom resumeAt state
         | Operation.Marshal ->
 
-        let sourceValue = readSource operation baseClassTypes typeHandle source state
+        let completed = completedConversions (IlMachineState.getFrame thread frameId state)
+        let completedCount = List.length completed
+        let sourceValue = readSource operation baseClassTypes typeHandle managed state
 
         match sourceValue with
         | CliType.ValueType vt when vt.Declared = typeHandle -> ()
@@ -745,53 +948,17 @@ module StructMarshalStub =
             // our evaluation stack.
             let next = conversions.[completedCount]
 
-            let state, convertToNative, convertToNativeDeclaringType =
-                dateConvertToNative operation loggerFactory baseClassTypes state
+            let state, convertToNative =
+                dateMarshalerMethod operation "ConvertToNative" loggerFactory baseClassTypes state
 
-            // `callMethodWithCommitment` arms the helper's class initialiser on the callee's
-            // frame; the dispatch loop runs it as that frame's prologue. (`DateMarshaler` has no
-            // `.cctor` today.)
-            let state = IlMachineState.pushToEvalStack next.Value thread state
-            let threadState = state.ThreadState.[thread]
-
-            let state, commitment =
-                IlMachineStateExecution.callMethodWithCommitment
-                    loggerFactory
-                    baseClassTypes
-                    None
-                    ConstructionState.NotConstructing
-                    false
-                    false
-                    false // this frame has no program counter to advance
-                    IlMachineStateExecution.CallSiteTransition.StaysCooperative
-                    convertToNative.Generics
-                    convertToNative
-                    thread
-                    threadState
-                    None
-                    ReturnValueDisposition.PushToCaller
-                    false // wrapExceptionInTargetInvocation
-                    state
-
-            match commitment with
-            | IlMachineStateExecution.CallCommitment.Aborted fatal ->
-                ExecutionResult.stepped (state, WhatWeDid.Aborted fatal)
-            | IlMachineStateExecution.CallCommitment.Committed
-            | IlMachineStateExecution.CallCommitment.Raised ->
-                // Either a callee frame or an exception constructor is now on top of us; in both
-                // cases our frame stays put and the dispatch loop takes it from here.
-                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
+            state
+            |> IlMachineState.pushToEvalStack next.Value thread
+            |> callGuest convertToNative
         else
 
         // Every conversion has completed. Only now do we touch the destination with real values,
         // so a retry can never have observed a partially-written image.
-        for step in plan.Steps do
-            // The destination is a raw buffer the guest sized from `Marshal.SizeOf`, so the plan's
-            // own total is the only bound we can check against. A step that ran past it would be
-            // writing outside what the guest allocated.
-            if step.Placement.NativeOffset + step.Placement.NativeSize.Size > plan.NativeSize.Size then
-                failwith
-                    $"%s{operation}: field %s{step.Placement.Field.Name} would be written at offset %d{step.Placement.NativeOffset} for %d{step.Placement.NativeSize.Size} byte(s), past the %d{plan.NativeSize.Size}-byte unmanaged image of %O{typeHandle}"
+        checkInsideImage plan
 
         // Conversion results are consumed in plan order, which is the order they were requested.
         let mutable remainingConversions = completed
@@ -813,5 +980,12 @@ module StructMarshalStub =
         if not (List.isEmpty remainingConversions) then
             failwith
                 $"%s{operation}: %d{List.length remainingConversions} conversion result(s) were left unconsumed after writing every field"
+
+        // The conversion results are this frame's scratch state and must go before it returns.
+        let mutable state = state
+
+        for _ in 1..completedCount do
+            let _, next = IlMachineState.popEvalStack thread state
+            state <- next
 
         finish state
