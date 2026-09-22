@@ -25,15 +25,16 @@ The test that separates the first two: **could two machines running the same
 kernel image disagree?** A sysctl, a mount option, a uid — yes, so it is
 configuration. `sizeof(struct sockaddr_un)` — no, so it is the platform.
 
-Two entries currently in `SimulatedUnixPlatform` do not pass that test, and are
+Three entries currently in `SimulatedUnixPlatform` do not pass that test, and are
 there as deliberate approximations rather than as precedent. `pathLimits` holds a
-`NAME_MAX` that varies per mount on Linux, because PawPrint models exactly one
-filesystem. `symlinkPermissions` holds Darwin's `umask 022` answer, because a
+`NAME_MAX` that varies per mount on Linux, and `bindableEntryNames` holds which
+names APFS will bind, because PawPrint models exactly one filesystem per flavour.
+`symlinkPermissions` holds Darwin's `umask 022` answer, because a
 symlink can only enter this filesystem through a *seed* — a tree some other
 process built, to which this run's configured umask never applied. Each has a
-named trigger for becoming configuration, stated beside it: a second filesystem,
-and `SystemNative_SymLink` letting a guest create a link. Do not cite either as a
-reason to put a machine-dependent fact in the platform.
+named trigger for becoming configuration, stated beside it: a second filesystem
+for the first two, and `SystemNative_SymLink` letting a guest create a link. Do
+not cite any of them as a reason to put a machine-dependent fact in the platform.
 `SystemNative_GetFileSystemType` is the worked example: the value is a *mount*
 fact, so it lives in `KernelConfig.FileSystemType`, even though the flavour
 constrains which types are possible (`Tmpfs` is Linux-only, `Apfs` Darwin-only).

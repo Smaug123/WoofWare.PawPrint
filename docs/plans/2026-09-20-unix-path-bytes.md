@@ -1018,6 +1018,20 @@ regression tests above are the ones that would flip.
 **Correctness oracle**: `scripts/check-docstring-attachment.py`, and a read-through
 of every `rg -i "utf-?8"` hit in `docs/` and in the two `AGENTS.md` files.
 
+**As built.**
+
+- The directory-enumeration rewrite landed with Stage 3.
+- `docs/divergences.md` gains one entry, not two. That document catalogues
+  deliberate divergences only, so the rows where the model agrees with the
+  kernels (§1.2–§1.5) are not restated there. The entry carries §1.1's refusal
+  table as the evidence for the over-admission.
+- The skill's `reference/flavour-divergence.md` says it is an index to the tests
+  that own each table, not a second copy. So §1.3's ordering, §1.5's two limits,
+  and the bytes-in-bytes-out rows are index rows naming those tests.
+- `PathArgumentRefusal`'s sentence about characters had already gone with
+  `NotUtf8`.
+- The read-through found no other live `utf-?8` mention that this work affects.
+
 ---
 
 ## 4. Risks
