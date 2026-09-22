@@ -1040,6 +1040,83 @@ module IlMachineTypeResolution =
             Size = blobReader.Length
         }
 
+    /// PE byte range over the assembly's whole `#Blob` heap; see `PeByteRangePointerSource.BlobHeap`.
+    let peByteRangeForBlobHeap (assembly : DumpedAssembly) : PeByteRangePointer =
+        let mdReader = assembly.PeReader.GetMetadataReader ()
+
+        {
+            AssemblyFullName = assembly.DefinitionFullName
+            Source = PeByteRangePointerSource.BlobHeap
+            RelativeVirtualAddress = 0
+            Size = Ecma335.MetadataReaderExtensions.GetHeapSize (mdReader, Ecma335.HeapIndex.Blob)
+        }
+
+    /// A `byte*` at the first byte of `blob`'s contents — past its ECMA II.24.2.4 length prefix —
+    /// inside `peByteRangeForBlobHeap`, so that reading on past the blob's end reaches the heap
+    /// bytes that follow it. `blob` must be a non-nil handle into `assembly`'s `#Blob` heap.
+    let blobHeapContentPointer
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assembly : DumpedAssembly)
+        (blob : BlobHandle)
+        (state : IlMachineState)
+        : IlMachineState * ManagedPointerSource
+        =
+        if blob.IsNil then
+            failwith $"blobHeapContentPointer: nil blob handle in %s{assembly.DefinitionFullName}"
+
+        let mdReader = assembly.PeReader.GetMetadataReader ()
+        let heap = peByteRangeForBlobHeap assembly
+        let prefixOffset = Ecma335.MetadataTokens.GetHeapOffset blob
+
+        let heapStart =
+            Ecma335.MetadataReaderExtensions.GetHeapMetadataOffset (mdReader, Ecma335.HeapIndex.Blob)
+
+        let metadata = assembly.PeReader.GetMetadata ()
+
+        let heapByte (offset : int) : int =
+            int (metadata.GetContent(heapStart + offset, 1).[0])
+
+        // The prefix is an ECMA II.23.2 compressed unsigned integer, whose width its first byte
+        // announces. `MetadataReader` has decoded the same prefix to get the blob's length, and
+        // insisting the two readings agree is what makes `contentOffset` trustworthy.
+        let prefixWidth, prefixValue =
+            let lead = heapByte prefixOffset
+
+            if lead &&& 0x80 = 0 then
+                1, lead
+            elif lead &&& 0xC0 = 0x80 then
+                2, ((lead &&& 0x3F) <<< 8) ||| heapByte (prefixOffset + 1)
+            elif lead &&& 0xE0 = 0xC0 then
+                4,
+                ((lead &&& 0x1F) <<< 24)
+                ||| (heapByte (prefixOffset + 1) <<< 16)
+                ||| (heapByte (prefixOffset + 2) <<< 8)
+                ||| heapByte (prefixOffset + 3)
+            else
+                failwith
+                    $"blobHeapContentPointer: blob at #Blob offset %d{prefixOffset} in %s{assembly.DefinitionFullName} has an invalid length-prefix byte 0x%02x{lead}"
+
+        let length = (mdReader.GetBlobReader blob).Length
+
+        if prefixValue <> length then
+            failwith
+                $"blobHeapContentPointer: blob at #Blob offset %d{prefixOffset} in %s{assembly.DefinitionFullName} has a length prefix of %d{prefixValue}, but MetadataReader reports %d{length} bytes"
+
+        let contentOffset = prefixOffset + prefixWidth
+
+        if contentOffset + length > heap.Size then
+            failwith
+                $"blobHeapContentPointer: blob at #Blob offset %d{prefixOffset} in %s{assembly.DefinitionFullName} claims %d{length} bytes after a %d{prefixWidth}-byte prefix, which overruns the %d{heap.Size}-byte heap"
+
+        let state, heapPointer = peByteRangePointer loggerFactory baseClassTypes heap state
+
+        state,
+        ManagedPointerSource.addByteOffsetToByteView
+            ByteOffsetNormalisationContext.nonArrayRootsOnly
+            contentOffset
+            heapPointer
+
     /// A `char*` over a PE byte range, as opposed to `peByteRangePointer`'s `byte*`.
     let peByteRangeCharPointer
         (loggerFactory : ILoggerFactory)

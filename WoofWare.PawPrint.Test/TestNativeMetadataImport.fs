@@ -975,23 +975,11 @@ public class MarshalShapes
                         | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value "ConstArray byte" b
                         | other -> failwith $"expected UInt8 in ConstArray storage, got %O{other}"
                     )
-            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
-                // Read one byte at a time through the machine's own byte-view reader — the reader a
-                // guest's `ConstArray[i]` ultimately lands in, though the guest reaches it via
-                // pointer arithmetic rather than by supplying the offset directly as we do here.
-                let byteTemplate, _ =
-                    IlMachineState.cliTypeZeroOfHandle state fixture.BaseClassTypes fixture.ByteHandle
-
-                Array.init
-                    length
-                    (fun i ->
-                        match
-                            IlMachineState.readPeByteRangeBytesAs state peByteRange i byteTemplate
-                            |> CliType.unwrapPrimitiveLikeDeep
-                        with
-                        | CliType.Numeric (CliNumericType.UInt8 b) -> UInt8Source.value "ConstArray byte" b
-                        | other -> failwith $"expected UInt8 in PE byte-range ConstArray storage, got %O{other}"
-                    )
+            | ManagedPointerSource.Byref (ByrefRoot.PeByteRange _, _) ->
+                // Read through the pointer itself, byte cursor and all, as a guest's
+                // `ConstArray[i]` does: a pointer into the whole `#Blob` heap carries the blob's
+                // offset in that cursor, so reading the root from zero would read the wrong bytes.
+                NativeCall.readCountedBytes "readConstArrayOut" fixture.BaseClassTypes state pointer length
             | other -> failwith $"unexpected ConstArray.m_constArray pointer %O{other}"
 
         length, bytes, pointer
@@ -2134,9 +2122,10 @@ public class MarshalShapes
     /// hands back raw pointers into the blob (managedmdimport.cpp:62-64) and the managed wrapper
     /// reads them with `CreateReadOnlySpanFromNullTerminated` (MdImport.cs:265-270), but MarshalSpec
     /// strings are length-prefixed rather than NUL-terminated, so the real runtime over-reads into
-    /// whatever `#Blob` bytes follow — measured as `MarshalType = "Some.MarshallerckM"` for this
-    /// fixture's `Custom` field. Those two are pinned byte-exactly by the spec-derived test above
-    /// instead. `SafeArraySubType` and `IidParameterIndex` are omitted for a different reason: the
+    /// whatever `#Blob` bytes follow, which the blob alone cannot predict. Those two are pinned
+    /// byte-exactly by the spec-derived test above instead, and compared against the host through
+    /// the `GetMarshalAs` handler further down. `SafeArraySubType` and `IidParameterIndex` are
+    /// omitted for a different reason: the
     /// FCall fills them only under FEATURE_COMINTEROP, so they differ between host platforms.
     type private DecodedMarshalAs =
         {
@@ -2230,16 +2219,19 @@ public class MarshalShapes
             SizeParamIndex = attribute.SizeParamIndex
         }
 
-    [<Test>]
-    let ``MetadataImport GetFieldMarshal agrees with the host runtime for every field and parameter`` () : unit =
-        let fixture = makeFixture ()
-
+    /// The host CLR's own `MarshalAsAttribute` for every field and for every parameter with a
+    /// Param row in the fixture image, keyed by metadata token: an outside oracle, since the host
+    /// parses the same image with its own native MarshalSpec parser.
+    let private hostMarshalAs
+        (fixture : MetadataImportFixture)
+        : (int32 * System.Runtime.InteropServices.MarshalAsAttribute option) list *
+          (int32 * System.Runtime.InteropServices.MarshalAsAttribute option) list
+        =
         // Outside oracle: hand the same image to the host CLR and let its own native MarshalSpec
         // parser answer. This covers the whole image rather than the `MarshalShapes` type alone, so
         // every field and parameter without a FieldMarshal row is a check that the handler does not
         // invent one.
         let hostAssembly = System.Reflection.Assembly.Load fixture.Image
-        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
 
         let flags =
             System.Reflection.BindingFlags.DeclaredOnly
@@ -2294,6 +2286,15 @@ public class MarshalShapes
             )
             |> Seq.toList
 
+        hostFields, hostParameters
+
+    [<Test>]
+    let ``MetadataImport GetFieldMarshal agrees with the host runtime for every field and parameter`` () : unit =
+        let fixture = makeFixture ()
+
+        let hostFields, hostParameters = hostMarshalAs fixture
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+
         // Both lists must contain marshalled and unmarshalled members, or the comparison below is
         // vacuous on one side.
         hostFields |> List.filter (snd >> Option.isSome) |> List.length |> shouldEqual 6
@@ -2344,6 +2345,283 @@ public class MarshalShapes
             bytes |> shouldEqual expected
 
     [<Test>]
+    let ``MetadataImport GetFieldMarshal points into the Blob heap at the blob's contents`` () : unit =
+        let fixture = makeFixture ()
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+        let field = fieldNamed fixture.MarshalShapesType "Custom"
+        let descriptor = (mr.GetFieldDefinition field.Handle).GetMarshallingDescriptor ()
+
+        let _, (length, _, pointer), state =
+            invokeGetFieldMarshal fixture (fieldDefToken field.Handle) fixture.State
+
+        let byteType =
+            AllConcreteTypes.lookup fixture.ByteHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () -> failwith "System.Byte was not concretized")
+
+        // The root is the whole heap rather than the one blob, which is what lets a read continue
+        // past the blob's end as it does over CoreCLR's mapped metadata; the blob itself is found by
+        // the byte cursor. `Custom`'s blob is under 128 bytes, so its length prefix is one byte.
+        let expected =
+            ManagedPointerSource.Byref (
+                ByrefRoot.PeByteRange
+                    {
+                        AssemblyFullName = fixture.Assembly.Name.FullName
+                        Source = PeByteRangePointerSource.BlobHeap
+                        RelativeVirtualAddress = 0
+                        Size = mr.GetHeapSize HeapIndex.Blob
+                    },
+                [
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset (MetadataTokens.GetHeapOffset descriptor + 1)
+                ]
+            )
+
+        pointer |> shouldEqual expected
+        length |> shouldEqual (mr.GetBlobReader descriptor).Length
+
+    let private allocateSlotOut
+        (fixture : MetadataImportFixture)
+        (elementType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (zero : CliType)
+        (state : IlMachineState)
+        : ManagedPointerSource * IlMachineState
+        =
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes elementType
+
+        let arrayAddr, state =
+            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 1 state
+
+        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
+
+    /// Everything `GetMarshalAs` wrote, read back: the six integers, and each of the three `byte*`
+    /// out-params followed to the NUL the managed wrapper's scan stops at, as that wrapper decodes
+    /// it (`None` for a null pointer).
+    type private MarshalAsOut =
+        {
+            UnmanagedType : int32
+            SafeArraySubType : int32
+            SafeArrayUserDefinedSubType : string option
+            ArraySubType : int32
+            SizeParamIndex : int32
+            SizeConst : int32
+            MarshalType : string option
+            MarshalCookie : string option
+            IidParamIndex : int32
+        }
+
+    /// Call the handler with its nine out-params seeded away from every value it writes, so an
+    /// out-param it failed to write cannot pass for one it wrote. Returns those out-params' slots in
+    /// the FCall's order.
+    let private invokeGetMarshalAsRaw
+        (fixture : MetadataImportFixture)
+        (nativeTypePointer : ManagedPointerSource)
+        (nativeTypeLength : int32)
+        (state : IlMachineState)
+        : EvalStackValue * ManagedPointerSource list * IlMachineState
+        =
+        let state, metadataImportType, getMarshalAsMethod =
+            metadataImportMethod fixture state "GetMarshalAs" 11
+
+        let int32Out (state : IlMachineState) : ManagedPointerSource * IlMachineState =
+            allocateInt32Out fixture 0x5A5A5A5A state
+
+        let pointerOut (state : IlMachineState) : ManagedPointerSource * IlMachineState =
+            allocateSlotOut
+                fixture
+                fixture.BaseClassTypes.IntPtr
+                (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0x5A5A5A5AL)))
+                state
+
+        let unmanagedTypeOut, state = int32Out state
+        let safeArraySubTypeOut, state = int32Out state
+        let safeArrayUserDefinedSubTypeOut, state = pointerOut state
+        let arraySubTypeOut, state = int32Out state
+        let sizeParamIndexOut, state = int32Out state
+        let sizeConstOut, state = int32Out state
+        let marshalTypeOut, state = pointerOut state
+        let marshalCookieOut, state = pointerOut state
+        let iidParamIndexOut, state = int32Out state
+
+        let outs =
+            [
+                unmanagedTypeOut
+                safeArraySubTypeOut
+                safeArrayUserDefinedSubTypeOut
+                arraySubTypeOut
+                sizeParamIndexOut
+                sizeConstOut
+                marshalTypeOut
+                marshalCookieOut
+                iidParamIndexOut
+            ]
+
+        let state =
+            invokeMetadataImportNative
+                fixture
+                metadataImportType
+                getMarshalAsMethod
+                ([
+                    CliType.RuntimePointer (CliRuntimePointer.Managed nativeTypePointer)
+                    CliType.Numeric (CliNumericType.Int32 nativeTypeLength)
+                 ]
+                 @ (outs |> List.map (CliRuntimePointer.Managed >> CliType.RuntimePointer)))
+                state
+
+        let returnValue, state = IlMachineState.popEvalStack (ThreadId 0) state
+        returnValue, outs, state
+
+    let private invokeGetMarshalAs
+        (fixture : MetadataImportFixture)
+        (nativeTypePointer : ManagedPointerSource)
+        (nativeTypeLength : int32)
+        (state : IlMachineState)
+        : EvalStackValue * MarshalAsOut * IlMachineState
+        =
+        let returnValue, outs, state =
+            invokeGetMarshalAsRaw fixture nativeTypePointer nativeTypeLength state
+
+        let out (index : int) : ManagedPointerSource = List.item index outs
+        let unmanagedTypeOut = out 0
+        let safeArraySubTypeOut = out 1
+        let safeArrayUserDefinedSubTypeOut = out 2
+        let arraySubTypeOut = out 3
+        let sizeParamIndexOut = out 4
+        let sizeConstOut = out 5
+        let marshalTypeOut = out 6
+        let marshalCookieOut = out 7
+        let iidParamIndexOut = out 8
+
+        let readString (ptr : ManagedPointerSource) : string option =
+            match
+                IlMachineState.readManagedByref fixture.BaseClassTypes state ptr
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
+            | CliType.RuntimePointer (CliRuntimePointer.Managed target) ->
+                NativeCall.readNullTerminatedBytes "invokeGetMarshalAs" fixture.BaseClassTypes state target
+                |> System.Text.Encoding.UTF8.GetString
+                |> Some
+            | other -> failwith $"expected a managed pointer in a byte* out-param, got %O{other}"
+
+        let out =
+            {
+                UnmanagedType = readInt32Out fixture.BaseClassTypes state unmanagedTypeOut
+                SafeArraySubType = readInt32Out fixture.BaseClassTypes state safeArraySubTypeOut
+                SafeArrayUserDefinedSubType = readString safeArrayUserDefinedSubTypeOut
+                ArraySubType = readInt32Out fixture.BaseClassTypes state arraySubTypeOut
+                SizeParamIndex = readInt32Out fixture.BaseClassTypes state sizeParamIndexOut
+                SizeConst = readInt32Out fixture.BaseClassTypes state sizeConstOut
+                MarshalType = readString marshalTypeOut
+                MarshalCookie = readString marshalCookieOut
+                IidParamIndex = readInt32Out fixture.BaseClassTypes state iidParamIndexOut
+            }
+
+        returnValue, out, state
+
+    [<Test>]
+    let ``MetadataImport GetMarshalAs agrees with the host runtime for every field and parameter`` () : unit =
+        let fixture = makeFixture ()
+        let hostFields, hostParameters = hostMarshalAs fixture
+
+        let marshalled =
+            List.append hostFields hostParameters
+            |> List.choose (fun (token, attribute) -> attribute |> Option.map (fun a -> token, a))
+
+        // Six fields and two parameters, including the one shape with strings.
+        marshalled.Length |> shouldEqual 8
+
+        marshalled
+        |> List.exists (fun (_, a) -> a.Value = System.Runtime.InteropServices.UnmanagedType.CustomMarshaler)
+        |> shouldEqual true
+
+        let mutable state = fixture.State
+
+        for token, host in marshalled do
+            let _, (length, _, pointer), nextState = invokeGetFieldMarshal fixture token state
+
+            let returnValue, ours, nextState =
+                invokeGetMarshalAs fixture pointer length nextState
+
+            state <- nextState
+
+            returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 1))
+
+            // The strings included. The host's managed wrapper decodes the same unterminated
+            // pointers the same way, so for `Custom` both sides read on past the blob into the
+            // `#Blob` bytes that follow it — and agreeing on *those* bytes is what shows the pointer
+            // really addresses the heap, not a copy of the one blob.
+            ours
+            |> shouldEqual
+                {
+                    UnmanagedType = int32 host.Value
+                    SafeArraySubType = int32 host.SafeArraySubType
+                    SafeArrayUserDefinedSubType = None
+                    ArraySubType = int32 host.ArraySubType
+                    SizeParamIndex = int32 host.SizeParamIndex
+                    SizeConst = host.SizeConst
+                    MarshalType = Option.ofObj host.MarshalType
+                    MarshalCookie = Option.ofObj host.MarshalCookie
+                    IidParamIndex = host.IidParameterIndex
+                }
+
+    [<Test>]
+    let ``MetadataImport GetMarshalAs returns false without writing on a blob CoreCLR rejects`` () : unit =
+        let fixture = makeFixture ()
+
+        // NATIVE_TYPE_FIXEDARRAY with no size: `ParseNativeTypeInfo` returns FALSE, and the FCall
+        // returns before writing any out-param.
+        let blob, state =
+            NativeCall.allocateBlobByteArray fixture.BaseClassTypes [| 0x1Euy |] fixture.State
+
+        let returnValue, outs, state = invokeGetMarshalAsRaw fixture blob 1 state
+
+        returnValue |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim 0))
+
+        for out in outs do
+            match
+                IlMachineState.readManagedByref fixture.BaseClassTypes state out
+                |> CliType.unwrapPrimitiveLikeDeep
+            with
+            | CliType.Numeric (CliNumericType.Int32 0x5A5A5A5A)
+            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0x5A5A5A5AL)) -> ()
+            | other -> failwith $"GetMarshalAs wrote %O{other} to an out-param despite returning false"
+
+    [<Test>]
+    let ``MetadataImport GetMarshalAs reads a CustomMarshaler cookie past the end of its blob`` () : unit =
+        let fixture = makeFixture ()
+        let mr = fixture.Assembly.PeReader.GetMetadataReader ()
+        let field = fieldNamed fixture.MarshalShapesType "Custom"
+
+        let _, (length, _, pointer), state =
+            invokeGetFieldMarshal fixture (fieldDefToken field.Handle) fixture.State
+
+        let _, ours, _ = invokeGetMarshalAs fixture pointer length state
+
+        // Independently of the host: the cookie is the blob's last two bytes, "ck", and the scan
+        // then continues through the `#Blob` heap to its next NUL. So the answer is "ck" followed by
+        // exactly the heap bytes between the blob's end and that NUL.
+        let descriptor = (mr.GetFieldDefinition field.Handle).GetMarshallingDescriptor ()
+        let heapStart = mr.GetHeapMetadataOffset HeapIndex.Blob
+        let metadata = fixture.Assembly.PeReader.GetMetadata ()
+        let blobEnd = MetadataTokens.GetHeapOffset descriptor + 1 + length
+
+        let following =
+            Seq.initInfinite (fun i -> metadata.GetContent(heapStart + blobEnd + i, 1).[0])
+            |> Seq.takeWhile (fun b -> b <> 0uy)
+            |> Seq.toArray
+
+        let expected =
+            Array.append (System.Text.Encoding.UTF8.GetBytes "ck") following
+            |> System.Text.Encoding.UTF8.GetString
+
+        ours.MarshalCookie |> shouldEqual (Some expected)
+        // And the marshaler's type name runs on into the cookie's length prefix and the cookie.
+        ours.MarshalType
+        |> Option.map (fun s -> s.StartsWith "Some.Marshaller\u0002ck")
+        |> shouldEqual (Some true)
+
+    [<Test>]
     let ``MetadataImport GetFieldMarshal rejects a token that is not a HasFieldMarshal parent`` () : unit =
         let fixture = makeFixture ()
 
@@ -2388,21 +2666,6 @@ public class MarshalShapes
             Assert.Throws (fun () -> invokeGetFieldMarshal fixture 0x08FFFFFF fixture.State |> ignore)
 
         ex.Message |> shouldContainText "was not present in"
-
-    let private allocateSlotOut
-        (fixture : MetadataImportFixture)
-        (elementType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (zero : CliType)
-        (state : IlMachineState)
-        : ManagedPointerSource * IlMachineState
-        =
-        let handle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes elementType
-
-        let arrayAddr, state =
-            IlMachineState.allocateArray (ConcreteTypeHandle.OneDimArrayZero handle) (fun () -> zero) 1 state
-
-        ManagedPointerSource.Byref (ByrefRoot.ArrayElement (arrayAddr, 0), []), state
 
     /// The four out-params of `GetDefaultValue`, read back: the 64-bit buffer, the `char*`, the
     /// length, and the ELEMENT_TYPE code.
