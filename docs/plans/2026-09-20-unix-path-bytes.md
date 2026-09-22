@@ -635,8 +635,10 @@ reference implementation for the ASCII subset and against raw bytes elsewhere:
 - **Comparison is a total order** consistent with equality, total **across
   differing lengths**, and agreeing with `Array.compareWith compare` on the
   unsigned bytes. The generator must produce unequal lengths, and must include a
-  proper-prefix pair (`[1]` vs `[1; 0]`): §2.1's table shows that is precisely
-  the case a bare `ImmutableArray` throws on, and a same-length generator passes
+  proper-prefix pair — `[1]` vs `[1; 2]`, *not* `[1; 0]`, since a `UnixByteString`
+  is NUL-free by invariant and that fixture would be rejected by the constructor
+  before `CompareTo` ever ran. §2.1's table shows unequal length is precisely
+  what a bare `ImmutableArray` throws on, and a same-length generator passes
   against the broken implementation.
 - **`Map`, `Set` and `List.sort` round-trip**: for all lists of distinct byte
   arrays **of differing lengths**, inserting each as a key and looking each up
@@ -896,10 +898,15 @@ directly testable against the shipped flavour rather than deferred:
   binding rather than about reading a pathname.
 - Property: on `linuxX64`, no operation ever reports EILSEQ, for any NUL-free
   byte string.
-- Property: on `macOsArm64`, a binding is refused with EILSEQ iff
-  `UnixByteString.tryToString` is `None`. Assert this as the *model's* rule
-  (§1.1.1), and site the §1.1.1 divergence table next to it so the next reader
-  does not mistake it for APFS's.
+- Property: on `macOsArm64`, **given a binding that every earlier rule permits**
+  — a free name in a writable, searchable parent, within whichever of §1.5's two
+  length limits applies — it is refused with EILSEQ iff
+  `UnixByteString.tryToString` is `None`. The precondition is not decoration:
+  §1.3 puts EILSEQ *last*, so `mkdir("ro/" + 300 × 0xFF)` is EACCES and a
+  766-byte undecodable component is ENAMETOOLONG, both with `tryToString` `None`.
+  An unconditional "iff" contradicts the very ordering the cell above asserts.
+  Assert it as the *model's* rule (§1.1.1), and site the §1.1.1 divergence table
+  next to it so the next reader does not mistake it for APFS's.
 - Regression tests for the three over-admitted rows, asserting that PawPrint
   **accepts** U+FFFF, U+1FFFD and a 33-mark combining sequence, each citing
   §1.1.1. They pin the approximation deliberately: without them, someone
