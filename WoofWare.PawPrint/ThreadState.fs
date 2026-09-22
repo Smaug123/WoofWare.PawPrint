@@ -2,6 +2,19 @@ namespace WoofWare.PawPrint
 
 open System.Reflection
 
+/// Whether a thread's wait on a wait handle is *alertable* in CoreCLR's sense
+/// (`WaitMode_Alertable`, passed to `Thread::DoAppropriateWait`). Only an alertable wait sets
+/// `TS_Interruptible`, so only such a wait is reported as `WaitSleepJoin` by `Thread.ThreadState`
+/// and can be broken by `Thread.Interrupt`. Nothing about when the wait is satisfied depends on it.
+[<RequireQualifiedAccess>]
+type WaitAlertability =
+    /// A `WaitHandle.WaitOne` and everything built on it, unless it asked for a trivial wait.
+    | Alertable
+    /// A wait with `useTrivialWaits` set, which CoreCLR's `WaitHandle_WaitOneCore` makes with
+    /// `WaitMode_None`; and `WaitHandle_WaitOnePrioritized`, where `LowLevelLifoSemaphore` (so
+    /// every idle thread-pool worker) parks, which calls the PAL wait directly.
+    | NonAlertable
+
 /// Scheduling status of a thread. The scheduler only picks Runnable threads; a thread in any
 /// other state is paused until something external (another thread terminating, for instance)
 /// flips it back to Runnable.
@@ -151,7 +164,10 @@ type ThreadStatus =
     /// deadline in the status itself (rather than alongside in a separate
     /// map) makes the invariant "no deadline once Runnable again" structural
     /// — a wake naturally forgets it.
-    | BlockedOnWaitHandle of handle : WaitHandleId * deadlineTicks : int64 option
+    ///
+    /// `alertability` records which kind of wait the guest asked for; it is what
+    /// `Thread.ThreadState` needs to know, and has no effect on the wake.
+    | BlockedOnWaitHandle of handle : WaitHandleId * deadlineTicks : int64 option * alertability : WaitAlertability
     /// This thread called `WaitHandle.WaitAny` / `WaitAll` (via the
     /// `WaitHandle_WaitMultipleIgnoringSyncContext` QCall) and could not be
     /// satisfied immediately, so it is parked at the FIFO tail of *every* named

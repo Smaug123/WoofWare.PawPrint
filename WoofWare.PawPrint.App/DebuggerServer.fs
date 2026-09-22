@@ -136,7 +136,7 @@ module DebuggerServer =
             | Some ticks -> writer.WriteNumber ("deadlineTicks", ticks)
 
             writer.WriteEndObject ()
-        | ThreadStatus.BlockedOnWaitHandle (WaitHandleId handle, deadlineTicks) ->
+        | ThreadStatus.BlockedOnWaitHandle (WaitHandleId handle, deadlineTicks, _) ->
             writer.WriteStartObject ()
             writer.WriteString ("kind", "blockedOnWaitHandle")
             writer.WriteNumber ("handle", handle)
