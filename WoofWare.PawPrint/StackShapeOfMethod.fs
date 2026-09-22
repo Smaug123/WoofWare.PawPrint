@@ -221,8 +221,11 @@ module StackShapeOfMethod =
                 $"BUG: %O{op} with a DynamicScope operand reached the stack-shape analysis, but IlDecoding refuses such a body at mint"
         | UnaryMetadataTokenIlOp.Ldfld
         | UnaryMetadataTokenIlOp.Ldsfld ->
-            match DynamicScopeOperand.field baseClassTypes operation index state handle with
-            | Error (_, why) -> Error why
+            // Reading ahead decides nothing: an entry the guest's instruction would raise on, or
+            // one PawPrint does not implement, is the instruction's own problem when it executes.
+            match DynamicScopeOperand.tryField baseClassTypes operation index state handle with
+            | Error (ScopeFieldRefusal.GuestException (_, why))
+            | Error (ScopeFieldRefusal.Unsupported why) -> Error why
             | Ok field ->
                 let assembly =
                     state.LoadedAssembly (field.GetAssemblyFullName ())
