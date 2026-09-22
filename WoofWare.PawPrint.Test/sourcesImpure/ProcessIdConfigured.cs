@@ -18,6 +18,9 @@ class Program
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_GetPid")]
     static extern int GetPid();
 
+    [DllImport("libSystem.Native", EntryPoint = "SystemNative_TryGetUInt32OSThreadId")]
+    static extern uint TryGetUInt32OSThreadId();
+
     [DllImport("libSystem.Native", EntryPoint = "SystemNative_Write")]
     static extern unsafe int Write(IntPtr fd, byte* buffer, int bufferSize);
 
@@ -28,6 +31,9 @@ class Program
         // CoreLib caches the first answer; the raw entry point asks again, so a
         // disagreement would mean the kernel's answer changed within the run.
         if (GetPid() != pid) return 1;
+
+        // Main runs on the thread-group leader, whose Linux tid is the pid.
+        if (TryGetUInt32OSThreadId() != (uint)pid) return 3;
 
         // Shifted out by hand rather than via BitConverter, so that the byte
         // order is stated here and matched by an equally explicit expectation

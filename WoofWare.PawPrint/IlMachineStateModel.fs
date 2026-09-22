@@ -88,8 +88,8 @@ type IlMachineState =
         ///
         /// The one cursor with that property, and it stays specific to CPU
         /// placement: `EmulatedKernel.osThreadId` deliberately keys off
-        /// `NextThreadId` instead, because a thread id is opaque to the guest
-        /// where a core index is not. See `osThreadId` for the argument.
+        /// `NextThreadId` instead, because which id a non-leader thread gets is
+        /// opaque to the guest where a core index is not. See `osThreadId` for the argument.
         ///
         /// Advanced when a thread is *created*, not when it is started: a guest
         /// that constructs a `Thread` and never calls `Start` still consumes a

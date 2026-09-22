@@ -158,7 +158,7 @@ module TestLowLevelMonitor =
                     // Distinct OS thread ids, minted by the same policy the
                     // real allocation sites use: these stand in for guest
                     // threads, and no two threads may share an id.
-                    let osThreadId = EmulatedKernel.osThreadId tid
+                    let osThreadId = EmulatedKernel.osThreadId state.Kernel.Process.ProcessId tid
 
                     state, acc |> Map.add tid (ThreadState.New methodState)
                 )

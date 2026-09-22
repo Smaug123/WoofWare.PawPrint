@@ -13,13 +13,14 @@ open WoofWare.PosixKernel
 /// `SystemNative_GetUInt64OSThreadId` (macOS CoreLib) — the OS thread id
 /// `System.Threading.Lock` uses as its owner identity.
 ///
-/// The invariant is *uniqueness across every live thread*, and a collision
+/// The main invariant is *uniqueness across every live thread*, and a collision
 /// would not crash: it would make `Lock` treat two threads as one, silently,
 /// because `Lock` reads a matching id as "the same thread re-entering".
-/// Uniqueness is inherited from `ThreadId` — the policy is a function of it —
-/// so these tests establish that the function is injective, that it dodges the
-/// two fatal sentinel values, and that every allocation site feeds it a
-/// distinct `ThreadId`.
+/// Uniqueness is inherited from `ThreadId` — for a fixed process id the policy
+/// is a function of it — so these tests establish that the function is
+/// injective, that it dodges the two fatal sentinel values, and that every
+/// allocation site feeds it a distinct `ThreadId`. The other invariant is
+/// Linux's: the entry thread's id is the process id.
 ///
 /// `TestCpuPlacement` covers the sibling policy (`cpuForRotation`), which
 /// deliberately keys off a *different* cursor; the contrast is the subject of
@@ -37,6 +38,20 @@ module TestOsThreadId =
 
     let private ints = ArbMap.defaults |> ArbMap.arbitrary<int>
     let private intPairs = ArbMap.defaults |> ArbMap.arbitrary<int * int>
+    let private intTriples = ArbMap.defaults |> ArbMap.arbitrary<int * int * int>
+
+    /// Every valid process id is reachable, with both ends of the range weighted
+    /// in: they are where the two sentinels sit.
+    let private pidFrom (seed : int) : ProcessId =
+        let candidate =
+            match seed % 4 with
+            | 0 -> 1
+            | 1 -> System.Int32.MaxValue
+            | _ -> 1 + abs (seed % (System.Int32.MaxValue - 1))
+
+        ProcessId.parseOrFail "test" candidate
+
+    let private defaultPid : ProcessId = UnixSystem.defaultProcessId
 
     /// `TryGetUInt32OSThreadId` returns this to mean "this platform does not
     /// know how to get an OS thread id", so a real id must never equal it.
@@ -59,30 +74,27 @@ module TestOsThreadId =
         // platform. `0` is worse: CoreLib's `Lock.ThreadId.InitializeForCurrentThread`
         // maps a zero id to `0xFFFF_FFFF` by decrementing it, so *every* thread
         // that minted `0` would end up sharing one id.
-        let property (seed : int) : bool =
-            let id = raw (EmulatedKernel.osThreadId (threadIdFrom seed))
+        let property (pidSeed : int, seed : int) : bool =
+            let id = raw (EmulatedKernel.osThreadId (pidFrom pidSeed) (threadIdFrom seed))
             id <> 0u && id <> unknownSentinel
 
-        Check.One (propertyConfig, Prop.forAll ints property)
+        Check.One (propertyConfig, Prop.forAll intPairs property)
 
     [<Test>]
     let ``the extremes of the thread-id range are safe`` () =
         // The property above samples; these are the values that actually sit
-        // against the two sentinels, and they are what makes the asymmetric
-        // guard in `osThreadId` correct. The low end needs the `+ 1`: thread
-        // id `0` is real and immediate (it is the entry thread), and would
-        // otherwise mint the fatal `0`. The high end needs no guard at all,
-        // and this pins why — the largest id an `int` thread id can produce is
-        // `0x8000_0000`, comfortably short of the `0xFFFF_FFFF` sentinel, so
-        // the upper bound is unreachable by construction rather than by a
-        // check someone could later relax.
-        raw (EmulatedKernel.osThreadId (ThreadId 0)) |> shouldEqual 1u
+        // against the two sentinels. The low end is the smallest process id with
+        // the entry thread, which is real and immediate. The high end is the
+        // largest of each summand, one short of the `0xFFFF_FFFF` sentinel, so
+        // the upper bound is unreachable by construction rather than by a check
+        // someone could later relax.
+        let minPid = ProcessId.parseOrFail "test" 1
+        let maxPid = ProcessId.parseOrFail "test" System.Int32.MaxValue
 
-        raw (EmulatedKernel.osThreadId (ThreadId System.Int32.MaxValue))
-        |> shouldEqual 0x8000_0000u
+        raw (EmulatedKernel.osThreadId minPid (ThreadId 0)) |> shouldEqual 1u
 
-        succeeds (fun () -> EmulatedKernel.osThreadId (ThreadId System.Int32.MaxValue))
-        |> shouldEqual true
+        raw (EmulatedKernel.osThreadId maxPid (ThreadId System.Int32.MaxValue))
+        |> shouldEqual 0xFFFF_FFFEu
 
     [<Test>]
     let ``the policy is injective`` () =
@@ -90,28 +102,38 @@ module TestOsThreadId =
         // uniqueness argument for the pure policy: because every thread's id is
         // a function of its `ThreadId`, and `ThreadId`s are unique and never
         // reused, injectivity here is uniqueness everywhere.
-        let property (a : int, b : int) : bool =
+        let property (pidSeed : int, a : int, b : int) : bool =
+            let pid = pidFrom pidSeed
             let x = threadIdFrom a
             let y = threadIdFrom b
 
             if x = y then
                 true
             else
-                EmulatedKernel.osThreadId x <> EmulatedKernel.osThreadId y
+                EmulatedKernel.osThreadId pid x <> EmulatedKernel.osThreadId pid y
 
-        Check.One (propertyConfig, Prop.forAll intPairs property)
+        Check.One (propertyConfig, Prop.forAll intTriples property)
+
+    [<Test>]
+    let ``the entry thread's id is the process id`` () =
+        // A Linux thread-group leader's gettid(2) is its getpid(2), and a guest
+        // can compare `Environment.ProcessId` with the id `Lock` reads.
+        let property (pidSeed : int) : bool =
+            let pid = pidFrom pidSeed
+            raw (EmulatedKernel.osThreadId pid (ThreadId 0)) = uint32 (ProcessId.toInt32 pid)
+
+        Check.One (propertyConfig, Prop.forAll ints property)
 
     [<Test>]
     let ``a negative thread id fails loudly`` () =
         // There is a `FrameId -1` sentinel in this codebase and
         // `allocateParkedThread` uses it, so a negative id is a mistake someone
-        // could plausibly make. `ThreadId -1` would mint `uint32 -1 + 1` — which
-        // wraps to exactly the fatal `0`, the one value the `+ 1` exists to
-        // avoid. Wrapping silently is precisely the failure mode this module is
+        // could plausibly make. Added to process id 1, `ThreadId -1` would wrap
+        // to exactly the fatal `0`. Wrapping silently is precisely the failure mode this module is
         // about, so it must throw.
         let property (seed : int) : bool =
             let negative = ThreadId (-1 - abs (seed % 1_000_000))
-            not (succeeds (fun () -> EmulatedKernel.osThreadId negative))
+            not (succeeds (fun () -> EmulatedKernel.osThreadId defaultPid negative))
 
         Check.One (propertyConfig, Prop.forAll ints property)
 
@@ -139,8 +161,10 @@ module TestOsThreadId =
         let state, second =
             IlMachineState.allocateUnstartedThread (ManagedHeapAddress 2) state
 
-        osThreadIdOf first state |> shouldEqual (OsThreadId 1u)
-        osThreadIdOf second state |> shouldEqual (OsThreadId 2u)
+        // The machine's default process id is 4242, and nothing has taken
+        // `ThreadId 0` yet.
+        osThreadIdOf first state |> shouldEqual (OsThreadId 4242u)
+        osThreadIdOf second state |> shouldEqual (OsThreadId 4243u)
 
     [<Test>]
     let ``a parked thread does consume an id, unlike a rotation slot`` () =
@@ -179,11 +203,11 @@ module TestOsThreadId =
         idsFrom false
         |> shouldEqual
             [
-                OsThreadId 1u
-                OsThreadId 2u
-                OsThreadId 3u
-                OsThreadId 4u
-                OsThreadId 5u
+                OsThreadId 4242u
+                OsThreadId 4243u
+                OsThreadId 4244u
+                OsThreadId 4245u
+                OsThreadId 4246u
             ]
 
         // Shifted by exactly the one id the dispatcher took, and still all
@@ -191,11 +215,11 @@ module TestOsThreadId =
         idsFrom true
         |> shouldEqual
             [
-                OsThreadId 2u
-                OsThreadId 3u
-                OsThreadId 4u
-                OsThreadId 5u
-                OsThreadId 6u
+                OsThreadId 4243u
+                OsThreadId 4244u
+                OsThreadId 4245u
+                OsThreadId 4246u
+                OsThreadId 4247u
             ]
 
     [<Test>]
