@@ -1254,6 +1254,56 @@ exactly this reason. `sourcesPure/EnumerateSeeded.cs` sorts the shim's own walk 
 since it is the differential tier and may claim only what holds on every machine either runtime
 might run on.
 
+## On the Darwin flavour, some valid UTF-8 names can be created that APFS refuses
+
+**CoreCLR (and any Unix)**: which names a filesystem will *bind* — create with `open(O_CREAT)`,
+`mkdir` or `symlink`, or `rename` onto — is the filesystem's business. Linux's ext4 binds any
+NUL-free bytes. APFS refuses a name with EILSEQ unless its bytes are valid UTF-8, and it refuses
+some valid UTF-8 as well. Measured on macOS 26.6:
+
+| name | APFS |
+| --- | --- |
+| `\xff`, `\xe4\xb8` (truncated), `\xc0\x80` (overlong), `\xed\xa0\x80` (an encoded surrogate) | EILSEQ |
+| `a`, `中`, an emoji, `é`, U+E000, U+FFFD, U+10FFFD | binds |
+| U+FDD0–U+FDEF, U+FFFE, U+FFFF, U+1FFFE, U+10FFFF and the other noncharacters | EILSEQ |
+| U+1FFFD, which is unassigned (the also-unassigned U+FDCF binds) | EILSEQ |
+| a combining sequence longer than 32 characters — 33 × U+0301, or `b` followed by 32 of them | EILSEQ |
+
+Looking such a name up is plain ENOENT: it cannot be bound, so it is absent.
+
+**PawPrint**: the Darwin flavour binds a name exactly when its bytes are strictly valid UTF-8, and
+refuses anything else with EILSEQ. So it agrees with APFS on the first two rows and binds the last
+three, which macOS would refuse. The Linux flavour binds any NUL-free bytes, as ext4 does. Where
+EILSEQ falls among the other refusals is modelled as measured: last, after `NAME_MAX` and the parent's
+write permission.
+
+A host's filesystem seed bypasses the rule on both flavours, as it already bypasses `NAME_MAX`: a
+seeded Darwin filesystem can hold a name APFS could not.
+
+**Spec status**: POSIX guarantees only its portable filename character set. Which other names a
+filesystem accepts is up to the filesystem.
+
+**Why we chose this**: APFS's rule is not a property that can be written down from the table
+above. Three successive closed forms were proposed and each was refuted by probing: strict UTF-8
+(refuted by the noncharacters), "not a noncharacter" (refuted by U+1FFFD), and any per-code-point
+rule at all (refuted by the combining-sequence limit, which is XNU's decomposition buffer). Doing
+it faithfully means transcribing XNU's `utf8_decodestr` and its normalisation, which is a project of
+its own, and probing suggests there are more rules to find.
+
+The rows the approximation gets right are the ones a guest plausibly reaches. A .NET guest names
+a file with a `string`, which CoreLib encodes as UTF-8 before the call. So bytes that are not UTF-8
+arrive only through a hand-rolled P/Invoke, and that case is modelled exactly. A guest naming a file
+after a noncharacter, or stacking 33 accents on one letter, is much rarer.
+
+**Where this lives in code**: `BindableEntryNames.StrictUtf8`, applied as the last step of
+`CreatingOpenRules.verdict`, `MkDirRules.verdict` and `RenameRules.verdict`. The three over-admitted
+classes are pinned deliberately by `TestUnixPathBytes`'s
+`Darwin binds the valid UTF-8 that APFS refuses, by choice`, and against a live APFS by
+`TestBindingAgainstHost`'s `the model's Darwin binds what APFS refuses, and only that`, so a change on
+either side is noticed. A faithful model would be a new `BindableEntryNames.AppleUnicode` case beside
+`StrictUtf8`, and those two tests are the ones it would flip. The probes and the full measurement are in
+`docs/plans/2026-09-20-unix-path-bytes.md` §1.1 and its sibling directory.
+
 ## A directory stream's descriptor keeps an offset of zero
 
 **CoreCLR (and any Unix)**: `opendir(3)` consumes a file descriptor, and `readdir(3)` advances that
