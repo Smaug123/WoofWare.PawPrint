@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="PathText.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
@@ -31,6 +32,7 @@
     <Compile Include="TestUnixError.fs" />
     <Compile Include="TestUnixByteString.fs" />
     <Compile Include="TestUnixPath.fs" />
+    <Compile Include="TestUnixPathBytes.fs" />
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
@@ -71,6 +73,13 @@
          kernel this library simulates; `WoofWare.PawPrint.Test` links the same
          files, so the two suites cannot drift onto different measurements. -->
     <EmbeddedResource Include="socketMatrix\*.tsv" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- What `PathArgument.parse` answered while it still decoded paths as
+         UTF-8, recorded by pathArgument/record.fsx from that build.
+         `TestUnixPathBytes` holds the byte-valued parse to it. -->
+    <EmbeddedResource Include="pathArgument\recorded.tsv" />
   </ItemGroup>
 
   <ItemGroup>

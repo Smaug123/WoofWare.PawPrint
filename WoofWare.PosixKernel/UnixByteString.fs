@@ -267,6 +267,38 @@ module UnixByteString =
     let length (s : UnixByteString) : int =
         (UnixByteStringInternal.checkedBytes s.Bytes).Length
 
+    /// The empty byte string.
+    let empty : UnixByteString =
+        {
+            Bytes = ImmutableArray<byte>.Empty
+        }
+
+    /// The `count` bytes starting at `start`. Throws if that range is not within `s`.
+    let slice (start : int) (count : int) (s : UnixByteString) : UnixByteString =
+        let bytes = UnixByteStringInternal.checkedBytes s.Bytes
+
+        if start < 0 || count < 0 || start > bytes.Length - count then
+            raise (
+                ArgumentOutOfRangeException (
+                    nameof start,
+                    $"UnixByteString.slice: %d{count} bytes from offset %d{start} is not within a %d{bytes.Length}-byte string"
+                )
+            )
+
+        // A slice of a NUL-free string is NUL-free, so no check is owed.
+        {
+            Bytes = bytes.Slice (start, count)
+        }
+
+    /// `left` followed by `right`.
+    let append (left : UnixByteString) (right : UnixByteString) : UnixByteString =
+        let left = UnixByteStringInternal.checkedBytes left.Bytes
+        let right = UnixByteStringInternal.checkedBytes right.Bytes
+        // Two NUL-free strings concatenate to a NUL-free one, so no check is owed.
+        {
+            Bytes = left.AddRange right
+        }
+
     /// The .NET string these bytes name, if they name one at all.
     ///
     /// `None` exactly when the bytes are not strictly-valid UTF-8.
@@ -292,20 +324,14 @@ module UnixByteString =
     /// throwing (with a message containing `context`) if it does not hold.
     ///
     /// The constructors already ensure the invariant holds, so there is no need to
-    /// call this if you know where the value came from.
+    /// call this if you know where the value came from. Takes constant time.
     let assertValid (context : string) (s : UnixByteString) : UnixByteString =
         // The only value this can reject is `Unchecked.defaultof` / C# `default`,
-        // whose payload is a default ImmutableArray: the private representation and
-        // the constructors' NUL check stop every other route. The `IsDefault` test
-        // has to come first, because `.Length` on that payload throws.
+        // whose payload is a default ImmutableArray. Every other value came from a
+        // constructor, all of which refuse a NUL, and the representation is
+        // private, so there is nothing else to re-check.
         if s.Bytes.IsDefault then
             failwith
-                $"%s{context}: this UnixByteString carries no bytes at all, so it can only have come from `Unchecked.defaultof` or C# `default`; construct one with UnixByteString.ofBytes instead."
-
-        let index = s.Bytes.IndexOf 0uy
-
-        if index >= 0 then
-            failwith
-                $"%s{context}: %s{describe (UnixByteStringDefect.ContainsNul index)}. A UnixByteString that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with UnixByteString.ofBytes instead."
+                $"%s{context}: this UnixByteString carries no bytes at all, so it came from `Unchecked.defaultof` or C# `default`; construct one with UnixByteString.ofBytes instead."
 
         s

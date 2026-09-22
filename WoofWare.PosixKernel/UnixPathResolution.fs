@@ -189,8 +189,8 @@ module UnixPathResolution =
         : bool
         =
         let limits = SimulatedUnixPlatform.pathLimits system.Machine.UnixPlatform
-        // The limit counts the NUL terminator, which the text does not carry.
-        UnixPathText.utf8.GetByteCount (UnixPath.toString path)
+        // The limit counts the NUL terminator, which the path does not carry.
+        UnixByteString.length (UnixPath.toByteString path)
         <= PathLimits.pathMaxBytes limits - 1
 
     /// <summary>
@@ -315,7 +315,7 @@ module UnixPathResolution =
             | InodeContent.RegularFile (contents, _) -> int64 contents.Length
             // `readlink` reports the target's byte length as the link's size,
             // and a guest can see it through a file-length API.
-            | InodeContent.Symlink target -> int64 (SymlinkTarget.toUtf8 target).Length
+            | InodeContent.Symlink target -> int64 (UnixByteString.length (SymlinkTarget.toByteString target))
             // Invented, and the only field here that is: this kernel has no
             // block allocator, so a directory has no natural size. 4096 is what
             // ext4 reports for a small directory, i.e. the least surprising
@@ -525,7 +525,8 @@ module UnixPathResolution =
         /// The bytes a successful call would place, terminator included. Also
         /// what the comparison producing ERANGE is made against, so the two
         /// cannot disagree about whether the path fits.
-        let terminated : ImmutableArray<byte> = (AbsoluteUnixPath.toUtf8 path).Add 0uy
+        let terminated : ImmutableArray<byte> =
+            (UnixByteString.toBytes (AbsoluteUnixPath.toByteString path)).Add 0uy
 
         if capacity < terminated.Length then
             // `getcwd` needs room for the path *and* its NUL, which is why a
@@ -564,7 +565,7 @@ module UnixPathResolution =
         match VirtualFileSystem.tryGetContent target system.Machine.FileSystem with
         | None ->
             failwith
-                $"UnixPathResolution.chdir: the walk resolved \"%s{UnixPath.toString path}\" to inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
+                $"UnixPathResolution.chdir: the walk resolved \"%s{UnixPath.toEscaped path}\" to inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants."
         // Reached by a symbolic link to a regular file as well as by a plain
         // one: `Follow` lands on the file, and only then is it a type error.
         | Some (InodeContent.RegularFile _) -> SyscallAnswer.Failed UnixError.ENOTDIR, system
@@ -577,7 +578,7 @@ module UnixPathResolution =
             // what this syscall asked of it. Found by mutation: the arm was
             // dead, so nothing could tell the two apart.
             failwith
-                $"UnixPathResolution.chdir: the walk resolved \"%s{UnixPath.toString path}\" to inode %O{target}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
+                $"UnixPathResolution.chdir: the walk resolved \"%s{UnixPath.toEscaped path}\" to inode %O{target}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
         | Some (InodeContent.Directory directory) ->
 
         // The *search* bit, and not the read bit: measured on both kernels, a

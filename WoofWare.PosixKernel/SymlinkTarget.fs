@@ -1,7 +1,5 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
-
 /// <summary>
 /// The target of a symbolic link.
 /// </summary>
@@ -20,17 +18,15 @@ type SymlinkTarget =
     /// <c>st_size</c>, so a link created with target "a//b/" must read back as "a//b/" — a difference a
     /// guest really can see.
     /// </remarks>
-    | SymlinkTarget of target : string
+    | SymlinkTarget of target : UnixByteString
 
-    /// <summary>
-    /// The exact string that was used to construct this target.
-    /// </summary>
+    /// The target rendered for a diagnostic; see `UnixByteString.toEscaped`.
     override this.ToString () : string =
         match this with
-        | SymlinkTarget target -> target
+        | SymlinkTarget target -> UnixByteString.toEscaped target
 
 /// <summary>
-/// Why a string is not usable as the target of a symbolic link.
+/// Why a candidate is not usable as the target of a symbolic link.
 /// </summary>
 [<RequireQualifiedAccess>]
 type SymlinkTargetError =
@@ -48,32 +44,57 @@ type SymlinkTargetError =
     /// <summary>
     /// The candidate could not survive the <c>char*</c> boundary.
     /// </summary>
-    /// <remarks>See <c>UnixPathTextDefect</c>.</remarks>
+    /// <remarks>
+    /// See <c>UnixPathTextDefect</c>. Only <c>parse</c>, which takes a .NET string, reports this.
+    /// </remarks>
     | Text of defect : UnixPathTextDefect
 
 [<RequireQualifiedAccess>]
 module SymlinkTarget =
     /// <summary>
-    /// The exact string that was used to construct this target.
+    /// The bytes <c>readlink(2)</c> hands back when asked about a symlink which points at this target.
     /// </summary>
-    let toString (target : SymlinkTarget) : string =
+    /// <remarks>
+    /// The length of these bytes is the link's <c>st_size</c>.
+    ///
+    /// There is no NUL terminator, because <c>readlink</c> does not write one.
+    /// </remarks>
+    let toByteString (target : SymlinkTarget) : UnixByteString =
         match target with
         | SymlinkTarget target -> target
+
+    /// The target as a .NET string, or `None` if its bytes are not valid UTF-8.
+    let tryToString (target : SymlinkTarget) : string option =
+        UnixByteString.tryToString (toByteString target)
+
+    /// The target rendered for a diagnostic; see `UnixByteString.toEscaped`.
+    let toEscaped (target : SymlinkTarget) : string =
+        UnixByteString.toEscaped (toByteString target)
+
+    /// Take a byte string as a symlink target, or explain why it is not one.
+    ///
+    /// Never reports `SymlinkTargetError.Text`: a `UnixByteString` has no text
+    /// defects.
+    let ofByteString (candidate : UnixByteString) : Result<SymlinkTarget, SymlinkTargetError> =
+        if UnixByteString.length candidate = 0 then
+            Error SymlinkTargetError.Empty
+        else
+            Ok (SymlinkTarget candidate)
 
     /// <summary>
     /// Parse a symlink target.
     /// </summary>
     /// <remarks>
-    /// Never throws.
+    /// Never throws. The target is the UTF-8 encoding of <c>candidate</c>.
     /// </remarks>
     let parse (candidate : string) : Result<SymlinkTarget, SymlinkTargetError> =
         if System.String.IsNullOrEmpty candidate then
             Error SymlinkTargetError.Empty
         else
 
-        match UnixPathText.firstDefect candidate with
-        | Some defect -> Error (SymlinkTargetError.Text defect)
-        | None -> Ok (SymlinkTarget candidate)
+        match UnixByteString.ofString candidate with
+        | Error defect -> Error (SymlinkTargetError.Text defect)
+        | Ok bytes -> ofByteString bytes
 
     /// <summary>
     /// Human-readable description of this failure to represent a <c>SymlinkTarget</c>.
@@ -106,7 +127,9 @@ module SymlinkTarget =
         match target with
         | SymlinkTarget raw ->
 
-        match parse raw with
+        let raw = UnixByteString.assertValid context raw
+
+        match ofByteString raw with
         | Ok _ -> target
         | Error error ->
             failwith
@@ -116,27 +139,7 @@ module SymlinkTarget =
     /// The path structure of the target, for a resolution walk to splice in.
     /// </summary>
     /// <remarks>
-    /// Throws only if the input would fail <c>SymlinkTarget.assertValid</c>.
-    /// Cannot throw on an input which came from <c>SymlinkTarget.parse</c>.
+    /// Every target is a path, so this cannot fail.
     /// </remarks>
     let toUnixPath (target : SymlinkTarget) : UnixPath =
-        let raw = toString target
-
-        match UnixPath.parse raw with
-        | Ok path -> path
-        | Error error ->
-            // `parse` has already discharged every rule `UnixPath.parse`
-            // enforces. This case should never happen, unless the user supplied `null` as the input.
-            failwith
-                $"SymlinkTarget.toUnixPath: %s{UnixPath.describe error} (got %s{raw}). Every SymlinkTarget satisfies UnixPath's invariant, so this cannot have come from SymlinkTarget.parse."
-
-    /// <summary>
-    /// The bytes <c>readlink(2)</c> hands back when asked about a symlink which points at this target.
-    /// </summary>
-    /// <remarks>
-    /// The resulting array's length is the link's <c>st_size</c>.
-    ///
-    /// There is no NUL terminator, because <c>readlink</c> does not write one.
-    /// </remarks>
-    let toUtf8 (target : SymlinkTarget) : ImmutableArray<byte> =
-        toString target |> UnixPathText.utf8.GetBytes |> ImmutableArray.CreateRange
+        UnixPath.ofByteString (toByteString target)

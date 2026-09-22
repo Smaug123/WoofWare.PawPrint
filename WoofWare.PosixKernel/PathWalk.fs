@@ -425,7 +425,7 @@ module PathWalk =
             | Some content -> content
             | None ->
                 failwith
-                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{DirectoryEntryName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{DirectoryEntryName.toEscaped name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         match content with
         | InodeContent.Symlink linkTarget ->
@@ -531,7 +531,7 @@ module PathWalk =
             | Some content -> content
             | None ->
                 failwith
-                    $"VirtualFileSystem: about to look \"%s{DirectoryEntryName.toString name}\" up in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem: about to look \"%s{DirectoryEntryName.toEscaped name}\" up in inode %O{directory}, which the walk had already established was a directory, but it is now absent or not a directory. The inode graph is inconsistent; run VirtualFileSystem.checkInvariants."
 
         // Before the length check, before the lookup, and before any symlink
         // this component names is traversed -- which is the whole content of
@@ -572,7 +572,7 @@ module PathWalk =
             | Some content -> content
             | None ->
                 failwith
-                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{DirectoryEntryName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem: directory inode %O{directory} binds \"%s{DirectoryEntryName.toEscaped name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         // A trailing separator forces the final symlink to be followed even
         // under NoFollowFinal: POSIX resolves "p/" as "p/.", and both

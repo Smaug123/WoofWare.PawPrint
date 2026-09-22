@@ -753,13 +753,15 @@ module TestVirtualFileSystem =
 
         match VirtualFileSystem.tryGetContent link vfs with
         | Some (InodeContent.Symlink stored) ->
-            SymlinkTarget.toString stored |> shouldEqual raw
-            SymlinkTarget.toUtf8 stored |> Seq.length |> shouldEqual raw.Length
+            PathText.ofTarget stored |> shouldEqual raw
+
+            UnixByteString.length (SymlinkTarget.toByteString stored)
+            |> shouldEqual raw.Length
             // The traversal view keeps the spelling too — `UnixPath` is verbatim
             // for the same reason this is, so converting one to the other loses
             // nothing. Only `components` collapses, and only where the kernel
             // does.
-            SymlinkTarget.toUnixPath stored |> UnixPath.toString |> shouldEqual raw
+            SymlinkTarget.toUnixPath stored |> PathText.ofPath |> shouldEqual raw
 
             SymlinkTarget.toUnixPath stored
             |> UnixPath.components
@@ -2755,7 +2757,7 @@ module TestVirtualFileSystem =
     let private entriesOf (inode : InodeNumber) (vfs : VirtualFileSystem) : (string * InodeNumber) list =
         entryMap inode vfs
         |> Map.toList
-        |> List.map (fun (n, i) -> DirectoryEntryName.toString n, i)
+        |> List.map (fun (n, i) -> PathText.ofName n, i)
 
     let private childOf (parent : InodeNumber) (n : string) (vfs : VirtualFileSystem) : InodeNumber =
         Map.find (name n) (entryMap parent vfs)
@@ -3365,7 +3367,7 @@ module TestVirtualFileSystem =
                     match orphaned, path with
                     | true, Some found ->
                         failwith
-                            $"inode %O{inode} is orphaned, but pathOfDirectory answered \"%s{AbsoluteUnixPath.toString found}\""
+                            $"inode %O{inode} is orphaned, but pathOfDirectory answered \"%s{PathText.ofAbsolute found}\""
                     | false, None -> failwith $"inode %O{inode} is not orphaned, but pathOfDirectory answered None"
                     | true, None
                     | false, Some _ -> ()
@@ -3536,7 +3538,7 @@ module TestVirtualFileSystem =
         let mutable insideCases = 0
 
         let components (absolute : AbsoluteUnixPath) : string list =
-            AbsoluteUnixPath.toString absolute
+            PathText.ofAbsolute absolute
             |> fun s -> s.Split '/'
             |> Array.toList
             |> List.filter (fun s -> s <> "")
@@ -4513,7 +4515,7 @@ module TestMkDirRules =
     /// only that something was.
     let private bound (verdict : MkDirVerdict) : string =
         match verdict with
-        | MkDirVerdict.Create (_, name, _) -> DirectoryEntryName.toString name
+        | MkDirVerdict.Create (_, name, _) -> PathText.ofName name
         | MkDirVerdict.Refuse error -> failwith $"expected a creation, got %O{error}"
 
     [<Test>]

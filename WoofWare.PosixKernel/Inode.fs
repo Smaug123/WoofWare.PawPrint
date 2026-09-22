@@ -149,7 +149,7 @@ type DirectoryContent =
 /// Metadata whose existence is guaranteed for all inodes lives on <c>Inode</c> instead.
 ///
 /// The emulated filesystem is case-sensitive and normalisation-preserving,
-/// because names are compared with .NET's ordinal string comparison.
+/// because names are compared byte for byte.
 /// This is more like a standard Linux filesystem than APFS, although it's not <i>wrong</i>
 /// from the point of view of the kernel.
 /// </remarks>

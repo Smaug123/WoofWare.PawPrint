@@ -46,7 +46,8 @@ type NameLengthLimit =
     /// </example>
     | Bytes of bytes : int
     /// <summary>
-    /// The length limit is this number of UTF-16 code units.
+    /// The length limit is <c>units</c> UTF-16 code units for a name that is valid UTF-8,
+    /// and <c>fallbackBytes</c> bytes for any other name.
     /// </summary>
     /// <example>
     /// APFS (and HFS+ before it) use this limit.
@@ -58,7 +59,7 @@ type NameLengthLimit =
     /// answer on APFS if you use its <c>String.Length</c> instead of computing the proper
     /// simulated kernel's answer!
     /// </remarks>
-    | Utf16CodeUnits of units : int
+    | Utf16CodeUnitsOrBytes of units : int * fallbackBytes : int
 
 /// <summary>
 /// Whether expanding a symbolic link re-checks that the path still fits in
@@ -177,10 +178,13 @@ module PathLimits =
         match nameMax with
         | NameLengthLimit.Bytes bytes when bytes < 1 ->
             failwith $"PathLimits.create: a NAME_MAX of %d{bytes} bytes would forbid every filename."
-        | NameLengthLimit.Utf16CodeUnits units when units < 1 ->
+        | NameLengthLimit.Utf16CodeUnitsOrBytes (units, _) when units < 1 ->
             failwith $"PathLimits.create: a NAME_MAX of %d{units} UTF-16 code units would forbid every filename."
+        | NameLengthLimit.Utf16CodeUnitsOrBytes (_, fallbackBytes) when fallbackBytes < 1 ->
+            failwith
+                $"PathLimits.create: a NAME_MAX of %d{fallbackBytes} bytes would forbid every filename that is not valid UTF-8."
         | NameLengthLimit.Bytes _
-        | NameLengthLimit.Utf16CodeUnits _ -> ()
+        | NameLengthLimit.Utf16CodeUnitsOrBytes _ -> ()
 
         {
             MaxSymlinkTraversals = maxSymlinkTraversals
@@ -213,8 +217,14 @@ module PathLimits =
     /// look correct.
     let nameWithinLimit (limits : PathLimits) (name : DirectoryEntryName) : bool =
         match limits.NameMax with
-        | NameLengthLimit.Bytes bytes -> UnixPathText.utf8.GetByteCount (DirectoryEntryName.toString name) <= bytes
-        | NameLengthLimit.Utf16CodeUnits units -> (DirectoryEntryName.toString name).Length <= units
+        | NameLengthLimit.Bytes bytes -> UnixByteString.length (DirectoryEntryName.toByteString name) <= bytes
+        | NameLengthLimit.Utf16CodeUnitsOrBytes (units, fallbackBytes) ->
+            // Darwin converts the name to UTF-16 to measure it, and falls back to
+            // a raw byte count when the conversion fails; measured, the names it
+            // counts in units are exactly the strictly-valid UTF-8 ones.
+            match DirectoryEntryName.tryToString name with
+            | Some decoded -> decoded.Length <= units
+            | None -> UnixByteString.length (DirectoryEntryName.toByteString name) <= fallbackBytes
 
     /// Whether this kernel will still resolve the path that results from
     /// expanding `target` here — or, on a kernel that does not re-check,
@@ -234,7 +244,7 @@ module PathLimits =
         // Bytes throughout, never UTF-16 code units — measured with CJK, and
         // the distinction matters because `nameWithinLimit` next door
         // legitimately *does* count code units on Darwin.
-        let targetBytes = UnixPathText.utf8.GetByteCount (SymlinkTarget.toString target)
+        let targetBytes = UnixByteString.length (SymlinkTarget.toByteString target)
 
         // The rule transcribes XNU's `linklen + ni_pathlen > MAXPATHLEN`, where
         // `linklen` is the target's raw byte length and `ni_pathlen` counts the
@@ -264,7 +274,7 @@ module PathLimits =
         let nameMax =
             match limits.NameMax with
             | NameLengthLimit.Bytes bytes -> bytes
-            | NameLengthLimit.Utf16CodeUnits units -> units
+            | NameLengthLimit.Utf16CodeUnitsOrBytes (units, fallbackBytes) -> min units fallbackBytes
 
         if nameMax < 1 then
             failwith
@@ -318,19 +328,10 @@ type PathArgumentBytes =
 /// Why this kernel cannot say what a path argument names.
 /// </summary>
 /// <remarks>
-/// This indicates a gap in WoofWare.PosixKernel's representation. Sorry.
+/// This indicates a bug in the caller: no guest can hand a kernel such bytes.
 /// </remarks>
 [<RequireQualifiedAccess>]
 type PathArgumentRefusal =
-    /// <summary>
-    /// The bytes are not valid UTF-8.
-    /// </summary>
-    /// <remarks>
-    /// This kernel models a filename as a string of characters (where real Linux
-    /// models it just as a stream of non-NUL bytes), so WoofWare.PosixKernel
-    /// can't name a file with a non-UTF-8 string.
-    /// </remarks>
-    | NotUtf8
     /// The bytes hold a NUL at `offset`. A kernel receives a pathname as a C
     /// string, which ends at its first NUL, so bytes carrying one are not a
     /// pathname any kernel was ever handed: the caller read past the end of
@@ -347,7 +348,7 @@ module PathArgument =
     /// Both arguments to <c>rename(2)</c> undergo this parsing.
     /// </example>
     /// <returns>
-    /// <c>Error(PathArgumentRefusal)</c> if the path can't even be represented by the kernel's filesystem (which e.g. only permits UTF-8 paths).
+    /// <c>Error(PathArgumentRefusal)</c> if the bytes are not a C string at all.
     /// <c>Ok(Failed)</c> if the path is valid to pass to the kernel, but fails the <c>limits</c>.
     /// <c>Ok(Parsed)</c> if the parse was successful.
     /// </returns>
@@ -357,7 +358,7 @@ module PathArgument =
     /// </param>
     /// <param name="bytes">
     /// The path argument, without its NUL terminator.
-    /// If it holds a NUL, or is not a UTF-8 string (but is within the length limit), we return a refusal.
+    /// If it holds a NUL, we return a refusal.
     /// </param>
     let parse (limits : PathLimits) (bytes : ImmutableArray<byte>) : Result<PathArgument, PathArgumentRefusal> =
         // A forged `PathLimits` has a `PathMaxBytes` of zero, which is not very
@@ -373,35 +374,14 @@ module PathArgument =
 
         // Before the length: a NUL says the bytes are not the C string the
         // kernel would have copied in, so no rule about that string applies.
-        let nulOffset = bytes.IndexOf 0uy
+        match UnixByteString.ofBytes bytes with
+        | Error (UnixByteStringDefect.ContainsNul offset) -> Error (PathArgumentRefusal.InteriorNul offset)
+        | Ok path ->
 
         // The limit counts the NUL byte, but the caller has not passed that; hence `- 1`.
-        // Length is checked next: PATH_MAX is enforced by getname()/copyinstr
-        // when the kernel copies the string in, before anything looks at what it says.
-        let overPathMax = bytes.Length > PathLimits.pathMaxBytes limits - 1
-
-        if nulOffset >= 0 then
-            Error (PathArgumentRefusal.InteriorNul nulOffset)
-        elif overPathMax then
+        // PATH_MAX is enforced by getname()/copyinstr when the kernel copies the
+        // string in, before anything looks at what it says.
+        if UnixByteString.length path > PathLimits.pathMaxBytes limits - 1 then
             Ok (PathArgument.Failed UnixError.ENAMETOOLONG)
         else
-
-        let decoded =
-            try
-                Some (UnixPathText.utf8.GetString (bytes.AsSpan ()))
-            with :? System.Text.DecoderFallbackException ->
-                None
-
-        match decoded with
-        | None -> Error PathArgumentRefusal.NotUtf8
-        | Some decoded ->
-
-        match UnixPath.parse decoded with
-        | Ok path -> Ok (PathArgument.Parsed path)
-        | Error error ->
-            // Unreachable: the only rejections are a null candidate — impossible,
-            // we have just decoded a string — and text that cannot survive the
-            // `char*` boundary, which a string decoded *from* that boundary
-            // cannot contain.
-            failwith
-                $"PathArgument.parse: the path did not survive parsing: %s{UnixPath.describe error}. The value was decoded from a NUL-free byte string, so it can contain neither an embedded NUL nor a null reference (this is a bug in this library)."
+            Ok (PathArgument.Parsed (UnixPath.ofByteString path))

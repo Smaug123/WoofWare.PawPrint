@@ -233,7 +233,7 @@ module TestRenameRules =
     let private moves (verdict : RenameVerdict) : string * string =
         match verdict with
         | RenameVerdict.Move (_, sourceName, _, destinationName) ->
-            DirectoryEntryName.toString sourceName, DirectoryEntryName.toString destinationName
+            PathText.ofName sourceName, PathText.ofName destinationName
         | other -> failwith $"expected a move, got %A{other}"
 
     let private refuses (platform : SimulatedUnixPlatform) (error : UnixError) (rows : (string * string) list) : unit =

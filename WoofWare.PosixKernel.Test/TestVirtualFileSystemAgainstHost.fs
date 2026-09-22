@@ -560,7 +560,7 @@ module TestVirtualFileSystemAgainstHost =
         | Ok inode ->
 
         match VirtualFileSystem.tryGetContent inode vfs with
-        | Some (InodeContent.Symlink target) -> Outcome.Symlink (SymlinkTarget.toString target)
+        | Some (InodeContent.Symlink target) -> Outcome.Symlink (PathText.ofTarget target)
         | Some _ -> Outcome.NotASymlink
         | None -> failwith $"the model resolved %s{relative} to inode %O{inode}, which it does not contain"
 
@@ -1825,9 +1825,9 @@ module TestVirtualFileSystemAgainstHost =
                 |> List.collect (fun (entry, child) ->
                     let relative =
                         if prefix = "" then
-                            DirectoryEntryName.toString entry
+                            PathText.ofName entry
                         else
-                            prefix + "/" + DirectoryEntryName.toString entry
+                            prefix + "/" + PathText.ofName entry
 
                     relative :: walk relative child
                 )
@@ -2446,8 +2446,7 @@ module TestVirtualFileSystemAgainstHost =
 
             match VirtualFileSystem.nextDirectoryEntry inode cursor vfs with
             | None -> acc
-            | Some (DirectoryStreamName.Entry name, _, next) ->
-                go next (fuel - 1) (DirectoryEntryName.toString name :: acc)
+            | Some (DirectoryStreamName.Entry name, _, next) -> go next (fuel - 1) (PathText.ofName name :: acc)
             | Some (_, _, next) -> go next (fuel - 1) acc
 
         go DirectoryCursor.Start 1000 [] |> List.sort
@@ -2666,7 +2665,7 @@ module TestVirtualFileSystemAgainstHost =
                 match VirtualFileSystem.pathOfDirectory content.Parent vfs with
                 | None -> Some (relative, "<unreachable>")
                 | Some absolute ->
-                    let rendered = AbsoluteUnixPath.toString absolute
+                    let rendered = PathText.ofAbsolute absolute
                     Some (relative, (if rendered = "/" then "" else rendered.TrimStart '/'))
             | _ -> None
         )
@@ -3135,7 +3134,7 @@ module TestVirtualFileSystemAgainstHost =
         match UnixPathResolution.chdir (UnixPath.parseOrFail "test" relative) system with
         | SyscallAnswer.Completed 0L, moved ->
             match UnixPathResolution.currentDirectoryPath moved with
-            | Some path -> ChDirOutcome.Entered (AbsoluteUnixPath.toString path)
+            | Some path -> ChDirOutcome.Entered (PathText.ofAbsolute path)
             | None ->
                 // No operand in this fixture removes a directory, so nothing
                 // here can leave the process somewhere no path reaches -- and

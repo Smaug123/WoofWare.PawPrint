@@ -91,7 +91,7 @@ module TestFileSystemSeed =
         | InodeContent.Symlink stored ->
             // Verbatim, and in particular *not* resolved when the seed was
             // realised: this target names nothing the seed declares.
-            SymlinkTarget.toString stored |> shouldEqual "/usr/share/zoneinfo/UTC"
+            PathText.ofTarget stored |> shouldEqual "/usr/share/zoneinfo/UTC"
         | other -> failwith $"expected a symlink, got %A{other}"
 
         match contentAt "/empty" SymlinkPolicy.Follow with
@@ -188,7 +188,7 @@ module TestFileSystemSeed =
         entries
         |> Map.toList
         |> List.collect (fun (name, entry) ->
-            let here = prefix + "/" + DirectoryEntryName.toString name
+            let here = prefix + "/" + PathText.ofName name
 
             match entry with
             | SeedEntry.Directory (children, _) -> (here, entry) :: declared here children

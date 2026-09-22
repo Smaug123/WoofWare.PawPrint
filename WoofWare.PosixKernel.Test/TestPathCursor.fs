@@ -86,7 +86,7 @@ module TestPathCursor =
         match component_ with
         | PathComponent.Current -> "."
         | PathComponent.Parent -> ".."
-        | PathComponent.Name name -> DirectoryEntryName.toString name
+        | PathComponent.Name name -> PathText.ofName name
 
     // ------------------------------------------------------------- equivalence
 
@@ -106,7 +106,7 @@ module TestPathCursor =
         let property (candidate : string) : unit =
             let parsed = path candidate
 
-            UnixPath.toString parsed |> shouldEqual candidate
+            PathText.ofPath parsed |> shouldEqual candidate
             UnixPath.isRooted parsed |> shouldEqual (candidate.StartsWith "/")
             UnixPath.isEmpty parsed |> shouldEqual (candidate = "")
 

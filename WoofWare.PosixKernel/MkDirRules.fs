@@ -126,10 +126,10 @@ module MkDirRules =
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"MkDirRules.verdict: the walk resolved \"%s{DirectoryEntryName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"MkDirRules.verdict: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
             | None ->
                 failwith
-                    $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toEscaped name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         match existing with
         | Some _ -> MkDirVerdict.Refuse UnixError.EEXIST
