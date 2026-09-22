@@ -234,6 +234,9 @@ module TestUnixByteString =
         value.Equals (box 1uy) |> shouldEqual false
         value.Equals (null : obj) |> shouldEqual false
 
+        // `IComparable`'s contract: every instance sorts after null.
+        (value :> IComparable).CompareTo (null : obj) |> shouldEqual 1
+
         // Ordering against a foreign type is a programming error, not a
         // verdict: answering it would let a mixed collection sort silently.
         Assert.Throws<ArgumentException> (fun () -> (value :> IComparable).CompareTo (box 1uy) |> ignore<int>)
