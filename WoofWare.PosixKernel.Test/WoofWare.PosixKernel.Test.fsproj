@@ -11,6 +11,7 @@
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
     <Compile Include="PathText.fs" />
+    <Compile Include="BindingProbes.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="TestUnixProcessState.fs" />
     <Compile Include="TestMonotonicTimestamp.fs" />
@@ -50,6 +51,7 @@
     <Compile Include="TestRenameRules.fs" />
     <Compile Include="TestResolutionSplit.fs" />
     <Compile Include="TestVirtualFileSystemAgainstHost.fs" />
+    <Compile Include="TestBindingAgainstHost.fs" />
     <Compile Include="TestLinuxEpollLimits.fs" />
     <Compile Include="TestCreatableSockets.fs" />
     <Compile Include="TestAccept.fs" />

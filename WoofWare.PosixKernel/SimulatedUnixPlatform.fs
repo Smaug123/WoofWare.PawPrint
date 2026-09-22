@@ -76,20 +76,6 @@ type DirectoryEntryNameLength =
     /// `-1`, as every libc without `d_namlen` gets.
     | WalkToTerminator
 
-/// Which names a platform's filesystem is willing to bind: create, or rename
-/// onto. Looking a name up is unaffected, since a name the filesystem could not
-/// have bound is simply absent.
-[<RequireQualifiedAccess>]
-type BindableEntryNames =
-    /// Any NUL-free byte string, as on Linux/ext4.
-    | AnyBytes
-    /// Only names that are valid UTF-8.
-    ///
-    /// This approximates Darwin/APFS. APFS also refuses some valid UTF-8 names:
-    /// Unicode noncharacters, at least one unassigned code point, and combining
-    /// sequences longer than 32 characters. This case admits all of those.
-    | StrictUtf8
-
 /// What `getcwd(3)` answers when the current directory has been *removed* — so
 /// there is no path to report — and how small a buffer can still change that
 /// answer.

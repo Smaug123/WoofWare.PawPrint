@@ -83,6 +83,9 @@ module CreatingOpenRules =
     ///    unsearchable directory before it looks a component up at all. See
     ///    `PathWalk.resolveFull`, which is also where the rows that
     ///    pin it live.
+    ///  * Last, a name `bindable` does not admit is EILSEQ. Measured on Darwin
+    ///    by `darwin-eilseq-is-last.c` in `docs/plans/2026-09-20-unix-path-bytes/`:
+    ///    each refusal above beats it.
     ///
     /// A freshly created inode is deliberately *not* screened against the mode
     /// it was just given — measured unanimously, `open(free, O_CREAT|O_RDWR, 0)`
@@ -91,6 +94,7 @@ module CreatingOpenRules =
     /// rather than a step before it.
     let verdict
         (rules : CreatingOpenRules)
+        (bindable : BindableEntryNames)
         (privilege : CallerPrivilege)
         (creating : bool)
         (exclusive : bool)
@@ -157,6 +161,8 @@ module CreatingOpenRules =
 
         if PermissionBits.deniedTo privilege AccessRequest.Write parentBits then
             CreatingOpenVerdict.Refuse UnixError.EACCES
+        elif not (BindableEntryNames.admits bindable name) then
+            CreatingOpenVerdict.Refuse UnixError.EILSEQ
         else
             CreatingOpenVerdict.Create (directory, name)
 

@@ -70,6 +70,7 @@ plan and were caught exactly that way.
 | `darwin-where-the-check-applies.c` | §1.2 |
 | `darwin-rule-ordering.c` | §1.3, Darwin rows of §1.4 |
 | `darwin-name-max-vs-permission.c` | §1.3's two-by-two |
+| `darwin-eilseq-is-last.c` | Stage 7's ordering of EILSEQ in `open(O_CREAT)` and `rename` |
 | `darwin-lookup-vs-name-max.c` | §1.4's lookup claim |
 | `darwin-name-max-boundary-per-unit.c` | §1.5's boundary table |
 | `darwin-name-max-which-unit.c` | §1.5's classification |
@@ -964,6 +965,24 @@ directly testable against the shipped flavour rather than deferred:
   compare only the rows §1.1.1 marks "agrees" — which is most of them, and is
   the first time this suite can check the Darwin encoding rule against a real
   kernel at all.
+
+**As built.**
+
+- §1.3 measured the position of EILSEQ only for `mkdir`.
+  `darwin-eilseq-is-last.c` measures it for `open(O_CREAT)` and `rename` too.
+  In every one of the three, each earlier refusal wins, including ENOENT from a
+  removed parent directory.
+- Each verdict takes the flavour's `BindableEntryNames` as a parameter, and
+  `BindableEntryNames.admits` applies it. The type moved to its own file,
+  ahead of the rule files.
+- The deferred `symlink` row is recorded in `admits`' docstring.
+- The rows are data (`BindingProbes` in the kernel's tests). `TestUnixPathBytes`
+  checks the model against the measured Darwin answers on any host.
+  `TestBindingAgainstHost` puts the same rows to the host kernel through
+  `byte[]` P/Invokes, rather than extending `TestVirtualFileSystemAgainstHost`.
+  Every row is one §1.1.1 marks "agrees", so it compares all of them on either
+  host. It also asserts that APFS refuses the three over-admitted names while
+  the model binds them.
 
 **If fidelity is wanted later**: add a `BindableEntryNames.AppleUnicode` case
 beside `StrictUtf8`, carrying a transcription of XNU's `utf8_decodestr`,
