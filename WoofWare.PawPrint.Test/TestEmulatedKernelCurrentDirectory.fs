@@ -164,6 +164,32 @@ module TestEmulatedKernelCurrentDirectory =
         text |> shouldContainText "NAME_MAX"
         text |> shouldContainText overlong
 
+    /// A seed name a Darwin filesystem would not bind is the same kind of host
+    /// mistake, and the message names the name (escaped, since it is not text)
+    /// and the knob.
+    [<Test>]
+    let ``a seed name Darwin will not bind names the filesystem knob and the name`` () : unit =
+        let undecodable =
+            match UnixByteString.ofBytes (ImmutableArray.Create 0xFFuy) with
+            | Ok bytes ->
+                match DirectoryEntryName.ofByteString bytes with
+                | Ok name -> name
+                | Error error -> failwith $"test name: %s{DirectoryEntryName.describe error}"
+            | Error defect -> failwith $"test bytes %s{UnixByteString.describe defect}"
+
+        let seed = Map.ofList [ undecodable, SeedEntry.file noBytes ]
+
+        let text =
+            message (fun () ->
+                EmulatedKernel.create SimulatedUnixPlatform.macOsArm64
+                |> EmulatedKernel.withFileSystemAndCurrentDirectory createdAt seed (absolute "/")
+                |> ignore<EmulatedKernel>
+            )
+
+        text |> shouldContainText "KernelConfig.FileSystem"
+        text |> shouldContainText "will not bind"
+        text |> shouldContainText "\\xFF"
+
     [<Test>]
     let ``a current directory the seed does not contain names both knobs`` () : unit =
         let text = message (fun () -> seededAt "/outer/nope" |> ignore<EmulatedKernel>)
