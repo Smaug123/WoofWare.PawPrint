@@ -436,14 +436,10 @@ module IlMachineThreadState =
     /// Allocate a fresh `ThreadId` for a PawPrint-internal auxiliary
     /// thread (currently the signal dispatcher spawned by
     /// `SystemNative_InitializeTerminalAndSignalHandling`). The thread
-    /// has no managed `Thread` heap mirror — it is not entered in
+    /// starts with no managed `Thread` heap mirror — it is not entered in
     /// `ManagedThreadObjects` — and its `ThreadState` is frameless with
-    /// status `ThreadStatus.Parked`, so the scheduler never picks it.
-    ///
-    /// A future slice that wires signal dispatch will introduce an
-    /// explicit transition out of `Parked` (driven by the signal
-    /// subsystem, not by guest IL); until then a thread allocated here
-    /// remains `Parked` for the lifetime of the run.
+    /// status `ThreadStatus.Parked`, so the scheduler never picks it until
+    /// `startParkedDispatcher` gives it a frame.
     let allocateParkedThread (state : IlMachineState) : IlMachineState * ThreadId =
         let thread = ThreadId state.NextThreadId
 
