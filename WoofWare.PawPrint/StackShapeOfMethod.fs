@@ -369,13 +369,30 @@ module StackShapeOfMethod =
         false
 #endif
 
+    /// The slot, counted from the top, of the first float32 on `stack` at `offset`, if `offset`
+    /// starts a block the analysis could not type. Such a float32 arrives in a spill temp
+    /// whose width CoreCLR decides over paths the analysis could not type, so the importer may
+    /// have widened it to double, and executing on with either width could diverge from it.
+    let internal untypedSpilledSingle (shape : StackShape) (offset : int) (stack : EvalStackValue list) : int option =
+        if shape.Entry.ContainsKey offset || not (shape.BlockStarts.Contains offset) then
+            None
+        else
+            stack
+            |> List.tryFindIndex (fun value ->
+                match value with
+                | EvalStackValue.Float (EvalStackFloat.Single _) -> true
+                | _ -> false
+            )
+
     /// Apply the body's stack shape to the frame about to execute an instruction, computing the
     /// shape on the body's first execution, which is the moment CoreCLR would JIT it. A float32
     /// arriving in a slot the analysis promotes is widened to double, as CoreCLR's importer casts
     /// it on arrival at a join it has typed as double. In a Debug build the runtime stack must
     /// then have the analysis's depth for the instruction, with a float of the analysis's width
-    /// in every slot it says is a float and in no other; an instruction the analysis found
-    /// invalid on every path stops the run rather than executing.
+    /// in every slot it says is a float and in no other. An instruction the analysis found
+    /// invalid on every path stops the run rather than executing, as does a join whose width
+    /// depends on a branch the JIT may fold, and a float32 entering a block the analysis could
+    /// not type.
     let beforeInstruction
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
@@ -406,6 +423,15 @@ module StackShapeOfMethod =
                     StackShapes = Map.add key shape state.StackShapes
                 }
 
+        // An untyped offset that execution carries on through, unless a float32 enters a block
+        // there.
+        let untyped () : IlMachineState =
+            match untypedSpilledSingle shape frame.IlOpIndex frame.EvaluationStack.Values with
+            | Some slot ->
+                failwith
+                    $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) is entering the block at offset %d{frame.IlOpIndex} with a float32 in slot %d{slot} from the top, but the analysis could not type that block, so whether CoreCLR widens the float32 there is undecided"
+            | None -> state
+
         match Map.tryFind frame.IlOpIndex shape.Entry with
         | None ->
             match Map.tryFind frame.IlOpIndex shape.Invalid with
@@ -413,18 +439,18 @@ module StackShapeOfMethod =
                 // Two paths disagree here. Either the IL is invalid, in which case CoreCLR's
                 // importer refuses it and PawPrint runs it as it always has, or one path is an
                 // arm the importer never imports (a branch on an intrinsic, say), in which case
-                // CoreCLR runs it. Neither is worth stopping over: the join and what follows it
-                // are simply untyped, and nothing is asserted.
-                state
+                // CoreCLR runs it. Neither is worth stopping over by itself: the join and what
+                // follows it are simply untyped, and only a float32 entering a block is refused.
+                untyped ()
             | Some (StackShapeError.MissingTokenShape _) ->
                 // The token could not be read ahead of time; the instruction raises for the
                 // guest, or fails, on its own terms.
-                state
+                untyped ()
             | Some (StackShapeError.WidthDependsOnFoldedBranch (_, branch)) ->
                 // CoreCLR may or may not widen a float32 here, depending on whether it folded
                 // the branch; carrying on with either width could diverge from it.
                 failwith
-                    $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) is executing offset %d{frame.IlOpIndex}, a join where a float32 meets a double whose width depends on whether the JIT folds the branch on literals at offset %d{branch}, which PawPrint does not model"
+                    $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) is executing offset %d{frame.IlOpIndex}, a join where a float32 meets a double whose width depends on whether the JIT folds the branch at offset %d{branch}, which PawPrint does not model"
             | Some error ->
                 // An instruction that cannot run on any path: CoreCLR's importer refuses it when
                 // it imports it, which is at the latest when control reaches it.
@@ -433,7 +459,7 @@ module StackShapeOfMethod =
             | None ->
                 if shape.Reachable.Contains frame.IlOpIndex then
                     // Reachable only through an offset the analysis could not type.
-                    state
+                    untyped ()
                 else
                     failwith
                         $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) is executing offset %d{frame.IlOpIndex}, which the analysis found unreachable"
