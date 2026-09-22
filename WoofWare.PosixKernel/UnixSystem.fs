@@ -10,6 +10,7 @@ open System.Collections.Immutable
 /// per flavour. Arguments only the client can classify arrive classified.
 type Syscall =
     | GetEffectiveUserId
+    | GetProcessId
     | Dup of fd : int
     | LSeek of fd : int * offset : int64 * whence : int
     /// `operation` is raw: which combinations of LOCK_SH/LOCK_EX/LOCK_UN/LOCK_NB
@@ -212,6 +213,15 @@ type CurrentDirectoryFault =
 [<RequireQualifiedAccess>]
 module UnixSystem =
 
+    /// The process ID, as `getpid(2)` reports it.
+    ///
+    /// Total, and changes nothing: `getpid` cannot fail.
+    let processId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (system : UnixSystem<'Task, 'Handler>)
+        : ProcessId
+        =
+        system.Process.ProcessId
+
     /// Answer one syscall, made by `task`.
     ///
     /// The task is what a blocking answer is recorded against: `FLock` that
@@ -253,6 +263,11 @@ module UnixSystem =
         | Syscall.GetEffectiveUserId ->
             Ok (
                 SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (UnixDescriptor.effectiveUserId system))),
+                system
+            )
+        | Syscall.GetProcessId ->
+            Ok (
+                SyscallOutcome.Answered (SyscallAnswer.Completed (int64 (ProcessId.toInt32 (processId system)))),
                 system
             )
         | Syscall.Dup fd -> Ok (UnixDescriptor.dup fd system) |> answered
@@ -734,6 +749,22 @@ module UnixSystem =
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
 
+    /// Process ID a freshly-minted simulated process reports: 4242.
+    ///
+    /// Not 1, which is the ID of a PID namespace's init process. A kernel
+    /// treats init specially — a signal it has not installed a handler for is
+    /// not delivered to it from inside its own namespace, so `kill -9` on
+    /// itself does nothing — and a default that took that branch would be
+    /// modelling a container's entry point rather than an ordinary process.
+    /// Hosts choose otherwise via `KernelConfig.ProcessId`.
+    let defaultProcessId : ProcessId =
+        // Measured on Linux 6.18.5 in a container: `sh` running as pid 1
+        // survives both `kill -9 $$` and `kill -TERM $$`, where the same
+        // shell as pid 2 dies with status 137. Otherwise the number is
+        // arbitrary; it differs from every other default ID here so that a
+        // caller reading the wrong one fails a test that uses the defaults.
+        ProcessId.parseOrFail "UnixSystem.defaultProcessId" 4242
+
     /// Seed for `UnixMachineState.NonCryptoRandomState`: `floor(2^64 / phi)`,
     /// the constant the reference splitmix64 uses as its weyl increment.
     /// Anything non-zero would do — splitmix64 has no weak seeds — and a
@@ -824,6 +855,7 @@ module UnixSystem =
                     UserId = defaultUserId flavour
                     GroupId = defaultGroupId flavour
                     Umask = defaultUmask
+                    ProcessId = defaultProcessId
                     Signals = SignalState.initial (SimulatedUnixPlatform.signalNumbering platform)
                 }
             Tasks = Map.empty

@@ -1738,6 +1738,9 @@ type KernelConfig =
         /// modes `FileSystem` states, which describe a tree this process did not
         /// build.
         Umask : PermissionBits
+        /// The ID the guest observes via `Environment.ProcessId`. See
+        /// `UnixSystem.defaultProcessId` for why the default is not 1.
+        ProcessId : ProcessId
         /// What `SystemNative_GetFileSystemType` reports for a file on
         /// `FileSystem`; `None` takes whichever filesystem `UnixPlatform`'s
         /// flavour would most honestly mount for an in-memory tree.
@@ -1793,6 +1796,7 @@ type KernelConfig =
             UserId = None
             GroupId = None
             Umask = UnixSystem.defaultUmask
+            ProcessId = UnixSystem.defaultProcessId
             FileSystemType = None
             EphemeralPortRange = None
             SoMaxConn = None
@@ -1848,3 +1852,4 @@ module KernelConfig =
         |> EmulatedKernel.mapMachine (UnixMachineState.withSoMaxConn config.SoMaxConn)
         |> EmulatedKernel.mapMachine (UnixMachineState.withLocalAddresses config.LocalAddresses config.LocalRoutes)
         |> EmulatedKernel.mapProcess (UnixProcessState.withUmask "KernelConfig.Umask" config.Umask)
+        |> EmulatedKernel.mapProcess (UnixProcessState.withProcessId "KernelConfig.ProcessId" config.ProcessId)

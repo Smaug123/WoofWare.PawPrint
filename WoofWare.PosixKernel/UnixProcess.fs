@@ -175,6 +175,11 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// literal but is not derived from this field, so raising the mask
         /// cannot silently change what an unannotated seed entry means.
         Umask : PermissionBits
+        /// The ID `getpid(2)` reports for the simulated process.
+        ///
+        /// Fixed for the whole run: a process keeps its ID from `fork` to exit,
+        /// and nothing here models either end.
+        ProcessId : ProcessId
         /// Pure data model of the simulated process's signal disposition,
         /// per-thread sigprocmasks, and pending-signal queue. Populated by
         /// future slices: nothing in the simulator dispatches signals yet,
@@ -273,6 +278,20 @@ module UnixProcessState =
         =
         { proc with
             Umask = PermissionBits.assertValid context umask
+        }
+
+    /// Set the ID `getpid(2)` reports for the simulated process.
+    ///
+    /// `context` prefixes the rejection a forged ID earns; see
+    /// `withProcessPath` for why the client supplies it.
+    let withProcessId<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (context : string)
+        (pid : ProcessId)
+        (proc : UnixProcessState<'Task, 'Handler>)
+        : UnixProcessState<'Task, 'Handler>
+        =
+        { proc with
+            ProcessId = ProcessId.assertValid context pid
         }
 
     /// Set the effective user and group IDs the simulated process runs as.

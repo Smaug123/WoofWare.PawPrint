@@ -41,6 +41,7 @@ module TestUnixProcessState =
             UserId = 1000u
             GroupId = 1000u
             Umask = PermissionBits.parseOrFail context 0o022
+            ProcessId = ProcessId.parseOrFail context 4242
             Signals = SignalState.initial SignalNumbering.Linux
         }
 

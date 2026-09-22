@@ -57,6 +57,34 @@ module TestKernelConfig =
         | Error error -> failwith $"could not resolve %s{path} in the test seed: %O{error}"
 
     [<Test>]
+    let ``the process ID is configurable and validated`` () : unit =
+        KernelConfig.Default.ProcessId |> shouldEqual UnixSystem.defaultProcessId
+
+        (KernelConfig.toKernel KernelConfig.Default).Process.ProcessId
+        |> shouldEqual UnixSystem.defaultProcessId
+
+        let configured =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    ProcessId = ProcessId.parseOrFail "test" 3
+                }
+
+        configured.Process.ProcessId |> ProcessId.toInt32 |> shouldEqual 3
+
+        // The one value of the type that did not come from `parse`.
+        let apply () =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    ProcessId = Unchecked.defaultof<ProcessId>
+                }
+            |> ignore<EmulatedKernel>
+
+        let exn = Assert.Throws<Exception> (TestDelegate apply)
+
+        exn.Message.StartsWith ("KernelConfig.ProcessId: ", StringComparison.Ordinal)
+        |> shouldEqual true
+
+    [<Test>]
     let ``the instruction cost is configurable and validated`` () : unit =
         // The rate is guest-observable — a guest can measure it by counting work against
         // `Environment.TickCount64`, and it decides whether `SpinWait` reaches its blocking

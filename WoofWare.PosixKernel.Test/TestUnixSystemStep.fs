@@ -2283,6 +2283,36 @@ module TestUnixSystemStep =
         | other -> failwith $"unexpected: %O{other}"
 
     [<Test>]
+    let ``getpid reports the configured process ID, through step as through the primitive`` () : unit =
+        UnixSystem.processId linux |> shouldEqual UnixSystem.defaultProcessId
+
+        // Away from the default, so that a primitive answering a constant fails.
+        let configured =
+            { linux with
+                Process = UnixProcessState.withProcessId "test" (ProcessId.parseOrFail "test" 3) linux.Process
+            }
+
+        UnixSystem.processId configured |> ProcessId.toInt32 |> shouldEqual 3
+
+        for system in [ linux ; configured ] do
+            match UnixSystem.step holderTask Syscall.GetProcessId system |> stepAnswered with
+            | Ok (SyscallAnswer.Completed answer, after) ->
+                answer |> shouldEqual (int64 (ProcessId.toInt32 (UnixSystem.processId system)))
+                after |> shouldEqual system
+            | other -> failwith $"unexpected: %O{other}"
+
+    [<Test>]
+    let ``withProcessId refuses the forged default process ID`` () : unit =
+        let apply () =
+            UnixProcessState.withProcessId "ctx" Unchecked.defaultof<ProcessId> linux.Process
+            |> ignore<UnixProcessState<int, string>>
+
+        let exn = Assert.Throws<System.Exception> (TestDelegate apply)
+
+        exn.Message.StartsWith ("ctx: ", System.StringComparison.Ordinal)
+        |> shouldEqual true
+
+    [<Test>]
     let ``dup of a closed descriptor is EBADF and changes nothing`` () : unit =
         let answer, after = UnixDescriptor.dup 7 linux
         answer |> shouldEqual (SyscallAnswer.Failed UnixError.EBADF)

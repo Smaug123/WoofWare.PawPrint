@@ -37,6 +37,7 @@
     <Compile Include="TestAbsoluteUnixPath.fs" />
     <Compile Include="TestFileSystemSeed.fs" />
     <Compile Include="TestFileDescriptorRegistry.fs" />
+    <Compile Include="TestProcessId.fs" />
     <Compile Include="TestSignal.fs" />
     <Compile Include="TestSignalAgainstHost.fs" />
     <Compile Include="TestSignalMaskAgainstHost.fs" />
