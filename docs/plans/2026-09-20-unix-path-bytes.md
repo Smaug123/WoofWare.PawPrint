@@ -254,8 +254,8 @@ APFS-admissibility — U+FFFF has a perfectly good UTF-16 length, is measured in
 units, and is only then refused at §1.3 row 5. Measured, a lookup shows the
 split — on Darwin,
 `open(300 × 0xff, O_RDONLY)` is **ENOENT**, where the valid control `open(300 ×
-'a', O_RDONLY)` is **ENAMETOOLONG**. A non-decodable component never reaches the
-length rule at all.
+'a', O_RDONLY)` is **ENAMETOOLONG**: 300 bytes is over the unit limit but under
+the 765-byte one, and it is the latter that applies to a non-decodable name.
 
 ### 1.5 Darwin has *two* NAME_MAX limits, not one
 
@@ -681,9 +681,12 @@ a raw byte count, and §1.4 measured that with bytes that are not UTF-8 at all.
 Six call sites, all listed by `rg NameLengthLimit`.
 
 **Correctness oracle**: the existing suite passes unchanged. This stage changes
-no behaviour, so `scripts/check-move-is-rename-only.sh` applies — and
-`scripts/check-docstring-attachment.py` must run against the branch point,
-because the docstring is being edited next to its declaration.
+no behaviour: reversing the substitution on every touched file must leave a diff
+against the branch point consisting of the docstring edit alone.
+(`scripts/check-move-is-rename-only.sh` does not apply; it checks file moves,
+and this stage moves none.) `scripts/check-docstring-attachment.py` must run
+against the branch point, because the docstring is being edited next to its
+declaration.
 
 ---
 
