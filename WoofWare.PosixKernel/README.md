@@ -11,7 +11,7 @@ A deterministic, purely functional simulation of a POSIX process.
 This library models what a Unix kernel tells a process about the world.
 It includes:
 
-* the filesystem, including permissions
+* the filesystem, including permissions, with every name a string of bytes exactly as the kernel stores it, never decoded as text
 * the file-descriptor table
 * sockets and connections
 * signals
