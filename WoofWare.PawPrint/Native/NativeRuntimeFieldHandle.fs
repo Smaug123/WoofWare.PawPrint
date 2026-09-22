@@ -169,6 +169,56 @@ module NativeRuntimeFieldHandle =
         | "System.Private.CoreLib",
           "System",
           "RuntimeFieldHandle",
+          "GetStaticFieldForGenericType",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics)
+            ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                              "MethodTable",
+                                                              methodTableGenerics)) ],
+          MethodReturnType.Returns (CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", retGenerics)) when
+            generics.IsEmpty && methodTableGenerics.IsEmpty && retGenerics.IsEmpty
+            ->
+            // CoreCLR's RuntimeFieldHandle::GetStaticFieldForGenericType (runtimehandles.cpp:2220)
+            // swaps a static FieldDesc that `RuntimeTypeHandle.GetFields` found on the canonical
+            // (`__Canon`) MethodTable for the one on the exact instantiation `pMT`, since statics
+            // are per instantiation; it then asserts that the answer's enclosing MethodTable *is*
+            // `pMT`. Its one caller is `RuntimeType.PopulateRtFields` (RuntimeType.CoreCLR.cs:917),
+            // for each static field of a closed generic type.
+            //
+            // PawPrint's `GetFields` already mints each handle against the exact closed type it
+            // was asked about (`walkClosedTypeHandleFields`), and `PopulateRtFields` passes that
+            // same type here, so the handle is already the exact instantiation's and the answer
+            // is the handle itself. CoreCLR's postcondition is checked rather than assumed: a
+            // handle declared on any other type did not come from `GetFields` on `pMT`, and
+            // answering it would read some other type's static storage.
+            let operation = "RuntimeFieldHandle.GetStaticFieldForGenericType"
+
+            let fieldHandle =
+                // CoreCLR's `_ASSERTE(pField != NULL)`; fault loudly, as the siblings above do.
+                fieldHandleOfRuntimeFieldHandleInternal operation state instruction.Arguments.[0]
+                |> Option.defaultWith (fun () -> failwith $"%s{operation}: null field handle")
+
+            let methodTable =
+                NativeCall.methodTableOfEvalStackValue operation (EvalStackValue.ofCliType instruction.Arguments.[1])
+
+            let _, fieldInfo = FieldRvaData.fieldForHandle operation fieldHandle state
+
+            if not (fieldInfo.Attributes.HasFlag FieldAttributes.Static) then
+                failwith
+                    $"%s{operation}: field %s{fieldInfo.Name} is not static; CoreCLR asserts `pField->IsStatic()` and its only caller asks only for static fields"
+
+            match fieldHandle.GetDeclaringTypeHandle () with
+            | RuntimeTypeHandleTarget.Closed declaring when declaring = methodTable -> ()
+            | declaring ->
+                failwith
+                    $"%s{operation}: field %s{fieldInfo.Name} has a handle declared on %O{declaring}, but the exact MethodTable asked for is %O{methodTable}; PawPrint mints field handles per exact instantiation, so these were expected to agree"
+
+            let state =
+                IlMachineState.pushToEvalStack instruction.Arguments.[0] ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "RuntimeFieldHandle",
           "AcquiresContextFromThis",
           [ CorelibType state.ConcreteTypes ("System", "RuntimeFieldHandleInternal", generics) ],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) when generics.IsEmpty ->

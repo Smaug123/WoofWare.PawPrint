@@ -16,7 +16,8 @@ open WoofWare.PawPrint
 module TestNativeRuntimeFieldHandleGetValue =
     open NativeRuntimeFieldHandleFixture
 
-    let private makeFixture () : Fixture = make "RuntimeFieldHandle_GetValue"
+    let private makeFixture () : Fixture =
+        make (NativeEntry.QCall "RuntimeFieldHandle_GetValue")
 
     /// The six QCall arguments for reading `field` of `declaringTypeHandle`, typed
     /// `fieldTypeHandle`, from `instance` (`None` for a static), with the out-cell holding
