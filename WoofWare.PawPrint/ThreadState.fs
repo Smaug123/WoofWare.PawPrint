@@ -413,6 +413,54 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnSleep _ -> true
         | ThreadStatus.BlockedInSyscall -> true
 
+    /// What `Thread.ThreadState` reports for a thread in this status whose `IsBackground` flag
+    /// is `isBackground`: CoreCLR's `ThreadNative_GetThreadState` (comsynchronizable.cpp),
+    /// which every row below was measured against on real .NET 10.
+    ///
+    /// `WaitSleepJoin` is CoreCLR's `TS_Interruptible`, which only an *alertable* wait sets:
+    /// `Sleep`, `Join`, `Monitor.Enter`/`Wait`, and a wait-handle wait whose `WaitAlertability`
+    /// says so. A thread parked on a class initialiser, on a `LowLevelMonitor` (a plain pthread
+    /// P/Invoke), in a non-alertable wait-handle wait (such as an idle thread-pool worker's) or
+    /// inside a blocking syscall reads as running.
+    ///
+    /// A dead thread reads `Stopped` alone whatever `isBackground` says, because CoreCLR
+    /// clears `TS_Background` on death. The entry thread waiting for foreground threads reads
+    /// `Stopped` too, but keeps its other bits: `WaitForOtherThreads` marks it
+    /// `TS_ReportDead` and then waits alertably.
+    ///
+    /// Throws on `Parked`, which no managed `Thread` object stands for, so no guest can ask.
+    let managedThreadState (isBackground : bool) (status : ThreadStatus) : System.Threading.ThreadState =
+        let background =
+            if isBackground then
+                System.Threading.ThreadState.Background
+            else
+                System.Threading.ThreadState.Running
+
+        // Fully enumerated, like the ones above, so a new `ThreadStatus` must say what the
+        // guest sees.
+        match status with
+        | ThreadStatus.Runnable -> background
+        | ThreadStatus.NotStarted -> System.Threading.ThreadState.Unstarted ||| background
+        | ThreadStatus.Terminated -> System.Threading.ThreadState.Stopped
+        | ThreadStatus.WaitingForForegroundThreads ->
+            System.Threading.ThreadState.Stopped
+            ||| System.Threading.ThreadState.WaitSleepJoin
+            ||| background
+        | ThreadStatus.BlockedOnWaitHandle (_, _, WaitAlertability.NonAlertable) -> background
+        | ThreadStatus.BlockedOnWaitHandle (_, _, WaitAlertability.Alertable)
+        | ThreadStatus.BlockedOnJoin _
+        | ThreadStatus.BlockedOnSleep _
+        | ThreadStatus.BlockedOnWaitHandles _
+        | ThreadStatus.BlockedOnSyncBlockAcquire _
+        | ThreadStatus.BlockedOnSyncBlockWait _ -> System.Threading.ThreadState.WaitSleepJoin ||| background
+        | ThreadStatus.BlockedOnClassInit _
+        | ThreadStatus.BlockedOnMonitorAcquire _
+        | ThreadStatus.BlockedOnMonitorWait _
+        | ThreadStatus.BlockedInSyscall -> background
+        | ThreadStatus.Parked ->
+            failwith
+                "managedThreadState: a Parked thread has no managed Thread object, so nothing can ask for its ThreadState (interpreter bug)"
+
 type ThreadState =
     {
         // TODO: thread-local storage, synchronisation state, exception handling context

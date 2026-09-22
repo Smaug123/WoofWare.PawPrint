@@ -85,6 +85,7 @@ module NativeQCall =
             "ThreadNative_Join", NativeThreading.tryExecuteQCall "ThreadNative_Join"
             "ThreadNative_SetIsBackground", NativeThreading.tryExecuteQCall "ThreadNative_SetIsBackground"
             "ThreadNative_GetIsBackground", NativeThreading.tryExecuteQCall "ThreadNative_GetIsBackground"
+            "ThreadNative_GetThreadState", NativeThreading.tryExecuteQCall "ThreadNative_GetThreadState"
             "ThreadNative_InformThreadNameChange", NativeThreading.tryExecuteQCall "ThreadNative_InformThreadNameChange"
             "ThreadNative_YieldThread", NativeThreading.tryExecuteQCall "ThreadNative_YieldThread"
             "ThreadNative_Sleep", NativeThreading.tryExecuteQCall "ThreadNative_Sleep"
