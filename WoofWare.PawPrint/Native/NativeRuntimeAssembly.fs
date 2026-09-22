@@ -685,6 +685,26 @@ module NativeRuntimeAssembly =
                 IlMachineTypeResolution.tryWalkExportChain ctx.LoggerFactory assembly export ImmutableArray.Empty state
             with
             | state, ExportChainArrival.Arrived (definingAssembly, arrivedAt) ->
+                // Only the far end of the chain has its folded candidates checked below, and an
+                // intermediate assembly can collide under the fold just as the far end can. Until
+                // the fold is carried through every hop, a chain of more than one is refused.
+                // Roslyn always points a forwarder at the defining assembly, so compiled code does
+                // not produce one.
+                let firstHop =
+                    match export.Data with
+                    | ExportedTypeData.ForwardsTo reference ->
+                        state._LoadedAssemblies.TryResolveReference assembly.AssemblyReferences.[reference]
+                    | ExportedTypeData.ParentExportedType _
+                    | ExportedTypeData.AssemblyFile _ ->
+                        failwith
+                            $"%s{operation}: top-level exported type %O{export.Handle} arrived somewhere without naming an assembly to forward to"
+
+                match firstHop with
+                | Some firstHop when firstHop.DefinitionFullName = definingAssembly.DefinitionFullName -> ()
+                | _ ->
+                    failwith
+                        $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder out of %s{assembly.Name.Name} that arrives in %s{definingAssembly.Name.Name} by more than one forwarder hop. Folding is not yet carried across a forwarder hop."
+
                 checkFoldedArrival export definingAssembly arrivedAt
 
                 IlMachineTypeResolution.tryPrimeExportArrival ctx.LoggerFactory definingAssembly arrivedAt state

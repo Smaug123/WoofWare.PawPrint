@@ -986,3 +986,110 @@ namespace FoldBrokenBase
 """
                     ]
             ]
+
+    [<Test>]
+    let ``a folded lookup whose forwarder chain has more than one hop is refused`` () : unit =
+        // Only the far end of a chain has its folded candidates checked, and an intermediate
+        // assembly can collide too: here `HopCollide.Mid` defines `Target` and forwards `TARGET`
+        // onwards, so CoreCLR's folded question at `Mid` has two answers while the exact walk
+        // passes straight through it. Measured on .NET 10: CoreCLR follows the forwarder, but which
+        // of two folded matches it takes is the hash ordering that makes any such pair ambiguous,
+        // so agreeing with it here would be luck. Roslyn always points a forwarder at the defining assembly, so
+        // the chain is made by compiling the facade against one `Mid` and running it against
+        // another.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "HopCollide.Lib"
+                        []
+                        [
+                            """
+namespace HopCollide
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopCollide.Mid"
+                        []
+                        [
+                            """
+namespace HopCollide
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopCollide.Facade"
+                        [ "HopCollide.Mid" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopCollide.TARGET))]
+
+namespace HopCollideFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "HopCollide.Entry"
+                        [ "HopCollide.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(HopCollideFacade.Marker).Assembly;
+
+        // Exact: two hops, to the library's declaration.
+        Type exact = facade.GetType("HopCollide.TARGET", throwOnError: false);
+        if (exact is null) return 1;
+        if (exact.Assembly.GetName().Name != "HopCollide.Lib") return 2;
+
+        // Folded: CoreCLR follows `Mid`'s forwarder rather than answering with `Mid`'s own `Target`.
+        Type folded = facade.GetType("HopCollide.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 3;
+        if (folded.Assembly.GetName().Name != "HopCollide.Lib") return 4;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "HopCollide.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [ "more than one forwarder hop" ]
+            [
+                // Same assembly name, now forwarding `TARGET` on to the library and defining a type
+                // that folds alike with it.
+                CrossAssemblySpec.library
+                    "HopCollide.Mid"
+                    [ "HopCollide.Lib" ]
+                    [
+                        """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopCollide.TARGET))]
+
+namespace HopCollide
+{
+    public class Target { }
+}
+"""
+                    ]
+            ]
