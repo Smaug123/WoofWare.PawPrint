@@ -273,10 +273,15 @@ module CrossAssemblyHarness =
             let entryPath = Path.Combine (tempDir, case.EntryAssemblyName + ".dll")
 
             let realResult = executeWithRealRuntime entryPath
-            realResult |> shouldEqual case.ExpectedReturnCode
+
+            if realResult <> case.ExpectedReturnCode then
+                failwith
+                    $"The real runtime returned %d{realResult}, but the case expects %d{case.ExpectedReturnCode}: the case disagrees with ground truth, so PawPrint was not run."
 
             let pawPrintResult = executeWithPawPrint entryPath entryBytes
-            pawPrintResult |> shouldEqual realResult
+
+            if pawPrintResult <> realResult then
+                failwith $"PawPrint returned %d{pawPrintResult}, but the real runtime returned %d{realResult}."
         finally
             try
                 if Directory.Exists tempDir then
