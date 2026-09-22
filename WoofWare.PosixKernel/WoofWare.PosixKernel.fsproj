@@ -19,6 +19,7 @@
     <ItemGroup>
         <Compile Include="UnixError.fs" />
         <Compile Include="UnixPathText.fs" />
+        <Compile Include="UnixByteString.fs" />
         <Compile Include="AbsoluteUnixPath.fs" />
         <Compile Include="UnixPath.fs" />
         <Compile Include="PermissionBits.fs" />

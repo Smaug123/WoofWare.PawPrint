@@ -631,9 +631,11 @@ conflict is confined to one type's case names.
 
 **Implements**: §2.1, §2.2.
 
-New file `UnixByteString.fs`, first in the compile order (before
-`UnixPathText.fs`). Nothing consumes it yet; this stage is the primitive and its
-tests.
+New file `UnixByteString.fs`, immediately *after* `UnixPathText.fs` in the
+compile order: its string-taking constructor `ofString` refuses exactly what
+`UnixPathText.firstDefect` refuses (NUL, unpaired surrogate; §2.4) and encodes
+with `UnixPathText.utf8`. Nothing consumes it yet; this stage is the primitive
+and its tests.
 
 **Correctness oracle** — property-based, against `System.String` as the
 reference implementation for the ASCII subset and against raw bytes elsewhere:
