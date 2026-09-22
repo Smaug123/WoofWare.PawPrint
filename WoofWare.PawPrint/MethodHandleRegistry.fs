@@ -12,10 +12,12 @@ type MetadataMethodIdentity =
         {
             AssemblyFullName : string
             /// The declaring type as the handle was minted, which is the identity the guest
-            /// sees: a closed instantiation gets `Closed`, and a generic type definition gets
-            /// `OpenGenericTypeDefinition`, so `typeof(G&lt;int&gt;)`'s method and
-            /// `typeof(G&lt;&gt;)`'s share a MethodDef row but never a registry id. CoreCLR keeps
-            /// their `MethodDesc*` distinct for the same reason. Only those two arms can occur;
+            /// sees: a closed instantiation gets `Closed`, a generic type definition gets
+            /// `OpenGenericTypeDefinition`, and an open construction such as `Base&lt;T&gt;` over a
+            /// deriving definition's `T` gets `OpenConstructed`. So `typeof(G&lt;int&gt;)`'s method,
+            /// `typeof(G&lt;&gt;)`'s and the open construction's share a MethodDef row but never a
+            /// registry id; CoreCLR keeps their `MethodDesc*`s distinct too (measured for the
+            /// definition against the open construction). Only those three arms can occur;
             /// `getOrAllocate*` refuses the rest.
             DeclaringType : RuntimeTypeHandleTarget
             MethodDefinition : ComparableMethodDefinitionHandle
@@ -303,7 +305,8 @@ module MethodHandleRegistry =
 
     /// Refuse the declaring-type shapes that cannot own a metadata-backed method, so that
     /// consumers matching on `MetadataMethodIdentity.GetDeclaringType ()` may treat those arms as
-    /// contract violations rather than as cases to serve. Mirrors
+    /// contract violations rather than as cases to serve, and an open construction that is not in
+    /// the canonical form `RuntimeTypeHandleTarget.openConstructed` builds. Mirrors
     /// `FieldHandleRegistry.getOrAllocate`.
     let private requireMethodBearingDeclaringType
         (operation : string)
@@ -313,24 +316,28 @@ module MethodHandleRegistry =
         match declaringType with
         | RuntimeTypeHandleTarget.Closed _
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> ()
+        | RuntimeTypeHandleTarget.OpenConstructed _ ->
+            // The registry dedups on the declaring type, so a non-canonical spelling -- the typical
+            // instantiation, which is the definition, or an all-closed one, which is a `Closed`
+            // type -- would mint a second id for a method that already has one.
+            RuntimeTypeHandleTarget.assertWellFormed declaringType
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             // A method on this class is a Reflection.Emit method, whose identity is
             // `MethodHandle.FromDynamic`; minting it as metadata-backed would give it a MethodDef
             // row it does not have.
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
-            failwith
-                $"TODO: open constructed types are not handled at MethodHandleRegistry.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
             // A generic parameter is a TypeVarTypeDesc: methods live on the type that mentions
             // the parameter, never on the parameter itself.
-            failwith $"%s{operation}: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
+            failwith
+                $"%s{operation}: declaring type must be Closed, OpenGenericTypeDefinition or OpenConstructed, got %O{declaringType}"
         | RuntimeTypeHandleTarget.Composite _
         | RuntimeTypeHandleTarget.FunctionPointer _ ->
             // A byref, pointer or function pointer is a TypeDesc with no methods, and an array's
             // methods are synthesised rather than declared, so no MethodDef row is theirs.
-            failwith $"%s{operation}: declaring type must be Closed or OpenGenericTypeDefinition, got %O{declaringType}"
+            failwith
+                $"%s{operation}: declaring type must be Closed, OpenGenericTypeDefinition or OpenConstructed, got %O{declaringType}"
 
     /// Construct the `MethodHandle` identifying `method` as declared by `declaringType`, with no
     /// method-generic arguments bound.
@@ -338,7 +345,8 @@ module MethodHandleRegistry =
     /// "Open" here is about the *method's* generics, not the declaring type's: the BCL's
     /// enumerator surfaces method-table slots, i.e. method definitions, and a generic-method
     /// definition cannot be expressed with empty `MethodGenerics` through `concretizeMethod`.
-    /// The declaring type may independently be closed or a generic type definition.
+    /// The declaring type may independently be closed, a generic type definition or an open
+    /// construction.
     let private makeOpenMethodHandle
         (operation : string)
         (assemblyFullName : string)

@@ -46,8 +46,8 @@ public static class Program
     // of an open definition stops earlier, in ModuleHandle.ResolveMethod.
     //
     // Both hierarchies here have a parent that mentions no type parameter. A parent that does --
-    // `class D<T> : B<T>` -- is a separate gap in naming the parent at all, before any of this is
-    // reached; sourcesPure/ReflectionOpenGenericDefinitionSharedParent.cs parks that shape.
+    // `class D<T> : B<T>`, whose parent is an open construction -- is
+    // sourcesPure/ReflectionOpenGenericDefinitionSharedParent.cs.
     //
     // Exit code is the index of the first failing check, so a failure names itself.
     public static int Main()

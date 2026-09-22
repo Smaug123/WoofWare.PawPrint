@@ -9,11 +9,10 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// Shapes of `RuntimeTypeHandle_GetMethodAt`'s receiver that corelib's corpus cannot supply and a
-/// C# guest cannot reach under PawPrint today, because an earlier query on the same path
-/// (`BaseType` of a definition whose base is an open construction; `GetNumVirtuals` before
-/// `GetMethodAt`) stops first. A Roslyn-compiled corpus is read by PawPrint and loaded into the
-/// host CLR, whose own `GetMethodAt` and `GetMethodBase` say what the answer is.
+/// Shapes of `RuntimeTypeHandle_GetMethodAt`'s receiver that corelib's corpus cannot supply: open
+/// generic definitions, the open constructions on their chains, and arrays over a type variable. A
+/// Roslyn-compiled corpus is read by PawPrint and loaded into the host CLR, whose own
+/// `GetMethodAt` and `GetMethodBase` say what the answer is.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestMethodAtSlotShapes =
@@ -45,6 +44,15 @@ namespace PawPrint.MethodAtSlot
     public class HasArray<T>
     {
         public void Takes(T[] values) { }
+    }
+
+    // `Wrap<T of OverWrap>` is an open construction whose own ancestor, `Base<T of OverWrap>`, is
+    // an open construction too.
+    public class Wrap<A> : Base<A> { }
+
+    public class OverWrap<T> : Wrap<T>
+    {
+        public override T Echo(T value) => value;
     }
 }
 """
@@ -135,10 +143,11 @@ namespace PawPrint.MethodAtSlot
 
         fun (t : Type) -> impl.Invoke ((null : obj), [| box t |]) :?> int
 
-    /// A method's declaring type as both sides can spell it: the TypeDef token of its definition
-    /// and the TypeDef tokens of its generic arguments (each a non-generic corelib or corpus type
-    /// here, so a token names it).
-    let private hostDeclaringShape (method : MethodBase) : int * int list =
+    /// A method's declaring type as both sides can spell it: the TypeDef token of its definition,
+    /// and for each generic argument either the TypeDef token of a non-generic type (every closed
+    /// argument in this corpus is one) or a type variable, named by its position and the TypeDef
+    /// token of the definition declaring it. A definition's own arguments are its variables.
+    let private hostDeclaringShape (method : MethodBase) : int * string list =
         let declaring = method.DeclaringType
 
         let definition =
@@ -147,7 +156,13 @@ namespace PawPrint.MethodAtSlot
             else
                 declaring
 
-        definition.MetadataToken, (declaring.GetGenericArguments () |> Array.map _.MetadataToken |> List.ofArray)
+        let argument (t : Type) : string =
+            if t.IsGenericParameter then
+                $"!%i{t.GenericParameterPosition} of %i{t.DeclaringType.MetadataToken}"
+            else
+                string t.MetadataToken
+
+        definition.MetadataToken, (declaring.GetGenericArguments () |> Array.map argument |> List.ofArray)
 
     let private tokenOfTypeDefinition (identity : ResolvedTypeIdentity) : int =
         MetadataTokens.GetToken (
@@ -155,24 +170,37 @@ namespace PawPrint.MethodAtSlot
             : System.Reflection.Metadata.EntityHandle
         )
 
-    let private pawPrintDeclaringShape (state : IlMachineState) (target : RuntimeTypeHandleTarget) : int * int list =
+    let private pawPrintDeclaringShape (state : IlMachineState) (target : RuntimeTypeHandleTarget) : int * string list =
+        let closedArgument (argument : ConcreteTypeHandle) : string =
+            match AllConcreteTypes.lookup argument state.ConcreteTypes with
+            | Some argumentType -> string (tokenOfTypeDefinition argumentType.Identity)
+            | None -> failwith $"generic argument %O{argument} is not a nominal type"
+
+        let variable (owner : ResolvedTypeIdentity) (position : int) : string =
+            $"!%i{position} of %i{tokenOfTypeDefinition owner}"
+
         match target with
         | RuntimeTypeHandleTarget.Closed handle ->
             let concreteType =
                 AllConcreteTypes.lookup handle state.ConcreteTypes
                 |> Option.defaultWith (fun () -> failwith $"declaring handle %O{handle} is not registered")
 
-            let arguments =
-                concreteType.Generics
-                |> Seq.map (fun argument ->
-                    match AllConcreteTypes.lookup argument state.ConcreteTypes with
-                    | Some argumentType -> tokenOfTypeDefinition argumentType.Identity
-                    | None -> failwith $"generic argument %O{argument} is not a nominal type"
-                )
-                |> List.ofSeq
+            tokenOfTypeDefinition concreteType.Identity, (concreteType.Generics |> Seq.map closedArgument |> List.ofSeq)
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            let arity =
+                state._LoadedAssemblies
+                    .ByDefinitionName(identity.AssemblyFullName)
+                    .TypeDefs.[identity.TypeDefinition.Get].Generics.Length
 
-            tokenOfTypeDefinition concreteType.Identity, arguments
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity -> tokenOfTypeDefinition identity, []
+            tokenOfTypeDefinition identity, List.init arity (variable identity)
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, arguments) ->
+            let argument (argument : RuntimeTypeHandleTarget) : string =
+                match argument with
+                | RuntimeTypeHandleTarget.Closed handle -> closedArgument handle
+                | RuntimeTypeHandleTarget.GenericParameter (owner, position) -> variable owner position
+                | other -> failwith $"unexpected open-construction argument %O{other}"
+
+            tokenOfTypeDefinition identity, List.map argument arguments
         | other -> failwith $"unexpected declaring target %O{other}"
 
     let private methodToken (slot : VtableSlot) : int =
@@ -228,78 +256,98 @@ namespace PawPrint.MethodAtSlot
         if not failures.IsEmpty then
             failwith (String.Join ("\n", List.rev failures))
 
+    /// Where each slot of `host` is declared, as the host reports it: by `host` itself, by a
+    /// generic ancestor all of whose arguments are closed, or by one some of whose arguments are
+    /// type variables. A law checked over a receiver is vacuous for any outcome that never occurs.
+    let private declaringOutcomes (host : Type) : Set<string> =
+        seq {
+            for slot in 0 .. hostNumVirtuals host - 1 do
+                let declaring = (hostMethodAt host slot).DeclaringType
+
+                if declaring = host then
+                    yield "own"
+                elif declaring.IsGenericType then
+                    if declaring.GetGenericArguments () |> Array.exists _.IsGenericParameter then
+                        yield "open ancestor"
+                    else
+                        yield "closed ancestor"
+        }
+        |> Set.ofSeq
+
+    /// The parent of `receiver`, as `Type.BaseType` reports it.
+    let private parentOf (state : IlMachineState) (receiver : RuntimeTypeHandleTarget) : RuntimeTypeHandleTarget =
+        match IlMachineState.resolveBaseRuntimeTypeHandleTarget loggerFactory bct state receiver with
+        | _, Some parent -> parent
+        | _, None -> failwith $"%O{receiver} has no parent"
+
     /// `TwoStep<T> : Mid<int, T> : Base<int>`, asked of the definition `TwoStep<>`: `Base`'s slots
     /// are declared by the closed `Base<int>` (its argument is spelled under a context whose other
-    /// entry is `T`, which the spelling never mentions), `Mid`'s `Echo` by `Mid<int, T>`, which is
-    /// an open construction and refused, and `Mid`'s `Other` likewise.
+    /// entry is `T`, which the spelling never mentions), and `Mid`'s `Other` by the open
+    /// construction `Mid<int, T>`.
     [<Test>]
-    let ``an ancestor closed through an intermediate that also carries the formal`` () : unit =
-        let twoStep = typeInfoNamed "TwoStep`1"
-        let receiver = RuntimeTypeHandleTarget.OpenGenericTypeDefinition twoStep.Identity
+    let ``every slot of a definition is declared by its chain as the host instantiates it`` () : unit =
+        let receiver =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition (typeInfoNamed "TwoStep`1").Identity
+
         let host = hostType "TwoStep`1"
-        let count = hostNumVirtuals host
-        let mutable own = 0
-        let mutable closedAncestors = 0
-        let mutable refusedOpen = 0
 
-        for slot in 0 .. count - 1 do
-            let expected = hostMethodAt host slot
+        declaringOutcomes host
+        |> shouldEqual (Set.ofList [ "own" ; "closed ancestor" ; "open ancestor" ])
 
-            let state, answer =
-                VirtualSlotLayout.methodAt loggerFactory bct "test" baseState receiver slot
+        let _, count =
+            VirtualSlotLayout.numVirtuals loggerFactory bct "test" baseState receiver
 
-            match answer with
-            | VirtualSlotLayout.MethodAtSlot.OutOfRange -> failwith $"slot %i{slot}: PawPrint out of range"
-            | VirtualSlotLayout.MethodAtSlot.Method occupant ->
-                methodToken occupant |> shouldEqual expected.MetadataToken
-                let expectedShape = hostDeclaringShape expected
+        count |> shouldEqual (hostNumVirtuals host)
+        checkEverySlot "TwoStep<>" host baseState receiver
 
-                // The host's answer says which of three outcomes this slot has: declared by the
-                // definition itself (the host spells that `TwoStep<T>`; PawPrint, the definition);
-                // by an ancestor whose arguments are all closed; or by an ancestor whose arguments
-                // mention `T`, an open construction.
-                let hostDeclaringDefinition =
-                    if expected.DeclaringType.IsGenericType then
-                        expected.DeclaringType.GetGenericTypeDefinition ()
-                    else
-                        expected.DeclaringType
+    /// The parent of `TwoStep<>`, the open construction `Mid<int, T>`, has its definition's slots,
+    /// and names itself as the declarer of the ones `Mid` owns.
+    [<Test>]
+    let ``every slot of an open construction mixing closed and open arguments`` () : unit =
+        let receiver =
+            parentOf baseState (RuntimeTypeHandleTarget.OpenGenericTypeDefinition (typeInfoNamed "TwoStep`1").Identity)
 
-                let hostMentionsFormal =
-                    expected.DeclaringType.IsGenericType
-                    && expected.DeclaringType.GetGenericArguments ()
-                       |> Array.exists _.IsGenericParameter
+        match receiver with
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> ()
+        | other -> failwith $"expected the open construction Mid<int, T>, got %O{other}"
 
-                if hostDeclaringDefinition = host then
-                    let _, declaring =
-                        VirtualSlotLayout.declaringTypeAt loggerFactory bct "test" state receiver slot occupant
+        let host = (hostType "TwoStep`1").BaseType
 
-                    declaring |> shouldEqual receiver
-                    own <- own + 1
-                elif hostMentionsFormal then
-                    let message =
-                        try
-                            VirtualSlotLayout.declaringTypeAt loggerFactory bct "test" state receiver slot occupant
-                            |> ignore
+        declaringOutcomes host |> shouldEqual (Set.ofList [ "own" ; "closed ancestor" ])
 
-                            failwith "expected refusal"
-                        with e ->
-                            e.Message
+        let _, count =
+            VirtualSlotLayout.numVirtuals loggerFactory bct "test" baseState receiver
 
-                    message |> shouldContainText "open construction"
-                    refusedOpen <- refusedOpen + 1
-                else
-                    let state, declaring =
-                        VirtualSlotLayout.declaringTypeAt loggerFactory bct "test" state receiver slot occupant
+        count |> shouldEqual (hostNumVirtuals host)
+        checkEverySlot "Mid<int, T>" host baseState receiver
 
-                    pawPrintDeclaringShape state declaring |> shouldEqual expectedShape
+    /// `OverWrap<T> : Wrap<T> : Base<T>`: asked of `OverWrap<>` and of its parent `Wrap<T>`, an
+    /// inherited slot is declared by `Base<T>`, an open construction reached through another one.
+    [<Test>]
+    let ``an open construction's inherited slots are declared by an open ancestor`` () : unit =
+        let definition =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition (typeInfoNamed "OverWrap`1").Identity
 
-                    if expected.DeclaringType.IsGenericType then
-                        closedAncestors <- closedAncestors + 1
+        let parent = parentOf baseState definition
 
-        // All three outcomes must have been exercised, or the law above is vacuous for one of them.
-        own |> shouldBeGreaterThan 0
-        closedAncestors |> shouldBeGreaterThan 0
-        refusedOpen |> shouldBeGreaterThan 0
+        match parent with
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> ()
+        | other -> failwith $"expected the open construction Wrap<T>, got %O{other}"
+
+        let host = hostType "OverWrap`1"
+
+        declaringOutcomes host |> shouldEqual (Set.ofList [ "own" ; "open ancestor" ])
+
+        declaringOutcomes host.BaseType
+        |> Set.contains "open ancestor"
+        |> shouldEqual true
+
+        for receiver, host in [ definition, host ; parent, host.BaseType ] do
+            let _, count =
+                VirtualSlotLayout.numVirtuals loggerFactory bct "test" baseState receiver
+
+            count |> shouldEqual (hostNumVirtuals host)
+            checkEverySlot (string receiver) host baseState receiver
 
     /// `T[]` is an array MethodTable whose slots are `System.Array`'s.
     [<Test>]
