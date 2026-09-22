@@ -118,8 +118,11 @@ Decisions for this stage, agreed before it was built:
   opcode, so refusal should be rare. Other folds are *not* modelled: intrinsics,
   `typeof` comparisons, `box` patterns, inlined constants, algebraic identities
   with one runtime operand (`gtFoldExprSpecial`) and comparisons of a local with
-  itself. An emitted mixed-width join under such a branch keeps path-local
-  width, and that bound is stated rather than chased.
+  itself. The analysis treats such a branch as importing both arms, so a join
+  under it where a float32 on the live arm meets a double on the arm CoreCLR
+  folds away is promoted, and widened once stage 3 applies promotions, where
+  CoreCLR keeps it single. Compilers rarely leave a value on the stack across
+  such a branch, and that bound is stated rather than chased.
 * Slots are joined over CoreCLR's spill cliques rather than per target. The
   clique is a property of the importer's flow graph: it spans blocks the
   importer never imports, so the two successors of a dead conditional share a
