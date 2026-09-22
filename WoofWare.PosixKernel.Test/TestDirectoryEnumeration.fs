@@ -154,7 +154,7 @@ module TestDirectoryEnumeration =
             match VirtualFileSystem.nextDirectoryEntry directory cursor vfs with
             | None -> List.rev acc, vfs
             | Some (DirectoryStreamName.Entry n, _, next) ->
-                go next (unbind directory (DirectoryEntryName.toString n) vfs) (DirectoryEntryName.toString n :: acc)
+                go next (unbind directory (PathText.ofName n) vfs) (PathText.ofName n :: acc)
             | Some (_, _, next) -> go next vfs acc
 
         let seen, after = go DirectoryCursor.Start vfs []
@@ -237,7 +237,7 @@ module TestDirectoryEnumeration =
                 drain directory DirectoryCursor.Start vfs
                 |> List.choose (fun e ->
                     match e with
-                    | DirectoryStreamName.Entry n -> Some (DirectoryEntryName.toString n)
+                    | DirectoryStreamName.Entry n -> Some (PathText.ofName n)
                     | DirectoryStreamName.Dot
                     | DirectoryStreamName.DotDot -> None
                 )
@@ -259,7 +259,7 @@ module TestDirectoryEnumeration =
                 drain directory DirectoryCursor.Start vfs
                 |> List.choose (fun e ->
                     match e with
-                    | DirectoryStreamName.Entry n -> Some (DirectoryEntryName.toString n)
+                    | DirectoryStreamName.Entry n -> Some (PathText.ofName n)
                     | DirectoryStreamName.Dot
                     | DirectoryStreamName.DotDot -> None
                 )
@@ -278,8 +278,7 @@ module TestDirectoryEnumeration =
             let rec go (cursor : DirectoryCursor) (vfs : VirtualFileSystem) =
                 match VirtualFileSystem.nextDirectoryEntry directory cursor vfs with
                 | None -> vfs
-                | Some (DirectoryStreamName.Entry n, _, next) ->
-                    go next (unbind directory (DirectoryEntryName.toString n) vfs)
+                | Some (DirectoryStreamName.Entry n, _, next) -> go next (unbind directory (PathText.ofName n) vfs)
                 | Some (_, _, next) -> go next vfs
 
             match VirtualFileSystem.tryGetContent directory (go DirectoryCursor.Start vfs) with

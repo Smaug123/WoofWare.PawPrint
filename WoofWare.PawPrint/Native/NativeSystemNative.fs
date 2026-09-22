@@ -655,9 +655,7 @@ module NativeSystemNative =
     /// heap. `readGuestPathBytes` is the half that needs a machine.
     ///
     /// The rules themselves, and the order they run in, are
-    /// `PathArgument.parse`'s. What is PawPrint's is the reachability: CoreLib
-    /// never produces a path that is not valid UTF-8, because it encodes from a
-    /// string, so only a hand-rolled P/Invoke can reach that refusal.
+    /// `PathArgument.parse`'s.
     let internal parseGuestPathBytes
         (operation : string)
         (limits : PathLimits)
@@ -667,11 +665,6 @@ module NativeSystemNative =
         match PathArgument.parse limits (ImmutableArray.CreateRange bytes) with
         | Ok (PathArgument.Parsed path) -> Ok path
         | Ok (PathArgument.Failed error) -> Error error
-        | Error PathArgumentRefusal.NotUtf8 ->
-            let rendered = bytes |> Array.map (sprintf "%02X") |> String.concat " "
-
-            failwith
-                $"%s{operation}: the guest passed a path that is not valid UTF-8 (bytes: %s{rendered}). This kernel models a filename as a string of characters, so this path has no representation in the emulated filesystem, and decoding it leniently would silently resolve a different file. CoreLib never produces such a path — it encodes from a string — so this can only come from a hand-rolled P/Invoke."
         | Error (PathArgumentRefusal.InteriorNul offset) ->
             // The bytes come from reading the guest's C string up to its NUL,
             // so a NUL among them means that read went wrong.
@@ -1035,8 +1028,7 @@ module NativeSystemNative =
     ///
     /// The second pathname is not read until the kernel says it has reached the
     /// point of copying it in. That is not tidiness: reading one can refuse
-    /// outright — a symbolic or unstatable pointer is a refusal at transfer, and
-    /// bytes that are not valid UTF-8 name a file this kernel cannot represent —
+    /// outright — a symbolic or unstatable pointer is a refusal at transfer —
     /// and both flavours have calls that finish without ever reading the
     /// destination. Reading it early turns those into a crash where the guest is
     /// owed the source's errno.
@@ -1045,12 +1037,6 @@ module NativeSystemNative =
 
         let answer (outcome : Result<SyscallAnswer * UnixSystem<ThreadId, SignalHandler>, PathArgumentRefusal>) =
             match outcome with
-            | Error PathArgumentRefusal.NotUtf8 ->
-                // Reached only for a pathname the syscall actually copied in,
-                // which is the whole reason the decode is the kernel's rather
-                // than this boundary's.
-                failwith
-                    $"%s{operation}: the guest passed a path that is not valid UTF-8. This kernel models a filename as a string of characters, so this path has no representation in the emulated filesystem, and decoding it leniently would silently resolve a different file. CoreLib never produces such a path -- it encodes from a string -- so this can only come from a hand-rolled P/Invoke."
             | Error (PathArgumentRefusal.InteriorNul offset) ->
                 failwith
                     $"%s{operation}: the bytes read for one of the guest's paths hold a NUL at offset %d{offset}, which a C string cannot: the read ran past the string's end (this is an interpreter bug)."
@@ -2290,9 +2276,10 @@ module NativeSystemNative =
                 // `SystemNative_GetCwd` already answers `Kernel.CurrentDirectory`
                 // the same way.
                 let ptr, state =
-                    NativeCall.allocateNativeHeapNullTerminatedUtf8
+                    NativeCall.allocateNativeHeapBlob
                         "SystemNative_GetProcessPath"
-                        (AbsoluteUnixPath.toString path)
+                        (Seq.append (UnixByteString.toBytes (AbsoluteUnixPath.toByteString path)) [ 0uy ]
+                         |> Seq.toArray)
                         state
 
                 state

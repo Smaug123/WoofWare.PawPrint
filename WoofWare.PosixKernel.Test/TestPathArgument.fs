@@ -8,8 +8,8 @@ open WoofWare.PosixKernel
 
 /// `PATH_MAX` is the one length rule the resolver can never see: it binds the
 /// pathname *as the caller passed it*, in bytes, before any parsing. `UnixPath`
-/// has already lost that — it collapses repeated separators, records a trailing
-/// one as a flag, and counts UTF-16 — so the rule lives at the syscall boundary,
+/// has already lost that — it collapses repeated separators and records a
+/// trailing one as a flag — so the rule lives at the syscall boundary,
 /// in `PathArgument.parse`, and is tested here against that function directly
 /// rather than through a resolution.
 [<TestFixture>]
@@ -79,32 +79,34 @@ module TestPathArgument =
         PathArgument.parse darwin (bytesOf multiByte)
         |> shouldEqual (Ok (PathArgument.Failed UnixError.ENAMETOOLONG))
 
+    /// The bytes `PathArgument.parse` put in a parsed path.
+    let private parsedBytes (outcome : Result<PathArgument, PathArgumentRefusal>) : byte list =
+        match outcome with
+        | Ok (PathArgument.Parsed path) -> UnixPath.toByteString path |> UnixByteString.toBytes |> Seq.toList
+        | other -> failwith $"expected a parse, got %O{other}"
+
     [<Test>]
-    let ``an over-long path is refused before its bytes are decoded`` () : unit =
-        // Ordering: a real kernel checks the length in `getname`/`copyinstr` as
-        // it copies the string in, long before anything interprets it. A path
-        // this kernel cannot represent has no answer at all — so if the decode
-        // ran first, a path a real kernel rejects cheaply would instead be a
-        // refusal.
+    let ``bytes that are not UTF-8 are measured and kept like any others`` () : unit =
+        // Nothing decodes the pathname: PATH_MAX binds its bytes, whatever they
+        // are, and a path within the limit is kept exactly as it was passed.
         let invalid =
             ImmutableArray.CreateRange (Seq.append (bytesOf (ofLength 2000)) [ 0xFFuy ])
 
         PathArgument.parse darwin invalid
         |> shouldEqual (Ok (PathArgument.Failed UnixError.ENAMETOOLONG))
 
-        // The same bytes under a kernel whose PATH_MAX they fit *do* reach the
-        // decode, and that is the refusal — which is what proves the check above
-        // is doing the work rather than the input being harmless.
         PathArgument.parse linux invalid
-        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+        |> parsedBytes
+        |> shouldEqual (Seq.toList invalid)
 
     [<Test>]
-    let ``a lone invalid byte is refused rather than substituted`` () : unit =
-        // The reason the decode is strict: U+FFFD would name a file literally
-        // called "�", which a caller could have seeded, so a lenient decode
-        // answers confidently about the wrong inode.
+    let ``a lone invalid byte is kept rather than substituted`` () : unit =
+        // A lenient decode would turn 0xFF into U+FFFD and name a file literally
+        // called "�", which a caller could have seeded, so it would answer
+        // confidently about the wrong inode.
         PathArgument.parse linux (ImmutableArray.CreateRange [ 0x2Fuy ; 0xFFuy ])
-        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+        |> parsedBytes
+        |> shouldEqual [ 0x2Fuy ; 0xFFuy ]
 
     /// A kernel receives a pathname as a C string, which ends at its first
     /// NUL, so bytes carrying one are something no kernel was handed. Refused
@@ -125,14 +127,14 @@ module TestPathArgument =
         PathArgument.parse linux (ImmutableArray.CreateRange overLong)
         |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
 
-        // ...and ahead of the decode, for the same reason.
+        // ...whatever the bytes before it are.
         PathArgument.parse linux (ImmutableArray.CreateRange [ 0xFFuy ; 0x00uy ])
         |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
 
     [<Test>]
     let ``a path within the limit parses to what it says`` () : unit =
         match PathArgument.parse linux (bytesOf "/etc/hostname") with
-        | Ok (PathArgument.Parsed path) -> UnixPath.toString path |> shouldEqual "/etc/hostname"
+        | Ok (PathArgument.Parsed path) -> PathText.ofPath path |> shouldEqual "/etc/hostname"
         | other -> failwith $"expected a parse, got %O{other}"
 
     [<Test>]

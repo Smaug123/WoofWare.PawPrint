@@ -76,6 +76,20 @@ type DirectoryEntryNameLength =
     /// `-1`, as every libc without `d_namlen` gets.
     | WalkToTerminator
 
+/// Which names a platform's filesystem is willing to bind: create, or rename
+/// onto. Looking a name up is unaffected, since a name the filesystem could not
+/// have bound is simply absent.
+[<RequireQualifiedAccess>]
+type BindableEntryNames =
+    /// Any NUL-free byte string, as on Linux/ext4.
+    | AnyBytes
+    /// Only names that are valid UTF-8.
+    ///
+    /// This approximates Darwin/APFS. APFS also refuses some valid UTF-8 names:
+    /// Unicode noncharacters, at least one unassigned code point, and combining
+    /// sequences longer than 32 characters. This case admits all of those.
+    | StrictUtf8
+
 /// What `getcwd(3)` answers when the current directory has been *removed* — so
 /// there is no path to report — and how small a buffer can still change that
 /// answer.
@@ -612,13 +626,25 @@ module SimulatedUnixPlatform =
     ///
     /// `NAME_MAX` is 255 on both — but *of different things*, which is why it
     /// carries its unit. See `NameLengthLimit`: `中`×255 is 765 bytes and 255
-    /// UTF-16 units, and APFS resolves it where ext4 refuses it.
+    /// UTF-16 units, and APFS resolves it where ext4 refuses it. Darwin measures
+    /// a name that is not valid UTF-8 in bytes instead, against 765.
     let pathLimits (platform : SimulatedUnixPlatform) : PathLimits =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
             PathLimits.create 40 4096 (NameLengthLimit.Bytes 255) SpliceLengthRecheck.NoRecheck
         | SimulatedUnixFlavour.Darwin ->
-            PathLimits.create 32 1024 (NameLengthLimit.Utf16CodeUnits 255) SpliceLengthRecheck.Recheck
+            PathLimits.create 32 1024 (NameLengthLimit.Utf16CodeUnitsOrBytes (255, 765)) SpliceLengthRecheck.Recheck
+
+    /// Which names this platform's filesystem will bind.
+    ///
+    /// Like `pathLimits`, this is really a property of the mounted filesystem
+    /// rather than of the kernel. It lives here because PawPrint models one
+    /// filesystem per flavour; a second filesystem on one flavour is what would
+    /// make it configuration instead.
+    let bindableEntryNames (platform : SimulatedUnixPlatform) : BindableEntryNames =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> BindableEntryNames.AnyBytes
+        | SimulatedUnixFlavour.Darwin -> BindableEntryNames.StrictUtf8
 
     /// `sizeof(struct sockaddr_storage)`: the size of the largest socket address
     /// any Unix we model can hand back, and so the buffer size CoreLib sizes

@@ -98,7 +98,7 @@ module TestUnixPath =
 
     let private parseError (candidate : string) : UnixPathError =
         match UnixPath.parse candidate with
-        | Ok path -> failwith $"expected %s{candidate} to be rejected, but it parsed as %s{UnixPath.toString path}"
+        | Ok path -> failwith $"expected %s{candidate} to be rejected, but it parsed as %s{PathText.ofPath path}"
         | Error error -> error
 
     let private componentStrings (path : UnixPath) : string list =
@@ -107,7 +107,7 @@ module TestUnixPath =
             match component_ with
             | PathComponent.Current -> "."
             | PathComponent.Parent -> ".."
-            | PathComponent.Name name -> DirectoryEntryName.toString name
+            | PathComponent.Name name -> PathText.ofName name
         )
 
     // ---------------------------------------------------------------- FileName
@@ -143,20 +143,18 @@ module TestUnixPath =
     let ``FileName accepts names that merely start with dots`` () : unit =
         for candidate in [ ".a" ; "..a" ; "a." ; "a.." ; "..." ; ".hidden" ] do
             match DirectoryEntryName.parse candidate with
-            | Ok name -> DirectoryEntryName.toString name |> shouldEqual candidate
+            | Ok name -> PathText.ofName name |> shouldEqual candidate
             | Error error -> failwith $"expected %s{candidate} to parse: %s{DirectoryEntryName.describe error}"
 
     [<Test>]
-    let ``FileName round-trips through parse and toString`` () : unit =
+    let ``FileName round-trips through parse and tryToString`` () : unit =
         let property (candidate : string) : unit =
             match DirectoryEntryName.parse candidate with
             | Error error -> DirectoryEntryName.describe error |> ignore<string>
             | Ok name ->
-                DirectoryEntryName.toString name |> shouldEqual candidate
+                PathText.ofName name |> shouldEqual candidate
 
-                DirectoryEntryName.toString name
-                |> DirectoryEntryName.parse
-                |> shouldEqual (Ok name)
+                PathText.ofName name |> DirectoryEntryName.parse |> shouldEqual (Ok name)
 
         Check.One (config, Prop.forAll (Arb.fromGen nameGen) property)
 
@@ -166,7 +164,9 @@ module TestUnixPath =
             match DirectoryEntryName.parse candidate with
             | Error error -> failwith $"expected %s{candidate} to parse: %s{DirectoryEntryName.describe error}"
             | Ok name ->
-                let bytes = DirectoryEntryName.toUtf8 name |> Seq.toArray
+                let bytes =
+                    UnixByteString.toBytes (DirectoryEntryName.toByteString name) |> Seq.toArray
+
                 bytes |> Array.contains 0uy |> shouldEqual false
                 // A strict decoder, so a malformed encoding fails rather than
                 // silently producing U+FFFD and comparing unequal for the
@@ -223,7 +223,7 @@ module TestUnixPath =
             // value, because a kernel can tell them apart. It counts the bytes
             // of the buffer it was handed, so "///" is two bytes more path than
             // "/" for the purpose of PATH_MAX.
-            UnixPath.toString path |> shouldEqual candidate
+            PathText.ofPath path |> shouldEqual candidate
 
         UnixPath.root |> shouldEqual (parseOk "/")
         parseOk "//" |> shouldNotEqual UnixPath.root
@@ -254,7 +254,7 @@ module TestUnixPath =
         // byte shorter is the difference between resolving and ENAMETOOLONG.
         // Collapsing here would make two distinguishable paths equal and throw
         // away the count.
-        UnixPath.toString (parseOk "//a///b//") |> shouldEqual "//a///b//"
+        PathText.ofPath (parseOk "//a///b//") |> shouldEqual "//a///b//"
 
     [<Test>]
     let ``A trailing separator is recorded, and only when something precedes it`` () : unit =
@@ -303,18 +303,18 @@ module TestUnixPath =
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
 
     [<Test>]
-    let ``Every parsed path round-trips through toString and parse`` () : unit =
+    let ``Every parsed path round-trips through tryToString and parse`` () : unit =
         let property (candidate : string) : unit =
             let once = parseOk candidate
-            UnixPath.parse (UnixPath.toString once) |> shouldEqual (Ok once)
+            UnixPath.parse (PathText.ofPath once) |> shouldEqual (Ok once)
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
 
     [<Test>]
     let ``Rendering is normalised: it re-renders to itself`` () : unit =
         let property (candidate : string) : unit =
-            let once = UnixPath.toString (parseOk candidate)
-            let twice = UnixPath.toString (parseOk once)
+            let once = PathText.ofPath (parseOk candidate)
+            let twice = PathText.ofPath (parseOk once)
             twice |> shouldEqual once
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
@@ -376,7 +376,7 @@ module TestUnixPath =
 
         // A well-formed pair in the same position must *not* be rejected, and
         // in particular the low half must not be reported as unpaired.
-        UnixPath.toString (parseOk "/a🐶b") |> shouldEqual "/a🐶b"
+        PathText.ofPath (parseOk "/a🐶b") |> shouldEqual "/a🐶b"
 
     [<Test>]
     let ``No parsed component is ever a reserved name in disguise`` () : unit =
@@ -386,7 +386,7 @@ module TestUnixPath =
                 | PathComponent.Current
                 | PathComponent.Parent -> ()
                 | PathComponent.Name name ->
-                    let text = DirectoryEntryName.toString name
+                    let text = PathText.ofName name
                     text |> shouldNotEqual "."
                     text |> shouldNotEqual ".."
                     // The name must survive its own parser, which is what makes
@@ -416,7 +416,7 @@ module TestUnixPath =
                     $"absolutePathStringGen produced %s{candidate}, which is not absolute: %s{AbsoluteUnixPath.describe error}"
             | Ok absolute ->
                 let widened = UnixPath.ofAbsolute absolute
-                UnixPath.toString widened |> shouldEqual candidate
+                PathText.ofPath widened |> shouldEqual candidate
                 UnixPath.isRooted widened |> shouldEqual true
                 UnixPath.hasTrailingSeparator widened |> shouldEqual false
 
@@ -446,9 +446,9 @@ module TestUnixPath =
                 // A repeated separator is a *spelling*, not a component: a UnixPath
                 // keeps it verbatim in the rendered text, and `AbsoluteUnixPath`
                 // rejects it, being the canonical shape `getcwd` can return.
-                && not ((UnixPath.toString path).Contains "//")
+                && not ((PathText.ofPath path).Contains "//")
 
-            let rendered = UnixPath.toString path
+            let rendered = PathText.ofPath path
 
             match AbsoluteUnixPath.parse rendered with
             | Ok absolute ->

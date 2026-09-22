@@ -150,10 +150,10 @@ module CreatingOpenRules =
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"CreatingOpenRules.verdict: the walk resolved \"%s{DirectoryEntryName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"CreatingOpenRules.verdict: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
             | None ->
                 failwith
-                    $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toString name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"CreatingOpenRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toEscaped name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         if PermissionBits.deniedTo privilege AccessRequest.Write parentBits then
             CreatingOpenVerdict.Refuse UnixError.EACCES

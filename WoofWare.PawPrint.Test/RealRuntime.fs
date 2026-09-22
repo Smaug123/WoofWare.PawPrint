@@ -153,6 +153,17 @@ module RealRuntime =
 }}
 """
 
+    /// A seed name as the host path component `System.IO` needs. Every name
+    /// the differential tests seed is valid UTF-8; one that is not has no
+    /// `string` to hand the host, so this refuses it rather than naming a
+    /// different file.
+    let private hostName (name : DirectoryEntryName) : string =
+        match DirectoryEntryName.tryToString name with
+        | Some text -> text
+        | None ->
+            failwith
+                $"The filesystem seed holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is not valid UTF-8, so this oracle cannot create it on the host through System.IO."
+
     /// The host locates `<name>.runtimeconfig.json` from the assembly's *file* name, so the two
     /// have to agree; use the image's own assembly name so the guest also sees the name it was
     /// compiled with.
@@ -381,10 +392,7 @@ module RealRuntime =
                     $"The filesystem seed gives %s{what} the mode %o{PermissionBits.toInt permissions}, whose set-user-ID/set-group-ID/sticky bits (%o{special}) this oracle refuses. A host `chmod` may silently drop them — Linux drops S_ISGID for a caller outside the file's group — so the two runtimes would disagree about the harness rather than about themselves. Move the case to sourcesImpure, which materialises nothing."
 
         let rec go (prefix : string) (depth : int) (entries : Map<DirectoryEntryName, SeedEntry>) : unit =
-            let names =
-                entries
-                |> Map.toList
-                |> List.map (fun (name, _) -> DirectoryEntryName.toString name)
+            let names = entries |> Map.toList |> List.map (fun (name, _) -> hostName name)
 
             for name in names do
                 requireFoldable $"The filesystem seed's entry %s{prefix}/%s{name}" name
@@ -408,7 +416,7 @@ module RealRuntime =
                 hostNames |> List.tryFind (fun existing -> fold existing = fold candidate)
 
             for KeyValue (name, entry) in entries do
-                let name = DirectoryEntryName.toString name
+                let name = hostName name
 
                 if depth = 0 then
                     match reserved |> List.tryFind (fun r -> fold r = fold name) with
@@ -444,7 +452,7 @@ module RealRuntime =
                         // host would fold it onto a sibling — or onto the guest
                         // image — that PawPrint does not match exactly, one
                         // side has a target and the other does not.
-                        let only = DirectoryEntryName.toString only
+                        let only = hostName only
 
                         // `foldsOntoHost` below folds this, so it is subject to
                         // the same alphabet: a target of "ss" beside a sibling
@@ -570,7 +578,7 @@ module RealRuntime =
     /// from a host tree and a seed that someone kept in step by hand.
     let rec private materialiseSeed (directory : string) (entries : Map<DirectoryEntryName, SeedEntry>) : unit =
         for KeyValue (name, entry) in entries do
-            let path = Path.Combine (directory, DirectoryEntryName.toString name)
+            let path = Path.Combine (directory, hostName name)
 
             match entry with
             | SeedEntry.File (contents, permissions) ->

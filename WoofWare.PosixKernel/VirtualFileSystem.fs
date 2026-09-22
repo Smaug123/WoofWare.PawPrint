@@ -179,12 +179,30 @@ type DirectoryStreamName =
     /// A name the directory actually binds.
     | Entry of name : DirectoryEntryName
 
-    /// The bytes `readdir(3)` would put in `d_name`.
+    /// The name rendered for a diagnostic; `DirectoryStreamName.toByteString`
+    /// is what `readdir(3)` puts in `d_name`.
     override this.ToString () : string =
         match this with
         | DirectoryStreamName.Dot -> "."
         | DirectoryStreamName.DotDot -> ".."
-        | DirectoryStreamName.Entry name -> DirectoryEntryName.toString name
+        | DirectoryStreamName.Entry name -> DirectoryEntryName.toEscaped name
+
+[<RequireQualifiedAccess>]
+module DirectoryStreamName =
+    let private ofLiteral (name : string) : UnixByteString =
+        match UnixByteString.ofString name with
+        | Ok bytes -> bytes
+        | Error defect -> failwith $"DirectoryStreamName: %s{UnixPathText.describe defect}"
+
+    let private dot : UnixByteString = ofLiteral "."
+    let private dotDot : UnixByteString = ofLiteral ".."
+
+    /// The bytes `readdir(3)` would put in `d_name`.
+    let toByteString (name : DirectoryStreamName) : UnixByteString =
+        match name with
+        | DirectoryStreamName.Dot -> dot
+        | DirectoryStreamName.DotDot -> dotDot
+        | DirectoryStreamName.Entry name -> DirectoryEntryName.toByteString name
 
 /// How far through a directory an open stream has read.
 ///
@@ -876,7 +894,7 @@ module VirtualFileSystem =
                         inodes
             | None ->
                 failwith
-                    $"VirtualFileSystem.unbind: directory inode %O{directory} bound \"%s{DirectoryEntryName.toString name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                    $"VirtualFileSystem.unbind: directory inode %O{directory} bound \"%s{DirectoryEntryName.toEscaped name}\" to inode %O{target}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         Ok (
             target,
@@ -1055,13 +1073,13 @@ module VirtualFileSystem =
 
         if isOrphanedDirectory destinationDirectory vfs then
             failwith
-                $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} has lost its last name, so binding \"%s{DirectoryEntryName.toString destinationName}\" into it would make inode %O{moved} unreachable from the root while it still has a name -- which nothing could then reap. The verdict owes ENOENT, exactly as it does for the creating operations."
+                $"VirtualFileSystem.rename: the destination directory %O{destinationDirectory} has lost its last name, so binding \"%s{DirectoryEntryName.toEscaped destinationName}\" into it would make inode %O{moved} unreachable from the root while it still has a name -- which nothing could then reap. The verdict owes ENOENT, exactly as it does for the creating operations."
 
         let displaced = Map.tryFind destinationName destinationContent.Entries
 
         if displaced = Some moved then
             failwith
-                $"VirtualFileSystem.rename: \"%s{DirectoryEntryName.toString sourceName}\" in inode %O{sourceDirectory} and \"%s{DirectoryEntryName.toString destinationName}\" in inode %O{destinationDirectory} both name inode %O{moved}. That is rename(2)'s no-op, which changes nothing at all; the verdict must answer it rather than calling this."
+                $"VirtualFileSystem.rename: \"%s{DirectoryEntryName.toEscaped sourceName}\" in inode %O{sourceDirectory} and \"%s{DirectoryEntryName.toEscaped destinationName}\" in inode %O{destinationDirectory} both name inode %O{moved}. That is rename(2)'s no-op, which changes nothing at all; the verdict must answer it rather than calling this."
 
         // Before the populated-destination check below, and the order is
         // load-bearing rather than arbitrary: the two overlap on
@@ -1078,7 +1096,7 @@ module VirtualFileSystem =
         match displaced |> Option.bind (fun inode -> tryGetDirectory inode vfs) with
         | Some content when not (Map.isEmpty content.Entries) ->
             failwith
-                $"VirtualFileSystem.rename: the destination \"%s{DirectoryEntryName.toString destinationName}\" in inode %O{destinationDirectory} names directory inode %O{displaced.Value}, which holds %i{Map.count content.Entries} entries. Displacing it would strand them unreachable from the root; the verdict owes ENOTEMPTY."
+                $"VirtualFileSystem.rename: the destination \"%s{DirectoryEntryName.toEscaped destinationName}\" in inode %O{destinationDirectory} names directory inode %O{displaced.Value}, which holds %i{Map.count content.Entries} entries. Displacing it would strand them unreachable from the root; the verdict owes ENOTEMPTY."
         | Some _
         | None ->
 
@@ -1147,7 +1165,7 @@ module VirtualFileSystem =
                 | Some node -> node
                 | None ->
                     failwith
-                        $"VirtualFileSystem.rename: directory inode %O{sourceDirectory} bound \"%s{DirectoryEntryName.toString sourceName}\" to inode %O{moved}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                        $"VirtualFileSystem.rename: directory inode %O{sourceDirectory} bound \"%s{DirectoryEntryName.toEscaped sourceName}\" to inode %O{moved}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
             let content =
                 match existing.Content with
@@ -1191,7 +1209,7 @@ module VirtualFileSystem =
                         inodes
                 | None ->
                     failwith
-                        $"VirtualFileSystem.rename: directory inode %O{destinationDirectory} bound \"%s{DirectoryEntryName.toString destinationName}\" to inode %O{displaced}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
+                        $"VirtualFileSystem.rename: directory inode %O{destinationDirectory} bound \"%s{DirectoryEntryName.toEscaped destinationName}\" to inode %O{displaced}, which the graph does not contain. Run VirtualFileSystem.checkInvariants."
 
         Ok (
             {
@@ -1525,15 +1543,30 @@ module VirtualFileSystem =
 
         climb inode [] Set.empty
         |> Option.map (fun names ->
-            let rendered =
-                names
-                |> List.map DirectoryEntryName.toString
-                |> List.fold (fun acc name -> acc + string UnixPathText.separator + name) ""
+            match names with
+            | [] -> AbsoluteUnixPath.root
+            | names ->
 
-            if rendered = "" then
-                AbsoluteUnixPath.root
-            else
-                AbsoluteUnixPath.parseOrFail "VirtualFileSystem.pathOfDirectory" rendered
+            // Bytes throughout: this is `getcwd`'s answer, not a diagnostic, so a
+            // name that is not valid UTF-8 must come back exactly as it was bound.
+            let builder = ImmutableArray.CreateBuilder<byte> ()
+
+            for name in names do
+                builder.Add UnixPathText.separatorByte
+                builder.AddRange (UnixByteString.toBytes (DirectoryEntryName.toByteString name))
+
+            let rendered =
+                match UnixByteString.ofBytes (builder.ToImmutable ()) with
+                | Ok bytes -> bytes
+                | Error defect ->
+                    failwith
+                        $"VirtualFileSystem.pathOfDirectory: joining NUL-free names produced bytes that %s{UnixByteString.describe defect} (this is a bug in this library)."
+
+            match AbsoluteUnixPath.ofByteString rendered with
+            | Ok path -> path
+            | Error error ->
+                failwith
+                    $"VirtualFileSystem.pathOfDirectory: the directory's names joined into %s{UnixByteString.toEscaped rendered}, which %s{AbsoluteUnixPath.describe error} (this is a bug in this library)."
         )
 
     /// Every way in which `vfs` fails to describe a filesystem a kernel could
@@ -1734,19 +1767,19 @@ module VirtualFileSystem =
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith
-                                $"ofFileSystemSeed: could not create the file %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                                $"ofFileSystemSeed: could not create the file %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
                     | SeedEntry.Symlink target ->
                         match createSymlink directory name createdAt target vfs with
                         | Ok (_, vfs) -> vfs
                         | Error error ->
                             failwith
-                                $"ofFileSystemSeed: could not create the symlink %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                                $"ofFileSystemSeed: could not create the symlink %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
                     | SeedEntry.Directory (children, permissions) ->
                         match createDirectory directory name permissions createdAt vfs with
                         | Ok (inode, vfs) -> install inode children vfs
                         | Error error ->
                             failwith
-                                $"ofFileSystemSeed: could not create the directory %s{DirectoryEntryName.toString name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
+                                $"ofFileSystemSeed: could not create the directory %s{DirectoryEntryName.toEscaped name}: %O{error}. Every name in a seed is unique within its directory by construction, so this cannot be a collision; the inode graph is inconsistent."
                 )
                 vfs
 
