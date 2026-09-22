@@ -66,7 +66,7 @@ plan and were caught exactly that way.
 | --- | --- |
 | `darwin-which-names-bind.c` | §1.1, Darwin half of §1.6 |
 | `darwin-utf8-is-not-the-rule.c` | §1.1's refutation of "strict UTF-8" and of "not a noncharacter" |
-| `darwin-admissibility-is-not-per-codepoint.c` | §1.1's combining-sequence limit, which descopes Stage 7 |
+| `darwin-admissibility-is-not-per-codepoint.c` | §1.1's combining-sequence limit, which rules out modelling APFS exactly |
 | `darwin-where-the-check-applies.c` | §1.2 |
 | `darwin-rule-ordering.c` | §1.3, Darwin rows of §1.4 |
 | `darwin-name-max-vs-permission.c` | §1.3's two-by-two |
@@ -119,20 +119,47 @@ characters (`darwin-admissibility-is-not-per-codepoint.c`):
 
 So the limit is 32 characters *per combining sequence*, independent of the
 mark, and unrelated to byte length or NAME_MAX. This is XNU's decomposition
-limit. **No table of admissible code points can express it**, which is what
-descopes Stage 7 — see there.
+limit. **No table of admissible code points can express it.**
 
-Two consequences for the design, and the second is the important one.
+Two consequences for the design.
 
 - `tryToString` succeeding and APFS accepting a name are **not** the same
-  predicate. An earlier draft of this plan claimed they were and built §2.3 on
-  it; the U+FFFF row is the counterexample. Do not re-derive one from the other.
-- **The Darwin predicate is not known well enough to implement, and a
-  code-point sweep would not establish it either** — the combining-sequence
-  limit below is a fact about the whole name, not about any code point. Stage 7
-  therefore does not model it at all: it ships Darwin as `AnyBytes` and records
-  the over-admission as a divergence. See Stage 7 for why a `failwith` is the
-  wrong placeholder here.
+  predicate. The U+FFFF row is the counterexample. Anything this plan says about
+  the two coinciding is a statement about *PawPrint's model*, never about APFS.
+- **PawPrint does not model APFS's predicate, and deliberately approximates it
+  as "strictly valid UTF-8".** Reproducing it faithfully means transcribing
+  XNU's converter with its normalisation behaviour, and the three refutations
+  above — strict UTF-8, noncharacters, per-code-point-ness — are good evidence
+  there is more to find. §2.3 states the approximation and §1.1.1 states exactly
+  what it over-admits.
+
+#### 1.1.1 The chosen approximation, and what it gets wrong
+
+Darwin's modelled rule is: **a name may be bound iff its bytes are strictly
+valid UTF-8.** That is narrower than Linux (which admits any non-NUL bytes) and
+broader than APFS. The gap is entirely inside the valid-UTF-8 set:
+
+| name | APFS | PawPrint's Darwin | |
+| --- | --- | --- | --- |
+| `\xff`, `\xe4\xb8`, `\xc0\x80`, `\xed\xa0\x80` | EILSEQ | **EILSEQ** | agrees |
+| `a`, `中`, emoji, `é` (NFC, short) | accept | **accept** | agrees |
+| U+FFFF, U+FFFE, U+FDD0–U+FDEF and the other noncharacters | EILSEQ | accept | **over-admits** |
+| U+1FFFD (unassigned) | EILSEQ | accept | **over-admits** |
+| a combining sequence over 32 characters | EILSEQ | accept | **over-admits** |
+
+Why this is the right trade. The rows it gets right are the ones a guest can
+plausibly reach: a hand-rolled P/Invoke passing bytes that are not UTF-8 is
+exactly the case that crashes the interpreter today, and it is the whole reason
+for this refactor. The rows it gets wrong need a guest to deliberately construct
+a Unicode noncharacter or a 33-mark combining sequence, and getting them wrong
+costs only that PawPrint *permits* what macOS refuses — a direction that cannot
+corrupt anything and cannot mislead a guest into believing a file was refused
+when it was not.
+
+The predicate is also cheap and total: it is `tryToString`'s own success
+condition, so there is nothing to maintain and nothing to drift. But note that
+sharing it is a **modelling choice** rather than a measured fact; §1.1's first
+consequence is why.
 
 ### 1.2 Where does APFS apply that check?
 
@@ -352,9 +379,12 @@ readers with different jobs:
 
 ```fsharp
 /// The .NET string this names, if it has one.
-/// `None` exactly when the bytes are not strict UTF-8. This is *not* the same
-/// question as "may APFS bind this as a name" — APFS refuses names this
-/// accepts (§1.1) — so do not use it for that.
+/// `None` exactly when the bytes are not strict UTF-8.
+///
+/// PawPrint's Darwin flavour happens to admit exactly the names for which this
+/// is `Some` (§1.1.1), but that is a chosen approximation of APFS's rule, not
+/// APFS's rule: real APFS also refuses Unicode noncharacters and over-long
+/// combining sequences, which this accepts.
 val tryToString : UnixByteString -> string option
 
 /// Total. Valid UTF-8 runs verbatim; any other byte as `\xNN`; a literal
@@ -409,17 +439,19 @@ val bindableEntryNames : SimulatedUnixPlatform -> BindableEntryNames
 type BindableEntryNames =
     /// Any NUL-free byte string. Linux/ext4.
     | AnyBytes
-    /// The set APFS admits. **Not implemented** — §1.1 shows it is not a
-    /// per-code-point property (a combining sequence is capped at 32
-    /// characters), so it needs XNU's conversion transcribed rather than a
-    /// table. Stage 7 ships Darwin as `AnyBytes` and records the gap as a
-    /// divergence; this case is the shape the fix would take.
-    | AppleUnicode
+    /// Strictly-valid UTF-8 only; anything else is EILSEQ *on binding*.
+    ///
+    /// Darwin/APFS, approximately: APFS additionally refuses Unicode
+    /// noncharacters, at least one unassigned code point, and combining
+    /// sequences over 32 characters, all of which this admits. See §1.1.1 for
+    /// the measured gap and why PawPrint accepts it.
+    | StrictUtf8
 ```
 
-`AppleUnicode` rather than `StrictUtf8`: the rule is Apple's, it is narrower than
-UTF-8 in at least two unrelated ways, and naming it after an encoding would
-invite exactly the `tryToString`-shaped shortcut §1.1 refutes.
+`StrictUtf8` names what the *model* does, which is the honest thing to name: an
+`AppleUnicode` case would claim to be Apple's rule, and §1.1 measures three ways
+it would not be. A future fidelity project adds that case beside this one rather
+than redefining this one.
 
 It has **two** measured consequences, and they are different consequences of the
 same fact rather than two rules:
@@ -634,21 +666,21 @@ arm measures every byte string exactly as it does today.
 Deleting `PathArgumentRefusal.NotUtf8` removes the only thing standing between a
 Darwin-flavour kernel and a name APFS would refuse: after this stage
 `mkdir("/tmp/\xff")` runs through `MkDirRules.verdict` into
-`VirtualFileSystem.createDirectory`, neither of which checks encoding, and the
-and 765 bytes is a long way above an ordinary name. Stages 4–6 would then model a
-macOS kernel creating files macOS cannot hold — silently, and in a way the Linux
-tests would never show.
+`VirtualFileSystem.createDirectory`, neither of which checks encoding, and 765
+bytes is far above an ordinary name so the length rule does not stop it either.
+Stages 4–6 would then model a macOS kernel creating files macOS cannot hold —
+silently, and in a way the Linux tests would never show.
 
 So Stage 3 adds a **temporary refusal** on the Darwin creating path: a
 `failwith` naming Stage 7, at exactly the point in the verdict where Stage 7's
 real rule goes. A crash is the right placeholder rather than "allow it for now",
-per correctness over availability — and siting it where the real rule lands
-means Stage 7 replaces it rather than hunting for it.
+per correctness over availability — and siting it where the real rule lands means
+Stage 7 replaces it rather than hunting for it.
 
-If that placeholder feels like enough friction to be worth avoiding, the
-alternative is to reorder: land Stage 7's structure before Stage 3. That costs
-more (Stage 7 wants byte-valued names to be *useful*) and is not recommended,
-but it is the honest way to avoid the window.
+The placeholder only ever fires on a name that is *not valid UTF-8*, which no
+ordinary filename is — an NFD-typed `é` is perfectly good UTF-8 and passes
+straight through. So it is narrow as well as short-lived, and Stage 7 converts it
+into the EILSEQ a real APFS would have given.
 
 **Correctness oracle**:
 
@@ -777,84 +809,75 @@ sides were seeded differently is worse than one that does not run.
 
 ---
 
-### Stage 7: the EILSEQ structure, and Darwin's gap as a documented divergence
+### Stage 7: Darwin refuses to bind a name that is not valid UTF-8
 
 **Dependencies**: Stages 3 and 4. (Independent of Stage 6.)
 
-**Implements**: §1.1, §1.2, §1.3, §2.3.
+**Implements**: §1.1.1, §1.2, §1.3, §2.3.
 
 The modelling gap that becomes real once bytes are representable.
 
-**Descoped, deliberately: this stage does not model APFS's predicate.** An
-earlier draft had it sweep all 1,114,112 code points and build a table. §1.1
-killed that method: admissibility is not a per-code-point property, because the
-32-character combining-sequence limit is a fact about the whole name. Modelling
-APFS faithfully means transcribing XNU's UTF-8 conversion including its
-normalisation behaviour — and having found two unrelated rules by probing, the
-honest expectation is that there are more. That is the rabbithole `AGENTS.md`
-says to stay out of.
+**Scope: the approximation of §1.1.1, not APFS's real predicate.** Darwin admits
+exactly the strictly-valid-UTF-8 names. That is a deliberate approximation —
+APFS also refuses Unicode noncharacters, at least one unassigned code point, and
+combining sequences over 32 characters — and the gap goes in
+`docs/divergences.md` rather than being chased. §1.1 is why: three successive
+closed forms were refuted by probing, so faithful modelling means transcribing
+XNU's converter, which is its own project.
 
-So this stage lands the **structure and the Linux arm**, and records the Darwin
-gap as a divergence rather than a crash:
-
-- `BindableEntryNames.AnyBytes` for Linux, which is fully known and fully
-  measured.
-- The Darwin arm is **also** `AnyBytes` for now, with a `docs/divergences.md`
-  entry stating precisely what that over-admits: PawPrint's Darwin flavour binds
-  names APFS refuses (invalid UTF-8, noncharacters, over-long combining
-  sequences), with §1.1's two tables as the evidence.
-- The EILSEQ vocabulary still lands — `UnixError.EILSEQ` and its PAL arm —
-  because it costs almost nothing and is what any later fidelity work needs.
-  **Nothing in either shipped flavour returns it**, and that is the stage's
-  acceptance test rather than a gap in it.
-
-Why a documented divergence rather than a `failwith`: a crash here would fire on
-*ordinary* filenames. `é` typed as NFD is a combining sequence, and a guest doing
-perfectly normal things on the Darwin flavour would meet it. Refusing to answer
-is right when the alternative is a *wrong* answer a guest can act on; here the
-alternative is being more permissive than one of two flavours, in a direction
-that cannot corrupt anything, on the flavour neither CI nor production uses.
-
-**If fidelity is wanted later**, the shape is a `BindableEntryNames.AppleUnicode`
-arm carrying a transcription of XNU's `utf8_decodestr`, validated against a
-macOS host oracle. That is its own project, and it should start by reading the
-XNU source rather than by probing — probing here found two rules and suggests
-there are more.
+What this buys is the row that matters. A guest hand-rolling a P/Invoke with
+bytes that are not UTF-8 is the case that crashes the interpreter today, and
+after this stage the Darwin flavour answers it with EILSEQ exactly as APFS does.
 
 - `UnixError.EILSEQ`, `platformDependent 84 92` — the numbers are already
   written down in `UnixError.fs`'s own comment on `EOVERFLOW` ("raw 84 is
   `EOVERFLOW` on Darwin and `EILSEQ` on Linux"). The PAL mapping is
-  `Error_EILSEQ = 0x10019`, which exists upstream
-  (`pal_error_common.h:62`), so `UnixErrorPal` needs one arm.
-- `SimulatedUnixPlatform.bindableEntryNames`, per §2.3 — with the rule applied
-  as the last step of the verdict in `CreatingOpenRules`, `MkDirRules` and
-  `RenameRules`, so §1.3's measured position is encoded in the structure even
-  though both flavours currently answer `AnyBytes`. Nothing in `RemovalRules`,
-  and nothing moves in `PathWalk`.
-- Stage 3's temporary Darwin `failwith` is removed, the answer now being "allow,
-  and document the divergence" rather than "crash".
+  `Error_EILSEQ = 0x10019`, which exists upstream (`pal_error_common.h:62`), so
+  `UnixErrorPal` needs one arm.
+- `SimulatedUnixPlatform.bindableEntryNames`, per §2.3: `AnyBytes` for
+  `linuxX64`, `StrictUtf8` for `macOsArm64`.
+- The rule as the **last** step of the verdict in `CreatingOpenRules`,
+  `MkDirRules` and `RenameRules`, at §1.3 row 5 — after the parent's write
+  check, not beside NAME_MAX. Nothing in `RemovalRules`: measured, removing such
+  a name is plain ENOENT. Nothing moves in `PathWalk`.
+- Stage 3's temporary Darwin `failwith` is removed, replaced by the real rule.
 
-**Correctness oracle**:
+**Correctness oracle** — Darwin now rejects something, so the ordering is
+directly testable against the shipped flavour rather than deferred:
 
-- Property: on an `AnyBytes` flavour, no operation ever reports EILSEQ, for any
-  NUL-free byte string. Both shipped flavours are `AnyBytes`, so this is the
-  whole behavioural claim of the stage, and it is what says the structure is
-  inert.
-- **The §1.3 two-by-two is deferred to the fidelity project, not asserted here.**
-  It needs a rule that actually *rejects* something, and after the descope no
-  constructible `BindableEntryNames` does: `AnyBytes` cannot produce the
-  writable-parent EILSEQ cell, and building `AppleUnicode` is the very thing
-  this stage does not do. Adding a test-only rejecting case would mean inventing
-  a rule no kernel has, so the ordering stays recorded in §1.3 — where the
-  fidelity project will find it, along with the warning that three of its four
-  cells are indistinguishable if NAME_MAX and the encoding check are implemented
-  as adjacent steps. An earlier draft of this plan got exactly that wrong.
+- **The §1.3 two-by-two, all four cells, on `macOsArm64`.** This is the one that
+  matters. Three of the four cells are indistinguishable if NAME_MAX and the
+  encoding check are implemented as adjacent steps, and the fourth — unwritable
+  parent, undecodable name → EACCES — is what separates them. An earlier draft
+  of this plan got exactly that ordering wrong.
+- The §1.2 table: on `macOsArm64`, every listed lookup and removal of an
+  undecodable name is ENOENT, and every listed binding is EILSEQ. The lookup rows
+  are as load-bearing as the binding rows — they are what says the rule is about
+  binding rather than about reading a pathname.
+- Property: on `linuxX64`, no operation ever reports EILSEQ, for any NUL-free
+  byte string.
+- Property: on `macOsArm64`, a binding is refused with EILSEQ iff
+  `UnixByteString.tryToString` is `None`. Assert this as the *model's* rule
+  (§1.1.1), and site the §1.1.1 divergence table next to it so the next reader
+  does not mistake it for APFS's.
+- Regression tests for the three over-admitted rows, asserting that PawPrint
+  **accepts** U+FFFF, U+1FFFD and a 33-mark combining sequence, each citing
+  §1.1.1. They pin the approximation deliberately: without them, someone
+  "fixing" one of these would change behaviour with nothing going red, and a
+  later reader cannot tell a chosen approximation from an oversight.
 - `UnixError.EILSEQ` round-trips through `toRawErrnoUnder` as 84 on Linux and 92
   on Darwin, and through the PAL as `0x10019`.
-- Extend `TestVirtualFileSystemAgainstHost` with `byte[]`-declared P/Invokes so
-  the host comparison covers non-UTF-8 names **on Linux**, where the model now
-  claims to agree. It must not make that comparison against an APFS host; the
-  divergence entry is why.
+- Extend `TestVirtualFileSystemAgainstHost` with `byte[]`-declared P/Invokes.
+  Against a Linux host it may compare the full rule. Against an APFS host it may
+  compare only the rows §1.1.1 marks "agrees" — which is most of them, and is
+  the first time this suite can check the Darwin encoding rule against a real
+  kernel at all.
+
+**If fidelity is wanted later**: add a `BindableEntryNames.AppleUnicode` case
+beside `StrictUtf8`, carrying a transcription of XNU's `utf8_decodestr`,
+validated against a macOS host oracle. Start by reading the XNU source, not by
+probing — probing here found three rules and suggests there are more. The
+regression tests above are the ones that would flip.
 
 ---
 
@@ -868,9 +891,12 @@ there are more.
   observe". After Stage 3 the order **is** byte order, so that passage is
   rewritten — and its own argument now favours what we have.
 - A new `docs/divergences.md` entry for §1.1–§1.5, with the measured tables, and
-  a second recording Stage 7's deliberate over-admission on the Darwin flavour.
-  The second matters more: it is a standing divergence, not a description of
-  agreement.
+  a second recording §1.1.1's deliberate over-admission on the Darwin flavour.
+  The second matters more: it is a standing divergence rather than a description
+  of agreement, and it must say plainly that PawPrint's Darwin rule is
+  "strictly-valid UTF-8" *chosen as an approximation*, listing the three classes
+  APFS refuses and PawPrint does not. The Stage 7 regression tests are its
+  executable half.
 - `WoofWare.PosixKernel/README.md` and `AGENTS.md`: the library's model of a
   filename is bytes, not characters. `PathArgumentRefusal`'s "This kernel models
   a filename as a string of characters (where real Linux models it just as a
@@ -908,10 +934,18 @@ representation in a second pass — but that is two migrations where one will do
 and a half-finished migration is the thing to avoid.
 
 **Stage 7 changes guest-visible behaviour on the Darwin flavour.** A guest that
-today gets a `failwith` will get an errno; a guest that today creates a file
-will, on the Darwin flavour, get EILSEQ. Both are corrections, but they are
+today gets a `failwith` will get an errno, and a guest that today creates a file
+with non-UTF-8 bytes will get EILSEQ. Both are corrections, but they are
 behaviour changes and belong in `docs/divergences.md` (Stage 8) rather than only
 in a commit message.
+
+**The Darwin rule is a stated approximation, and the danger is that it stops
+being stated.** `StrictUtf8` looks like a complete rule, and nothing about a
+`tryToString` call at the use site says "this over-admits three classes of name
+that macOS refuses". That is what the §1.1.1 table, the divergence entry and the
+three Stage 7 regression tests are for — between them a reader meets the
+approximation whether they start from the code, the docs or a failing test. Do
+not land the rule without all three.
 
 **An undecodable name must be measured, not skipped and not crashed on.** Such
 a name reaching `PathLimits.nameWithinLimit` is *expected* — an ordinary
