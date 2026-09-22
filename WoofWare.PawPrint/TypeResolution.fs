@@ -32,6 +32,22 @@ type ExportedTypeResolution =
     /// caller asked to be thrown at, whereas an absent type is simply not found.
     | BaseTypeAbsent of TypeResolutionMiss
 
+/// <summary>
+/// Where following an assembly's type forwarders arrived, before anything the arrived-at type
+/// depends on has been loaded.
+/// </summary>
+[<RequireQualifiedAccess>]
+type ExportChainArrival =
+    /// The chain ended at a type definition, in the assembly that declares it; nothing that type
+    /// depends on has been loaded yet.
+    | Arrived of DumpedAssembly * WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>
+
+    /// As <see cref="ExportedTypeResolution.AssemblyUnavailable" />.
+    | AssemblyUnavailable of WoofWare.PawPrint.AssemblyReference
+
+    /// As <see cref="ExportedTypeResolution.TypeAbsent" />.
+    | TypeAbsent of TypeResolutionMiss
+
 /// Functions for resolving type metadata (TypeRefs, TypeDefs, TypeSpecs) to concrete TypeInfo values.
 /// Operates on the loaded-assemblies dictionary directly, without requiring IlMachineState.
 [<RequireQualifiedAccess>]
@@ -205,44 +221,29 @@ module TypeResolution =
 
     /// <summary>
     /// Follow <paramref name="ty" />'s forwarder chain to the assembly that declares the type,
-    /// loading assemblies along the way, and report what happened rather than terminating on a
-    /// chain that does not arrive anywhere.
+    /// loading the chain's assemblies but nothing the arrived-at type itself depends on.
     /// </summary>
     /// <remarks>
+    /// The arrived-at type is not yet fit to hand over: pass it to
+    /// <see cref="tryPrimeExportArrival"/> first. The two are separate so a caller can inspect where
+    /// the chain arrived before a failure to load the type's dependencies hides it.
+    ///
     /// The returned <c>LoadedAssemblies</c> carries every load the walk did manage, in every
     /// outcome: a chain that binds two assemblies and then fails on a third must not discard the
     /// two.
     /// </remarks>
-    let rec internal tryResolveTypeFromExport
+    let rec internal tryWalkExportChain
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (fromAssembly : DumpedAssembly)
         (ty : WoofWare.PawPrint.ExportedType)
         (genericArgs : ImmutableArray<TypeDefn>)
         (assemblies : LoadedAssemblies)
-        : LoadedAssemblies * ExportedTypeResolution
+        : LoadedAssemblies * ExportChainArrival
         =
         match Assembly.resolveTypeFromExport fromAssembly assemblies genericArgs ty with
-        | TypeResolutionResult.Resolved (assy, _, typeDef) ->
-            // Arriving at the type is not enough to hand it over: the pure walks a caller will run
-            // on it cannot load, so its base chain has to be primed first — and priming can itself
-            // need an assembly nobody supplies. The real runtime reports that the same way it
-            // reports a missing forwarder target, because it is the same fact: a type this one
-            // depends on could not be loaded.
-            // Whatever priming managed is kept in every arm below: a chain that loads two
-            // assemblies and then fails on a third must not lose the two, because a guest can
-            // enumerate what is loaded.
-            match tryPrimeBaseChain loggerFactory dotnetRuntimeDirs assemblies assy typeDef with
-            | assemblies, None -> assemblies, ExportedTypeResolution.Forwarded (assy, typeDef)
-            | assemblies, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.NoSuchAssembly reference)) ->
-                assemblies, ExportedTypeResolution.AssemblyUnavailable reference
-            | assemblies, Some (BaseChainFailure.BaseTypeAbsent miss) ->
-                assemblies, ExportedTypeResolution.BaseTypeAbsent miss
-            | _, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) as failure) ->
-                // Unreachable: the loader used here reads files. A caller's mistaken belief about
-                // what is already loaded is a bug in us, not a fact to report onwards.
-                failwith (string<BaseChainFailure> failure)
-        | TypeResolutionResult.NotFound miss -> assemblies, ExportedTypeResolution.TypeAbsent miss
+        | TypeResolutionResult.Resolved (assy, _, typeDef) -> assemblies, ExportChainArrival.Arrived (assy, typeDef)
+        | TypeResolutionResult.NotFound miss -> assemblies, ExportChainArrival.TypeAbsent miss
         | TypeResolutionResult.FirstLoadAssy loadFirst ->
             match
                 tryLoadAssembly
@@ -252,13 +253,69 @@ module TypeResolution =
                     (fst loadFirst.Handle)
                     assemblies
             with
-            | None -> assemblies, ExportedTypeResolution.AssemblyUnavailable loadFirst
+            | None -> assemblies, ExportChainArrival.AssemblyUnavailable loadFirst
             | Some (assemblies, _, _) ->
 
             let assemblies =
                 LoadedAssemblies.assertReferenceBound $"exported type %s{ty.Name}" loadFirst assemblies
 
-            tryResolveTypeFromExport loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies
+            tryWalkExportChain loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies
+
+    /// <summary>
+    /// Load what a type that <see cref="tryWalkExportChain"/> arrived at depends on, so it can be
+    /// handed over; the answer is never <c>TypeAbsent</c>.
+    /// </summary>
+    /// <remarks>
+    /// Whatever loading managed is kept in every outcome, because a guest can enumerate what is
+    /// loaded.
+    /// </remarks>
+    let internal tryPrimeExportArrival
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (definedIn : DumpedAssembly)
+        (typeDef : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * ExportedTypeResolution
+        =
+        // The pure walks a caller will run on the type cannot load, so its base chain has to be
+        // primed first — and priming can itself need an assembly nobody supplies. The real runtime
+        // reports that the same way it reports a missing forwarder target, because it is the same
+        // fact: a type this one depends on could not be loaded.
+        match tryPrimeBaseChain loggerFactory dotnetRuntimeDirs assemblies definedIn typeDef with
+        | assemblies, None -> assemblies, ExportedTypeResolution.Forwarded (definedIn, typeDef)
+        | assemblies, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.NoSuchAssembly reference)) ->
+            assemblies, ExportedTypeResolution.AssemblyUnavailable reference
+        | assemblies, Some (BaseChainFailure.BaseTypeAbsent miss) ->
+            assemblies, ExportedTypeResolution.BaseTypeAbsent miss
+        | _, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) as failure) ->
+            // Unreachable: the loader used here reads files. A caller's mistaken belief about
+            // what is already loaded is a bug in us, not a fact to report onwards.
+            failwith (string<BaseChainFailure> failure)
+
+    /// <summary>
+    /// Follow <paramref name="ty" />'s forwarder chain to the assembly that declares the type,
+    /// loading assemblies along the way, and report what happened rather than terminating on a
+    /// chain that does not arrive anywhere.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="tryWalkExportChain"/> then <see cref="tryPrimeExportArrival"/>. The returned
+    /// <c>LoadedAssemblies</c> carries every load either managed, in every outcome.
+    /// </remarks>
+    let internal tryResolveTypeFromExport
+        (loggerFactory : ILoggerFactory)
+        (dotnetRuntimeDirs : string seq)
+        (fromAssembly : DumpedAssembly)
+        (ty : WoofWare.PawPrint.ExportedType)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (assemblies : LoadedAssemblies)
+        : LoadedAssemblies * ExportedTypeResolution
+        =
+        match tryWalkExportChain loggerFactory dotnetRuntimeDirs fromAssembly ty genericArgs assemblies with
+        | assemblies, ExportChainArrival.Arrived (definedIn, typeDef) ->
+            tryPrimeExportArrival loggerFactory dotnetRuntimeDirs definedIn typeDef assemblies
+        | assemblies, ExportChainArrival.AssemblyUnavailable reference ->
+            assemblies, ExportedTypeResolution.AssemblyUnavailable reference
+        | assemblies, ExportChainArrival.TypeAbsent miss -> assemblies, ExportedTypeResolution.TypeAbsent miss
 
     /// <summary>
     /// As <see cref="tryResolveTypeFromExport"/>, for callers that have no way to report a chain

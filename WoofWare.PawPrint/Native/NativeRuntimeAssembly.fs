@@ -582,6 +582,88 @@ module NativeRuntimeAssembly =
                 $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} in %s{assembly.Name.Name} is ambiguous between the type it defines (%s{definitionName}) and the one it forwards (%s{exportName})"
         | _ ->
 
+        let ofResolution
+            (state : IlMachineState, resolution : ExportedTypeResolution)
+            : ForwarderMiss * IlMachineState * (DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn>) option
+            =
+            match resolution with
+            | ExportedTypeResolution.Forwarded (definingAssembly, forwarded) ->
+                // Back to the type as its own metadata declares it: no generic arguments were
+                // supplied to the walk, so nothing was substituted, and the allocation below wants
+                // the declared generic parameters rather than an instantiation of them.
+                ForwarderMiss.AnswerNull,
+                state,
+                Some (definingAssembly, definingAssembly.TypeDefs.[forwarded.TypeDefHandle])
+            | ExportedTypeResolution.TypeAbsent _ ->
+                // Every assembly in the chain bound, and none declares the type. CoreCLR's
+                // loader hands back a null TypeHandle, and `TypeNameResolver` is what turns
+                // that into a `TypeLoadException` when the caller asked to be thrown at — so
+                // reporting absence here is reporting it at the right layer.
+                ForwarderMiss.AnswerNull, state, None
+            | ExportedTypeResolution.AssemblyUnavailable reference ->
+                // The chain named an assembly nothing supplies. CoreCLR raises
+                // `FileNotFoundException` out of the QCall, and `RuntimeAssembly.GetTypeCore`
+                // catches it `when (!throwOnFileNotFound)` — so raising it is what lets
+                // `throwOnError: false` answer null while `throwOnError: true` throws.
+                ForwarderMiss.AssemblyUnavailable reference, state, None
+            | ExportedTypeResolution.BaseTypeAbsent typeMiss ->
+                // The type was found; something in its base chain is not declared where the
+                // metadata says. That is a load failure of a *type*, not of an assembly, so the
+                // catch in `RuntimeAssembly.GetTypeCore` does not apply and the guest sees it
+                // either way.
+                ForwarderMiss.BaseTypeAbsent typeMiss, state, None
+
+        // The walk asks the far side for the forwarder row's own spelling, exactly. Under
+        // `ignoreCase` that is not the question CoreCLR asked: it carries the fold across the hop,
+        // so anything on the far side folding alike with the row is a candidate too, among its
+        // forwarders as well as its definitions. Measured: a facade forwarding `N.TARGET` into a
+        // target that declares both `N.Target` and `N.TARGET` answers `N.Target`. Ask the folded
+        // question as well, and stop unless it has the same answer — silently returning a
+        // different type from the real runtime is the worst way to be wrong. This runs before the
+        // arrived-at type's dependencies are loaded, because a failure to load them would
+        // otherwise be reported for a type CoreCLR might not have picked.
+        let checkFoldedArrival
+            (export : WoofWare.PawPrint.ExportedType)
+            (definingAssembly : DumpedAssembly)
+            (arrivedAt : TypeInfo<TypeDefn, TypeDefn>)
+            : unit
+            =
+            let exportNs = export.Namespace |> Option.defaultValue ""
+
+            match definingAssembly.TryGetTopLevelTypeDefIgnoreCase exportNs export.Name (isModulePseudoType >> not) with
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, where the folded name does not have one answer: %O{refusal}"
+            | Ok (Some folded) when folded.TypeDefHandle = arrivedAt.TypeDefHandle ->
+                // The row's own declaration is the only definition on the far side folding to it.
+                ()
+            | Ok found ->
+                // Defensive, and believed unreachable: the walk arrived *through* a
+                // declaration of the row's own spelling, which necessarily folds to the
+                // folded query too — so anything else that folds alike makes two
+                // candidates and comes back as `Error Ambiguous` above, and a lone
+                // different answer cannot arise. Kept because "cannot arise" is an
+                // argument rather than a check, and stopping is cheap.
+                let foundName =
+                    match found with
+                    | None -> "nothing"
+                    | Some found -> $"%s{found.Namespace}.%s{found.Name}"
+
+                failwith
+                    $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, where the row's own spelling names %s{arrivedAt.Namespace}.%s{arrivedAt.Name} but the folded name names %s{foundName}. Folding is not yet carried across a forwarder hop."
+
+            match definingAssembly.TryGetTopLevelExportedTypeIgnoreCase (Some exportNs) export.Name with
+            | Ok None -> ()
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, where the folded name does not have one answer among its forwarders: %O{refusal}"
+            | Ok (Some forwarder) ->
+                // The same collision the asking assembly is refused over below, one hop further on.
+                let forwarderNs = forwarder.Namespace |> Option.defaultValue ""
+
+                failwith
+                    $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, which both defines %s{arrivedAt.Namespace}.%s{arrivedAt.Name} and forwards %s{forwarderNs}.%s{forwarder.Name}, and these fold alike"
+
         let miss, state, topLevel =
             match definedHere with
             | Some typeDef -> ForwarderMiss.AnswerNull, state, Some (assembly, typeDef)
@@ -589,86 +671,33 @@ module NativeRuntimeAssembly =
 
             match forwardedFromHere with
             | None -> ForwarderMiss.AnswerNull, state, None
-            | Some export ->
-
-            match
+            | Some export when not ignoreCase ->
                 IlMachineTypeResolution.tryResolveTypeFromExport
                     ctx.LoggerFactory
                     assembly
                     export
                     ImmutableArray.Empty
                     state
+                |> ofResolution
+            | Some export ->
+
+            match
+                IlMachineTypeResolution.tryWalkExportChain ctx.LoggerFactory assembly export ImmutableArray.Empty state
             with
-            | state, ExportedTypeResolution.Forwarded (definingAssembly, forwarded) ->
-                // The walk asked the far side for the forwarder row's own spelling, exactly. Under
-                // `ignoreCase` that is not the question CoreCLR asked: it carries the fold across
-                // the hop, so a target declaring a folded sibling of the row can answer with the
-                // sibling instead. Measured: a facade forwarding `N.TARGET` into a target that
-                // declares both `N.Target` and `N.TARGET` answers `N.Target`. Ask the folded
-                // question too, and stop unless it has the same answer — silently returning a
-                // different type from the real runtime is the worst way to be wrong.
-                if ignoreCase then
-                    let exportNs = export.Namespace |> Option.defaultValue ""
+            | state, ExportChainArrival.Arrived (definingAssembly, arrivedAt) ->
+                checkFoldedArrival export definingAssembly arrivedAt
 
-                    match
-                        definingAssembly.TryGetTopLevelTypeDefIgnoreCase
-                            exportNs
-                            export.Name
-                            (isModulePseudoType >> not)
-                    with
-                    | Error refusal ->
-                        failwith
-                            $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, where the folded name does not have one answer: %O{refusal}"
-                    | Ok (Some folded) when folded.TypeDefHandle = forwarded.TypeDefHandle ->
-                        // The row's own declaration is the only thing on the far side folding to
-                        // it, so the exact walk and the folded question have the same answer.
-                        ()
-                    | Ok found ->
-                        // Defensive, and believed unreachable: the walk arrived *through* a
-                        // declaration of the row's own spelling, which necessarily folds to the
-                        // folded query too — so anything else that folds alike makes two
-                        // candidates and comes back as `Error Ambiguous` above, and a lone
-                        // different answer cannot arise. Kept because "cannot arise" is an
-                        // argument rather than a check, and stopping is cheap.
-                        let foundName =
-                            match found with
-                            | None -> "nothing"
-                            | Some found -> $"%s{found.Namespace}.%s{found.Name}"
-
-                        failwith
-                            $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, where the row's own spelling names %s{forwarded.Namespace}.%s{forwarded.Name} but the folded name names %s{foundName}. Folding is not yet carried across a forwarder hop."
-
-                // Back to the type as its own metadata declares it: no generic arguments were
-                // supplied above, so nothing was substituted, and the allocation below wants
-                // the declared generic parameters rather than an instantiation of them.
-                ForwarderMiss.AnswerNull,
-                state,
-                Some (definingAssembly, definingAssembly.TypeDefs.[forwarded.TypeDefHandle])
-            | state, ExportedTypeResolution.TypeAbsent miss when ignoreCase ->
+                IlMachineTypeResolution.tryPrimeExportArrival ctx.LoggerFactory definingAssembly arrivedAt state
+                |> ofResolution
+            | state, ExportChainArrival.TypeAbsent miss ->
                 // The forwarder row matched by folding, and then the walk looked the row's own
                 // spelling up *exactly* in the target. Measured: CoreCLR carries the fold across
                 // the hop, so where the target declares a differently-cased name it still
                 // resolves. Answering `null` here would be answering a question we did not ask.
                 failwith
                     $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder out of %s{assembly.Name.Name}, and the target does not declare that name under the forwarder's own spelling: %O{miss}. Folding is not yet carried across a forwarder hop."
-            | state, ExportedTypeResolution.TypeAbsent _ ->
-                // Every assembly in the chain bound, and none declares the type. CoreCLR's
-                // loader hands back a null TypeHandle, and `TypeNameResolver` is what turns
-                // that into a `TypeLoadException` when the caller asked to be thrown at — so
-                // reporting absence here is reporting it at the right layer.
-                ForwarderMiss.AnswerNull, state, None
-            | state, ExportedTypeResolution.AssemblyUnavailable reference ->
-                // The chain named an assembly nothing supplies. CoreCLR raises
-                // `FileNotFoundException` out of the QCall, and `RuntimeAssembly.GetTypeCore`
-                // catches it `when (!throwOnFileNotFound)` — so raising it is what lets
-                // `throwOnError: false` answer null while `throwOnError: true` throws.
-                ForwarderMiss.AssemblyUnavailable reference, state, None
-            | state, ExportedTypeResolution.BaseTypeAbsent typeMiss ->
-                // The type was found; something in its base chain is not declared where the
-                // metadata says. That is a load failure of a *type*, not of an assembly, so the
-                // catch in `RuntimeAssembly.GetTypeCore` does not apply and the guest sees it
-                // either way.
-                ForwarderMiss.BaseTypeAbsent typeMiss, state, None
+            | state, ExportChainArrival.AssemblyUnavailable reference ->
+                ofResolution (state, ExportedTypeResolution.AssemblyUnavailable reference)
 
         let resolved =
             match topLevel with

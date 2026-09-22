@@ -778,3 +778,211 @@ class Program
             ExpectedReturnCode = 0
         }
         |> CrossAssemblyHarness.runTest
+
+    [<Test>]
+    let ``a forwarder into an assembly that both defines and forwards the folded name is refused`` () : unit =
+        // The far side of a hop can collide with itself the same way the asking assembly can:
+        // `DeepCollide.Mid` defines `TARGET` and forwards `Target`, which fold alike, so the folded
+        // query CoreCLR carries across the hop matches both. The exact walk arrives at `TARGET`, and
+        // checking only the far side's definitions would accept it.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "DeepCollide.Lib"
+                        []
+                        [
+                            """
+namespace DeepCollide
+{
+    public class Target { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "DeepCollide.Mid"
+                        [ "DeepCollide.Lib" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(DeepCollide.Target))]
+
+namespace DeepCollide
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "DeepCollide.Facade"
+                        [ "DeepCollide.Mid" ; "DeepCollide.Lib" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(DeepCollide.TARGET))]
+
+namespace DeepCollideFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "DeepCollide.Entry"
+                        [ "DeepCollide.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(DeepCollideFacade.Marker).Assembly;
+
+        // Exact: the forwarder row's own spelling, defined in the middle assembly.
+        Type exact = facade.GetType("DeepCollide.TARGET", throwOnError: false);
+        if (exact is null) return 1;
+        if (exact.Assembly.GetName().Name != "DeepCollide.Mid") return 2;
+
+        // Folded: the middle assembly's forwarded type, not its own definition.
+        Type folded = facade.GetType("DeepCollide.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 3;
+        if (folded.Assembly.GetName().Name == "DeepCollide.Mid") return 4;
+        if (folded.FullName != "DeepCollide.Target") return 5;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "DeepCollide.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [
+                "followed a forwarder into DeepCollide.Mid"
+                "both defines DeepCollide.TARGET and forwards DeepCollide.Target"
+            ]
+            []
+
+    [<Test>]
+    let ``a folded collision on the far side of a hop is refused even when one side's base chain is broken`` () : unit =
+        // The exact walk arrives at `TARGET`, whose base class is gone, and loading that base chain
+        // fails before any folded question is asked. CoreCLR asks the folded question first, and
+        // picks one of `Target` and `TARGET` by its internal hash ordering. Measured on .NET 10: here
+        // it picks `TARGET` and throws, whereas in the otherwise identically shaped `FoldCollide`
+        // case it picks `Target` — so reporting the broken base chain would agree with it only by
+        // luck. The collision has to be noticed before the base chain is loaded.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "FoldBroken.Base"
+                        []
+                        [
+                            """
+namespace FoldBrokenBase
+{
+    public class Root { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "FoldBroken.Lib"
+                        [ "FoldBroken.Base" ]
+                        [
+                            """
+namespace FoldBroken
+{
+    public class Target { }
+    public class TARGET : FoldBrokenBase.Root { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "FoldBroken.Facade"
+                        [ "FoldBroken.Lib" ; "FoldBroken.Base" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(FoldBroken.TARGET))]
+
+namespace FoldBrokenFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "FoldBroken.Entry"
+                        [ "FoldBroken.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(FoldBrokenFacade.Marker).Assembly;
+
+        // Exact: the row's own spelling, whose base class the replaced base assembly lacks.
+        try
+        {
+            facade.GetType("FoldBroken.TARGET", throwOnError: false);
+            return 1;
+        }
+        catch (TypeLoadException)
+        {
+        }
+
+        // Folded: CoreCLR picks `TARGET` from the two, and so throws too.
+        try
+        {
+            facade.GetType("FoldBroken.TARGET", throwOnError: false, ignoreCase: true);
+            return 2;
+        }
+        catch (TypeLoadException)
+        {
+        }
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "FoldBroken.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [
+                "followed a forwarder into FoldBroken.Lib"
+                "does not have one answer"
+                "FoldBroken.Target"
+            ]
+            [
+                // Same assembly name, no longer declaring the base class `TARGET` derives from.
+                CrossAssemblySpec.library
+                    "FoldBroken.Base"
+                    []
+                    [
+                        """
+namespace FoldBrokenBase
+{
+    public class Unrelated { }
+}
+"""
+                    ]
+            ]
