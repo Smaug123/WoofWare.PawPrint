@@ -170,6 +170,7 @@ module internal ExceptionHResults =
             "System.TypeLoadException", int 0x80131522u // COR_E_TYPELOAD
             "System.MissingFieldException", int 0x80131511u // COR_E_MISSINGFIELD
             "System.FieldAccessException", int 0x80131507u // COR_E_FIELDACCESS
+            "System.MemberAccessException", int 0x8013151Au // COR_E_MEMBERACCESS
             "System.MissingMethodException", int 0x80131513u // COR_E_MISSINGMETHOD
             "System.ArgumentException", int 0x80070057u // COR_E_ARGUMENT
             "System.ArgumentNullException", 0x80004003 // E_POINTER (ArgumentNullException maps to E_POINTER in the CLR)

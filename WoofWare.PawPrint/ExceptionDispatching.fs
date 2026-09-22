@@ -1322,6 +1322,8 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.MissingFieldException"
         elif id = baseClassTypes.FieldAccessException.Identity then
             ExceptionHResults.lookup "System.FieldAccessException"
+        elif id = baseClassTypes.MemberAccessException.Identity then
+            ExceptionHResults.lookup "System.MemberAccessException"
         elif id = baseClassTypes.MissingMethodException.Identity then
             ExceptionHResults.lookup "System.MissingMethodException"
         elif id = baseClassTypes.ArgumentException.Identity then

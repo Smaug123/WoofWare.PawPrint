@@ -360,6 +360,10 @@ type BaseClassTypes<'corelib> =
         /// that check rather than performing it, whenever its accessor is still in
         /// `SlowPathUntilClassInitialized`.
         FieldAccessException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Raised by the runtime — not the BCL — when `RuntimeHelpers.GetUninitializedObject` is
+        /// asked for an abstract type or one containing generic variables
+        /// (`ValidateTypeAbleToBeInstantiated`, reflectioninvocation.cpp:1487).
+        MemberAccessException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         MissingMethodException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NotSupportedException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         /// Thrown by the runtime — not the BCL — when a call reaches a method whose declaring

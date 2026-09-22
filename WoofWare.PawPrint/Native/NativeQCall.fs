@@ -24,6 +24,8 @@ module NativeQCall =
             NativeReflectionInvocation.tryExecuteQCall "RuntimeMethodHandle_InvokeMethod"
             "ReflectionInvocation_GetBoxInfo",
             NativeReflectionInvocation.tryExecuteQCall "ReflectionInvocation_GetBoxInfo"
+            "ReflectionSerialization_GetCreateUninitializedObjectInfo",
+            NativeReflectionInvocation.tryExecuteQCall "ReflectionSerialization_GetCreateUninitializedObjectInfo"
             "QCall_GetGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_GetGCHandleForTypeHandle"
             "QCall_FreeGCHandleForTypeHandle", NativeGcHandle.tryExecuteQCall "QCall_FreeGCHandleForTypeHandle"
             "MarshalNative_SizeOfHelper", NativeMarshal.tryExecuteQCall "MarshalNative_SizeOfHelper"

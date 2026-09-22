@@ -153,9 +153,8 @@ public class Program
         // 1: `int.TryParse(string, out int)` with a boxed default in the `out` slot — the shape
         // ASP.NET's route parameter binding reaches through the LINQ expression interpreter, whose
         // `ByRefUpdater` passes the interpreter variable's current (boxed) value. A *null* `out`
-        // slot is a different primitive: `TryChangeType` fills it with
-        // `RuntimeHelpers.GetUninitializedObject`, whose QCall is not implemented; see the parked
-        // `ReflectionInvokeOutNullSlot.cs`.
+        // slot reaches a different primitive, `RuntimeHelpers.GetUninitializedObject`, through
+        // `TryChangeType`; `ReflectionInvokeOutNullSlot.cs` covers that shape.
         MethodInfo tryParse =
             typeof (int).GetMethod ("TryParse", new[] { typeof (string), typeof (int).MakeByRefType () });
 
