@@ -386,6 +386,18 @@ module TestImpureCases =
                 SeedEntry.Directory (Map.ofList [ name "kid", SeedEntry.directory Map.empty ], mode 0o666)
             ]
 
+    /// Shared by the two guests that bind names which are not UTF-8, so that the
+    /// only thing that differs between them is the configured flavour.
+    let private bindNonUtf8WiringSeed : Map<DirectoryEntryName, SeedEntry> =
+        let name (s : string) =
+            DirectoryEntryName.parseOrFail "test seed" s
+
+        Map.ofList
+            [
+                name "d", SeedEntry.directory (Map.ofList [ name "f", SeedEntry.file ImmutableArray.Empty ])
+                name "ro", SeedEntry.Directory (Map.empty, PermissionBits.parseOrFail "test seed" 0o555)
+            ]
+
     /// Shared by the two `unlink` wiring guests, so that the only thing that
     /// differs between them is the configured flavour and the constants each
     /// expects.
@@ -1545,6 +1557,39 @@ module TestImpureCases =
                         Umask = PermissionBits.parseOrFail "test" 0o027
                         UserId = Some 1000u
                         FileSystem = mkDirWiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // Binding a name that is not UTF-8 under a **Darwin** kernel is
+                // EILSEQ, in the raw numbering and the PAL's. Paired with the
+                // Linux case below, where the same bindings succeed; neither
+                // alone catches a handler that ignored the configured flavour.
+                // Not uid 0, so that the unwritable-parent row is a real refusal.
+                FileName = "BindNonUtf8WiringDarwinSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                        UserId = Some 1000u
+                        FileSystem = bindNonUtf8WiringSeed
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                FileName = "BindNonUtf8WiringLinuxSeeded.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.linuxX64
+                        UserId = Some 1000u
+                        FileSystem = bindNonUtf8WiringSeed
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never
