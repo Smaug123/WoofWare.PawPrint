@@ -958,8 +958,8 @@ module StackShape =
         /// Every path seen so far arrives at this depth; the slots' shapes live in the cliques.
         | Known of int
         /// Some path arrives with a stack the analysis cannot state: through a join two paths
-        /// disagree at, through an instruction it could not type, or through a spill temp such a
-        /// join shares. Nothing past here is typed.
+        /// disagree at, through a join whose width it refuses to decide, through an instruction it
+        /// could not type, or through a spill temp such a join shares. Nothing past here is typed.
         | Unknown
 
     /// What an instruction delivers to one successor.
