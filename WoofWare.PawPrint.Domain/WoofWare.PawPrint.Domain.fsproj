@@ -17,6 +17,7 @@
     </PropertyGroup>
 
     <ItemGroup>
+        <Compile Include="AssemblyInfo.fs" />
         <Compile Include="StringToken.fs" />
         <Compile Include="Constants.fs" />
         <Compile Include="ImmutableArray.fs" />
