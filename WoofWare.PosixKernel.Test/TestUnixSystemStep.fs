@@ -3499,7 +3499,8 @@ module TestUnixSystemStep =
     /// What a successful `getcwd` places: the path and the terminator that makes
     /// nine bytes an exact fit for an eight-byte path.
     let private cwdBytes : ImmutableArray<byte> =
-        (AbsoluteUnixPath.toUtf8 (AbsoluteUnixPath.parseOrFail context "/d/inner")).Add 0uy
+        (UnixByteString.toBytes (AbsoluteUnixPath.toByteString (AbsoluteUnixPath.parseOrFail context "/d/inner"))).Add
+            0uy
 
     [<Test>]
     let ``getcwd reports the path and its terminator, which is what makes the fit exact`` () : unit =
@@ -5116,40 +5117,40 @@ module TestUnixSystemStep =
             |> shouldEqual (Error UnixError.ENAMETOOLONG)
 
     [<Test>]
-    let ``a pathname the syscall never copies in is never decoded`` () : unit =
-        // Bytes that are not valid UTF-8 name a file this kernel cannot
-        // represent, so decoding them is a refusal rather than an errno. The
-        // decode therefore has to happen where the *kernel* copies the pathname
-        // in: on Darwin the source is resolved to completion first, so a
-        // destination behind a failing source is never looked at, and refusing
-        // it would answer about a pathname `rename(2)` never read.
-        let undecodable =
-            [| 0x66uy ; 0xFFuy ; 0x66uy |]
+    let ``a pathname the syscall never copies in is never refused`` () : unit =
+        // Bytes holding a NUL are no pathname a kernel was ever handed, so
+        // they are a refusal rather than an errno. The refusal therefore has
+        // to happen where the *kernel* copies the pathname in: on Darwin the
+        // source is resolved to completion first, so a destination behind a
+        // failing source is never looked at, and refusing it would answer about
+        // a pathname `rename(2)` never read.
+        let unreadable =
+            [| 0x66uy ; 0x00uy ; 0x66uy |]
             |> ImmutableArray.CreateRange
             |> PathArgumentBytes.Bytes
 
         // Darwin: the source's ENOENT is settled before the destination's
         // pathname is copied in at all.
-        UnixNamespace.rename (arg "nope") undecodable (withRenameTree darwin)
+        UnixNamespace.rename (arg "nope") unreadable (withRenameTree darwin)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree darwin))
 
         // Linux: the source's *parent* walk fails before the destination's
         // pathname is copied in.
-        UnixNamespace.rename (arg "nodir/kid") undecodable (withRenameTree linux)
+        UnixNamespace.rename (arg "nodir/kid") unreadable (withRenameTree linux)
         |> shouldEqual (Ok (SyscallAnswer.Failed UnixError.ENOENT, withRenameTree linux))
 
         // ...and when the syscall does reach it, the refusal is reported rather
         // than swallowed — otherwise the two rows above would pass for a kernel
-        // that never decodes anything.
-        UnixNamespace.rename (arg "f") undecodable (withRenameTree linux)
-        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+        // that never copies anything in.
+        UnixNamespace.rename (arg "f") unreadable (withRenameTree linux)
+        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
 
-        UnixNamespace.rename (arg "f") undecodable (withRenameTree darwin)
-        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+        UnixNamespace.rename (arg "f") unreadable (withRenameTree darwin)
+        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
 
         // A bad *source* is refused on both, being copied in first either way.
-        UnixNamespace.rename undecodable (arg "x") (withRenameTree linux)
-        |> shouldEqual (Error PathArgumentRefusal.NotUtf8)
+        UnixNamespace.rename unreadable (arg "x") (withRenameTree linux)
+        |> shouldEqual (Error (PathArgumentRefusal.InteriorNul 1))
 
     [<Test>]
     let ``a call the source phase finishes never asks for a destination`` () : unit =
@@ -5332,7 +5333,7 @@ module TestUnixSystemStep =
         match UnixPathResolution.chdir (statPath path) system with
         | SyscallAnswer.Completed 0L, moved ->
             UnixPathResolution.currentDirectoryPath moved
-            |> Option.map AbsoluteUnixPath.toString
+            |> Option.map PathText.ofAbsolute
             |> Ok
         | SyscallAnswer.Failed error, _ -> Error error
         | other -> failwith $"unexpected answer %A{other}"

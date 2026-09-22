@@ -87,10 +87,10 @@ module private RemovalChecks =
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"RemovalChecks.lacksWrite: the walk resolved \"%s{DirectoryEntryName.toString name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"RemovalChecks.lacksWrite: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
             | None ->
                 failwith
-                    $"RemovalChecks.lacksWrite: resolution named inode %O{directory} as the directory holding \"%s{DirectoryEntryName.toString name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
+                    $"RemovalChecks.lacksWrite: resolution named inode %O{directory} as the directory holding \"%s{DirectoryEntryName.toEscaped name}\", but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."
 
         PermissionBits.deniedTo privilege AccessRequest.Write permissions
 

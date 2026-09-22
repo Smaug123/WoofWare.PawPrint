@@ -188,7 +188,7 @@ module TestFileSystemSeed =
         entries
         |> Map.toList
         |> List.collect (fun (name, entry) ->
-            let here = prefix + "/" + DirectoryEntryName.toString name
+            let here = prefix + "/" + PathText.ofName name
 
             match entry with
             | SeedEntry.Directory (children, _) -> (here, entry) :: declared here children

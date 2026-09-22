@@ -1222,7 +1222,7 @@ where the dots come *last* and in the other order. What separates the machines w
 the two that disagree are both ext4, so it is a property of the individual filesystem rather than
 of the flavour, and no claim is made here about which property.
 
-**PawPrint**: the directory's names in F# ordinal (UTF-16) order, which is the order
+**PawPrint**: the directory's names in unsigned byte order, which is the order
 `DirectoryContent.Entries` already holds them in, and *then* `..` and `.` — the dots last.
 Deterministic across runs and machines, which is the whole point of the interpreter.
 
@@ -1244,9 +1244,8 @@ cursor that must track which dots it has already emitted alongside which name it
 
 *The order among the names* has no such argument, because no real order can be reproduced — there
 are several and they disagree — so the criteria are determinism and cost, and the map's own order is
-free. Sorting by UTF-8 bytes was considered; it is arguably more principled, since a Unix name *is*
-bytes, and it is no more expensive, but it differs only above the BMP and buys nothing a test could
-observe.
+free. That order is unsigned byte order, because a name *is* its bytes: `UnixByteString`'s
+comparison, lexicographic with a proper prefix first.
 
 **Where this lives in code**: `VirtualFileSystem.nextDirectoryEntry`. Every test that compares a
 listing sorts it first, and `TestVirtualFileSystemAgainstHost`'s

@@ -81,17 +81,17 @@ module TestAbsoluteUnixPath =
 
     [<Test>]
     let ``The root parses and renders as "/"`` () : unit =
-        AbsoluteUnixPath.toString AbsoluteUnixPath.root |> shouldEqual "/"
+        PathText.ofAbsolute AbsoluteUnixPath.root |> shouldEqual "/"
         parseOk "/" |> shouldEqual AbsoluteUnixPath.root
 
-        AbsoluteUnixPath.toUtf8 AbsoluteUnixPath.root
+        UnixByteString.toBytes (AbsoluteUnixPath.toByteString AbsoluteUnixPath.root)
         |> Seq.toList
         |> shouldEqual [ byte '/' ]
 
     [<Test>]
-    let ``Every generated well-formed path round-trips through parse and toString`` () : unit =
+    let ``Every generated well-formed path round-trips through parse and tryToString`` () : unit =
         let property (candidate : string) : unit =
-            AbsoluteUnixPath.toString (parseOk candidate) |> shouldEqual candidate
+            PathText.ofAbsolute (parseOk candidate) |> shouldEqual candidate
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
 
@@ -99,7 +99,7 @@ module TestAbsoluteUnixPath =
     let ``Parsing is idempotent: reparsing a rendered path gives an equal value`` () : unit =
         let property (candidate : string) : unit =
             let once = parseOk candidate
-            let twice = parseOk (AbsoluteUnixPath.toString once)
+            let twice = parseOk (PathText.ofAbsolute once)
             twice |> shouldEqual once
 
         Check.One (config, Prop.forAll (Arb.fromGen pathStringGen) property)
@@ -107,7 +107,10 @@ module TestAbsoluteUnixPath =
     [<Test>]
     let ``The UTF-8 encoding decodes back to the path and contains no NUL`` () : unit =
         let property (candidate : string) : unit =
-            let bytes = AbsoluteUnixPath.toUtf8 (parseOk candidate) |> Seq.toArray
+            let bytes =
+                UnixByteString.toBytes (AbsoluteUnixPath.toByteString (parseOk candidate))
+                |> Seq.toArray
+
             bytes |> Array.contains 0uy |> shouldEqual false
             // A strict decoder, so a malformed encoding fails rather than
             // silently producing U+FFFD and comparing unequal for the wrong reason.
@@ -190,7 +193,7 @@ module TestAbsoluteUnixPath =
 
         // A well-formed pair in the same position must *not* be rejected, and
         // in particular the low half must not be reported as unpaired.
-        parseOk "/a🐶b" |> AbsoluteUnixPath.toString |> shouldEqual "/a🐶b"
+        parseOk "/a🐶b" |> PathText.ofAbsolute |> shouldEqual "/a🐶b"
 
     [<Test>]
     let ``A repeated separator is rejected as an empty segment`` () : unit =
@@ -223,7 +226,7 @@ module TestAbsoluteUnixPath =
         parseError "/a/../b"
         |> shouldEqual (AbsoluteUnixPathError.UnresolvedSegment ("..", 3))
         // Segments that merely *start* with a dot are ordinary hidden files.
-        parseOk "/a/.b/..c" |> AbsoluteUnixPath.toString |> shouldEqual "/a/.b/..c"
+        parseOk "/a/.b/..c" |> PathText.ofAbsolute |> shouldEqual "/a/.b/..c"
 
     [<Test>]
     let ``assertValid accepts every parsed path`` () : unit =

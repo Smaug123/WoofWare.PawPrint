@@ -34,6 +34,10 @@ module UnixPathText =
     [<Literal>]
     let separator : char = '/'
 
+    /// `separator` as the single byte a Unix kernel scans for.
+    [<Literal>]
+    let separatorByte : byte = 47uy
+
     /// <summary>
     /// Locate the first defect in <c>candidate</c> preventing the string from being a valid Unix path.
     /// </summary>

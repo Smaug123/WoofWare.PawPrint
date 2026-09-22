@@ -1,10 +1,9 @@
 namespace WoofWare.PosixKernel
 
 open System
-open System.Collections.Immutable
 
 /// <summary>
-/// Why a candidate .NET string is not a path <c>getcwd(3)</c> could ever have returned.
+/// Why a candidate is not a path <c>getcwd(3)</c> could ever have returned.
 /// </summary>
 [<RequireQualifiedAccess>]
 type AbsoluteUnixPathError =
@@ -26,6 +25,8 @@ type AbsoluteUnixPathError =
     /// <summary> The candidate contained a NUL byte at this UTF-16 character index.</summary>
     /// <remarks>
     /// NUL terminates a C string and cannot be part of a path.
+    ///
+    /// Only <c>parse</c>, which takes a .NET string, reports this.
     /// </remarks>
     | ContainsNul of index : int
     /// <summary>
@@ -33,19 +34,18 @@ type AbsoluteUnixPathError =
     /// it has no UTF-8 encoding at all.
     /// </summary>
     /// <remarks>
-    /// Real Unix paths are arbitrary non-NUL byte strings; we only model the
-    /// UTF-8-encodable subset.
+    /// Only <c>parse</c>, which takes a .NET string, reports this.
     /// </remarks>
     | UnpairedSurrogate of index : int
     /// <summary>
-    /// Two consecutive separators, i.e. there is a zero-length segment beginning at this character index.
+    /// Two consecutive separators, i.e. there is a zero-length segment beginning at this byte index.
     /// </summary>
     /// <remarks>The kernel collapses these, so <c>getcwd</c> never reports one.</remarks>
     | EmptySegment of index : int
     /// <summary>There was a separator at the end of a path, and the path was not literally the root.</summary>
     /// <remarks><c>getcwd</c> returns "/" for the root and an unterminated path for everything else.</remarks>
     | TrailingSeparator
-    /// <summary>The path contained a "." or ".." segment beginning at this character index.</summary>
+    /// <summary>The path contained a "." or ".." segment beginning at this byte index.</summary>
     /// <remarks><c>getcwd</c> returns a fully-resolved path, so neither can appear in its output.</remarks>
     | UnresolvedSegment of segment : string * index : int
 
@@ -60,14 +60,12 @@ type AbsoluteUnixPathError =
 [<Struct>]
 type AbsoluteUnixPath =
     private
-    | AbsoluteUnixPath of path : string
+    | AbsoluteUnixPath of path : UnixByteString
 
-    /// <summary>
-    /// Round-trippable string representation.
-    /// </summary>
+    /// The path rendered for a diagnostic; see `UnixByteString.toEscaped`.
     override this.ToString () : string =
         match this with
-        | AbsoluteUnixPath path -> path
+        | AbsoluteUnixPath path -> UnixByteString.toEscaped path
 
 [<RequireQualifiedAccess>]
 module AbsoluteUnixPath =
@@ -81,59 +79,78 @@ module AbsoluteUnixPath =
     /// <remarks>
     /// The one absolute path that is legally separator-terminated, and the only one guaranteed to exist on any Unix.
     /// </remarks>
-    let root : AbsoluteUnixPath = AbsoluteUnixPath "/"
+    let root : AbsoluteUnixPath =
+        match UnixByteString.ofString "/" with
+        | Ok bytes -> AbsoluteUnixPath bytes
+        | Error defect -> failwith $"AbsoluteUnixPath.root: %s{UnixPathText.describe defect}"
 
-    /// <summary>
-    /// Round-trippable string representation.
-    /// </summary>
-    let toString (path : AbsoluteUnixPath) : string =
+    /// The path's bytes, exactly as `getcwd(3)` would hand them back.
+    let toByteString (path : AbsoluteUnixPath) : UnixByteString =
         match path with
         | AbsoluteUnixPath path -> path
 
-    /// <summary>
-    /// First encoding defect in <c>candidate</c>, scanning left to right, or <c>None</c>
-    /// if there is none.
-    /// </summary>
-    let private firstCharacterDefect (candidate : string) : AbsoluteUnixPathError option =
-        // Shared with `UnixPath` via `UnixPathText`, so that the two path shapes
-        // cannot drift on which strings survive the `char*` boundary; only the
-        // mapping into this type's error DU is local.
-        UnixPathText.firstDefect candidate
-        |> Option.map (fun defect ->
-            match defect with
-            | UnixPathTextDefect.ContainsNul index -> AbsoluteUnixPathError.ContainsNul index
-            | UnixPathTextDefect.UnpairedSurrogate index -> AbsoluteUnixPathError.UnpairedSurrogate index
-        )
+    /// The path as a .NET string, or `None` if its bytes are not valid UTF-8.
+    let tryToString (path : AbsoluteUnixPath) : string option =
+        UnixByteString.tryToString (toByteString path)
+
+    /// The path rendered for a diagnostic; see `UnixByteString.toEscaped`.
+    let toEscaped (path : AbsoluteUnixPath) : string =
+        UnixByteString.toEscaped (toByteString path)
 
     /// First defect in `candidate`'s segment structure, or `None` if there is
     /// none. `candidate` must already be known non-empty and separator-rooted.
-    let private firstSegmentDefect (candidate : string) : AbsoluteUnixPathError option =
-        if candidate = "/" then
+    let private firstSegmentDefect (candidate : UnixByteString) : AbsoluteUnixPathError option =
+        let bytes = UnixByteString.toBytes candidate
+
+        if bytes.Length = 1 then
             // The root is the one path whose sole separator is also its last
-            // character; every rule below would otherwise reject it.
+            // byte; every rule below would otherwise reject it.
             None
-        elif candidate.[candidate.Length - 1] = separator then
+        elif bytes.[bytes.Length - 1] = UnixPathText.separatorByte then
             Some AbsoluteUnixPathError.TrailingSeparator
         else
 
-        let segments = candidate.Substring(1).Split separator
-
-        // Index within `candidate` at which each segment starts: past the
-        // leading separator, then past every earlier segment and its separator.
-        // `Array.scan` yields one more element than `segments`, so drop the
-        // trailing running total.
-        let offsets =
-            segments |> Array.scan (fun offset (seg : string) -> offset + seg.Length + 1) 1
-
-        Array.zip segments offsets.[.. segments.Length - 1]
-        |> Array.tryPick (fun (segment, offset) ->
-            if segment.Length = 0 then
-                Some (AbsoluteUnixPathError.EmptySegment offset)
-            elif segment = "." || segment = ".." then
-                Some (AbsoluteUnixPathError.UnresolvedSegment (segment, offset))
-            else
+        // Each segment runs from just past one separator to the next, starting
+        // past the leading one.
+        let rec check (start : int) : AbsoluteUnixPathError option =
+            if start > bytes.Length then
                 None
-        )
+            else
+
+            let next = bytes.IndexOf (UnixPathText.separatorByte, start)
+            let finish = if next < 0 then bytes.Length else next
+
+            let result =
+                match finish - start with
+                | 0 -> Some (AbsoluteUnixPathError.EmptySegment start)
+                | 1 when bytes.[start] = 46uy -> Some (AbsoluteUnixPathError.UnresolvedSegment (".", start))
+                | 2 when bytes.[start] = 46uy && bytes.[start + 1] = 46uy ->
+                    Some (AbsoluteUnixPathError.UnresolvedSegment ("..", start))
+                | _ -> None
+
+            match result with
+            | Some _ -> result
+            | None -> check (finish + 1)
+
+        check 1
+
+    /// Take a byte string as an absolute path, or explain why it is not one.
+    ///
+    /// Never reports `ContainsNul` or `UnpairedSurrogate`: a `UnixByteString`
+    /// can contain neither.
+    let ofByteString (candidate : UnixByteString) : Result<AbsoluteUnixPath, AbsoluteUnixPathError> =
+        let candidate = UnixByteString.assertValid "AbsoluteUnixPath.ofByteString" candidate
+        let bytes = UnixByteString.toBytes candidate
+
+        if bytes.Length = 0 then
+            Error AbsoluteUnixPathError.Empty
+        elif bytes.[0] <> UnixPathText.separatorByte then
+            Error AbsoluteUnixPathError.NotRooted
+        else
+
+        match firstSegmentDefect candidate with
+        | Some defect -> Error defect
+        | None -> Ok (AbsoluteUnixPath candidate)
 
     /// <summary>
     /// Parse a host-supplied string into an absolute Unix path, or explain why
@@ -151,13 +168,10 @@ module AbsoluteUnixPath =
             Error AbsoluteUnixPathError.NotRooted
         else
 
-        match firstCharacterDefect candidate with
-        | Some defect -> Error defect
-        | None ->
-
-        match firstSegmentDefect candidate with
-        | Some defect -> Error defect
-        | None -> Ok (AbsoluteUnixPath candidate)
+        match UnixByteString.ofString candidate with
+        | Error (UnixPathTextDefect.ContainsNul index) -> Error (AbsoluteUnixPathError.ContainsNul index)
+        | Error (UnixPathTextDefect.UnpairedSurrogate index) -> Error (AbsoluteUnixPathError.UnpairedSurrogate index)
+        | Ok bytes -> ofByteString bytes
 
     /// <summary>
     /// Human-readable rendering of a rejection.
@@ -171,11 +185,11 @@ module AbsoluteUnixPath =
         | AbsoluteUnixPathError.UnpairedSurrogate index ->
             $"path contains an unpaired UTF-16 surrogate at index %d{index}, so it has no UTF-8 encoding"
         | AbsoluteUnixPathError.EmptySegment index ->
-            $"path contains an empty segment (a repeated '%c{separator}') at index %d{index}"
+            $"path contains an empty segment (a repeated '%c{separator}') at byte index %d{index}"
         | AbsoluteUnixPathError.TrailingSeparator ->
             $"path ends with '%c{separator}'; only the root \"/\" may be separator-terminated"
         | AbsoluteUnixPathError.UnresolvedSegment (segment, index) ->
-            $"path contains an unresolved \"%s{segment}\" segment at index %d{index}; getcwd returns fully-resolved paths"
+            $"path contains an unresolved \"%s{segment}\" segment at byte index %d{index}; getcwd returns fully-resolved paths"
 
     /// <summary>
     /// Re-check the invariant of a value that may not have come from <c>parse</c>,
@@ -188,12 +202,14 @@ module AbsoluteUnixPath =
     /// </remarks>
     let assertValid (context : string) (path : AbsoluteUnixPath) : AbsoluteUnixPath =
         // The only value this can actually reject is `Unchecked.defaultof` / C# `default`,
-        // whose payload is null; the `private` on the union case, plus the restrictions
-        // enforced by the `parse` method, stops every other route.
+        // whose payload is a forged `UnixByteString`; the `private` on the union case, plus
+        // the restrictions enforced by the constructors, stops every other route.
         match path with
         | AbsoluteUnixPath raw ->
 
-        match parse raw with
+        let raw = UnixByteString.assertValid context raw
+
+        match ofByteString raw with
         | Ok _ -> path
         | Error error ->
             failwith
@@ -207,11 +223,3 @@ module AbsoluteUnixPath =
         match parse candidate with
         | Ok path -> path
         | Error error -> failwith $"%s{context}: %s{describe error} (got %s{candidate})"
-
-    /// <summary>Return the path as exactly the NUL-free byte string the Unix kernel would use.</summary>
-    /// <remarks>
-    /// This is the encoding <i>without</i> a null terminator; callers that need a C
-    /// string must append the NUL themselves.
-    /// </remarks>
-    let toUtf8 (path : AbsoluteUnixPath) : ImmutableArray<byte> =
-        toString path |> UnixPathText.utf8.GetBytes |> ImmutableArray.CreateRange

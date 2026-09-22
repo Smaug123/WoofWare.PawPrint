@@ -114,6 +114,46 @@ module TestUnixByteString =
 
         Check.One (config, Prop.forAll (Arb.fromGen bytesGen) property)
 
+    [<Test>]
+    let ``slice agrees with slicing the bytes`` () : unit =
+        let property (bytes : byte[], a : int, b : int) : unit =
+            let start = if bytes.Length = 0 then 0 else abs a % (bytes.Length + 1)
+
+            let count =
+                if bytes.Length - start = 0 then
+                    0
+                else
+                    abs b % (bytes.Length - start + 1)
+
+            ofBytesOk bytes
+            |> UnixByteString.slice start count
+            |> toArray
+            |> shouldEqual (Array.sub bytes start count)
+
+        let gen =
+            Gen.zip3 bytesGen (ArbMap.defaults |> ArbMap.generate<int>) (ArbMap.defaults |> ArbMap.generate<int>)
+
+        Check.One (config, Prop.forAll (Arb.fromGen gen) property)
+
+    [<Test>]
+    let ``slice refuses a range outside the string`` () : unit =
+        let value = ofBytesOk [| 1uy ; 2uy |]
+
+        for start, count in [ -1, 1 ; 0, 3 ; 2, 1 ; 3, 0 ; 1, -1 ] do
+            Assert.Throws<ArgumentOutOfRangeException> (fun () ->
+                UnixByteString.slice start count value |> ignore<UnixByteString>
+            )
+            |> ignore<ArgumentOutOfRangeException>
+
+    [<Test>]
+    let ``append agrees with appending the bytes`` () : unit =
+        let property (left : byte[], right : byte[]) : unit =
+            UnixByteString.append (ofBytesOk left) (ofBytesOk right)
+            |> toArray
+            |> shouldEqual (Array.append left right)
+
+        Check.One (config, Prop.forAll (Arb.fromGen (Gen.zip bytesGen bytesGen)) property)
+
     // ---------------------------------------------------------------- equality
 
     [<Test>]

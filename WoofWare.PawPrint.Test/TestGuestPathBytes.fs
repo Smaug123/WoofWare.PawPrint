@@ -9,9 +9,7 @@ open WoofWare.PosixKernel
 
 /// PawPrint's half of a path argument: the rules are `PathArgument.parse`'s and
 /// are tested in `WoofWare.PosixKernel.Test.TestPathArgument`, so what is left
-/// here is the message a refusal composes, which needs facts the library never
-/// has — which entry point asked, what the bytes actually were, and which
-/// managed caller could have produced them.
+/// here is what PawPrint does with each outcome.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestGuestPathBytes =
@@ -20,26 +18,31 @@ module TestGuestPathBytes =
         SimulatedUnixPlatform.pathLimits SimulatedUnixPlatform.linuxX64
 
     [<Test>]
-    let ``a path that cannot be represented names the caller and its bytes`` () : unit =
-        // The library says why no answer exists; only PawPrint can say which
-        // entry point was asked and what it was asked with, and a crash without
-        // those is one nobody can act on.
-        let invalid = [| 0x2Fuy ; 0x61uy ; 0xFFuy |]
+    let ``a path that is not valid UTF-8 is a path, byte for byte`` () : unit =
+        // A real Unix names a file with any NUL-free bytes, and a hand-rolled
+        // P/Invoke can pass such bytes, so this is an answer rather than a crash.
+        let bytes = [| 0x2Fuy ; 0x74uy ; 0x6Duy ; 0x70uy ; 0x2Fuy ; 0xFFuy |]
 
+        match NativeSystemNative.parseGuestPathBytes "SystemNative_Open" linux bytes with
+        | Ok path ->
+            UnixPath.toByteString path
+            |> UnixByteString.toBytes
+            |> Seq.toArray
+            |> shouldEqual bytes
+        | Error error -> failwith $"expected a path, got %O{error}"
+
+    [<Test>]
+    let ``bytes holding a NUL crash, naming the caller and the offset`` () : unit =
+        // PawPrint reads a guest's path up to its NUL, so bytes holding one mean
+        // that read went wrong: an interpreter bug, and the crash must say where.
         let exn =
             Assert.Throws<Exception> (fun () ->
-                NativeSystemNative.parseGuestPathBytes "SystemNative_Open" linux invalid
+                NativeSystemNative.parseGuestPathBytes "SystemNative_Open" linux [| 0x2Fuy ; 0x00uy ; 0x61uy |]
                 |> ignore<Result<UnixPath, UnixError>>
             )
 
         exn.Message |> shouldContainText "SystemNative_Open"
-        // The bytes, in hex, so that the offending one is identifiable: it is by
-        // construction not printable.
-        exn.Message |> shouldContainText "2F 61 FF"
-        // And the reachability, which is a fact about CoreLib rather than about
-        // any kernel: its own callers encode from a string and so cannot produce
-        // this.
-        exn.Message |> shouldContainText "hand-rolled P/Invoke"
+        exn.Message |> shouldContainText "offset 1"
 
     [<Test>]
     let ``an answerable path argument comes back as an answer`` () : unit =
@@ -51,5 +54,5 @@ module TestGuestPathBytes =
         |> shouldEqual (Error UnixError.ENAMETOOLONG)
 
         match NativeSystemNative.parseGuestPathBytes "SystemNative_Open" linux (Encoding.UTF8.GetBytes "/etc") with
-        | Ok path -> UnixPath.toString path |> shouldEqual "/etc"
+        | Ok path -> UnixPath.tryToString path |> shouldEqual (Some "/etc")
         | Error error -> failwith $"expected a path, got %O{error}"

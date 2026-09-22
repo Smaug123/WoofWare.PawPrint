@@ -143,7 +143,7 @@ module TestUnlinkRules =
     /// only that something would.
     let private removed (verdict : UnlinkVerdict) : string =
         match verdict with
-        | UnlinkVerdict.Remove (_, name) -> DirectoryEntryName.toString name
+        | UnlinkVerdict.Remove (_, name) -> PathText.ofName name
         | UnlinkVerdict.Refuse error -> failwith $"expected a removal, got %O{error}"
 
     let private refuses (platform : SimulatedUnixPlatform) (error : UnixError) (candidates : string list) : unit =

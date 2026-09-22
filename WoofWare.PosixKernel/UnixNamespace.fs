@@ -171,6 +171,28 @@ type RenameProgress<'Task, 'Handler when 'Task : comparison and 'Handler : equal
 [<RequireQualifiedAccess>]
 module UnixNamespace =
 
+    /// Crash, rather than bind a name the platform's filesystem would refuse.
+    /// Called once a verdict has decided to bind, which is where the real
+    /// refusal belongs, since it comes after every other check.
+    ///
+    /// Stage 7 of docs/plans/2026-09-20-unix-path-bytes.md replaces this with
+    /// the EILSEQ a real APFS answers.
+    let private refuseUnbindableUntilModelled
+        (operation : string)
+        (platform : SimulatedUnixPlatform)
+        (name : DirectoryEntryName)
+        : unit
+        =
+        match SimulatedUnixPlatform.bindableEntryNames platform with
+        | BindableEntryNames.AnyBytes -> ()
+        | BindableEntryNames.StrictUtf8 ->
+
+        match DirectoryEntryName.tryToString name with
+        | Some _ -> ()
+        | None ->
+            failwith
+                $"UnixNamespace.%s{operation}: the guest asked to bind \"%s{DirectoryEntryName.toEscaped name}\", which is not valid UTF-8, on a platform whose filesystem only binds valid UTF-8 names. A real APFS answers EILSEQ here; that answer is not modelled yet."
+
     /// `open(2)`: resolve `path`, apply every check a kernel makes, and return a
     /// descriptor onto what it names.
     ///
@@ -245,6 +267,8 @@ module UnixNamespace =
         match CreatingOpenRules.verdict rules privilege flags.Create exclusive resolution system.Machine.FileSystem with
         | CreatingOpenVerdict.Refuse error -> SyscallAnswer.Failed error, system
         | CreatingOpenVerdict.Create (directory, name) ->
+            refuseUnbindableUntilModelled "openPath" system.Machine.UnixPlatform name
+
             let permissions =
                 CreatingOpenRules.createdPermissions rules system.Process.Umask mode
 
@@ -265,7 +289,7 @@ module UnixNamespace =
                 // neither is the case, so either is a broken graph rather than
                 // something the caller did.
                 failwith
-                    $"UnixNamespace.openPath: creating \"%s{DirectoryEntryName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+                    $"UnixNamespace.openPath: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
             | Ok (inode, filesystem) ->
                 { system with
                     Machine =
@@ -574,9 +598,9 @@ module UnixNamespace =
             | Some content -> DirectoryEntryKind.ofContent content
             | None ->
                 failwith
-                    $"UnixNamespace.readdir: the entry \"%s{name.ToString ()}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
+                    $"UnixNamespace.readdir: the entry \"%O{name}\" names inode %O{target}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
 
-        ReadDirAnswer.Entry (ImmutableArray.CreateRange (UnixPathText.utf8.GetBytes (name.ToString ())), kind),
+        ReadDirAnswer.Entry (UnixByteString.toBytes (DirectoryStreamName.toByteString name), kind),
         { system with
             Process =
                 { system.Process with
@@ -621,6 +645,8 @@ module UnixNamespace =
         | MkDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
         | MkDirVerdict.Create (directory, name, parentPermissions) ->
 
+        refuseUnbindableUntilModelled "mkdir" system.Machine.UnixPlatform name
+
         let permissions =
             MkDirRules.createdPermissions rules parentPermissions system.Process.Umask mode
 
@@ -633,7 +659,7 @@ module UnixNamespace =
             // neither is the case, so either is a broken graph rather than
             // something the caller did.
             failwith
-                $"UnixNamespace.mkdir: creating \"%s{DirectoryEntryName.toString name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
+                $"UnixNamespace.mkdir: creating \"%s{DirectoryEntryName.toEscaped name}\" in inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and does not hold that name (this is a bug in this library)."
         | Ok (_, filesystem) ->
 
         SyscallAnswer.Completed 0L,
@@ -681,7 +707,7 @@ module UnixNamespace =
             // directory does not bind. The walk has just established both, so
             // either is a broken graph rather than something the caller did.
             failwith
-                $"UnixNamespace.unlink: removing \"%s{DirectoryEntryName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
+                $"UnixNamespace.unlink: removing \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
         | Ok (target, filesystem) ->
 
         // The name is gone; whether the *inode* is depends on whether any other
@@ -731,7 +757,7 @@ module UnixNamespace =
         match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now system.Machine.FileSystem with
         | Error error ->
             failwith
-                $"UnixNamespace.rmdir: removing \"%s{DirectoryEntryName.toString name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
+                $"UnixNamespace.rmdir: removing \"%s{DirectoryEntryName.toEscaped name}\" from inode %O{directory} was refused with %O{error}, but the walk had just established that the directory exists and holds that name (this is a bug in this library)."
         | Ok (target, filesystem) ->
 
         // A directory has only ever had the one name, so this was the last — but
@@ -949,6 +975,8 @@ module UnixNamespace =
         | RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
         | RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName) ->
 
+        refuseUnbindableUntilModelled "rename" system.Machine.UnixPlatform destinationName
+
         let now = UnixMachineState.fileTimestamp system.Machine
 
         match
@@ -970,7 +998,7 @@ module UnixNamespace =
             // means the verdict let something through rather than that the
             // guest did anything unusual.
             failwith
-                $"UnixNamespace.rename: moving \"%s{DirectoryEntryName.toString sourceName}\" from inode %O{sourceDirectory} to \"%s{DirectoryEntryName.toString destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
+                $"UnixNamespace.rename: moving \"%s{DirectoryEntryName.toEscaped sourceName}\" from inode %O{sourceDirectory} to \"%s{DirectoryEntryName.toEscaped destinationName}\" in inode %O{destinationDirectory} was refused with %O{error}, but the verdict had just approved it (this is a bug in this library)."
         | Ok (outcome, filesystem) ->
 
         // A rename is the one syscall that can change the *path* of a directory

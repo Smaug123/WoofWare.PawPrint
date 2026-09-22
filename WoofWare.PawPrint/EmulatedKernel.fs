@@ -1033,7 +1033,7 @@ module EmulatedKernel =
         let directory =
             AbsoluteUnixPath.assertValid "EmulatedKernel.CurrentDirectory" directory
 
-        let described = AbsoluteUnixPath.toString directory
+        let described = AbsoluteUnixPath.toEscaped directory
 
         match
             unix kernel
@@ -1058,7 +1058,7 @@ module EmulatedKernel =
                 $"EmulatedKernel.CurrentDirectory: \"%s{described}\" resolves in KernelConfig.FileSystem, but not to a directory. No process can be started anywhere else; point KernelConfig.CurrentDirectory at a directory the seed contains."
         | Error (CurrentDirectoryFault.SeedNameTooLong (name, flavour)) ->
             failwith
-                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toString name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in KernelConfig.FileSystem, or configure the flavour whose limit admits it."
+                $"EmulatedKernel.FileSystem: KernelConfig.FileSystem holds the entry name \"%s{DirectoryEntryName.toEscaped name}\", which is past %O{flavour}'s NAME_MAX, so no filesystem that flavour could mount holds it. Shorten the name in KernelConfig.FileSystem, or configure the flavour whose limit admits it."
 
 
 

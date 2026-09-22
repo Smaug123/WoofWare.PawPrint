@@ -985,16 +985,16 @@ module UnixSystem =
                     | Some _ -> Ok inode
                     | None ->
                         failwith
-                            $"UnixSystem.withFileSystemAndCurrentDirectory: \"%s{AbsoluteUnixPath.toString directory}\" resolved to inode %O{inode}, but no path from the root reaches it. This is a bug in this library."
+                            $"UnixSystem.withFileSystemAndCurrentDirectory: \"%s{AbsoluteUnixPath.toEscaped directory}\" resolved to inode %O{inode}, but no path from the root reaches it. This is a bug in this library."
                 | Some (InodeContent.RegularFile _) -> Error CurrentDirectoryFault.NotADirectory
                 | Some (InodeContent.Symlink _) ->
                     // `SymlinkPolicy.Follow` never finishes on one; `chdir` says
                     // the same of the same walk.
                     failwith
-                        $"UnixSystem.withFileSystemAndCurrentDirectory: the walk resolved \"%s{AbsoluteUnixPath.toString directory}\" to inode %O{inode}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
+                        $"UnixSystem.withFileSystemAndCurrentDirectory: the walk resolved \"%s{AbsoluteUnixPath.toEscaped directory}\" to inode %O{inode}, which is a symbolic link -- but it ran under SymlinkPolicy.Follow, which never finishes on one (this is a bug in this library)."
                 | None ->
                     failwith
-                        $"UnixSystem.withFileSystemAndCurrentDirectory: resolving \"%s{AbsoluteUnixPath.toString directory}\" gave inode %O{inode}, which the filesystem does not contain. This is a bug in this library; run VirtualFileSystem.checkInvariants."
+                        $"UnixSystem.withFileSystemAndCurrentDirectory: resolving \"%s{AbsoluteUnixPath.toEscaped directory}\" gave inode %O{inode}, which the filesystem does not contain. This is a bug in this library; run VirtualFileSystem.checkInvariants."
             | Error UnixError.ENAMETOOLONG ->
                 Error (CurrentDirectoryFault.TooLong (SimulatedUnixPlatform.flavour platform))
             | Error error -> Error (CurrentDirectoryFault.DoesNotResolve error)

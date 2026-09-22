@@ -735,6 +735,20 @@ ordinary filename is — an NFD-typed `é` is perfectly good UTF-8 and passes
 straight through. So it is narrow as well as short-lived, and Stage 7 converts it
 into the EILSEQ a real APFS would have given.
 
+**As built**, three things differ from the text above.
+
+- The placeholder sits in `UnixNamespace`, straight after each verdict decides
+  to bind, not inside the three verdicts. That is the same point in the
+  ordering, because the refusal is the verdicts' last rule. It needs the
+  flavour, which `MkDirRules.verdict` does not take, so `BindableEntryNames`
+  and `SimulatedUnixPlatform.bindableEntryNames` land here, not in Stage 7.
+- `AbsoluteUnixPathError` keeps `ContainsNul` and `UnpairedSurrogate`, with
+  UTF-16 indices. Only the string-taking `parse` reports them; the byte-taking
+  `ofByteString` cannot. Its segment indices become byte offsets.
+- A directory's names now sort in unsigned byte order, not .NET's UTF-16
+  ordinal order. The two differ only above the BMP, and `readdir` hands names
+  back in this order, so `docs/divergences.md` says so.
+
 **Correctness oracle**:
 
 - Every existing `WoofWare.PosixKernel.Test` and `WoofWare.PawPrint.Test` test

@@ -1,9 +1,8 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
 
 /// <summary>
-/// Why a .NET string is not usable as a single Unix directory-entry name.
+/// Why a candidate is not usable as a single Unix directory-entry name.
 /// </summary>
 [<RequireQualifiedAccess>]
 type FileNameError =
@@ -15,12 +14,14 @@ type FileNameError =
     /// </remarks>
     | Empty
     /// <summary>
-    /// The candidate contained a separator at this index, so it names a path
+    /// The candidate contained a separator at this byte index, so it names a path
     /// rather than a single entry within one directory.
     /// </summary>
     | ContainsSeparator of index : int
     /// <summary>The candidate could not survive the <c>char*</c> boundary.</summary>
-    /// <remarks>See <c>UnixPathTextDefect</c>.</remarks>
+    /// <remarks>
+    /// See <c>UnixPathTextDefect</c>. Only <c>parse</c>, which takes a .NET string, reports this.
+    /// </remarks>
     | Text of defect : UnixPathTextDefect
     /// <summary>
     /// The candidate was "." or "..".
@@ -36,52 +37,69 @@ type FileNameError =
 /// A single component of a Unix path that names an actual directory entry.
 /// </summary>
 /// <remarks>
-/// This is non-empty, separator-free, NUL-free, UTF-8-encodable, and neither "." nor
-/// "..".
+/// This is non-empty, separator-free, NUL-free, and neither "." nor "..".
+/// It need not be valid UTF-8.
 ///
-/// Construct via <c>FileName.parse</c>.
+/// Construct via <c>DirectoryEntryName.parse</c> or <c>DirectoryEntryName.ofByteString</c>.
 /// </remarks>
 [<Struct>]
 type DirectoryEntryName =
     private
-    | DirectoryEntryName of name : string
+    | DirectoryEntryName of name : UnixByteString
 
-    /// <summary>
-    /// Round-trippable string representation.
-    /// </summary>
+    /// The name rendered for a diagnostic; see `UnixByteString.toEscaped`.
     override this.ToString () : string =
         match this with
-        | DirectoryEntryName name -> name
+        | DirectoryEntryName name -> UnixByteString.toEscaped name
 
 [<RequireQualifiedAccess>]
 module DirectoryEntryName =
-    /// <summary>
-    /// Round-trippable string representation.
-    /// </summary>
-    let toString (name : DirectoryEntryName) : string =
+    /// The name's bytes, exactly as `readdir` would hand them back.
+    let toByteString (name : DirectoryEntryName) : UnixByteString =
         match name with
         | DirectoryEntryName name -> name
 
+    /// The name as a .NET string, or `None` if its bytes are not valid UTF-8.
+    let tryToString (name : DirectoryEntryName) : string option =
+        UnixByteString.tryToString (toByteString name)
+
+    /// The name rendered for a diagnostic; see `UnixByteString.toEscaped`.
+    let toEscaped (name : DirectoryEntryName) : string =
+        UnixByteString.toEscaped (toByteString name)
+
+    /// Take a byte string as a single directory-entry name, or explain why it is not one.
+    ///
+    /// Never reports `FileNameError.Text`: a `UnixByteString` has no text defects.
+    let ofByteString (candidate : UnixByteString) : Result<DirectoryEntryName, FileNameError> =
+        let bytes = UnixByteString.toBytes candidate
+
+        if bytes.Length = 0 then
+            Error FileNameError.Empty
+        else
+
+        let separatorIndex = bytes.IndexOf UnixPathText.separatorByte
+
+        if separatorIndex >= 0 then
+            Error (FileNameError.ContainsSeparator separatorIndex)
+        elif bytes.Length = 1 && bytes.[0] = 46uy then
+            Error (FileNameError.Reserved ".")
+        elif bytes.Length = 2 && bytes.[0] = 46uy && bytes.[1] = 46uy then
+            Error (FileNameError.Reserved "..")
+        else
+            Ok (DirectoryEntryName candidate)
+
     /// <summary>Parse a single directory-entry name, or explain why the candidate is not one.</summary>
+    /// <remarks>
+    /// The name is the UTF-8 encoding of <c>candidate</c>.
+    /// </remarks>
     let parse (candidate : string) : Result<DirectoryEntryName, FileNameError> =
         if System.String.IsNullOrEmpty candidate then
             Error FileNameError.Empty
         else
 
-        let separatorIndex = candidate.IndexOf UnixPathText.separator
-
-        if separatorIndex >= 0 then
-            Error (FileNameError.ContainsSeparator separatorIndex)
-        else
-
-        match UnixPathText.firstDefect candidate with
-        | Some defect -> Error (FileNameError.Text defect)
-        | None ->
-
-        if candidate = "." || candidate = ".." then
-            Error (FileNameError.Reserved candidate)
-        else
-            Ok (DirectoryEntryName candidate)
+        match UnixByteString.ofString candidate with
+        | Error defect -> Error (FileNameError.Text defect)
+        | Ok bytes -> ofByteString bytes
 
     /// <summary>
     /// Human-readable rendering of a rejection.
@@ -90,7 +108,7 @@ module DirectoryEntryName =
         match error with
         | FileNameError.Empty -> "name is null or empty, but no directory holds an entry with the empty name"
         | FileNameError.ContainsSeparator index ->
-            $"name contains '%c{UnixPathText.separator}' at index %d{index}, so it is a path rather than a single entry name"
+            $"name contains '%c{UnixPathText.separator}' at byte index %d{index}, so it is a path rather than a single entry name"
         | FileNameError.Text defect -> $"name %s{UnixPathText.describe defect}"
         | FileNameError.Reserved name ->
             $"\"%s{name}\" is a path component, not an entry name; PawPrint derives it from the directory graph rather than storing it"
@@ -113,21 +131,18 @@ module DirectoryEntryName =
     /// </remarks>
     let assertValid (context : string) (name : DirectoryEntryName) : DirectoryEntryName =
         // The only value this can reject is `Unchecked.defaultof` / C# `default`,
-        // whose payload is null: `private` on the union case, and the restrictions
-        // enforced by `parse`, stops every other route.
+        // whose payload is a forged `UnixByteString`: `private` on the union case,
+        // and the restrictions enforced by the constructors, stops every other route.
         match name with
         | DirectoryEntryName raw ->
 
-        match parse raw with
+        let raw = UnixByteString.assertValid context raw
+
+        match ofByteString raw with
         | Ok _ -> name
         | Error error ->
             failwith
                 $"%s{context}: %s{describe error}. A FileName that fails its own invariant can only have come from `Unchecked.defaultof` or C# `default`; construct one with FileName.parse instead."
-
-    /// <summary>The name as the NUL-free byte string a Unix kernel would hand back from <c>readdir</c>.</summary>
-    /// <remarks>Has no NUL terminator; callers that need a C string append the NUL themselves.</remarks>
-    let toUtf8 (name : DirectoryEntryName) : ImmutableArray<byte> =
-        toString name |> UnixPathText.utf8.GetBytes |> ImmutableArray.CreateRange
 
 /// <summary>
 /// One component of a guest-supplied path, between two separators.
@@ -190,7 +205,7 @@ type UnixPathError =
 /// Every <c>AbsoluteUnixPath</c> is a <c>UnixPath</c> (see <c>UnixPath.ofAbsolute</c>); the
 /// converse holds only for paths a resolution walk has already reduced.
 ///
-/// Construct via <c>UnixPath.parse</c>.
+/// Construct via <c>UnixPath.parse</c> or <c>UnixPath.ofByteString</c>.
 ///
 /// Recover the path's structure on demand with <c>UnixPath.components</c> and <c>PathCursor</c>.
 /// </remarks>
@@ -208,7 +223,7 @@ type UnixPath =
             /// Darwin's length rules count the bytes in the path's byte buffer, so "a//b" and "a/b" are
             /// behaviourally distinct on Darwin. So we really do have to store it raw.
             /// </remarks>
-            Raw : string
+            Raw : UnixByteString
         }
 
 /// <summary>
@@ -232,9 +247,9 @@ type PathCursor =
             /// Always satisfies <c>UnixPath</c>'s invariant, because every way to
             /// build one takes a <c>UnixPath</c>.
             /// </remarks>
-            Buffer : string
+            Buffer : UnixByteString
             /// <summary>
-            /// How far through <c>Buffer</c> the walk has got, measured in chars of the UTF-16 string.
+            /// How far through <c>Buffer</c> the walk has got, in bytes.
             /// </summary>
             /// <remarks>
             /// Always at a separator or at the end, never inside a component.
@@ -253,20 +268,10 @@ module PathCursor =
             Offset = 0
         }
 
-    /// <summary>The text this cursor is walking.</summary>
-    /// <remarks>Throws if we are walking the null string.</remarks>
-    let private bufferOf (cursor : PathCursor) : string =
-        match cursor.Buffer with
-        | null ->
-            failwith
-                "PathCursor: this cursor's buffer is null, which it can only be if the cursor came from `Unchecked.defaultof` or C# `default`; obtain one from PathCursor.ofPath instead."
-        | buffer -> buffer
-
-    /// <summary>
-    /// The buffer from the cursor onwards, separator runs intact.
-    /// </summary>
-    let private remainder (cursor : PathCursor) : string =
-        (bufferOf cursor).Substring cursor.Offset
+    /// The bytes this cursor is walking. Throws if the cursor is a forged default.
+    let private bufferOf (cursor : PathCursor) : System.Collections.Immutable.ImmutableArray<byte> =
+        UnixByteString.assertValid "PathCursor (obtain one from PathCursor.ofPath)" cursor.Buffer
+        |> UnixByteString.toBytes
 
     /// <summary>
     /// Where the next component starts, or the end of the buffer if only
@@ -276,7 +281,7 @@ module PathCursor =
         let buffer = bufferOf cursor
         let mutable index = cursor.Offset
 
-        while index < buffer.Length && buffer.[index] = UnixPathText.separator do
+        while index < buffer.Length && buffer.[index] = UnixPathText.separatorByte do
             index <- index + 1
 
         index
@@ -291,7 +296,7 @@ module PathCursor =
     /// <c>None</c> when the path is exhausted;
     /// otherwise, the component that was at the cursor, and a new cursor which is advanced to the next component.
     /// </returns>
-    /// <remarks>Throws if the input cursor is into the null string.</remarks>
+    /// <remarks>Throws if the input cursor is a forged default.</remarks>
     let next (cursor : PathCursor) : (PathComponent * PathCursor) option =
         let buffer = bufferOf cursor
         let start = afterSeparators cursor
@@ -302,26 +307,22 @@ module PathCursor =
 
         let mutable finish = start
 
-        while finish < buffer.Length && buffer.[finish] <> UnixPathText.separator do
+        while finish < buffer.Length && buffer.[finish] <> UnixPathText.separatorByte do
             finish <- finish + 1
 
-        let segment = buffer.Substring (start, finish - start)
+        let segment = UnixByteString.slice start (finish - start) cursor.Buffer
 
         let component_ =
-            match segment with
-            | "." -> PathComponent.Current
-            | ".." -> PathComponent.Parent
-            | _ ->
-                // Every rule `FileName.parse` enforces has already been
-                // discharged: the segment is non-empty (the scan above stopped
-                // at a non-separator), holds no separator (the scan stopped at
-                // one), carries no text defect (`UnixPath.parse` scanned the
-                // whole buffer), and is neither "." nor ".." (matched above).
-                match DirectoryEntryName.parse segment with
-                | Ok name -> PathComponent.Name name
-                | Error error ->
-                    failwith
-                        $"PathCursor.next: segment \"%s{segment}\" of \"%s{buffer}\" was rejected as an entry name (%s{DirectoryEntryName.describe error}), but every value that can reach this has already been through UnixPath.parse, which excludes every reason a segment could be rejected"
+            match DirectoryEntryName.ofByteString segment with
+            | Ok name -> PathComponent.Name name
+            | Error (FileNameError.Reserved ".") -> PathComponent.Current
+            | Error (FileNameError.Reserved "..") -> PathComponent.Parent
+            | Error error ->
+                // Every other rule has already been discharged: the segment is
+                // non-empty (the scan above stopped at a non-separator) and holds
+                // no separator (the scan stopped at one).
+                failwith
+                    $"PathCursor.next: segment \"%s{UnixByteString.toEscaped segment}\" of \"%s{UnixByteString.toEscaped cursor.Buffer}\" was rejected as an entry name (%s{DirectoryEntryName.describe error}), but a separator-free, non-empty segment can only be a name, \".\" or \"..\""
 
         // Transcribed from XNU's `lookup`, which advances past the separator run
         // following a component "while the next character is a separator or the
@@ -337,8 +338,8 @@ module PathCursor =
         let mutable niNext = finish
 
         while niNext < buffer.Length
-              && buffer.[niNext] = UnixPathText.separator
-              && (niNext + 1 = buffer.Length || buffer.[niNext + 1] = UnixPathText.separator) do
+              && buffer.[niNext] = UnixPathText.separatorByte
+              && (niNext + 1 = buffer.Length || buffer.[niNext + 1] = UnixPathText.separatorByte) do
             niNext <- niNext + 1
 
         Some (
@@ -359,7 +360,7 @@ module PathCursor =
     /// a kernel's pathname buffer is bytes and its limits are byte counts.
     /// </remarks>
     let remainingBytes (cursor : PathCursor) : int =
-        UnixPathText.utf8.GetByteCount (remainder cursor)
+        (bufferOf cursor).Length - cursor.Offset
 
     /// <summary>
     /// Expand the path assuming the cursor's current position marks a symlink to the given <c>target</c>,
@@ -378,24 +379,29 @@ module PathCursor =
         let buffer = bufferOf cursor
 
         // `next` never returns offset zero — a component is at least one
-        // character — so offset zero is exactly the condition to check.
+        // byte — so offset zero is exactly the condition to check.
         if cursor.Offset = 0 then
             failwith
-                $"PathCursor.splice: the cursor into \"%s{buffer}\" has not consumed a component, so there is no symbolic link here to expand. Splice onto the cursor `next` returned, not one straight from `ofPath`."
+                $"PathCursor.splice: the cursor into \"%s{UnixByteString.toEscaped cursor.Buffer}\" has not consumed a component, so there is no symbolic link here to expand. Splice onto the cursor `next` returned, not one straight from `ofPath`."
+
+        let remainder =
+            UnixByteString.slice cursor.Offset (buffer.Length - cursor.Offset) cursor.Buffer
 
         {
-            Buffer = target.Raw + remainder cursor
+            Buffer = UnixByteString.append target.Raw remainder
             Offset = 0
         }
 
 [<RequireQualifiedAccess>]
 module UnixPath =
-    /// <summary>Render this path back as the (.NET representation of the) string a guest would have passed.</summary>
-    /// <remarks>
-    /// Exact: this returns the very text <c>parse</c> accepted, separator runs and all, so
-    /// <c>toString (parse s) = s</c> for every <c>s</c> that parses.
-    /// </remarks>
-    let toString (path : UnixPath) : string = path.Raw
+    /// The path's bytes, exactly as the guest passed them, separator runs and all.
+    let toByteString (path : UnixPath) : UnixByteString = path.Raw
+
+    /// The path as a .NET string, or `None` if its bytes are not valid UTF-8.
+    let tryToString (path : UnixPath) : string option = UnixByteString.tryToString path.Raw
+
+    /// The path rendered for a diagnostic; see `UnixByteString.toEscaped`.
+    let toEscaped (path : UnixPath) : string = UnixByteString.toEscaped path.Raw
 
     /// <summary>True when the path began with a separator.</summary>
     /// <remarks>
@@ -403,7 +409,8 @@ module UnixPath =
     /// filesystem root rather than at a caller-supplied directory.
     /// </remarks>
     let isRooted (path : UnixPath) : bool =
-        path.Raw.Length > 0 && path.Raw.[0] = UnixPathText.separator
+        let bytes = UnixByteString.toBytes path.Raw
+        bytes.Length > 0 && bytes.[0] = UnixPathText.separatorByte
 
     /// <summary>
     /// The path's components in order.
@@ -442,9 +449,11 @@ module UnixPath =
     /// not a trailing one), for "//" (or "/////" etc), and for the empty path.
     /// </returns>
     let hasTrailingSeparator (path : UnixPath) : bool =
-        path.Raw.Length > 0
-        && path.Raw.[path.Raw.Length - 1] = UnixPathText.separator
-        && path.Raw |> String.exists (fun c -> c <> UnixPathText.separator)
+        let bytes = UnixByteString.toBytes path.Raw
+
+        bytes.Length > 0
+        && bytes.[bytes.Length - 1] = UnixPathText.separatorByte
+        && bytes |> Seq.exists (fun b -> b <> UnixPathText.separatorByte)
 
     /// <summary>The empty path: neither rooted nor naming any component.</summary>
     /// <remarks>
@@ -453,29 +462,36 @@ module UnixPath =
     /// </remarks>
     let empty : UnixPath =
         {
-            Raw = ""
+            Raw = UnixByteString.empty
         }
 
     /// <summary>True exactly when the input is the empty string.</summary>
     /// <remarks>
-    /// Throws if the underlying string is null.
-    ///
     /// This exists because POSIX generally requires APIs to return <c>ENOENT</c> for the empty path.
     /// </remarks>
-    let isEmpty (path : UnixPath) : bool = path.Raw.Length = 0
+    let isEmpty (path : UnixPath) : bool = UnixByteString.length path.Raw = 0
+
+    /// Take a guest-supplied byte string as a path. Every NUL-free byte
+    /// string is one, so this cannot fail.
+    ///
+    /// Stores the bytes verbatim, for the reasons `parse` gives.
+    let ofByteString (bytes : UnixByteString) : UnixPath =
+        {
+            Raw = UnixByteString.assertValid "UnixPath.ofByteString" bytes
+        }
 
     /// <summary>
     /// The root, "/".
     /// </summary>
     let root : UnixPath =
-        {
-            Raw = "/"
-        }
+        match UnixByteString.ofString "/" with
+        | Ok bytes -> ofByteString bytes
+        | Error defect -> failwith $"UnixPath.root: %s{UnixPathText.describe defect}"
 
     /// <summary>Parse a guest-supplied path.</summary>
     ///
     /// <remarks>
-    /// Stores the candidate verbatim.
+    /// Stores the UTF-8 encoding of the candidate verbatim.
     /// (Even the simplest normalisation, collapsing consecutive separator characters, is observable on Darwin,
     /// so we can't even do that during parse.)
     ///
@@ -488,13 +504,9 @@ module UnixPath =
             Error UnixPathError.Null
         else
 
-        match UnixPathText.firstDefect candidate with
-        | Some defect -> Error (UnixPathError.Text defect)
-        | None ->
-            Ok
-                {
-                    Raw = candidate
-                }
+        match UnixByteString.ofString candidate with
+        | Error defect -> Error (UnixPathError.Text defect)
+        | Ok bytes -> Ok (ofByteString bytes)
 
     /// <summary>
     /// Human-readable rendering of a rejection.
@@ -520,10 +532,4 @@ module UnixPath =
     /// Widen a fully-resolved absolute path into the shape of a guest-supplied path.
     /// </summary>
     let ofAbsolute (path : AbsoluteUnixPath) : UnixPath =
-        let rendered = AbsoluteUnixPath.toString path
-
-        match parse rendered with
-        | Ok parsed -> parsed
-        | Error error ->
-            failwith
-                $"UnixPath.ofAbsolute: %s{describe error} (got %s{rendered}). Every AbsoluteUnixPath satisfies UnixPath's invariant, so this value cannot have come from AbsoluteUnixPath.parse."
+        ofByteString (AbsoluteUnixPath.toByteString path)
