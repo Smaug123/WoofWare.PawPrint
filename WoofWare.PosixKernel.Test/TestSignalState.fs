@@ -687,6 +687,40 @@ module TestSignalState =
         |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
 
     [<Test>]
+    let ``a Continue default bypasses masks and receivers`` () : unit =
+        // Resumption happens at generation on a real kernel, whatever any
+        // mask says: measured on Linux 6.18.5 and Darwin 25.6.0 (two runs
+        // each), a child that blocks SIGCONT and stops itself is resumed by
+        // SIGCONT anyway — the mask defers only handler delivery. So the
+        // event must surface even when every live thread blocks SIGCONT —
+        // and even with no live threads at all, since resuming a process
+        // needs no receiver thread.
+        let s =
+            empty
+            |> SignalState.block t0 Signal.SIGCONT
+            |> SignalState.enqueue
+                {
+                    Signal = Signal.SIGCONT
+                    Target = ValueNone
+                }
+
+        let delivery, s' = SignalState.nextDelivery (liveThreads [ t0 ]) s
+        delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
+        SignalState.pending s' |> shouldEqual []
+
+        let s =
+            empty
+            |> SignalState.enqueue
+                {
+                    Signal = Signal.SIGCONT
+                    Target = ValueNone
+                }
+
+        let delivery, s' = SignalState.nextDelivery (liveThreads []) s
+        delivery |> shouldEqual (Some (SignalDelivery.DefaultContinue Signal.SIGCONT))
+        SignalState.pending s' |> shouldEqual []
+
+    [<Test>]
     let ``a default action still requires a receiver`` () : unit =
         // A pending terminate-default signal blocked by every live thread
         // stays pending, exactly as a handler delivery would.
@@ -1054,27 +1088,29 @@ module TestSignalState =
         while result.IsNone && i < entries.Length do
             let entry = entries.[i]
 
-            match pickReceiver entry with
-            | None -> ()
-            | Some receiver ->
-                if Set.contains entry.Signal r.Enabled then
-                    match r.Handler with
-                    | None -> ()
-                    | Some handler ->
+            if Set.contains entry.Signal r.Enabled then
+                match pickReceiver entry, r.Handler with
+                | Some receiver, Some handler ->
+                    removed.[i] <- true
+                    result <- Some (SignalDelivery.RunHandler (entry, receiver, handler))
+                | _, _ -> ()
+            else
+                match Signal.defaultDispositionUnder numbering entry.Signal with
+                | DefaultDisposition.Continue ->
+                    // Resumption bypasses masks and receivers entirely.
+                    removed.[i] <- true
+                    result <- Some (SignalDelivery.DefaultContinue entry.Signal)
+                | DefaultDisposition.Ignore ->
+                    if (pickReceiver entry).IsSome then
                         removed.[i] <- true
-                        result <- Some (SignalDelivery.RunHandler (entry, receiver, handler))
-                else
-                    match Signal.defaultDispositionUnder numbering entry.Signal with
-                    | DefaultDisposition.Ignore -> removed.[i] <- true
-                    | DefaultDisposition.Terminate ->
+                | DefaultDisposition.Terminate ->
+                    if (pickReceiver entry).IsSome then
                         removed.[i] <- true
                         result <- Some (SignalDelivery.DefaultTerminate entry.Signal)
-                    | DefaultDisposition.Stop ->
+                | DefaultDisposition.Stop ->
+                    if (pickReceiver entry).IsSome then
                         removed.[i] <- true
                         result <- Some (SignalDelivery.DefaultStop entry.Signal)
-                    | DefaultDisposition.Continue ->
-                        removed.[i] <- true
-                        result <- Some (SignalDelivery.DefaultContinue entry.Signal)
 
             i <- i + 1
 

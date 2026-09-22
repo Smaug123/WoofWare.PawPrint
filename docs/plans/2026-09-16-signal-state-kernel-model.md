@@ -189,7 +189,7 @@ handler:
   `kill(getpid(), signo)` becomes `enqueue` with `Target = ValueNone`, and
   the signo is read under the platform numbering via `ofRawSignoUnder`.
 * A signal whose delivery answers `RunHandler` wakes the existing dispatcher
-  (`SignalDispatch.trySpawnHandler` already consumes `tryDeliverable`);
+  (`SignalDispatch.trySpawnHandler` already consumes `nextDelivery`);
 * `DefaultTerminate` surfaces as `ExecutionResult.SignalTerminated`, which
   already exists and already computes the `128 + signo` exit code;
 * `DefaultStop`/`DefaultContinue` stay refused loudly, as the

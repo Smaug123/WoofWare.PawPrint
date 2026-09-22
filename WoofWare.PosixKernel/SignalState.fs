@@ -59,7 +59,10 @@ type SignalDelivery<'Task, 'Handler> =
     /// the whole process.
     | DefaultStop of Signal
     /// No handler claims the signal and its kernel default is to resume a
-    /// stopped process.
+    /// stopped process. Unlike the other cases this one is not gated on
+    /// masks or receivers: resumption happens at generation on a real
+    /// kernel, whatever any thread's mask says — a mask defers only the
+    /// handler delivery.
     | DefaultContinue of Signal
 
 /// Pure, deterministic model of the simulator's signal-handling state.
@@ -74,8 +77,8 @@ type SignalDelivery<'Task, 'Handler> =
 ///     delivered to it. This mirrors the enable bits a real signal shim
 ///     keeps; the mapping from a signal to whatever the client runs for it
 ///     is the client's own, and is none of this module's concern. A pending
-///     entry whose signal is not enabled stays queued; the consumer decides
-///     whether to drop it or wait for an enable.
+///     entry whose signal is not enabled falls to its kernel default; see
+///     `nextDelivery`.
 ///   * `Blocked` — per-thread sigprocmask. A signal in a thread's set is
 ///     blocked for that thread and cannot be delivered to it.
 ///   * `Pending` — FIFO queue of generated signals waiting for dispatch.
@@ -243,9 +246,9 @@ module SignalState =
             }
 
     /// Clear the enable bit for `signal`. No-op if not enabled. Pending
-    /// entries for the signal remain queued (a future `enable` makes them
-    /// deliverable) but `tryDeliverable` will not dispatch them in the
-    /// meantime.
+    /// entries for the signal remain queued, but `nextDelivery` now applies
+    /// the signal's kernel default to them rather than running the handler:
+    /// a disposition is read at delivery, not at generation.
     ///
     /// Unlike `enable`, an uncatchable signal is *not* refused here: it is
     /// provably absent from the enabled set (`enable` cannot admit one), so
@@ -428,15 +431,20 @@ module SignalState =
     ///   * enabled, and a handler is installed — `RunHandler`;
     ///   * enabled, but no handler installed yet — stays queued, which is the
     ///     real shim's behaviour while `g_posixSignalHandler` is NULL;
-    ///   * not enabled — the kernel default applies: `Terminate`, `Stop` and
-    ///     `Continue` surface as their cases for the client to act on, and
-    ///     Ignore is discarded silently, the scan continuing past it. That
-    ///     discard is the delivery half of the generation rule on `enqueue`:
-    ///     under Linux numbering an ignored-but-blocked signal stays pending
+    ///   * not enabled — the kernel default applies: `Terminate` and `Stop`
+    ///     surface as their cases for the client to act on, and Ignore is
+    ///     discarded silently, the scan continuing past it. That discard is
+    ///     the delivery half of the generation rule on `enqueue`: under
+    ///     Linux numbering an ignored-but-blocked signal stays pending
     ///     (measured; `Signal.blockedIgnoredSignalStaysPendingUnder`), and
     ///     what un-pends it is exactly this — it becomes receivable while
     ///     still ignored and is dropped, or a handler arrives first and it
     ///     is delivered.
+    ///
+    /// A pending non-enabled `Continue`-default signal is the exception to
+    /// receivability: it surfaces as `DefaultContinue` without consulting
+    /// masks or receivers, because resumption is a generation-time effect no
+    /// mask can hold back (see the case's own docstring).
     let nextDelivery
         (liveThreads : ImmutableArray<'Task>)
         (state : SignalState<'Task, 'Handler>)
@@ -464,25 +472,47 @@ module SignalState =
             | [] -> None, List.rev skipped
             | head :: tail ->
 
-            match pickReceiver head with
-            | None -> scan (head :: skipped) tail
-            | Some receiver ->
-
             let remaining () : PendingSignal<'Task> list = List.rev skipped @ tail
 
             if Set.contains head.Signal state.Enabled then
+                match pickReceiver head with
+                | None -> scan (head :: skipped) tail
+                | Some receiver ->
+
                 match state.Handler with
                 | None -> scan (head :: skipped) tail
                 | Some handler -> Some (SignalDelivery.RunHandler (head, receiver, handler)), remaining ()
             else
                 match Signal.defaultDispositionUnder state.Numbering head.Signal with
+                | DefaultDisposition.Continue ->
+                    // Resumption is a generation-time effect and unmaskable:
+                    // a kernel continues a stopped process the moment the
+                    // signal is generated, whatever any thread's mask says —
+                    // the mask defers only the *handler* delivery, which the
+                    // enabled arm above gates correctly. So this surfaces
+                    // without consulting masks or receivers at all. One
+                    // approximation until a stopped-process state exists: a
+                    // real kernel keeps a blocked instance pending after the
+                    // resume (measured on Linux 6.18.5 and Darwin 25.6.0,
+                    // visible to `sigpending`), where this consumes the entry
+                    // with the event.
+                    Some (SignalDelivery.DefaultContinue head.Signal), remaining ()
                 | DefaultDisposition.Ignore ->
-                    // Discarded with no action: drop the entry and keep
-                    // scanning — a later entry may still deliver this tick.
-                    scan skipped tail
-                | DefaultDisposition.Terminate -> Some (SignalDelivery.DefaultTerminate head.Signal), remaining ()
-                | DefaultDisposition.Stop -> Some (SignalDelivery.DefaultStop head.Signal), remaining ()
-                | DefaultDisposition.Continue -> Some (SignalDelivery.DefaultContinue head.Signal), remaining ()
+                    match pickReceiver head with
+                    | None -> scan (head :: skipped) tail
+                    | Some _ ->
+                        // Discarded with no action: drop the entry and keep
+                        // scanning — a later entry may still deliver this
+                        // tick.
+                        scan skipped tail
+                | DefaultDisposition.Terminate ->
+                    match pickReceiver head with
+                    | None -> scan (head :: skipped) tail
+                    | Some _ -> Some (SignalDelivery.DefaultTerminate head.Signal), remaining ()
+                | DefaultDisposition.Stop ->
+                    match pickReceiver head with
+                    | None -> scan (head :: skipped) tail
+                    | Some _ -> Some (SignalDelivery.DefaultStop head.Signal), remaining ()
 
         let delivery, pending = scan [] state.Pending
 

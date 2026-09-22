@@ -226,7 +226,8 @@ module TestSignalDispatch =
     let ``trySpawnHandler holds a pending signal with no eligible receiver`` () : unit =
         // Pending entry exists but the only thread in the state is the
         // dispatcher itself, which is never a candidate receiver — so the
-        // entry stays queued whatever its disposition is.
+        // entry stays queued. (SIGINT, because a Continue-default signal
+        // would surface without a receiver.)
         let state, dispatcher, _ = preparedState ()
 
         let state =
@@ -540,7 +541,7 @@ module TestSignalDispatch =
         // has an empty `Blocked` map, so the naive eligibility check ("thread
         // is live and not blocking the signal") would mark it as a candidate
         // receiver. `SignalDispatch.trySpawnHandler` must exclude the
-        // dispatcher from the live-threads set passed to `tryDeliverable`,
+        // dispatcher from the live-threads set passed to `nextDelivery`,
         // otherwise a process-directed signal with no other live threads
         // would dispatch its own handler to itself as the receiver. Set up a
         // world where the dispatcher is the *only* live thread and confirm
