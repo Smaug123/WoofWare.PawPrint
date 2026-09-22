@@ -334,6 +334,47 @@ module TestSignal =
                 |> shouldEqual (Signal.isUnblockableUnder numbering signal)
 
     [<Test>]
+    let ``isRealTimeUnder flags exactly Linux's 32 to 64`` () : unit =
+        // Measured on Linux 6.18.5: three generations of signo 36 while
+        // blocked deliver three times where three of SIGUSR1 deliver once.
+        // The threshold is the kernel's own 32 (glibc makes 32 and 33
+        // unobservable, so those two rows follow the kernel's rule); the
+        // ceiling is the kernel's 64. Darwin has no real-time signals.
+        for signo in 1..31 do
+            match Signal.ofRawSignoUnder SignalNumbering.Linux signo with
+            | ValueSome signal -> Signal.isRealTimeUnder SignalNumbering.Linux signal |> shouldEqual false
+            | ValueNone -> failwith $"Linux: signo %d{signo} is within range"
+
+        for signo in 32..64 do
+            Signal.isRealTimeUnder SignalNumbering.Linux (Signal.Other signo)
+            |> shouldEqual true
+
+        // A number that is not a signal at all is not a real-time signal
+        // either: this classifier is public in a standalone package, so a
+        // client can reach it without going through ofRawSignoUnder first.
+        for signo in [ 65 ; 100 ; System.Int32.MaxValue ; 0 ; -1 ] do
+            Signal.isRealTimeUnder SignalNumbering.Linux (Signal.Other signo)
+            |> shouldEqual false
+
+        for signo in 1 .. Signal.highestSignoUnder SignalNumbering.Darwin do
+            match Signal.ofRawSignoUnder SignalNumbering.Darwin signo with
+            | ValueSome signal -> Signal.isRealTimeUnder SignalNumbering.Darwin signal |> shouldEqual false
+            | ValueNone -> failwith $"Darwin: signo %d{signo} is within range"
+
+    [<Test>]
+    let ``isRealTimeUnder reads an Other carrying a named signal's number as that signal`` () : unit =
+        // No named case is a real-time signal, so the canonicalisation only
+        // matters in that every named number answers false however spelt —
+        // including 30 and 31, which sit just under Linux's threshold under
+        // one numbering and name SIGUSR1/SIGUSR2 under the other.
+        for numbering in everyNumbering do
+            for signal, signo in column numbering do
+                Signal.isRealTimeUnder numbering (Signal.Other signo)
+                |> shouldEqual (Signal.isRealTimeUnder numbering signal)
+
+                Signal.isRealTimeUnder numbering signal |> shouldEqual false
+
+    [<Test>]
     let ``defaultDispositionUnder classifies every named signal the same way everywhere`` () : unit =
         // POSIX default for these signals is Terminate (some with a core
         // dump, but PawPrint collapses both into a single Terminate case
