@@ -413,7 +413,7 @@ module WaitHandle =
 
     let private registrationOf (thread : ThreadId) (id : WaitHandleId) (state : IlMachineState) : WaitRegistration =
         match state.ThreadState.[thread].Status with
-        | ThreadStatus.BlockedOnWaitHandle (handle, _) -> WaitRegistration.Single handle
+        | ThreadStatus.BlockedOnWaitHandle (handle, _, _) -> WaitRegistration.Single handle
         | ThreadStatus.BlockedOnWaitHandles (handles, waitAll, _) -> WaitRegistration.Multiple (handles, waitAll)
         | other ->
             failwith
@@ -572,6 +572,7 @@ module WaitHandle =
     let private waitOneSemaphore
         (thread : ThreadId)
         (id : WaitHandleId)
+        (alertability : WaitAlertability)
         (deadlineTicks : int64 option)
         (semaphore : SemaphoreState)
         (state : IlMachineState)
@@ -602,7 +603,7 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Semaphore semaphore)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks, alertability))
             |> WaitOutcome.Blocked
 
     /// Internal: kind-private mutex waitOne. Re-entrant on owner; the
@@ -613,6 +614,7 @@ module WaitHandle =
     let private waitOneMutex
         (thread : ThreadId)
         (id : WaitHandleId)
+        (alertability : WaitAlertability)
         (deadlineTicks : int64 option)
         (mutex : MutexState)
         (state : IlMachineState)
@@ -649,7 +651,7 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Mutex mutex)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks, alertability))
             |> WaitOutcome.Blocked
 
     /// Internal: kind-private event waitOne. Acquiring a signalled `Auto`
@@ -660,6 +662,7 @@ module WaitHandle =
     let private waitOneEvent
         (thread : ThreadId)
         (id : WaitHandleId)
+        (alertability : WaitAlertability)
         (deadlineTicks : int64 option)
         (event : EventState)
         (state : IlMachineState)
@@ -687,7 +690,7 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Event event)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
+            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks, alertability))
             |> WaitOutcome.Blocked
 
     /// Try to take ownership of `id` on behalf of `thread`. Dispatches
@@ -695,7 +698,7 @@ module WaitHandle =
     ///
     ///  - Semaphore: decrement the count if positive; otherwise park at
     ///    the FIFO tail of `WaitQueue` and flip the thread's status to
-    ///    `BlockedOnWaitHandle (id, deadlineTicks)`.
+    ///    `BlockedOnWaitHandle (id, deadlineTicks, alertability)`.
     ///  - Mutex: re-entrant fast path on the owning thread; take the
     ///    free mutex (producing `AcquiredAbandoned` iff the abandoned
     ///    flag was set, clearing it); otherwise park at the FIFO tail.
@@ -706,7 +709,8 @@ module WaitHandle =
     /// finite timeout expires, or `None` for an infinite wait. The fast
     /// paths ignore it; only the slow paths thread it through to the
     /// parked thread's status, where the driver loop's deadline-firing
-    /// pass picks it up.
+    /// pass picks it up. `alertability` is likewise recorded on a parked
+    /// thread's status and nowhere else.
     ///
     /// The IL `WaitOne` site advances in every case (the native handler
     /// returns `Stepped/Executed` for all three outcomes). When a parked
@@ -718,6 +722,7 @@ module WaitHandle =
     let waitOne
         (thread : ThreadId)
         (id : WaitHandleId)
+        (alertability : WaitAlertability)
         (deadlineTicks : int64 option)
         (state : IlMachineState)
         : WaitOutcome
@@ -725,9 +730,9 @@ module WaitHandle =
         let handle = lookup id state
 
         match handle with
-        | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id deadlineTicks semaphore state
-        | WaitHandleState.Mutex mutex -> waitOneMutex thread id deadlineTicks mutex state
-        | WaitHandleState.Event event -> waitOneEvent thread id deadlineTicks event state
+        | WaitHandleState.Semaphore semaphore -> waitOneSemaphore thread id alertability deadlineTicks semaphore state
+        | WaitHandleState.Mutex mutex -> waitOneMutex thread id alertability deadlineTicks mutex state
+        | WaitHandleState.Event event -> waitOneEvent thread id alertability deadlineTicks event state
 
     /// Non-blocking probe used to model the zero-timeout `WaitOne(0)`
     /// path. CoreCLR's contract for a zero millisecond timeout: try the
@@ -833,7 +838,9 @@ module WaitHandle =
     /// The fast path is identical to `waitOne`: priority only matters
     /// when the call has to block. `deadlineTicks` propagates to the parked
     /// thread's status when the slow path fires, and is ignored on the
-    /// fast path for the same reason as `waitOne`.
+    /// fast path for the same reason as `waitOne`. The wait is always
+    /// `WaitAlertability.NonAlertable`, as CoreCLR's
+    /// `WaitHandle_WaitOnePrioritized` calls the PAL wait directly.
     let waitOnePrioritized
         (thread : ThreadId)
         (id : WaitHandleId)
@@ -865,7 +872,9 @@ module WaitHandle =
 
             state
             |> writeHandle id (WaitHandleState.Semaphore semaphore)
-            |> Scheduler.setThreadStatus thread (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks))
+            |> Scheduler.setThreadStatus
+                thread
+                (ThreadStatus.BlockedOnWaitHandle (id, deadlineTicks, WaitAlertability.NonAlertable))
             |> WaitOutcome.Blocked
 
     /// Increment the semaphore by `releaseCount`, waking up to that many

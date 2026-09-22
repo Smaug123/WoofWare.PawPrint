@@ -350,8 +350,8 @@ module TestEvalStack =
 
     [<Test>]
     let ``unsigned-or-unordered branch comparisons treat NaN as true`` () : unit =
-        let nan = EvalStackValue.Float System.Double.NaN
-        let one = EvalStackValue.Float 1.0
+        let nan = EvalStackValue.Float (EvalStackFloat.Double System.Double.NaN)
+        let one = EvalStackValue.Float (EvalStackFloat.Double 1.0)
 
         if not (EvalStackValueComparisons.cgtUn nan one) then
             failwith "Expected cgt.un-style float comparison to be true when left operand is NaN"
@@ -380,9 +380,9 @@ module TestEvalStack =
         // `UserDefinedValueType` operand, which there is no cheap way to construct here.)
         let probes =
             [
-                EvalStackValue.Int32 (Int32Source.Verbatim 0), EvalStackValue.Float 1.0
-                EvalStackValue.Int64 (Int64Source.Verbatim 0L), EvalStackValue.Float 1.0
-                EvalStackValue.Float 1.0, EvalStackValue.Int32 (Int32Source.Verbatim 0)
+                EvalStackValue.Int32 (Int32Source.Verbatim 0), EvalStackValue.Float (EvalStackFloat.Double 1.0)
+                EvalStackValue.Int64 (Int64Source.Verbatim 0L), EvalStackValue.Float (EvalStackFloat.Double 1.0)
+                EvalStackValue.Float (EvalStackFloat.Double 1.0), EvalStackValue.Int32 (Int32Source.Verbatim 0)
             ]
 
         for lhs, rhs in probes do
@@ -690,7 +690,8 @@ module TestEvalStack =
     let private nZero : float = -0.0
     let private subnormal : float = System.Double.Epsilon
 
-    let private floatEsv (v : float) : EvalStackValue = EvalStackValue.Float v
+    let private floatEsv (v : float) : EvalStackValue =
+        EvalStackValue.Float (EvalStackFloat.Double v)
 
     [<Test>]
     let ``cle on Float × Float matches IEEE <= (ordered semantics)`` () : unit =
@@ -798,7 +799,7 @@ module TestEvalStack =
         // classifier honest by failing loudly rather than coercing one side. cle defers
         // non-Float×Float to `not cgt`, so the Float × Int case re-uses cgt's existing
         // "invalid comparison" failwith.
-        let f = EvalStackValue.Float 1.0
+        let f = EvalStackValue.Float (EvalStackFloat.Double 1.0)
         let i = EvalStackValue.Int32 (Int32Source.Verbatim 1)
         let n = EvalStackValue.NativeInt (NativeIntSource.Verbatim 1L)
 
@@ -1328,3 +1329,60 @@ module TestEvalStack =
 
         high
         |> shouldEqual (EvalStackValue.Int32 (Int32Source.Verbatim (int32 (uint32 (uint64 (expectedBits >>> 32))))))
+
+    [<Test>]
+    let ``a float32 cell reaches the stack with its exact bits and returns to it unchanged`` () : unit =
+        // Every bit pattern, signalling NaNs included: a float32 that transited the stack as a
+        // double would come back with the NaN quiet bit set.
+        let property (bits : int32) : unit =
+            let cell =
+                CliType.Numeric (CliNumericType.Float32 (BitConverter.Int32BitsToSingle bits))
+
+            match EvalStackValue.ofCliType cell with
+            | EvalStackValue.Float (EvalStackFloat.Single f) ->
+                BitConverter.SingleToInt32Bits f |> shouldEqual bits
+
+                match EvalStackValue.toCliTypeCoerced cell (EvalStackValue.Float (EvalStackFloat.Single f)) with
+                | CliType.Numeric (CliNumericType.Float32 stored) ->
+                    BitConverter.SingleToInt32Bits stored |> shouldEqual bits
+                | other -> failwith $"expected a float32 cell back, got %O{other}"
+            | other -> failwith $"expected a single-precision stack float from a float32 cell, got %O{other}"
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 500,
+            Prop.forAll (Arb.fromGen (Gen.choose (Int32.MinValue, Int32.MaxValue))) property
+        )
+
+    [<Test>]
+    let ``storing a stack float into a slot of the other width converts by value`` () : unit =
+        // A double stored to a float32 slot is `conv.r4`; a float32 stored to a float64 slot
+        // widens exactly. Both are the host's own conversions, so the oracle is `float32` /
+        // `float` applied to the same value.
+        let property (hi : int32, lo : int32) : unit =
+            let d = BitConverter.Int64BitsToDouble ((int64 hi <<< 32) ||| int64 (uint32 lo))
+            let s = BitConverter.Int32BitsToSingle lo
+
+            match
+                EvalStackValue.toCliTypeCoerced
+                    (CliType.Numeric (CliNumericType.Float32 0.0f))
+                    (EvalStackValue.Float (EvalStackFloat.Double d))
+            with
+            | CliType.Numeric (CliNumericType.Float32 stored) ->
+                BitConverter.SingleToInt32Bits stored
+                |> shouldEqual (BitConverter.SingleToInt32Bits (float32 d))
+            | other -> failwith $"expected a float32 cell, got %O{other}"
+
+            match
+                EvalStackValue.toCliTypeCoerced
+                    (CliType.Numeric (CliNumericType.Float64 0.0))
+                    (EvalStackValue.Float (EvalStackFloat.Single s))
+            with
+            | CliType.Numeric (CliNumericType.Float64 stored) ->
+                BitConverter.DoubleToInt64Bits stored
+                |> shouldEqual (BitConverter.DoubleToInt64Bits (float s))
+            | other -> failwith $"expected a float64 cell, got %O{other}"
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 500,
+            Prop.forAll (Arb.fromGen (Gen.two (Gen.choose (Int32.MinValue, Int32.MaxValue)))) property
+        )

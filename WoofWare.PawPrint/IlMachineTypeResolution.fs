@@ -250,6 +250,62 @@ module IlMachineTypeResolution =
         typeInfo
 
     /// <summary>
+    /// Follow <paramref name="ty" />'s forwarder chain without loading anything the arrived-at type
+    /// depends on; see <see cref="TypeResolution.tryWalkExportChain"/>.
+    /// </summary>
+    /// <remarks>
+    /// The returned state carries every load the walk managed, whichever outcome it reports.
+    /// </remarks>
+    let tryWalkExportChain
+        (loggerFactory : ILoggerFactory)
+        (fromAssembly : DumpedAssembly)
+        (ty : WoofWare.PawPrint.ExportedType)
+        (genericArgs : ImmutableArray<TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * ExportChainArrival
+        =
+        let assemblies, outcome =
+            TypeResolution.tryWalkExportChain
+                loggerFactory
+                state.DotnetRuntimeDirs
+                fromAssembly
+                ty
+                genericArgs
+                state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        outcome
+
+    /// <summary>
+    /// Load what a type <see cref="tryWalkExportChain"/> arrived at depends on; see
+    /// <see cref="TypeResolution.tryPrimeExportArrival"/>.
+    /// </summary>
+    /// <remarks>
+    /// The returned state carries every load that managed, whichever outcome it reports.
+    /// </remarks>
+    let tryPrimeExportArrival
+        (loggerFactory : ILoggerFactory)
+        (definedIn : DumpedAssembly)
+        (typeDef : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * ExportedTypeResolution
+        =
+        let assemblies, outcome =
+            TypeResolution.tryPrimeExportArrival
+                loggerFactory
+                state.DotnetRuntimeDirs
+                definedIn
+                typeDef
+                state._LoadedAssemblies
+
+        { state with
+            _LoadedAssemblies = assemblies
+        },
+        outcome
+
+    /// <summary>
     /// Follow <paramref name="ty" />'s forwarder chain, reporting a chain that does not arrive
     /// rather than terminating on one.
     /// </summary>

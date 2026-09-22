@@ -155,6 +155,7 @@
     <Compile Include="TestMethodOwner.fs" />
     <Compile Include="TestDynamicMethodMintOutcome.fs" />
     <Compile Include="TestDynamicMethodTracing.fs" />
+    <Compile Include="TestFloatWidthJoin.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestLdtokenMemberTokens.fs" />
     <Compile Include="TestNativeGetDynamicMethod.fs" />
@@ -171,6 +172,7 @@
     <Compile Include="TestAssemblyDictionaryKeying.fs" />
     <Compile Include="TestLoadedAssemblies.fs" />
     <Compile Include="TestForwarderResolutionOutcomes.fs" />
+    <Compile Include="TestCaseInsensitiveTypeLookup.fs" />
     <Compile Include="TestSharedFrameworkForwardSweep.fs" />
     <Compile Include="TestGenericParamConstraints.fs" />
     <Compile Include="TestGenericConstraintSatisfaction.fs" />
@@ -198,6 +200,7 @@
     <Compile Include="TestBufferRangeFit.fs" />
     <Compile Include="TestNonCryptoRandom.fs" />
     <Compile Include="TestDeterministicMath.fs" />
+    <Compile Include="TestFloatToInteger.fs" />
     <Compile Include="TestPrimitiveLikeStructRegistry.fs" />
     <Compile Include="TestEvalStackPrimitiveLikeBoundary.fs" />
     <Compile Include="TestEvalStackBoxedPrimitiveView.fs" />
@@ -233,6 +236,7 @@
     <Compile Include="TestWaitHandle.fs" />
     <Compile Include="TestSyncBlockMonitor.fs" />
     <Compile Include="TestNativeThreadYield.fs" />
+    <Compile Include="TestNativeWaitOneCore.fs" />
     <Compile Include="TestNativeThreadSpinWait.fs" />
     <Compile Include="TestNativeEventSource.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />

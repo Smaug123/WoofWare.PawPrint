@@ -2,6 +2,62 @@ namespace WoofWare.PawPrint
 
 #nowarn "42"
 
+/// A floating-point value on the evaluation stack, together with its width.
+///
+/// ECMA-335 I.12.1.3 allows the stack's F type to be wider than float32, but CoreCLR's JIT
+/// evaluates an operation whose operands are both float32 in single precision, and CoreCLR is
+/// what PawPrint is compared against: `16777216f + 1f + 1f` is `16777216f` there, and would
+/// be `16777218f` if the intermediate sum were kept as a double. So the width travels with
+/// the value, and an operation rounds to float32 exactly when both operands are `Single`.
+///
+/// A `Single` also keeps its exact bits. A signalling NaN loaded by `ldc.r4` or `ldloc`
+/// reaches `BitConverter.SingleToInt32Bits` unquieted, which a value that had been widened
+/// to double on the way would not.
+[<RequireQualifiedAccess>]
+[<Struct>]
+type EvalStackFloat =
+    | Single of single : float32
+    | Double of double : float
+
+    override this.ToString () =
+        match this with
+        | EvalStackFloat.Single f -> $"Single(%f{f})"
+        | EvalStackFloat.Double f -> $"Double(%f{f})"
+
+[<RequireQualifiedAccess>]
+module EvalStackFloat =
+    /// Exact: every float32 is representable as a double.
+    let toDouble (f : EvalStackFloat) : float =
+        match f with
+        | EvalStackFloat.Single f -> float<float32> f
+        | EvalStackFloat.Double f -> f
+
+    /// `conv.r4`: a `Double` is rounded to the nearest float32; a `Single` is unchanged.
+    let toSingle (f : EvalStackFloat) : float32 =
+        match f with
+        | EvalStackFloat.Single f -> f
+        | EvalStackFloat.Double f -> (# "conv.r4" f : float32 #)
+
+    /// Apply a unary operation at the value's own width.
+    let map (onSingle : float32 -> float32) (onDouble : float -> float) (f : EvalStackFloat) : EvalStackFloat =
+        match f with
+        | EvalStackFloat.Single f -> EvalStackFloat.Single (onSingle f)
+        | EvalStackFloat.Double f -> EvalStackFloat.Double (onDouble f)
+
+    /// Apply a binary operation at the width CoreCLR would use: single precision when both
+    /// operands are `Single`, and otherwise double, with the narrower operand widened first
+    /// (the JIT's importer inserts that cast for a mixed-width pair).
+    let map2
+        (onSingle : float32 -> float32 -> float32)
+        (onDouble : float -> float -> float)
+        (a : EvalStackFloat)
+        (b : EvalStackFloat)
+        : EvalStackFloat
+        =
+        match a, b with
+        | EvalStackFloat.Single a, EvalStackFloat.Single b -> EvalStackFloat.Single (onSingle a b)
+        | _, _ -> EvalStackFloat.Double (onDouble (toDouble a) (toDouble b))
+
 /// See I.12.3.2.1 for definition
 type EvalStackValue =
     /// An int32 slot. The payload carries provenance because `conv.i4` / `conv.u4`
@@ -9,7 +65,7 @@ type EvalStackValue =
     | Int32 of Int32Source
     | Int64 of Int64Source
     | NativeInt of NativeIntSource
-    | Float of float
+    | Float of EvalStackFloat
     | ManagedPointer of ManagedPointerSource
     | NullObjectRef
     | ObjectRef of ManagedHeapAddress
@@ -21,7 +77,7 @@ type EvalStackValue =
         | EvalStackValue.Int32 i -> $"Int32(%O{i})"
         | EvalStackValue.Int64 i -> $"Int64(%O{i})"
         | EvalStackValue.NativeInt src -> $"NativeInt(%O{src})"
-        | EvalStackValue.Float f -> $"Float(%f{f})"
+        | EvalStackValue.Float f -> $"Float(%O{f})"
         | EvalStackValue.ManagedPointer managedPointerSource -> $"Pointer(%O{managedPointerSource})"
         | EvalStackValue.NullObjectRef -> "NullObjectRef"
         | EvalStackValue.ObjectRef managedHeapAddress -> $"ObjectRef(%O{managedHeapAddress})"
@@ -136,23 +192,11 @@ module EvalStackValue =
         let converted = (# "conv.i" value : nativeint #)
         int64<nativeint> converted
 
-    let private convIFromFloat (value : float) : int64 =
-        let converted = (# "conv.i" value : nativeint #)
-        int64<nativeint> converted
-
-    let private convUFromFloat (value : float) : uint64 =
-        let converted = (# "conv.u" value : unativeint #)
-        uint64<unativeint> converted
-
     let private convI1FromInt64 (value : int64) : int32 =
         let converted = (# "conv.i1" value : int8 #)
         int32<int8> converted
 
     let private convI1FromInt32 (value : int32) : int32 =
-        let converted = (# "conv.i1" value : int8 #)
-        int32<int8> converted
-
-    let private convI1FromFloat (value : float) : int32 =
         let converted = (# "conv.i1" value : int8 #)
         int32<int8> converted
 
@@ -164,25 +208,13 @@ module EvalStackValue =
         let converted = (# "conv.i2" value : int16 #)
         int32<int16> converted
 
-    let private convI2FromFloat (value : float) : int32 =
-        let converted = (# "conv.i2" value : int16 #)
-        int32<int16> converted
-
     let private convI4FromInt64 (value : int64) : int32 = (# "conv.i4" value : int32 #)
-
-    let private convI4FromFloat (value : float) : int32 = (# "conv.i4" value : int32 #)
-
-    let private convI8FromFloat (value : float) : int64 = (# "conv.i8" value : int64 #)
 
     let private convU1FromInt64 (value : int64) : int32 =
         let converted = (# "conv.u1" value : uint8 #)
         int32<uint8> converted
 
     let private convU1FromInt32 (value : int32) : int32 =
-        let converted = (# "conv.u1" value : uint8 #)
-        int32<uint8> converted
-
-    let private convU1FromFloat (value : float) : int32 =
         let converted = (# "conv.u1" value : uint8 #)
         int32<uint8> converted
 
@@ -194,10 +226,6 @@ module EvalStackValue =
         let converted = (# "conv.u2" value : uint16 #)
         int32<uint16> converted
 
-    let private convU2FromFloat (value : float) : int32 =
-        let converted = (# "conv.u2" value : uint16 #)
-        int32<uint16> converted
-
     let private convU4FromInt64 (value : int64) : int32 =
         let converted = (# "conv.u4" value : uint32 #)
         int32<uint32> converted
@@ -206,31 +234,13 @@ module EvalStackValue =
         let converted = (# "conv.u4" value : uint32 #)
         int32<uint32> converted
 
-    let private convU4FromFloat (value : float) : int32 =
-        let converted = (# "conv.u4" value : uint32 #)
-        int32<uint32> converted
+    let private convR4FromInt32 (value : int32) : float32 = (# "conv.r4" value : float32 #)
 
-    let private convU8FromFloat (value : float) : int64 =
-        let converted = (# "conv.u8" value : uint64 #)
-        int64<uint64> converted
-
-    let private convR4FromInt32 (value : int32) : float =
-        let converted = (# "conv.r4" value : float32 #)
-        float<float32> converted
-
-    let private convR4FromInt64 (value : int64) : float =
-        let converted = (# "conv.r4" value : float32 #)
-        float<float32> converted
-
-    let private convR4FromFloat (value : float) : float =
-        let converted = (# "conv.r4" value : float32 #)
-        float<float32> converted
+    let private convR4FromInt64 (value : int64) : float32 = (# "conv.r4" value : float32 #)
 
     let private convR8FromInt32 (value : int32) : float = (# "conv.r8" value : float #)
 
     let private convR8FromInt64 (value : int64) : float = (# "conv.r8" value : float #)
-
-    let private convR8FromFloat (value : float) : float = (# "conv.r8" value : float #)
 
     let private convRUnFromInt32 (value : int32) : float = (# "conv.r.un" value : float #)
 
@@ -312,7 +322,10 @@ module EvalStackValue =
             | NativeIntSource.MetadataImportHandle moduleName ->
                 failwith $"Conv_U: refusing to convert metadata import handle %s{moduleName} to unsigned native int"
             | NativeIntSource.OpaqueHashBits bits -> UnsignedNativeIntSource.FromOpaqueHashBits bits
-        | EvalStackValue.Float f -> convUFromFloat f |> UnsignedNativeIntSource.Verbatim
+        | EvalStackValue.Float f ->
+            EvalStackFloat.toDouble f
+            |> FloatToInteger.toUInt64
+            |> UnsignedNativeIntSource.Verbatim
         | EvalStackValue.ManagedPointer managedPointerSource ->
             UnsignedNativeIntSource.FromManagedPointer managedPointerSource
         | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> UnsignedNativeIntSource.FromManagedPointer
@@ -338,7 +351,7 @@ module EvalStackValue =
             let i = Int32Source.value "Conv_I" int32Source
             i |> convIFromInt32 |> NativeIntSource.Verbatim
         | EvalStackValue.NativeInt src -> src
-        | EvalStackValue.Float f -> f |> convIFromFloat |> NativeIntSource.Verbatim
+        | EvalStackValue.Float f -> EvalStackFloat.toDouble f |> FloatToInteger.toInt64 |> NativeIntSource.Verbatim
         | EvalStackValue.ManagedPointer ptr -> NativeIntSource.ManagedPointer ptr
         | EvalStackValue.NullObjectRef -> ManagedPointerSource.Null |> NativeIntSource.ManagedPointer
         | EvalStackValue.ObjectRef _
@@ -372,7 +385,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I1" src counters
             convI1FromInt64 bits, counters
-        | EvalStackValue.Float f -> convI1FromFloat f, counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toInt8 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -391,7 +404,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I2" src counters
             convI2FromInt64 bits, counters
-        | EvalStackValue.Float f -> convI2FromFloat f, counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toInt16 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -427,7 +440,12 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_I4" src counters
             convI4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
-        | EvalStackValue.Float f -> convI4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
+        | EvalStackValue.Float f ->
+            EvalStackFloat.toDouble f
+            |> FloatToInteger.toInt32
+            |> Int32Source.Verbatim
+            |> EvalStackValue.Int32,
+            counters
         | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convI4FromInt64 ptr, counters
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -446,7 +464,7 @@ module EvalStackValue =
             // get wrapped so their provenance survives the
             // `Conv.I8 → … → Conv.I` round-trip.
             Int64Source.widenedNativeInt src true
-        | EvalStackValue.Float f -> convI8FromFloat f |> Int64Source.Verbatim
+        | EvalStackValue.Float f -> EvalStackFloat.toDouble f |> FloatToInteger.toInt64 |> Int64Source.Verbatim
         | EvalStackValue.ManagedPointer ptr ->
             // Same rationale as the NativeInt arm: keep the pointer's provenance
             // as a widened-native-int so a subsequent `Conv.U` / `Conv.I`
@@ -465,7 +483,9 @@ module EvalStackValue =
             int64 (uint32 i) |> Int64Source.Verbatim
         | EvalStackValue.Int64 i -> i
         | EvalStackValue.NativeInt src -> Int64Source.widenedNativeInt src false
-        | EvalStackValue.Float f -> convU8FromFloat f |> Int64Source.Verbatim
+        | EvalStackValue.Float f ->
+            (EvalStackFloat.toDouble f |> FloatToInteger.toUInt64 |> int64)
+            |> Int64Source.Verbatim
         | EvalStackValue.ManagedPointer ptr -> Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ptr) false
         | EvalStackValue.NullObjectRef ->
             Int64Source.widenedNativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null) false
@@ -486,7 +506,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U1" src counters
             convU1FromInt64 bits, counters
-        | EvalStackValue.Float f -> convU1FromFloat f, counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toUInt8 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -506,7 +526,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U2" src counters
             convU2FromInt64 bits, counters
-        | EvalStackValue.Float f -> convU2FromFloat f, counters
+        | EvalStackValue.Float f -> (EvalStackFloat.toDouble f |> FloatToInteger.toUInt16 |> int32), counters
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -537,13 +557,18 @@ module EvalStackValue =
         | EvalStackValue.NativeInt src ->
             let bits, counters = PointerHashSynthesis.materialiseHashBits "Conv_U4" src counters
             convU4FromInt64 bits |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
-        | EvalStackValue.Float f -> convU4FromFloat f |> Int32Source.Verbatim |> EvalStackValue.Int32, counters
+        | EvalStackValue.Float f ->
+            (EvalStackFloat.toDouble f |> FloatToInteger.toUInt32 |> int32)
+            |> Int32Source.Verbatim
+            |> EvalStackValue.Int32,
+            counters
         | EvalStackValue.ManagedPointer ptr -> narrowByrefTo32 convU4FromInt64 ptr, counters
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_U4" value
 
-    let convToFloat32 (value : EvalStackValue) : float =
+    /// `conv.r4`: the value as a float32, rounding a wider source to nearest.
+    let convToFloat32 (value : EvalStackValue) : float32 =
         match value with
         | EvalStackValue.Int32 int32Source ->
             let i = Int32Source.value "Conv_R4" int32Source
@@ -561,12 +586,13 @@ module EvalStackValue =
             // pointer provenance into the float domain.
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R4" src |> convR4FromInt64
-        | EvalStackValue.Float f -> convR4FromFloat f
+        | EvalStackValue.Float f -> EvalStackFloat.toSingle f
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
         | EvalStackValue.UserDefinedValueType _ -> failReferenceConversion "Conv_R4" value
 
+    /// `conv.r8`: the value as a double; a `Single` widens exactly.
     let convToFloat64 (value : EvalStackValue) : float =
         match value with
         | EvalStackValue.Int32 int32Source ->
@@ -582,7 +608,7 @@ module EvalStackValue =
         | EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits bits) ->
             failwith $"Refusing to convert synthesised pointer-hash bits 0x%x{bits} (native int) to float"
         | EvalStackValue.NativeInt src -> nativeIntBitsForFloatConversion "Conv_R8" src |> convR8FromInt64
-        | EvalStackValue.Float f -> convR8FromFloat f
+        | EvalStackValue.Float f -> EvalStackFloat.toDouble f
         | EvalStackValue.ManagedPointer _
         | EvalStackValue.NullObjectRef
         | EvalStackValue.ObjectRef _
@@ -709,9 +735,9 @@ module EvalStackValue =
                 EvalStackValue.Int32 (Int32Source.NativeIntByte (source, index))
             | CliNumericType.Int16 s -> int32<int16> s |> Int32Source.Verbatim |> EvalStackValue.Int32
             | CliNumericType.UInt16 s -> int32<uint16> s |> Int32Source.Verbatim |> EvalStackValue.Int32
-            | CliNumericType.Float32 f -> EvalStackValue.Float (float<float32> f)
-            | CliNumericType.Float64 f -> EvalStackValue.Float f
-            | CliNumericType.NativeFloat f -> EvalStackValue.Float f
+            | CliNumericType.Float32 f -> EvalStackValue.Float (EvalStackFloat.Single f)
+            | CliNumericType.Float64 f -> EvalStackValue.Float (EvalStackFloat.Double f)
+            | CliNumericType.NativeFloat f -> EvalStackValue.Float (EvalStackFloat.Double f)
         | CliType.ObjectRef None -> EvalStackValue.NullObjectRef
         | CliType.ObjectRef (Some addr) -> EvalStackValue.ObjectRef addr
         // Zero-extend bool/char
@@ -906,12 +932,12 @@ module EvalStackValue =
                 | i -> failwith $"todo: {i} to uint16"
             | CliNumericType.Float32 _ ->
                 match popped with
-                | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float32 (float32<float> f))
+                | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float32 (EvalStackFloat.toSingle f))
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | i -> failwith $"todo: {i} to float32"
             | CliNumericType.Float64 _ ->
                 match popped with
-                | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float64 f)
+                | EvalStackValue.Float f -> CliType.Numeric (CliNumericType.Float64 (EvalStackFloat.toDouble f))
                 | EvalStackValue.UserDefinedValueType vt -> viewValueTypeAsPrimitive target vt
                 | _ -> failwith $"todo: {popped} to float64"
         | CliType.ObjectRef _ ->
