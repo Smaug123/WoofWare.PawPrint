@@ -185,6 +185,15 @@ lookup of an unrepresentable name simply misses, exactly as a lookup of any
 absent name does — which is the correct answer, because on APFS such a name
 cannot be bound and therefore is absent by construction.
 
+One row of that table is ground truth PawPrint cannot yet act on: **there is no
+guest-reachable `symlink`**. `SystemNative_SymLink` does not exist, and
+`VirtualFileSystem.createSymlink` is reached only from `ofFileSystemSeed`, so a
+link enters this filesystem through a seed and never through a verdict. (The
+`emulated-posix-kernel` skill names the same gap, as the trigger that would make
+`symlinkPermissions` configuration rather than platform.) The row is recorded
+here because it is what a future `symlink` must do, not because this plan can
+test it — see Stage 7.
+
 ### 1.3 Ordering against the other rules
 
 Darwin, creating operations. Every row is measured against a control, because an
@@ -893,9 +902,15 @@ directly testable against the shipped flavour rather than deferred:
   parent, undecodable name → EACCES — is what separates them. An earlier draft
   of this plan got exactly that ordering wrong.
 - The §1.2 table: on `macOsArm64`, every listed lookup and removal of an
-  undecodable name is ENOENT, and every listed binding is EILSEQ. The lookup rows
-  are as load-bearing as the binding rows — they are what says the rule is about
-  binding rather than about reading a pathname.
+  undecodable name is ENOENT, and every listed binding is EILSEQ — **except the
+  `symlink` row, which is deferred**. PawPrint has no guest-reachable symlink
+  creation to apply a verdict to (§1.2), and adding one is a separate feature
+  that `AGENTS.md` says to raise rather than fold into this work. Leave a test
+  parked, or a comment in `UnixNamespace`, so that whoever implements
+  `SystemNative_SymLink` finds the measured answer instead of re-deriving it.
+
+  The lookup rows are as load-bearing as the binding rows — they are what says
+  the rule is about binding rather than about reading a pathname.
 - Property: on `linuxX64`, no operation ever reports EILSEQ, for any NUL-free
   byte string.
 - Property: on `macOsArm64`, **given a binding that every earlier rule permits**
