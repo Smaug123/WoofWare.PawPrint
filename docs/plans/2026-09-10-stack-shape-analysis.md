@@ -36,7 +36,7 @@ primitive. That is where the design decisions with blast radius live, so it
 comes second, on top of a depth analysis that the Guest suite has already
 checked against every interpreted instruction.
 
-### Stage 1 (this PR): depths
+### Stage 1 (#1443, merged): depths
 
 `WoofWare.PawPrint.Semantics/StackShape.fs` computes the stack depth on entry
 to every instruction reachable from the method's entry or a handler entry,
@@ -73,7 +73,7 @@ which is the correct degraded answer for depth; a wrong answer is impossible,
 because two arms that agree on depth deliver the same depth whichever the
 importer imports.
 
-### Stage 2: float widths at joins
+### Stage 2 (this PR): float widths at joins
 
 On top of stage 1, each slot gets a shape (`Float Single`, `Float Double`,
 `Other`), joined over CoreCLR's spill cliques rather than per target
@@ -82,7 +82,12 @@ predecessor/successor relation shares one temp. `Promotions` are the offsets
 and slots at which a float32 still arrives where the clique settled as double,
 which are exactly the edges CoreCLR casts.
 
-Decisions for that stage, recorded here so the PR does not relitigate them:
+The Debug assertion grows a slot-kind check: a float in every slot the analysis
+says is one and in no other, which the Guest suite checks against every
+interpreted instruction. The width itself is not yet a fact the stack carries,
+so it is checked in stage 3.
+
+Decisions for this stage, agreed before it was built:
 
 * A `TypeRef` named `System.Single` or `System.Double` is the primitive when
   its resolution scope is a framework assembly, judged by name, exactly as the
@@ -90,12 +95,41 @@ Decisions for that stage, recorded here so the PR does not relitigate them:
   or loaded before the body runs: eager resolution is an effect the interpreter
   never had, and it makes "which offsets are reachable" decide whether a method
   can execute at all, which is the wrong altitude for a width analysis.
-* Branches on a literal of the same basic block are folded as the importer
-  folds them (`gtFoldExpr` runs at Tier-0 too; only debuggable code and MinOpts
-  skip it), because otherwise a folded-away double arm widens a join CoreCLR
-  keeps single. Folding of intrinsics, `typeof` comparisons and inlined
-  constants is *not* modelled: an emitted mixed-width join under such a branch
-  keeps path-local width, and that bound is stated rather than chased.
+* Branches on literals are *not* folded; a join whose width they can decide is
+  refused. The importer folds a branch whose operands its block computes from
+  literals alone (`gtFoldExpr`, at every tier but not in debuggable code),
+  importing only the arm taken, so whether such a join is widened depends on how
+  the body was compiled. Rather than model that (which tier, which assembly
+  stamp, which constants fold under which widening and overflow rules, and a
+  re-JIT at a higher tier typing the join differently again), the analysis types
+  the flow graph with every arm imported, as debuggable code does. Folding only
+  removes edges and the deliveries of code reached only through them, so that
+  answer is every compilation's answer except where a float32 meets a double: a
+  promotion. A promotion that a branch on literals can reach, through succession
+  or through sharing a spill temp with something it reaches, is recorded as
+  `WidthDependsOnFoldedBranch`, and the interpreter refuses to execute it rather
+  than guess a width. What follows only from it is unknown. A literal is an
+  integer, float, `null`, token or `sizeof` literal, or the result of a
+  token-less operation on literals; a value arriving at a block's first
+  instruction is a spill temp to the importer, and no literal, and a `br` to the
+  very next instruction starts no block, since the JIT merges the blocks before
+  importing. Measured on the 10.0.7 shared framework: 259 of 129,000 methods
+  branch directly on a same-block `ldc`/`ldnull`, and 2 of those use any `.r4`
+  opcode, so refusal should be rare. Other folds are *not* modelled: intrinsics,
+  `typeof` comparisons, `box` patterns, inlined constants, algebraic identities
+  with one runtime operand (`gtFoldExprSpecial`) and comparisons of a local with
+  itself. The analysis treats such a branch as importing both arms, so a join
+  under it where a float32 on the live arm meets a double on the arm CoreCLR
+  folds away is promoted, and widened once stage 3 applies promotions, where
+  CoreCLR keeps it single. Compilers rarely leave a value on the stack across
+  such a branch, and that bound is stated rather than chased.
+* Slots are joined over CoreCLR's spill cliques rather than per target. The
+  clique is a property of the importer's flow graph: it spans blocks the
+  importer never imports, so the two successors of a dead conditional share a
+  temp, transitively. A
+  conflict (a depth mismatch, a float meeting a non-float) makes the join
+  unknown, as in stage 1, together with every offset sharing one of its spill
+  temps: they share the temp whose type is undecidable.
 * Shapes are per instantiation (an argument of type `T` is a float32 in
   `M<float>`), so the cache key grows the generic arguments.
 
