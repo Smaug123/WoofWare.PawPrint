@@ -30,12 +30,12 @@ module NativeThreading =
         | other -> failwith $"%s{operation}: unexpected shape for ThreadHandle argument: %O{other}"
 
     /// Reverse-lookup the interpreter `ThreadId` that owns the given Thread
-    /// heap object. Distinguishes "guest handed a wild pointer" (interpreter
-    /// bug — no heap object exists at the address at all) from "Thread object
-    /// was never Start()ed" (guest bug that the real CLR would surface as
-    /// `ThreadStateException` once exception synthesis lands here). Both
-    /// surface as `failwith` for now because the interpreter cannot yet
-    /// raise managed exceptions on behalf of native helpers.
+    /// heap object. A Thread object is bound to its `ThreadId` when its
+    /// constructor's `Initialize` runs (`allocateUnstartedThread`), or, for a
+    /// thread PawPrint started itself, when the guest first asks for it
+    /// (`getOrAllocateManagedThreadObject`), so every started *and* unstarted
+    /// thread is found. Both misses are interpreter bugs and fail: no heap
+    /// object at the address at all, or an object no `ThreadId` was bound to.
     let private threadIdFromThreadAddr
         (state : IlMachineState)
         (operation : string)
@@ -49,7 +49,7 @@ module NativeThreading =
             match ManagedHeap.tryGet threadAddr state.ManagedHeap with
             | Some _ ->
                 failwith
-                    $"%s{operation}: Thread object at {threadAddr} was never Start()ed. The real CLR raises ThreadStateException here; PawPrint doesn't synthesise that yet, so this is a guest bug we can't currently report structurally."
+                    $"%s{operation}: no ThreadId is bound to the Thread object at {threadAddr} (interpreter bug: its Initialize never ran, or it is not a Thread)."
             | None ->
                 failwith
                     $"%s{operation}: no heap object at {threadAddr} (interpreter bug: stale or invalid Thread reference)."
@@ -445,6 +445,42 @@ module NativeThreading =
 
             let state =
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 resultInt)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "ThreadNative_GetThreadState",
+          "System.Private.CoreLib",
+          "System.Threading",
+          "Thread",
+          "GetThreadState",
+          [ CorelibType state.ConcreteTypes ("System.Threading", "ThreadHandle", threadHandleGenerics) ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            threadHandleGenerics.IsEmpty
+            ->
+            // .NET 10 QCall backing the `Thread.ThreadState` getter, which casts the int32 back
+            // to the `ThreadState` enum. Unlike the `IsBackground` pair, a terminated target is
+            // legitimate here: `Stopped` is exactly what it reports.
+            let operation = "ThreadNative_GetThreadState"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            let threadAddr =
+                threadAddrFromThreadHandle state operation instruction.Arguments.[0]
+
+            let targetThreadId = threadIdFromThreadAddr state operation threadAddr
+
+            let targetState =
+                state.ThreadState
+                |> Map.tryFind targetThreadId
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: target ThreadId {targetThreadId} has no ThreadState"
+                )
+
+            let result =
+                ThreadStatus.managedThreadState targetState.IsBackground targetState.Status
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 (int result))) ctx.Thread state
 
             NativeHandlerResult.completed state |> Some
         | "ThreadNative_InformThreadNameChange",

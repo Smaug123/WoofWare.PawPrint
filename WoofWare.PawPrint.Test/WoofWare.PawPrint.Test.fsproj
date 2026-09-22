@@ -241,6 +241,7 @@
     <Compile Include="TestNativeEventSource.fs" />
     <Compile Include="TestSchedulerVoluntaryYield.fs" />
     <Compile Include="TestClassInitWaitChain.fs" />
+    <Compile Include="TestManagedThreadState.fs" />
     <Compile Include="TestSchedulerYieldDebt.fs" />
     <Compile Include="TestSchedulerYieldFairness.fs" />
     <Compile Include="TestSchedulerSleepFairness.fs" />
