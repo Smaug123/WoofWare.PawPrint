@@ -35,23 +35,6 @@ type TokenShape =
     /// The type an `ldobj`, `unbox.any` or `ldelem` pushes.
     | Type of SlotShape
 
-/// How CoreCLR's JIT compiles a body, as far as it decides what the importer folds. A method of
-/// a PE image is compiled at Tier-0 first; a method marked `AggressiveOptimization`, and a
-/// dynamic method, which tiering never touches, are fully optimised from the start; a method
-/// marked `NoOptimization`, and every method of an assembly stamped `DebuggableAttribute` with
-/// `DisableOptimizations` under `Default`, dynamic methods it hosts included, is compiled with
-/// no optimisation at all. A method the runtime later re-compiles at a higher tier may then type
-/// a join differently; the analysis follows the first compilation.
-[<RequireQualifiedAccess>]
-type CompilationMode =
-    /// No constant folding and no early block merging: every arm is imported.
-    | Unoptimised
-    /// A branch on a constant of its block is folded, and `dup` copies a constant.
-    | Tier0
-    /// As `Tier0`, but `dup` of a non-zero integer constant spills it to a temp, which is no
-    /// longer a constant to the importer.
-    | FullyOptimised
-
 /// Everything the analysis needs beyond the body itself.
 type StackShapeInputs =
     {
@@ -64,17 +47,15 @@ type StackShapeInputs =
         /// For every instruction whose stack effect depends on its token, that effect, keyed by the
         /// instruction's offset. An instruction that needs one and has none is an analysis error.
         Tokens : Map<int, TokenShape>
-        /// How the JIT compiles the body, which decides what its importer folds.
-        Mode : CompilationMode
     }
 
 /// Why an instruction could not be given an entry shape. Each is a claim that CoreCLR's importer
 /// would refuse the instruction if it imported it, except where noted. The importer imports only
-/// what it reaches, folding a branch on a constant of its own block as this analysis does, but
-/// also folding what the analysis cannot see (an intrinsic such as `IsSupported`, a `typeof`
-/// comparison) and never importing the arm it drops, so an instruction the analysis reaches may
-/// never be imported: the analysis therefore records the instruction rather than rejecting the
-/// body, and the interpreter refuses only its execution.
+/// what it reaches, and unless it compiles the body as debuggable code it folds some branches (on
+/// literals, on an intrinsic such as `IsSupported`, on a `typeof` comparison), never importing the
+/// arm it drops, so an
+/// instruction the analysis reaches may never be imported: the analysis therefore records the
+/// instruction rather than rejecting the body, and the interpreter refuses only its execution.
 [<RequireQualifiedAccess>]
 type StackShapeError =
     /// An instruction pops more than the stack holds on entry to it.
@@ -94,6 +75,13 @@ type StackShapeError =
     | ArgumentOutOfRange of offset : int * index : int
     /// `ldloc` or `stloc` of an index the locals signature does not have.
     | LocalOutOfRange of offset : int * index : int
+    /// A join at which a float32 meets a double, downstream of the conditional branch or
+    /// `switch` at `branch`, whose operands its block computes from literals alone. Not a claim
+    /// about the IL: the JIT folds such a branch at every tier but not in debuggable code,
+    /// importing only the arm taken, so whether CoreCLR widens the join depends on how it
+    /// compiled the body, which the analysis does not decide. What follows only from the join is
+    /// unknown rather than typed.
+    | WidthDependsOnFoldedBranch of offset : int * branch : int
 
     /// Whether the error is about two paths disagreeing rather than about the instruction on
     /// its own. A disagreement can be an artefact of following an arm CoreCLR's importer would
@@ -107,7 +95,8 @@ type StackShapeError =
         | StackShapeError.MissingTokenShape _
         | StackShapeError.BranchOutsideBody _
         | StackShapeError.ArgumentOutOfRange _
-        | StackShapeError.LocalOutOfRange _ -> false
+        | StackShapeError.LocalOutOfRange _
+        | StackShapeError.WidthDependsOnFoldedBranch _ -> false
 
 /// The shape of the evaluation stack at the entry of every reachable instruction.
 type StackShape =
@@ -176,7 +165,7 @@ module StackShape =
         | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, _) -> Successors.None
         // A `br` to the very next instruction is a `nop` to the JIT, which merges the two blocks
         // before importing (`DoEarlyBlockMerging`, Tier-0 included): no block boundary, so a
-        // constant of the block survives it.
+        // literal of the block survives it.
         | IlOp.UnaryConst (UnaryConstIlOp.Br 0)
         | IlOp.UnaryConst (UnaryConstIlOp.Br_s 0y) -> Successors.FallThrough
         | IlOp.UnaryConst (UnaryConstIlOp.Br delta) -> Successors.Targets [ target delta ]
@@ -744,554 +733,27 @@ module StackShape =
                         shape.[root] <- joined
                         Ok members.[root]
 
-    /// An integer a basic block has pushed as a literal, or computed from literals it pushed.
-    /// CoreCLR's importer folds such a value (`gtFoldExpr`) and, when it is the condition of a
-    /// branch, imports only the arm taken; a value that crossed a block boundary is a spill temp
-    /// to the importer, not a constant, so these never survive one.
-    [<RequireQualifiedAccess>]
-    type private IntConstant =
-        | Int32 of int32
-        /// An int64 or a native int, which is 64 bits wide here.
-        | Int64 of int64
+    /// Where control goes after the instruction at `offset`, as byte offsets into the body.
+    let private targetsOf (offset : int) (instruction : IlOp) : int list =
+        let fallThrough = offset + IlOp.NumberOfBytes instruction
 
-    let private isZero (c : IntConstant) : bool =
-        match c with
-        | IntConstant.Int32 v -> v = 0
-        | IntConstant.Int64 v -> v = 0L
+        match successorsOf offset instruction with
+        | Successors.None -> []
+        | Successors.FallThrough -> [ fallThrough ]
+        | Successors.Targets targets -> targets
+        | Successors.TargetsAndFallThrough targets -> fallThrough :: targets
+        | Successors.Leave target -> [ target ]
 
-    /// The constant an instruction leaves in each of the `pushed` slots it pushes, given the
-    /// constants in the slots it popped (top first), or `None` for a slot that is not a constant
-    /// of the block. Only the operations the importer folds on literals are folded; a division
-    /// or remainder that would fault is left alone.
-    /// What a basic block knows about a value in a stack slot beyond its shape.
-    [<RequireQualifiedAccess>]
-    type private Literal =
-        /// An integer the block pushed as a literal or computed from literals, which the JIT folds
-        /// and this analysis folds alike.
-        | Int of IntConstant
-        /// A value the block computed from a literal the JIT may fold but this analysis does not
-        /// (a float, `null`, a token, a `sizeof`): a branch on it is undecidable here, and what it
-        /// reaches is unknown rather than typed over an arm the JIT never imports.
-        | Opaque
-        /// A copy that fully optimised code's `dup` spilled to a temp, named by the `dup`'s offset:
-        /// two reads of one local, between which the JIT folds a comparison
-        /// (`gtFoldExprCompare`), and which it folds nothing else about.
-        | Temp of dupOffset : int
-
-    /// `foldConstants` on the integer literals alone; `None` is a value the JIT does not fold.
-    let private foldInts
-        (mode : CompilationMode)
-        (instruction : IlOp)
-        (popped : IntConstant option list)
-        (pushed : int)
-        : IntConstant option list
-        =
-        let unknown = List.replicate pushed None
-
-        let unary (f32 : int32 -> IntConstant) (f64 : int64 -> IntConstant) : IntConstant option list =
-            match popped with
-            | [ Some (IntConstant.Int32 v) ] -> [ Some (f32 v) ]
-            | [ Some (IntConstant.Int64 v) ] -> [ Some (f64 v) ]
-            | _ -> unknown
-
-        // `popped` is top first, so the right operand comes first. An int32 constant meeting a
-        // native int is widened to it first, and how depends on the operation. Arithmetic casts
-        // it (`impGetByRefResultType`), zero-extended for the unsigned operations, and folds that
-        // cast only in fully optimised code: at Tier-0 the cast stands and the result is no
-        // constant. A comparison retypes the constant node instead (`impImplicitIorI4Cast`),
-        // whose value is already sign-extended whatever the comparison's signedness, at every tier.
-        let binaryWith
-            (mixed : int32 -> int64 option)
-            (f32 : int32 -> int32 -> IntConstant option)
-            (f64 : int64 -> int64 -> IntConstant option)
-            : IntConstant option list
-            =
-            match popped with
-            | [ Some (IntConstant.Int32 b) ; Some (IntConstant.Int32 a) ] -> [ f32 a b ]
-            | [ Some (IntConstant.Int64 b) ; Some (IntConstant.Int64 a) ] -> [ f64 a b ]
-            | [ Some (IntConstant.Int32 b) ; Some (IntConstant.Int64 a) ] ->
-                [ mixed b |> Option.bind (fun b -> f64 a b) ]
-            | [ Some (IntConstant.Int64 b) ; Some (IntConstant.Int32 a) ] ->
-                [ mixed a |> Option.bind (fun a -> f64 a b) ]
-            | _ -> unknown
-
-        let arithmeticWidening (zeroExtend : bool) (v : int32) : int64 option =
-            match mode with
-            | CompilationMode.FullyOptimised -> Some (if zeroExtend then int64 (uint32 v) else int64 v)
-            | CompilationMode.Tier0
-            | CompilationMode.Unoptimised -> None
-
-        let binary = binaryWith (arithmeticWidening false)
-        let binaryUn = binaryWith (arithmeticWidening true)
-        let compare = binaryWith (fun v -> Some (int64 v))
-
-        let i32 (v : int32) : IntConstant option = Some (IntConstant.Int32 v)
-
-        // The checked operators say "overflow" the way the framework does, by throwing.
-        let overflowing (compute : unit -> IntConstant option) : IntConstant option =
-            try
-                compute ()
-            with :? System.OverflowException ->
-                None
-
-        /// A checked conversion of the one popped constant: `f32` from a 32-bit source and `f64`
-        /// from a 64-bit one, each giving the result's bits, which are a 64-bit constant when
-        /// `wide` and a 32-bit one otherwise.
-        let checkedConversion (f32 : int32 -> int64) (f64 : int64 -> int64) (wide : bool) : IntConstant option list =
-            let result (bits : int64) : IntConstant =
-                if wide then
-                    IntConstant.Int64 bits
-                else
-                    IntConstant.Int32 (int32 bits)
-
-            match popped with
-            | [ Some (IntConstant.Int32 v) ] -> [ overflowing (fun () -> Some (result (f32 v))) ]
-            | [ Some (IntConstant.Int64 v) ] -> [ overflowing (fun () -> Some (result (f64 v))) ]
-            | _ -> unknown
-
-        /// `checkedConversion` reading the source as unsigned.
-        let checkedConversionUn
-            (f32 : uint32 -> int64)
-            (f64 : uint64 -> int64)
-            (wide : bool)
-            : IntConstant option list
-            =
-            checkedConversion (fun v -> f32 (uint32 v)) (fun v -> f64 (uint64 v)) wide
-
-        let checkedBinary (f32 : int32 -> int32 -> int32) (f64 : int64 -> int64 -> int64) : IntConstant option list =
-            binary
-                (fun a b -> overflowing (fun () -> Some (IntConstant.Int32 (f32 a b))))
-                (fun a b -> overflowing (fun () -> Some (IntConstant.Int64 (f64 a b))))
-
-        let checkedUnsigned
-            (f32 : uint32 -> uint32 -> uint32)
-            (f64 : uint64 -> uint64 -> uint64)
-            : IntConstant option list
-            =
-            binaryUn
-                (fun a b -> overflowing (fun () -> Some (IntConstant.Int32 (int32 (f32 (uint32 a) (uint32 b))))))
-                (fun a b -> overflowing (fun () -> Some (IntConstant.Int64 (int64 (f64 (uint64 a) (uint64 b))))))
-
-        let i64 (v : int64) : IntConstant option = Some (IntConstant.Int64 v)
-
-        let flag (b : bool) : IntConstant option =
-            Some (IntConstant.Int32 (if b then 1 else 0))
-
-        match instruction with
-        | IlOp.Nullary NullaryIlOp.LdcI4_0 -> [ i32 0 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_1 -> [ i32 1 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_2 -> [ i32 2 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_3 -> [ i32 3 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_4 -> [ i32 4 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_5 -> [ i32 5 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_6 -> [ i32 6 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_7 -> [ i32 7 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_8 -> [ i32 8 ]
-        | IlOp.Nullary NullaryIlOp.LdcI4_m1 -> [ i32 -1 ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4 v) -> [ i32 v ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4_s v) -> [ i32 (int v) ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I8 v) -> [ i64 v ]
-        | IlOp.Nullary NullaryIlOp.Dup ->
-            // Fully optimised code spills anything but zero to a temp (`CEE_DUP` in the
-            // importer), and a temp is a local, not a constant; Tier-0 clones the constant.
-            match popped, mode with
-            | [ Some c ], CompilationMode.FullyOptimised when not (isZero c) -> unknown
-            | [ c ], _ -> [ c ; c ]
-            | _ -> unknown
-        | IlOp.Nullary NullaryIlOp.Neg -> unary (fun v -> IntConstant.Int32 (-v)) (fun v -> IntConstant.Int64 (-v))
-        | IlOp.Nullary NullaryIlOp.Not -> unary (fun v -> IntConstant.Int32 (~~~v)) (fun v -> IntConstant.Int64 (~~~v))
-        | IlOp.Nullary NullaryIlOp.Conv_I1 ->
-            unary (fun v -> IntConstant.Int32 (int32 (int8 v))) (fun v -> IntConstant.Int32 (int32 (int8 v)))
-        | IlOp.Nullary NullaryIlOp.Conv_I2 ->
-            unary (fun v -> IntConstant.Int32 (int32 (int16 v))) (fun v -> IntConstant.Int32 (int32 (int16 v)))
-        | IlOp.Nullary NullaryIlOp.Conv_I4 -> unary IntConstant.Int32 (fun v -> IntConstant.Int32 (int32 v))
-        | IlOp.Nullary NullaryIlOp.Conv_U1 ->
-            unary (fun v -> IntConstant.Int32 (int32 (uint8 v))) (fun v -> IntConstant.Int32 (int32 (uint8 v)))
-        | IlOp.Nullary NullaryIlOp.Conv_U2 ->
-            unary (fun v -> IntConstant.Int32 (int32 (uint16 v))) (fun v -> IntConstant.Int32 (int32 (uint16 v)))
-        | IlOp.Nullary NullaryIlOp.Conv_U4 -> unary IntConstant.Int32 (fun v -> IntConstant.Int32 (int32 v))
-        | IlOp.Nullary NullaryIlOp.Conv_I8
-        | IlOp.Nullary NullaryIlOp.Conv_I -> unary (fun v -> IntConstant.Int64 (int64 v)) IntConstant.Int64
-        | IlOp.Nullary NullaryIlOp.Conv_U8
-        | IlOp.Nullary NullaryIlOp.Conv_U -> unary (fun v -> IntConstant.Int64 (int64 (uint32 v))) IntConstant.Int64
-        // A checked conversion folds exactly when the value fits (`gtFoldExprConst` on a cast
-        // with overflow checking); the `.un` forms read the operand as unsigned first.
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i1 ->
-            checkedConversion (fun v -> int64 (Checked.int8 v)) (fun v -> int64 (Checked.int8 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i2 ->
-            checkedConversion (fun v -> int64 (Checked.int16 v)) (fun v -> int64 (Checked.int16 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i4 ->
-            checkedConversion (fun v -> int64 (Checked.int32 v)) (fun v -> int64 (Checked.int32 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u1 ->
-            checkedConversion (fun v -> int64 (Checked.uint8 v)) (fun v -> int64 (Checked.uint8 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u2 ->
-            checkedConversion (fun v -> int64 (Checked.uint16 v)) (fun v -> int64 (Checked.uint16 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u4 ->
-            checkedConversion (fun v -> int64 (Checked.uint32 v)) (fun v -> int64 (Checked.uint32 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i8
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i ->
-            checkedConversion (fun v -> Checked.int64 v) (fun v -> Checked.int64 v) true
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u8
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u ->
-            checkedConversion (fun v -> int64 (Checked.uint64 v)) (fun v -> int64 (Checked.uint64 v)) true
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i1_un ->
-            checkedConversionUn (fun v -> int64 (Checked.int8 v)) (fun v -> int64 (Checked.int8 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i2_un ->
-            checkedConversionUn (fun v -> int64 (Checked.int16 v)) (fun v -> int64 (Checked.int16 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i4_un ->
-            checkedConversionUn (fun v -> int64 (Checked.int32 v)) (fun v -> int64 (Checked.int32 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u1_un ->
-            checkedConversionUn (fun v -> int64 (Checked.uint8 v)) (fun v -> int64 (Checked.uint8 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u2_un ->
-            checkedConversionUn (fun v -> int64 (Checked.uint16 v)) (fun v -> int64 (Checked.uint16 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u4_un ->
-            checkedConversionUn (fun v -> int64 (Checked.uint32 v)) (fun v -> int64 (Checked.uint32 v)) false
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i8_un
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_i_un ->
-            checkedConversionUn (fun v -> Checked.int64 v) (fun v -> Checked.int64 v) true
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u8_un
-        | IlOp.Nullary NullaryIlOp.Conv_ovf_u_un ->
-            checkedConversionUn (fun v -> int64 (Checked.uint64 v)) (fun v -> int64 (Checked.uint64 v)) true
-        | IlOp.Nullary NullaryIlOp.Add -> binary (fun a b -> i32 (a + b)) (fun a b -> i64 (a + b))
-        | IlOp.Nullary NullaryIlOp.Sub -> binary (fun a b -> i32 (a - b)) (fun a b -> i64 (a - b))
-        | IlOp.Nullary NullaryIlOp.Mul -> binary (fun a b -> i32 (a * b)) (fun a b -> i64 (a * b))
-        | IlOp.Nullary NullaryIlOp.And -> binary (fun a b -> i32 (a &&& b)) (fun a b -> i64 (a &&& b))
-        | IlOp.Nullary NullaryIlOp.Or -> binary (fun a b -> i32 (a ||| b)) (fun a b -> i64 (a ||| b))
-        | IlOp.Nullary NullaryIlOp.Xor -> binary (fun a b -> i32 (a ^^^ b)) (fun a b -> i64 (a ^^^ b))
-        | IlOp.Nullary NullaryIlOp.Div ->
-            binary
-                (fun a b ->
-                    if b = 0 || (a = System.Int32.MinValue && b = -1) then
-                        None
-                    else
-                        i32 (a / b)
-                )
-                (fun a b ->
-                    if b = 0L || (a = System.Int64.MinValue && b = -1L) then
-                        None
-                    else
-                        i64 (a / b)
-                )
-        | IlOp.Nullary NullaryIlOp.Rem ->
-            binary
-                (fun a b ->
-                    if b = 0 || (a = System.Int32.MinValue && b = -1) then
-                        None
-                    else
-                        i32 (a % b)
-                )
-                (fun a b ->
-                    if b = 0L || (a = System.Int64.MinValue && b = -1L) then
-                        None
-                    else
-                        i64 (a % b)
-                )
-        // The JIT leaves `MinValue / -1` unfolded for the unsigned forms too (`gtFoldExprConst`).
-        | IlOp.Nullary NullaryIlOp.Div_un ->
-            binaryUn
-                (fun a b ->
-                    if b = 0 || (a = System.Int32.MinValue && b = -1) then
-                        None
-                    else
-                        i32 (int32 (uint32 a / uint32 b))
-                )
-                (fun a b ->
-                    if b = 0L || (a = System.Int64.MinValue && b = -1L) then
-                        None
-                    else
-                        i64 (int64 (uint64 a / uint64 b))
-                )
-        | IlOp.Nullary NullaryIlOp.Rem_un ->
-            binaryUn
-                (fun a b ->
-                    if b = 0 || (a = System.Int32.MinValue && b = -1) then
-                        None
-                    else
-                        i32 (int32 (uint32 a % uint32 b))
-                )
-                (fun a b ->
-                    if b = 0L || (a = System.Int64.MinValue && b = -1L) then
-                        None
-                    else
-                        i64 (int64 (uint64 a % uint64 b))
-                )
-        // A checked operation folds exactly when it would not overflow (`gtFoldExprConst`).
-        | IlOp.Nullary NullaryIlOp.Add_ovf -> checkedBinary Checked.(+) Checked.(+)
-        | IlOp.Nullary NullaryIlOp.Sub_ovf -> checkedBinary Checked.(-) Checked.(-)
-        | IlOp.Nullary NullaryIlOp.Mul_ovf -> checkedBinary Checked.(*) Checked.(*)
-        | IlOp.Nullary NullaryIlOp.Add_ovf_un -> checkedUnsigned Checked.(+) Checked.(+)
-        | IlOp.Nullary NullaryIlOp.Sub_ovf_un -> checkedUnsigned Checked.(-) Checked.(-)
-        | IlOp.Nullary NullaryIlOp.Mul_ovf_un -> checkedUnsigned Checked.(*) Checked.(*)
-        | IlOp.Nullary NullaryIlOp.Ceq -> compare (fun a b -> flag (a = b)) (fun a b -> flag (a = b))
-        | IlOp.Nullary NullaryIlOp.Cgt -> compare (fun a b -> flag (a > b)) (fun a b -> flag (a > b))
-        | IlOp.Nullary NullaryIlOp.Clt -> compare (fun a b -> flag (a < b)) (fun a b -> flag (a < b))
-        | IlOp.Nullary NullaryIlOp.Cgt_un ->
-            compare (fun a b -> flag (uint32 a > uint32 b)) (fun a b -> flag (uint64 a > uint64 b))
-        | IlOp.Nullary NullaryIlOp.Clt_un ->
-            compare (fun a b -> flag (uint32 a < uint32 b)) (fun a b -> flag (uint64 a < uint64 b))
-        | IlOp.Nullary NullaryIlOp.Shl
-        | IlOp.Nullary NullaryIlOp.Shr
-        | IlOp.Nullary NullaryIlOp.Shr_un ->
-            // The count is masked to the width of the value, as the JIT masks it.
-            match popped with
-            | [ Some count ; Some value ] ->
-                let count =
-                    match count with
-                    | IntConstant.Int32 c -> c
-                    | IntConstant.Int64 c -> int32 c
-
-                match value with
-                | IntConstant.Int32 v ->
-                    let c = count &&& 31
-
-                    match instruction with
-                    | IlOp.Nullary NullaryIlOp.Shl -> [ i32 (v <<< c) ]
-                    | IlOp.Nullary NullaryIlOp.Shr -> [ i32 (v >>> c) ]
-                    | _ -> [ i32 (int32 (uint32 v >>> c)) ]
-                | IntConstant.Int64 v ->
-                    let c = count &&& 63
-
-                    match instruction with
-                    | IlOp.Nullary NullaryIlOp.Shl -> [ i64 (v <<< c) ]
-                    | IlOp.Nullary NullaryIlOp.Shr -> [ i64 (v >>> c) ]
-                    | _ -> [ i64 (int64 (uint64 v >>> c)) ]
-            | _ -> unknown
-        | _ -> unknown
-
-    /// The literal each of the `pushed` slots an instruction pushes holds, given the literals in
-    /// the slots it popped (top first), or `None` for a slot that is not a literal of the block.
-    let private foldConstants
-        (mode : CompilationMode)
-        (offset : int)
-        (instruction : IlOp)
-        (popped : Literal option list)
-        (pushed : int)
-        : Literal option list
-        =
-        // Every operand is a literal the JIT folds (an integer, or one it folds and the analysis
-        // does not); a temp is a local to it, which it folds only against itself.
-        let anyLiteral =
-            not popped.IsEmpty
-            && popped
-               |> List.forall (fun literal ->
-                   match literal with
-                   | Some (Literal.Int _)
-                   | Some Literal.Opaque -> true
-                   | Some (Literal.Temp _)
-                   | None -> false
-               )
-
-        let sameTemp =
-            match popped with
-            | [ Some (Literal.Temp a) ; Some (Literal.Temp b) ] when a = b -> true
-            | _ -> false
-
-        match instruction with
-        // The two copies a spilled `dup` leaves are reads of one local, as are the copies of
-        // a copy.
-        | IlOp.Nullary NullaryIlOp.Dup ->
-            match popped, mode with
-            | [ Some (Literal.Int c) ], CompilationMode.FullyOptimised when not (isZero c) ->
-                [ Some (Literal.Temp offset) ; Some (Literal.Temp offset) ]
-            | [ Some (Literal.Temp t) ], _ -> [ Some (Literal.Temp t) ; Some (Literal.Temp t) ]
-            | [ Some Literal.Opaque ], _ -> [ Some Literal.Opaque ; Some Literal.Opaque ]
-            | [ Some (Literal.Int c) ], _ -> [ Some (Literal.Int c) ; Some (Literal.Int c) ]
-            | _ -> List.replicate pushed None
-        // A comparison of a local with itself folds, whatever the local holds.
-        | IlOp.Nullary NullaryIlOp.Ceq when sameTemp -> [ Some (Literal.Int (IntConstant.Int32 1)) ]
-        | IlOp.Nullary NullaryIlOp.Cgt
-        | IlOp.Nullary NullaryIlOp.Clt
-        | IlOp.Nullary NullaryIlOp.Cgt_un
-        | IlOp.Nullary NullaryIlOp.Clt_un when sameTemp -> [ Some (Literal.Int (IntConstant.Int32 0)) ]
-        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R4 _)
-        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R8 _)
-        | IlOp.Nullary NullaryIlOp.LdNull
-        | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, _)
-        | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, _) -> List.replicate pushed (Some Literal.Opaque)
-        // A literal converted to a float is a float literal the JIT folds.
-        | IlOp.Nullary NullaryIlOp.Conv_R4
-        | IlOp.Nullary NullaryIlOp.Conv_R8
-        | IlOp.Nullary NullaryIlOp.Conv_r_un when anyLiteral -> List.replicate pushed (Some Literal.Opaque)
-        | _ ->
-
-        let ints =
-            popped
-            |> List.map (fun literal ->
-                match literal with
-                | Some (Literal.Int c) -> Some c
-                | _ -> None
-            )
-
-        // A result the JIT may fold that the analysis does not is one computed from literals
-        // alone, at least one of them opaque; a runtime value among the operands makes the
-        // result a runtime value, which the JIT cannot fold either.
-        let opaque =
-            anyLiteral
-            && popped
-               |> List.exists (fun literal ->
-                   match literal with
-                   | Some Literal.Opaque -> true
-                   | _ -> false
-               )
-
-        foldInts mode instruction ints pushed
-        |> List.map (fun folded ->
-            match folded with
-            | Some c -> Some (Literal.Int c)
-            | None -> if opaque then Some Literal.Opaque else None
-        )
-
-    /// The successors the importer imports when the branch condition is a constant of the block:
-    /// one arm of a conditional branch, one target of a `switch`.
-    let private foldSuccessors
-        (mode : CompilationMode)
-        (instruction : IlOp)
-        (literals : Literal option list)
-        (successors : Successors)
-        : Successors option
-        =
-        // The operands the branch reads, top first: one for `brtrue`, `brfalse` and `switch`,
-        // two for a comparison.
-        let read =
-            match instruction with
-            | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Brtrue_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Brfalse _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s _)
-            | IlOp.Switch _ -> 1
-            | IlOp.UnaryConst (UnaryConstIlOp.Beq _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bne_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Beq_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bne_un_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge_un_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt_un_s _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble_un_s _) -> 2
-            | _ -> 0
-
-        let undecidable =
-            literals
-            |> List.truncate read
-            |> List.exists (fun literal ->
-                match literal with
-                | Some Literal.Opaque -> true
-                | _ -> false
-            )
-
-        let popped =
-            literals
-            |> List.map (fun literal ->
-                match literal with
-                | Some (Literal.Int c) -> Some c
-                | _ -> None
-            )
-
-        if undecidable then
-            None
-        else
-
-        let compare
-            (signed : int64 -> int64 -> bool)
-            (unsigned : uint64 -> uint64 -> bool)
-            (isUnsigned : bool)
-            : bool option
-            =
-            // An int32 constant meeting a native int is widened to it first; the importer
-            // retypes the constant node (`impImplicitIorI4Cast`), whose value is already
-            // sign-extended, for an unsigned comparison as much as a signed one.
-            let wide (c : IntConstant) : int64 =
-                match c with
-                | IntConstant.Int64 v -> v
-                | IntConstant.Int32 v -> int64 v
-
-            match popped, literals with
-            // Two reads of one local compare as one value would against itself.
-            | _, [ Some (Literal.Temp b) ; Some (Literal.Temp a) ] when a = b -> Some (signed 0L 0L)
-            | [ Some (IntConstant.Int32 b) ; Some (IntConstant.Int32 a) ], _ ->
-                Some (
-                    if isUnsigned then
-                        unsigned (uint64 (uint32 a)) (uint64 (uint32 b))
-                    else
-                        signed (int64 a) (int64 b)
-                )
-            | [ Some b ; Some a ], _ ->
-                Some (
-                    if isUnsigned then
-                        unsigned (uint64 (wide a)) (uint64 (wide b))
-                    else
-                        signed (wide a) (wide b)
-                )
-            | _ -> None
-
-        let decided (taken : bool option) : Successors =
-            match taken, successors with
-            | Some true, Successors.TargetsAndFallThrough [ target ] -> Successors.Targets [ target ]
-            | Some false, Successors.TargetsAndFallThrough [ _ ] -> Successors.FallThrough
-            | _ -> successors
-
-        let folded : Successors =
-            match instruction with
-            | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Brtrue_s _) ->
-                match popped with
-                | [ Some c ] -> decided (Some (not (isZero c)))
-                | _ -> successors
-            | IlOp.UnaryConst (UnaryConstIlOp.Brfalse _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s _) ->
-                match popped with
-                | [ Some c ] -> decided (Some (isZero c))
-                | _ -> successors
-            | IlOp.UnaryConst (UnaryConstIlOp.Beq _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Beq_s _) -> decided (compare (=) (=) false)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bne_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bne_un_s _) -> decided (compare (<>) (<>) true)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt_s _) -> decided (compare (>) (>) false)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge_s _) -> decided (compare (>=) (>=) false)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt_s _) -> decided (compare (<) (<) false)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble_s _) -> decided (compare (<=) (<=) false)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un_s _) -> decided (compare (>) (>) true)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Bge_un_s _) -> decided (compare (>=) (>=) true)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Blt_un_s _) -> decided (compare (<) (<) true)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble_un _)
-            | IlOp.UnaryConst (UnaryConstIlOp.Ble_un_s _) -> decided (compare (<=) (<=) true)
-            | IlOp.Switch _ ->
-                // Only fully optimised code folds a `switch` on a constant (`CEE_SWITCH` in the
-                // importer); Tier-0 imports every target.
-                match mode, popped, successors with
-                | CompilationMode.FullyOptimised,
-                  [ Some (IntConstant.Int32 index) ],
-                  Successors.TargetsAndFallThrough targets ->
-                    if index >= 0 && index < targets.Length then
-                        Successors.Targets [ targets.[index] ]
-                    else
-                        Successors.FallThrough
-                | _ -> successors
-            | _ -> successors
-
-        Some folded
+    /// The successors of every instruction in the body's flow graph, including those of an
+    /// instruction control never reaches, which CoreCLR's importer still puts in its graph.
+    let private flowGraphOf (body : MethodInstructions<'methodVars>) : Map<int, int list> =
+        body.Instructions
+        |> List.map (fun (instruction, offset) -> offset, targetsOf offset instruction)
+        |> Map.ofList
 
     /// The offsets at which the importer starts a basic block: the entry, every branch target,
-    /// every handler entry, and the instruction after a conditional branch or `switch`. A
-    /// constant does not survive arriving at one of these.
+    /// every handler entry, and the instruction after a conditional branch or `switch`. A value
+    /// arriving at one of these is a spill temp to the importer, not a literal.
     let private leadersOf (body : MethodInstructions<'methodVars>) : Set<int> =
         let fromInstructions =
             body.Instructions
@@ -1306,118 +768,125 @@ module StackShape =
 
         Set.ofList (0 :: fromInstructions @ (handlerEntries body.ExceptionRegions |> List.map fst))
 
-    /// The successors of every instruction as the importer sees them: the arm a branch on a
-    /// constant of its block takes, and every successor otherwise, including those of an
-    /// instruction control never reaches, which the importer still puts in its flow graph.
-    /// Decided by depths and the block's constants alone, which no slot's shape affects.
-    let private importedSuccessorsOf
-        (inputs : StackShapeInputs)
-        (body : MethodInstructions<'methodVars>)
-        : Map<int, int list>
-        =
-        let locations = body.Locations
+    /// How many operands a conditional branch or `switch` reads from the stack to choose its
+    /// successor: none for any other instruction.
+    let private conditionOperands (instruction : IlOp) : int =
+        match instruction with
+        | IlOp.UnaryConst (UnaryConstIlOp.Brtrue _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Brtrue_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Brfalse _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Brfalse_s _)
+        | IlOp.Switch _ -> 1
+        | IlOp.UnaryConst (UnaryConstIlOp.Beq _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bne_un _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bgt _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bge _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Blt _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ble _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bge_un _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Blt_un _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ble_un _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Beq_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bne_un_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bgt_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bge_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Blt_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ble_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bgt_un_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Bge_un_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Blt_un_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ble_un_s _) -> 2
+        | _ -> 0
+
+    /// Whether the instruction pushes a literal, which the importer holds as a constant it may
+    /// fold.
+    let private pushesLiteral (instruction : IlOp) : bool =
+        match instruction with
+        | IlOp.Nullary NullaryIlOp.LdcI4_0
+        | IlOp.Nullary NullaryIlOp.LdcI4_1
+        | IlOp.Nullary NullaryIlOp.LdcI4_2
+        | IlOp.Nullary NullaryIlOp.LdcI4_3
+        | IlOp.Nullary NullaryIlOp.LdcI4_4
+        | IlOp.Nullary NullaryIlOp.LdcI4_5
+        | IlOp.Nullary NullaryIlOp.LdcI4_6
+        | IlOp.Nullary NullaryIlOp.LdcI4_7
+        | IlOp.Nullary NullaryIlOp.LdcI4_8
+        | IlOp.Nullary NullaryIlOp.LdcI4_m1
+        | IlOp.Nullary NullaryIlOp.LdNull
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4 _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I4_s _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_I8 _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R4 _)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R8 _)
+        | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, _)
+        | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, _) -> true
+        | _ -> false
+
+    /// The conditional branches and `switch`es whose every operand their basic block computes
+    /// from literals alone: a literal, or the result of an operation without a token on such
+    /// values. The JIT may fold such a branch (`gtFoldExpr`), importing only the arm taken, and
+    /// does so at every tier but not in debuggable code. A value
+    /// arriving at a block's first instruction is a spill temp to the importer, and no literal;
+    /// a `br` to the very next instruction starts no block.
+    let private literalBranchesOf (inputs : StackShapeInputs) (body : MethodInstructions<'methodVars>) : Set<int> =
         let leaders = leadersOf body
-        // The constants of the stack on entry, or `None` once the stack is unknown there.
-        let entry =
-            System.Collections.Generic.Dictionary<int, Literal option list option> ()
+        let locations = body.Locations
 
-        let successors = System.Collections.Generic.Dictionary<int, int list> ()
-        let worklist = System.Collections.Generic.Queue<int> ()
-        let queued = System.Collections.Generic.HashSet<int> ()
+        // Whether each slot the block itself pushed, top first, is computed from literals alone;
+        // the block's entry stack lies below these and is none.
+        let _, _, found =
+            ((([] : bool list), false, Set.empty), body.Instructions)
+            ||> List.fold (fun (stack, fallsIn, found) (instruction, offset) ->
+                let stack =
+                    if fallsIn && not (leaders.Contains offset) then
+                        stack
+                    else
+                        []
 
-        let enqueue (offset : int) : unit =
-            if queued.Add offset then
-                worklist.Enqueue offset
+                let literalOperands (count : int) : bool =
+                    count > 0 && stack.Length >= count && stack |> List.take count |> List.forall id
 
-        let arrive (offset : int) (incoming : Literal option list option) : unit =
-            if locations.ContainsKey offset then
-                match entry.TryGetValue offset with
-                | false, _ ->
-                    entry.[offset] <- incoming
-                    enqueue offset
-                | true, existing ->
-                    let merged =
-                        match existing, incoming with
-                        | Some e, Some i when e = i -> Some e
-                        | _ -> None
+                let found =
+                    if literalOperands (conditionOperands instruction) then
+                        Set.add offset found
+                    else
+                        found
 
-                    if merged <> existing then
-                        entry.[offset] <- merged
-                        enqueue offset
+                let stack =
+                    match effectOf inputs locations offset instruction with
+                    | Error _ -> []
+                    | Ok effect ->
+                        let pushed = (effect.Pushes (List.replicate effect.Pops SlotShape.Other)).Length
 
-        let targetsOf (offset : int) (instruction : IlOp) (successors : Successors) : int list =
-            let fallThrough = offset + IlOp.NumberOfBytes instruction
+                        let literal =
+                            pushesLiteral instruction
+                            || (
+                                match instruction with
+                                | IlOp.Nullary _ -> literalOperands effect.Pops
+                                | _ -> false
+                            )
 
-            match successors with
-            | Successors.None -> []
-            | Successors.FallThrough -> [ fallThrough ]
-            | Successors.Targets targets -> targets
-            | Successors.TargetsAndFallThrough targets -> fallThrough :: targets
-            | Successors.Leave target -> [ target ]
+                        let rest =
+                            if stack.Length >= effect.Pops then
+                                List.skip effect.Pops stack
+                            else
+                                []
 
-        arrive 0 (Some [])
+                        List.replicate pushed literal @ rest
 
-        for offset, stack in handlerEntries body.ExceptionRegions do
-            arrive offset (Some (List.replicate stack.Length None))
+                let fallsOut =
+                    match successorsOf offset instruction with
+                    | Successors.FallThrough
+                    | Successors.TargetsAndFallThrough _ -> true
+                    | Successors.None
+                    | Successors.Targets _
+                    | Successors.Leave _ -> false
 
-        while worklist.Count > 0 do
-            let offset = worklist.Dequeue ()
-            queued.Remove offset |> ignore
-            let instruction = locations.[offset]
-            let unfolded = successorsOf offset instruction
+                stack, fallsOut, found
+            )
 
-            let deliverUnfolded () : unit =
-                successors.[offset] <- targetsOf offset instruction unfolded
-
-                match unfolded with
-                | Successors.Leave target -> arrive target (Some [])
-                | _ -> targetsOf offset instruction unfolded |> List.iter (fun t -> arrive t None)
-
-            match entry.[offset] with
-            | None -> deliverUnfolded ()
-            | Some stack ->
-                match effectOf inputs locations offset instruction with
-                | Error _ -> deliverUnfolded ()
-                | Ok effect when stack.Length < effect.Pops -> deliverUnfolded ()
-                | Ok effect ->
-                    let popped, rest = List.splitAt effect.Pops stack
-                    let pushed = (effect.Pushes (List.replicate effect.Pops SlotShape.Other)).Length
-                    let after = foldConstants inputs.Mode offset instruction popped pushed @ rest
-
-                    let folded =
-                        match inputs.Mode with
-                        | CompilationMode.Unoptimised -> Some unfolded
-                        | CompilationMode.Tier0
-                        | CompilationMode.FullyOptimised -> foldSuccessors inputs.Mode instruction popped unfolded
-
-                    match folded with
-                    | None ->
-                        // A branch on a literal the analysis does not fold: the importer takes
-                        // some arm, and nothing past the branch is known.
-                        deliverUnfolded ()
-                    | Some folded ->
-                        successors.[offset] <- targetsOf offset instruction folded
-
-                        match folded with
-                        | Successors.Leave target -> arrive target (Some [])
-                        | _ ->
-                            for target in targetsOf offset instruction folded do
-                                arrive
-                                    target
-                                    (Some (
-                                        if leaders.Contains target then
-                                            List.replicate after.Length None
-                                        else
-                                            after
-                                    ))
-
-        body.Instructions
-        |> List.map (fun (instruction, offset) ->
-            match successors.TryGetValue offset with
-            | true, targets -> offset, targets
-            | false, _ -> offset, targetsOf offset instruction (successorsOf offset instruction)
-        )
-        |> Map.ofList
+        found
 
     /// The component of the flow graph each offset belongs to, where two offsets are in one
     /// component when they are successors of the same instruction, transitively: the blocks
@@ -1496,9 +965,38 @@ module StackShape =
     /// What an instruction delivers to one successor.
     [<RequireQualifiedAccess>]
     type private Delivery =
-        /// The stack, top first, and the constants of the block in each slot.
-        | Known of SlotShape list * Literal option list
+        /// The stack, top first.
+        | Known of SlotShape list
         | Unknown
+
+    /// The offsets whose shape can depend on which way the JIT takes the branch whose
+    /// successors are `targets`: those successors, closed under succession in `graph` and under
+    /// sharing a component of the flow graph, whose spill temps a changed delivery retypes.
+    let private dependentOn
+        (graph : Map<int, int list>)
+        (componentOf : int -> int)
+        (membersOf : Map<int, int list>)
+        (targets : int list)
+        : Set<int>
+        =
+        let seen = System.Collections.Generic.HashSet<int> ()
+        let worklist = System.Collections.Generic.Queue<int> ()
+
+        let visit (offset : int) : unit =
+            if graph.ContainsKey offset && seen.Add offset then
+                worklist.Enqueue offset
+
+        List.iter visit targets
+
+        while worklist.Count > 0 do
+            let offset = worklist.Dequeue ()
+            List.iter visit graph.[offset]
+
+            Map.tryFind (componentOf offset) membersOf
+            |> Option.defaultValue []
+            |> List.iter visit
+
+        Set.ofSeq seen
 
     /// Compute the shape of the evaluation stack at the entry of every instruction reachable
     /// from the method's entry or from a handler entry, joining over every path. An instruction
@@ -1506,15 +1004,13 @@ module StackShape =
     /// reach with stacks that cannot meet is recorded as a conflict and delivers an unknown
     /// stack, which propagates: what follows only from the join is left untyped, a join it feeds
     /// is untyped too rather than classified from its other arms, and so is every offset sharing
-    /// one of its spill temps.
+    /// one of its spill temps. A join that would be a promotion, but which a branch on literals
+    /// reaches, is recorded as `WidthDependsOnFoldedBranch` and propagates as a conflict does.
     let analyse (inputs : StackShapeInputs) (body : MethodInstructions<'methodVars>) : StackShape =
         let locations = body.Locations
-        let leaders = leadersOf body
-        let imported = importedSuccessorsOf inputs body
-        let components = componentsOf imported
+        let graph = flowGraphOf body
+        let components = componentsOf graph
         let entry = System.Collections.Generic.Dictionary<int, Entry> ()
-
-        let constants = System.Collections.Generic.Dictionary<int, Literal option list> ()
 
         let invalid = System.Collections.Generic.Dictionary<int, StackShapeError> ()
         let cliques = Cliques ()
@@ -1578,14 +1074,12 @@ module StackShape =
                         failwith $"BUG: stack shape: slot %d{k} at offset %d{offset} has a depth but no clique shape"
                 )
 
-        /// Where `offset` sends control as the importer sees it, each arriving with `delivery`
-        /// (a `leave` empties the stack).
+        /// Where `offset` sends control, each successor arriving with `delivery` (a `leave`
+        /// empties the stack).
         let successors (offset : int) (delivery : Delivery) : (int * Delivery) list =
-            let instruction = locations.[offset]
-
-            match successorsOf offset instruction with
-            | Successors.Leave target -> [ target, Delivery.Known ([], []) ]
-            | _ -> imported.[offset] |> List.map (fun target -> target, delivery)
+            match successorsOf offset locations.[offset] with
+            | Successors.Leave target -> [ target, Delivery.Known [] ]
+            | _ -> graph.[offset] |> List.map (fun target -> target, delivery)
 
         /// Where `offset` sends control, and what it delivers there: the stack its instruction
         /// leaves.
@@ -1597,7 +1091,6 @@ module StackShape =
             | Entry.Known depth ->
 
             let stack = entryShapes offset depth
-            let stackConstants = constants.[offset]
 
             match effectOf inputs locations offset instruction with
             | Error e -> Error e
@@ -1608,40 +1101,7 @@ module StackShape =
             else
 
             let popped, rest = List.splitAt effect.Pops stack
-            let poppedConstants, restConstants = List.splitAt effect.Pops stackConstants
-            let pushed = effect.Pushes popped
-            let after = pushed @ rest
-
-            let afterConstants =
-                foldConstants inputs.Mode offset instruction poppedConstants pushed.Length
-                @ restConstants
-
-            // A branch on a literal the analysis does not fold is taken some way the analysis
-            // cannot say: what it reaches is unknown.
-            let undecidable =
-                match inputs.Mode with
-                | CompilationMode.Unoptimised -> false
-                | CompilationMode.Tier0
-                | CompilationMode.FullyOptimised ->
-                    (foldSuccessors inputs.Mode instruction poppedConstants (successorsOf offset instruction)).IsNone
-
-            let targets =
-                match successorsOf offset instruction with
-                | Successors.Leave target -> [ target, Delivery.Known ([], []) ]
-                | _ ->
-                    imported.[offset]
-                    |> List.map (fun target ->
-                        if undecidable then
-                            target, Delivery.Unknown
-                        else
-                            let targetConstants =
-                                if leaders.Contains target then
-                                    List.replicate after.Length None
-                                else
-                                    afterConstants
-
-                            target, Delivery.Known (after, targetConstants)
-                    )
+            let targets = successors offset (Delivery.Known (effect.Pushes popped @ rest))
 
             match targets |> List.tryFind (fun (target, _) -> not (locations.ContainsKey target)) with
             | Some (target, _) -> Error (StackShapeError.BranchOutsideBody (offset, target))
@@ -1667,7 +1127,7 @@ module StackShape =
                         | Delivery.Unknown ->
                             markUnknown target None
                             None
-                        | Delivery.Known (stack, stackConstants) ->
+                        | Delivery.Known stack ->
                             match entry.TryGetValue target with
                             | true, Entry.Unknown -> None
                             | true, Entry.Known existing when existing <> stack.Length ->
@@ -1676,18 +1136,9 @@ module StackShape =
                                     (Some (StackShapeError.DepthMismatch (target, existing, stack.Length)))
 
                                 None
-                            | true, Entry.Known _ ->
-                                if constants.[target] <> stackConstants then
-                                    // A leader is delivered no constants, and an instruction that
-                                    // is not one has a single predecessor, whose literals do not
-                                    // change between visits.
-                                    failwith
-                                        $"BUG: stack shape: offset %d{target} was delivered constants that differ from an earlier delivery"
-
-                                Some (target, stack)
+                            | true, Entry.Known _ -> Some (target, stack)
                             | false, _ ->
                                 entry.[target] <- Entry.Known stack.Length
-                                constants.[target] <- stackConstants
                                 enqueue target
 
                                 // Every slot shares its component's temp for that slot; an offset
@@ -1721,25 +1172,23 @@ module StackShape =
             for offset in changed do
                 enqueue offset
 
-        for offset, stack in (0, []) :: handlerEntries body.ExceptionRegions do
-            deliverAll [ offset, Delivery.Known (stack, List.replicate stack.Length None) ]
-
         // An offset is queued when first reached, when a clique one of its slots belongs to
         // changes shape, and when it becomes unknown. An instruction found invalid on its own
         // delivers nothing; a call whose token could not be read is no claim about the IL, so
         // what follows it is unknown rather than unreached.
-        while worklist.Count > 0 do
-            let offset = worklist.Dequeue ()
-            queued.Remove offset |> ignore
+        let drain () : unit =
+            while worklist.Count > 0 do
+                let offset = worklist.Dequeue ()
+                queued.Remove offset |> ignore
 
-            match deliveries offset with
-            | Error (StackShapeError.MissingTokenShape _ as e) ->
-                invalid.[offset] <- e
-                deliverAll (successors offset Delivery.Unknown)
-            | Error e -> invalid.[offset] <- e
-            | Ok targets -> deliverAll targets
+                match deliveries offset with
+                | Error (StackShapeError.MissingTokenShape _ as e) ->
+                    invalid.[offset] <- e
+                    deliverAll (successors offset Delivery.Unknown)
+                | Error e -> invalid.[offset] <- e
+                | Ok targets -> deliverAll targets
 
-        let typed =
+        let typed () : Map<int, SlotShape list> =
             entry
             |> Seq.choose (fun kv ->
                 match kv.Value with
@@ -1753,7 +1202,7 @@ module StackShape =
         // re-imports such a predecessor with the widened temp, so it delivers a double in the
         // end and inserts no cast. Only an edge that *still* delivers a float32 into a slot
         // whose clique settled as double is cast.
-        let promotions =
+        let promotionsOf (typed : Map<int, SlotShape list>) : Map<int, int list> =
             typed
             |> Map.toList
             |> List.collect (fun (offset, _) ->
@@ -1763,7 +1212,7 @@ module StackShape =
                     targets
                     |> List.collect (fun (target, delivery) ->
                         match delivery, Map.tryFind target typed with
-                        | Delivery.Known (delivered, _), Some settled ->
+                        | Delivery.Known delivered, Some settled ->
                             List.zip delivered settled
                             |> List.indexed
                             |> List.choose (fun (i, (d, s)) ->
@@ -1782,9 +1231,56 @@ module StackShape =
             |> List.map (fun (target, slots) -> target, slots |> List.map snd |> List.sort)
             |> Map.ofList
 
+        for offset, stack in (0, []) :: handlerEntries body.ExceptionRegions do
+            deliverAll [ offset, Delivery.Known stack ]
+
+        drain ()
+
+        // The analysis types the flow graph with every arm imported, as debuggable code imports
+        // it. Folding a branch on literals only removes edges and the deliveries of code reached
+        // only through them, so a join keeps its width in every compilation unless a float32
+        // meets a double there: then the double may arrive only through a folded-away arm. Such a
+        // join, where a branch on literals can change what reaches its spill temps, is refused,
+        // and what follows only from it is unknown.
+        let reachableOffsets = reachable body
+
+        let dependent : Map<int, int> =
+            literalBranchesOf inputs body
+            |> Set.intersect reachableOffsets
+            |> Seq.fold
+                (fun (acc : Map<int, int>) (branch : int) ->
+                    dependentOn graph componentOf membersOf graph.[branch]
+                    |> Seq.fold
+                        (fun (acc : Map<int, int>) (offset : int) ->
+                            if acc.ContainsKey offset then
+                                acc
+                            else
+                                Map.add offset branch acc
+                        )
+                        acc
+                )
+                Map.empty
+
+        let refused =
+            promotionsOf (typed ())
+            |> Map.toList
+            |> List.choose (fun (offset, _) ->
+                Map.tryFind offset dependent |> Option.map (fun branch -> offset, branch)
+            )
+
+        for offset, _ in refused do
+            markUnknown offset None
+
+        drain ()
+
+        for offset, branch in refused do
+            invalid.[offset] <- StackShapeError.WidthDependsOnFoldedBranch (offset, branch)
+
+        let typed = typed ()
+
         {
             Entry = typed
             Invalid = invalid |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
-            Reachable = reachable body
-            Promotions = promotions
+            Reachable = reachableOffsets
+            Promotions = promotionsOf typed
         }

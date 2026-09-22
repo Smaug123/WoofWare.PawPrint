@@ -95,29 +95,35 @@ Decisions for this stage, agreed before it was built:
   or loaded before the body runs: eager resolution is an effect the interpreter
   never had, and it makes "which offsets are reachable" decide whether a method
   can execute at all, which is the wrong altitude for a width analysis.
-* Branches on a literal of the same basic block are folded as the importer
-  folds them (`gtFoldExpr` runs at Tier-0 too; only debuggable code and MinOpts
-  skip it), because otherwise a folded-away double arm widens a join CoreCLR
-  keeps single. An integer a block pushes as a literal, or computes from
-  literals it pushed, is a constant of that block; a value that crosses a block
-  boundary (a branch target, a handler entry, the instruction after a
-  conditional branch) is a spill temp to the importer, and no constant survives
-  one; a `br` to the very next instruction is no boundary, since the JIT merges
-  the blocks before importing. Folding is off, as it is in the JIT, for a method
-  marked `NoOptimization` and for every method of an assembly stamped
-  `DebuggableAttribute(DisableOptimizations)`, dynamic methods it hosts included:
-  a Debug build, which is what the test harness compiles its guests as. A
-  dynamic method, and a method marked `AggressiveOptimization`, is fully
-  optimised from the start, where `dup` of a non-zero constant spills it to a
-  temp the importer no longer folds; every other method is compiled at Tier-0
-  first, and the analysis follows that first compilation: a later re-JIT at a
-  higher tier may type a join differently, and that is not modelled. Folding of intrinsics, `typeof` comparisons and inlined constants is
-  *not* modelled: an emitted mixed-width join under such a branch keeps
-  path-local width, and that bound is stated rather than chased.
+* Branches on literals are *not* folded; a join whose width they can decide is
+  refused. The importer folds a branch whose operands its block computes from
+  literals alone (`gtFoldExpr`, at every tier but not in debuggable code),
+  importing only the arm taken, so whether such a join is widened depends on how
+  the body was compiled. Rather than model that (which tier, which assembly
+  stamp, which constants fold under which widening and overflow rules, and a
+  re-JIT at a higher tier typing the join differently again), the analysis types
+  the flow graph with every arm imported, as debuggable code does. Folding only
+  removes edges and the deliveries of code reached only through them, so that
+  answer is every compilation's answer except where a float32 meets a double: a
+  promotion. A promotion that a branch on literals can reach, through succession
+  or through sharing a spill temp with something it reaches, is recorded as
+  `WidthDependsOnFoldedBranch`, and the interpreter refuses to execute it rather
+  than guess a width. What follows only from it is unknown. A literal is an
+  integer, float, `null`, token or `sizeof` literal, or the result of a
+  token-less operation on literals; a value arriving at a block's first
+  instruction is a spill temp to the importer, and no literal, and a `br` to the
+  very next instruction starts no block, since the JIT merges the blocks before
+  importing. Measured on the 10.0.7 shared framework: 259 of 129,000 methods
+  branch directly on a same-block `ldc`/`ldnull`, and 2 of those use any `.r4`
+  opcode, so refusal should be rare. Other folds are *not* modelled: intrinsics,
+  `typeof` comparisons, `box` patterns, inlined constants, algebraic identities
+  with one runtime operand (`gtFoldExprSpecial`) and comparisons of a local with
+  itself. An emitted mixed-width join under such a branch keeps path-local
+  width, and that bound is stated rather than chased.
 * Slots are joined over CoreCLR's spill cliques rather than per target. The
   clique is a property of the importer's flow graph: it spans blocks the
   importer never imports, so the two successors of a dead conditional share a
-  temp, transitively, and it lacks the edge a folded branch discards. A
+  temp, transitively. A
   conflict (a depth mismatch, a float meeting a non-float) makes the join
   unknown, as in stage 1, together with every offset sharing one of its spill
   temps: they share the temp whose type is undecidable.

@@ -55,7 +55,6 @@ module StackShapeOfMethod =
         (assembly : DumpedAssembly)
         (binding : GenericBinding)
         (isStatic : bool)
-        (mode : CompilationMode)
         (signature : TypeMethodSignature<TypeDefn>)
         (body : MethodInstructions<TypeDefn>)
         (tokens : Map<int, TokenShape>)
@@ -77,7 +76,6 @@ module StackShapeOfMethod =
             ReturnsValue =
                 (StackShapeTokens.returnShape assembly binding GenericSubstitution.None signature.ReturnType).IsSome
             Tokens = tokens
-            Mode = mode
         }
 
     /// A body from a PE image: everything comes from the owning assembly's metadata.
@@ -110,16 +108,7 @@ module StackShapeOfMethod =
         let tokens =
             StackShapeTokens.ofBody assembly binding (StackShape.reachable body) body
 
-        StackShape.analyse
-            (inputsOf
-                assembly
-                binding
-                definition.IsStatic
-                (StackShapeTokens.compilationModeOf assembly facts.Handle)
-                definition.Signature
-                body
-                tokens)
-            body
+        StackShape.analyse (inputsOf assembly binding definition.IsStatic definition.Signature body tokens) body
 
     /// The signature of a `DynamicMethod` that has not yet been minted, read from the guest
     /// object itself: its `_parameterTypes` array and `_returnType`.
@@ -367,17 +356,8 @@ module StackShapeOfMethod =
             )
             |> Map.ofList
 
-        // A dynamic method is always static, and is compiled the way its scope's module is.
-        StackShape.analyse
-            (inputsOf
-                scopeAssembly
-                GenericBinding.AtDefinition
-                true
-                (StackShapeTokens.dynamicCompilationModeOf scopeAssembly)
-                signature
-                body
-                tokens)
-            body
+        // A dynamic method is always static.
+        StackShape.analyse (inputsOf scopeAssembly GenericBinding.AtDefinition true signature body tokens) body
 
     let private isDebugBuild : bool =
 #if DEBUG
@@ -435,6 +415,11 @@ module StackShapeOfMethod =
                 // The token could not be read ahead of time; the instruction raises for the
                 // guest, or fails, on its own terms.
                 state
+            | Some (StackShapeError.WidthDependsOnFoldedBranch (_, branch)) ->
+                // CoreCLR may or may not widen a float32 here, depending on whether it folded
+                // the branch; carrying on with either width could diverge from it.
+                failwith
+                    $"stack shape: %s{frame.ExecutingMethod.Name} (%O{key}) is executing offset %d{frame.IlOpIndex}, a join where a float32 meets a double whose width depends on whether the JIT folds the branch on literals at offset %d{branch}, which PawPrint does not model"
             | Some error ->
                 // An instruction that cannot run on any path: CoreCLR's importer refuses it when
                 // it imports it, which is at the latest when control reaches it.
