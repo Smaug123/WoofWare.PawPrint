@@ -81,6 +81,7 @@
     <Compile Include="IlMachineThreadState.fs" />
     <Compile Include="IlMachineMemberResolution.fs" />
     <Compile Include="IlMachineManagedByref.fs" />
+    <Compile Include="ReflectedTypeTarget.fs" />
     <Compile Include="IlMachineRuntimeMetadata.fs" />
     <Compile Include="IlMachineState.fs" />
     <!-- Before IlMachineStateExecution.fs, not with the QCalls that ask it for `GetSlot` and

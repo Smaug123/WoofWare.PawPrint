@@ -514,7 +514,7 @@ module NativeRuntimeMethodHandle =
     /// `ConcreteTypeHandle` cannot express one. Consumers that need only the *layout* of a
     /// definition should ask `VirtualSlotLayout.slotTableOfDefinition`, and those that need the
     /// types a definition's signature *reflects as* should ask
-    /// `NativeRuntimeTypeHelpers.reflectedTypeTarget`; both carry a formal context of their own.
+    /// `ReflectedTypeTarget.reflectedTypeTarget`; both carry a formal context of their own.
     let requireClosedDeclaringType (operation : string) (identity : MetadataMethodIdentity) : ConcreteTypeHandle =
         match identity.GetDeclaringType () with
         | RuntimeTypeHandleTarget.Closed handle -> handle
