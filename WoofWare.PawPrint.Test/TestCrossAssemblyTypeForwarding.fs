@@ -415,3 +415,41 @@ class Program
             ExpectedReturnCode = 0
         }
         |> CrossAssemblyHarness.runTest
+
+    [<Test>]
+    let ``the module pseudo-type is not something GetType can name`` () : unit =
+        // ECMA-335 II.22.37's first `TypeDef` row parents an assembly's module-scope functions and
+        // variables. `ClassLoader::PopulateAvailableClassHashTable` skips it, so it is in none of
+        // the tables `Assembly.GetType` searches. Measured: real .NET answers null, and
+        // `GetTypes()` omits it too.
+        {
+            Assemblies =
+                assemblies
+                    """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(TypeForwardFacade.Marker).Assembly;
+
+        if (facade.GetType("<Module>", throwOnError: false) is not null) return 1;
+
+        // It is genuinely in the metadata — this is the lookup declining to name it, not the
+        // assembly lacking the row.
+        if (Array.Exists(facade.GetTypes(), t => t.Name == "<Module>")) return 2;
+
+        // A real type in the same assembly still resolves, so the exclusion is that row and not
+        // the whole table.
+        if (facade.GetType("TypeForwardFacade.Marker", throwOnError: false) is null) return 3;
+
+        return 0;
+    }
+}
+"""
+            EntryAssemblyName = "TypeForward.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTest

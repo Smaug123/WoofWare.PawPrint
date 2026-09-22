@@ -1462,8 +1462,22 @@ module NativeRuntimeAssembly =
             // throwOnError: false)` answers `null` for both ways of not arriving, and
             // `throwOnError: true` distinguishes them — so the two are reported differently and
             // CoreLib decides what the guest sees.
+            // ECMA-335 II.22.37: the first `TypeDef` row is the pseudo-class that parents an
+            // assembly's module-scope functions and variables. `ClassLoader::PopulateAvailableClassHashTable`
+            // skips it, so it is in no table the class loader searches and `Assembly.GetType` never
+            // answers with it — measured: real .NET answers `null` for `<Module>`, and `GetTypes()`
+            // omits it too. Identified by its row rather than its name, because the name is a legal
+            // identifier that a hand-written assembly could also give a real type.
+            let isModulePseudoType (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>) : bool =
+                System.Reflection.Metadata.Ecma335.MetadataTokens.GetRowNumber (
+                    System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit typeInfo.TypeDefHandle
+                ) = 1
+
             let miss, state, topLevel =
-                match assembly.TryGetTopLevelTypeDef ns simple with
+                match
+                    assembly.TryGetTopLevelTypeDef ns simple
+                    |> Option.filter (isModulePseudoType >> not)
+                with
                 | Some typeDef -> ForwarderMiss.AnswerNull, state, Some (assembly, typeDef)
                 | None ->
 
