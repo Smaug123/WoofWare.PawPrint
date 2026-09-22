@@ -60,23 +60,21 @@ module ReflectedTypeTarget =
     /// What one axis of a reflected type's generic environment -- the type variables, or the
     /// method variables -- denotes.
     ///
-    /// Two cases and not a per-variable mixture, because a mixture cannot arise: an axis comes
-    /// either from an instantiation, whose every argument is a runtime type, or from a definition
-    /// read as itself, whose every argument is that definition's own variable. Binding *some*
-    /// arguments of an axis is `MakeGenericMethod` with an open argument, which
-    /// `MethodHandle.MethodGenerics` cannot express either (see
-    /// `sourcesPure/MakeGenericMethodOpenArgument.cs`).
+    /// An axis comes either from an instantiation, whose every argument is a runtime type, or from
+    /// something open: a definition read as itself, whose every argument is that definition's own
+    /// variable, or an open construction such as the `Base&lt;int, T&gt;` a definition may extend,
+    /// whose arguments mix the two.
     ///
     /// The distinction is not cosmetic. `Bound` keeps the concrete handles, which is what lets an
-    /// element mentioning only this axis be *concretized* rather than walked -- and it must be,
-    /// since `RuntimeTypeHandleTarget.openConstructed` refuses an all-closed argument list.
+    /// element mentioning only this axis be *concretized* in one step rather than walked.
     [<RequireQualifiedAccess>]
     type ReflectionVariableBinding =
         /// The owner is an instantiation: the `i`th variable denotes this runtime type.
         | Bound of ImmutableArray<ConcreteTypeHandle>
-        /// The owner is a definition read as itself: the `i`th variable denotes this target,
-        /// which is the very object reflection hands the guest for it.
-        | Formal of ImmutableArray<RuntimeTypeHandleTarget>
+        /// The owner is open -- a definition read as itself, or an open construction: the `i`th
+        /// variable denotes this target, closed or not, which is the very object reflection hands
+        /// the guest for it.
+        | Open of ImmutableArray<RuntimeTypeHandleTarget>
 
     [<RequireQualifiedAccess>]
     module ReflectionVariableBinding =
@@ -85,23 +83,23 @@ module ReflectedTypeTarget =
             match binding with
             | ReflectionVariableBinding.Bound handles ->
                 handles |> Seq.map RuntimeTypeHandleTarget.Closed |> ImmutableArray.CreateRange
-            | ReflectionVariableBinding.Formal targets -> targets
+            | ReflectionVariableBinding.Open targets -> targets
 
         /// The axis as a substitution `concretizeType` can apply, where it has one.
         ///
-        /// `Formal` answers empty rather than failing: it is a legitimate argument on the closed
+        /// `Open` answers empty rather than failing: it is a legitimate argument on the closed
         /// path precisely when the element mentions no variable of this axis, and then the vector
         /// is never indexed. `reflectedTypeTarget` is what enforces that precondition.
         let substitution (binding : ReflectionVariableBinding) : ImmutableArray<ConcreteTypeHandle> =
             match binding with
             | ReflectionVariableBinding.Bound handles -> handles
-            | ReflectionVariableBinding.Formal _ -> ImmutableArray.Empty
+            | ReflectionVariableBinding.Open _ -> ImmutableArray.Empty
 
     /// The generic environment a *reflected* type is read in: what each ECMA-335 `!i` and `!!i`
     /// denotes, as something reflection can hand the guest.
     ///
     /// One entry per generic parameter the owner declares, so an index outside an array is
-    /// malformed metadata rather than a missing entry. `MethodVariables` is an empty `Formal`
+    /// malformed metadata rather than a missing entry. `MethodVariables` is an empty `Open`
     /// where the owner is a type rather than a method, which makes every `!!i` there a failure --
     /// ECMA-335 §II.10.1.7 scopes a type parameter's constraints to the type, and a method that
     /// declares no generic parameters cannot spell one in its own signature.
@@ -198,9 +196,9 @@ module ReflectedTypeTarget =
             state, resolved.Identity
 
     /// The type reflection surfaces for one signature element, read in an environment whose
-    /// variables need not denote runtime types -- a generic parameter's constraints, or the
+    /// variables need not denote runtime types -- a generic parameter's constraints, the
     /// signature of a method whose declaring type is a generic definition rather than an
-    /// instantiation.
+    /// instantiation, or the extends clause of a definition or of an open construction.
     ///
     /// <paramref name="assembly"/> is the one whose token space <paramref name="ty"/> is spelled
     /// in; <paramref name="ownerDescription"/> names what carries the element, for diagnostics.
@@ -220,15 +218,10 @@ module ReflectedTypeTarget =
         : IlMachineState * RuntimeTypeHandleTarget
         =
         // Every variable this element mentions denotes a runtime type, so the element does too --
-        // whether it mentions none at all, or only variables of an axis that is `Bound`.
-        //
-        // This has to be decided *before* the structural walk rather than after it, because a
-        // walk that resolved every argument closed could not put the answer back together:
-        // `RuntimeTypeHandleTarget.openConstructed` refuses an all-closed argument list, since
-        // such a type belongs in `AllConcreteTypes` as a `Closed` handle, which the walk cannot
-        // mint. `List<!0>` under a closed `Box<int>` is exactly that shape, and it shares a
-        // signature with `!!0` whenever the declaring type is an instantiation and the method is
-        // a generic method definition.
+        // whether it mentions none at all, or only variables of an axis that is `Bound` -- and it
+        // is concretized whole. The structural walk below is reached only for an element that
+        // mentions a variable of an `Open` axis; each piece of it that does not (the `int` in
+        // `Dictionary<!0, int>`) comes back through here and is concretized.
         let mentioned = mentionedAxes ty
 
         let axisIsClosed (mentions : bool) (binding : ReflectionVariableBinding) : bool =
@@ -236,14 +229,14 @@ module ReflectedTypeTarget =
             || (
                 match binding with
                 | ReflectionVariableBinding.Bound _ -> true
-                | ReflectionVariableBinding.Formal _ -> false
+                | ReflectionVariableBinding.Open _ -> false
             )
 
         if
             axisIsClosed mentioned.TypeVariable environment.TypeVariables
             && axisIsClosed mentioned.MethodVariable environment.MethodVariables
         then
-            // A `Formal` axis contributes an empty substitution, which is sound precisely because
+            // An `Open` axis contributes an empty substitution, which is sound precisely because
             // the test above has established that this element mentions no variable of it.
             let state, handle =
                 IlMachineTypeResolution.concretizeType
@@ -258,7 +251,7 @@ module ReflectedTypeTarget =
             state, RuntimeTypeHandleTarget.Closed handle
         else
 
-        // Reached only for an axis the test above found `Formal`, since a `Bound` one takes the
+        // Reached only for an axis the test above found `Open`, since a `Bound` one takes the
         // closed path; but indexed generally, so the arm stays correct if that ever changes.
         let typeVariables = ReflectionVariableBinding.targets environment.TypeVariables
         let methodVariables = ReflectionVariableBinding.targets environment.MethodVariables
@@ -309,11 +302,36 @@ module ReflectedTypeTarget =
                     state, target :: acc
                 )
 
-            // `openConstructed` is what keeps this canonical: it collapses the typical
-            // instantiation -- the CRTP `where T : ISelf<T>`, and a definition naming itself in its
-            // own method signatures -- back to the bare definition, exactly as CoreCLR's class
-            // loader does, so the guest sees one `Type` object rather than two.
-            state, RuntimeTypeHandleTarget.openConstructed definition (List.rev argumentTargets)
+            let argumentTargets = List.rev argumentTargets
+
+            let closedArguments =
+                argumentTargets
+                |> List.choose (fun target ->
+                    match target with
+                    | RuntimeTypeHandleTarget.Closed handle -> Some handle
+                    | _ -> None
+                )
+
+            if closedArguments.Length = argumentTargets.Length then
+                // Every variable mentioned here named a closed argument of an `Open` axis --
+                // `Base<!0>` read under `Derived<int, T>` -- so this is a closed type, which
+                // `openConstructed` refuses to spell and `AllConcreteTypes` must hold instead.
+                let handle, state =
+                    instantiateOpenGenericTypeDefinition
+                        loggerFactory
+                        baseClassTypes
+                        operation
+                        state
+                        definition
+                        closedArguments
+
+                state, RuntimeTypeHandleTarget.Closed handle
+            else
+                // `openConstructed` is what keeps this canonical: it collapses the typical
+                // instantiation -- the CRTP `where T : ISelf<T>`, and a definition naming itself in
+                // its own method signatures -- back to the bare definition, exactly as CoreCLR's
+                // class loader does, so the guest sees one `Type` object rather than two.
+                state, RuntimeTypeHandleTarget.openConstructed definition argumentTargets
         | TypeDefn.Byref element
         | TypeDefn.Pointer element
         | TypeDefn.OneDimensionalArrayLowerBoundZero element

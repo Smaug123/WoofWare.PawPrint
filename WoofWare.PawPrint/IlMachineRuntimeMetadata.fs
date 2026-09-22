@@ -362,17 +362,13 @@ module IlMachineRuntimeMetadata =
     ///
     /// `Closed` defers to `resolveBaseConcreteType` and rewraps as `Closed`.
     ///
-    /// `OpenGenericTypeDefinition` represents CoreCLR's canonical MethodTable
-    /// for a generic typedef (i.e. `G<__Canon>`). Its parent MT is the parent
-    /// type after substituting `__Canon` for each of `G`'s parameters. The
-    /// case where the base type doesn't mention `G`'s parameters at all (e.g.
-    /// `class G<T> : object`, `class G<T> : Base<int>`) is fully closed and
-    /// concretizes with no generics. The shared-base case (e.g.
-    /// `class G<T> : Base<T>` → parent is `Base<__Canon>` →
-    /// `OpenGenericTypeDefinition Base`) is not yet implemented and surfaces
-    /// loudly; the immediate callers (`MethodTable::ParentMethodTable` lookups
-    /// driven by reflection on open typedefs) only exercise the closed-parent
-    /// case today.
+    /// `OpenGenericTypeDefinition` is the typical instantiation `G<T>`, and `OpenConstructed` an
+    /// instantiation with at least one argument open. Either one's parent is its definition's
+    /// extends clause with that instantiation's arguments substituted in, exactly as CoreCLR loads
+    /// the parent of any instantiation: `class G<T> : Base<T>` makes the parent of `G<>` the open
+    /// construction `Base<T>` over `G`'s own `T` (reflection reports it with
+    /// `IsGenericTypeDefinition` false), a base mentioning no parameter (`Base<int>`) is the closed
+    /// type, and so is `Base<!0>` read under `G<int, U>`.
     ///
     /// `GenericParameter` and `MethodGenericParameter` are TypeDescs in
     /// CoreCLR and carry no MethodTable; asking for their parent is a bug.
@@ -410,11 +406,6 @@ module IlMachineRuntimeMetadata =
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
         | RuntimeTypeHandleTarget.FunctionPointer _ ->
             RuntimeTypeHandleTarget.refuseComposite "resolveBaseRuntimeTypeHandleTarget" target
-        // An instantiation's parent is its definition's base type with the instantiation
-        // substituted in. The substitution is only needed when the base actually mentions a
-        // parameter, and the existing guard below refuses exactly that case — so the common
-        // shapes (`Comparer<T>`, whose base is `System.Object`, and any non-generic base) are
-        // answered correctly and the rest stays loud.
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
         | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             let assy =
@@ -432,21 +423,38 @@ module IlMachineRuntimeMetadata =
                 let state, baseAssy, baseTypeDefn =
                     resolveBaseTypeInfo loggerFactory baseClassTypes state assy baseTypeInfo
 
-                if containsAnyGenericParameter baseTypeDefn then
-                    failwith
-                        $"TODO: resolveBaseRuntimeTypeHandleTarget for open generic typedef %O{identity.TypeDefinition.Get} in %s{identity.AssemblyFullName}: base type %O{baseTypeDefn} references generic parameters (shared/canonical parent); only closed parents are supported today"
-                else
-                    let state, baseHandle =
-                        IlMachineTypeResolution.concretizeType
-                            loggerFactory
-                            baseClassTypes
-                            state
-                            baseAssy.DefinitionFullName
-                            ImmutableArray.Empty
-                            ImmutableArray.Empty
-                            baseTypeDefn
+                // What each `!i` of the extends clause denotes. The typical instantiation's
+                // arguments are the definition's own variables, the very targets reflection hands
+                // the guest for `typeof(G<>).GetGenericArguments()`.
+                let typeArguments =
+                    match target with
+                    | RuntimeTypeHandleTarget.OpenConstructed (_, arguments) -> ImmutableArray.CreateRange arguments
+                    | _ ->
+                        Seq.init
+                            typeInfo.Generics.Length
+                            (fun index -> RuntimeTypeHandleTarget.GenericParameter (identity, index))
+                        |> ImmutableArray.CreateRange
 
-                    state, Some (RuntimeTypeHandleTarget.Closed baseHandle)
+                let environment =
+                    {
+                        ReflectedTypeTarget.ReflectionTypeEnvironment.TypeVariables =
+                            ReflectedTypeTarget.ReflectionVariableBinding.Open typeArguments
+                        ReflectedTypeTarget.ReflectionTypeEnvironment.MethodVariables =
+                            ReflectedTypeTarget.ReflectionVariableBinding.Open ImmutableArray.Empty
+                    }
+
+                let state, parent =
+                    ReflectedTypeTarget.reflectedTypeTarget
+                        loggerFactory
+                        baseClassTypes
+                        "resolveBaseRuntimeTypeHandleTarget"
+                        $"the extends clause of %O{target}"
+                        baseAssy
+                        environment
+                        state
+                        baseTypeDefn
+
+                state, Some parent
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             failwith
                 $"resolveBaseRuntimeTypeHandleTarget: refused for generic parameter #%i{position} of %O{declaringType.TypeDefinition.Get}: TypeDescs have no MethodTable in CoreCLR"

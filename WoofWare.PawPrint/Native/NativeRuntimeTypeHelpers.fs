@@ -1169,7 +1169,7 @@ module NativeRuntimeTypeHelpers =
                 failwith
                     $"logic error: %s{operation}: %O{target} is not a generic-parameter target, which binding `declaringType` above has already refused"
 
-        // Both axes are `Formal`: a constraint is read against the declaring owner's own
+        // Both axes are `Open`: a constraint is read against the declaring owner's own
         // variables, never against an instantiation of them, so nothing here can take the closed
         // path on account of the environment. An all-closed constraint like `where T : List<int>`
         // still does, by mentioning no variable at all.
@@ -1180,9 +1180,9 @@ module NativeRuntimeTypeHelpers =
                         declaringTypeInfo.Generics.Length
                         (fun index -> RuntimeTypeHandleTarget.GenericParameter (declaringType, index))
                     |> ImmutableArray.CreateRange
-                    |> ReflectedTypeTarget.ReflectionVariableBinding.Formal
+                    |> ReflectedTypeTarget.ReflectionVariableBinding.Open
                 ReflectedTypeTarget.ReflectionTypeEnvironment.MethodVariables =
-                    methodVariables |> ReflectedTypeTarget.ReflectionVariableBinding.Formal
+                    methodVariables |> ReflectedTypeTarget.ReflectionVariableBinding.Open
             }
 
         let constraintTarget (state : IlMachineState) (ty : TypeDefn) : IlMachineState * RuntimeTypeHandleTarget =

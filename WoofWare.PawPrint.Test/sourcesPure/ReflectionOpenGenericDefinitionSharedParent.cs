@@ -18,11 +18,10 @@ public static class Program
     // Enumerating the methods of an open generic definition whose *base type mentions its own type
     // parameter*: `SharedDerived<T> : SharedBase<T>`. The layout question is the same one
     // sourcesPure/ReflectionOpenGenericDefinitionMethods.cs asks and PawPrint answers -- the
-    // override folds onto the inherited slot -- but reaching it needs the parent to be nameable
-    // first, and `RuntimeType.GetParentType` fails before any of it: PawPrint's
-    // `resolveBaseRuntimeTypeHandleTarget` refuses a base type that references generic parameters
-    // (CoreCLR calls that the shared/canonical parent). That is the same refusal
-    // sourcesPure/EnumQueriesOpenGenericSharedParent.cs parks, reached by a different query.
+    // override folds onto the inherited slot -- but reaching it means walking into the parent,
+    // which is the open construction `SharedBase<T>` over the deriving definition's own `T`: its
+    // virtual slot count, its introduced methods, and method handles whose declaring type it is.
+    // sourcesPure/EnumQueriesOpenGenericSharedParent.cs asks only for that parent's name.
     //
     // Exit code is the index of the first failing check, so a failure names itself.
     public static int Main()

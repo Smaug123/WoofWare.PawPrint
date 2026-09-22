@@ -612,7 +612,7 @@ module NativeSignature =
                     methodInfo.DeclaringTypeGenerics.Length
                     (fun index -> RuntimeTypeHandleTarget.GenericParameter (definition, index))
                 |> ImmutableArray.CreateRange
-                |> ReflectedTypeTarget.ReflectionVariableBinding.Formal
+                |> ReflectedTypeTarget.ReflectionVariableBinding.Open
 
         let methodVariables =
             match methodGenericContext with
@@ -642,7 +642,7 @@ module NativeSignature =
                         RuntimeTypeHandleTarget.MethodGenericParameter (declaringDefinition, declaringMethod, index)
                     )
                 |> ImmutableArray.CreateRange
-                |> ReflectedTypeTarget.ReflectionVariableBinding.Formal
+                |> ReflectedTypeTarget.ReflectionVariableBinding.Open
 
         let environment =
             {
