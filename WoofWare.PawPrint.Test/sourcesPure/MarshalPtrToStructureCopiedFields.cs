@@ -3,11 +3,16 @@ using System.Runtime.InteropServices;
 
 public class Program
 {
+    interface IPointerHolder
+    {
+        bool Holds(IntPtr p);
+    }
+
     // Every field kind the struct-marshal stub copies verbatim. The Decimal is what sends the
     // struct through the stub at all: CoreCLR never treats a Decimal field as blittable, so the
     // other fields are unmarshalled one by one alongside it rather than memmoved.
     [StructLayout(LayoutKind.Sequential)]
-    struct Mixed
+    struct Mixed : IPointerHolder
     {
         public byte B;
         public sbyte SB;
@@ -23,6 +28,10 @@ public class Program
         public IntPtr P;
         public UIntPtr UP;
         public decimal M;
+
+        // An instance call on the field itself, so it reads `IntPtr._value` through the field's
+        // home rather than loading the field's value.
+        public bool Holds(IntPtr p) => P.Equals(p);
     }
 
     // Overlapping copied fields. Both read the same native bytes, so unlike a DateTime overlap the
@@ -91,6 +100,12 @@ public class Program
             if (!Same(s, r)) return 10;
             Marshal.WriteInt32(r.P, 0, 99);
             if (Marshal.ReadInt32(pointee, 0) != 99) return 11;
+
+            // The non-generic overload hands back the very box the stub unmarshalled into, so
+            // what the stub stored there is what the guest sees, field shapes and all.
+            object boxed = Marshal.PtrToStructure(ptr, typeof(Mixed));
+            if (!((IPointerHolder)boxed).Holds(pointee)) return 13;
+            if (!Same(s, (Mixed)boxed)) return 14;
 
             // For every field kind copied verbatim, a round trip is the identity, bit for bit
             // (NaN payloads and negative zeros included, since `Same` compares floats' bits).

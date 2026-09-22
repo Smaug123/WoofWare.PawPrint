@@ -871,14 +871,17 @@ module StructMarshalStub =
                 | StructMarshalFieldKind.CopyBytes ->
                     // CoreCLR's copy marshaler is an `ldobj` and `stobj` of the field's own type,
                     // so read as that type rather than as the plan's value, which the Marshal
-                    // direction unwraps (an `IntPtr` field's step holds a bare native int).
-                    // `readManagedByrefAs` takes a pointer cell as it is, provenance included.
+                    // direction unwraps (an `IntPtr` field's step holds a bare native int), and
+                    // coerce to it as `stobj` does. The coercion is not redundant: over a pointer
+                    // cell with provenance, `readManagedByrefAs` hands back the bare cell whatever
+                    // the template, and storing that would leave the field of type `IntPtr`
+                    // holding something that is not one.
+                    let template = CliType.ZeroLike step.Placement.Field.Contents
+
                     let value =
-                        IlMachineState.readManagedByrefAs
-                            baseClassTypes
-                            state
-                            (CliType.ZeroLike step.Placement.Field.Contents)
-                            native
+                        IlMachineState.readManagedByrefAs baseClassTypes state template native
+                        |> EvalStackValue.ofCliType
+                        |> EvalStackValue.toCliTypeCoerced template
 
                     let state =
                         IlMachineState.writeManagedByrefWithBase baseClassTypes state (homeOf step) value
