@@ -2411,6 +2411,19 @@ module NativeSystemNative =
             |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer destination) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_GetPid",
+          [],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) ->
+            // `int32_t SystemNative_GetPid(void)` (pal_process.c:684) is
+            // `return getpid();`, infallible as `getpid(2)` is.
+            let pid = UnixSystem.processId (EmulatedKernel.unix state.Kernel)
+
+            state
+            |> IlMachineState.pushToEvalStack
+                (CliType.Numeric (CliNumericType.Int32 (ProcessId.toInt32 pid)))
+                ctx.Thread
+            |> NativeHandlerResult.completed
+            |> Some
         | Some "SystemNative_GetEUid",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->

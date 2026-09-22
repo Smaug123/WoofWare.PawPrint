@@ -369,7 +369,7 @@ module IlMachineThreadState =
         // thread id, by contrast, comes from the `ThreadId` just allocated:
         // every thread has one of those, so `osThreadId` needs no cursor.
         let cpu = EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel
-        let osThreadId = EmulatedKernel.osThreadId thread
+        let osThreadId = EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread
 
         let newState =
             { state with
@@ -427,7 +427,7 @@ module IlMachineThreadState =
                         (UnixTaskTable.register
                             thread
                             (EmulatedKernel.cpuForRotation state.NextCpuRotation state.Kernel)
-                            (EmulatedKernel.osThreadId thread))
+                            (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread))
                         state.Kernel
             }
 
@@ -487,7 +487,10 @@ module IlMachineThreadState =
                     // `ThreadId` allocated just above, which is unique to this
                     // thread like any other's.
                     EmulatedKernel.mapTasks
-                        (UnixTaskTable.register thread (CpuId 0) (EmulatedKernel.osThreadId thread))
+                        (UnixTaskTable.register
+                            thread
+                            (CpuId 0)
+                            (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread))
                         state.Kernel
             }
 

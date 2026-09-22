@@ -48,7 +48,7 @@ module TestTaskState =
         agrees state
 
         UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
-        |> shouldEqual (EmulatedKernel.osThreadId thread)
+        |> shouldEqual (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread)
 
         UnixTaskTable.parkedFor thread state.Kernel.Tasks |> shouldEqual None
 
@@ -62,7 +62,7 @@ module TestTaskState =
         UnixTaskTable.cpuOf thread state.Kernel.Tasks |> shouldEqual (CpuId 0)
 
         UnixTaskTable.osThreadIdOf thread state.Kernel.Tasks
-        |> shouldEqual (EmulatedKernel.osThreadId thread)
+        |> shouldEqual (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId thread)
 
     [<Test>]
     let ``several threads of both kinds keep the sets in step`` () : unit =
@@ -82,7 +82,10 @@ module TestTaskState =
             |> List.map (fun (t, _) -> UnixTaskTable.osThreadIdOf t state.Kernel.Tasks)
 
         ids |> List.distinct |> List.length |> shouldEqual ids.Length
-        ids |> List.contains (EmulatedKernel.osThreadId parked) |> shouldEqual true
+
+        ids
+        |> List.contains (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId parked)
+        |> shouldEqual true
 
     [<Test>]
     let ``guest threads take successive cores in the rotation`` () : unit =
@@ -185,7 +188,12 @@ module TestTaskState =
 
         let haunted =
             state.MapKernel (
-                EmulatedKernel.mapTasks (UnixTaskTable.register ghost (CpuId 0) (EmulatedKernel.osThreadId ghost))
+                EmulatedKernel.mapTasks (
+                    UnixTaskTable.register
+                        ghost
+                        (CpuId 0)
+                        (EmulatedKernel.osThreadId state.Kernel.Process.ProcessId ghost)
+                )
             )
 
         EmulatedKernel.checkTaskInvariants (threads haunted) haunted.Kernel

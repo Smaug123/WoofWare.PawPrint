@@ -73,6 +73,41 @@ module TestImpureCases =
                 )
         }
 
+    /// Build one registration of `ProcessIdConfigured.cs`, whose guest echoes the
+    /// process ID it observed to stdout as four little-endian bytes. `None` runs
+    /// it under `KernelConfig.Default`, pinning `UnixSystem.defaultProcessId` as
+    /// part of the replay contract.
+    let private processIdCase (pid : int32 option) : EndToEndTestCase =
+        let expected =
+            pid |> Option.defaultValue (ProcessId.toInt32 UnixSystem.defaultProcessId)
+
+        {
+            FileName = "ProcessIdConfigured.cs"
+            ExpectedReturnCode = 0
+            KernelConfig =
+                match pid with
+                | None -> KernelConfig.Default
+                | Some pid ->
+                    { KernelConfig.Default with
+                        ProcessId = ProcessId.parseOrFail "test" pid
+                    }
+            AppContext = AppContextProperties.empty
+            Oracle = OraclePolicy.Never
+            ExpectsUnhandledException = false
+            AssertTerminalState =
+                Some (fun state ->
+                    OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                    |> Seq.toArray
+                    |> shouldEqual
+                        [|
+                            byte (expected &&& 0xFF)
+                            byte ((expected >>> 8) &&& 0xFF)
+                            byte ((expected >>> 16) &&& 0xFF)
+                            byte ((expected >>> 24) &&& 0xFF)
+                        |]
+                )
+        }
+
     /// A seed holding exactly the chain of directories `path` names, so that a
     /// process really can be started there. The kernel resolves its current
     /// directory when it is built, so a case configuring one must seed it —
@@ -842,6 +877,14 @@ module TestImpureCases =
             // high bit set and neither fits in sixteen bits, which is what
             // makes a truncating or sign-confusing handler visible at all.
             effectiveUserIdCase 4294967294u 4294967293u
+            processIdCase None
+            // Small enough to fit in a byte, so the case above is not the only
+            // one that pins the handler to the configuration.
+            processIdCase (Some 3)
+            // Linux's largest possible `pid_max` (`PID_MAX_LIMIT` on 64-bit),
+            // which needs all but the top byte: a handler truncating to 16 bits
+            // is caught here.
+            processIdCase (Some 4194304)
             {
                 // Reads every field `SystemNative_Stat`/`LStat` write, through a
                 // hand-rolled P/Invoke. Impure because most of those fields

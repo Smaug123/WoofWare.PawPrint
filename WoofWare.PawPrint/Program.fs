@@ -1303,6 +1303,12 @@ module Program =
 
         let (state, mainThread), baseClassTypes = state |> computeState None
 
+        // `EmulatedKernel.osThreadId` gives the process id to exactly `ThreadId 0`,
+        // and a thread-group leader's tid must be its pid.
+        if mainThread <> ThreadId 0 then
+            failwith
+                $"the entry thread is %O{mainThread}, but it must be the first thread created (ThreadId 0) for its OS thread id to be the process id"
+
         let baseClassTypes =
             match baseClassTypes with
             | Some c -> c

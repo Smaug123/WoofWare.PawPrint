@@ -45,6 +45,7 @@
         <Compile Include="RemovalRules.fs" />
         <Compile Include="RenameRules.fs" />
         <Compile Include="SimulatedUnixPlatform.fs" />
+        <Compile Include="ProcessId.fs" />
         <Compile Include="UnixProcess.fs" />
         <Compile Include="UnixMachine.fs" />
         <Compile Include="UnixSystemState.fs" />
