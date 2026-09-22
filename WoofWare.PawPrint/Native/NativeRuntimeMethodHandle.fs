@@ -1322,10 +1322,10 @@ module NativeRuntimeMethodHandle =
                 | other ->
                     // `stubOutcome` only says `Rebind` for a MethodTable-backed declaring type, and
                     // the arm above has served the definition-level rebind that binds no method
-                    // generic arguments, so what is left here is an array declaring type and an open
-                    // generic definition that *is* binding some.
+                    // generic arguments, so what is left here is an array declaring type, and an open
+                    // generic definition or open construction that *is* binding some.
                     //
-                    // The latter is `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))`, an
+                    // The definition case is `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))`, an
                     // ordinary reflection idiom (genmeth.cpp:1256-1270) whose *identity* PawPrint
                     // could already name. What it cannot do is check the constraints, and CoreCLR
                     // checks them against the definition's own formals: for `M<U>(U) where U : T` on
@@ -1335,7 +1335,8 @@ module NativeRuntimeMethodHandle =
                     // assignability check against a formal, with the formal's own constraints in
                     // play, and `validateConstraintsOn` wants each of those formals as a
                     // `ConcreteTypeHandle`, which is closed by construction. Serving the shape
-                    // without the check would hand back a usable handle where real .NET throws.
+                    // without the check would hand back a usable handle where real .NET throws. An
+                    // open construction's arguments may be variables too, and meet the same limit.
                     //
                     // A guest reaches it by the plain idiom, now that `RuntimeTypeHandle.GetNumVirtuals`
                     // answers for an open definition and so `typeof(G<>).GetMethod` succeeds;
