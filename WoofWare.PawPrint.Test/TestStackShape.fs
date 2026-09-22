@@ -99,6 +99,7 @@ module TestStackShape =
     let private ret : IlOp = IlOp.Nullary NullaryIlOp.Ret
     let private pop : IlOp = IlOp.Nullary NullaryIlOp.Pop
     let private ldarg0 : IlOp = IlOp.Nullary NullaryIlOp.LdArg0
+    let private ldloc0 : IlOp = IlOp.Nullary NullaryIlOp.Ldloc_0
 
     let private br (target : int) : IlOp =
         IlOp.UnaryConst (UnaryConstIlOp.Br target)
@@ -725,7 +726,7 @@ module TestStackShape =
         // additions happen in double.
         let ops =
             [
-                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                ldloc0 // 0
                 brtrue 0 // 1 -> single arm
                 ldcR8 // 2
                 br 0 // 3 -> join
@@ -750,7 +751,7 @@ module TestStackShape =
             )
 
         let body, at = layOut [] ops
-        let shape = analyseOrFail (inputs [ other ] [] false) body
+        let shape = analyseOrFail (inputs [ other ] [ other ] false) body
 
         shape.Entry.[at.[5]] |> shouldEqual [ double ]
         shape.Entry.[at.[6]] |> shouldEqual [ single ; double ]
@@ -762,7 +763,7 @@ module TestStackShape =
     let ``the arm order does not matter`` () : unit =
         let ops =
             [
-                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                ldloc0 // 0
                 brtrue 0 // 1 -> double arm
                 ldcR4 // 2
                 br 0 // 3 -> join
@@ -783,7 +784,7 @@ module TestStackShape =
             )
 
         let body, at = layOut [] ops
-        let shape = analyseOrFail (inputs [ other ] [] false) body
+        let shape = analyseOrFail (inputs [ other ] [ other ] false) body
 
         shape.Entry.[at.[5]] |> shouldEqual [ double ]
         shape.Promotions |> shouldEqual (Map.ofList [ at.[5], [ 0 ] ])
@@ -990,10 +991,10 @@ module TestStackShape =
         // float32 arriving there is promoted.
         let ops =
             [
-                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                ldloc0 // 0
                 brtrue 0 // 1 -> D
                 ldcR4 // 2  A
-                IlOp.Nullary NullaryIlOp.LdArg0 // 3
+                ldloc0 // 3
                 brtrue 0 // 4 -> C
                 pop // 5  B
                 ret // 6
@@ -1016,7 +1017,7 @@ module TestStackShape =
             )
 
         let body, at = layOut [] ops
-        let shape = analyseOrFail (inputs [ other ] [] false) body
+        let shape = analyseOrFail (inputs [ other ] [ other ] false) body
 
         shape.Entry.[at.[5]] |> shouldEqual [ double ]
         shape.Entry.[at.[9]] |> shouldEqual [ double ]
@@ -1029,16 +1030,16 @@ module TestStackShape =
         // clique typed double, so M2 and everything after it must be redone.
         let ops =
             [
-                IlOp.Nullary NullaryIlOp.LdArg0 // 0
+                ldloc0 // 0
                 brtrue 0 // 1 -> L1
                 ldcR4 // 2
                 br 0 // 3 -> M2
-                IlOp.Nullary NullaryIlOp.LdArg0 // 4  L1
+                ldloc0 // 4  L1
                 brtrue 0 // 5 -> L2
                 ldcR8 // 6
                 br 0 // 7 -> M1
                 ldcR4 // 8  L2
-                IlOp.Nullary NullaryIlOp.LdArg0 // 9
+                ldloc0 // 9
                 brtrue 0 // 10 -> M1, fall through to M2
                 IlOp.Nullary NullaryIlOp.Neg // 11 M2
                 pop // 12
@@ -1062,7 +1063,7 @@ module TestStackShape =
             )
 
         let body, at = layOut [] ops
-        let shape = analyseOrFail (inputs [ other ] [] false) body
+        let shape = analyseOrFail (inputs [ other ] [ other ] false) body
 
         shape.Entry.[at.[11]] |> shouldEqual [ double ]
         shape.Entry.[at.[12]] |> shouldEqual [ double ]
@@ -1303,19 +1304,19 @@ module TestStackShape =
         (literalCondition : bool)
         : unit
         =
-        // `ldarg0; brtrue C_ARM; ldc.r4; br B; C_ARM: ldc.r8; br C; DEAD: ldarg0; brtrue C; B: pop;
+        // `ldloc0; brtrue C_ARM; ldc.r4; br B; C_ARM: ldc.r8; br C; DEAD: ldloc0; brtrue C; B: pop;
         // ret; C: pop; ret`: nothing reaches DEAD, but the JIT walks its two successors B and C
         // into one spill clique, so B's float32 is a double, and cast on arrival. A branch on a
         // literal that nothing reaches is never imported, so never folded either.
         let ops =
             [
-                ldarg0 // 0
+                ldloc0 // 0
                 brtrue 0 // 1 -> C_ARM
                 ldcR4 // 2
                 br 0 // 3 -> B
                 ldcR8 // 4 C_ARM
                 br 0 // 5 -> C
-                (if literalCondition then ldc else ldarg0) // 6 DEAD
+                (if literalCondition then ldc else ldloc0) // 6 DEAD
                 brtrue 0 // 7 -> C, falls through to B
                 pop // 8 B
                 ret // 9
@@ -1324,7 +1325,7 @@ module TestStackShape =
             ]
 
         let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 8 ; 5, 10 ; 7, 10 ]
-        let shape = analyseOrFail (inputs [ other ] [] false) body
+        let shape = analyseOrFail (inputs [ other ] [ other ] false) body
 
         shape.Entry.[at.[8]] |> shouldEqual [ double ]
         shape.Entry.[at.[10]] |> shouldEqual [ double ]
@@ -1372,12 +1373,12 @@ module TestStackShape =
                 [ ldc ]
                 [ ldc ; ldc ; add ]
                 [ IlOp.Nullary NullaryIlOp.LdNull ]
-                [ ldarg0 ]
-                [ ldarg0 ; ldc ; add ]
+                [ ldloc0 ]
+                [ ldloc0 ; ldc ; add ]
             ].[conditionIndex]
 
         let body, at, branch, join = literalJoin condition
-        let shape = StackShape.analyse (inputs [ other ] [] false) body
+        let shape = StackShape.analyse (inputs [] [ other ] false) body
 
         if literal then
             refusalsOf shape |> shouldEqual (Map.ofList [ join, branch ])
@@ -1403,6 +1404,11 @@ module TestStackShape =
     [<TestCase(4, true)>]
     [<TestCase(5, false)>]
     [<TestCase(6, false)>]
+    [<TestCase(7, true)>]
+    [<TestCase(8, true)>]
+    [<TestCase(9, true)>]
+    [<TestCase(10, false)>]
+    [<TestCase(11, false)>]
     let ``a float32 meeting a double downstream of a branch the importer may fold is refused, and one on a runtime value is promoted``
         (conditionIndex : int, foldable : bool)
         : unit
@@ -1433,16 +1439,38 @@ module TestStackShape =
                 [ ldtoken, None ; call, returning 1 ; callvirt, returning 1 ]
                 // An intrinsic's result combined with a literal.
                 [ call, returning 0 ; ldc, None ; add, None ]
-                // A call on a runtime value.
+                // A call on a local, which the importer never holds as a constant.
+                [ ldloc0, None ; call, returning 1 ]
+                // A static field combined with a local.
+                [ ldsfld, Some (TokenShape.Field other) ; ldloc0, None ; add, None ]
+                // An argument, which an inlinee receives as the constant its caller passes.
+                [ ldarg0, None ]
+                // A call on an argument.
                 [ ldarg0, None ; call, returning 1 ]
-                // A static field combined with a runtime value.
-                [ ldsfld, Some (TokenShape.Field other) ; ldarg0, None ; add, None ]
+                // An argument, though a different argument is written.
+                [
+                    ldc, None
+                    IlOp.UnaryConst (UnaryConstIlOp.Starg_s 1uy), None
+                    ldarg0, None
+                ]
+                // An argument the body writes, which the JIT then never substitutes.
+                [
+                    ldc, None
+                    IlOp.UnaryConst (UnaryConstIlOp.Starg_s 0uy), None
+                    ldarg0, None
+                ]
+                // An argument whose address the body takes, which the JIT then never substitutes.
+                [
+                    IlOp.UnaryConst (UnaryConstIlOp.Ldarga_s 0uy), None
+                    pop, None
+                    ldarg0, None
+                ]
             ].[conditionIndex]
 
         let body, at, branch, join = literalJoin (List.map fst condition)
 
         let inputs =
-            { inputs [ other ] [] false with
+            { inputs [ other ; other ] [ other ] false with
                 Tokens =
                     condition
                     |> List.indexed
@@ -1472,13 +1500,13 @@ module TestStackShape =
 
     [<Test>]
     let ``every promotion sharing a spill temp with a successor of a branch on literals is refused`` () : unit =
-        // B = `ldc.r8; ldc.i4.1; brtrue T1` falls through to T2, and P = `ldc.r4; ldarg0; brtrue T1`
+        // B = `ldc.r8; ldc.i4.1; brtrue T1` falls through to T2, and P = `ldc.r4; ldloc0; brtrue T1`
         // falls through to S: T1, T2 and S share a temp, which is double only if B's arms are
         // imported. S is no successor of B, but its float32 arrival is refused all the same; T2
         // receives only a double, so has no width to decide, but shares the undecided temp.
         let ops (condition : IlOp) =
             [
-                ldarg0 // 0
+                ldloc0 // 0
                 brtrue 0 // 1 -> PP
                 ldcR8 // 2
                 condition // 3
@@ -1486,7 +1514,7 @@ module TestStackShape =
                 pop // 5 T2
                 ret // 6
                 ldcR4 // 7 PP
-                ldarg0 // 8
+                ldloc0 // 8
                 brtrue 0 // 9 P -> T1
                 pop // 10 S
                 ret // 11
@@ -1497,7 +1525,7 @@ module TestStackShape =
         let branches = [ 1, 7 ; 4, 12 ; 9, 12 ]
 
         let body, at = layOutWithBranches [] (ops ldc) branches
-        let shape = StackShape.analyse (inputs [ other ] [] false) body
+        let shape = StackShape.analyse (inputs [ other ] [ other ] false) body
 
         refusalsOf shape
         |> shouldEqual (Map.ofList [ at.[10], at.[4] ; at.[12], at.[4] ])
@@ -1507,8 +1535,8 @@ module TestStackShape =
 
         // On a runtime condition every arm is imported: the temp is double, and both float32
         // arrivals are cast.
-        let body, at = layOutWithBranches [] (ops ldarg0) branches
-        let shape = analyseOrFail (inputs [ other ] [] false) body
+        let body, at = layOutWithBranches [] (ops ldloc0) branches
+        let shape = analyseOrFail (inputs [ other ] [ other ] false) body
         shape.Entry.[at.[5]] |> shouldEqual [ double ]
         shape.Promotions |> shouldEqual (Map.ofList [ at.[10], [ 0 ] ; at.[12], [ 0 ] ])
 
@@ -1516,16 +1544,16 @@ module TestStackShape =
     [<TestCase(true)>]
     let ``a literal arriving at a block's first instruction is a spill temp, not a literal`` (boundary : bool) : unit =
         // `ldc.r4; ldc.i4.1; X; X; brtrue J; pop; ldc.r8; J: pop; ret`, where `X; X` is
-        // `ldarg0; brtrue NEXT` (a conditional branch, after which a block starts) or `nop; nop`.
+        // `ldloc0; brtrue NEXT` (a conditional branch, after which a block starts) or `nop; nop`.
         let separator : IlOp list =
-            if boundary then [ ldarg0 ; brtrue 0 ] else [ nop ; nop ]
+            if boundary then [ ldloc0 ; brtrue 0 ] else [ nop ; nop ]
 
         let ops = [ ldcR4 ; ldc ] @ separator @ [ brtrue 0 ; pop ; ldcR8 ; pop ; ret ]
 
         let branches = (if boundary then [ 3, 4 ] else []) @ [ 4, 7 ]
 
         let body, at = layOutWithBranches [] ops branches
-        let shape = StackShape.analyse (inputs [ other ] [] false) body
+        let shape = StackShape.analyse (inputs [ other ] [ other ] false) body
 
         // The branch's fall-through shares J's temp, so its float32 is cast too.
         if boundary then
@@ -1549,17 +1577,17 @@ module TestStackShape =
         // C, which nothing reaches.
         let ops =
             [
-                ldarg0 // 0
+                ldloc0 // 0
                 brtrue 0 // 1 -> BARM
                 ldcR4 // 2
                 br 0 // 3 -> A
                 ldcR8 // 4 BARM
                 br 0 // 5 -> B
-                ldarg0 // 6 DEAD1
+                ldloc0 // 6 DEAD1
                 brtrue 0 // 7 -> C, falls through to A
                 pop // 8 A
                 ret // 9
-                ldarg0 // 10 DEAD2
+                ldloc0 // 10 DEAD2
                 brtrue 0 // 11 -> B, falls through to C
                 pop // 12 C
                 ret // 13
@@ -1568,7 +1596,7 @@ module TestStackShape =
             ]
 
         let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 8 ; 5, 14 ; 7, 12 ; 11, 14 ]
-        let shape = analyseOrFail (inputs [ other ] [] false) body
+        let shape = analyseOrFail (inputs [ other ] [ other ] false) body
 
         shape.Entry.[at.[8]] |> shouldEqual [ double ]
         shape.Entry.[at.[14]] |> shouldEqual [ double ]
@@ -1826,15 +1854,15 @@ module TestStackShape =
     [<Test>]
     let ``the join of every arm's path is what the analysis reports, and only the join is promoted`` () : unit =
         let property (case : WidthArmsAndTail) : unit =
-            // arm i: `ldarg0; ldc.i4 i; beq -> arm i` would need integer comparisons; a chain
-            // of `brtrue` on ldarg0 suffices since only the *shapes* matter, and an argument is
-            // never a literal, so no branch on it can be folded.
+            // arm i: `ldloc0; ldc.i4 i; beq -> arm i` would need integer comparisons; a chain
+            // of `brtrue` on ldloc0 suffices since only the *shapes* matter, and a local is
+            // never a constant to the importer, so no branch on it can be folded.
             let armCount = case.Arms.Length
 
             let prefix =
                 [
                     for _ in 1 .. armCount - 1 do
-                        yield IlOp.Nullary NullaryIlOp.LdArg0
+                        yield ldloc0
                         yield brtrue 0
                 ]
 
@@ -1877,7 +1905,7 @@ module TestStackShape =
                 )
 
             let body, at = layOut [] allOps
-            let shape = analyseOrFail (inputs [ other ] [] false) body
+            let shape = analyseOrFail (inputs [ other ] [ other ] false) body
 
             let expectedAtTail =
                 case.Arms
@@ -1914,7 +1942,10 @@ module TestStackShape =
         /// `call; brtrue` on a callee with no arguments, such as an `IsSupported` intrinsic, which
         /// the JIT may fold; `taken` is the constant it folds to.
         | CallBranch of taken : bool * target : int
-        /// `ldarg.0; brtrue`, which no JIT folds.
+        /// `ldarg.0; brtrue`, which the JIT folds when it inlines the body into a caller passing a
+        /// constant; `taken` is the constant.
+        | ArgumentBranch of taken : bool * target : int
+        /// `ldloc.0; brtrue`, which no JIT folds.
         | RuntimeBranch of target : int
         | Jump of target : int
         | Return
@@ -1940,6 +1971,11 @@ module TestStackShape =
                         2,
                         Gen.map2
                             (fun taken target -> Statement.CallBranch (taken, target))
+                            (Gen.elements [ true ; false ])
+                            (genTarget index)
+                        2,
+                        Gen.map2
+                            (fun taken target -> Statement.ArgumentBranch (taken, target))
                             (Gen.elements [ true ; false ])
                             (genTarget index)
                         3, Gen.map Statement.RuntimeBranch (genTarget index)
@@ -1973,7 +2009,9 @@ module TestStackShape =
                 [ (if taken then ldc else IlOp.Nullary NullaryIlOp.LdcI4_0) ; brtrue 0 ]
             | Statement.CallBranch _ when folded.Contains index -> List.replicate 5 nop @ [ br 0 ]
             | Statement.CallBranch _ -> [ IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, callToken) ; brtrue 0 ]
-            | Statement.RuntimeBranch _ -> [ ldarg0 ; brtrue 0 ]
+            | Statement.ArgumentBranch _ when folded.Contains index -> [ nop ; br 0 ]
+            | Statement.ArgumentBranch _ -> [ ldarg0 ; brtrue 0 ]
+            | Statement.RuntimeBranch _ -> [ ldloc0 ; brtrue 0 ]
             | Statement.Jump _ -> [ br 0 ]
             | Statement.Return -> [ ret ]
 
@@ -1990,10 +2028,12 @@ module TestStackShape =
             |> List.choose (fun (i, statement) ->
                 match statement with
                 | Statement.LiteralBranch (taken, target)
-                | Statement.CallBranch (taken, target) when folded.Contains i ->
+                | Statement.CallBranch (taken, target)
+                | Statement.ArgumentBranch (taken, target) when folded.Contains i ->
                     Some (branchOp i, (if taken then firstOp.[target] else firstOp.[i + 1]))
                 | Statement.LiteralBranch (_, target)
                 | Statement.CallBranch (_, target)
+                | Statement.ArgumentBranch (_, target)
                 | Statement.RuntimeBranch target
                 | Statement.Jump target -> Some (branchOp i, firstOp.[target])
                 | _ -> None
@@ -2027,9 +2067,11 @@ module TestStackShape =
                 let next =
                     match statements.[i] with
                     | Statement.LiteralBranch (true, target)
-                    | Statement.CallBranch (true, target) -> [ target ]
+                    | Statement.CallBranch (true, target)
+                    | Statement.ArgumentBranch (true, target) -> [ target ]
                     | Statement.LiteralBranch (false, _)
-                    | Statement.CallBranch (false, _) -> [ i + 1 ]
+                    | Statement.CallBranch (false, _)
+                    | Statement.ArgumentBranch (false, _) -> [ i + 1 ]
                     | Statement.RuntimeBranch target -> [ target ; i + 1 ]
                     | Statement.Jump target -> [ target ]
                     | Statement.Return -> []
@@ -2042,7 +2084,8 @@ module TestStackShape =
         |> Set.filter (fun i ->
             match statements.[i] with
             | Statement.LiteralBranch _
-            | Statement.CallBranch _ -> true
+            | Statement.CallBranch _
+            | Statement.ArgumentBranch _ -> true
             | _ -> false
         )
 
@@ -2050,6 +2093,7 @@ module TestStackShape =
     let ``every join the analysis types has the shape and promotion the folded program gets`` () : unit =
         let mutable refusals = 0
         let mutable callRefusals = 0
+        let mutable argumentRefusals = 0
         let mutable comparedPromotions = 0
 
         let property (statements : Statement list) : unit =
@@ -2059,7 +2103,7 @@ module TestStackShape =
 
             let shape =
                 StackShape.analyse
-                    { inputs [ other ] [] false with
+                    { inputs [ other ] [ other ] false with
                         Tokens = tokens
                     }
                     body
@@ -2069,7 +2113,7 @@ module TestStackShape =
 
             let folded =
                 StackShape.analyse
-                    { inputs [ other ] [] false with
+                    { inputs [ other ] [ other ] false with
                         Tokens = foldedTokens
                     }
                     foldedBody
@@ -2097,10 +2141,23 @@ module TestStackShape =
                 )
                 |> Set.ofList
 
+            // An argument branch's `brtrue` follows its 1-byte `ldarg.0`.
+            let argumentBranches =
+                statements
+                |> List.indexed
+                |> List.choose (fun (i, statement) ->
+                    match statement with
+                    | Statement.ArgumentBranch _ -> Some (starts.[i] + 1)
+                    | _ -> None
+                )
+                |> Set.ofList
+
             for KeyValue (_, error) in refused do
                 match error with
                 | StackShapeError.WidthDependsOnFoldedBranch (_, branch) when callBranches.Contains branch ->
                     callRefusals <- callRefusals + 1
+                | StackShapeError.WidthDependsOnFoldedBranch (_, branch) when argumentBranches.Contains branch ->
+                    argumentRefusals <- argumentRefusals + 1
                 | _ -> ()
 
             for offset in starts.Values do
@@ -2122,6 +2179,7 @@ module TestStackShape =
         // The generator reaches both kinds of join the property is about.
         refusals |> shouldBeGreaterThan 0
         callRefusals |> shouldBeGreaterThan 0
+        argumentRefusals |> shouldBeGreaterThan 0
         comparedPromotions |> shouldBeGreaterThan 0
 
     // ---------- The interpreter's refusal of a float32 entering an untyped block ----------
