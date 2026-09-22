@@ -380,6 +380,7 @@ module CrossAssemblyHarness =
     /// </remarks>
     let runTestExpectingRefusal
         (messageContains : string list)
+        (omitFromDisk : string list)
         (replacements : CrossAssemblySpec list)
         (case : CrossAssemblyEndToEndTestCase)
         : unit
@@ -388,7 +389,7 @@ module CrossAssemblyHarness =
             failwith
                 "runTestExpectingRefusal was given nothing to match in the refusal; a bare \"something threw\" assertion would pass for any bug."
 
-        runTestWith [] [] replacements (PawPrintExpectation.Refuses messageContains) case
+        runTestWith [] omitFromDisk replacements (PawPrintExpectation.Refuses messageContains) case
 
     /// As `runTest`, but first assert that each stated `AssemblyRefRowDivergence` actually holds of
     /// the compiled images. Use this for any test whose point is that a type reference is resolved

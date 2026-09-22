@@ -182,6 +182,24 @@ class Program
         // specific to following the forwarder, not a wholesale refusal to look anything up.
         if (facade.GetType("TypeForwardFacade.Marker", throwOnError: false) is null) return 4;
 
+        // Folded, the same bind fails the same way: with the first hop missing, there is no far
+        // side whose folded candidates could answer instead.
+        if (facade.GetType("typeforwardcross.target", throwOnError: false, ignoreCase: true) is not null) return 5;
+
+        try
+        {
+            facade.GetType("typeforwardcross.target", throwOnError: true, ignoreCase: true);
+            return 6;
+        }
+        catch (FileNotFoundException)
+        {
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine("unexpected: " + e.GetType().FullName);
+            return 7;
+        }
+
         return 0;
     }
 }
@@ -469,6 +487,7 @@ class Program
                 "FoldCollide.Target"
             ]
             []
+            []
 
     [<Test>]
     let ``the module pseudo-type is not something GetType can name`` () : unit =
@@ -593,6 +612,7 @@ class Program
         |> CrossAssemblyHarness.runTestExpectingRefusal
             [ "is ambiguous between the type it defines" ; "TypeForwardCross.TARGET" ]
             []
+            []
 
     [<Test>]
     let ``a folded lookup that must cross a forwarder hop is refused`` () : unit =
@@ -634,6 +654,7 @@ class Program
                 "followed a forwarder out of"
                 "Folding is not yet carried across a forwarder hop"
             ]
+            []
             [
                 // Same assembly name, declaring the forwarded type under a different casing.
                 CrossAssemblySpec.library
@@ -871,15 +892,17 @@ class Program
                 "both defines DeepCollide.TARGET and forwards DeepCollide.Target"
             ]
             []
+            []
 
     [<Test>]
     let ``a folded collision on the far side of a hop is refused even when one side's base chain is broken`` () : unit =
         // The exact walk arrives at `TARGET`, whose base class is gone, and loading that base chain
         // fails before any folded question is asked. CoreCLR asks the folded question first, and
-        // picks one of `Target` and `TARGET` by its internal hash ordering. Measured on .NET 10: here
-        // it picks `TARGET` and throws, whereas in the otherwise identically shaped `FoldCollide`
-        // case it picks `Target` — so reporting the broken base chain would agree with it only by
-        // luck. The collision has to be noticed before the base chain is loaded.
+        // picks one of `Target` and `TARGET` by its internal hash ordering. Measured on .NET 10:
+        // here it picks `TARGET` and throws, whereas in the `FoldCollide` case, of the same shape
+        // apart from its names and this base class, it picks `Target` — so reporting the broken
+        // base chain would agree with it only by luck. The collision has to be noticed before the
+        // base chain is loaded.
         {
             Assemblies =
                 [
@@ -972,6 +995,7 @@ class Program
                 "does not have one answer"
                 "FoldBroken.Target"
             ]
+            []
             [
                 // Same assembly name, no longer declaring the base class `TARGET` derives from.
                 CrossAssemblySpec.library
@@ -1074,6 +1098,7 @@ class Program
         }
         |> CrossAssemblyHarness.runTestExpectingRefusal
             [ "more than one forwarder hop" ]
+            []
             [
                 // Same assembly name, now forwarding `TARGET` on to the library and defining a type
                 // that folds alike with it.
@@ -1087,6 +1112,110 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(HopCollide.TARGET))]
 
 namespace HopCollide
+{
+    public class Target { }
+}
+"""
+                    ]
+            ]
+
+    [<Test>]
+    let ``a folded lookup whose forwarder chain fails past its first hop is refused`` () : unit =
+        // As the multi-hop case above, but with the far end of the chain missing, so the exact walk
+        // stops at an unavailable assembly having passed through `HopMissing.Mid` unchecked. There
+        // `Mid`'s own `Target` folds alike with the row it forwards onwards, so which of the two
+        // CoreCLR takes decides between a type and a missing assembly. Measured on .NET 10: it
+        // takes `Target` here, where PawPrint's exact walk would answer null.
+        {
+            Assemblies =
+                [
+                    CrossAssemblySpec.library
+                        "HopMissing.Lib"
+                        []
+                        [
+                            """
+namespace HopMissing
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopMissing.Mid"
+                        []
+                        [
+                            """
+namespace HopMissing
+{
+    public class TARGET { }
+}
+"""
+                        ]
+                    CrossAssemblySpec.library
+                        "HopMissing.Facade"
+                        [ "HopMissing.Mid" ]
+                        [
+                            """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopMissing.TARGET))]
+
+namespace HopMissingFacade
+{
+    public sealed class Marker
+    {
+    }
+}
+"""
+                        ]
+                    CrossAssemblySpec.entryPoint
+                        "HopMissing.Entry"
+                        [ "HopMissing.Facade" ]
+                        [
+                            """
+using System;
+using System.Reflection;
+
+class Program
+{
+    static int Main()
+    {
+        Assembly facade = typeof(HopMissingFacade.Marker).Assembly;
+
+        // Exact: the chain ends at an assembly that is not there.
+        if (facade.GetType("HopMissing.TARGET", throwOnError: false) is not null) return 1;
+
+        // Folded: CoreCLR answers with `Mid`'s own `Target` rather than following the forwarder.
+        Type folded = facade.GetType("HopMissing.TARGET", throwOnError: false, ignoreCase: true);
+        if (folded is null) return 2;
+        if (folded.Assembly.GetName().Name != "HopMissing.Mid") return 3;
+        if (folded.FullName != "HopMissing.Target") return 4;
+
+        return 0;
+    }
+}
+"""
+                        ]
+                ]
+            EntryAssemblyName = "HopMissing.Entry"
+            ExpectedReturnCode = 0
+        }
+        |> CrossAssemblyHarness.runTestExpectingRefusal
+            [ "more than one forwarder hop" ]
+            [ "HopMissing.Lib" ]
+            [
+                // Same assembly name, now forwarding `TARGET` on to the (absent) library and
+                // defining a type that folds alike with it.
+                CrossAssemblySpec.library
+                    "HopMissing.Mid"
+                    [ "HopMissing.Lib" ]
+                    [
+                        """
+using System.Runtime.CompilerServices;
+
+[assembly: TypeForwardedTo(typeof(HopMissing.TARGET))]
+
+namespace HopMissing
 {
     public class Target { }
 }

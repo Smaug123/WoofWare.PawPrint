@@ -664,6 +664,40 @@ module NativeRuntimeAssembly =
                 failwith
                     $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder into %s{definingAssembly.Name.Name}, which both defines %s{arrivedAt.Namespace}.%s{arrivedAt.Name} and forwards %s{forwarderNs}.%s{forwarder.Name}, and these fold alike"
 
+        // Only the far end of a chain has its folded candidates checked, by `checkFoldedArrival`, and
+        // an intermediate assembly can collide under the fold just as the far end can. Until the
+        // fold is carried through every hop, a walk that got past its first hop is refused. Roslyn
+        // always points a forwarder at the defining assembly, so compiled code does not produce
+        // one. `arrivedIn` is the assembly the walk arrived in, or `None` where it stopped at an
+        // unavailable one; `endedAt` names where it stopped either way, for the message.
+        let refuseIfPastFirstHop
+            (state : IlMachineState)
+            (export : WoofWare.PawPrint.ExportedType)
+            (arrivedIn : DumpedAssembly option)
+            (endedAt : string)
+            : unit
+            =
+            let firstHop =
+                match export.Data with
+                | ExportedTypeData.ForwardsTo reference ->
+                    state._LoadedAssemblies.TryResolveReference assembly.AssemblyReferences.[reference]
+                | ExportedTypeData.ParentExportedType _
+                | ExportedTypeData.AssemblyFile _ ->
+                    failwith
+                        $"%s{operation}: top-level exported type %O{export.Handle} does not name an assembly to forward to"
+
+            match firstHop, arrivedIn with
+            | None, None ->
+                // The first hop is the assembly that is missing.
+                ()
+            | None, Some arrivedIn ->
+                failwith
+                    $"%s{operation}: the forwarder walk arrived in %s{arrivedIn.Name.Name} without binding the first hop out of %s{assembly.Name.Name}"
+            | Some firstHop, Some arrivedIn when firstHop.DefinitionFullName = arrivedIn.DefinitionFullName -> ()
+            | Some firstHop, _ ->
+                failwith
+                    $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder out of %s{assembly.Name.Name} through %s{firstHop.Name.Name} to %s{endedAt}, which is more than one forwarder hop. Folding is not yet carried across a forwarder hop."
+
         let miss, state, topLevel =
             match definedHere with
             | Some typeDef -> ForwarderMiss.AnswerNull, state, Some (assembly, typeDef)
@@ -685,26 +719,7 @@ module NativeRuntimeAssembly =
                 IlMachineTypeResolution.tryWalkExportChain ctx.LoggerFactory assembly export ImmutableArray.Empty state
             with
             | state, ExportChainArrival.Arrived (definingAssembly, arrivedAt) ->
-                // Only the far end of the chain has its folded candidates checked below, and an
-                // intermediate assembly can collide under the fold just as the far end can. Until
-                // the fold is carried through every hop, a chain of more than one is refused.
-                // Roslyn always points a forwarder at the defining assembly, so compiled code does
-                // not produce one.
-                let firstHop =
-                    match export.Data with
-                    | ExportedTypeData.ForwardsTo reference ->
-                        state._LoadedAssemblies.TryResolveReference assembly.AssemblyReferences.[reference]
-                    | ExportedTypeData.ParentExportedType _
-                    | ExportedTypeData.AssemblyFile _ ->
-                        failwith
-                            $"%s{operation}: top-level exported type %O{export.Handle} arrived somewhere without naming an assembly to forward to"
-
-                match firstHop with
-                | Some firstHop when firstHop.DefinitionFullName = definingAssembly.DefinitionFullName -> ()
-                | _ ->
-                    failwith
-                        $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder out of %s{assembly.Name.Name} that arrives in %s{definingAssembly.Name.Name} by more than one forwarder hop. Folding is not yet carried across a forwarder hop."
-
+                refuseIfPastFirstHop state export (Some definingAssembly) definingAssembly.Name.Name
                 checkFoldedArrival export definingAssembly arrivedAt
 
                 IlMachineTypeResolution.tryPrimeExportArrival ctx.LoggerFactory definingAssembly arrivedAt state
@@ -717,6 +732,9 @@ module NativeRuntimeAssembly =
                 failwith
                     $"%s{operation}: case-insensitive lookup of %s{ns}.%s{simple} followed a forwarder out of %s{assembly.Name.Name}, and the target does not declare that name under the forwarder's own spelling: %O{miss}. Folding is not yet carried across a forwarder hop."
             | state, ExportChainArrival.AssemblyUnavailable reference ->
+                // A missing *first* hop is missing for CoreCLR too, whatever it folds; a later one
+                // was reached through an assembly whose folded candidates went unchecked.
+                refuseIfPastFirstHop state export None reference.Name.Name
                 ofResolution (state, ExportedTypeResolution.AssemblyUnavailable reference)
 
         let resolved =
