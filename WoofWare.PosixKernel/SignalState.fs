@@ -314,19 +314,44 @@ module SignalState =
                     Blocked = blocked
                 }
 
-    /// Append a signal to the back of the pending queue, canonicalising its
-    /// spelling first. Two enqueues of the same signal are not coalesced;
-    /// POSIX allows duplicates for real-time signals and we preserve identity
-    /// here so callers can detect collapse elsewhere if they want it.
+    /// Add a generated signal to the pending queue, canonicalising its
+    /// spelling first.
+    ///
+    /// A standard signal that is already pending in the same pending set is
+    /// discarded: a kernel holds at most one pending instance of a standard
+    /// signal per set, and `Target` is the set — `ValueNone` the process-wide
+    /// one, `ValueSome t` the thread's own. Measured on Linux 6.18.5 and
+    /// Darwin 25.6.0: three process-directed `SIGUSR1` while blocked deliver
+    /// once; and the sets are separate keys — a process-directed plus a
+    /// thread-directed `SIGUSR2` deliver twice, on Linux and on a two-thread
+    /// Darwin process alike. A real-time signal (Linux's 32..64; see
+    /// `Signal.isRealTimeUnder`) queues without coalescing.
+    ///
+    /// One measured divergence is deliberately not modelled: a
+    /// *single-threaded* Darwin process delivers that process-plus-thread
+    /// pair once, not twice, because xnu assigns a process-directed signal to
+    /// a thread at generation time and the two instances then coalesce in
+    /// that thread's set. Modelling it would need this function to resolve
+    /// `ValueNone` to a thread at enqueue time, importing xnu's assignment
+    /// policy for a difference nothing can yet generate; revisit when
+    /// `kill(2)` or `pthread_kill(2)` is modelled for Darwin flavours.
     let enqueue (entry : PendingSignal<'Task>) (state : SignalState<'Task, 'Handler>) : SignalState<'Task, 'Handler> =
         let entry =
             { entry with
                 Signal = parse "enqueue" state entry.Signal
             }
 
-        { state with
-            Pending = state.Pending @ [ entry ]
-        }
+        let coalesced =
+            not (Signal.isRealTimeUnder state.Numbering entry.Signal)
+            && state.Pending
+               |> List.exists (fun pending -> pending.Signal = entry.Signal && pending.Target = entry.Target)
+
+        if coalesced then
+            state
+        else
+            { state with
+                Pending = state.Pending @ [ entry ]
+            }
 
     /// Snapshot of the pending queue, in FIFO order (head = next candidate),
     /// every entry's signal in its canonical spelling.

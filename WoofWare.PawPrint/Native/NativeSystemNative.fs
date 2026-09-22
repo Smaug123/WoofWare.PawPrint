@@ -2000,7 +2000,7 @@ module NativeSystemNative =
                 ptr
                 (ImmutableArray.CreateRange (Array.zeroCreate<byte> 24))
                 state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float 0.0) ctx.Thread
+            |> IlMachineState.pushToEvalStack' (EvalStackValue.Float (EvalStackFloat.Double 0.0)) ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
         | Some "SystemNative_GetLowResolutionTimestamp",
