@@ -25,16 +25,10 @@ module TestManagedThreadState =
     let private has (bit : System.Threading.ThreadState) (s : System.Threading.ThreadState) : bool = s &&& bit = bit
 
     let private statusGen : Gen<ThreadStatus> =
-        ArbMap.defaults
-        |> ArbMap.generate<ThreadStatus>
-        |> Gen.filter (
-            function
-            | ThreadStatus.Parked -> false
-            | _ -> true
-        )
+        ArbMap.defaults |> ArbMap.generate<ThreadStatus>
 
     [<Test>]
-    let ``Every status a guest can name obeys CoreCLR's snapshot laws`` () : unit =
+    let ``Every status obeys CoreCLR's snapshot laws`` () : unit =
         let property (status : ThreadStatus, isBackground : bool) : unit =
             let s = ThreadStatus.managedThreadState isBackground status
 
@@ -88,10 +82,13 @@ module TestManagedThreadState =
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 1000, Prop.forAll (Arb.fromGen gen) property)
 
     /// No guest can reach these: a `LowLevelMonitor` and a trivial-wait `Lock` are internal to
-    /// CoreLib, and the parking syscalls run on threads the guest does not hold. Measured on
-    /// real .NET 10 with a contended `LowLevelLock` and a contended `Lock(useTrivialWaits: true)`
-    /// (both reached by reflection), and with `flock(2)` blocked on a lock another descriptor
-    /// holds: none is an alertable wait, so none reports `WaitSleepJoin`.
+    /// CoreLib, the parking syscalls run on threads the guest does not hold, and the signal
+    /// dispatcher's `Thread` is reachable only from a handler installed straight through
+    /// `SystemNative_SetPosixSignalHandler`. Measured on real .NET 10 with a contended
+    /// `LowLevelLock` and a contended `Lock(useTrivialWaits: true)` (both reached by
+    /// reflection), with `flock(2)` blocked on a lock another descriptor holds, and with such a
+    /// handler keeping `Thread.CurrentThread` (which then reads `Background` while idle): none
+    /// is an alertable wait, so none reports `WaitSleepJoin`.
     [<Test>]
     let ``Non-alertable parks read as running`` () : unit =
         for status in
@@ -100,14 +97,10 @@ module TestManagedThreadState =
                 ThreadStatus.BlockedOnMonitorWait (LowLevelMonitorId 0, None)
                 ThreadStatus.BlockedInSyscall
                 ThreadStatus.BlockedOnWaitHandle (WaitHandleId 0, None, WaitAlertability.NonAlertable)
+                ThreadStatus.Parked
             ] do
             ThreadStatus.managedThreadState false status
             |> shouldEqual System.Threading.ThreadState.Running
 
             ThreadStatus.managedThreadState true status
             |> shouldEqual System.Threading.ThreadState.Background
-
-    [<Test>]
-    let ``A Parked thread has no managed state to report`` () : unit =
-        Assert.Throws<exn> (fun () -> ThreadStatus.managedThreadState false ThreadStatus.Parked |> ignore)
-        |> ignore

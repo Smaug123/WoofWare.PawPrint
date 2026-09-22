@@ -265,20 +265,18 @@ type ThreadStatus =
     /// This thread has executed its final `ret`; it will never run again. Its state is kept
     /// only so other threads can observe termination (e.g. to satisfy Join).
     | Terminated
-    /// PawPrint-internal auxiliary thread: it exists for kernel-side
-    /// bookkeeping rather than to run guest IL, and the scheduler never
-    /// picks it. The dispatcher thread spawned by
-    /// `SystemNative_InitializeTerminalAndSignalHandling` is the current
-    /// (and only) inhabitant: mirrors real CoreCLR's `SignalHandlerLoop`
-    /// pthread, which the runtime owns and the guest never names.
+    /// PawPrint-internal auxiliary thread, idle between the pieces of guest IL
+    /// the runtime hands it, and never picked by the scheduler while idle. The
+    /// dispatcher thread spawned by `SystemNative_InitializeTerminalAndSignalHandling`
+    /// is the current (and only) inhabitant: it mirrors real CoreCLR's
+    /// `SignalHandlerLoop` pthread, which sits blocked in a native `read` until
+    /// a signal arrives. `SignalDispatch` moves it to `Runnable` onto a handler
+    /// frame and back to `Parked` when that frame returns.
     ///
-    /// The semantic difference from `NotStarted` is that no managed
-    /// `Thread` heap object backs a `Parked` thread — there is no
-    /// `Thread.Start` call that will ever fire to flip it to `Runnable`.
-    /// A future slice that wires signal-dispatch will introduce an
-    /// explicit transition out of `Parked` (driven by the signal
-    /// subsystem, not by guest IL); for now `Parked` is permanent for
-    /// the run.
+    /// The difference from `NotStarted` is that no `Thread.Start` call will ever
+    /// fire to flip it to `Runnable`. A managed `Thread` object need not back it,
+    /// but one can: guest code running on the dispatcher that reads
+    /// `Thread.CurrentThread` binds one, which outlives the handler.
     ///
     /// A permanently-`Parked` thread is no obstacle to the run ending: it does
     /// not keep the process alive (`ThreadStatus.keepsProcessAlive`), and the
@@ -426,9 +424,8 @@ module ThreadStatus =
     /// A dead thread reads `Stopped` alone whatever `isBackground` says, because CoreCLR
     /// clears `TS_Background` on death. The entry thread waiting for foreground threads reads
     /// `Stopped` too, but keeps its other bits: `WaitForOtherThreads` marks it
-    /// `TS_ReportDead` and then waits alertably.
-    ///
-    /// Throws on `Parked`, which no managed `Thread` object stands for, so no guest can ask.
+    /// `TS_ReportDead` and then waits alertably. The idle signal dispatcher reads as running,
+    /// as `SignalHandlerLoop` does while blocked in its native `read`.
     let managedThreadState (isBackground : bool) (status : ThreadStatus) : System.Threading.ThreadState =
         let background =
             if isBackground then
@@ -456,10 +453,8 @@ module ThreadStatus =
         | ThreadStatus.BlockedOnClassInit _
         | ThreadStatus.BlockedOnMonitorAcquire _
         | ThreadStatus.BlockedOnMonitorWait _
-        | ThreadStatus.BlockedInSyscall -> background
-        | ThreadStatus.Parked ->
-            failwith
-                "managedThreadState: a Parked thread has no managed Thread object, so nothing can ask for its ThreadState (interpreter bug)"
+        | ThreadStatus.BlockedInSyscall
+        | ThreadStatus.Parked -> background
 
 type ThreadState =
     {
