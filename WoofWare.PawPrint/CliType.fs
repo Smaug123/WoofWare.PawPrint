@@ -1058,10 +1058,9 @@ and CliValueTypeStorage =
 /// two walks can disagree on an individual field while still agreeing on the total.
 ///
 /// Note the shape assumes one contiguous native range per managed field. That holds for every
-/// case we currently support, but it is not obviously universal: CoreCLR's `NFT_DECIMAL` field
-/// marshaller, for instance, repositions a `System.Decimal` relative to its managed form. Treat
-/// the one-to-one assumption as provisional, and expect to revisit the shape — not merely add a
-/// case to the consumer's classification — if a marshaller needs several native ranges.
+/// case we currently support, but it is not obviously universal. Treat the one-to-one
+/// assumption as provisional, and expect to revisit the shape — not merely add a case to the
+/// consumer's classification — if a marshaller needs several native ranges.
 and MarshalFieldPlacement =
     {
         /// The managed field this placement describes.
@@ -3330,19 +3329,15 @@ and CliValueType =
         =
         CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib corelib.DateTime vt._Declared
 
-    /// True iff `vt`'s declared type is `System.Decimal`. CoreCLR's `MarshalInfo` routes a
-    /// Decimal-typed *field* through marshal-stub synthesis (`NFT_DECIMAL` in
-    /// `fieldmarshaler.cpp`) rather than treating it as memmove-blittable: managed `Decimal`
-    /// is 16 bytes with 4-byte field alignment, but native `DECIMAL` is 16 bytes with 8-byte
-    /// alignment (its `Lo64` union member is `ULONGLONG`), so a sequential outer struct
-    /// containing a `Decimal` field is laid out differently managed vs native. Structurally,
-    /// `Decimal` looks like a plain sequential struct of four `Int32` fields, so PawPrint can't
-    /// distinguish it without a nominal name match. This predicate is intended for the
-    /// **field-level** rejection inside `MarshalNative_TryGetStructMarshalStub`'s classifier;
-    /// it does not gate `Marshal.SizeOf<Decimal>()` or top-level
-    /// `Marshal.StructureToPtr<decimal>` (where managed and native byte images of standalone
-    /// Decimal happen to coincide — `flags` decomposes byte-for-byte to
-    /// `wReserved+scale+sign`).
+    /// True iff `vt`'s declared type is `System.Decimal`. CoreCLR's `IsFieldBlittable` rejects a
+    /// Decimal-typed *field* unconditionally (fieldmarshaler.cpp:266, because managed
+    /// `System.Decimal`'s alignment need not match native `DECIMAL`'s), so a struct holding one
+    /// goes through marshal-stub synthesis, whose `MARSHAL_TYPE_DECIMAL` marshaller copies the
+    /// managed value verbatim at the field's native offset. Structurally `Decimal` is a plain
+    /// sequential `{ int; uint; ulong }`, so only a nominal match can tell it apart. This
+    /// predicate is for the **field-level** classification in `StructMarshalStub`; it does not
+    /// gate `Marshal.SizeOf<Decimal>()` or top-level `Marshal.StructureToPtr<decimal>`, where the
+    /// type is its own layout.
     static member IsHostKnownDecimal
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)

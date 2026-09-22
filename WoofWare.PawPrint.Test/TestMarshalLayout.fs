@@ -33,9 +33,9 @@ module TestMarshalLayout =
     let private loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ]
 
     /// `Corelib.concretizeAll` covers the base types the interpreter needs at startup, which does
-    /// not include `System.DateTime` — so concretize that one explicitly rather than widening the
-    /// startup set for a test's benefit.
-    let private allCt, dateTimeHandle: AllConcreteTypes * ConcreteTypeHandle =
+    /// not include `System.DateTime` or `System.Decimal` — so concretize those explicitly rather
+    /// than widening the startup set for a test's benefit.
+    let private allCt, dateTimeHandle, decimalHandle: AllConcreteTypes * ConcreteTypeHandle * ConcreteTypeHandle =
         let ctx =
             {
                 TypeConcretization.ConcretizationContext.ConcreteTypes =
@@ -44,19 +44,25 @@ module TestMarshalLayout =
                 TypeConcretization.ConcretizationContext.BaseTypes = bct
             }
 
-        let stk =
-            DumpedAssembly.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies bct.DateTime
+        let concretize
+            (ctx : TypeConcretization.ConcretizationContext<DumpedAssembly>)
+            (ty : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+            : ConcreteTypeHandle * TypeConcretization.ConcretizationContext<DumpedAssembly>
+            =
+            let stk = DumpedAssembly.signatureTypeKind ctx.BaseTypes ctx.LoadedAssemblies ty
 
-        let handle, ctx =
             TypeConcretization.concretizeType
                 ctx
                 IAssemblyLoad.alreadyLoadedOnly
-                bct.DateTime.AssemblyFullName
+                ty.AssemblyFullName
                 ImmutableArray.Empty
                 ImmutableArray.Empty
-                (TypeDefn.FromDefinition (bct.DateTime.Identity, stk))
+                (TypeDefn.FromDefinition (ty.Identity, stk))
 
-        ctx.ConcreteTypes, handle
+        let dateTime, ctx = concretize ctx bct.DateTime
+        let decimalHandle, ctx = concretize ctx bct.Decimal
+
+        ctx.ConcreteTypes, dateTime, decimalHandle
 
     let private handleOf (t : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt t
@@ -103,11 +109,32 @@ module TestMarshalLayout =
             ]
         |> CliType.ValueType
 
-    /// The field kinds the sweep draws from, with the unmanaged size and alignment each is
-    /// expected to contribute. `DateTime` is the interesting one: CoreCLR marshals a `DateTime`
-    /// *field* as an 8-byte OADate double (`MARSHAL_TYPE_DATE`, mlinfo.cpp:1747) rather than as
-    /// its managed `_dateData` image, and the sizes coincide only by luck — the alignment claim
-    /// is what places it.
+    /// A `System.Decimal`-typed field with the given words, laid out as CoreLib declares it:
+    /// `int _flags; uint _hi32; ulong _lo64`. Declared as corelib's `Decimal`, which is what
+    /// `IsHostKnownDecimal` keys on.
+    let private decimalValue (flags : int) (hi32 : int) (lo64 : int64) : CliType =
+        SynthesisedLayoutKind.ofFields
+            bct
+            allCt
+            decimalHandle
+            Layout.Default
+            CharSet.Ansi
+            [
+                cliField "_flags" (CliType.Numeric (CliNumericType.Int32 flags)) (handleOf bct.Int32)
+                cliField "_hi32" (CliType.Numeric (CliNumericType.Int32 hi32)) (handleOf bct.UInt32)
+                cliField
+                    "_lo64"
+                    (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim lo64)))
+                    (handleOf bct.UInt64)
+            ]
+        |> CliType.ValueType
+
+    /// The field kinds the sweep draws from, with the unmanaged size each is expected to
+    /// contribute. `DateTime` is one interesting one: CoreCLR marshals a `DateTime` *field* as an
+    /// 8-byte OADate double (`MARSHAL_TYPE_DATE`, mlinfo.cpp:1747) rather than as its managed
+    /// `_dateData` image, and the sizes coincide only by luck — the alignment claim is what places
+    /// it. `Decimal` is the other: its 16 bytes are 8-byte aligned, so it is the one kind whose
+    /// size and alignment differ.
     let private fieldKinds : (string * (int -> CliType) * ConcreteTypeHandle * int) list =
         [
             "u8",
@@ -123,6 +150,7 @@ module TestMarshalLayout =
             "f32", (fun i -> CliType.Numeric (CliNumericType.Float32 (float32 i))), handleOf bct.Single, 4
             "f64", (fun i -> CliType.Numeric (CliNumericType.Float64 (float i))), handleOf bct.Double, 8
             "date", (fun _ -> dateTimeValue), dateTimeHandle, 8
+            "decimal", (fun i -> decimalValue (i <<< 16) (-i) (int64 i * 0x1_0000_0001L)), decimalHandle, 16
         ]
 
     /// One generated field: what the implementation is given, and the unmanaged width/alignment
@@ -161,14 +189,14 @@ module TestMarshalLayout =
         gen {
             let! count = Gen.choose (1, 5)
             let! kinds = Gen.listOfLength count (Gen.elements fieldKinds)
-            // Distinct 8-byte slots, so no two fields overlap whatever widths are drawn.
+            // Distinct 16-byte slots, so no two fields overlap whatever widths are drawn.
             let! slots = Gen.shuffle [ 0 .. count - 1 ]
 
             return
                 List.zip kinds (List.ofArray slots)
                 |> List.mapi (fun i ((kindName, make, ty, width), slot) ->
                     {
-                        Field = cliFieldAt $"f%d{i}_%s{kindName}" (make (i + 1)) ty (Some (slot * 8))
+                        Field = cliFieldAt $"f%d{i}_%s{kindName}" (make (i + 1)) ty (Some (slot * 16))
                         NativeWidth = width
                     }
                 )
@@ -391,3 +419,106 @@ module TestMarshalLayout =
                 Size = 16
                 Alignment = 8
             }
+
+    [<Test>]
+    let ``A Decimal field claims sixteen bytes at eight-byte alignment`` () : unit =
+        // Native `DECIMAL`'s `Lo64` is a `ULONGLONG`, so `{ int; decimal }` puts the decimal at
+        // offset 8 and is 24 bytes; `Pack = 4` caps that alignment and closes the gap.
+        let fields =
+            [
+                {
+                    Field = cliField "Id" (CliType.Numeric (CliNumericType.Int32 7)) (handleOf bct.Int32)
+                    NativeWidth = 4
+                }
+                {
+                    Field = cliField "Value" (decimalValue 0x10000 0 15L) decimalHandle
+                    NativeWidth = 16
+                }
+            ]
+
+        let size, placements = layoutOf Layout.Default fields
+
+        placements |> List.map _.NativeOffset |> shouldEqual [ 0 ; 8 ]
+
+        size
+        |> shouldEqual
+            {
+                Size = 24
+                Alignment = 8
+            }
+
+        let packedSize, packedPlacements =
+            layoutOf (Layout.Custom (size = 0, packingSize = 4)) fields
+
+        packedPlacements |> List.map _.NativeOffset |> shouldEqual [ 0 ; 4 ]
+
+        packedSize
+        |> shouldEqual
+            {
+                Size = 20
+                Alignment = 4
+            }
+
+    [<Test>]
+    let ``Every swept field kind has a struct-marshal step, placed where the layout puts it`` () : unit =
+        // The plan is the layout plus a per-field classification, so for every field the sweep can
+        // draw it must agree with the layout on placement and pick CoreCLR's marshaller: an
+        // OADate conversion for `DateTime`, and a verbatim copy of the managed value for
+        // everything else — including `Decimal`, whose `ILDecimalMarshaler` is a copy marshaler
+        // with `System.Decimal` itself as its native type.
+        let property (fields : GeneratedField list) (layout : Layout) : unit =
+            let vt = ofFields layout (fields |> List.map _.Field)
+            let size, placements = layoutOf layout fields
+
+            match StructMarshalStub.tryComputePlan allCt loaded bct (CliType.ValueType vt) with
+            | Result.Error err -> failwith $"expected a marshal plan, got %s{err.Reason}"
+            | Result.Ok plan ->
+                plan.NativeSize |> shouldEqual size
+                plan.Steps |> List.map _.Placement |> shouldEqual placements
+
+                for generated, step in List.zip fields plan.Steps do
+                    step.Value |> shouldEqual generated.Field.Contents
+
+                    let expectedKind =
+                        if generated.Field.Type = dateTimeHandle then
+                            StructMarshalFieldKind.OADate
+                        else
+                            StructMarshalFieldKind.CopyBytes
+
+                    step.Kind |> shouldEqual expectedKind
+
+        Prop.forAll
+            (Arb.fromGen (Gen.zip (Gen.oneof [ genFields ; genExplicitFields ]) genLayout))
+            (fun (f, l) -> property f l)
+        |> Check.QuickThrowOnFailure
+
+    [<Test>]
+    let ``Holding a Decimal is not blittable, and nesting a struct that holds one is refused`` () : unit =
+        // The verbatim copy is for a Decimal *field*. It must not make the enclosing struct
+        // blittable (CoreCLR's `IsFieldBlittable` says no, fieldmarshaler.cpp:266), and a struct
+        // one level up that holds such a struct needs a recursive plan, which does not exist.
+        let inner =
+            ofFields
+                Layout.Default
+                [
+                    cliField "Id" (CliType.Numeric (CliNumericType.Int32 7)) (handleOf bct.Int32)
+                    cliField "Value" (decimalValue 0x10000 0 15L) decimalHandle
+                ]
+            |> CliType.ValueType
+
+        StructMarshalStub.isStructStrictlyNumericBlittable allCt loaded bct inner
+        |> shouldEqual false
+
+        let outer =
+            ofFields
+                Layout.Default
+                [
+                    cliField "A" (CliType.Numeric (CliNumericType.Int32 3)) (handleOf bct.Int32)
+                    cliField "Inner" inner declaredHandle
+                ]
+            |> CliType.ValueType
+
+        match StructMarshalStub.tryComputePlan allCt loaded bct outer with
+        | Result.Ok plan ->
+            failwith $"expected the nested Decimal to be refused, got a plan of %d{plan.Steps.Length} step(s)"
+        | Result.Error err -> err.Reason |> shouldContainText "field Inner"

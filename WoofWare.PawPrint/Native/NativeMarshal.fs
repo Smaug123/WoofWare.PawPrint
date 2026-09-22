@@ -137,13 +137,14 @@ module NativeMarshal =
             // - Blittable: the strict subset we are confident matches CoreCLR exactly — structs
             //   whose fields are recursively plain numeric (Int8..Float64), excluding the
             //   host-known field-only special cases (DateTime, Decimal) that CoreCLR's
-            //   `MarshalInfo` diverts to stub synthesis (`MARSHAL_TYPE_DATE`, `NFT_DECIMAL`).
+            //   `MarshalInfo` diverts to stub synthesis (`MARSHAL_TYPE_DATE`,
+            //   `MARSHAL_TYPE_DECIMAL`).
             // - Has-layout-non-blittable: a function pointer to a synthesised method carrying
             //   `RuntimeBehaviour.StructMarshalStub`, which `AbstractMachine` dispatches like any
             //   other runtime-provided method. Today that means a struct whose only non-blittable
-            //   fields are `DateTime`.
+            //   fields are `DateTime` or `Decimal`.
             //
-            // Everything else — `[MarshalAs]` descriptors, Bool/Char/ObjectRef fields, Decimal,
+            // Everything else — `[MarshalAs]` descriptors, Bool/Char/ObjectRef fields,
             // nested composites needing a recursive plan, and reference types (which reach us as
             // `CliType.ObjectRef` and so classify non-blittable, though CoreCLR would memmove a
             // sequential class) — surfaces a host TODO. Each future widening wants its own
@@ -174,12 +175,10 @@ module NativeMarshal =
             // The classifier lives in `StructMarshalStub` so that this arm and the stub itself
             // ask the same question. It encodes the top-level-vs-field distinction CoreCLR's
             // `MarshalInfo` makes: CoreCLR walks fields with `IsFieldBlittable`, which
-            // short-circuits DateTime to `MARSHAL_TYPE_DATE` (mlinfo.cpp:1747) and Decimal to
-            // marshal-stub synthesis (`NFT_DECIMAL` in fieldmarshaler.cpp); neither of those
-            // host-known types is byte-image compatible with its native form *when used as a
-            // field*, but their standalone byte images can coincide with the native form
-            // (Decimal's standalone is byte-identical; DateTime is filtered earlier by the
-            // AutoLayout gate).
+            // short-circuits DateTime to `MARSHAL_TYPE_DATE` (mlinfo.cpp:1747) and rejects a
+            // Decimal field outright (fieldmarshaler.cpp:266). Neither host-known type may be
+            // memmoved *as a field*, though a standalone Decimal is its own native layout, and a
+            // standalone DateTime is filtered earlier by the AutoLayout gate.
             let isStructStrictlyNumericBlittable (t : CliType) : bool =
                 StructMarshalStub.isStructStrictlyNumericBlittable
                     state.ConcreteTypes

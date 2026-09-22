@@ -104,14 +104,12 @@ module StructMarshalStub =
             let isDateTime =
                 CliValueType.IsHostKnownDateTime concreteTypes assemblies corelib vt
 
-            // Decimal is structurally four `Int32` fields (`flags`, `hi`, `lo`, `mid`) and would
-            // otherwise recurse to true, but CoreCLR's `MarshalInfo` routes Decimal fields through
-            // marshal-stub synthesis (`NFT_DECIMAL` in fieldmarshaler.cpp): managed `Decimal` is
-            // 16 bytes with 4-byte field alignment, native `DECIMAL` is 16 bytes with 8-byte
-            // alignment (its `Lo64` union member is `ULONGLONG`). The outer struct's managed
-            // layout therefore positions Decimal at a different offset than the native layout —
-            // `{ int x; decimal d; }` is 20 bytes managed, 24 bytes native. Memmoving would write
-            // into native padding.
+            // Decimal is structurally `{ int; uint; ulong }` and would otherwise recurse to true,
+            // but CoreCLR's `IsFieldBlittable` rejects a Decimal field unconditionally
+            // (fieldmarshaler.cpp:266): managed `System.Decimal`'s alignment need not match
+            // native `DECIMAL`'s, so the enclosing struct's managed layout cannot stand in for its
+            // native one. `tryComputePlan` copies the Decimal itself verbatim instead, at the
+            // offset the native layout walk gives it.
             let isDecimal = CliValueType.IsHostKnownDecimal concreteTypes assemblies corelib vt
 
             if isDateTime || isDecimal then
@@ -187,13 +185,21 @@ module StructMarshalStub =
             // forms. So accept composites only where the interior is trivial: a primitive-like
             // wrapper (an enum, `IntPtr`, …) is a single field at offset 0, whose image is that
             // field's image under either walk. Anything else needs a recursive plan.
+            //
+            // `System.Decimal` is the one composite whose interior is trivial by definition rather
+            // than by shape. CoreCLR marshals a Decimal field with `ILDecimalMarshaler`
+            // (`ILCopyMarshalerKnownStruct<CLASS__DECIMAL, DECIMAL>`, ilmarshalers.h:1788), a copy
+            // marshaler whose native type *is* `System.Decimal`: the stub `ldobj`s the managed
+            // value and `stobj`s it at the field's native offset. `isBlittableField` still says no,
+            // because the *outer* struct is not blittable when it holds one — a Decimal's native
+            // placement is decided by the native layout walk, not the managed one.
             let isCopyableVerbatim (contents : CliType) : bool =
-                isBlittableField concreteTypes assemblies corelib contents
-                && (
-                    match contents with
-                    | CliType.ValueType vt -> vt.PrimitiveLikeKind.IsSome
-                    | _ -> true
-                )
+                match contents with
+                | CliType.ValueType vt when CliValueType.IsHostKnownDecimal concreteTypes assemblies corelib vt -> true
+                | CliType.ValueType vt ->
+                    vt.PrimitiveLikeKind.IsSome
+                    && isBlittableField concreteTypes assemblies corelib contents
+                | _ -> isBlittableField concreteTypes assemblies corelib contents
 
             let steps =
                 placements
