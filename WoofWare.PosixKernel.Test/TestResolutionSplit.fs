@@ -227,7 +227,7 @@ module TestResolutionSplit =
     /// fixture compares two implementations of one walk, and `PathLimits.create`
     /// accepts it, so it is a legal input the two must agree on.
     let private tightLimits : PathLimits =
-        PathLimits.create 2 256 (NameLengthLimit.Utf8Bytes 2) SpliceLengthRecheck.Recheck
+        PathLimits.create 2 256 (NameLengthLimit.Bytes 2) SpliceLengthRecheck.Recheck
 
     let private allLimits : (string * PathLimits) list =
         [
@@ -250,7 +250,7 @@ module TestResolutionSplit =
         [ CallerPrivilege.Unprivileged ; CallerPrivilege.Privileged ]
 
     /// A name that is over-long in bytes but not in UTF-16 code units, which is
-    /// the one input that tells `NameLengthLimit.Utf8Bytes` from
+    /// the one input that tells `NameLengthLimit.Bytes` from
     /// `Utf16CodeUnits`. An ASCII-only corpus reads the two as the same rule.
     let private wideName : string = "中中"
 

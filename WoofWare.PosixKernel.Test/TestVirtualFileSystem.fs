@@ -375,13 +375,13 @@ module TestVirtualFileSystem =
     [<Test>]
     let ``create refuses a limit no Unix has`` () : unit =
         Assert.Throws<Exception> (fun () ->
-            PathLimits.create 0 4096 (NameLengthLimit.Utf8Bytes 255) SpliceLengthRecheck.NoRecheck
+            PathLimits.create 0 4096 (NameLengthLimit.Bytes 255) SpliceLengthRecheck.NoRecheck
             |> ignore<PathLimits>
         )
         |> ignore<Exception>
 
         Assert.Throws<Exception> (fun () ->
-            PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 0) SpliceLengthRecheck.NoRecheck
+            PathLimits.create 40 4096 (NameLengthLimit.Bytes 0) SpliceLengthRecheck.NoRecheck
             |> ignore<PathLimits>
         )
         |> ignore<Exception>
@@ -394,7 +394,7 @@ module TestVirtualFileSystem =
         // a way no test of *resolution* would obviously report.
         let exn =
             Assert.Throws<Exception> (fun () ->
-                PathLimits.create 4096 40 (NameLengthLimit.Utf8Bytes 255) SpliceLengthRecheck.NoRecheck
+                PathLimits.create 4096 40 (NameLengthLimit.Bytes 255) SpliceLengthRecheck.NoRecheck
                 |> ignore<PathLimits>
             )
 

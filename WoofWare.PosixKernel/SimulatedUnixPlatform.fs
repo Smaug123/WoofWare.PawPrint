@@ -616,7 +616,7 @@ module SimulatedUnixPlatform =
     let pathLimits (platform : SimulatedUnixPlatform) : PathLimits =
         match flavour platform with
         | SimulatedUnixFlavour.Linux ->
-            PathLimits.create 40 4096 (NameLengthLimit.Utf8Bytes 255) SpliceLengthRecheck.NoRecheck
+            PathLimits.create 40 4096 (NameLengthLimit.Bytes 255) SpliceLengthRecheck.NoRecheck
         | SimulatedUnixFlavour.Darwin ->
             PathLimits.create 32 1024 (NameLengthLimit.Utf16CodeUnits 255) SpliceLengthRecheck.Recheck
 

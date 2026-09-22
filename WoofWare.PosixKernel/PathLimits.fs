@@ -29,19 +29,22 @@ open System.Collections.Immutable
 /// make a forged `Unchecked.defaultof<PathLimits>` carry a *null* limit, and
 /// `assertValid` would then have to match on it to reject it — which is exactly
 /// the operation that would throw. As a struct the forged default is
-/// `Utf8Bytes 0`, which reads as an ordinary case carrying a zero, and the zero
+/// `Bytes 0`, which reads as an ordinary case carrying a zero, and the zero
 /// is what `assertValid` rejects.
 [<RequireQualifiedAccess>]
 [<Struct>]
 type NameLengthLimit =
     /// <summary>
-    /// The length limit is this number of UTF8 bytes.
+    /// The length limit is this number of bytes.
     /// </summary>
+    /// <remarks>
+    /// Every byte counts once, whether or not the name is valid UTF-8.
+    /// </remarks>
     /// <example>
     /// Linux filesystems generally, and ext4 specifically, use this limit:
     /// a raw byte count, which is what the kernel stores and compares.
     /// </example>
-    | Utf8Bytes of bytes : int
+    | Bytes of bytes : int
     /// <summary>
     /// The length limit is this number of UTF-16 code units.
     /// </summary>
@@ -172,11 +175,11 @@ module PathLimits =
                 $"PathLimits.create: a PATH_MAX of %d{pathMaxBytes} bytes is below POSIX's _POSIX_PATH_MAX floor of 256. Are the first two arguments the wrong way round?"
 
         match nameMax with
-        | NameLengthLimit.Utf8Bytes bytes when bytes < 1 ->
+        | NameLengthLimit.Bytes bytes when bytes < 1 ->
             failwith $"PathLimits.create: a NAME_MAX of %d{bytes} bytes would forbid every filename."
         | NameLengthLimit.Utf16CodeUnits units when units < 1 ->
             failwith $"PathLimits.create: a NAME_MAX of %d{units} UTF-16 code units would forbid every filename."
-        | NameLengthLimit.Utf8Bytes _
+        | NameLengthLimit.Bytes _
         | NameLengthLimit.Utf16CodeUnits _ -> ()
 
         {
@@ -210,7 +213,7 @@ module PathLimits =
     /// look correct.
     let nameWithinLimit (limits : PathLimits) (name : DirectoryEntryName) : bool =
         match limits.NameMax with
-        | NameLengthLimit.Utf8Bytes bytes -> UnixPathText.utf8.GetByteCount (DirectoryEntryName.toString name) <= bytes
+        | NameLengthLimit.Bytes bytes -> UnixPathText.utf8.GetByteCount (DirectoryEntryName.toString name) <= bytes
         | NameLengthLimit.Utf16CodeUnits units -> (DirectoryEntryName.toString name).Length <= units
 
     /// Whether this kernel will still resolve the path that results from
@@ -260,7 +263,7 @@ module PathLimits =
 
         let nameMax =
             match limits.NameMax with
-            | NameLengthLimit.Utf8Bytes bytes -> bytes
+            | NameLengthLimit.Bytes bytes -> bytes
             | NameLengthLimit.Utf16CodeUnits units -> units
 
         if nameMax < 1 then
