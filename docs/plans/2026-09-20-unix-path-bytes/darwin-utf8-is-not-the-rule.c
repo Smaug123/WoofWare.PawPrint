@@ -2,8 +2,10 @@
  * APFS admits strictly fewer names than strict UTF-8 does: U+FFFF and the
  * other Unicode noncharacters decode fine and are refused with EILSEQ. The
  * obvious closed form -- "accept iff not a noncharacter" -- is itself refuted
- * by U+1FFFD, which is merely unassigned and is also refused. The real
- * boundary is unmapped; see Stage 7, which opens by sweeping for it.
+ * by U+1FFFD, which is merely unassigned and is also refused.
+ * The real boundary is never mapped: darwin-admissibility-is-not-per-codepoint.c
+ * shows it is not a per-code-point property at all, so PawPrint approximates it
+ * as "strictly valid UTF-8" and records the gap as a divergence (plan 1.1.1).
  * Run: cc -o p darwin-utf8-is-not-the-rule.c && ./p
  * Measured: Darwin 25.6.0 / macOS 26.6, APFS.
  */

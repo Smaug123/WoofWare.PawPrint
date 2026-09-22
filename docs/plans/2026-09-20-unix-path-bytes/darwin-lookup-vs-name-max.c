@@ -1,8 +1,13 @@
 /* Produces the plan's §1.4 lookup claim.
- * On a *lookup*, an unrepresentable component is ENOENT at any length --
- * including 300 bytes, where a valid component of the same length is
- * ENAMETOOLONG. This is what makes NameLengthLimit.Utf16CodeUnits well
- * defined: the length rule is never asked about a name it cannot decode.
+ * On a *lookup*, an undecodable component of 300 bytes is ENOENT, where a valid
+ * component of the same length is ENAMETOOLONG -- so the two are not measured by
+ * the same rule.
+ *
+ * Do NOT read this as "an undecodable component is never length-checked": it is,
+ * against a different limit. Darwin caps a decodable name at 255 UTF-16 units and
+ * an undecodable one at 765 raw bytes, so 766 x 0xFF *is* ENAMETOOLONG. This
+ * probe only reaches 300 bytes and so cannot see that; darwin-name-max-boundary-
+ * per-unit.c bisects both limits, and the plan's §1.5 has the tables.
  * Run: cc -o p darwin-lookup-vs-name-max.c && ./p
  * Measured: Darwin 25.6.0 / macOS 26.6, APFS.
  */

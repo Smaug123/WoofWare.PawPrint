@@ -1,4 +1,4 @@
-# Produces the plan's Linux column throughout §1.1-§1.5.
+# Produces the plan's Linux column throughout §1.1-§1.6.
 # ext4 stores names as bytes and asks no questions: every encoding APFS refuses
 # binds here and readdirs back exactly, NAME_MAX is a raw byte count (confirmed
 # with 255 x 0xFF), and getcwd returns the raw bytes of a non-UTF-8 directory.

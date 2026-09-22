@@ -1,9 +1,11 @@
-/* Produces the plan's §1.1 second refutation, and the reason Stage 7 is descoped.
+/* Produces the plan's §1.1 second refutation.
  * APFS admissibility is not a per-code-point property at all: it limits a
  * *combining sequence* to 32 characters. 'b' + 31 combining marks is accepted
  * and 'b' + 32 is EILSEQ; 32 bare marks are accepted and 33 are EILSEQ; 33
  * ordinary CJK characters are fine. This is XNU's decomposition limit, so no
- * table of admissible code points can express the rule.
+ * table of admissible code points can express the rule -- which is why PawPrint
+ * does not model APFS's predicate, and approximates it as "strictly valid
+ * UTF-8" instead. See the plan's 1.1.1 for what that over-admits.
  * Run: cc -o p darwin-admissibility-is-not-per-codepoint.c && ./p
  * Measured: Darwin 25.6.0 / macOS 26.6, APFS.
  */

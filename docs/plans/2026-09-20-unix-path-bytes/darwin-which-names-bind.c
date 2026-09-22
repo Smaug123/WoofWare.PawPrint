@@ -1,4 +1,4 @@
-/* Produces the plan's §1.1 and the Darwin half of §1.5.
+/* Produces the plan's §1.1 and the Darwin half of §1.6.
  * Which byte strings APFS will bind as a directory entry name, and whether a
  * symlink *target* is subject to the same rule (it is not).
  * Run: cc -o p darwin-which-names-bind.c && ./p

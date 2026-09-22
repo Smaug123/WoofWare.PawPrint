@@ -3,6 +3,9 @@
  * parent's write check and the encoding check follows it. Only the four-cell
  * table (writable/unwritable parent x decodable/undecodable name) separates
  * them; three of the four cells agree with the wrong ordering.
+ * The undecodable names here are 300 bytes, which is under Darwin's 765-byte
+ * limit for such names (plan §1.5) -- so the length rule passes and the cells
+ * really do isolate the permission/encoding order.
  * Run: cc -o p darwin-name-max-vs-permission.c && ./p
  * Measured: Darwin 25.6.0 / macOS 26.6, APFS.
  */
