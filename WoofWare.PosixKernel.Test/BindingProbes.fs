@@ -148,8 +148,9 @@ module BindingProbes =
         | BindingProbeCall.OpenRead path -> UnixNamespace.openPath reading (rooted path) 0 system |> fst |> ofAnswer
         | BindingProbeCall.Exists path ->
             match UnixPathResolution.stat SymlinkPolicy.Follow (rooted path) system with
-            | FileStatusAnswer.Reported _ -> None
-            | FileStatusAnswer.Failed error -> Some error
+            | Ok (FileStatusAnswer.Reported _) -> None
+            | Ok (FileStatusAnswer.Failed error) -> Some error
+            | Error refusal -> failwith $"stat refused: %s{StatRefusal.describe refusal}"
         | BindingProbeCall.ReadLink path ->
             match UnixNamespace.readlink (rooted path) UserBuffer.Mapped 8192 system with
             | Ok (ReadLinkAnswer.Reported _) -> None

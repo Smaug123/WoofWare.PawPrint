@@ -348,8 +348,9 @@ module TestDirectorySize =
 
     let private modelSize (system : UnixSystem<int, string>) : int64 =
         match UnixPathResolution.stat SymlinkPolicy.Follow (rooted "d") system with
-        | FileStatusAnswer.Reported status -> status.Size
-        | FileStatusAnswer.Failed error -> failwith $"stat d failed with %O{error}"
+        | Ok (FileStatusAnswer.Reported status) -> status.Size
+        | Ok (FileStatusAnswer.Failed error) -> failwith $"stat d failed with %O{error}"
+        | Error refusal -> failwith $"stat d was refused: %s{StatRefusal.describe refusal}"
 
     let private modelFStatSize (fd : int) (system : UnixSystem<int, string>) : int64 =
         match UnixPathResolution.fstat fd system with
@@ -519,25 +520,37 @@ module TestDirectorySize =
         for platform in [ SimulatedUnixPlatform.linuxX64 ; SimulatedUnixPlatform.macOsArm64 ] do
             let fd, system = modelWith platform EmulatedFileSystemType.Nfs
 
-            let viaStat =
-                Assert.Throws (fun () ->
-                    UnixPathResolution.stat SymlinkPolicy.Follow (rooted "d") system
-                    |> ignore<FileStatusAnswer>
-                )
+            let inodeOf (relative : string) : InodeNumber =
+                match
+                    UnixPathResolution.resolvePath SymlinkPolicy.Follow (UnixPath.parseOrFail context relative) system
+                with
+                | Ok inode -> inode
+                | Error error -> failwith $"resolving %s{relative}: %O{error}"
 
-            viaStat.Message |> shouldContainText "Nfs"
+            // The root is a directory on the same mount, so it is refused too.
+            for path in [ "/d" ; "/" ; "/o" ] do
+                for policy in [ SymlinkPolicy.Follow ; SymlinkPolicy.NoFollowFinal ] do
+                    UnixPathResolution.stat policy (UnixPath.parseOrFail context path) system
+                    |> shouldEqual (Error (StatRefusal.NfsDirectorySize (inodeOf path)))
 
-            let viaFStat =
-                Assert.Throws (fun () ->
-                    UnixPathResolution.fstat fd system
-                    |> ignore<Result<FileStatusAnswer, FStatRefusal>>
-                )
-
-            viaFStat.Message |> shouldContainText "Nfs"
+            UnixPathResolution.fstat fd system
+            |> shouldEqual (Error (FStatRefusal.NfsDirectorySize (inodeOf "/d")))
 
             match UnixDescriptor.lseek fd 0L 2 system with
             | Error (LSeekRefusal.DirectoryEnd _) -> ()
             | other -> failwith $"expected SEEK_END on an NFS directory to be refused, got %A{other}"
+
+    [<Test>]
+    let ``an NFS refusal names the server as the reason`` () : unit =
+        let inode = InodeNumber 7L
+
+        for text in
+            [
+                StatRefusal.describe (StatRefusal.NfsDirectorySize inode)
+                FStatRefusal.describe (FStatRefusal.NfsDirectorySize inode)
+            ] do
+            text |> shouldContainText "NFS server"
+            text |> shouldContainText (string<InodeNumber> inode)
 
     [<Test>]
     let ``an NFS mount still reports a regular file's size`` () : unit =
@@ -548,7 +561,7 @@ module TestDirectorySize =
             let system = applyToModel (DirectorySizeOp.Create "d/f") system
 
             match UnixPathResolution.stat SymlinkPolicy.Follow (rooted "d/f") system with
-            | FileStatusAnswer.Reported status -> status.Size |> shouldEqual 0L
+            | Ok (FileStatusAnswer.Reported status) -> status.Size |> shouldEqual 0L
             | other -> failwith $"stat d/f: %A{other}"
 
     // ------------------------------------------------------------ the host

@@ -72,6 +72,23 @@ type FileStatus =
         Inode : InodeNumber
     }
 
+/// Why this kernel refused to report a `struct stat` for a path.
+[<RequireQualifiedAccess>]
+type StatRefusal =
+    /// The path names a directory on an NFS mount. Its `st_size` is the size
+    /// the NFS server's GETATTR reports, and nothing in this machine
+    /// determines that.
+    | NfsDirectorySize of inode : InodeNumber
+
+[<RequireQualifiedAccess>]
+module StatRefusal =
+    /// What this kernel knows about why it cannot answer, for a client composing
+    /// a diagnostic.
+    let describe (refusal : StatRefusal) : string =
+        match refusal with
+        | StatRefusal.NfsDirectorySize inode ->
+            $"inode %O{inode} is a directory on an NFS mount. Its st_size is the size the NFS server's GETATTR reports, which nothing in this machine determines, so this kernel will not state one."
+
 /// <summary>
 /// Why this kernel refused to report a <c>struct stat</c> for a descriptor.
 /// </summary>
@@ -93,6 +110,14 @@ type FStatRefusal =
     /// A socket, which has an identity in WoofWare.PosixKernel, but not an inode-shaped one.
     /// </summary>
     | Socket of socket : SocketId
+    /// <summary>
+    /// A directory on an NFS mount.
+    /// </summary>
+    /// <remarks>
+    /// Its <c>st_size</c> is the size the NFS server's GETATTR reports, and nothing in this machine
+    /// determines that.
+    /// </remarks>
+    | NfsDirectorySize of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
 module FStatRefusal =
@@ -105,6 +130,7 @@ module FStatRefusal =
             "the descriptor is a socket event port, an anonymous kernel object this kernel holds no inode for. Measured, the two flavours share not one field, and Linux's identity fields are facts about the machine that produced them rather than portable ones: Linux gives `st_mode` 0600 (permission bits and *no* file-type bits), `st_nlink` 1, `st_blksize` 4096, and a real anon-inode `st_dev`/`st_ino`; Darwin gives `st_mode` S_IFIFO (no permission bits), `st_nlink` 0, `st_blksize` 32, and zero for both identity fields."
         | FStatRefusal.Socket socket ->
             $"the descriptor is socket %O{socket}, for which this kernel holds no inode — a `SocketId` is a contention key rather than an inode number. Measured, only Linux gives a socket an inode at all (`st_dev` 8 and a distinct `st_ino` per socket, on `sockfs`), a Darwin AF_INET socket reporting 0 for both; and the rest would be invented either way — `st_mode` is S_IFSOCK|0777 on Linux against S_IFSOCK|0666 on Darwin, `st_nlink` 1 against 0, and Darwin's `st_blksize` varies with the socket itself (131072 for TCP, 9216 for UDP, 8192 for a Unix-domain socket)."
+        | FStatRefusal.NfsDirectorySize inode -> StatRefusal.describe (StatRefusal.NfsDirectorySize inode)
 
 /// <summary>
 /// What <c>fstat(2)</c> reported.
@@ -296,12 +322,12 @@ module UnixPathResolution =
     /// only in how they reach the inode. `fstat` is this plus a descriptor
     /// lookup, and `stat`/`lstat` are this plus a path resolution.
     ///
-    /// Throws for a directory on an NFS mount, whose size this kernel cannot
-    /// state (see `EmulatedFileSystemType.directorySize`).
+    /// Refuses for a directory on an NFS mount, whose size this kernel cannot
+    /// state; see `StatRefusal`.
     let statOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (system : UnixSystem<'Task, 'Handler>)
-        : FileStatus option
+        : Result<FileStatus, StatRefusal> option
         =
         match VirtualFileSystem.tryGet inode system.Machine.FileSystem with
         | None -> None
@@ -313,18 +339,24 @@ module UnixPathResolution =
             | InodePermissions.PlatformSymlinkDefault ->
                 SimulatedUnixPlatform.symlinkPermissions system.Machine.UnixPlatform
 
-        let size =
+        let size : Result<int64, StatRefusal> =
             match entry.Content with
-            | InodeContent.RegularFile (contents, _) -> int64 contents.Length
+            | InodeContent.RegularFile (contents, _) -> Ok (int64 contents.Length)
             // `readlink` reports the target's byte length as the link's size,
             // and a guest can see it through a file-length API.
-            | InodeContent.Symlink target -> int64 (UnixByteString.length (SymlinkTarget.toByteString target))
+            | InodeContent.Symlink target -> Ok (int64 (UnixByteString.length (SymlinkTarget.toByteString target)))
             | InodeContent.Directory directory ->
-                match EmulatedFileSystemType.directorySize system.Machine.FileSystemType directory.Entries.Count with
-                | Some size -> size
+                let fsType = system.Machine.FileSystemType
+
+                match EmulatedFileSystemType.directorySize fsType directory.Entries.Count with
+                | Some size -> Ok size
                 | None ->
-                    failwith
-                        $"UnixPathResolution.statOf: inode %O{inode} is a directory on a %O{system.Machine.FileSystemType} mount. A directory's st_size there is whatever the server's filesystem reports, which nothing in this machine determines, so this kernel will not state one."
+                    match fsType with
+                    | EmulatedFileSystemType.Nfs -> Error (StatRefusal.NfsDirectorySize inode)
+                    | EmulatedFileSystemType.Tmpfs
+                    | EmulatedFileSystemType.Apfs ->
+                        failwith
+                            $"UnixPathResolution.statOf: EmulatedFileSystemType.directorySize states no size for a %O{fsType} directory, which has a measured one (this is a bug in this library)"
 
         let birthTime =
             // Withheld rather than reported when the platform has no
@@ -335,21 +367,27 @@ module UnixPathResolution =
             else
                 None
 
-        Some
-            {
-                Mode = InodeContent.fileTypeBits entry.Content ||| PermissionBits.toInt permissions
-                // The calling process's, this kernel storing no per-inode
-                // ownership. See `FileStatus.UserId`.
-                UserId = system.Process.UserId
-                GroupId = system.Process.GroupId
-                Size = size
-                AccessTime = entry.Times.Access
-                ModificationTime = entry.Times.Modification
-                StatusChangeTime = entry.Times.StatusChange
-                BirthTime = birthTime
-                DeviceId = VirtualFileSystem.deviceId
-                Inode = inode
-            }
+        match size with
+        | Error refusal -> Some (Error refusal)
+        | Ok size ->
+
+        Some (
+            Ok
+                {
+                    Mode = InodeContent.fileTypeBits entry.Content ||| PermissionBits.toInt permissions
+                    // The calling process's, this kernel storing no per-inode
+                    // ownership. See `FileStatus.UserId`.
+                    UserId = system.Process.UserId
+                    GroupId = system.Process.GroupId
+                    Size = size
+                    AccessTime = entry.Times.Access
+                    ModificationTime = entry.Times.Modification
+                    StatusChangeTime = entry.Times.StatusChange
+                    BirthTime = birthTime
+                    DeviceId = VirtualFileSystem.deviceId
+                    Inode = inode
+                }
+        )
 
     /// `stat(2)` and `lstat(2)`: report the status of the inode `path` names,
     /// the two differing only in whether a symbolic link in the final position
@@ -358,22 +396,24 @@ module UnixPathResolution =
     /// Changes nothing and returns no system, for the reason `fstat` does not:
     /// a `stat` records no access.
     ///
-    /// Cannot be refused, unlike `fstat`. Every inode a path resolves to is one
-    /// this filesystem holds — a name for an inode-free object cannot be created
-    /// in it — so the three descriptors `fstat` refuses for are unreachable from
-    /// here. It does throw for a directory on an NFS mount, as `statOf` does.
+    /// Refuses only for a directory on an NFS mount, as `statOf` does; see
+    /// `StatRefusal`. The three descriptor kinds `fstat` also refuses for are
+    /// unreachable from here: every inode a path resolves to is one this
+    /// filesystem holds, since a name for an inode-free object cannot be
+    /// created in it.
     let stat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (path : UnixPath)
         (system : UnixSystem<'Task, 'Handler>)
-        : FileStatusAnswer
+        : Result<FileStatusAnswer, StatRefusal>
         =
         match resolvePath policy path system with
-        | Error error -> FileStatusAnswer.Failed error
+        | Error error -> Ok (FileStatusAnswer.Failed error)
         | Ok inode ->
 
         match statOf inode system with
-        | Some status -> FileStatusAnswer.Reported status
+        | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
+        | Some (Error refusal) -> Error refusal
         | None ->
             failwith
                 $"UnixPathResolution.stat: resolving %O{path} returned inode %O{inode}, which the filesystem does not contain. Run VirtualFileSystem.checkInvariants (this is a bug in this library)."
@@ -386,8 +426,8 @@ module UnixPathResolution =
     ///
     /// Refuses for a descriptor this kernel holds no inode for — the standard
     /// streams, a socket event port, a socket. That is a limit of the model
-    /// rather than an absent kernel answer; see `FStatRefusal`. Throws for a
-    /// directory on an NFS mount, as `statOf` does.
+    /// rather than an absent kernel answer; see `FStatRefusal`. Also refuses
+    /// for a directory on an NFS mount, as `statOf` does.
     let fstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)
@@ -401,7 +441,8 @@ module UnixPathResolution =
         | Some (OpenFileObject.File inode) ->
 
         match statOf inode system with
-        | Some status -> Ok (FileStatusAnswer.Reported status)
+        | Some (Ok status) -> Ok (FileStatusAnswer.Reported status)
+        | Some (Error (StatRefusal.NfsDirectorySize inode)) -> Error (FStatRefusal.NfsDirectorySize inode)
         | None ->
             failwith
                 $"UnixPathResolution.fstat: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."

@@ -350,7 +350,7 @@ module TestUnixPathBytes =
                 | other -> failwith $"expected a target, got %A{other}"
 
                 match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (pathOf [ slash ; byte 'l' ]) system with
-                | FileStatusAnswer.Reported status -> status.Size |> shouldEqual (int64 bytes.Length)
+                | Ok (FileStatusAnswer.Reported status) -> status.Size |> shouldEqual (int64 bytes.Length)
                 | other -> failwith $"expected a status, got %A{other}"
 
         Check.One (config, Prop.forAll (Arb.fromGen targetBytesGen) property)
@@ -368,7 +368,7 @@ module TestUnixPathBytes =
                 linux
 
         match UnixPathResolution.stat SymlinkPolicy.Follow (pathOf [ slash ; byte 'l' ; slash ; byte '.' ]) system with
-        | FileStatusAnswer.Reported status -> status.Mode &&& 0o170000 |> shouldEqual 0o040000
+        | Ok (FileStatusAnswer.Reported status) -> status.Mode &&& 0o170000 |> shouldEqual 0o040000
         | other -> failwith $"expected the directory, got %A{other}"
 
     [<Test>]
@@ -382,7 +382,7 @@ module TestUnixPathBytes =
             let body = List.replicate 300 [ 0xE4uy ; 0xB8uy ; slash ] |> List.concat
             body @ List.replicate (length - body.Length) (byte 'a')
 
-        let lookup (length : int) : FileStatusAnswer =
+        let lookup (length : int) : Result<FileStatusAnswer, StatRefusal> =
             let system =
                 seeded [ nameOf [ byte 'l' ], SeedEntry.Symlink (targetOf (target length)) ] darwin
 
@@ -390,8 +390,8 @@ module TestUnixPathBytes =
 
         // Fits, so the walk proceeds into the target, whose first component
         // does not exist.
-        lookup 1021 |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
-        lookup 1022 |> shouldEqual (FileStatusAnswer.Failed UnixError.ENAMETOOLONG)
+        lookup 1021 |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
+        lookup 1022 |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENAMETOOLONG))
 
     // ------------------------------------------------------------ PathCursor
 

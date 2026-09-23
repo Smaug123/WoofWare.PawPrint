@@ -1496,8 +1496,8 @@ module TestUnixSystemStep =
 
             let status =
                 match UnixPathResolution.statOf inode system with
-                | Some status -> status
-                | None -> failwith "expected a status"
+                | Some (Ok status) -> status
+                | other -> failwith $"expected a status, got %A{other}"
 
             // The target's length in bytes, which is what `readlink` would copy
             // out — not the length of anything the link points at.
@@ -1719,6 +1719,7 @@ module TestUnixSystemStep =
             UnixPathResolution.fstat fd withDescriptor
             |> reported
             |> FileStatusAnswer.Reported
+            |> Ok
         )
 
     [<Test>]
@@ -1731,14 +1732,14 @@ module TestUnixSystemStep =
             let _, target, link, system = withTree flavour
 
             match UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/l") system with
-            | FileStatusAnswer.Reported status ->
+            | Ok (FileStatusAnswer.Reported status) ->
                 status.Inode |> shouldEqual target
                 status.Size |> shouldEqual 3L
                 status.Mode |> shouldEqual 0o100600
             | other -> failwith $"expected a status, got %A{other}"
 
             match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (statPath "/l") system with
-            | FileStatusAnswer.Reported status ->
+            | Ok (FileStatusAnswer.Reported status) ->
                 status.Inode |> shouldEqual link
                 // `/d/inner/t` is ten bytes, which is what `readlink` would copy.
                 status.Size |> shouldEqual 10L
@@ -1752,7 +1753,7 @@ module TestUnixSystemStep =
         let _, _, _, system = withTree linux
 
         UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d/inner/nope") system
-        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+        |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
 
     [<Test>]
     let ``a relative path starts at the current directory's inode`` () : unit =
@@ -1853,7 +1854,7 @@ module TestUnixSystemStep =
 
             [
                 (match UnixPathResolution.stat SymlinkPolicy.Follow path system with
-                 | FileStatusAnswer.Failed error -> error
+                 | Ok (FileStatusAnswer.Failed error) -> error
                  | other -> failwith $"expected a failure, got %A{other}")
                 UnixNamespace.mkdir path 0o777 system |> answer
                 UnixNamespace.unlink path system |> answer
@@ -1923,7 +1924,7 @@ module TestUnixSystemStep =
                         UnixError.ENOENT
 
                 match UnixPathResolution.stat SymlinkPolicy.Follow (statPath text) system with
-                | FileStatusAnswer.Failed actual -> actual |> shouldEqual expected
+                | Ok (FileStatusAnswer.Failed actual) -> actual |> shouldEqual expected
                 | other -> failwith $"expected %O{expected} at %d{length} bytes, got %A{other}"
 
                 // The raw-bytes door draws the line at the same byte.
@@ -1952,7 +1953,7 @@ module TestUnixSystemStep =
         let after = UnixNamespace.mkdir (statPath "/d") 0o777 system |> completed
 
         match UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d") after with
-        | FileStatusAnswer.Reported status -> status.Mode |> shouldEqual 0o40750
+        | Ok (FileStatusAnswer.Reported status) -> status.Mode |> shouldEqual 0o40750
         | other -> failwith $"expected a status, got %A{other}"
 
     [<Test>]
@@ -1971,7 +1972,7 @@ module TestUnixSystemStep =
         |> failedAs UnixError.EEXIST
 
         UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (statPath "/d/inner/gone") system
-        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+        |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
 
     [<Test>]
     let ``unlink removes the name, and the inode with it when nothing holds it`` () : unit =
@@ -1980,7 +1981,7 @@ module TestUnixSystemStep =
         let after = UnixNamespace.unlink (statPath "/d/inner/t") system |> completed
 
         UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d/inner/t") after
-        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+        |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
 
         // The inode is gone too, which is the part `unlink` adds over the
         // filesystem's own unbind.
@@ -2008,7 +2009,7 @@ module TestUnixSystemStep =
 
         // The name has gone...
         UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d/inner/t") after
-        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+        |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
 
         // ...and the inode has not.
         UnixPathResolution.statOf target after |> shouldNotEqual None
@@ -2036,7 +2037,7 @@ module TestUnixSystemStep =
             |> fun system -> UnixNamespace.rmdir (statPath "/d") system |> completed
 
         UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d") after
-        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+        |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
 
     [<Test>]
     let ``a removed directory's ctime is the flavour's own answer`` () : unit =
@@ -2062,7 +2063,8 @@ module TestUnixSystemStep =
             let after = UnixNamespace.rmdir (statPath "/d") system |> completed
 
             match UnixPathResolution.statOf inode after with
-            | Some status -> status.StatusChangeTime |> shouldEqual expected
+            | Some (Ok status) -> status.StatusChangeTime |> shouldEqual expected
+            | Some (Error refusal) -> failwith $"refused: %A{refusal}"
             | None -> failwith "the held descriptor should have kept the inode alive"
 
     [<Test>]
@@ -3780,7 +3782,7 @@ module TestUnixSystemStep =
             answer |> shouldEqual (SyscallAnswer.Failed UnixError.EEXIST)
 
             UnixPathResolution.stat SymlinkPolicy.Follow (statPath "/d/inner/gone") after
-            |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+            |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
 
     [<Test>]
     let ``a directory opens for reading but not for writing`` () : unit =
@@ -3841,7 +3843,8 @@ module TestUnixSystemStep =
                     system
 
             match UnixPathResolution.statOf target after with
-            | Some status -> status.Size |> shouldEqual 0L
+            | Some (Ok status) -> status.Size |> shouldEqual 0L
+            | Some (Error refusal) -> failwith $"refused: %A{refusal}"
             | None -> failwith "the file vanished"
 
     [<Test>]
@@ -4013,7 +4016,8 @@ module TestUnixSystemStep =
             match UnixPathResolution.resolvePath SymlinkPolicy.Follow (statPath "/made") after with
             | Ok inode ->
                 match UnixPathResolution.statOf inode after with
-                | Some status -> status.Mode &&& 0o7777 |> shouldEqual 0o755
+                | Some (Ok status) -> status.Mode &&& 0o7777 |> shouldEqual 0o755
+                | Some (Error refusal) -> failwith $"refused: %A{refusal}"
                 | None -> failwith "the created file has no status"
             | Error error -> failwith $"the created file is unreachable: %O{error}"
 
@@ -4988,10 +4992,10 @@ module TestUnixSystemStep =
 
         // The source name is gone and the destination now names what moved.
         UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (statPath "/f") moved
-        |> shouldEqual (FileStatusAnswer.Failed UnixError.ENOENT)
+        |> shouldEqual (Ok (FileStatusAnswer.Failed UnixError.ENOENT))
 
         match UnixPathResolution.stat SymlinkPolicy.NoFollowFinal (statPath "/victim") moved with
-        | FileStatusAnswer.Reported _ -> ()
+        | Ok (FileStatusAnswer.Reported _) -> ()
         | other -> failwith $"expected /victim to exist, got %A{other}"
 
         // The inode the destination *used* to name lost its last link, and
