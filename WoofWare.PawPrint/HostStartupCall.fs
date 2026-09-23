@@ -94,19 +94,15 @@ module HostStartupCall =
 
         ptr, IlMachineState.setNativeMemoryPool pool state
 
-    let private findCorelibMethod
-        (isStatic : bool)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+    /// The unique type definition `typeNamespace.typeName` in `corelib`. `purpose` is as for
+    /// `findCorelibStaticMethod`.
+    let findCorelibType
+        (corelib : DumpedAssembly)
         (typeNamespace : string)
         (typeName : string)
-        (methodName : string)
-        (arity : int)
         (purpose : string)
-        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        : WoofWare.PawPrint.TypeInfo<GenericParamFromMetadata, TypeDefn>
         =
-        let corelib = baseClassTypes.Corelib
-        let staticness = if isStatic then "static" else "instance"
-
         let candidateTypes =
             corelib.TypeDefs
             |> Seq.choose (fun (KeyValue (_, ty)) ->
@@ -117,14 +113,27 @@ module HostStartupCall =
             )
             |> Seq.toList
 
+        match candidateTypes with
+        | [ single ] -> single
+        | [] -> failwith $"Could not find %s{typeNamespace}.%s{typeName} in CoreLib; PawPrint calls it to %s{purpose}."
+        | _ :: _ :: _ ->
+            failwith
+                $"Found several %s{typeNamespace}.%s{typeName} type definitions in CoreLib; PawPrint calls it to %s{purpose}."
+
+    let private findCorelibMethod
+        (isStatic : bool)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeNamespace : string)
+        (typeName : string)
+        (methodName : string)
+        (arity : int)
+        (purpose : string)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        let staticness = if isStatic then "static" else "instance"
+
         let declaringType =
-            match candidateTypes with
-            | [ single ] -> single
-            | [] ->
-                failwith $"Could not find %s{typeNamespace}.%s{typeName} in CoreLib; PawPrint calls it to %s{purpose}."
-            | _ :: _ :: _ ->
-                failwith
-                    $"Found several %s{typeNamespace}.%s{typeName} type definitions in CoreLib; PawPrint calls it to %s{purpose}."
+            findCorelibType baseClassTypes.Corelib typeNamespace typeName purpose
 
         let candidates =
             declaringType.Methods

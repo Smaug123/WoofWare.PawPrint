@@ -7,7 +7,7 @@ description: How PawPrint seeds AppContext feature switches from runtimeconfig.j
 
 BCL feature switches (`System.Diagnostics.Tracing.EventSource.IsSupported`, `System.Globalization.Invariant`, …) are read through `AppContext.GetData`/`TryGetSwitch`. Nothing in managed code populates that store: on CoreCLR the VM calls `AppContext.Setup(char**, char**, int)` from `CorHost2::CreateAppDomainWithManager`, with arrays `hostpolicy` built from `runtimeOptions.configProperties`.
 
-PawPrint does the same in `AppContextSeed.fs`, called from `Program.prepare`.
+PawPrint does the same in `AppContextSeed.fs`, called from `Program.prepare`. It finds `Setup` by name and classifies the signature it finds into a `SetupShape`, whose cases are exactly the signatures checked against a real CoreLib; any other signature is refused, naming what was found. A new CoreLib's `Setup` is therefore a new `SetupShape` case, added against that image.
 The design has three properties:
 
 - **The library never performs IO to read the file.** `RuntimeConfig.parse` is pure `byte[] -> Result<AppContextProperties, string>`; the filesystem read lives in the App (`HostRuntimeConfig.fs`). A library that read the host's disk would make a replay depend on the machine that produced it, and the test harness compiles guests straight to a `MemoryStream` where no sibling file exists. It takes bytes rather than a string because the encoding rules are part of hostpolicy's behaviour: `parse_file` mmaps the file, skips only a UTF-8 BOM, and parses the rest as UTF-8, so a UTF-16 config is one a real host refuses.

@@ -1,7 +1,49 @@
 namespace WoofWare.PawPrint
 
 open System.Collections.Immutable
+open System.Reflection.Metadata
 open Microsoft.Extensions.Logging
+
+/// A signature of `System.AppContext::Setup` which PawPrint has checked against a real CoreLib
+/// and knows how to build a call for.
+///
+/// The cases are exactly the validated set. A signature outside it is refused rather than called
+/// with whatever arguments its parameter list suggests, because a changed `Setup` may have
+/// changed its contract too (net11's added out-slot is a value the host must read back), and
+/// only a check against the image that declares it can say how.
+[<RequireQualifiedAccess>]
+type internal SetupShape =
+    /// `static void Setup(char** pNames, char** pValues, int count)`, as .NET 10's CoreCLR CoreLib
+    /// declares it.
+    | ThreeArg
+
+[<RequireQualifiedAccess>]
+module internal SetupShape =
+
+    let private (|CharPtrPtr|_|) (ty : TypeDefn) : unit option =
+        match ty with
+        | TypeDefn.Pointer (TypeDefn.Pointer (TypeDefn.PrimitiveType PrimitiveType.Char)) -> Some ()
+        | _ -> None
+
+    /// A static, non-generic method with the default managed calling convention.
+    let private plainStaticHeader : SignatureHeader =
+        SignatureHeader (SignatureKind.Method, SignatureCallingConvention.Default, SignatureAttributes.None)
+
+    /// The shape `signature` has, or `None` if it has none of them. The whole signature is
+    /// compared, header and return type included.
+    let classify (signature : TypeMethodSignature<TypeDefn>) : SetupShape option =
+        if signature.Header.Get <> plainStaticHeader then
+            None
+        else
+
+        match signature.ReturnType, signature.ParameterTypes with
+        | MethodReturnType.Void, [ CharPtrPtr ; CharPtrPtr ; TypeDefn.PrimitiveType PrimitiveType.Int32 ] ->
+            Some SetupShape.ThreeArg
+        | _ -> None
+
+    /// The signatures `classify` recognises, for a refusal to name.
+    let describeKnown : string =
+        "static void Setup(char** pNames, char** pValues, int count)"
 
 /// Seeds `System.AppContext` the way a real runtime host does, so that feature switches
 /// declared in `runtimeconfig.json` — `System.Diagnostics.Tracing.EventSource.IsSupported`
@@ -19,6 +61,10 @@ open Microsoft.Extensions.Logging
 ///
 /// This module only *builds the call*; installing and pumping it is `Program.prepare`'s
 /// business, because that is where the entry thread's frame lifecycle is managed.
+///
+/// The call is built for a `SetupShape`: CoreLib's `Setup` is found by name and its signature
+/// classified, so a CoreLib that declares some other signature is refused by name rather than
+/// called with arguments built for a different one.
 [<RequireQualifiedAccess>]
 module AppContextSeed =
 
@@ -27,6 +73,65 @@ module AppContextSeed =
     [<Literal>]
     let private Purpose =
         "install the host's configuration properties, which is what AppContext.GetData reads"
+
+    /// `method`'s signature as a reader of a refusal wants it: every part of it that
+    /// `SetupShape.classify` looks at.
+    let private describeSignature
+        (corelib : DumpedAssembly)
+        (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+        : string
+        =
+        let scope = GenericScope.ofMethod method
+        let signature = method.Signature
+        let header = signature.Header.Get
+
+        let parameters =
+            signature.ParameterTypes
+            |> List.map (IlFormatting.renderTypeDefn corelib scope)
+            |> String.concat ", "
+
+        let generics =
+            if signature.GenericParameterCount = 0 then
+                ""
+            else
+                $"<%i{signature.GenericParameterCount} generic parameters>"
+
+        let instance = if header.IsInstance then "instance " else ""
+
+        let ret = IlFormatting.renderMethodReturnType corelib scope signature.ReturnType
+
+        $"%s{instance}%O{header.CallingConvention} %s{method.Name}%s{generics}(%s{parameters}) : %s{ret}"
+
+    /// CoreLib's `System.AppContext::Setup`, and the shape its signature was classified into.
+    /// Refuses, naming the signature found, when there is no static `Setup`, when there are
+    /// several, or when the one there is has a signature outside the `SetupShape`s.
+    let internal locateSetup
+        (corelib : DumpedAssembly)
+        : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> * SetupShape
+        =
+        let appContext =
+            HostStartupCall.findCorelibType corelib "System" "AppContext" Purpose
+
+        let candidates =
+            appContext.Methods |> List.filter (fun m -> m.Name = "Setup" && m.IsStatic)
+
+        match candidates with
+        | [ setup ] ->
+            match SetupShape.classify setup.Signature with
+            | Some shape -> setup, shape
+            | None ->
+                failwith
+                    $"CoreLib's System.AppContext::Setup has the signature `%s{describeSignature corelib setup}`, which is not one PawPrint knows how to call (it knows `%s{SetupShape.describeKnown}`); PawPrint calls it to %s{Purpose}."
+        | [] ->
+            failwith $"Could not find a static System.AppContext::Setup in CoreLib; PawPrint calls it to %s{Purpose}."
+        | _ :: _ :: _ ->
+            let found =
+                candidates
+                |> List.map (fun m -> $"`%s{describeSignature corelib m}`")
+                |> String.concat ", "
+
+            failwith
+                $"Found several static System.AppContext::Setup methods in CoreLib (%s{found}); expected exactly one. PawPrint calls it to %s{Purpose}."
 
     /// Build the call to `AppContext.Setup` that seeds `properties`, returning the machine
     /// state with the argument buffers allocated and a frame ready to be installed and run.
@@ -69,16 +174,17 @@ module AppContextSeed =
         let pNames, state = HostStartupCall.allocatePointerArray namePointers state
         let pValues, state = HostStartupCall.allocatePointerArray valuePointers state
 
-        let setup =
-            HostStartupCall.findCorelibStaticMethod baseClassTypes "System" "AppContext" "Setup" 3 Purpose
+        let setup, shape = locateSetup baseClassTypes.Corelib
 
         let args =
-            ImmutableArray.CreateRange
-                [
-                    CliType.RuntimePointer (CliRuntimePointer.Managed pNames)
-                    CliType.RuntimePointer (CliRuntimePointer.Managed pValues)
-                    CliType.Numeric (CliNumericType.Int32 (List.length entries))
-                ]
+            match shape with
+            | SetupShape.ThreeArg ->
+                ImmutableArray.CreateRange
+                    [
+                        CliType.RuntimePointer (CliRuntimePointer.Managed pNames)
+                        CliType.RuntimePointer (CliRuntimePointer.Managed pValues)
+                        CliType.Numeric (CliNumericType.Int32 (List.length entries))
+                    ]
 
         let state, frame, _declaringType =
             HostStartupCall.buildFrame loggerFactory baseClassTypes setup args Purpose state
