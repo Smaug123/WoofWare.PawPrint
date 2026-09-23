@@ -146,30 +146,40 @@ module MulticastDelegateStub =
 
         let multicast = ManagedHeap.get multicastAddr state.ManagedHeap
 
-        let multicastDelegateHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.MulticastDelegateType
-
-        let multicastField (fieldName : string) : CliType =
-            FieldIdentity.requiredOwnInstanceField baseClassTypes.MulticastDelegateType fieldName
-            |> FieldIdentity.fieldId multicastDelegateHandle
-            |> fun fieldId -> AllocatedNonArrayObject.DereferenceFieldById fieldId multicast
+        let read (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) : CliType =
+            AllocatedNonArrayObject.DereferenceFieldById (DelegateLayout.fieldId state.ConcreteTypes field) multicast
 
         // Read on every step, as CoreCLR's stub reloads both fields on every iteration. Neither
         // changes after `NewMulticastDelegate` publishes the delegate, but the backing array is
         // shared with the delegate it was combined from and may have been *extended* since, which
         // is why the count and not the array's length bounds the walk: `CombineImpl` grows the
-        // array by doubling and appends into its spare slots in place (`TrySetSlot`).
-        let invocationCount =
-            match multicastField "_invocationCount" |> CliType.unwrapPrimitiveLikeDeep with
-            | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim count)) -> count
-            | other -> failwith $"%s{operation}: expected _invocationCount to be a verbatim native int, got %O{other}"
+        // array by doubling and appends into its spare slots in place (`TrySetSlot`). `elementAt`
+        // is the delegate the list holds at an index, read from the list as the layout stores it.
+        let invocationCount, elementAt =
+            match DelegateLayout.require baseClassTypes with
+            | DelegateLayout.InvocationListAndCount (_, invocations) ->
+                let invocationCount =
+                    match read invocations.InvocationCount |> CliType.unwrapPrimitiveLikeDeep with
+                    | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim count)) -> count
+                    | other ->
+                        failwith $"%s{operation}: expected _invocationCount to be a verbatim native int, got %O{other}"
 
-        let invocationList =
-            match multicastField "_invocationList" with
-            | CliType.ObjectRef (Some addr) -> addr
-            | other ->
-                failwith
-                    $"%s{operation}: expected _invocationList to reference the invocation-list array, got %O{other}"
+                let invocationList =
+                    match read invocations.InvocationList with
+                    | CliType.ObjectRef (Some addr) -> addr
+                    | other ->
+                        failwith
+                            $"%s{operation}: expected _invocationList to reference the invocation-list array, got %O{other}"
+
+                // An `object[]` whose elements are the delegates themselves.
+                let elementAt (index : int) (state : IlMachineState) : CliType =
+                    match ManagedHeap.getArrayValue invocationList index state.ManagedHeap with
+                    | CliType.ObjectRef (Some _) as element -> element
+                    | other ->
+                        failwith
+                            $"%s{operation}: expected element %d{index} of _invocationList to reference a delegate, got %O{other}"
+
+                invocationCount, elementAt
 
         // CoreCLR's loop tests the bound only after its first call, so a count below one would
         // still invoke element 0. `NewMulticastDelegate`'s callers never build one: combining
@@ -208,7 +218,7 @@ module MulticastDelegateStub =
             |> List.fold (fun state _ -> IlMachineState.popEvalStack thread state |> snd) state
 
         if int64 nextIndex < invocationCount then
-            let element = ManagedHeap.getArrayValue invocationList nextIndex state.ManagedHeap
+            let element = elementAt nextIndex state
 
             let delegateType =
                 AllConcreteTypes.findExistingConcreteType
