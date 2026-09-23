@@ -1612,7 +1612,8 @@ module internal UnaryMetadataCallOps =
     /// What an unboxing stub does before entering `method`: the receiver slot holds a boxed
     /// instance of `method`'s declaring type, and becomes a byref to that box's payload, so that
     /// `method`'s writes through `this` land in the box itself. The function pointer must already
-    /// have been popped, leaving the receiver on top.
+    /// have been popped, leaving `method`'s arguments on top and the receiver beneath them; the
+    /// arguments are left as they were.
     let private enterUnboxingStub
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (thread : ThreadId)
@@ -1643,11 +1644,13 @@ module internal UnaryMetadataCallOps =
             failwith
                 $"%s{operation}: %s{describe} is declared on a reference type, whose methods take an object receiver already and so have no unboxing stub"
 
-        // The one producer, `RuntimeTypeHandle_GetActivationInfo`, hands out a stub only over a
-        // parameterless constructor, so the receiver is the only slot there is to translate.
-        if MethodInfo.arity method <> 0 then
-            failwith
-                $"TODO: %s{operation}: %s{describe} takes %d{MethodInfo.arity method} argument(s) besides its receiver; only a parameterless method's unboxing stub is modelled, since that is all RuntimeTypeHandle_GetActivationInfo produces"
+        // Popped last argument first; consing each onto the front leaves the first at the head.
+        let arguments, state =
+            ((([] : EvalStackValue list), state), [ 1 .. MethodInfo.arity method ])
+            ||> List.fold (fun (acc, state) _ ->
+                let value, state = IlMachineState.popEvalStack thread state
+                value :: acc, state
+            )
 
         let receiver, state = IlMachineState.popEvalStack thread state
 
@@ -1671,10 +1674,14 @@ module internal UnaryMetadataCallOps =
                 $"%s{operation}: receiver is a boxed %O{boxed.ConcreteType}, but %s{describe} is declared on %O{declaringTypeHandle}"
         | None -> failwith $"%s{operation}: receiver %O{addr} for %s{describe} is not a boxed value"
 
-        IlMachineState.pushToEvalStack'
-            (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])))
-            thread
-            state
+        let state =
+            IlMachineState.pushToEvalStack'
+                (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])))
+                thread
+                state
+
+        (state, arguments)
+        ||> List.fold (fun state argument -> IlMachineState.pushToEvalStack' argument thread state)
 
     /// `calli` through a managed method's entry point, once `executeCalli` has classified the
     /// function pointer. See `executeCalli` for how the call-site signature is used.

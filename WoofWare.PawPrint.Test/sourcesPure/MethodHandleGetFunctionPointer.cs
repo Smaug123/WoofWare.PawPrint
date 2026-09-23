@@ -65,6 +65,8 @@ public interface IBump
 {
     int BumpVirtual();
 
+    int BumpBy(int by, long times);
+
     string Named<U>();
 }
 
@@ -81,6 +83,12 @@ public struct S : IBump
     public int BumpVirtual()
     {
         X += 7;
+        return X;
+    }
+
+    public int BumpBy(int by, long times)
+    {
+        X = X * by + (int)times;
         return X;
     }
 
@@ -212,61 +220,63 @@ public static unsafe class Program
         if (((delegate*<object, int>)Fp(typeof(S), "BumpVirtual"))(boxed) != 8) return 21;
         if (((S)boxed).X != 8) return 22;
         if (((delegate*<object, string>)Fp(typeof(S), "ToString"))(boxed) != "S8") return 23;
-        if (((delegate*<object, string>)FpGeneric(typeof(S), "Named", typeof(string)))(boxed) != "String8")
-            return 24;
+        if (((delegate*<object, int, long, int>)Fp(typeof(S), "BumpBy"))(boxed, 3, 2L) != 26) return 24;
+        if (((S)boxed).X != 26) return 25;
+        if (((delegate*<object, string>)FpGeneric(typeof(S), "Named", typeof(string)))(boxed) != "String26")
+            return 26;
         object boxedGeneric = new SG<int> { Count = 3 };
-        if (((delegate*<object, string>)Fp(typeof(SG<int>), "ToString"))(boxedGeneric) != "Int323") return 25;
-        if (Fp(typeof(SG<long>), "ToString") == Fp(typeof(SG<int>), "ToString")) return 26;
+        if (((delegate*<object, string>)Fp(typeof(SG<int>), "ToString"))(boxedGeneric) != "Int323") return 27;
+        if (Fp(typeof(SG<long>), "ToString") == Fp(typeof(SG<int>), "ToString")) return 28;
 
         // Likewise a value type's constructor, the pointer `ActivatorCache` keeps in `_pfnValueCtor`.
         var withCtor = default(SWithCtor);
         ((delegate*<ref SWithCtor, void>)typeof(SWithCtor).GetConstructor(Type.EmptyTypes).MethodHandle
             .GetFunctionPointer())(ref withCtor);
-        if (withCtor.Value != 5) return 27;
+        if (withCtor.Value != 5) return 29;
 
         // A reference type's constructor, run over an unconstructed instance.
         var uninit = (Base)RuntimeHelpers.GetUninitializedObject(typeof(Base));
-        if (uninit.F != 0) return 28;
+        if (uninit.F != 0) return 30;
         ((delegate*<Base, void>)typeof(Base).GetConstructor(Type.EmptyTypes).MethodHandle.GetFunctionPointer())(uninit);
-        if (uninit.F != 10) return 29;
+        if (uninit.F != 10) return 31;
 
         // A value type's method over a reference type is shared code needing an instantiating
         // stub (a byref `this` carries no type), so it is per-instantiation.
         var sg = new SG<string>();
         IntPtr sgString = Fp(typeof(SG<string>), "Inst");
-        if (((delegate*<ref SG<string>, string>)sgString)(ref sg) != "String") return 30;
-        if (sg.Count != 1) return 31;
-        if (Fp(typeof(SG<object>), "Inst") == sgString) return 32;
+        if (((delegate*<ref SG<string>, string>)sgString)(ref sg) != "String") return 32;
+        if (sg.Count != 1) return 33;
+        if (Fp(typeof(SG<object>), "Inst") == sgString) return 34;
 
         // A default interface method over a reference type: per-instantiation, for the same reason.
         IntPtr dimString = Fp(typeof(IG<string>), "Dim");
-        if (((delegate*<IG<string>, string>)dimString)(new IGImpl<string>()) != "DimString") return 33;
-        if (Fp(typeof(IG<object>), "Dim") == dimString) return 34;
+        if (((delegate*<IG<string>, string>)dimString)(new IGImpl<string>()) != "DimString") return 35;
+        if (Fp(typeof(IG<object>), "Dim") == dimString) return 36;
 
         // So is an abstract method of a generic interface over a reference type. It has no code
         // to share, and `RequiresInstArg` exempts it, but reflection hands out an instantiating
         // stub for every non-generic method of a generic interface regardless.
-        if (Fp(typeof(IGAbstract<string>), "M") == Fp(typeof(IGAbstract<object>), "M")) return 35;
+        if (Fp(typeof(IGAbstract<string>), "M") == Fp(typeof(IGAbstract<object>), "M")) return 37;
 
         // A generic method of a generic class, both over reference types: per-instantiation.
         IntPtr instGen = FpGeneric(typeof(GC<string>), "InstGen", typeof(string));
-        if (((delegate*<GC<string>, string>)instGen)(new GC<string>()) != "StringString") return 36;
-        if (FpGeneric(typeof(GC<string>), "InstGen", typeof(object)) == instGen) return 37;
+        if (((delegate*<GC<string>, string>)instGen)(new GC<string>()) != "StringString") return 38;
+        if (FpGeneric(typeof(GC<string>), "InstGen", typeof(object)) == instGen) return 39;
 
         // Methods with no body still have an address, one per method.
         IntPtr abs = Fp(typeof(Abs), "A");
-        if (abs == IntPtr.Zero) return 38;
-        if (Fp(typeof(Abs), "A") != abs) return 39;
-        if (Fp(typeof(Conc), "A") == abs) return 40;
-        if (Fp(typeof(I), "M") == IntPtr.Zero) return 41;
-        if (Fp(typeof(I), "SA") == IntPtr.Zero) return 42;
+        if (abs == IntPtr.Zero) return 40;
+        if (Fp(typeof(Abs), "A") != abs) return 41;
+        if (Fp(typeof(Conc), "A") == abs) return 42;
+        if (Fp(typeof(I), "M") == IntPtr.Zero) return 43;
+        if (Fp(typeof(I), "SA") == IntPtr.Zero) return 44;
 
         // Anything still naming a generic variable has no code to point at.
-        if (RefusesOpen(typeof(GC<>).GetMethod("Name")) != 0) return 43;
-        if (RefusesOpen(typeof(GC<>).GetMethod("Inst")) != 0) return 44;
-        if (RefusesOpen(typeof(Program).GetMethod("Gen", All)) != 0) return 45;
-        if (RefusesOpen(typeof(GC<int>).GetMethod("InstGen")) != 0) return 46;
-        if (RefusesOpen(typeof(GC<>).GetConstructor(Type.EmptyTypes)) != 0) return 47;
+        if (RefusesOpen(typeof(GC<>).GetMethod("Name")) != 0) return 45;
+        if (RefusesOpen(typeof(GC<>).GetMethod("Inst")) != 0) return 46;
+        if (RefusesOpen(typeof(Program).GetMethod("Gen", All)) != 0) return 47;
+        if (RefusesOpen(typeof(GC<int>).GetMethod("InstGen")) != 0) return 48;
+        if (RefusesOpen(typeof(GC<>).GetConstructor(Type.EmptyTypes)) != 0) return 49;
 
         return 0;
     }
