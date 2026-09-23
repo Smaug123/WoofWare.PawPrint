@@ -173,6 +173,23 @@ module IlMachineManagedByref =
     let private isCellCoercionCompatible (cell : CliType) (target : CliType) : bool =
         isCellIdentityCompatible cell target || haveSameCliShape cell target
 
+    /// `true` iff `cell` is a pointer-typed storage cell and `target`, once primitive-like wrappers
+    /// are peeled, is a native int: the read `ldind.i` or `Unsafe.ReadUnaligned<IntPtr>` makes of
+    /// an `int*` slot.
+    ///
+    /// Such a read is the pointer itself, so it has an answer that needs no byte image: the
+    /// evaluation stack already flattens a `CliType.RuntimePointer` to a native int without loss,
+    /// and `coerceToCellShape` puts that into the template's shape. A read of the same cell as any
+    /// other type — an `Int64`, or anything narrower — would be a read of the pointer's bytes, and
+    /// this refuses it.
+    ///
+    /// Read side only. A write of a native int into a pointer cell is routed by
+    /// `destinationNeedsWholeCellStore` instead.
+    let private isPointerCellReadAsNativeInt (cell : CliType) (target : CliType) : bool =
+        match cell, CliType.unwrapPrimitiveLikeDeep target with
+        | CliType.RuntimePointer _, CliType.Numeric (CliNumericType.NativeInt _) -> true
+        | _ -> false
+
     /// The storage cell a reinterpreting byref addresses, when the bytewise path cannot serve the
     /// access at all. `[InlineArray(N)] struct { T _item; }` produces exactly this shape — indexing
     /// element `k` is `Unsafe.Add(ref Unsafe.As<TBuffer, T>(ref buffer), k)`, i.e.
@@ -252,11 +269,13 @@ module IlMachineManagedByref =
         =
         tryNameCellWith isCellCoercionCompatible byteOffset storage targetTemplate
 
-    /// Put `value` into the CLI shape of `template`, for the two sites that have named a storage
-    /// cell by its *extent* and now have to reconcile a wrapper layer.
+    /// Put `value` into the CLI shape of `template`, for the sites that have named a storage
+    /// cell by its *extent* and now have to reconcile a wrapper layer, or a pointer cell with
+    /// the native int it is read as (`isPointerCellReadAsNativeInt`).
     ///
     /// A `System.ByReference` and a bare managed pointer convert both ways without losing the
-    /// pointer's provenance. A pair the conversion does not explain fails loudly inside
+    /// pointer's provenance, and a `CliType.RuntimePointer` becomes a native int without losing
+    /// it either. A pair the conversion does not explain fails loudly inside
     /// `toCliTypeCoerced` rather than being silently reshaped.
     let private coerceToCellShape (template : CliType) (value : CliType) : CliType =
         // Both disjuncts, for the same reason `isCellCoercionCompatible` needs both: neither
@@ -808,6 +827,12 @@ module IlMachineManagedByref =
                 // through an `IntPtr` template is that pair, and it is served here or nowhere.
                 | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ when haveSameCliShape cellValue targetTemplate -> ValueSome cellValue
+                // A pointer cell read as a native int, which `MemoryMarshal.GetArrayDataReference`
+                // over an `int*[]` produces. Unlike the arm above, the result is put into the
+                // template's shape: a caller unwrapping it to a native int would otherwise meet a
+                // `RuntimePointer`, a different constructor rather than a wrapper layer.
+                | _ when isPointerCellReadAsNativeInt cellValue targetTemplate ->
+                    ValueSome (coerceToCellShape targetTemplate cellValue)
                 | _ -> ValueNone
             else
                 ValueNone

@@ -5,13 +5,12 @@ using System.Runtime.InteropServices;
 // Reading a cell of a pointer-element array through a byte view of that array's data.
 //
 // `MemoryMarshal.GetArrayDataReference(Array)` hands back a `ref byte`, which PawPrint
-// anchors as a byte-stride cursor unconditionally. Reading a whole cell back through it
-// then has to notice that the cursor sits exactly on a cell boundary and hand over the
-// cell itself: `readArrayBytesAs`'s shape-matching short-circuit does that for numeric and
-// reference cells, but has no arm pairing a stored `RuntimePointer` with the `NativeInt`
-// template a `nint`-shaped read presents, so the read falls through to a byte-by-byte walk
-// that a pointer cell has no image for. The write side already accepts that pairing, and so
-// does a bare read of the same cell.
+// anchors as a byte-stride cursor over the array. A pointer cell has no byte image, so the
+// only read such a cursor can serve is one covering exactly one cell at the width of a native
+// int, and that read must hand over the pointer the cell holds -- the same value a plain read
+// of the cell would give -- so that dereferencing it reaches the original pointee.
+// `TestPointerArrayCellByteView.fs` covers the reads which would need the cell's bytes, and
+// which PawPrint therefore refuses.
 //
 // Returns 0 on success, or the number of the first check that failed.
 public class Program
