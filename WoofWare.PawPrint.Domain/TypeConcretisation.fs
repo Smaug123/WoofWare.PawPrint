@@ -2126,6 +2126,37 @@ module TypeConcretization =
             caller.Signature
             callee.Signature
 
+    /// Do two instantiations of one generic definition name the same type, in the sense of
+    /// `MetaSig::CompareTypeDefsUnderSubstitutions`? Each argument is compared as a signature element
+    /// would be, so two instantiations spelled in different assemblies agree when they denote the same
+    /// types, while a type variable left standing equals only itself.
+    ///
+    /// The caller is responsible for both contexts belonging to the same generic definition.
+    let substitutionsEquivalent
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (left : SubstitutionContext)
+        (right : SubstitutionContext)
+        : bool * ConcretizationContext<DumpedAssembly>
+        =
+        if left.Arguments.Length <> right.Arguments.Length then
+            false, ctx
+        else
+            let rec go (ctx : ConcretizationContext<DumpedAssembly>) (i : int) =
+                if i >= left.Arguments.Length then
+                    true, ctx
+                else
+                    let equal, ctx =
+                        compareElements
+                            ctx
+                            loadAssembly
+                            (elementOfArgument left.Arguments.[i])
+                            (elementOfArgument right.Arguments.[i])
+
+                    if equal then go ctx (i + 1) else false, ctx
+
+            go ctx 0
+
 /// High-level API for concretizing types
 [<RequireQualifiedAccess>]
 module Concretization =

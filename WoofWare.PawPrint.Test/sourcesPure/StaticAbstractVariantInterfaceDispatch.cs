@@ -2,19 +2,18 @@
 // at `object`, dispatched through `IStatic<ArgumentException>` by a `constrained.call` from a
 // generic method whose constraint is the call-site instantiation.
 //
-// This one passes on both sides of the variant-interface-map retarget, and that is the point of
-// having it. A static virtual slot has no name-based matching to fall back on, so implementing
+// A static virtual slot has no name-based matching to fall back on, so implementing
 // one requires an explicit MethodImpl row — which the C# compiler emits even for a member
 // written as an ordinary `public static` method. Resolution therefore goes through the
 // already-variance-aware MethodImpl path (`findMatchingMethodImplBodies`, "Found concrete
-// implementation from MethodImpl" in the debug log) and never reaches
-// `tryRetargetToVariantInterfaceMapEntry`, which explicitly declines static members.
+// implementation from MethodImpl" in the debug log) and never reaches the interface dispatch
+// map or the variant default-body search, both of which serve instance members only.
 //
 // That routing matters: CoreCLR guards its own first-compatible-entry
 // shortcut on `!pInterfaceMD->IsStatic()`, so a static member keeps scanning for a conflict and
-// can throw AmbiguousResolutionException — the tie-break the retarget applies would be wrong
-// here. This test fails if a future change routes static interface dispatch through the
-// retarget instead.
+// can throw AmbiguousResolutionException — the first-compatible-entry tie-break of instance
+// dispatch would be wrong here. This test fails if a future change routes static interface
+// dispatch through that tie-break instead.
 
 using System;
 

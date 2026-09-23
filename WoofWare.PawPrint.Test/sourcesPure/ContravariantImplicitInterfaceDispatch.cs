@@ -6,16 +6,12 @@
 // slot under variance without consulting the signature at all. This file is the same shape
 // with an ordinary public method satisfying the interface instead, which has no such row: the
 // only thing tying `ObjectSink.Accept(object, ...)` to `ISink<string>::Accept(string, ...)` is
-// the signature, and those differ under `in`-variance. Without a retarget, dispatch misses
-// entirely and the interpreter reaches the abstract interface method:
+// the signature, and those differ under `in`-variance.
 //
-//   BUG: reached executeOneStep for abstract method ISink`1::Accept;
-//   virtual dispatch should have resolved to a concrete override
-//
-// `IlMachineStateExecution.tryRetargetToVariantInterfaceMapEntry` serves this: when
-// ordinary resolution misses, it retargets the call from the call site's instantiation to the
-// receiver's own variance-compatible interface-map entry (`ISink<object>`) and resolves against
-// that, exactly as CoreCLR does. No signature comparison is loosened.
+// The implementation is matched to `ISink<object>`'s slot when the receiver's dispatch map is
+// built, where the signatures agree; a call through `ISink<string>` then finds that entry by
+// variance (`InterfaceDispatch.tryFindImplementationSlot`), exactly as CoreCLR does. No signature
+// comparison is loosened.
 
 using System;
 

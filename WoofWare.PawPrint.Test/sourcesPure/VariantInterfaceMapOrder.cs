@@ -3,11 +3,12 @@
 // first entry in the receiver's interface map, and swapping the declaration order swaps the
 // answer. There is no AmbiguousImplementationException here — these are ordinary programs.
 //
-// This pins the tie-break rule that `tryRetargetToVariantInterfaceMapEntry` implements, and it
-// pins the interface-map *order* itself, which is what makes that rule well-defined:
+// This pins the tie-break rule that `InterfaceDispatch.tryFindImplementationSlot` implements, and
+// it pins the search *order* itself, which is what makes that rule well-defined:
 //
-//   * a type's own declared interfaces come before its base class's, in metadata order;
-//   * an interface is expanded through its own parents where it is declared.
+//   * a derived type's entries are searched before its base class's;
+//   * within one type, entries are searched in interface-map order, which is metadata order with
+//     each interface expanded through its own parents where it is declared.
 //
 // Every expectation below is checked against the real runtime as well as PawPrint, because
 // `sourcesPure` cases are differential.
