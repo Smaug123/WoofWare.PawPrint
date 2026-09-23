@@ -534,11 +534,11 @@ module VirtualFileSystem =
     /// *filesystem* difference, not a platform one, even though a dev box's
     /// APFS accepts what a CI container's ext4 refuses.
     /// **The size is deferred**: only `SEEK_END` consults it, and there are
-    /// descriptors with no size PawPrint is willing to state — a directory's,
-    /// which is a filesystem artefact rather than a fact (see the
-    /// `SystemNative_LSeek` handler). Seeking such a descriptor with `SEEK_SET`
-    /// or `SEEK_CUR` is portable and must keep working, so the caller passes a
-    /// thunk that refuses, and only the `End` case forces it.
+    /// descriptors with no size this kernel will state — a directory on an NFS
+    /// mount, whose size is the server's (see `UnixDescriptor.lseek`). Seeking
+    /// such a descriptor with `SEEK_SET` or `SEEK_CUR` is portable and must keep
+    /// working, so the caller passes a thunk that refuses, and only the `End`
+    /// case forces it.
     let seekTarget
         (whence : SeekWhence)
         (current : int64)

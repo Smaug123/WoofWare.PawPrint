@@ -32,6 +32,7 @@
     <Compile Include="TestUnixEntropy.fs" />
     <Compile Include="TestEntropyAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
+    <Compile Include="TestDirectorySize.fs" />
     <Compile Include="TestWithFileSystemAndCurrentDirectory.fs" />
     <Compile Include="TestInodeLifetime.fs" />
     <Compile Include="TestUnixError.fs" />

@@ -138,7 +138,9 @@ class Program
         if (!Is((st.Mode & S_IFMT) == S_IFDIR)) return check;
         // 0o755.
         if (!Is((st.Mode & 0xFFF) == 0x1ED)) return check;
-        if (!Is(st.Size == 4096)) return check;
+        // The default mount is tmpfs, where an empty directory is 40 bytes: 20
+        // for each of "." and "..".
+        if (!Is(st.Size == 40)) return check;
         // One device for the whole tree, and a distinct inode per file.
         if (!Is(st.Dev == fileDev)) return check;
         if (!Is(st.Ino != fileIno)) return check;

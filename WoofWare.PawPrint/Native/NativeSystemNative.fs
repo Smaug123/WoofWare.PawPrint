@@ -918,6 +918,12 @@ module NativeSystemNative =
         |> NativeHandlerResult.completed
         |> Some
 
+    /// The PawPrint half of the message when a directory on an NFS mount is
+    /// statted: the kernel has no size to give, and `ConvertFileStatus` has no
+    /// way to leave `Size` unset.
+    let private nfsDirectoryReachability : string =
+        "The PAL's FileStatus has no way to say a field is unknown, so PawPrint cannot report this directory at all. Configure a mount type other than Nfs for a guest that stats directories."
+
     /// PawPrint's half of a refused `fstat`: which entry point asked, which
     /// descriptor it named, and what PawPrint would have to decide to lift the
     /// refusal. The library's half says what it measured and what its model has
@@ -930,6 +936,7 @@ module NativeSystemNative =
             | FStatRefusal.SocketEventPort
             | FStatRefusal.Socket _ ->
                 "Decide what an inode-free descriptor's struct stat is -- for streams, ports and sockets together (issue #956) -- rather than guessing."
+            | FStatRefusal.NfsDirectorySize _ -> nfsDirectoryReachability
 
         $"%s{operation}: fd %d{fd}: %s{FStatRefusal.describe refusal} %s{reachability}"
 
@@ -1127,8 +1134,10 @@ module NativeSystemNative =
         | Ok path ->
 
         match UnixPathResolution.stat policy path (EmulatedKernel.unix state.Kernel) with
-        | FileStatusAnswer.Failed error -> fail error
-        | FileStatusAnswer.Reported status ->
+        | Error refusal ->
+            failwith $"%s{operation}: %O{path}: %s{StatRefusal.describe refusal} %s{nfsDirectoryReachability}"
+        | Ok (FileStatusAnswer.Failed error) -> fail error
+        | Ok (FileStatusAnswer.Reported status) ->
 
         // The output pointer is only decoded here, on the path that actually
         // writes through it.

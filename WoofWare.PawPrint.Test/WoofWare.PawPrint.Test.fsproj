@@ -216,6 +216,7 @@
     <Compile Include="TestFlockPark.fs" />
     <Compile Include="TestPReadNegativeSize.fs" />
     <Compile Include="TestLSeek.fs" />
+    <Compile Include="TestStatNfsDirectory.fs" />
     <Compile Include="TestUserBufferCheck.fs" />
     <Compile Include="TestUserBufferFault.fs" />
     <Compile Include="TestPlatformSocketSupport.fs" />
