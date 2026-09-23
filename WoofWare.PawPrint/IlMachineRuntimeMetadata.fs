@@ -2452,7 +2452,7 @@ module IlMachineRuntimeMetadata =
         (target : RuntimeTypeHandleTarget)
         : IlMachineState * bool
         =
-        let isObject (target : RuntimeTypeHandleTarget) : bool =
+        let isObject (state : IlMachineState) (target : RuntimeTypeHandleTarget) : bool =
             isClosedNonGeneric state baseClassTypes.Object target
 
         // A type variable's metadata (for its flag-style constraints) and its declared
@@ -2495,7 +2495,7 @@ module IlMachineRuntimeMetadata =
                 elif
                     not (isInterfaceTarget state constraintTarget)
                     && isObjRefTarget baseClassTypes state constraintTarget
-                    && not (isObject constraintTarget)
+                    && not (isObject state constraintTarget)
                     && not (isClosedNonGeneric state baseClassTypes.ValueType constraintTarget)
                     && not (isClosedNonGeneric state baseClassTypes.Enum constraintTarget)
                 then
@@ -2574,7 +2574,7 @@ module IlMachineRuntimeMetadata =
                 // `TypeDesc::CanCastTo` (typedesc.cpp:322). The ValueType arm reads only the
                 // `struct` flag, not the declared constraints, so `where T : Enum` does not make
                 // `T` castable to ValueType here.
-                if isObject target then
+                if isObject state target then
                     state, true
                 elif isClosedNonGeneric state baseClassTypes.ValueType target then
                     let state, metadata, _ = typeVariableFacts state source
@@ -2698,7 +2698,7 @@ module IlMachineRuntimeMetadata =
             match target with
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ | ConcreteTypeHandle.Array _) ->
                 state, false
-            | _ when isObject target ->
+            | _ when isObject state target ->
                 // Every reference type (including an interface) and every boxed value type casts to
                 // System.Object, which is also where `isConcreteTypeAssignableTo` ends its walk.
                 state, true

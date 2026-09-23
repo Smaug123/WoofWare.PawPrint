@@ -17,6 +17,18 @@ public class Holder<T> where T : class
     }
 }
 
+// Named by nothing but `Cold`'s constraint, so the constraint walk is the first thing to load it.
+public class ColdBase
+{
+}
+
+public class Cold<T> where T : ColdBase
+{
+    public void RequiresComparerOfT<U>() where U : IComparer<T>
+    {
+    }
+}
+
 public sealed class ObjectComparer : IComparer<object>
 {
     public int Compare(object x, object y) => 0;
@@ -65,6 +77,10 @@ public static class Program
 
         // The accepted binding really is bound, rather than having been waved through.
         if (requiresComparer.MakeGenericMethod(typeof(IComparer<object>)).GetGenericArguments()[0] != typeof(IComparer<object>)) return 12;
+
+        // `T : ColdBase` makes `T` an object reference through a base-class constraint rather than
+        // the `class` flag, and reading that constraint is what first loads `ColdBase`.
+        if (Throws(typeof(Cold<>).GetMethod("RequiresComparerOfT"), typeof(IComparer<object>))) return 13;
 
         return 0;
     }
