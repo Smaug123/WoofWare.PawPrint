@@ -188,6 +188,11 @@ module PointerHashSynthesis =
             // needs no bits.
             failwith
                 $"PointerHashSynthesis.canonicalKey: %O{target} has no synthesised address bits; nothing hashes or does arithmetic on a delegate stub's address today"
+        | NativeIntSource.FunctionPointer (FunctionPointerTarget.UnboxingStub _ as target) ->
+            // Its one producer is `RuntimeTypeHandle_GetActivationInfo`, and `ActivatorCache` only
+            // compares the result against null and calls through it.
+            failwith
+                $"PointerHashSynthesis.canonicalKey: %O{target} has no synthesised address bits; nothing hashes or does arithmetic on an unboxing stub's address today"
         | NativeIntSource.MethodHandlePtr id -> CanonicalPointerKey.MethodHandle id
         | NativeIntSource.FieldHandlePtr id -> CanonicalPointerKey.FieldHandle id
         // The canonical key is the handle's *identity*; its tag bits are a view

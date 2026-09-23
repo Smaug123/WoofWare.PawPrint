@@ -229,6 +229,7 @@
     <Compile Include="TestLowLevelMonitor.fs" />
     <Compile Include="TestLastError.fs" />
     <Compile Include="TestSignalHandler.fs" />
+    <Compile Include="TestFunctionPointerTargetIdentity.fs" />
     <Compile Include="TestSignalDispatcherThread.fs" />
     <Compile Include="TestSignalDispatch.fs" />
     <Compile Include="TestSocketEventsWaitReason.fs" />
@@ -302,6 +303,7 @@
     <Compile Include="TestClockJitterFindsBugs.fs" />
     <Compile Include="TestScheduleFork.fs" />
     <Compile Include="TestBoxedAllocationParity.fs" />
+    <Compile Include="TestActivatorCacheEntryPoints.fs" />
     <Compile Include="TestInstantiationArg0.fs" />
     <Compile Include="TestCommandLineArgs.fs" />
     <Compile Include="TestCalliSuspensionOutcome.fs" />

@@ -2374,22 +2374,6 @@ module NativeRuntimeTypeQCall =
                         failwith $"%s{operation}: ConcreteTypeHandle %O{methodTable} not found in AllConcreteTypes"
                     )
 
-                if isValueType then
-                    // CoreCLR hands back the ctor's *boxed* entry point in `ppfnRefCtor` and its
-                    // unboxed entry point in `ppfnValueCtor` — the same MethodDesc reached two
-                    // ways. PawPrint's function pointers carry no entry-point flavour, and
-                    // `CreateInstanceDefaultCtor` calls the boxed one, so we would have to invoke
-                    // a value-type instance method with an ObjectRef receiver. Coercing that into
-                    // a byref `this` risks constructing into a copy of the box's payload and
-                    // silently discarding the result, so refuse instead.
-                    let typeInfo =
-                        state._LoadedAssemblies
-                            .ByDefinitionName(declaringType.Identity.AssemblyFullName)
-                            .TypeDefs.[declaringType.Identity.TypeDefinition.Get]
-
-                    failwith
-                        $"TODO: %s{operation} for value type %s{typeInfo.Namespace}.%s{typeInfo.Name}, which declares an explicit parameterless constructor; CoreCLR returns that ctor's boxed entry point, which PawPrint's function-pointer representation cannot express"
-
                 let state, concretizedCtor, _declaringTypeHandle =
                     ExecutionConcretization.concretizeMethodWithAllGenerics
                         ctx.LoggerFactory
@@ -2399,16 +2383,27 @@ module NativeRuntimeTypeQCall =
                         ImmutableArray.Empty
                         state
 
-                let refCtorPointer =
-                    CliType.Numeric (
-                        CliNumericType.NativeInt (
-                            NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed concretizedCtor)
-                        )
-                    )
+                let functionPointer (target : FunctionPointerTarget) : CliType =
+                    CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target))
 
-                // A reference type has no value ctor: CoreCLR asserts `*ppfnValueCtor == NULL`
-                // for one.
-                writeAll allocatorPointer (methodTablePointer methodTable) refCtorPointer nullPointer isPublic state
+                // `ppfnRefCtor` takes its receiver as `object`. A value type's ctor takes a byref
+                // `this`, so CoreCLR hands back its boxed entry point there and the unboxed one in
+                // `ppfnValueCtor`. A reference type has no value ctor: CoreCLR asserts
+                // `*ppfnValueCtor == NULL` for one.
+                let refCtorPointer, valueCtorPointer =
+                    if isValueType then
+                        functionPointer (FunctionPointerTarget.UnboxingStub concretizedCtor),
+                        functionPointer (FunctionPointerTarget.Managed concretizedCtor)
+                    else
+                        functionPointer (FunctionPointerTarget.Managed concretizedCtor), nullPointer
+
+                writeAll
+                    allocatorPointer
+                    (methodTablePointer methodTable)
+                    refCtorPointer
+                    valueCtorPointer
+                    isPublic
+                    state
                 |> NativeHandlerResult.completed
                 |> Some
         | _ -> None

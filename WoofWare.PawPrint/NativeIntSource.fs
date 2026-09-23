@@ -195,6 +195,19 @@ type FunctionPointerTarget =
         token : VirtualDispatchToken *
         method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
+    /// The *boxed* entry point of <c>method</c>, an instance method declared on a value type:
+    /// CoreCLR's unboxing stub (`MethodDesc::IsUnboxingStub`). `RuntimeTypeHandle_GetActivationInfo`
+    /// hands one back in `ppfnRefCtor` for a value type's parameterless constructor
+    /// (`GetDefaultConstructor(forceBoxedEntryPoint = isValueType)`, reflectioninvocation.cpp).
+    /// Its receiver is a boxed instance of <c>method</c>'s declaring type, and calling it runs
+    /// <c>method</c> with `this` addressing that box's payload, so the method's writes land in
+    /// the box rather than in a copy.
+    ///
+    /// A different address from `Managed method`, which is the *unboxed* entry point and takes
+    /// `this` as a byref. Measured: `ActivatorCache`'s `_pfnRefCtor` and `_pfnValueCtor` differ
+    /// for the same constructor, and only the latter equals `RuntimeMethodHandle.GetFunctionPointer`.
+    | UnboxingStub of method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+
     override this.ToString () : string =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
@@ -204,6 +217,8 @@ type FunctionPointerTarget =
         | FunctionPointerTarget.OpenDelegateShuffleThunk -> "the runtime's open-delegate shuffle thunk"
         | FunctionPointerTarget.VirtualCallStub (_, method) ->
             $"the virtual call stub for {method.Name} in {AssemblyDefinitionName.simpleName method.DeclaringAssemblyFullName}"
+        | FunctionPointerTarget.UnboxingStub method ->
+            $"the unboxing stub for {method.Name} in {AssemblyDefinitionName.simpleName method.DeclaringAssemblyFullName}"
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -216,11 +231,14 @@ type FunctionPointerTarget =
             | FunctionPointerTarget.OpenDelegateShuffleThunk, FunctionPointerTarget.OpenDelegateShuffleThunk -> true
             | FunctionPointerTarget.VirtualCallStub (left, _), FunctionPointerTarget.VirtualCallStub (right, _) ->
                 left = right
+            | FunctionPointerTarget.UnboxingStub left, FunctionPointerTarget.UnboxingStub right ->
+                MethodInfo.NominallyEqual left right
             | FunctionPointerTarget.Managed _, _
             | FunctionPointerTarget.RuntimeAllocator, _
             | FunctionPointerTarget.Dynamic _, _
             | FunctionPointerTarget.OpenDelegateShuffleThunk, _
-            | FunctionPointerTarget.VirtualCallStub _, _ -> false
+            | FunctionPointerTarget.VirtualCallStub _, _
+            | FunctionPointerTarget.UnboxingStub _, _ -> false
         | _ -> false
 
     override this.GetHashCode () : int =
@@ -241,6 +259,8 @@ type FunctionPointerTarget =
         | FunctionPointerTarget.Dynamic handle -> HashCode.Combine (2, handle.GetRegistryId ())
         | FunctionPointerTarget.OpenDelegateShuffleThunk -> HashCode.Combine 3
         | FunctionPointerTarget.VirtualCallStub (token, _) -> hash (4, token)
+        // Structural `hash` for the same reason as the `Managed` case.
+        | FunctionPointerTarget.UnboxingStub method -> hash (5, method.Owner, method.IdentityKey, method.Generics)
 
 [<RequireQualifiedAccess>]
 module FunctionPointerTarget =
@@ -273,6 +293,11 @@ module FunctionPointerTarget =
             // interprets them there; nothing else calls through one.
             failwith
                 $"%s{operation}: expected a pointer to a managed method, got a pointer to %O{target}, a delegate-invocation stub that only a delegate's Invoke calls through"
+        | FunctionPointerTarget.UnboxingStub _ ->
+            // A frame for the method could be pushed, but only after the stub's receiver
+            // translation, which a caller asking for a bare method would skip.
+            failwith
+                $"%s{operation}: expected a pointer to a managed method, got a pointer to %O{target}, whose receiver must be translated from a box to a byref before the method can run"
 
 [<RequireQualifiedAccess>]
 [<CustomEquality>]
