@@ -1323,6 +1323,10 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.BadImageFormatException"
         elif id = baseClassTypes.ArgumentOutOfRangeException.Identity then
             ExceptionHResults.lookup "System.ArgumentOutOfRangeException"
+        elif id = baseClassTypes.VerificationException.Identity then
+            ExceptionHResults.lookup "System.Security.VerificationException"
+        elif id = baseClassTypes.AmbiguousMatchException.Identity then
+            ExceptionHResults.lookup "System.Reflection.AmbiguousMatchException"
         else
             ExceptionHResults.corEException
 

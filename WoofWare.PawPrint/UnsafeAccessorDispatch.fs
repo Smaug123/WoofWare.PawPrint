@@ -38,12 +38,13 @@ type internal UnsafeAccessorPlan =
 
 /// Why an `[UnsafeAccessor]` declaration could not be honoured, in the vocabulary of the exception
 /// CoreCLR raises for it. Every one of these is raised *into the guest*: real .NET raises them from
-/// the accessor's first invocation, where the guest's own `try`/`catch` can see them, and CoreLib's
-/// own accessors are written expecting exactly that.
+/// the accessor's first invocation, before the accessor's declaring type is initialised, where the
+/// guest's own `try`/`catch` can see them; CoreLib's own accessors are written expecting exactly
+/// that.
 ///
-/// These three are the whole of what dispatch answers with an exception. A declaration whose
-/// answer on CoreCLR is some other exception, or whose answer PawPrint cannot decide, is refused
-/// with a `failwith` naming the shape rather than approximated: see the TODOs in `resolve`.
+/// These are the whole of what dispatch answers with an exception. A declaration whose answer on
+/// CoreCLR is some other exception, or whose answer PawPrint cannot decide, is refused with a
+/// `failwith` naming the shape rather than approximated: see the TODOs in `resolve`.
 [<RequireQualifiedAccess>]
 type internal UnsafeAccessorRefusal =
     /// `COR_E_BADIMAGEFORMAT`, which CoreCLR raises for a declaration whose signature cannot
@@ -58,6 +59,31 @@ type internal UnsafeAccessorRefusal =
 
     /// `MemberLoader::ThrowMissingFieldException`.
     | MissingField of targetType : string * name : string
+
+    /// `AmbiguousMatchException` (`Arg_AmbiguousMatchException_UnsafeAccessor`), which the lookup
+    /// raises when more than one of the target type's methods matches the declaration.
+    | AmbiguousMatch
+
+    /// `InvalidProgramException` (`Argument_GenTypeConstraintsNotEqual`), which
+    /// `VerifyDeclarationSatisfiesTargetConstraints` raises once the lookup has found a method of a
+    /// generic type: an accessor on a non-generic type supplies no class instantiation to check the
+    /// target type's parameters against.
+    | GenericTypeConstraintsNotEqual
+
+    /// `VerificationException` (`IDS_EE_METHOD_CONSTRAINTS_VIOLATION`), which CoreCLR raises while
+    /// instantiating a generic target method with a type argument that one of its type parameters
+    /// refuses. Each field is spelled as `TypeString::AppendType` spells it in that message: the
+    /// target type, the target method's name, the offending type argument, and the name of the
+    /// *target's* type parameter it violates.
+    | MethodConstraintsViolation of
+        targetType : string *
+        methodName : string *
+        typeArgument : string *
+        typeParameter : string
+
+    /// `InvalidOperationException` (`InvalidOperation_CantInstantiateAbstractClass`), which the JIT
+    /// raises compiling a `Constructor` accessor's `newobj` of an abstract class.
+    | CantInstantiateAbstractClass
 
 [<RequireQualifiedAccess>]
 module internal UnsafeAccessorDispatch =
@@ -387,15 +413,23 @@ module internal UnsafeAccessorDispatch =
             // modifier retry cannot either -- the lookup is simply ambiguous. Measured on real .NET
             // 10: an accessor over `ref S` naming either an `override ToString` or an implicitly
             // implemented interface method raises `AmbiguousMatchException`, while a non-virtual
-            // instance method and a static one bind. Only the instance-method kind reaches this:
-            // a non-virtual method has no stub, and no `.ctor` is virtual.
-            let isVirtualOnValueType =
+            // instance method and a static one bind.
+            //
+            // This is `MethodTableBuilder::NeedsTightlyBoundUnboxingStub`, which also exempts a
+            // generic method (`mcInstantiated`) and an `RTSpecialName` one: measured, a struct's
+            // generic interface implementation binds rather than being ambiguous.
+            let hasUnboxingStub =
                 DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
+                && not single.IsStatic
                 && single.IsVirtual
+                && single.Generics.IsEmpty
+                && not (
+                    single.TryMetadata
+                    |> Option.exists (fun facts -> facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName)
+                )
 
-            if isVirtualOnValueType then
-                failwith
-                    $"TODO: %s{describe} names the virtual method %s{name} of a value type, which CoreCLR refuses with AmbiguousMatchException because the method and its unboxing stub both match; that exception is not one this dispatcher raises"
+            if hasUnboxingStub then
+                state, Error UnsafeAccessorRefusal.AmbiguousMatch
             else
                 state, Ok single
         | [] -> state, Error (UnsafeAccessorRefusal.MissingMethod (describeTargetType targetTypeInfo, name))
@@ -496,20 +530,55 @@ module internal UnsafeAccessorDispatch =
         | first :: _ -> state, Ok first
         | [] -> state, Error (UnsafeAccessorRefusal.MissingField (describeTargetType targetTypeInfo, name))
 
-    /// `VerifyDeclarationSatisfiesTargetConstraints` (unsafeaccessors.cpp:513), for the shapes
-    /// whose answer this dispatcher can state: a target with no generic parameters at all, or a
-    /// generic method whose parameters constrain nothing the accessor's type arguments could
-    /// violate.
+    /// Whether CoreCLR shares code over `System.__Canon` for an instantiation with this type
+    /// argument: `ClassLoader::CanonicalizeGenericArg` (generics.cpp:27) replaces a reference type,
+    /// arrays included, by `__Canon`, and a value type by its canonical MethodTable. So a value type
+    /// is shared exactly when one of its own type arguments is -- `ValueTuple<string>` shares with
+    /// `ValueTuple<object>` -- and a non-generic one never is.
     ///
-    /// Everything else is refused. A target method *of a generic type* is one CoreCLR refuses with
-    /// `InvalidProgramException` (measured on real .NET 10: the declaration supplies no class
-    /// instantiation for the target's parameters), which is not an exception this dispatcher
-    /// raises. A type parameter that names a constraint needs `TypeVarTypeDesc::SatisfiesConstraints`'s
-    /// assignability walk, which PawPrint does not have. And the *absence* of `allows ref struct`
-    /// is itself a constraint (typedesc.cpp:1606) that a byref-like argument violates -- measured,
-    /// `VerificationException` -- so that pair is refused too, while a parameter that does carry
-    /// `allows ref struct` accepts the argument and runs.
-    let private refuseUndecidableConstraints
+    /// A byref, pointer or function pointer is not a valid type argument, and CoreCLR asserts that
+    /// none reaches the canonicalisation; one is refused rather than classified.
+    let rec private isSharedTypeArgument
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (describe : string)
+        (argument : ConcreteTypeHandle)
+        : bool
+        =
+        match argument with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> true
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"TODO: %s{describe} is instantiated with %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes argument}, which is not a valid type argument; PawPrint does not model how CoreCLR refuses it"
+        | ConcreteTypeHandle.Concrete _ ->
+
+        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
+        | None ->
+            failwith $"BUG: %s{describe} is instantiated with the handle %O{argument}, which names no registered type"
+        | Some (concrete, typeInfo) ->
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                concrete.Generics
+                |> Seq.exists (isSharedTypeArgument baseClassTypes state describe)
+            else
+                true
+
+    /// The constraint checks CoreCLR makes once the lookup has found a target method, for the shapes
+    /// whose answer this dispatcher can state: `VerifyDeclarationSatisfiesTargetConstraints`
+    /// (unsafeaccessors.cpp:513), which compares the declaration's *typical* instantiation with the
+    /// target's as part of the lookup, and then `MethodDesc::SatisfiesMethodConstraints`
+    /// (genmeth.cpp:1594), which checks the accessor's actual type arguments as the stub
+    /// instantiates the target.
+    ///
+    /// A target method *of a generic type* fails the first check outright. A type parameter that
+    /// names a constraint is refused, because deciding either check for it needs
+    /// `TypeVarTypeDesc::SatisfiesConstraints`'s assignability walk, which PawPrint does not have.
+    /// What is left is the one constraint every type parameter carries: the *absence* of
+    /// `allows ref struct` refuses a byref-like argument (typedesc.cpp:1606) -- a refusal only the
+    /// second check can make, since the declaration's own type variables are not byref-like.
+    let private checkTargetConstraints
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (describe : string)
@@ -517,11 +586,11 @@ module internal UnsafeAccessorDispatch =
         (targetType : ConcreteType<ConcreteTypeHandle>)
         (accessorMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (target : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-        : unit
+        : Result<unit, UnsafeAccessorRefusal>
         =
         if not targetType.Generics.IsEmpty then
-            failwith
-                $"TODO: %s{describe} names a method of the generic type %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes targetTypeHandle}, which CoreCLR refuses with InvalidProgramException (the accessor's declaring type supplies no instantiation for the target type's parameters); that exception is not one this dispatcher raises"
+            Error UnsafeAccessorRefusal.GenericTypeConstraintsNotEqual
+        else
 
         if target.Generics.Length <> accessorMethodGenerics.Length then
             // Unreachable after a successful signature match, which compares the generic-parameter
@@ -529,7 +598,9 @@ module internal UnsafeAccessorDispatch =
             failwith
                 $"BUG: %s{describe} matched %s{target.Name} with %d{target.Generics.Length} generic parameters against %d{accessorMethodGenerics.Length} type arguments"
 
-        for (parameter, metadata), argument in Seq.zip target.Generics accessorMethodGenerics do
+        // Every parameter is screened before any argument is checked, because the lookup's check
+        // over all of them precedes the instantiation's check over any one of them.
+        for parameter, metadata in target.Generics do
             if
                 metadata.Constraint.IsSome
                 || metadata.RequiresParameterlessConstructor
@@ -538,18 +609,37 @@ module internal UnsafeAccessorDispatch =
                 failwith
                     $"TODO: %s{describe} names the generic method %s{target.Name}, whose type parameter %s{parameter.Name} carries a constraint; deciding whether the accessor's own type argument satisfies it needs the assignability walk of CoreCLR's TypeVarTypeDesc::SatisfiesConstraints, which PawPrint does not have"
 
-            let argumentIsByRefLike =
-                match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
-                | Some (_, typeInfo) -> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
-                | None ->
-                    // A structural handle: a byref, pointer, array or function pointer. None of
-                    // those is a byref-like *type* -- `Span<T>` is nominal -- so the
-                    // anti-constraint does not bear on them.
-                    false
+        let isByRefLike (argument : ConcreteTypeHandle) : bool =
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
+            | Some (_, typeInfo) -> DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo
+            | None ->
+                // A structural handle: a byref, pointer, array or function pointer. None of those
+                // is a byref-like *type* -- `Span<T>` is nominal -- so the anti-constraint does not
+                // bear on them.
+                false
 
-            if argumentIsByRefLike && not metadata.AllowsByRefLike then
-                failwith
-                    $"TODO: %s{describe} instantiates the generic method %s{target.Name} with the byref-like type %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes argument} for a type parameter %s{parameter.Name} that does not say `allows ref struct`, which CoreCLR refuses with VerificationException; that exception is not one this dispatcher raises"
+        // The first violated parameter in declaration order is the one reported.
+        let firstViolation =
+            Seq.zip target.Generics accessorMethodGenerics
+            |> Seq.tryFind (fun ((_, metadata), argument) -> isByRefLike argument && not metadata.AllowsByRefLike)
+
+        match firstViolation with
+        | None -> Ok ()
+        | Some ((parameter, _), argument) ->
+            let render (handle : ConcreteTypeHandle) : string =
+                NativeRuntimeTypeHelpers.runtimeTypeHandleName
+                    describe
+                    state
+                    NativeRuntimeTypeHelpers.formatNamespaceFlag
+                    (RuntimeTypeHandleTarget.Closed handle)
+
+            UnsafeAccessorRefusal.MethodConstraintsViolation (
+                render targetTypeHandle,
+                target.Name,
+                render argument,
+                parameter.Name
+            )
+            |> Error
 
     /// Read an `[UnsafeAccessor]` declaration and resolve the member it names, reproducing
     /// `MethodDesc::TryGenerateUnsafeAccessor` (unsafeaccessors.cpp:1027) down to the point where
@@ -740,16 +830,30 @@ module internal UnsafeAccessorDispatch =
             | Error refusal -> state, Error refusal
             | Ok target ->
 
+            match
+                checkTargetConstraints baseClassTypes state describe strippedTarget targetType accessor.Generics target
+            with
+            | Error refusal -> state, Error refusal
+            | Ok () ->
+
             refuseByrefReferenceReceiver ()
 
-            refuseUndecidableConstraints
-                baseClassTypes
-                state
-                describe
-                strippedTarget
-                targetType
-                accessor.Generics
-                target
+            // A value type's generic virtual method has no unboxing stub, so it binds (see
+            // `findTargetMethod`), and the stub's `callvirt` then runs it for a value-type
+            // instantiation. For an instantiation shared over `System.__Canon` -- a reference-type
+            // argument, or a value type instantiated over one -- measured on real .NET 10 the
+            // process dies with SIGSEGV on the call, which is not an answer PawPrint can give.
+            match kind with
+            | UnsafeAccessorKind.Method when
+                targetIsValueType
+                && target.IsVirtual
+                && not target.Generics.IsEmpty
+                && accessor.Generics
+                   |> Seq.exists (isSharedTypeArgument baseClassTypes state describe)
+                ->
+                failwith
+                    $"TODO: %s{describe} names the generic virtual method %s{name} of a value type and instantiates it over System.__Canon; real .NET 10 crashes the process with SIGSEGV calling such an accessor, which PawPrint cannot reproduce"
+            | _ -> ()
 
             // Two shapes the *body* CoreCLR emits refuses, both of them after the lookup has
             // succeeded -- measured on real .NET 10, an abstract class with no matching
@@ -761,11 +865,9 @@ module internal UnsafeAccessorDispatch =
                 // abstract. The message is the JIT's rather than the attribute's.
                 state, Error (UnsafeAccessorRefusal.BadImageFormat "Bad IL format.")
             | UnsafeAccessorKind.Constructor, _ when targetTypeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract ->
-                // The body is a `newobj`, which cannot allocate an abstract class: CoreCLR raises
-                // `InvalidOperationException` (`Acc_CreateAbst`), which is not one of the
-                // exceptions this dispatcher raises.
-                failwith
-                    $"TODO: %s{describe} names a constructor of the abstract class %s{describeTargetType targetTypeInfo}, whose `newobj` CoreCLR refuses with InvalidOperationException; that exception is not one this dispatcher raises"
+                // The body is a `newobj`, which the JIT refuses for an abstract class
+                // (`CEEInfo::getNewHelper`).
+                state, Error UnsafeAccessorRefusal.CantInstantiateAbstractClass
             | _ ->
 
             let state, concretizedTarget, _declaringTypeHandle =
@@ -846,6 +948,15 @@ module internal UnsafeAccessorDispatch =
             baseClassTypes.MissingMethodException, $"Method not found: '%s{targetType}.%s{name}'."
         | UnsafeAccessorRefusal.MissingField (targetType, name) ->
             baseClassTypes.MissingFieldException, $"Field not found: '%s{targetType}.%s{name}'."
+        | UnsafeAccessorRefusal.AmbiguousMatch ->
+            baseClassTypes.AmbiguousMatchException, "Ambiguity in binding of UnsafeAccessorAttribute."
+        | UnsafeAccessorRefusal.GenericTypeConstraintsNotEqual ->
+            baseClassTypes.InvalidProgramException, "Generic type constraints do not match."
+        | UnsafeAccessorRefusal.MethodConstraintsViolation (targetType, methodName, typeArgument, typeParameter) ->
+            baseClassTypes.VerificationException,
+            $"Method %s{targetType}.%s{methodName}: type argument '%s{typeArgument}' violates the constraint of type parameter '%s{typeParameter}'."
+        | UnsafeAccessorRefusal.CantInstantiateAbstractClass ->
+            baseClassTypes.InvalidOperationException, "Instances of abstract classes cannot be created."
 
     /// Is this receiver null, in either of the two ways an accessor's first argument can be?
     ///

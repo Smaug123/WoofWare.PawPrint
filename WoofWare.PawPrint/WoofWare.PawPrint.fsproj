@@ -115,8 +115,6 @@
     <Compile Include="BoxedValue.fs" />
     <Compile Include="UnaryMetadataObjectOps.fs" />
     <Compile Include="UnaryMetadataFieldOps.fs" />
-    <!-- After the field and object ops, whose `ldflda`/`ldsflda`/`newobj` bodies it shares. -->
-    <Compile Include="UnsafeAccessorDispatch.fs" />
     <Compile Include="UnaryMetadataArrayOps.fs" />
     <Compile Include="UnaryMetadataMemoryOps.fs" />
     <Compile Include="UnaryMetadataTokenOps.fs" />
@@ -191,6 +189,10 @@
     <Compile Include="Native\NativeLowLevelMonitor.fs" />
     <Compile Include="Native\NativeCryptoNative.fs" />
     <Compile Include="Native\NativeDispatch.fs" />
+    <!-- After the field and object ops, whose `ldflda`/`ldsflda`/`newobj` bodies it shares, and
+         after NativeRuntimeTypeHelpers.fs, whose type-name renderer formats CoreCLR's
+         IDS_EE_METHOD_CONSTRAINTS_VIOLATION message. -->
+    <Compile Include="UnsafeAccessorDispatch.fs" />
     <Compile Include="SignalDispatch.fs" />
     <Compile Include="StackShapeOfMethod.fs" />
     <Compile Include="AbstractMachine.fs" />

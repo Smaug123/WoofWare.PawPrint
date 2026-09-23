@@ -372,6 +372,13 @@ type BaseClassTypes<'corelib> =
         /// `WAIT_FAILED` + `ERROR_INVALID_PARAMETER` into this before the managed
         /// wrapper ever sees a return value.
         DuplicateWaitObjectException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Security.VerificationException`. Raised by the runtime — not the BCL — when a
+        /// generic method is instantiated with a type argument its type parameter's constraints
+        /// refuse (`MethodDesc::SatisfiesMethodConstraints`, `IDS_EE_METHOD_CONSTRAINTS_VIOLATION`).
+        VerificationException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// `System.Reflection.AmbiguousMatchException`. Raised by the runtime — not the BCL — when
+        /// an `[UnsafeAccessor]` declaration matches more than one member of its target type.
+        AmbiguousMatchException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>
