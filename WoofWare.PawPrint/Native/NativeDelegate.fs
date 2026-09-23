@@ -872,9 +872,11 @@ module NativeDelegate =
                     targetSignature
                     state
 
-            let state =
+            // `Ok` with the delegate bound, or with it untouched if the shapes are incompatible; or
+            // `Error` naming the exception `BindToMethod` raises instead.
+            let bound : Result<IlMachineState, TypeInfo<GenericParamFromMetadata, TypeDefn>> =
                 match shape with
-                | None -> state
+                | None -> Ok state
                 | Some shape ->
                     // `COMDelegate::BindToMethod` (comdelegate.cpp:1184). Two of its branches
                     // cannot fire here. `NeedsWrapperDelegate` is ARM32-only and
@@ -904,14 +906,16 @@ module NativeDelegate =
                         match bindTarget, shape with
                         | BindTarget.Dynamic dynamicHandle, DelegateBindingShape.Open ->
                             // A dynamic method is static, so never takes the stub path.
-                            state, DelegateBinding.Open (FunctionPointerTarget.Dynamic dynamicHandle)
+                            state, Ok (DelegateBinding.Open (FunctionPointerTarget.Dynamic dynamicHandle))
                         | BindTarget.Dynamic dynamicHandle, DelegateBindingShape.Closed ->
-                            state, DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Dynamic dynamicHandle)
+                            state, Ok (DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Dynamic dynamicHandle))
                         | BindTarget.Metadata (method, declaringType), DelegateBindingShape.Open ->
-                            state,
-                            DelegateBinding.Open (
+                            match
                                 DelegateRepresentation.openAux ctx.BaseClassTypes operation method declaringType state
-                            )
+                            with
+                            | OpenDelegateAux.Aux aux -> state, Ok (DelegateBinding.Open aux)
+                            | OpenDelegateAux.GenericVirtualUnsupported ->
+                                state, Error ctx.BaseClassTypes.NotSupportedException
                         | BindTarget.Metadata (method, _), DelegateBindingShape.Closed when
                             method.IsStatic && method.IsVirtual
                             ->
@@ -967,9 +971,18 @@ module NativeDelegate =
                                 // declared body unvirtualised.
                                 state, method
 
-                        state, DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Managed methodPtr)
+                        state, Ok (DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Managed methodPtr))
 
-                    DelegateRepresentation.write ctx.BaseClassTypes delegateAddr binding state
+                    binding
+                    |> Result.map (fun binding ->
+                        DelegateRepresentation.write ctx.BaseClassTypes delegateAddr binding state
+                    )
+
+            match bound with
+            | Error exceptionType ->
+                // Raised by the QCall, so whatever `throwOnBindFailure` said, the guest sees it.
+                NativeHandlerResult.raiseException exceptionType state |> Some
+            | Ok state ->
 
             // The QCall's managed declaration is `[return: MarshalAs(UnmanagedType.Bool)] bool`,
             // so the interop stub receives an Int32 and normalises it; hand back the C `BOOL`.

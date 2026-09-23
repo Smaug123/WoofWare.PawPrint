@@ -20,6 +20,16 @@ type DelegateBinding =
     /// also names the target method.
     | Open of aux : FunctionPointerTarget
 
+/// What an open delegate over a given method stores in `_methodPtrAux`, or that it cannot be built.
+[<RequireQualifiedAccess>]
+type OpenDelegateAux =
+    /// The delegate can be built, with this in `_methodPtrAux`.
+    | Aux of FunctionPointerTarget
+    /// The target needs a virtual call stub but has a generic instantiation of its own, which
+    /// `GetVirtualCallStub` refuses by raising `NotSupportedException` (comdelegate.cpp:979-982).
+    /// Measured: real .NET raises it from `CreateDelegate` even with `throwOnBindFailure: false`.
+    | GenericVirtualUnsupported
+
 /// What invoking a single-cast delegate does, read back off its fields.
 [<RequireQualifiedAccess>]
 type DelegateInvocation =
@@ -88,7 +98,8 @@ module DelegateRepresentation =
     /// <c>IsVirtual</c>, not <c>DispatchesVirtually</c>: CoreCLR takes the stub path for a
     /// <c>final</c> virtual too, where it resolves to the method itself, and for a static
     /// abstract interface method, where invoking it raises. Only the latter is observable, and
-    /// only because of this choice.
+    /// only because of this choice. The delegate constructor's rule differs for statics; see
+    /// <c>construct</c>.
     /// </remarks>
     let openAux
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -96,15 +107,18 @@ module DelegateRepresentation =
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (declaringType : ConcreteTypeHandle)
         (state : IlMachineState)
-        : FunctionPointerTarget
+        : OpenDelegateAux
         =
         if
             method.IsVirtual
             && IlMachineState.isReferenceTypeHandle baseClassTypes operation state declaringType
         then
-            FunctionPointerTarget.VirtualCallStub method
+            if method.Generics.IsEmpty then
+                OpenDelegateAux.Aux (FunctionPointerTarget.VirtualCallStub method)
+            else
+                OpenDelegateAux.GenericVirtualUnsupported
         else
-            FunctionPointerTarget.Managed method
+            OpenDelegateAux.Aux (FunctionPointerTarget.Managed method)
 
     /// Write `binding` into the delegate at `delegateAddr`. Every field the binding determines is
     /// written, so this is correct on a freshly allocated delegate and needs no prior state.
@@ -361,16 +375,18 @@ module DelegateRepresentation =
     /// <summary>
     /// The delegate constructor every delegate type's <c>.ctor(object, IntPtr)</c> runs:
     /// <c>Delegate_Construct</c> (comdelegate.cpp:1665), which is also what the JIT's choice
-    /// among <c>MulticastDelegate</c>'s <c>Ctor*</c> helpers computes. Returns <c>None</c> when the
-    /// delegate is closed over a null receiver of an instance method, which CoreCLR refuses with
-    /// <c>ArgumentException(Arg_DlgtNullInst)</c>; the caller raises that.
+    /// among <c>MulticastDelegate</c>'s <c>Ctor*</c> helpers computes. When CoreCLR refuses the
+    /// delegate, returns the exception for the caller to raise, with its message if that is not the
+    /// parameterless constructor's: <c>ArgumentException(Arg_DlgtNullInst)</c> for a delegate
+    /// closed over a null receiver of an instance method, and <c>NotSupportedException</c> for one
+    /// open over a generic virtual method.
     /// </summary>
     let construct
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (instruction : MethodState)
         (state : IlMachineState)
-        : IlMachineState option
+        : Result<IlMachineState, TypeInfo<GenericParamFromMetadata, TypeDefn> * string option>
         =
         let operation = "delegate constructor"
 
@@ -405,32 +421,35 @@ module DelegateRepresentation =
         let invokeArgCount = MethodInfo.arity invoke
 
         if methodArgCount = invokeArgCount then
-            // `Delegate_Construct` excludes statics from the stub path, where `BindToMethod`
-            // does not; `ldftn` cannot name a static virtual without a `constrained.` prefix, so
-            // only the latter is reachable.
-            if method.IsStatic && method.IsVirtual then
-                failwith
-                    $"TODO: %s{operation} was handed the static virtual method %s{method.Name} for an open delegate; ldftn cannot produce one"
+            // `Delegate_Construct`'s rule is `openAux`'s with statics excluded
+            // (`!pMeth->IsStatic() && pMeth->IsVirtual()`, comdelegate.cpp:1736). A static
+            // virtual reaches here only through `constrained. ldftn`, which has already resolved
+            // it to an implementation, so its body is the one to call.
+            let aux =
+                if method.IsStatic then
+                    OpenDelegateAux.Aux (FunctionPointerTarget.Managed method)
+                else
+                    let declaringType =
+                        AllConcreteTypes.findExistingConcreteType
+                            state.ConcreteTypes
+                            method.RequiredDeclaringType.Identity
+                            method.DeclaringTypeGenerics
+                        |> Option.defaultWith (fun () ->
+                            failwith
+                                $"%s{operation}: declaring type %s{MethodOwner.describe method.Owner} is not registered in AllConcreteTypes"
+                        )
 
-            let declaringType =
-                AllConcreteTypes.findExistingConcreteType
-                    state.ConcreteTypes
-                    method.RequiredDeclaringType.Identity
-                    method.DeclaringTypeGenerics
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: declaring type %s{MethodOwner.describe method.Owner} is not registered in AllConcreteTypes"
-                )
+                    openAux baseClassTypes operation method declaringType state
 
-            let aux = openAux baseClassTypes operation method declaringType state
-
-            write baseClassTypes constructing (DelegateBinding.Open aux) state |> Some
+            match aux with
+            | OpenDelegateAux.Aux aux -> write baseClassTypes constructing (DelegateBinding.Open aux) state |> Ok
+            | OpenDelegateAux.GenericVirtualUnsupported -> Error (baseClassTypes.NotSupportedException, None)
         elif methodArgCount = invokeArgCount + 1 then
             if not method.IsStatic && target.IsNone then
-                None
+                Error (baseClassTypes.ArgumentException, Some "Delegate to an instance method cannot have null 'this'.")
             else
                 write baseClassTypes constructing (DelegateBinding.Closed (target, methodPtr)) state
-                |> Some
+                |> Ok
         else
             failwith
                 $"%s{operation}: %s{method.Name} takes %d{methodArgCount} argument(s) but the delegate's Invoke takes %d{invokeArgCount}; the target must take the same number or one more"

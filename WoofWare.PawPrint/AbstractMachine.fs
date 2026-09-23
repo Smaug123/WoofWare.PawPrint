@@ -193,23 +193,23 @@ module AbstractMachine =
 
         let dispatchDelegateCtor () =
             match DelegateRepresentation.construct loggerFactory baseClassTypes instruction state with
-            | Some state ->
+            | Ok state ->
                 state
                 // can't advance the program counter here - there's no IL instructions executing!
                 |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
                 |> function
                     | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
                     | result -> failwith $"unexpected ReturnFrameResult from delegate constructor: %A{result}"
-            | None ->
-                // `Delegate_Construct`'s `COMPlusThrow(kArgumentException, W("Arg_DlgtNullInst"))`
-                // (comdelegate.cpp:1755), raised from inside the constructor as CoreCLR's is. The
-                // frame is left up for dispatch to unwind through, as a native method's is.
+            | Error (exceptionType, message) ->
+                // `Delegate_Construct` refuses by `COMPlusThrow` from inside the constructor, so this
+                // is raised from inside it too: the frame is left up for dispatch to unwind through,
+                // as a native method's is.
                 let state, _whatWeDid =
                     IlMachineStateExecution.raiseRuntimeExceptionWithMessage
                         loggerFactory
                         baseClassTypes
-                        baseClassTypes.ArgumentException
-                        (Some "Delegate to an instance method cannot have null 'this'.")
+                        exceptionType
+                        message
                         thread
                         state
 

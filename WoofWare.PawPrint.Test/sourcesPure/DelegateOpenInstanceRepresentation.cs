@@ -85,8 +85,48 @@ public struct Polygon : IShape
     }
 }
 
+public interface IDefaulted
+{
+    static virtual int Value ()
+    {
+        return 5;
+    }
+}
+
+public class UsesDefault : IDefaulted
+{
+}
+
+public class OverridesDefault : IDefaulted
+{
+    public static int Value ()
+    {
+        return 7;
+    }
+}
+
+public class GenericMethods
+{
+    public virtual int Virtual<T> (int x)
+    {
+        return x;
+    }
+
+    public int NonVirtual<T> (int x)
+    {
+        return x + 1;
+    }
+}
+
 public static class Program
 {
+    // `constrained. T ldftn IDefaulted::Value`, which resolves the static virtual to an
+    // implementation before the delegate is constructed.
+    private static Func<int> ValueOf<T> () where T : IDefaulted
+    {
+        return T.Value;
+    }
+
     public static int Twice (int x)
     {
         return 2 * x;
@@ -273,6 +313,42 @@ public static class Program
         if (!ReferenceEquals (withSecond.GetInvocationList ()[3], second))
         {
             return 20;
+        }
+
+        // 21: an open delegate over a static virtual, built by `newobj` from a constrained
+        // `ldftn`, calls the implementation the constraint resolved to, default or not. Only
+        // `CreateDelegate` puts a static virtual behind a virtual call stub.
+        Func<int> defaulted = ValueOf<UsesDefault> ();
+
+        if (defaulted () != 5 || ValueOf<OverridesDefault> () () != 7 || defaulted.Method.DeclaringType != typeof (IDefaulted))
+        {
+            return 21;
+        }
+
+        // 22: a virtual call stub cannot be built over a generic method instantiation, and the
+        // runtime raises rather than reporting a bind failure, so `throwOnBindFailure: false` does
+        // not suppress it.
+        MethodInfo genericVirtual = typeof (GenericMethods).GetMethod ("Virtual").MakeGenericMethod (typeof (int));
+
+        try
+        {
+            Delegate.CreateDelegate (typeof (Func<GenericMethods, int, int>), genericVirtual, false);
+            return 22;
+        }
+        catch (NotSupportedException)
+        {
+        }
+
+        // 23: the same method closed over a receiver needs no stub, and nor does an open delegate
+        // over a non-virtual generic method.
+        Func<int, int> closedGeneric = (Func<int, int>) genericVirtual.CreateDelegate (typeof (Func<int, int>), new GenericMethods ());
+        Func<GenericMethods, int, int> openGeneric = (Func<GenericMethods, int, int>)
+            typeof (GenericMethods).GetMethod ("NonVirtual").MakeGenericMethod (typeof (int))
+                .CreateDelegate (typeof (Func<GenericMethods, int, int>));
+
+        if (closedGeneric (3) != 3 || openGeneric (new GenericMethods (), 3) != 4)
+        {
+            return 23;
         }
 
         return 0;
