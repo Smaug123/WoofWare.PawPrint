@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Include="HostPlatform.fs" />
+    <Compile Include="ReuseAddress.fs" />
     <Compile Include="PathText.fs" />
     <Compile Include="BindingProbes.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
@@ -58,6 +59,8 @@
     <Compile Include="TestCreatableSockets.fs" />
     <Compile Include="TestAccept.fs" />
     <Compile Include="TestBind.fs" />
+    <Compile Include="TestSockOpt.fs" />
+    <Compile Include="TestSockOptAgainstHost.fs" />
     <Compile Include="TestSocketBinding.fs" />
     <Compile Include="TestEphemeralPorts.fs" />
     <Compile Include="TestListen.fs" />

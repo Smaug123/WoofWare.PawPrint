@@ -9,8 +9,7 @@ open WoofWare.PosixKernel
 ///
 /// The screens it shares with `connect` are `TestConnect`'s; what is only here
 /// is what `bind` adds — the fault *ordering*, which the two flavours disagree
-/// about, the `SO_REUSEADDR` write that outlives every failure, and the
-/// ephemeral allocation a request for port 0 performs.
+/// about, and the ephemeral allocation a request for port 0 performs.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestBind =
@@ -85,7 +84,7 @@ module TestBind =
         (system : UnixSystem<int, string>)
         : BindAnswer * UnixSystem<int, string>
         =
-        match UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some inetFamily) (Some endpoint) system with
+        match UnixSocket.bind fd UserBuffer.Mapped exactLength (Some inetFamily) (Some endpoint) system with
         | Ok result -> result
         | Error refusal -> failwith $"expected an answer, got a refusal: %s{BindRefusal.describe refusal}"
 
@@ -246,7 +245,7 @@ module TestBind =
     let ``a foreign family is EAFNOSUPPORT`` (platform : SimulatedUnixPlatform) : unit =
         let fd, system = stream platform
 
-        UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some 99) (Some (loopback 5000us)) system
+        UnixSocket.bind fd UserBuffer.Mapped exactLength (Some 99) (Some (loopback 5000us)) system
         |> shouldEqual (Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, system))
 
     /// `AF_UNSPEC` is two rules. Linux takes it only with an all-zero address;
@@ -262,7 +261,6 @@ module TestBind =
                     fd
                     UserBuffer.Mapped
                     exactLength
-                    false
                     (Some 0)
                     (Some (InternetEndpoint.ofParts InternetEndpoint.WildcardAddress 5000us))
                     system
@@ -272,7 +270,7 @@ module TestBind =
 
             // A non-zero one: Linux refuses, Darwin binds it.
             let answer =
-                UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some 0) (Some (loopback 5000us)) system
+                UnixSocket.bind fd UserBuffer.Mapped exactLength (Some 0) (Some (loopback 5000us)) system
 
             match SimulatedUnixPlatform.flavour platform, answer with
             | SimulatedUnixFlavour.Linux, Ok (BindAnswer.Failed UnixError.EAFNOSUPPORT, _) -> ()
@@ -328,7 +326,6 @@ module TestBind =
                 fd
                 UserBuffer.Mapped
                 exactLength
-                false
                 (Some inetFamily)
                 (Some (InternetEndpoint.ofParts multicast 5000us))
                 system
@@ -342,42 +339,41 @@ module TestBind =
         | other -> failwith $"Darwin: expected EINVAL, got %A{other}"
 
     // ------------------------------------------------------------------
-    // SO_REUSEADDR, which survives every failure
+    // SO_REUSEADDR, which bind reads and never writes
     // ------------------------------------------------------------------
 
-    /// Measured: the option is set by a separate call that no failure of the
-    /// bind undoes, so it is recorded above every answer — the address fault
-    /// included.
+    /// `bind(2)` consults `SO_REUSEADDR` and leaves it as it found it, whether
+    /// the bind succeeds, fails on the address, or fails on the buffer before
+    /// the address is read -- and whichever way the flag was set beforehand.
     [<TestCaseSource(nameof platforms)>]
-    let ``SO_REUSEADDR survives a failing bind`` (platform : SimulatedUnixPlatform) : unit =
-        let fd, system = stream platform
+    let ``bind leaves SO_REUSEADDR as it found it`` (platform : SimulatedUnixPlatform) : unit =
+        let attempts =
+            [
+                UserBuffer.Mapped, Some inetFamily, Some (loopback 5000us), true
+                UserBuffer.Mapped, Some inetFamily, Some (loopback 1023us), false
+                UserBuffer.Unmapped 4096UL, None, None, false
+            ]
 
-        (UnixMachineState.socket (SocketId 0L) system.Machine).ReuseAddress
-        |> shouldEqual false
+        for reuse in [ false ; true ] do
+            for destination, family, endpoint, succeeds in attempts do
+                let fd, system =
+                    withSocket
+                        (SocketId 0L)
+                        { socketOfKind SocketKind.Stream SocketPhase.Idle with
+                            ReuseAddress = reuse
+                        }
+                        (systemOn platform)
 
-        // A privileged port, which fails — and an unmapped buffer, which fails
-        // earlier still, inside the shared admission.
-        for destination, declaredLength in [ UserBuffer.Mapped, exactLength ; UserBuffer.Unmapped 4096UL, exactLength ] do
-            let family, endpoint =
-                match destination with
-                | UserBuffer.Mapped -> Some inetFamily, Some (loopback 1023us)
-                | _ -> None, None
+                match UnixSocket.bind fd destination exactLength family endpoint system with
+                | Ok (answer, after) ->
+                    (match answer with
+                     | BindAnswer.Bound _ -> true
+                     | BindAnswer.Failed _ -> false)
+                    |> shouldEqual succeeds
 
-            match UnixSocket.bind fd destination declaredLength true family endpoint system with
-            | Ok (BindAnswer.Failed _, after) ->
-                (UnixMachineState.socket (SocketId 0L) after.Machine).ReuseAddress
-                |> shouldEqual true
-            | other -> failwith $"expected a failure, got %A{other}"
-
-    /// It is only set when the caller asks: a client with no such layer passes
-    /// `false` and the flag is left alone.
-    [<TestCaseSource(nameof platforms)>]
-    let ``SO_REUSEADDR is not set unless asked for`` (platform : SimulatedUnixPlatform) : unit =
-        let fd, system = stream platform
-        let _, system = bound fd (loopback 5000us) system
-
-        (UnixMachineState.socket (SocketId 0L) system.Machine).ReuseAddress
-        |> shouldEqual false
+                    (UnixMachineState.socket (SocketId 0L) after.Machine).ReuseAddress
+                    |> shouldEqual reuse
+                | Error refusal -> failwith $"expected an answer, got a refusal: %s{BindRefusal.describe refusal}"
 
     // ------------------------------------------------------------------
     // Refusals
@@ -394,7 +390,6 @@ module TestBind =
             fd
             UserBuffer.Mapped
             exactLength
-            false
             (Some inetFamily)
             (Some (InternetEndpoint.ofParts multicast 5000us))
             system
@@ -424,7 +419,7 @@ module TestBind =
         let fd, system =
             withSocket (SocketId 0L) (socketOfKind SocketKind.Stream SocketPhase.Idle) system
 
-        UnixSocket.bind fd UserBuffer.Mapped exactLength false (Some inetFamily) (Some (loopback 0us)) system
+        UnixSocket.bind fd UserBuffer.Mapped exactLength (Some inetFamily) (Some (loopback 0us)) system
         |> shouldEqual (Error (BindRefusal.EphemeralPortsExhausted (40000us, 40000us)))
 
     /// The field-consistency contract `connect` states, restated because `bind`
@@ -435,8 +430,7 @@ module TestBind =
 
         let e =
             Assert.Throws<exn> (fun () ->
-                UnixSocket.bind fd UserBuffer.Mapped exactLength false None None system
-                |> ignore<_>
+                UnixSocket.bind fd UserBuffer.Mapped exactLength None None system |> ignore<_>
             )
 
         e.Message |> shouldContainText "have different measured answers"

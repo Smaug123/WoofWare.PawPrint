@@ -111,12 +111,8 @@ type BindAnswer =
     /// the caller asked for: a request for port 0 asks for any free port, and
     /// this is the one allocated.
     | Bound of endpoint : InternetEndpoint
-    /// The call failed with this errno.
-    ///
-    /// The system still comes back, and may have changed: the `SO_REUSEADDR` a
-    /// caller folds into this call is applied before every answer here, the
-    /// address fault included. Measured -- after a bind that answered EFAULT the
-    /// option still reads back set.
+    /// The call failed with this errno. Nothing changed: the socket is bound,
+    /// or not, exactly as it was.
     | Failed of error : UnixError
 
 /// Why this kernel will not answer a `bind`.
@@ -273,6 +269,74 @@ module GetSockNameRefusal =
         | GetSockNameRefusal.Buffer refusal -> BufferRefusal.describe refusal
         | GetSockNameRefusal.UnmodelledDomain (socket, domain) ->
             $"the descriptor is socket %O{socket}, whose domain is %O{domain}. This kernel models a local address only for IPv4: an IPv6 socket's is sixteen bytes of address plus a scope id, and a Unix-domain socket's is a *path* in the filesystem rather than a transport endpoint. Neither is a wider version of what is modelled here, so there is nothing to truncate or widen into an answer."
+
+/// Why this kernel will not answer a `setsockopt(2)` or a `getsockopt(2)`.
+[<RequireQualifiedAccess>]
+type SocketOptionRefusal =
+    /// The `level` and `optionName` name an option this kernel does not model,
+    /// in the simulated platform's numbering.
+    ///
+    /// Not `ENOPROTOOPT`, which is a real kernel's answer for an option *it*
+    /// does not know. These are options a real kernel does know, or numbers this
+    /// library has not measured a real kernel's answer for.
+    | UnmodelledOption of socket : SocketId * level : int * optionName : int
+    /// A buffer the call reaches has no answer at the step it is reached.
+    | Buffer of BufferRefusal
+
+[<RequireQualifiedAccess>]
+module SocketOptionRefusal =
+    /// What this kernel knows about why it cannot answer. The client supplies
+    /// its own half -- which entry point asked, and which argument.
+    let describe (refusal : SocketOptionRefusal) : string =
+        match refusal with
+        | SocketOptionRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) ->
+            $"socket %O{socket} was asked about option %d{optionName} at level %d{level}, and SO_REUSEADDR at SOL_SOCKET is the only option this kernel models. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. SO_ERROR in particular is refused because reading it consumes a pending connect refusal, which changes what the next connect(2) answers on both flavours and what poll(2) reports on Linux. Model the option before asking for it."
+
+/// Whether a `setsockopt(2)` reaches the point at which the kernel copies the
+/// option's value in, which is where a client that cannot always produce those
+/// bytes needs to be let off. The counterpart of `SockaddrCopyAdmission`.
+[<RequireQualifiedAccess>]
+type SetSockOptAdmission =
+    /// Answered without the value being read at all. Always a failure, for the
+    /// same reason `SockaddrCopyAdmission.Answered` is.
+    | Answered of error : UnixError
+    /// The copy is reached: it takes exactly `length` bytes from the start of
+    /// the caller's value buffer, whatever length the caller declared, and they
+    /// are a C `int` in the simulated machine's byte order.
+    | Transfer of length : int
+
+/// What a `setsockopt(2)` answered.
+[<RequireQualifiedAccess>]
+type SetSockOptAnswer =
+    /// The option now holds the value the caller asked for.
+    | Set
+    /// The call failed with this errno, and the option keeps the value it had.
+    | Failed of error : UnixError
+
+/// Whether a `getsockopt(2)` reaches the point at which the kernel reads the
+/// caller's length cell, which is where a client that cannot always produce
+/// those bytes needs to be let off.
+[<RequireQualifiedAccess>]
+type GetSockOptAdmission =
+    /// Answered without the length cell being read at all. Always a failure.
+    | Answered of error : UnixError
+    /// The kernel reads the caller's length cell: a `socklen_t`, four bytes in
+    /// the simulated machine's byte order. Pass what it holds.
+    | ReadLength
+
+/// What a `getsockopt(2)` answered.
+[<RequireQualifiedAccess>]
+type GetSockOptAnswer =
+    /// The call succeeded. The kernel wrote the first `length` bytes of `value`,
+    /// a C `int` in the simulated machine's byte order, to the caller's value
+    /// buffer, and then wrote `length` to the caller's length cell.
+    ///
+    /// `length` may be zero, and the value buffer is then untouched.
+    | Reported of value : int * length : uint32
+    /// The call failed with this errno, and neither the value buffer nor the
+    /// length cell was written.
+    | Failed of error : UnixError
 
 [<RequireQualifiedAccess>]
 module UnixSocket =
@@ -490,12 +554,9 @@ module UnixSocket =
     /// field it *could not read* is measured and different from its answer for a
     /// field nobody read.
     ///
-    /// `reuseAddress` folds in the `SO_REUSEADDR` that a foreign-function layer
-    /// may set on the way past. It is applied before every answer below, the
-    /// address fault included, because the option is set by a separate call that
-    /// no failure of this one undoes -- measured: after a bind that answered
-    /// EFAULT, the option still reads back set. A caller with no such layer
-    /// passes `false`.
+    /// Which existing bindings the new one conflicts with depends on
+    /// `SO_REUSEADDR` as `setsockopt` last left it, on this socket and on the
+    /// others; see `SimulatedUnixPlatform.bindConflict`.
     ///
     /// Answers where the socket ended up, which for a request of port 0 is a
     /// port this kernel chose.
@@ -503,40 +564,28 @@ module UnixSocket =
         (fd : int)
         (destination : UserBuffer)
         (declaredLength : int)
-        (reuseAddress : bool)
         (family : int option)
         (endpoint : InternetEndpoint option)
         (system : UnixSystem<'Task, 'Handler>)
         : Result<BindAnswer * UnixSystem<'Task, 'Handler>, BindRefusal>
         =
-        // The descriptor is resolved here rather than left to the admission
-        // below, because the `SO_REUSEADDR` write needs the socket and has to
-        // happen before the admission's own answers. The admission resolves it
-        // again; that is a lookup repeated, not a rule.
-        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
-        | None -> Ok (BindAnswer.Failed UnixError.EBADF, system)
-        | Some target ->
+        match admitSockaddrCopy fd destination declaredLength system with
+        | Error refusal -> Error (BindRefusal.Copy refusal)
+        | Ok (SockaddrCopyAdmission.Answered error) -> Ok (BindAnswer.Failed error, system)
+        | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
 
-        match target with
-        | OpenFileTarget.File _
-        | OpenFileTarget.StandardStream _
-        | OpenFileTarget.SocketEventPort _ -> Ok (BindAnswer.Failed UnixError.ENOTSOCK, system)
-        | OpenFileTarget.Socket socketId ->
+        SockaddrCopyFields.checkSupplied "UnixSocket.bind" fields family endpoint
+
+        // The admission has classified the descriptor as an IPv4 socket, or it
+        // would not have reached the copy.
+        let socketId =
+            match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+            | Some (OpenFileTarget.Socket socketId) -> socketId
+            | other ->
+                failwith
+                    $"UnixSocket.bind: fd %d{fd} names %A{other}, yet the sockaddr admission reached the copy, which it does only for a socket (this is a bug in this library)."
 
         let socket = UnixMachineState.socket socketId system.Machine
-
-        match socket.Domain with
-        | SocketDomain.InterNetworkV6
-        | SocketDomain.Unix -> Error (BindRefusal.Copy (SockaddrCopyRefusal.UnmodelledDomain (socketId, socket.Domain)))
-        | SocketDomain.InterNetwork ->
-
-        let socket =
-            if reuseAddress then
-                { socket with
-                    ReuseAddress = true
-                }
-            else
-                socket
 
         let withSocket (socket : SocketDescription) (system : UnixSystem<'Task, 'Handler>) =
             { system with
@@ -545,15 +594,6 @@ module UnixSocket =
                         Sockets = Map.add socketId socket system.Machine.Sockets
                     }
             }
-
-        let system = withSocket socket system
-
-        match admitSockaddrCopy fd destination declaredLength system with
-        | Error refusal -> Error (BindRefusal.Copy refusal)
-        | Ok (SockaddrCopyAdmission.Answered error) -> Ok (BindAnswer.Failed error, system)
-        | Ok (SockaddrCopyAdmission.Transfer (_, fields)) ->
-
-        SockaddrCopyFields.checkSupplied "UnixSocket.bind" fields family endpoint
 
         let platform = system.Machine.UnixPlatform
 
@@ -783,9 +823,7 @@ module UnixSocket =
              | Some binding -> Some (binding, system.Machine)
              | None ->
                  // `listen(2)` on an unbound socket binds it to the wildcard and
-                 // an ephemeral port. Measured on both -- and note it does *not*
-                 // go through `bind(2)`, so no `SO_REUSEADDR` is set, which is a
-                 // distinction a later bind can see.
+                 // an ephemeral port. Measured on both.
                  let candidate (port : uint16) : SocketBinding =
                      {
                          Endpoint = InternetEndpoint.ofParts InternetEndpoint.WildcardAddress port
@@ -925,3 +963,325 @@ module UnixSocket =
 
             Ok (GetSockNameAnswer.Failed (UnixError.EFAULT, overwritten))
         | UserBuffer.Mapped -> Ok (GetSockNameAnswer.Reported (endpoint, reportedLength))
+
+    /// `sizeof(int)`: what both kernels copy in for `SO_REUSEADDR` whatever
+    /// length the caller declares, and the most they copy out.
+    let private optionIntSize : int = 4
+
+    /// The options this kernel models, each named once its number has been
+    /// decoded under the simulated platform.
+    [<RequireQualifiedAccess>]
+    type private ModelledOption = | ReuseAddress
+
+    let private decodeOption
+        (platform : SimulatedUnixPlatform)
+        (level : int)
+        (optionName : int)
+        : ModelledOption option
+        =
+        if
+            level = SimulatedUnixPlatform.socketOptionLevel platform
+            && optionName = SimulatedUnixPlatform.reuseAddressOption platform
+        then
+            Some ModelledOption.ReuseAddress
+        else
+            None
+
+    /// The descriptor screens `setsockopt(2)` and `getsockopt(2)` share, which
+    /// both flavours make ahead of anything about the option: EBADF, then
+    /// ENOTSOCK.
+    let private socketOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SocketId, UnixError>
+        =
+        match FileDescriptorRegistry.tryFindTarget fd system.Process.FileDescriptors with
+        | None -> Error UnixError.EBADF
+        | Some (OpenFileTarget.File _)
+        | Some (OpenFileTarget.StandardStream _)
+        | Some (OpenFileTarget.SocketEventPort _) -> Error UnixError.ENOTSOCK
+        | Some (OpenFileTarget.Socket socketId) -> Ok socketId
+
+    /// Everything `setsockopt(2)` decides before the kernel copies the option's
+    /// value in. See `SetSockOptAdmission`.
+    ///
+    /// `level` and `optionName` are in the simulated platform's own numbering;
+    /// `SimulatedUnixPlatform.socketOptionLevel` and
+    /// `SimulatedUnixPlatform.reuseAddressOption` name the one pair modelled.
+    /// `optionLength` is the caller's `socklen_t` exactly as passed: the
+    /// platforms disagree about whether one at or above 2^31 is negative.
+    ///
+    /// Changes nothing: everything a `setsockopt` does before the copy is a
+    /// question.
+    let admitSetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (optionLength : uint32)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SetSockOptAdmission, SocketOptionRefusal>
+        =
+        let platform = system.Machine.UnixPlatform
+        let flavour = SimulatedUnixPlatform.flavour platform
+        let answered (error : UnixError) = Ok (SetSockOptAdmission.Answered error)
+
+        // Darwin's `setsockopt` compares the value pointer with NULL before it
+        // looks at the descriptor, whatever the option: measured EFAULT on a
+        // closed descriptor, on a pipe, and at an unknown level. It asks only
+        // when the declared length is non-zero.
+        let darwinNullScreen : Result<UnixError option, SocketOptionRefusal> =
+            match flavour with
+            | SimulatedUnixFlavour.Linux -> Ok None
+            | SimulatedUnixFlavour.Darwin ->
+                if optionLength = 0u then
+                    Ok None
+                else
+                    match value with
+                    | UserBuffer.Unmapped 0UL -> Ok (Some UnixError.EFAULT)
+                    | UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtScreen)
+                    | UserBuffer.Unmapped _
+                    | UserBuffer.Mapped
+                    | UserBuffer.Opaque -> Ok None
+
+        match darwinNullScreen with
+        | Error refusal -> Error refusal
+        | Ok (Some error) -> answered error
+        | Ok None ->
+
+        match socketOf fd system with
+        | Error error -> answered error
+        | Ok socketId ->
+
+        // Linux reads the length as an `int` and refuses a negative one before
+        // it dispatches on the option: measured EINVAL at an unknown level too.
+        // Darwin reads it as the `socklen_t` it is, so the same bits are a
+        // length of more than two gigabytes there.
+        if flavour = SimulatedUnixFlavour.Linux && int optionLength < 0 then
+            answered UnixError.EINVAL
+        else
+
+        match decodeOption platform level optionName with
+        | None -> Error (SocketOptionRefusal.UnmodelledOption (socketId, level, optionName))
+        | Some ModelledOption.ReuseAddress ->
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        // Darwin refuses every option on a socket that can neither send nor
+        // receive any more, ahead of the length and the copy: measured EINVAL
+        // after a refused connect, before and after the refusal is delivered,
+        // even through an unmapped value. Linux takes the option in every phase.
+        let darwinShutDown =
+            flavour = SimulatedUnixFlavour.Darwin
+            && match socket.Phase with
+               | SocketPhase.RefusedPendingDelivery
+               | SocketPhase.Dead -> true
+               | SocketPhase.Idle
+               | SocketPhase.Listening _
+               | SocketPhase.EstablishedPendingReport _
+               | SocketPhase.Established _
+               | SocketPhase.DatagramPeer _ -> false
+
+        if darwinShutDown then
+            answered UnixError.EINVAL
+        elif optionLength < uint32 optionIntSize then
+            answered UnixError.EINVAL
+        else
+
+        match value with
+        | UserBuffer.Unmapped _ -> answered UnixError.EFAULT
+        | UserBuffer.Opaque -> Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped -> Ok (SetSockOptAdmission.Transfer optionIntSize)
+
+    /// `setsockopt(2)`: set a socket option.
+    ///
+    /// `supplied` is the `int` the caller read out of its value buffer, and
+    /// must be present exactly when `admitSetSockOpt` answers `Transfer`: the
+    /// kernel's answer for a value it could not read is different from its
+    /// answer for a value nobody read.
+    ///
+    /// For `SO_REUSEADDR`, any non-zero value sets the option and zero clears
+    /// it; bytes beyond the first `int` are never read. The option persists
+    /// until the next `setsockopt` of it, and no later failure of another call
+    /// undoes it.
+    let setsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (optionLength : uint32)
+        (supplied : int option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<SetSockOptAnswer * UnixSystem<'Task, 'Handler>, SocketOptionRefusal>
+        =
+        match admitSetSockOpt fd level optionName value optionLength system with
+        | Error refusal ->
+            if supplied.IsSome then
+                failwith
+                    "UnixSocket.setsockopt: the caller supplied a value that the kernel never reads, because the call is refused before the copy (this is a bug in the caller)."
+
+            Error refusal
+        | Ok (SetSockOptAdmission.Answered error) ->
+            if supplied.IsSome then
+                failwith
+                    $"UnixSocket.setsockopt: the caller supplied a value that the kernel never reads, because the call answers %O{error} before the copy (this is a bug in the caller)."
+
+            Ok (SetSockOptAnswer.Failed error, system)
+        | Ok (SetSockOptAdmission.Transfer _) ->
+
+        let supplied =
+            match supplied with
+            | Some supplied -> supplied
+            | None ->
+                failwith
+                    "UnixSocket.setsockopt: the kernel copies the option's value in, but the caller supplied none (this is a bug in the caller)."
+
+        let socketId =
+            match socketOf fd system with
+            | Ok socketId -> socketId
+            | Error error ->
+                failwith
+                    $"UnixSocket.setsockopt: fd %d{fd} answers %O{error}, yet the admission reached the copy (this is a bug in this library)."
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        let system =
+            { system with
+                Machine =
+                    { system.Machine with
+                        Sockets =
+                            Map.add
+                                socketId
+                                { socket with
+                                    ReuseAddress = supplied <> 0
+                                }
+                                system.Machine.Sockets
+                    }
+            }
+
+        Ok (SetSockOptAnswer.Set, system)
+
+    /// Everything `getsockopt(2)` decides before the kernel reads the caller's
+    /// length cell. See `GetSockOptAdmission`.
+    ///
+    /// `level` and `optionName` are numbered as for `admitSetSockOpt`.
+    ///
+    /// Changes nothing.
+    let admitGetSockOpt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (length : UserBuffer)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetSockOptAdmission, SocketOptionRefusal>
+        =
+        // Unlike `setsockopt`, the descriptor comes first on both flavours:
+        // measured EBADF and ENOTSOCK through a null length cell.
+        match socketOf fd system with
+        | Error error -> Ok (GetSockOptAdmission.Answered error)
+        | Ok socketId ->
+
+        match decodeOption system.Machine.UnixPlatform level optionName with
+        | None -> Error (SocketOptionRefusal.UnmodelledOption (socketId, level, optionName))
+        | Some ModelledOption.ReuseAddress ->
+
+        // Measured EFAULT on both for a null and for an unmapped cell, with
+        // neither buffer written.
+        match length with
+        | UserBuffer.Unmapped _ -> Ok (GetSockOptAdmission.Answered UnixError.EFAULT)
+        | UserBuffer.Opaque -> Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | UserBuffer.Mapped -> Ok GetSockOptAdmission.ReadLength
+
+    /// `getsockopt(2)`: read a socket option.
+    ///
+    /// `declaredLength` is the `socklen_t` the caller read out of its length
+    /// cell, and must be present exactly when `admitGetSockOpt` answers
+    /// `ReadLength`.
+    ///
+    /// For `SO_REUSEADDR` the value is 0 when the option is clear; when it is
+    /// set, Linux reports 1 and Darwin reports the option's own number, 4.
+    ///
+    /// Changes nothing and returns no system: this `getsockopt` reads.
+    let getsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+        (fd : int)
+        (level : int)
+        (optionName : int)
+        (value : UserBuffer)
+        (length : UserBuffer)
+        (declaredLength : uint32 option)
+        (system : UnixSystem<'Task, 'Handler>)
+        : Result<GetSockOptAnswer, SocketOptionRefusal>
+        =
+        match admitGetSockOpt fd level optionName length system with
+        | Error refusal ->
+            if declaredLength.IsSome then
+                failwith
+                    "UnixSocket.getsockopt: the caller supplied a length that the kernel never reads, because the call is refused before it would (this is a bug in the caller)."
+
+            Error refusal
+        | Ok (GetSockOptAdmission.Answered error) ->
+            if declaredLength.IsSome then
+                failwith
+                    $"UnixSocket.getsockopt: the caller supplied a length that the kernel never reads, because the call answers %O{error} first (this is a bug in the caller)."
+
+            Ok (GetSockOptAnswer.Failed error)
+        | Ok GetSockOptAdmission.ReadLength ->
+
+        let declaredLength =
+            match declaredLength with
+            | Some declaredLength -> declaredLength
+            | None ->
+                failwith
+                    "UnixSocket.getsockopt: the kernel reads the caller's length cell, but the caller supplied no length (this is a bug in the caller)."
+
+        let platform = system.Machine.UnixPlatform
+        let flavour = SimulatedUnixPlatform.flavour platform
+
+        let socketId =
+            match socketOf fd system with
+            | Ok socketId -> socketId
+            | Error error ->
+                failwith
+                    $"UnixSocket.getsockopt: fd %d{fd} answers %O{error}, yet the admission read the length cell (this is a bug in this library)."
+
+        let socket = UnixMachineState.socket socketId system.Machine
+
+        // Darwin's `so_options & SO_REUSEADDR`, which is the option's bit;
+        // Linux's `sk_reuse`, which a set stores as 1 whatever non-zero value
+        // it was given. Both measured.
+        let reported =
+            if not socket.ReuseAddress then
+                0
+            else
+                match flavour with
+                | SimulatedUnixFlavour.Linux -> 1
+                | SimulatedUnixFlavour.Darwin -> SimulatedUnixPlatform.reuseAddressOption platform
+
+        // As for `setsockopt`, Linux reads the length as an `int`: measured
+        // EINVAL at -1 and at 2^31, with neither buffer written. Darwin reads
+        // the `socklen_t` and copies `sizeof(int)`.
+        if flavour = SimulatedUnixFlavour.Linux && int declaredLength < 0 then
+            Ok (GetSockOptAnswer.Failed UnixError.EINVAL)
+        else
+
+        let count = min declaredLength (uint32 optionIntSize)
+
+        if count = 0u then
+            Ok (GetSockOptAnswer.Reported (reported, 0u))
+        else
+
+        match flavour, value with
+        // Darwin skips the copy for a null value buffer and reports a length of
+        // 0, whatever was declared: measured at 2, 4 and -1. Linux copies
+        // through it like any other address.
+        | SimulatedUnixFlavour.Darwin, UserBuffer.Unmapped 0UL -> Ok (GetSockOptAnswer.Reported (reported, 0u))
+        | SimulatedUnixFlavour.Darwin, UserBuffer.Addressless ->
+            Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtScreen)
+        // Measured on both: EFAULT, and the length cell keeps what the caller
+        // put there.
+        | _, UserBuffer.Unmapped _ -> Ok (GetSockOptAnswer.Failed UnixError.EFAULT)
+        | _, UserBuffer.Opaque -> Error (SocketOptionRefusal.Buffer BufferRefusal.OpaqueAtTransfer)
+        | _, UserBuffer.Addressless -> Error (SocketOptionRefusal.Buffer BufferRefusal.AddresslessAtTransfer)
+        | _, UserBuffer.Mapped -> Ok (GetSockOptAnswer.Reported (reported, count))

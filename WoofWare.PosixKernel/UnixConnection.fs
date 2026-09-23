@@ -686,8 +686,8 @@ module UnixConnection =
                     // EINPROGRESS now; the first later connect delivers
                     // ECONNREFUSED. Measured on both — with no SO_ERROR read
                     // in between, which would consume the pending error and
-                    // change these answers; GetSocketErrorOption is not
-                    // modelled yet, so only this path is reachable.
+                    // change these answers; `getsockopt` refuses SO_ERROR, so
+                    // only this path is reachable.
                     let system =
                         { system with
                             Machine =

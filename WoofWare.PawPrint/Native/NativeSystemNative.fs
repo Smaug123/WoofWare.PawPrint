@@ -3952,8 +3952,10 @@ module NativeSystemNative =
         // uint8_t* socketAddress, int32_t socketAddressLen)`
         // (pal_networking.c:1760).
         //
-        // The C screens a null blob and a negative length, sets SO_REUSEADDR when
-        // `protocolType` is PT_TCP, and calls `bind(2)`. Both screens precede
+        // The C screens a null blob and a negative length, then, when its
+        // `protocolType` argument is PT_TCP, calls
+        // `setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &1, sizeof(int))` and ignores
+        // the answer, and then calls `bind(2)`. Both screens precede
         // `ToFileDescriptor`, so they beat EBADF.
         | Some "SystemNative_Bind",
           [ ConcreteIntPtr state.ConcreteTypes
@@ -4018,6 +4020,45 @@ module NativeSystemNative =
                 | BindRefusal.EphemeralPortsExhausted _ ->
                     failwith $"%s{operation}: fd %d{fd}: %s{BindRefusal.describe refusal}"
 
+            // The shim's `setsockopt`. Its value is the shim's own stack `int`,
+            // so the value buffer is real storage holding 1 and its length is
+            // `sizeof(int)`. The shim ignores the answer, but a failure still
+            // sets errno. Every descriptor on which this `setsockopt` fails is
+            // one on which the `bind(2)` below fails too and overwrites errno,
+            // so no guest can yet read the value recorded here.
+            let state =
+                if not (SocketArgumentsPal.isTcpProtocolType palProtocolType) then
+                    state
+                else
+
+                let level = SimulatedUnixPlatform.socketOptionLevel platform
+                let optionName = SimulatedUnixPlatform.reuseAddressOption platform
+                let sizeOfInt = 4u
+                let unix = EmulatedKernel.unix state.Kernel
+
+                let setsockopt (supplied : int option) =
+                    UnixSocket.setsockopt fd level optionName UserBuffer.Mapped sizeOfInt supplied unix
+
+                let answer =
+                    match UnixSocket.admitSetSockOpt fd level optionName UserBuffer.Mapped sizeOfInt unix with
+                    | Ok (SetSockOptAdmission.Transfer _) -> setsockopt (Some 1)
+                    | Ok (SetSockOptAdmission.Answered _)
+                    | Error _ -> setsockopt None
+
+                match answer with
+                | Error refusal ->
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the shim's setsockopt(SO_REUSEADDR) through its own stack buffer was refused: %s{SocketOptionRefusal.describe refusal} That option through real storage has an answer on every descriptor, so this is an interpreter bug."
+                | Ok (SetSockOptAnswer.Set, unix) -> state.MapKernel (EmulatedKernel.withUnix unix)
+                | Ok (SetSockOptAnswer.Failed error, unix) ->
+                    let raw =
+                        UnixError.toRawErrnoUnder (SimulatedUnixPlatform.rawErrnoNumbering platform) error
+
+                    state.MapKernel (
+                        EmulatedKernel.withUnix unix
+                        >> EmulatedKernel.withLastSystemError ctx.Thread raw
+                    )
+
             // `bind(2)`'s buffer, not the wrapper's: the C never dereferences it
             // itself, so an address naming no storage faults in the *kernel* and
             // comes back as EFAULT rather than killing the process, which is what
@@ -4037,11 +4078,8 @@ module NativeSystemNative =
             let family, endpoint =
                 match admission with
                 | SockaddrCopyAdmission.Answered _ ->
-                    // The call still goes through `UnixSocket.bind`, which
-                    // re-derives this answer — because the `SO_REUSEADDR` write
-                    // survives every one of these failures and only `bind`
-                    // applies it. No field is read: the kernel never touches the
-                    // buffer on this path.
+                    // `UnixSocket.bind` re-derives this answer. No field is
+                    // read: the kernel never touches the buffer on this path.
                     None, None
                 | SockaddrCopyAdmission.Transfer (length, fields) ->
 
@@ -4103,9 +4141,6 @@ module NativeSystemNative =
                     fd
                     (BufferPointer.toUserBuffer addressArgument)
                     declaredLength
-                    // `setsockopt(SO_REUSEADDR)` runs inside the shim before
-                    // `bind(2)`, and no failure of the bind undoes it.
-                    (SocketArgumentsPal.isTcpProtocolType palProtocolType)
                     family
                     endpoint
                     (EmulatedKernel.unix state.Kernel)

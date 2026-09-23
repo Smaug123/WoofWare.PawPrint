@@ -58,7 +58,7 @@ module TestDatagramDissolve =
             match bindTo with
             | None -> system
             | Some endpoint ->
-                match UnixSocket.bind fd UserBuffer.Mapped 16 false inetFamily (Some endpoint) system with
+                match UnixSocket.bind fd UserBuffer.Mapped 16 inetFamily (Some endpoint) system with
                 | Ok (BindAnswer.Bound _, system) -> system
                 | other -> failwith $"bind to %s{InternetEndpoint.toString endpoint}: %A{other}"
 
@@ -188,7 +188,7 @@ module TestDatagramDissolve =
             ] do
             let fd, system = halfBound ()
 
-            match UnixSocket.bind fd UserBuffer.Mapped 16 false inetFamily (Some rebind) system with
+            match UnixSocket.bind fd UserBuffer.Mapped 16 inetFamily (Some rebind) system with
             | Ok (BindAnswer.Bound actual, after) ->
                 actual.Address |> shouldEqual rebind.Address
 
@@ -206,7 +206,7 @@ module TestDatagramDissolve =
             let fd, system = datagram platform (Some (endpoint wildcard 5555us)) true
             let _, after = dissolve fd system
 
-            match UnixSocket.bind fd UserBuffer.Mapped 16 false inetFamily (Some (endpoint wildcard 0us)) after with
+            match UnixSocket.bind fd UserBuffer.Mapped 16 inetFamily (Some (endpoint wildcard 0us)) after with
             | Ok (BindAnswer.Failed UnixError.EINVAL, _) -> ()
             | other -> failwith $"rebind after dissolve on %O{platform}: %A{other}"
 
@@ -267,7 +267,7 @@ module TestDatagramDissolve =
         let other, system =
             UnixSocket.createSocket SocketDomain.InterNetwork SocketKind.Datagram SocketProtocol.Udp system
 
-        match UnixSocket.bind other UserBuffer.Mapped 16 false inetFamily (Some (endpoint loopback 0us)) system with
+        match UnixSocket.bind other UserBuffer.Mapped 16 inetFamily (Some (endpoint loopback 0us)) system with
         | Ok (BindAnswer.Bound actual, after) ->
             actual.Address |> shouldEqual loopback
             actual.Port |> shouldNotEqual 0us

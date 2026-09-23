@@ -53,7 +53,13 @@ module TestEphemeralPorts =
         (system : UnixSystem<int, string>)
         : Result<BindAnswer, BindRefusal> * UnixSystem<int, string>
         =
-        match UnixSocket.bind fd UserBuffer.Mapped 16 reuseAddress inetFamily (Some endpoint) system with
+        let system =
+            if reuseAddress then
+                ReuseAddress.set true fd system
+            else
+                system
+
+        match UnixSocket.bind fd UserBuffer.Mapped 16 inetFamily (Some endpoint) system with
         | Ok (answer, system) -> Ok answer, system
         | Error refusal -> Error refusal, system
 
