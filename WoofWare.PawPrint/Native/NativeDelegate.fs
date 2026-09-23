@@ -911,10 +911,16 @@ module NativeDelegate =
                             state, Ok (DelegateBinding.Closed (targetAddr, FunctionPointerTarget.Dynamic dynamicHandle))
                         | BindTarget.Metadata (method, declaringType), DelegateBindingShape.Open ->
                             match
-                                DelegateRepresentation.openAux ctx.BaseClassTypes operation method declaringType state
+                                DelegateRepresentation.openAux
+                                    ctx.LoggerFactory
+                                    ctx.BaseClassTypes
+                                    operation
+                                    method
+                                    declaringType
+                                    state
                             with
-                            | OpenDelegateAux.Aux aux -> state, Ok (DelegateBinding.Open aux)
-                            | OpenDelegateAux.GenericVirtualUnsupported ->
+                            | state, OpenDelegateAux.Aux aux -> state, Ok (DelegateBinding.Open aux)
+                            | state, OpenDelegateAux.GenericVirtualUnsupported ->
                                 state, Error ctx.BaseClassTypes.NotSupportedException
                         | BindTarget.Metadata (method, _), DelegateBindingShape.Closed when
                             method.IsStatic && method.IsVirtual

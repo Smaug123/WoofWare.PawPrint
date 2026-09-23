@@ -44,6 +44,35 @@ public class Dog : Animal
     {
         return "woof";
     }
+
+    // A fresh slot, not an override of `Animal.Move`.
+    public new virtual string Move ()
+    {
+        return "run";
+    }
+}
+
+public interface ILeft
+{
+    string Name ();
+}
+
+public interface IRight
+{
+    string Name ();
+}
+
+public class TwoFaced : ILeft, IRight
+{
+    string ILeft.Name ()
+    {
+        return "left";
+    }
+
+    string IRight.Name ()
+    {
+        return "right";
+    }
 }
 
 public class Box<T>
@@ -349,6 +378,54 @@ public static class Program
         if (closedGeneric (3) != 3 || openGeneric (new GenericMethods (), 3) != 4)
         {
             return 23;
+        }
+
+        // 24-25: a virtual call stub is identified by the vtable slot it dispatches, not by the
+        // method it was asked for. So open delegates over `Animal.Speak` and over its override
+        // `Dog.Speak` are equal, even with `Method` already cached and different; and `Remove`,
+        // searching from the end, takes the first equal element it finds.
+        Func<Dog, string> viaBase = (Func<Dog, string>)
+            typeof (Animal).GetMethod ("Speak").CreateDelegate (typeof (Func<Dog, string>));
+        Func<Dog, string> viaOverride = (Func<Dog, string>)
+            typeof (Dog).GetMethod ("Speak").CreateDelegate (typeof (Func<Dog, string>));
+
+        if (!viaBase.Equals (viaOverride)
+            || viaBase.Method.DeclaringType != typeof (Animal)
+            || viaOverride.Method.DeclaringType != typeof (Dog)
+            || !viaBase.Equals (viaOverride))
+        {
+            return 24;
+        }
+
+        Delegate pair = Delegate.Combine (viaBase, viaOverride);
+
+        if (Delegate.Remove (pair, viaBase).Method.DeclaringType != typeof (Animal))
+        {
+            return 25;
+        }
+
+        // 26: a `new virtual` method has a slot of its own, so it is not equal to the one it hides.
+        Func<Dog, string> hidden = (Func<Dog, string>)
+            typeof (Animal).GetMethod ("Move").CreateDelegate (typeof (Func<Dog, string>));
+        Func<Dog, string> hiding = (Func<Dog, string>)
+            typeof (Dog).GetMethod ("Move", BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .CreateDelegate (typeof (Func<Dog, string>));
+
+        if (hidden.Equals (hiding) || hidden (new Dog ()) != "walk" || hiding (new Dog ()) != "run")
+        {
+            return 26;
+        }
+
+        // 27: an interface method's stub names its interface, so two interfaces' methods at the
+        // same slot are distinct.
+        Func<TwoFaced, string> left = (Func<TwoFaced, string>)
+            typeof (ILeft).GetMethod ("Name").CreateDelegate (typeof (Func<TwoFaced, string>));
+        Func<TwoFaced, string> right = (Func<TwoFaced, string>)
+            typeof (IRight).GetMethod ("Name").CreateDelegate (typeof (Func<TwoFaced, string>));
+
+        if (left.Equals (right) || left (new TwoFaced ()) != "left" || right (new TwoFaced ()) != "right")
+        {
+            return 27;
         }
 
         return 0;

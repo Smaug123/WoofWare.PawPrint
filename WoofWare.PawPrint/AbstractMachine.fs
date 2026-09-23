@@ -233,7 +233,7 @@ module AbstractMachine =
             let callee, prepended, dispatchesOnReceiver =
                 match invocation with
                 | DelegateInvocation.ThroughMethodPtr (target, methodPtr) -> methodPtr, Some target, false
-                | DelegateInvocation.ThroughShuffleThunk (FunctionPointerTarget.VirtualCallStub declared) ->
+                | DelegateInvocation.ThroughShuffleThunk (FunctionPointerTarget.VirtualCallStub (_, declared)) ->
                     FunctionPointerTarget.Managed declared, None, true
                 | DelegateInvocation.ThroughShuffleThunk aux -> aux, None, false
 

@@ -89,6 +89,22 @@ type UnsignedNativeIntSource =
     /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
     | FromOpaqueHashBits of int64
 
+/// <summary>
+/// What CoreCLR keys a virtual call stub on: <c>VirtualCallStubManager::GetTokenFromOwnerAndSlot</c>
+/// (virtualcallstub.cpp:1069). Two stubs are the same address exactly when their tokens are equal.
+/// </summary>
+/// <remarks>
+/// A class method's token is its vtable slot and nothing else, so an override and the method it
+/// overrides share one, and so do the methods of unrelated classes that happen to sit at the same
+/// slot. An interface method's token also names the exact interface type.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type VirtualDispatchToken =
+    /// A method declared on a class or value type, by its vtable slot.
+    | ClassSlot of slot : int
+    /// A method declared on an interface, by that exact interface type and its slot there.
+    | InterfaceSlot of interfaceType : ConcreteTypeHandle * slot : int
+
 /// What a `NativeIntSource.FunctionPointer` points at. Almost always a managed method,
 /// but the CLR also hands managed code the addresses of *runtime* helpers which have no
 /// managed `MethodInfo` at all: `RuntimeTypeHandle.GetActivationInfo` returns the JIT's
@@ -171,9 +187,13 @@ type FunctionPointerTarget =
     /// is therefore resolved per call rather than at binding. Calling one over a *static* virtual
     /// method raises `EntryPointNotFoundException`, since there is no receiver to resolve on.
     ///
-    /// Identity is the method's, which carries its declaring type's exact instantiation, matching
-    /// the `(MethodDesc, TypeHandle)` pair CoreCLR keys the stub on.
-    | VirtualCallStub of method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+    /// Identity is the `token` alone, as CoreCLR's is: measured, open delegates over `Base.M` and
+    /// over its override `Derived.M` hold equal `_methodPtrAux`, and so are `Equals`. `method` is
+    /// the method the stub was requested for, and dispatching it gives the same answer as
+    /// dispatching any other method sharing its token.
+    | VirtualCallStub of
+        token : VirtualDispatchToken *
+        method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
     override this.ToString () : string =
         match this with
@@ -182,7 +202,7 @@ type FunctionPointerTarget =
         | FunctionPointerTarget.RuntimeAllocator -> "the runtime's newobj allocation helper"
         | FunctionPointerTarget.Dynamic handle -> string<DynamicMethodHandle> handle
         | FunctionPointerTarget.OpenDelegateShuffleThunk -> "the runtime's open-delegate shuffle thunk"
-        | FunctionPointerTarget.VirtualCallStub method ->
+        | FunctionPointerTarget.VirtualCallStub (_, method) ->
             $"the virtual call stub for {method.Name} in {AssemblyDefinitionName.simpleName method.DeclaringAssemblyFullName}"
 
     override this.Equals (other : obj) : bool =
@@ -194,8 +214,8 @@ type FunctionPointerTarget =
             | FunctionPointerTarget.RuntimeAllocator, FunctionPointerTarget.RuntimeAllocator -> true
             | FunctionPointerTarget.Dynamic left, FunctionPointerTarget.Dynamic right -> left = right
             | FunctionPointerTarget.OpenDelegateShuffleThunk, FunctionPointerTarget.OpenDelegateShuffleThunk -> true
-            | FunctionPointerTarget.VirtualCallStub left, FunctionPointerTarget.VirtualCallStub right ->
-                MethodInfo.NominallyEqual left right
+            | FunctionPointerTarget.VirtualCallStub (left, _), FunctionPointerTarget.VirtualCallStub (right, _) ->
+                left = right
             | FunctionPointerTarget.Managed _, _
             | FunctionPointerTarget.RuntimeAllocator, _
             | FunctionPointerTarget.Dynamic _, _
@@ -220,9 +240,7 @@ type FunctionPointerTarget =
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
         | FunctionPointerTarget.Dynamic handle -> HashCode.Combine (2, handle.GetRegistryId ())
         | FunctionPointerTarget.OpenDelegateShuffleThunk -> HashCode.Combine 3
-        | FunctionPointerTarget.VirtualCallStub method ->
-            // Spelled as the `Managed` case is, for the reason given there.
-            hash (4, method.Owner, method.IdentityKey, method.Generics)
+        | FunctionPointerTarget.VirtualCallStub (token, _) -> hash (4, token)
 
 [<RequireQualifiedAccess>]
 module FunctionPointerTarget =

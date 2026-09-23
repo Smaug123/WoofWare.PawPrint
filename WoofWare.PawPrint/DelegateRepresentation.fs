@@ -102,23 +102,47 @@ module DelegateRepresentation =
     /// <c>construct</c>.
     /// </remarks>
     let openAux
+        (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (declaringType : ConcreteTypeHandle)
         (state : IlMachineState)
-        : OpenDelegateAux
+        : IlMachineState * OpenDelegateAux
         =
         if
-            method.IsVirtual
-            && IlMachineState.isReferenceTypeHandle baseClassTypes operation state declaringType
+            not method.IsVirtual
+            || not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state declaringType)
         then
-            if method.Generics.IsEmpty then
-                OpenDelegateAux.Aux (FunctionPointerTarget.VirtualCallStub method)
-            else
-                OpenDelegateAux.GenericVirtualUnsupported
+            state, OpenDelegateAux.Aux (FunctionPointerTarget.Managed method)
+        elif not method.Generics.IsEmpty then
+            state, OpenDelegateAux.GenericVirtualUnsupported
         else
-            OpenDelegateAux.Aux (FunctionPointerTarget.Managed method)
+
+        // `GetTokenFromOwnerAndSlot(TypeHandle(pExactMethodType), pMD->GetSlot())`.
+        let state, slotTable =
+            VirtualSlotLayout.slotTableOfClosed loggerFactory baseClassTypes operation state declaringType
+
+        let slot =
+            slotTable
+            |> VirtualSlotLayout.slotIndexInTable (method.DeclaringAssemblyFullName, method.IdentityKey)
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"%s{operation}: %s{method.Name} occupies no slot in its declaring type %s{MethodOwner.describe method.Owner}"
+            )
+
+        let isInterface =
+            match IlMachineState.tryGetConcreteTypeInfo state declaringType with
+            | Some (_, typeInfo) -> typeInfo.IsInterface
+            | None -> failwith $"%s{operation}: declaring type %O{declaringType} has no TypeDef row"
+
+        let token =
+            if isInterface then
+                VirtualDispatchToken.InterfaceSlot (declaringType, slot)
+            else
+                VirtualDispatchToken.ClassSlot slot
+
+        state, OpenDelegateAux.Aux (FunctionPointerTarget.VirtualCallStub (token, method))
 
     /// Write `binding` into the delegate at `delegateAddr`. Every field the binding determines is
     /// written, so this is correct on a freshly allocated delegate and needs no prior state.
@@ -137,7 +161,7 @@ module DelegateRepresentation =
             | DelegateBinding.Open aux ->
                 let state, invocationCount =
                     match aux with
-                    | FunctionPointerTarget.VirtualCallStub method ->
+                    | FunctionPointerTarget.VirtualCallStub (_, method) ->
                         // `SetInvocationCount((INT_PTR)(void *)pTargetMethod)`: the `MethodDesc*`,
                         // which is what `COMDelegate::GetMethodDesc` reads the target back from.
                         let registryId, registry =
@@ -341,7 +365,7 @@ module DelegateRepresentation =
                 // `MethodDesc*` out of `_invocationCount`. `_methodPtrAux` holds the stub over
                 // that same method, and the two are written together by `write`.
                 match methodPtrAux with
-                | NativeIntSource.FunctionPointer (FunctionPointerTarget.VirtualCallStub method) ->
+                | NativeIntSource.FunctionPointer (FunctionPointerTarget.VirtualCallStub (_, method)) ->
                     let state, stubId =
                         idOfTarget state "_methodPtrAux" (FunctionPointerTarget.Managed method)
 
@@ -425,9 +449,9 @@ module DelegateRepresentation =
             // (`!pMeth->IsStatic() && pMeth->IsVirtual()`, comdelegate.cpp:1736). A static
             // virtual reaches here only through `constrained. ldftn`, which has already resolved
             // it to an implementation, so its body is the one to call.
-            let aux =
+            let state, aux =
                 if method.IsStatic then
-                    OpenDelegateAux.Aux (FunctionPointerTarget.Managed method)
+                    state, OpenDelegateAux.Aux (FunctionPointerTarget.Managed method)
                 else
                     let declaringType =
                         AllConcreteTypes.findExistingConcreteType
@@ -439,7 +463,7 @@ module DelegateRepresentation =
                                 $"%s{operation}: declaring type %s{MethodOwner.describe method.Owner} is not registered in AllConcreteTypes"
                         )
 
-                    openAux baseClassTypes operation method declaringType state
+                    openAux loggerFactory baseClassTypes operation method declaringType state
 
             match aux with
             | OpenDelegateAux.Aux aux -> write baseClassTypes constructing (DelegateBinding.Open aux) state |> Ok
