@@ -280,10 +280,10 @@ module TestCpuPlacement =
             let busy =
                 { plain with
                     StepCounter = 5678L
+                    NonCryptoRandomState = 0xDEADBEEFUL
                     Machine =
                         { plain.Machine with
                             NanosecondsSinceBoot = 1234L * ClockPal.nanosecondsPerTick
-                            NonCryptoRandomState = 0xDEADBEEFUL
                         }
                 }
 

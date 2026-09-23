@@ -88,37 +88,10 @@ type UnixMachineState =
         /// `settimeofday`. Set by `UnixMachineState.withBootTime`, which says
         /// what it admits.
         BootTime : UnixTimestamp
-        /// Deterministic state for the splitmix64 PRNG that backs
-        /// `SystemNative_GetNonCryptographicallySecureRandomBytes`. Real
-        /// CoreCLR fills this buffer from `arc4random_buf` /
-        /// `BCryptGenRandom` / `/dev/urandom`; PawPrint refuses host
-        /// entropy because the whole point of the runtime is bit-for-bit
-        /// reproducibility. A seeded PRNG is the closest deterministic
-        /// substitute that still survives downstream consumers: the BCL's
-        /// `Random()` ctor retries until it sees a non-zero seed, so a
-        /// constant-zero substitute would hang at construction time.
-        NonCryptoRandomState : uint64
-        /// Deterministic state for the splitmix64 PRNG that backs
-        /// `SystemNative_GetCryptographicallySecureRandomBytes` — the entry
-        /// point `Guid.NewGuid` draws its 16 bytes from on Unix, and the one
-        /// CoreLib's `Interop.GetCryptographicallySecureRandomBytes` wrapper
-        /// turns into a `CryptographicException` on any non-zero return.
-        /// PawPrint substitutes the same seeded PRNG it uses for the
-        /// non-crypto entry point: the output is emphatically *not*
-        /// cryptographically secure, but nothing inside a deterministic
-        /// interpreter can be, and reproducibility is the property this
-        /// runtime exists to provide. Guests that need real entropy must not
-        /// run under PawPrint.
-        ///
-        /// Deliberately a *separate* stream from `NonCryptoRandomState`,
-        /// per the guidance on `NonCryptoRandom`: sharing one state would
-        /// make an added `new Random()` (or any other non-crypto consumer)
-        /// silently shift every subsequent `Guid.NewGuid`, which is exactly
-        /// the kind of spooky action at a distance that makes a recorded
-        /// trace hard to reason about. Seeded from a constant distinct from
-        /// `NonCryptoRandom.initialState` so the two streams do not emit
-        /// identical byte sequences.
-        CryptoRandomState : uint64
+        /// The kernel's entropy pool, which every random-bytes syscall draws
+        /// from: `getrandom(2)` on Linux, `getentropy(2)` on Darwin. Seeded
+        /// by `UnixSystem.initial` from `UnixSystem.defaultEntropySeed`.
+        EntropyPool : EntropyPool
         /// Number of logical processors the simulated process observes, as
         /// reported by `Environment.ProcessorCount`. Deliberately a value in
         /// kernel state rather than a host read: real CoreCLR answers this

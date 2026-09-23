@@ -20,9 +20,9 @@ namespace WoofWare.PawPrint
 /// sequence" isn't actually guaranteed by the framework. Determinism across
 /// host versions is a hard requirement for WoofWare.PawPrint, so we pin a
 /// stable algorithm with a fully-specified output here. Distinct callers
-/// (kernel-backed `Random`, schedule fuzzer, etc.) should each hold their
-/// own `uint64` state so that one consumer's draws don't perturb another's
-/// stream.
+/// (the C library stream behind `Random`, the schedule fuzzer, etc.) should
+/// each hold their own `uint64` state so that one consumer's draws don't
+/// perturb another's stream.
 [<RequireQualifiedAccess>]
 module NonCryptoRandom =
     /// `floor(2^64 / phi)`, the same constant the reference splitmix64 uses

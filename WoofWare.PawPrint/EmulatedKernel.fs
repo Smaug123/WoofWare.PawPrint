@@ -578,6 +578,28 @@ type EmulatedKernel =
         /// frame and is reclaimed at frame exit), native-heap blocks outlive
         /// the frames that allocate them.
         NativeMemoryPool : NativeMemoryPool
+        /// State of the C library's own non-cryptographic generator, which
+        /// `SystemNative_GetNonCryptographicallySecureRandomBytes` draws from.
+        /// Userspace state rather than kernel state: CoreCLR's shim answers that
+        /// entry point with `arc4random_buf` where libc has it, a generator
+        /// private to the process, so the stream is not the kernel's entropy
+        /// pool in `Machine`. It is splitmix64, advanced by
+        /// `NonCryptoRandom.drawBytes` and seeded from
+        /// `NonCryptoRandom.initialState`.
+        ///
+        /// A seeded generator rather than a constant because CoreLib's consumers
+        /// need real-looking bytes: `new Random()` retries until its seed is
+        /// non-zero, so an all-zero answer would hang at construction.
+        ///
+        /// A separate stream from the kernel pool, which is what backs
+        /// `Guid.NewGuid`, so that a guest's `new Random()`, `HashCode` seed or
+        /// Marvin seed never shifts the GUIDs a recorded run observed. That is
+        /// why the shim's other path is not modelled: where libc lacks
+        /// `arc4random_buf` it XORs `lrand48` over bytes read from the kernel,
+        /// which here would mean drawing from the pool. Seeded distinctly from
+        /// the pool too, so a fresh process's two streams do not start with the
+        /// same bytes.
+        NonCryptoRandomState : uint64
         /// Every task the kernel knows about, by the thread that is it.
         ///
         /// Exactly the live threads: `IlMachineState.checkInvariants` refuses a
@@ -771,8 +793,6 @@ type EmulatedKernel =
 
         nanoseconds / ClockPal.nanosecondsPerTick
 
-    member this.NonCryptoRandomState : uint64 = this.Machine.NonCryptoRandomState
-    member this.CryptoRandomState : uint64 = this.Machine.CryptoRandomState
     member this.ProcessorCount : int = this.Machine.ProcessorCount
     member this.UserAddressLimit : uint64 = this.Machine.UserAddressLimit
     member this.UnixPlatform : SimulatedUnixPlatform = this.Machine.UnixPlatform
@@ -893,15 +913,6 @@ module EmulatedKernel =
             | Error problem -> failwith $"%s{context}: refusing to install %s{problem}."
         )
 
-    /// Seed for `EmulatedKernel.CryptoRandomState`. The first 64 bits of the
-    /// fractional part of pi — a nothing-up-my-sleeve constant chosen purely
-    /// so that the crypto-entropy stream starts somewhere other than
-    /// `NonCryptoRandom.initialState` (the golden-ratio constant). Any
-    /// non-zero value distinct from that one would do; splitmix64 has no weak
-    /// seeds. Changing it changes every `Guid.NewGuid` a recorded trace
-    /// observes, so treat it as part of PawPrint's replay contract.
-    let cryptoRandomInitialState : uint64 = 0x243F6A8885A308D3UL
-
 
 
     /// Ceiling `Thread.OptimalMaxSpinWaitsPerSpinIteration` can legally report,
@@ -996,12 +1007,14 @@ module EmulatedKernel =
     /// life: every field derived from it is derived once, by this constructor
     /// and the setters that read it back.
     ///
-    /// The POSIX half is `UnixSystem.initial`'s; what is added here is the
-    /// CoreCLR-shaped state no POSIX kernel has, and the three values PawPrint
-    /// pins rather than inherits. Those three are stated rather than left to the
-    /// library because each is part of PawPrint's replay contract: a change to
-    /// the library's default must not silently change what a recorded trace
-    /// observes.
+    /// The POSIX half is `UnixSystem.initial`'s, entropy pool included; what is
+    /// added here is the CoreCLR-shaped state no POSIX kernel has, and the
+    /// environment, which PawPrint pins rather than inherits. The environment is
+    /// stated rather than left to the library because it is part of PawPrint's
+    /// replay contract: a change to the library's default must not silently
+    /// change what a recorded trace observes. The entropy pool's seed,
+    /// `UnixSystem.defaultEntropySeed`, is part of the same contract, and
+    /// PawPrint's tests pin it rather than a second copy of the value.
     let create (platform : SimulatedUnixPlatform) : EmulatedKernel =
         let system : UnixSystem<ThreadId, SignalHandler> = UnixSystem.initial platform
 
@@ -1010,6 +1023,7 @@ module EmulatedKernel =
             LastPInvokeError = Map.empty
             LastSystemError = Map.empty
             NativeMemoryPool = NativeMemoryPool.empty
+            NonCryptoRandomState = NonCryptoRandom.initialState
             DirectoryStreamBlocks = Map.empty
             Tasks = Map.empty
             LowLevelMonitors = Map.empty
@@ -1022,11 +1036,7 @@ module EmulatedKernel =
             ClockJitter = ClockJitterStrategy.Disabled
             StepCounter = 0L
             OptimalMaxSpinWaitsPerSpinIteration = defaultOptimalMaxSpinWaitsPerSpinIteration
-            Machine =
-                { system.Machine with
-                    NonCryptoRandomState = NonCryptoRandom.initialState
-                    CryptoRandomState = cryptoRandomInitialState
-                }
+            Machine = system.Machine
             Process =
                 { system.Process with
                     Environment = encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment

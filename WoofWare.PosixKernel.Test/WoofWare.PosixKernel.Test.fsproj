@@ -28,6 +28,9 @@
     <Compile Include="TestPathArgument.fs" />
     <Compile Include="TestUserBuffer.fs" />
     <Compile Include="TestUserBufferCheckAgainstHost.fs" />
+    <Compile Include="TestEntropyPool.fs" />
+    <Compile Include="TestUnixEntropy.fs" />
+    <Compile Include="TestEntropyAgainstHost.fs" />
     <Compile Include="TestFileSystemType.fs" />
     <Compile Include="TestWithFileSystemAndCurrentDirectory.fs" />
     <Compile Include="TestInodeLifetime.fs" />
