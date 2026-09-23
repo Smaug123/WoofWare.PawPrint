@@ -102,6 +102,136 @@ module TestSafeIntrinsicFingerprints =
         IntrinsicMethodKeys.verdict (Some [ fingerprint ]) None
         |> shouldEqual IntrinsicMethodKeys.SafeIntrinsicVerdict.ListedWithoutIlBody
 
+    /// An image whose static methods' bodies differ from one another only in one operand each,
+    /// in the ways a display rendering of IL loses: two same-named fields of different types, and
+    /// string literals that UTF-8 cannot tell apart. `calli` names a signature as a standalone
+    /// row, and a one-method image puts it in the same row whatever it says, so that case is one
+    /// image per signature.
+    let private fabricate (defineMethods : Reflection.Emit.ModuleBuilder -> unit) : DumpedAssembly =
+        let assemblyBuilder =
+            Reflection.Emit.PersistedAssemblyBuilder (
+                Reflection.AssemblyName "PawPrintFingerprintOperands",
+                typeof<obj>.Assembly
+            )
+
+        let moduleBuilder =
+            assemblyBuilder.DefineDynamicModule "PawPrintFingerprintOperands.dll"
+
+        defineMethods moduleBuilder
+        use stream = new MemoryStream ()
+        assemblyBuilder.Save stream
+        readImage (stream.ToArray ())
+
+    let private defineBody
+        (typeBuilder : Reflection.Emit.TypeBuilder)
+        (name : string)
+        (emit : Reflection.Emit.ILGenerator -> unit)
+        : unit
+        =
+        let methodBuilder =
+            typeBuilder.DefineMethod (
+                name,
+                Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                typeof<Void>,
+                Type.EmptyTypes
+            )
+
+        let il = methodBuilder.GetILGenerator ()
+        emit il
+        il.Emit Reflection.Emit.OpCodes.Pop
+        il.Emit Reflection.Emit.OpCodes.Ret
+
+    let private fingerprintOf (image : DumpedAssembly) (name : string) : IlBodyFingerprint =
+        image.Methods.Values
+        |> Seq.filter (fun m -> m.Name = name)
+        |> Seq.exactlyOne
+        |> IlBodyFingerprint.ofMethod image
+        |> Option.get
+
+    [<Test>]
+    let ``bodies differing only in which same-named field they load have different fingerprints`` () =
+        let image =
+            fabricate (fun moduleBuilder ->
+                let holder =
+                    moduleBuilder.DefineType (
+                        "Holder",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                let staticField =
+                    Reflection.FieldAttributes.Public ||| Reflection.FieldAttributes.Static
+
+                let asInt = holder.DefineField ("f", typeof<int>, staticField)
+                let asLong = holder.DefineField ("f", typeof<int64>, staticField)
+                defineBody holder "LoadInt" (fun il -> il.Emit (Reflection.Emit.OpCodes.Ldsfld, asInt))
+                defineBody holder "LoadLong" (fun il -> il.Emit (Reflection.Emit.OpCodes.Ldsfld, asLong))
+                holder.CreateType () |> ignore<Type>
+            )
+
+        fingerprintOf image "LoadInt" |> shouldNotEqual (fingerprintOf image "LoadLong")
+
+    [<Test>]
+    let ``bodies differing only in a string literal's unpaired surrogate have different fingerprints`` () =
+        // Built from code units: a lone surrogate in an F# literal does not reach the image intact.
+        let literals =
+            [
+                "LoadD800", System.String (char 0xD800, 1)
+                "LoadD801", System.String (char 0xD801, 1)
+                "LoadFFFD", System.String (char 0xFFFD, 1)
+            ]
+
+        let image =
+            fabricate (fun moduleBuilder ->
+                let holder =
+                    moduleBuilder.DefineType (
+                        "Holder",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                for name, literal in literals do
+                    defineBody holder name (fun il -> il.Emit (Reflection.Emit.OpCodes.Ldstr, literal))
+
+                holder.CreateType () |> ignore<Type>
+            )
+
+        literals
+        |> List.map (fst >> fingerprintOf image)
+        |> List.distinct
+        |> List.length
+        |> shouldEqual literals.Length
+
+    [<Test>]
+    let ``bodies differing only in their calli signature have different fingerprints`` () =
+        let calling (parameters : Type[]) : DumpedAssembly =
+            fabricate (fun moduleBuilder ->
+                let holder =
+                    moduleBuilder.DefineType (
+                        "Holder",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                defineBody
+                    holder
+                    "CallThrough"
+                    (fun il ->
+                        il.Emit Reflection.Emit.OpCodes.Ldc_I4_0
+                        il.Emit Reflection.Emit.OpCodes.Conv_I
+
+                        il.EmitCalli (
+                            Reflection.Emit.OpCodes.Calli,
+                            Reflection.CallingConventions.Standard,
+                            typeof<int>,
+                            parameters,
+                            null
+                        )
+                    )
+
+                holder.CreateType () |> ignore<Type>
+            )
+
+        fingerprintOf (calling Type.EmptyTypes) "CallThrough"
+        |> shouldNotEqual (fingerprintOf (calling [| typeof<int> |]) "CallThrough")
+
     /// Where `String.get_Length`'s IL begins in the host CoreLib's bytes, and the field token its
     /// `ldfld` names. The body is `ldarg.0; ldfld String::_stringLength; ret` under a tiny header.
     let private getLengthBody (bytes : byte[]) : int * int * int =
