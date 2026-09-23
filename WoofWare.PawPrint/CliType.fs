@@ -3383,6 +3383,54 @@ and CliValueType =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> false
 
+    /// True iff `handle` names a CLR enum: CoreCLR's `MethodTable::IsEnum`, decided nominally
+    /// from the base type rather than from the `value__` field shape. Returns `false` for
+    /// synthetic handles (arrays, byrefs, pointers, function pointers), none of which is an enum.
+    static member IsEnumHandle
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        : bool
+        =
+        match handle with
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.lookup handle concreteTypes with
+            | None -> failwith $"CliValueType.IsEnumHandle: %O{handle} is not a registered concrete type"
+            | Some concreteType ->
+                let typeDef =
+                    (assemblies.ByDefinitionName concreteType.AssemblyFullName).TypeDefs.[concreteType.Definition.Get]
+
+                DumpedAssembly.isEnum corelib assemblies typeDef
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> false
+
+    /// If `contents` is a value of a CLR enum type, the declared type and contents of its single
+    /// `value__` field, i.e. of the enum's underlying primitive; `None` for anything else.
+    static member private TryEnumUnderlying
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (contents : CliType)
+        : (ConcreteTypeHandle * CliType) option
+        =
+        match contents with
+        | CliType.ValueType vt when CliValueType.IsEnumHandle concreteTypes assemblies corelib vt._Declared ->
+            match vt._Storage with
+            | CliValueTypeStorage.Fields {
+                                             Fields = [ underlying ]
+                                         } -> Some (underlying.Type, underlying.Contents)
+            | CliValueTypeStorage.Fields storage ->
+                failwith
+                    $"CliValueType.TryEnumUnderlying: %O{vt._Declared} is an enum, but its value holds %d{storage.Fields.Length} fields rather than the single `value__` that ECMA-335 II.14.3 requires"
+            | CliValueTypeStorage.RawBytes _ ->
+                failwith
+                    $"CliValueType.TryEnumUnderlying: %O{vt._Declared} is an enum, but its value is raw-byte storage rather than its `value__` field"
+        | _ -> None
+
     /// True iff `vt`'s declared type carries `LayoutKind.Auto`. Convenience wrapper around
     /// `IsAutoLayoutHandle` for the field/struct marshal-size walk; field-level use is gated
     /// separately so host-known AutoLayout types (DateTime) can still appear as fields via
@@ -3396,7 +3444,8 @@ and CliValueType =
         CliValueType.IsAutoLayoutHandle concreteTypes assemblies vt._Declared
 
     /// Compute the unmanaged size of a single field, consulting `[MarshalAs(...)]` descriptors
-    /// and the declaring type's `CharSet`. Without a descriptor, falls back to the managed
+    /// and the declaring type's `CharSet`. An enum-typed field is sized as its underlying
+    /// primitive. Without a descriptor, falls back to the managed
     /// layout size for byte-stable primitives, recurses into nested value types, and rejects
     /// shapes (Bool/Char/ObjectRef) whose unmanaged size deviates from the managed one.
     /// The field's nominal `ConcreteTypeHandle` is consulted to validate `ByValTStr`/`ByValArray`
@@ -3411,6 +3460,15 @@ and CliValueType =
         (contents : CliType)
         : Result<SizeofResult, MarshalSizeError>
         =
+        // CoreCLR's `MarshalInfo` classifies a field by `PeekElemTypeNormalized` (mlinfo.cpp:863),
+        // which reports an enum as its underlying primitive's element type, so an enum field
+        // marshals exactly as that primitive would, `[MarshalAs]` validation included. The enum's
+        // own type, which is auto-layout and so has no native layout, is never consulted.
+        let fieldType, contents =
+            match CliValueType.TryEnumUnderlying concreteTypes assemblies corelib contents with
+            | Some underlying -> underlying
+            | None -> fieldType, contents
+
         match descriptor with
         | Some (FieldMarshalDescriptor.ByValTStr sizeConst) ->
             // CoreCLR's `MarshalInfo` rejects ByValTStr unless the managed field is
@@ -3541,9 +3599,10 @@ and CliValueType =
         // Mirror CoreCLR's `IsStructMarshalable` (fieldmarshaler.cpp:288): a type with
         // `LayoutKind.Auto` reports `HasLayout() == false`, so `Marshal.SizeOf<T>()` throws an
         // `ArgumentException`. The recursion from `TryFieldMarshalSize` reaches us here too —
-        // host-known AutoLayout fields (currently just `System.DateTime`) are intercepted in
-        // `TryFieldMarshalSize` before they recurse, so by the time we see an AutoLayout type
-        // it really is something we should reject.
+        // the AutoLayout field types CoreCLR marshals anyway (enums, as their underlying
+        // primitive, and `System.DateTime`) are intercepted in `TryFieldMarshalSize` before they
+        // recurse, so by the time we see an AutoLayout type it really is something we should
+        // reject.
         if CliValueType.IsAutoLayout concreteTypes assemblies vt then
             MarshalSizeError.NotMarshalable "type has [StructLayout(LayoutKind.Auto)] and has no native layout"
             |> Result.Error
