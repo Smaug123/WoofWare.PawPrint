@@ -16,9 +16,29 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestEntropyAgainstHost =
 
-    [<DllImport("libc", EntryPoint = "getrandom", SetLastError = true)>]
-    extern nativeint private getrandom(nativeint buffer, unativeint count, uint32 flags)
+    // Linux's getrandom is reached through syscall(2) rather than glibc's
+    // getrandom(3): from glibc 2.41 that wrapper can answer from the vDSO
+    // without entering the kernel, and the vDSO's answers are not the
+    // syscall's (it faults in userspace on a bad buffer, for one). Linux's
+    // variadic convention passes these integer arguments exactly as a
+    // fixed-arity call does, on both architectures below.
+    [<DllImport("libc", EntryPoint = "syscall", SetLastError = true)>]
+    extern nativeint private linuxSyscall3(nativeint number, nativeint a, unativeint b, uint32 c)
 
+    /// `SYS_getrandom` for this process's architecture.
+    let private sysGetRandom () : nativeint =
+        match RuntimeInformation.ProcessArchitecture with
+        | Architecture.X64 -> 318n
+        | Architecture.Arm64 -> 278n
+        | other -> failwith $"no getrandom syscall number recorded for %O{other}; add it here"
+
+    let private getrandom (buffer : nativeint, count : unativeint, flags : uint32) : nativeint =
+        linuxSyscall3 (sysGetRandom (), buffer, count, flags)
+
+    // Darwin's getentropy(3) is the syscall's own stub: the probe beside the
+    // plan measured it agreeing with syscall(SYS_getentropy) on every row. It
+    // is called directly because Apple's arm64 convention passes variadic
+    // arguments on the stack, so a fixed-arity call of syscall(2) would not.
     [<DllImport("libc", EntryPoint = "getentropy", SetLastError = true)>]
     extern int private getentropy(nativeint buffer, unativeint length)
 
