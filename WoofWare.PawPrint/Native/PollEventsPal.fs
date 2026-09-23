@@ -95,5 +95,6 @@ module PollEventsPal =
         // The count is the kernel's, not a count of the converted reports, as
         // in the C. The two cannot differ here: a PAL request asks for none of
         // the bits `ofPlatform` drops, and `poll(2)` reports those only when
-        // asked.
+        // asked -- which also means `ofPlatform` changes no report this can
+        // produce. It is applied anyway, because the shim applies it.
         | Ok (reported, triggered) -> Ok (List.map ofPlatform reported, triggered)
