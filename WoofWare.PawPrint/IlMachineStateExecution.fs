@@ -2264,8 +2264,26 @@ module IlMachineStateExecution =
                     |> fst
                     |> fun state -> Some (state, CallCommitment.Raised)
                 | IntrinsicResult.Unrecognised ->
-                    failwith
-                        $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey (Option.get intrinsicKey)}, or add it to safeIntrinsics after reviewing its IL"
+                    // Refusing guards against *interpreting* an `[Intrinsic]` body the JIT may
+                    // always replace. Only an IL body can be interpreted. Any other body is
+                    // already PawPrint's implementation of the method -- `NativeDispatch` for an
+                    // InternalCall or P/Invoke, delegate or accessor dispatch for a
+                    // runtime-provided body -- so the call proceeds to it as though unmarked.
+                    //
+                    // That is CoreCLR's order too: `impIntrinsic` (importercalls.cpp) tries to
+                    // expand the intrinsic and otherwise emits an ordinary call. Outside NativeAOT
+                    // it insists on expansion only for a method's recursive call to itself
+                    // (importercalls.cpp:3104), which a method with no IL cannot make.
+                    match methodToCall.Body with
+                    | MethodBody.Il _ ->
+                        failwith
+                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey (Option.get intrinsicKey)}, or add it to safeIntrinsics after reviewing its IL"
+                    | MethodBody.InternalCall
+                    | MethodBody.PInvoke
+                    | MethodBody.RuntimeProvided _ -> None
+                    | MethodBody.Abstract ->
+                        failwith
+                            $"logic error: %s{Intrinsics.formatMethodKey (Option.get intrinsicKey)} was classified as an intrinsic, but its body is abstract, which `isIntrinsic` excludes"
             else
                 None
         with

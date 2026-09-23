@@ -274,6 +274,7 @@
     <Compile Include="TestFabricatedCallvirtMethodSpecMethodDef.fs" />
     <Compile Include="TestFabricatedLdlen.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
+    <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="LinuxCoreLibFlavour.fs" />
