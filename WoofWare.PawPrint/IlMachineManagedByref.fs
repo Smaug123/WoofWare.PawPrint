@@ -318,6 +318,57 @@ module IlMachineManagedByref =
         | CliType.ObjectRef a, CliType.ObjectRef b -> a = b
         | _ -> false
 
+    /// `true` iff a cell holding `cell` can take a write of `target`'s bytes over its whole extent.
+    ///
+    /// A cell with a byte image takes any value that has one, because the write splices the
+    /// value's bytes into the cell rather than installing the value: the cell keeps its own type
+    /// and holds the payload's bit pattern read back as that type, which is what the real runtime
+    /// stores. `stind.i1` hands over a signed byte whatever the cell's type is, so without this a
+    /// `ref byte` over a `System.Byte` field of reference-holding storage could never be written
+    /// through. A cell with no byte
+    /// image has nothing to splice into, and takes only what `isCellIdentityCompatible` would
+    /// install verbatim.
+    let private isCellByteWritable (cell : CliType) (target : CliType) : bool =
+        match CliType.ByteAddressability cell, CliType.ByteAddressability target with
+        | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable -> true
+        | _ -> isCellIdentityCompatible cell target
+
+    /// The cell a byte-renderable write names by its extent, when the storage it lands in has no
+    /// byte image. See `isCellByteWritable` for which cells qualify, and
+    /// `writeIntoCellNamedForByteWrite` for how the write must then be installed.
+    let private tryNameCellForByteWrite
+        (byteOffset : int)
+        (storage : CliType)
+        (newValue : CliType)
+        : FieldId list option
+        =
+        tryNameCellWith isCellByteWritable byteOffset storage newValue
+
+    /// Write `newValue` into the cell at `path` of `storage`, the path having come from
+    /// `tryNameCellForByteWrite`. A cell with a byte image keeps its own type and takes the value's
+    /// bytes; any other cell is replaced by the value. `None` means the write is provably
+    /// unobservable.
+    let private writeIntoCellNamedForByteWrite
+        (path : FieldId list)
+        (storage : CliType)
+        (newValue : CliType)
+        : CliType option
+        =
+        let current = CliType.getCellAtPath path storage
+
+        let updatedCell =
+            match CliType.ByteAddressability current with
+            | CliByteAddressability.ByteAddressable -> CliType.WithBytesAtIfChanged 0 (CliType.ToBytes newValue) current
+            | CliByteAddressability.SymbolicallyAddressable _
+            | CliByteAddressability.Rejected _ ->
+                if isProvableNoOpWrite current newValue then
+                    None
+                else
+                    Some newValue
+
+        updatedCell
+        |> Option.map (fun cell -> CliType.withCellAtPathSet path cell storage)
+
     let setStatic
         (owner : StaticOwner)
         (ty : ConcreteTypeHandle)
@@ -2792,7 +2843,7 @@ module IlMachineManagedByref =
                 // Probed only for roots whose typed read is total. `readRootValue` throws for
                 // `PeByteRange`, and for the raw byte pools when no typed cell starts at the
                 // offset; those roots are byte storage by construction and can never hold a
-                // reference anyway. `tryNameCellForByrefAccess` yields `None` for byte-addressable
+                // reference anyway. `tryNameCellForByteWrite` yields `None` for byte-addressable
                 // storage, so nothing that reaches the writers below today is diverted.
                 //
                 // This reads the root value for `ArrayElement` and `HeapValue`. Both reads are
@@ -2809,14 +2860,12 @@ module IlMachineManagedByref =
                     let rootValue = readRootValue state outerRoot
                     let cellHere = readProjectedValue rootValue prefixProjs
 
-                    match tryNameCellForByrefAccess byteOffset cellHere newValue with
+                    match tryNameCellForByteWrite byteOffset cellHere newValue with
                     | None -> ValueNone
                     | Some path ->
-                        if isProvableNoOpWrite (CliType.getCellAtPath path cellHere) newValue then
-                            ValueSome state
-                        else
-
-                        let updatedCell = CliType.withCellAtPathSet path newValue cellHere
+                        match writeIntoCellNamedForByteWrite path cellHere newValue with
+                        | None -> ValueSome state
+                        | Some updatedCell ->
 
                         match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
                         | None -> ValueSome state
@@ -2860,19 +2909,17 @@ module IlMachineManagedByref =
                     // route for `buffer[k].Tag = v` over an `[InlineArray]` whose element holds a
                     // reference: the value written is byte-renderable, so the write arrives here
                     // rather than at the structural writer, but the *storage* is not.
-                    // `tryNameCellForByrefAccess` yields `None` for byte-addressable storage, so
+                    // `tryNameCellForByteWrite` yields `None` for byte-addressable storage, so
                     // nothing that reaches `resolveCell` today is diverted.
                     let namedWrite =
                         let cellHere = readProjectedValue rootValue prefixProjs
 
-                        match tryNameCellForByrefAccess byteOffset cellHere newValue with
+                        match tryNameCellForByteWrite byteOffset cellHere newValue with
                         | None -> ValueNone
                         | Some path ->
-                            let updatedCell = CliType.withCellAtPathSet path newValue cellHere
-
-                            if updatedCell = cellHere then
-                                ValueSome state
-                            else
+                            match writeIntoCellNamedForByteWrite path cellHere newValue with
+                            | None -> ValueSome state
+                            | Some updatedCell ->
                                 match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
                                 | None -> ValueSome state
                                 | Some updatedRoot -> ValueSome (writeRootValue state outerRoot updatedRoot)
