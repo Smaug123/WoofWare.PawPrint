@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 public interface IIn<in T> where T : class { }
 
@@ -23,6 +24,9 @@ public class Program
         if (typeof(IIn<>).IsAssignableFrom(typeof(StructIn))) return 3;
         if (typeof(IIn<>).IsAssignableFrom(typeof(IInterfaceIn))) return 4;
         if (typeof(IIn<>).IsAssignableFrom(typeof(IIn<string>))) return 5;
+        // An open interface with no interface that could match, which is false however CoreCLR
+        // treats its interface map.
+        if (typeof(IEnumerable<>).IsAssignableFrom(typeof(IComparer<>))) return 6;
         return 0;
     }
 }

@@ -2788,7 +2788,12 @@ module IlMachineRuntimeMetadata =
                     | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> targetIsVariant
                     | _ -> false
 
-                if
+                let state, interfaceMap = closeOver state Set.empty fromChain
+                let state, scanMatches = anyMatch state (Set.toList interfaceMap)
+
+                if not scanMatches then
+                    state, false
+                elif
                     targetIsSpecialMarker
                     && (isInterfaceTarget state source
                         || not (isObjRefTarget baseClassTypes state source))
@@ -2806,12 +2811,12 @@ module IlMachineRuntimeMetadata =
                         // of its map would itself be a marker, which no closed instantiation is.
                         state, false
                     | _ ->
+                        // A scan that finds nothing answers false whatever the flag says; one that
+                        // finds a match is answered by the flag alone.
                         failwith
-                            $"TODO: isRuntimeTypeHandleTargetAssignableTo: whether the open value type or interface %O{source} casts to the variant interface definition %O{target} depends on CoreCLR's MayHaveOpenInterfacesInInterfaceMap flag, which PawPrint does not model for open types"
+                            $"TODO: isRuntimeTypeHandleTargetAssignableTo: the open value type or interface %O{source} has an interface that casts to the variant interface definition %O{target}, but whether CoreCLR scans for it depends on its MayHaveOpenInterfacesInInterfaceMap flag, which PawPrint does not model for open types"
                 else
-
-                let state, interfaceMap = closeOver state Set.empty fromChain
-                anyMatch state (Set.toList interfaceMap)
+                    state, true
             else
                 anyMatch state chain
 
