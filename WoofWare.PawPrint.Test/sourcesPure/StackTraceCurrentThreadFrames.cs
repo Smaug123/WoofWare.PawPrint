@@ -18,7 +18,7 @@ using System.Reflection;
 //
 // Every frame this guest captures is declared on a non-generic type, so every one is already the
 // typical method definition and `RuntimeMethodHandle.GetTypicalMethodDefinition` never reaches its
-// QCall. `StackTraceGenericDeclaringFrame.cs` is the sibling that does, and is parked on it.
+// QCall. `StackTraceGenericDeclaringFrame.cs` is the sibling that does.
 class StackTraceCurrentThreadFrames
 {
     static StackTrace Innermost()

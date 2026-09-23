@@ -219,14 +219,13 @@ module MethodHandleRegistry =
             failwith
                 $"cannot mint a RuntimeMethodHandle for %O{method}: it is synthesised by the runtime and has no MethodDef token"
 
-    /// Build a `MethodHandle` for a concretised method, binding `methodGenerics` as its
-    /// method-generic arguments. The declaring type's own instantiation is taken from the method
-    /// either way.
-    let private makeConcreteMethodHandle
+    /// Build the identity of a concretised method, binding `methodGenerics` as its method-generic
+    /// arguments. The declaring type's own instantiation is taken from the method either way.
+    let private makeConcreteMethodIdentity
         (allConcreteTypes : AllConcreteTypes)
         (methodGenerics : ConcreteTypeHandle list)
         (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        : MethodHandle
+        : MetadataMethodIdentity
         =
         {
             AssemblyFullName = method.DeclaringAssemblyFullName
@@ -244,15 +243,14 @@ module MethodHandleRegistry =
                 |> RuntimeTypeHandleTarget.Closed
             MethodGenerics = methodGenerics
         }
-        |> MethodHandle.FromMetadata
 
-    /// Build a `MethodHandle` describing the canonical identity of a concretised method.
-    let private makeMethodHandle
+    /// Build the canonical identity of a concretised method.
+    let private makeMethodIdentity
         (allConcreteTypes : AllConcreteTypes)
         (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
-        : MethodHandle
+        : MetadataMethodIdentity
         =
-        makeConcreteMethodHandle allConcreteTypes (method.Generics |> Seq.toList) method
+        makeConcreteMethodIdentity allConcreteTypes (method.Generics |> Seq.toList) method
 
     /// Look up `handle`'s registry id, minting a fresh one if this is the first time it has been
     /// asked for.
@@ -446,7 +444,7 @@ module MethodHandleRegistry =
         (reg : MethodHandleRegistry)
         : int64 * MethodHandleRegistry
         =
-        idOfHandle (makeMethodHandle allConcreteTypes method) reg
+        idOfHandle (MethodHandle.FromMetadata (makeMethodIdentity allConcreteTypes method)) reg
 
     /// Mint (or reuse) a registry id for the given fully-concretised method and return a
     /// `RuntimeMethodHandleInternal` value type referencing it. Unlike `getOrAllocate`, this
@@ -488,7 +486,58 @@ module MethodHandleRegistry =
         // may hold one must classify it first: a dynamic method already carries a registry id and
         // needs no minting, and the remaining kinds have no identity to mint (see
         // `NativeStackTrace.methodHandleIdOfFrame`).
-        idOfHandle (makeConcreteMethodHandle allConcreteTypes [] method) reg
+        idOfHandle (MethodHandle.FromMetadata (makeConcreteMethodIdentity allConcreteTypes [] method)) reg
+
+    /// CoreCLR's `MethodDesc::LoadTypicalMethodDefinition` (method.cpp:1645): the same MethodDef
+    /// row with *both* instantiations stripped, so `Foo&lt;int&gt;.Bar&lt;string&gt;` becomes
+    /// `Foo&lt;T&gt;.Bar&lt;U&gt;` and `Foo&lt;int&gt;.Baz` becomes `Foo&lt;T&gt;.Baz`. A generic declaring
+    /// type is replaced by its definition, which PawPrint spells `OpenGenericTypeDefinition` exactly
+    /// as `typeof(Foo&lt;&gt;)` does, and the method's own arguments are dropped, which is how this
+    /// registry names a generic method *definition*. A non-generic declaring type is kept as it is.
+    ///
+    /// Contrast `getOrAllocateDefinitionId`, which strips only the method's instantiation.
+    ///
+    /// The result is typical whatever the input, and a typical input comes back unchanged, so the
+    /// function is idempotent; CoreCLR states the first half as the postcondition
+    /// `RETVAL->IsTypicalMethodDefinition()`.
+    let typicalMethodDefinition
+        (allConcreteTypes : AllConcreteTypes)
+        (identity : MetadataMethodIdentity)
+        : MetadataMethodIdentity
+        =
+        let declaringType =
+            match identity.DeclaringType with
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> identity.DeclaringType
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+                let concreteType =
+                    AllConcreteTypes.lookup handle allConcreteTypes
+                    |> Option.defaultWith (fun () ->
+                        failwith
+                            $"MethodHandleRegistry.typicalMethodDefinition: declaring type %O{handle} is not registered in ConcreteTypes"
+                    )
+
+                if concreteType.Generics.IsEmpty then
+                    identity.DeclaringType
+                else
+                    RuntimeTypeHandleTarget.OpenGenericTypeDefinition concreteType.Identity
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _)
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Array _) ->
+                // An array's MethodTable has no class instantiation of its own (CoreCLR's
+                // `HasClassOrMethodInstantiation` is false for it), so its methods are already
+                // typical in the declaring-type half.
+                identity.DeclaringType
+            | other ->
+                // `requireMethodBearingDeclaringType` admits only `Closed` and
+                // `OpenGenericTypeDefinition`, and a byref, pointer or function pointer is a
+                // TypeDesc, which declares no methods; either way this identity was built outside
+                // the registry's chokepoints.
+                failwith
+                    $"MethodHandleRegistry.typicalMethodDefinition: declaring type %O{other} cannot declare a metadata-backed method"
+
+        { identity with
+            DeclaringType = declaringType
+            MethodGenerics = []
+        }
 
     let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
         match typeDefn with
@@ -688,20 +737,22 @@ module MethodHandleRegistry =
     /// `getOrAllocateStub` is guest-visible, because a stub handed back through an
     /// `ObjectHandleOnStack` reaches managed code as an object whose reference identity can be
     /// compared.
-    let allocateFreshStub
+    ///
+    /// Takes the method by identity rather than as a concretised `MethodInfo`, so that it can name
+    /// a method declared by a generic type *definition*, which no concretised `MethodInfo` can
+    /// describe; `allocateFreshStub` is the concretised form.
+    let allocateFreshStubOfIdentity
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (allConcreteTypes : AllConcreteTypes)
         (allocState : 'allocState)
         (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
-        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (identity : MetadataMethodIdentity)
         (reg : MethodHandleRegistry)
         : ManagedHeapAddress * MethodHandleRegistry * 'allocState
         =
-        let handle = makeMethodHandle allConcreteTypes method
-
         // Reuses an existing registry id for this method if one was minted earlier (e.g., via
         // `getOrAllocateInternalHandle` while iterating introduced methods).
-        let registryId, reg = idOfHandle handle reg
+        let registryId, reg = idOfHandle (MethodHandle.FromMetadata identity) reg
 
         let runtimeMethodHandleInternal =
             let mHandle =
@@ -716,6 +767,24 @@ module MethodHandleRegistry =
         let alloc, allocState = allocate runtimeMethodInfoStub allocState
 
         alloc, reg, allocState
+
+    /// `allocateFreshStubOfIdentity` for a concretised method.
+    let allocateFreshStub
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (allocState : 'allocState)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (reg : MethodHandleRegistry)
+        : ManagedHeapAddress * MethodHandleRegistry * 'allocState
+        =
+        allocateFreshStubOfIdentity
+            baseClassTypes
+            allConcreteTypes
+            allocState
+            allocate
+            (makeMethodIdentity allConcreteTypes method)
+            reg
 
     /// The address of the `RuntimeMethodInfoStub` naming this method, reusing the one this
     /// registry allocated for the same method before if there is one. Unlike `allocateFreshStub`
@@ -732,7 +801,7 @@ module MethodHandleRegistry =
         (reg : MethodHandleRegistry)
         : ManagedHeapAddress * MethodHandleRegistry * 'allocState
         =
-        let handle = makeMethodHandle allConcreteTypes method
+        let handle = MethodHandle.FromMetadata (makeMethodIdentity allConcreteTypes method)
 
         match Map.tryFind handle reg.MethodToHandle with
         | Some v -> v, reg, allocState

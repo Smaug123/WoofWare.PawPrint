@@ -1018,6 +1018,104 @@ module NativeRuntimeMethodHandle =
                     targets
 
             NativeHandlerResult.completed state |> Some
+        | "RuntimeMethodHandle_GetTypicalMethodDefinition",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetTypicalMethodDefinition",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics)
+            CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                             "ObjectHandleOnStack",
+                                             objectHandleGenerics) ],
+          MethodReturnType.Void when handleGenerics.IsEmpty && objectHandleGenerics.IsEmpty ->
+            // CoreCLR runtimehandles.cpp:1806:
+            //   MethodDesc *pMethodTypical = pMethod->LoadTypicalMethodDefinition();
+            //   if (pMethodTypical != pMethod)
+            //       refMethod.Set(pMethodTypical->AllocateStubMethodInfo());
+            // See `MethodHandleRegistry.typicalMethodDefinition` for the rebind itself. The one
+            // managed caller, `RuntimeMethodHandle.GetTypicalMethodDefinition(IRuntimeMethodInfo)`
+            // (RuntimeHandles.cs:1291), reaches here only after `IsTypicalMethodDefinition` has
+            // answered false, and a captured stack frame on a method of `G<int>` is how a guest
+            // typically gets there.
+            let operation = "RuntimeMethodHandle.GetTypicalMethodDefinition"
+
+            if instruction.Arguments.Length <> 2 then
+                failwith $"%s{operation}: expected two native arguments, got %d{instruction.Arguments.Length}"
+
+            let original = resolveMethodHandleFromArg operation state instruction.Arguments.[0]
+
+            let refMethod =
+                NativeCall.objectHandleOnStackTarget operation state "refMethod" instruction.Arguments.[1]
+
+            // CoreCLR asserts (debug builds only) that `refMethod` already holds a reflection
+            // object for `pMethod`, which is how its managed caller builds the handle. The QCall
+            // either leaves that object in place or replaces it, so a mismatch would hand the guest
+            // back a method it never asked about.
+            let current =
+                IlMachineState.readManagedByref ctx.BaseClassTypes state refMethod
+                |> resolveMethodHandleFromMethodInfoObject operation state
+
+            if current <> original then
+                failwith
+                    $"%s{operation}: refMethod names %O{current}, but the RuntimeMethodHandleInternal argument names %O{original}"
+
+            match original with
+            | MethodHandle.FromDynamic _ ->
+                // A `DynamicMethodDesc` has neither a class nor a method instantiation (see the
+                // `IsTypicalMethodDefinition` FCall), so `LoadTypicalMethodDefinition` returns it
+                // unchanged and `refMethod` is left alone.
+                NativeHandlerResult.completed state |> Some
+            | MethodHandle.FromMetadata identity ->
+
+            let typical =
+                MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes identity
+
+            if typical = identity then
+                NativeHandlerResult.completed state |> Some
+            else
+
+            // CoreCLR's `LoadTypicalMethodDefinition` carries the postcondition
+            // `RETVAL->IsTypicalMethodDefinition()`; check it against the FCall's own predicate so
+            // that the two natives cannot disagree about what "typical" means.
+            let methodInfo = methodInfoOfMetadataIdentity operation state typical
+
+            let typicalIsTypical =
+                match stubDeclaringTypeOfTarget operation ctx.BaseClassTypes state (typical.GetDeclaringType ()) with
+                | StubDeclaringType.MethodTable facts ->
+                    isTypicalMethodDefinition methodInfo.Generics.Length (typical.GetMethodGenerics ()).Length facts
+                | StubDeclaringType.TypeDesc -> false
+
+            if not typicalIsTypical then
+                failwith
+                    $"%s{operation}: the typical definition %O{typical} of %O{identity} does not itself answer true to IsTypicalMethodDefinition"
+
+            let runtimeMethodInfoStubType =
+                AllConcreteTypes.getRequiredNonGenericHandle
+                    state.ConcreteTypes
+                    ctx.BaseClassTypes.RuntimeMethodInfoStub
+
+            let stubAddress, registry, state =
+                MethodHandleRegistry.allocateFreshStubOfIdentity
+                    ctx.BaseClassTypes
+                    state.ConcreteTypes
+                    state
+                    (fun fields state -> IlMachineState.allocateManagedObject runtimeMethodInfoStubType fields state)
+                    typical
+                    state.MethodHandles
+
+            let state =
+                { state with
+                    MethodHandles = registry
+                }
+
+            let state =
+                IlMachineState.writeManagedByrefWithBase
+                    ctx.BaseClassTypes
+                    state
+                    refMethod
+                    (CliType.ObjectRef (Some stubAddress))
+
+            NativeHandlerResult.completed state |> Some
         | "RuntimeMethodHandle_GetStubIfNeededSlow",
           "System.Private.CoreLib",
           "System",
