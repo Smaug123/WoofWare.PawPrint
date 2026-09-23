@@ -282,6 +282,15 @@ type SocketOptionRefusal =
     | UnmodelledOption of socket : SocketId * level : int * optionName : int
     /// A buffer the call reaches has no answer at the step it is reached.
     | Buffer of BufferRefusal
+    /// The call would change `SO_REUSEADDR` on a listening socket whose
+    /// accept queue holds completed connections.
+    ///
+    /// A real kernel gives each of those connections its own copy of the
+    /// listener's options when the connection completes, so the socket a later
+    /// `accept(2)` returns keeps the value from then. This kernel copies the
+    /// listener's value at `accept(2)` instead, which agrees only while the
+    /// value has not changed since.
+    | ListenerWithQueuedConnections of socket : SocketId
 
 [<RequireQualifiedAccess>]
 module SocketOptionRefusal =
@@ -290,6 +299,8 @@ module SocketOptionRefusal =
     let describe (refusal : SocketOptionRefusal) : string =
         match refusal with
         | SocketOptionRefusal.Buffer refusal -> BufferRefusal.describe refusal
+        | SocketOptionRefusal.ListenerWithQueuedConnections socket ->
+            $"socket %O{socket} is listening with completed connections in its accept queue, and the call would change its SO_REUSEADDR. Measured on both flavours, each queued connection keeps the value the listener had when that connection completed, so an accept after the change returns a socket carrying the old value. This kernel does not record that per-connection copy: it gives the accepted socket the listener's value at accept time. Record the value with each queued connection before allowing the change."
         | SocketOptionRefusal.UnmodelledOption (socket, level, optionName) ->
             $"socket %O{socket} was asked about option %d{optionName} at level %d{level}, and SO_REUSEADDR at SOL_SOCKET is the only option this kernel models. A real kernel either knows this option, in which case its value is socket state nothing here holds, or answers an errno nobody has measured for it; ENOPROTOOPT would be a guess either way. SO_ERROR in particular is refused because reading it consumes a pending connect refusal, which changes what the next connect(2) answers on both flavours and what poll(2) reports on Linux. Model the option before asking for it."
 
@@ -1104,7 +1115,9 @@ module UnixSocket =
     /// For `SO_REUSEADDR`, any non-zero value sets the option and zero clears
     /// it; bytes beyond the first `int` are never read. The option persists
     /// until the next `setsockopt` of it, and no later failure of another call
-    /// undoes it.
+    /// undoes it. A change on a listener with connections waiting to be
+    /// accepted is refused; see
+    /// `SocketOptionRefusal.ListenerWithQueuedConnections`.
     let setsockopt<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (level : int)
@@ -1145,6 +1158,23 @@ module UnixSocket =
                     $"UnixSocket.setsockopt: fd %d{fd} answers %O{error}, yet the admission reached the copy (this is a bug in this library)."
 
         let socket = UnixMachineState.socket socketId system.Machine
+        let requested = supplied <> 0
+
+        let hasQueuedConnections =
+            match socket.Phase with
+            | SocketPhase.Listening listenState -> not (List.isEmpty listenState.Queue)
+            | SocketPhase.Idle
+            | SocketPhase.EstablishedPendingReport _
+            | SocketPhase.Established _
+            | SocketPhase.RefusedPendingDelivery
+            | SocketPhase.Dead
+            | SocketPhase.DatagramPeer _ -> false
+
+        // Setting the value it already has changes nothing a queued connection
+        // could have copied, so only a change is refused.
+        if hasQueuedConnections && requested <> socket.ReuseAddress then
+            Error (SocketOptionRefusal.ListenerWithQueuedConnections socketId)
+        else
 
         let system =
             { system with
@@ -1154,7 +1184,7 @@ module UnixSocket =
                             Map.add
                                 socketId
                                 { socket with
-                                    ReuseAddress = supplied <> 0
+                                    ReuseAddress = requested
                                 }
                                 system.Machine.Sockets
                     }

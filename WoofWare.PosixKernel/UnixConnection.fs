@@ -1152,9 +1152,11 @@ module UnixConnection =
                                 LockedPort = false
                             }
                     // Both kernels copy the listener's socket options onto
-                    // the accepted socket (inet_csk_clone_lock; sonewconn),
-                    // and this flag's one modelled effect is bind-conflict
-                    // admission.
+                    // the new socket when the connection completes
+                    // (inet_csk_clone_lock; sonewconn), not at accept.
+                    // Reading the listener now gives the same value because
+                    // `UnixSocket.setsockopt` refuses to change it while
+                    // connections are queued.
                     ReuseAddress = listener.ReuseAddress
                     Phase = SocketPhase.Established connectionId
                 }

@@ -4046,9 +4046,15 @@ module NativeSystemNative =
                     | Error _ -> setsockopt None
 
                 match answer with
+                | Error (SocketOptionRefusal.ListenerWithQueuedConnections _ as refusal) ->
+                    // Reached by a PT_TCP bind of a socket that is already
+                    // listening without the option, which the bind itself then
+                    // refuses as EINVAL.
+                    failwith
+                        $"%s{operation}: fd %d{fd}: the shim sets SO_REUSEADDR before bind(2), and %s{SocketOptionRefusal.describe refusal}"
                 | Error refusal ->
                     failwith
-                        $"%s{operation}: fd %d{fd}: the shim's setsockopt(SO_REUSEADDR) through its own stack buffer was refused: %s{SocketOptionRefusal.describe refusal} That option through real storage has an answer on every descriptor, so this is an interpreter bug."
+                        $"%s{operation}: fd %d{fd}: the shim's setsockopt(SO_REUSEADDR) through its own stack buffer was refused: %s{SocketOptionRefusal.describe refusal} That option through real storage has an answer on every descriptor except a listener with queued connections, so this is an interpreter bug."
                 | Ok (SetSockOptAnswer.Set, unix) -> state.MapKernel (EmulatedKernel.withUnix unix)
                 | Ok (SetSockOptAnswer.Failed error, unix) ->
                     let raw =

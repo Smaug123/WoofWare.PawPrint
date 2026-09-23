@@ -165,6 +165,32 @@ static void setThenRead(const char *label, int fd, int before, const void *val, 
     printf("%s (from %d) -> %s readback=%d\n", label, before, en(e), r);
 }
 
+// Whether an accepted socket carries the listener's SO_REUSEADDR as it was
+// when the connection completed, or as it is at accept.
+static void inheritRow(int listenerBefore, int listenerAfter, int changeBeforeConnect) {
+    int l = socket(AF_INET, SOCK_STREAM, 0);
+    setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &listenerBefore, sizeof listenerBefore);
+    struct sockaddr_in a = lo(0);
+    bind(l, (struct sockaddr *)&a, sizeof a);
+    listen(l, 5);
+    a = lo(portOf(l));
+    if (changeBeforeConnect)
+        setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &listenerAfter, sizeof listenerAfter);
+    int c = socket(AF_INET, SOCK_STREAM, 0);
+    int ce = connect(c, (struct sockaddr *)&a, sizeof a) == 0 ? 0 : errno;
+    usleep(50000);
+    if (!changeBeforeConnect)
+        setsockopt(l, SOL_SOCKET, SO_REUSEADDR, &listenerAfter, sizeof listenerAfter);
+    int x = accept(l, NULL, NULL);
+    int listenerNow = readback(l);
+    int accepted = readback(x);
+    printf("listener %d -> %d %s connect: connect=%s listener now=%d accepted=%d\n", listenerBefore, listenerAfter,
+           changeBeforeConnect ? "before" : "after", en(ce), listenerNow, accepted);
+    close(x);
+    close(c);
+    close(l);
+}
+
 int main(void) {
     int one = 1;
     char big[16];
@@ -498,5 +524,10 @@ int main(void) {
         close(A);
     }
     refusedAndEdgeRows();
+    printf("\n== what an accepted socket inherits ==\n");
+    inheritRow(1, 0, 0);
+    inheritRow(0, 1, 0);
+    inheritRow(1, 0, 1);
+    inheritRow(0, 1, 1);
     return 0;
 }

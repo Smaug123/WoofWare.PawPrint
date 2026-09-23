@@ -446,6 +446,57 @@ module TestSockOpt =
                 |> Result.map fst
                 |> shouldEqual (Ok (SetSockOptAnswer.Failed UnixError.EFAULT))
 
+    /// Measured on both: a connection that completes while the listener has
+    /// the option keeps it through a later clear, and one that completes
+    /// without it stays without it through a later set. This kernel copies the
+    /// option at accept rather than at completion, so it refuses a change while
+    /// any connection is queued, and allows one that changes nothing.
+    [<Test>]
+    let ``a listener with queued connections refuses a change to SO_REUSEADDR`` () : unit =
+        let listening (queue : ConnectionId list) : SocketPhase =
+            SocketPhase.Listening
+                {
+                    Backlog = 5
+                    Queue = queue
+                }
+
+        for platform in platforms do
+            let level, optionName = numbered platform Option.ReuseAddress
+
+            for initially in [ false ; true ] do
+                let socketFd, _, system = systemWith platform (listening [])
+                let system = ReuseAddress.set initially socketFd system
+
+                let queued =
+                    { system with
+                        Machine =
+                            { system.Machine with
+                                Sockets =
+                                    system.Machine.Sockets
+                                    |> Map.change
+                                        (SocketId 0L)
+                                        (Option.map (fun socket ->
+                                            { socket with
+                                                Phase = listening [ ConnectionId 0L ]
+                                            }
+                                        ))
+                            }
+                    }
+
+                let change = if initially then 0 else 1
+                let keep = if initially then 1 else 0
+
+                setWith socketFd level optionName UserBuffer.Mapped 4u change queued
+                |> shouldEqual (Error (SocketOptionRefusal.ListenerWithQueuedConnections (SocketId 0L)))
+
+                match setWith socketFd level optionName UserBuffer.Mapped 4u keep queued with
+                | Ok (SetSockOptAnswer.Set, after) -> after |> shouldEqual queued
+                | other -> failwith $"%O{platform}: re-setting the same value answered %A{other}"
+
+                match setWith socketFd level optionName UserBuffer.Mapped 4u change system with
+                | Ok (SetSockOptAnswer.Set, after) -> reuseFlag after |> shouldEqual (not initially)
+                | other -> failwith $"%O{platform}: an empty queue answered %A{other}"
+
     /// Every socket shape this kernel creates takes the option. Measured on
     /// both flavours for every shape in `creatableSockets`.
     [<Test>]
