@@ -11,7 +11,7 @@ open WoofWare.PawPrint
 /// importer decides it: when one arm delivers a double, the float32 arm is widened on arrival and
 /// arithmetic after the join is double even when the float32 arm executed. No compiler emits that
 /// shape, so the guest emits it with `Reflection.Emit`, which needs dynamic code enabled and so
-/// cannot be a pure case. The guest passes on real .NET (exit 0, measured 2026-09-10).
+/// cannot be a pure case, so the test checks it against real .NET itself.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 [<Category("Guest")>]
@@ -23,6 +23,12 @@ module TestFloatWidthJoin =
     let ``a float32 arriving at a join another arm reaches with a double is widened`` () : unit =
         let source = Assembly.getEmbeddedResourceAsString "FloatWidthJoin.cs" assy
         let image = Roslyn.compile [ source ]
+
+        match RealRuntime.executeWithRealRuntime [||] image with
+        | RealRuntimeResult.NormalExit exitCode -> exitCode |> shouldEqual 0
+        | RealRuntimeResult.UnhandledException report ->
+            failwith $"real runtime terminated with an unhandled exception:\n%s{report}"
+        | RealRuntimeResult.Aborted (code, report) -> failwith $"real runtime aborted (%O{code}):\n%s{report}"
 
         let dotnetRuntimes =
             DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange

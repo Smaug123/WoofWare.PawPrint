@@ -111,14 +111,17 @@ Decisions for this stage, agreed before it was built:
   than guess a width. What follows only from it is unknown. A value the
   importer may hold as a constant is an integer, float, `null`, token or
   `sizeof` literal, a static field (an initialised `static readonly` one is read
-  at import), the result of a `call` or `callvirt` on such values or on none
+  at import), an argument the body never `starg`s or `ldarga`s (when the JIT
+  inlines the body, `impInlineFetchArg` substitutes a constant the caller
+  passes for such an argument), the result of a `call` or `callvirt` on such
+  values or on none
   (intrinsics such as `IsSupported`, `typeof(A) == typeof(B)`,
   `typeof(A).IsValueType`), or the result of a token-less operation on such
   values; a value arriving at a block's first instruction is a spill temp to
   the importer, and no constant, and a `br` to the very next instruction starts
   no block, since the JIT merges the blocks before importing. Other folds are
-  *not* modelled: `box` patterns, constant arguments substituted into an
-  inlinee, algebraic identities with one runtime operand (`gtFoldExprSpecial`)
+  *not* modelled: `box` patterns, algebraic identities with one runtime operand
+  (`gtFoldExprSpecial`)
   and comparisons of a local with itself. The analysis treats such a branch as
   importing both arms, so a join under it where a float32 on the live arm meets
   a double on the arm CoreCLR folds away is promoted, and widened, where CoreCLR

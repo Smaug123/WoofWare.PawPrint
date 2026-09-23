@@ -7,7 +7,7 @@ using System.Reflection.Emit;
 // compiler emits this shape (they widen the float32 arm themselves), so it is emitted here.
 public class Program
 {
-    // (bool selectSingle) => { float64 slot = selectSingle ? 16777216f : 16777216d; slot += 1f; slot += 1f; return (double)slot; }
+    // (bool selectSingle) => { bool local = selectSingle; float64 slot = local ? 16777216f : 16777216d; slot += 1f; slot += 1f; return (double)slot; }
     private static Func<bool, double> EmitMixedJoin()
     {
         DynamicMethod method = new DynamicMethod("MixedJoin", typeof(double), new[] { typeof(bool) }, typeof(Program).Module);
@@ -15,7 +15,12 @@ public class Program
         Label singleArm = il.DefineLabel();
         Label join = il.DefineLabel();
 
+        // The branch is on a local: had it been on the argument, an inlining JIT could fold it
+        // for a constant caller, and whether the join widens would depend on the call site.
+        il.DeclareLocal(typeof(bool));
         il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Stloc_0);
+        il.Emit(OpCodes.Ldloc_0);
         il.Emit(OpCodes.Brtrue, singleArm);
         il.Emit(OpCodes.Ldc_R8, 16777216.0);
         il.Emit(OpCodes.Br, join);

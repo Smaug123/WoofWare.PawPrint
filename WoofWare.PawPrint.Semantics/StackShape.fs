@@ -77,7 +77,8 @@ type StackShapeError =
     | LocalOutOfRange of offset : int * index : int
     /// A join at which a float32 meets a double, downstream of the conditional branch or
     /// `switch` at `branch`, whose operands its block computes from values the importer may hold
-    /// as constants: literals, static fields, and calls on such values or on none. Not a claim
+    /// as constants: literals, static fields, arguments (which an inlinee may receive as
+    /// constants), and calls on such values or on none. Not a claim
     /// about the IL: the JIT folds such a branch at every tier but not in debuggable code,
     /// importing only the arm taken, so whether CoreCLR widens the join depends on how it
     /// compiled the body, which the analysis does not decide. What follows only from the join is
@@ -829,17 +830,47 @@ module StackShape =
         | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Sizeof, _) -> true
         | _ -> false
 
+    /// The index of the argument an instruction loads, if it is an `ldarg`.
+    let private loadedArgument (instruction : IlOp) : int option =
+        match instruction with
+        | IlOp.Nullary NullaryIlOp.LdArg0 -> Some 0
+        | IlOp.Nullary NullaryIlOp.LdArg1 -> Some 1
+        | IlOp.Nullary NullaryIlOp.LdArg2 -> Some 2
+        | IlOp.Nullary NullaryIlOp.LdArg3 -> Some 3
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldarg_s i) -> Some (int i)
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldarg i) -> Some (int i)
+        | _ -> None
+
+    /// The arguments the body stores to or takes the address of, anywhere in its IL. The JIT
+    /// substitutes a constant a caller passes into an inlinee only for an argument that is
+    /// neither (`impInlineFetchArg`, whose `argHasStargOp` and `argHasLdargaOp` come from a scan
+    /// of the whole body).
+    let private modifiableArguments (body : MethodInstructions<'methodVars>) : Set<int> =
+        body.Instructions
+        |> List.choose (fun (instruction, _) ->
+            match instruction with
+            | IlOp.UnaryConst (UnaryConstIlOp.Starg_s i)
+            | IlOp.UnaryConst (UnaryConstIlOp.Ldarga_s i) -> Some (int i)
+            | IlOp.UnaryConst (UnaryConstIlOp.Starg i)
+            | IlOp.UnaryConst (UnaryConstIlOp.Ldarga i) -> Some (int i)
+            | _ -> None
+        )
+        |> Set.ofList
+
     /// The conditional branches and `switch`es whose every operand their basic block computes
     /// from values the importer may hold as constants: a literal, a static field (the importer
-    /// reads an initialised `static readonly` one), the result of a call on such values or on
-    /// none (an intrinsic such as `IsSupported`, `Type.op_Equality` on two `typeof`s), or the
-    /// result of an operation without a token on such values. The JIT may fold such a branch
+    /// reads an initialised `static readonly` one), an argument the body never stores to or
+    /// takes the address of (the constant a caller passes, when the JIT inlines the body there),
+    /// the result of a call on such values or on none (an intrinsic such as `IsSupported`,
+    /// `Type.op_Equality` on two `typeof`s), or the result of an operation without a token on
+    /// such values. The JIT may fold such a branch
     /// (`gtFoldExpr`), importing only the arm taken, and does so at every tier but not in
     /// debuggable code. A value arriving at a block's first instruction is a spill temp to the
     /// importer, and no constant; a `br` to the very next instruction starts no block.
     let private foldableBranchesOf (inputs : StackShapeInputs) (body : MethodInstructions<'methodVars>) : Set<int> =
         let leaders = leadersOf body
         let locations = body.Locations
+        let modifiable = modifiableArguments body
 
         // Whether each slot the block itself pushed, top first, may be a constant to the importer;
         // the block's entry stack lies below these and is none.
@@ -871,6 +902,11 @@ module StackShape =
 
                         let constant =
                             pushesLiteral instruction
+                            || (
+                                match loadedArgument instruction with
+                                | Some index -> not (modifiable.Contains index)
+                                | None -> false
+                            )
                             || (
                                 match instruction with
                                 | IlOp.Nullary _ -> effect.Pops > 0 && constantOperands effect.Pops
