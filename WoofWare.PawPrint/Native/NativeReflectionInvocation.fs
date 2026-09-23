@@ -327,56 +327,6 @@ module internal NativeReflectionInvocation =
                     failwith
                         $"%s{operation}: args[%d{index}] for the pointer parameter %O{parameterType} should address a boxed IntPtr, but read %O{other}"
 
-    /// CoreCLR's `InvokeUtil::CreatePointer` (invokeutil.cpp:58): a fresh `System.Reflection.Pointer`
-    /// whose `_ptr` is `value` and whose `_ptrType` is the `RuntimeType` of `pointerType` itself,
-    /// not of its pointee. That is the shape `Pointer.Box` produces, and `_ptrType` is what
-    /// `RuntimeType.TryChangeTypeSpecial` reads back when the `Pointer` is later passed as an
-    /// argument. CoreCLR writes both fields directly rather than running `Pointer`'s constructor,
-    /// and so does this.
-    let private createPointer
-        (ctx : NativeCallContext)
-        (pointerType : ConcreteTypeHandle)
-        (value : EvalStackValue)
-        (state : IlMachineState)
-        : ManagedHeapAddress * IlMachineState
-        =
-        match pointerType with
-        | ConcreteTypeHandle.Pointer _ -> ()
-        | other -> failwith $"createPointer: %O{other} is not an unmanaged pointer type"
-
-        let state, _, pointerClass =
-            NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
-                ctx.LoggerFactory
-                ctx.BaseClassTypes
-                state
-                "System.Reflection"
-                "Pointer"
-
-        let addr, state =
-            IlMachineState.allocateUninitialisedInstance ctx.LoggerFactory ctx.BaseClassTypes pointerClass state
-
-        let ptrTypeObject, state =
-            IlMachineState.getOrAllocateType
-                ctx.LoggerFactory
-                ctx.BaseClassTypes
-                (RuntimeTypeHandleTarget.Closed pointerType)
-                state
-
-        // Coerce against the field's own zero so the stored cell has the `void*` field's shape
-        // while keeping whatever provenance `value` carries.
-        let ptrField = IlMachineState.requiredOwnInstanceFieldId state pointerClass "_ptr"
-
-        let ptrZero =
-            ManagedHeap.get addr state.ManagedHeap
-            |> AllocatedNonArrayObject.DereferenceFieldById ptrField
-
-        let state =
-            state
-            |> IlMachineState.setInstanceFieldById addr ptrField (EvalStackValue.toCliTypeCoerced ptrZero value)
-            |> IlMachineState.setOwnInstanceField addr "_ptrType" (CliType.ObjectRef (Some ptrTypeObject))
-
-        addr, state
-
     /// Reject the invocation shapes CoreCLR handles but this does not, naming the triggering
     /// condition rather than diverging quietly.
     let private rejectUnsupportedShapes
@@ -880,21 +830,9 @@ module internal NativeReflectionInvocation =
                         let _marker, state = IlMachineState.popEvalStack ctx.Thread state
 
                         match returnType with
-                        | ConcreteTypeHandle.Pointer _ ->
-                            // `InvokeUtil::CreateObjectAfterInvoke`'s `ELEMENT_TYPE_PTR` case
-                            // (invokeutil.cpp:555): a `Pointer` even when the pointer is null.
-                            let addr, state = createPointer ctx returnType returnValue state
-                            CliType.ObjectRef (Some addr), state
+                        | ConcreteTypeHandle.Pointer _
                         | ConcreteTypeHandle.FunctionPointer _ ->
-                            // `InvokeUtil::CreateObjectAfterInvoke`'s `ELEMENT_TYPE_FNPTR` case
-                            // (invokeutil.cpp:570): a boxed `IntPtr` carrying the pointer's bits.
-                            let intPtr =
-                                AllConcreteTypes.getRequiredNonGenericHandle
-                                    state.ConcreteTypes
-                                    ctx.BaseClassTypes.IntPtr
-
-                            let addr, state =
-                                Boxing.boxValueType ctx.LoggerFactory ctx.BaseClassTypes intPtr returnValue state
+                            let addr, state = NativeReflectionPointer.toObject ctx returnType returnValue state
 
                             CliType.ObjectRef (Some addr), state
                         | _ ->
