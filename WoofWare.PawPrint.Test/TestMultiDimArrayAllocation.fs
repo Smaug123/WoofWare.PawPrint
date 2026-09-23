@@ -43,6 +43,8 @@ module TestMultiDimArrayAllocation =
         | Error MultiDimArrayLengthError.TotalElementsExceedsInt32 ->
             Error ("OutOfMemoryException", "PawPrint backing store limit")
         | Error (MultiDimArrayLengthError.Negative _) -> Error ("OverflowException", "")
+        // Zero lower bounds cannot overflow, so this is never reached here.
+        | Error (MultiDimArrayLengthError.LowerBoundAndLengthOverflow _) -> Error ("ArgumentOutOfRangeException", "")
         | Error (MultiDimArrayLengthError.DimensionExceedsMaxLength _)
         | Error (MultiDimArrayLengthError.TotalElementsOverflow _) ->
             Error ("OutOfMemoryException", SzArrayAllocation.dimensionsExceededMessage)

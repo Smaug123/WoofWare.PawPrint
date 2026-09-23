@@ -14,8 +14,8 @@ using System.Runtime.CompilerServices;
 // element type is not qualified by its encloser (`Inner[]`), though a nested *type argument* is
 // (`GS`1[TestUnsafeAccessorArrayMemberLookup+Inner][]`); and a function pointer is `FNPTR`.
 //
-// The constructor is the half PawPrint cannot yet answer, and is parked as
-// `sourcesPure/UnsafeAccessorArrayConstructor.cs`.
+// The constructor, which does bind, is `sourcesPure/UnsafeAccessorArrayConstructor.cs` and
+// `sourcesPure/UnsafeAccessorArrayConstructorShapes.cs`.
 public unsafe class TestUnsafeAccessorArrayMemberLookup
 {
     public class Inner

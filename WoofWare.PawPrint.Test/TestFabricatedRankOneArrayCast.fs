@@ -15,6 +15,10 @@ open NUnit.Framework
 /// rejects a multi-dimensional source only when the *target* is an SZ array; against any other
 /// array target it compares ranks, and an SZ array's rank is 1. So `int[]` is an `int[*]` while
 /// `int[*]` is not an `int[]`. C# cannot spell `int[*]`, so the tokens come from fabricated IL.
+///
+/// The same assembly constructs an `int[*]` through both of its constructors, which is where the
+/// two types meet: `AllocateArrayEx` (`vm/gchelpers.cpp:838`) allocates an `int[]` whenever the
+/// lower bound is zero.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFabricatedRankOneArrayCast =
@@ -23,7 +27,9 @@ module TestFabricatedRankOneArrayCast =
     /// `ChkIntRankOne` is the same with `castclass`. `IsUIntRankOne`, `IsLongRankOne`,
     /// `IsObjectRankOne` and `IsIntRankTwo` are `isinst` with `uint32[*]`, `int64[*]`,
     /// `object[*]` and `int32[,]` tokens. `IntRankOneType() : Type` is
-    /// `ldtoken int32[*]; call Type.GetTypeFromHandle; ret`.
+    /// `ldtoken int32[*]; call Type.GetTypeFromHandle; ret`. `NewIntRankOne(int) : object` is
+    /// `ldarg.0; newobj int32[*]::.ctor(int32); ret`, and `NewIntRankOneBounded(int, int) : object`
+    /// the same over `.ctor(int32, int32)`, which takes a lower bound and then a length.
     ///
     /// Built with `MetadataBuilder` rather than `PersistedAssemblyBuilder`, because the latter
     /// writes the signature of `typeof<int>.MakeArrayType 1` as `ELEMENT_TYPE_SZARRAY` (measured:
@@ -143,6 +149,43 @@ module TestFabricatedRankOneArrayCast =
 
             metadata.GetOrAddBlob signature
 
+        let intRankOneCtor (parameterCount : int) : EntityHandle =
+            let signature = BlobBuilder ()
+
+            BlobEncoder(signature)
+                .MethodSignature(isInstanceMethod = true)
+                .Parameters (
+                    parameterCount,
+                    (fun (ret : ReturnTypeEncoder) -> ret.Void ()),
+                    fun (parameters : ParametersEncoder) ->
+                        for _ in 1..parameterCount do
+                            parameters.AddParameter().Type().Int32 ()
+                )
+
+            let handle =
+                metadata.AddMemberReference (
+                    intRankOne,
+                    metadata.GetOrAddString ".ctor",
+                    metadata.GetOrAddBlob signature
+                )
+
+            (MemberReferenceHandle.op_Implicit handle : EntityHandle)
+
+        let intsToObject (parameterCount : int) : BlobHandle =
+            let signature = BlobBuilder ()
+
+            BlobEncoder(signature)
+                .MethodSignature()
+                .Parameters (
+                    parameterCount,
+                    (fun (ret : ReturnTypeEncoder) -> ret.Type().Object ()),
+                    fun (parameters : ParametersEncoder) ->
+                        for _ in 1..parameterCount do
+                            parameters.AddParameter().Type().Int32 ()
+                )
+
+            metadata.GetOrAddBlob signature
+
         let ilStream = BlobBuilder ()
         let bodies = MethodBodyStreamEncoder ilStream
 
@@ -214,6 +257,19 @@ module TestFabricatedRankOneArrayCast =
                 il.Call getTypeFromHandle
                 il.OpCode ILOpCode.Ret
             )
+
+        for name, parameterCount in [ "NewIntRankOne", 1 ; "NewIntRankOneBounded", 2 ] do
+            define
+                name
+                (intsToObject parameterCount)
+                (fun il ->
+                    for i in 0 .. parameterCount - 1 do
+                        il.LoadArgument i
+
+                    il.OpCode ILOpCode.Newobj
+                    il.Token (intRankOneCtor parameterCount)
+                    il.OpCode ILOpCode.Ret
+                )
 
         let peBuilder =
             ManagedPEBuilder (
@@ -303,3 +359,42 @@ public static class Driver
     [<Test>]
     let ``an SZ array is an instance of the rank-1 multi-dimensional array type`` () : unit =
         FabricatedGuest.run "Arrays" (fabricate ()) "RankOneArrayCastDriver" driverSource 0
+
+    /// Each check returns its own index on failure. A non-zero lower bound is not constructed,
+    /// because PawPrint's heap has no representation for one.
+    let private constructionDriverSource : string =
+        """
+using System;
+
+public static class Driver
+{
+    public static int Main(string[] args)
+    {
+        object made = Arrays.NewIntRankOne(3);
+        if (made.GetType() != typeof(int[]) || ((int[])made).Length != 3) return 1;
+
+        made = Arrays.NewIntRankOneBounded(0, 2);
+        if (made.GetType() != typeof(int[]) || ((int[])made).Length != 2) return 2;
+
+        try { Arrays.NewIntRankOne(-1); return 3; }
+        catch (OverflowException) { }
+
+        // With a zero lower bound the length is a szarray's, whatever the rank-1 walk would say.
+        try { Arrays.NewIntRankOneBounded(0, 0x7FFFFFC8); return 4; }
+        catch (OutOfMemoryException e) { if (e.Message != "Array dimensions exceeded supported range.") return 5; }
+
+        // A non-zero lower bound takes the multi-dimensional walk, so its last index is checked.
+        try { Arrays.NewIntRankOneBounded(int.MaxValue, 2); return 6; }
+        catch (ArgumentOutOfRangeException e) { if (e.ParamName != null) return 7; }
+
+        try { Arrays.NewIntRankOneBounded(5, -1); return 8; }
+        catch (OverflowException) { }
+
+        return 0;
+    }
+}
+"""
+
+    [<Test>]
+    let ``constructing a rank-1 multi-dimensional array with a zero lower bound builds an SZ array`` () : unit =
+        FabricatedGuest.run "Arrays" (fabricate ()) "RankOneArrayConstructionDriver" constructionDriverSource 0
