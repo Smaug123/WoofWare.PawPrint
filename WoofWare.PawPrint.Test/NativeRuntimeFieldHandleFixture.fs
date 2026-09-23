@@ -256,10 +256,8 @@ public sealed class GenericHolder<T>
         let stubAddress, state = fieldInfoStubFor fixture declaringType field state
         let stub = ManagedHeap.get stubAddress state.ManagedHeap
 
-        match CliValueType.DereferenceField "m_fieldHandle" stub.Contents with
-        | CliType.ValueType _ as handle -> handle, state
-        | other ->
-            failwith $"expected RuntimeFieldInfoStub.m_fieldHandle to be a RuntimeFieldHandleInternal, got %O{other}"
+        RuntimeFieldInfoStubLayout.value fixture.BaseClassTypes state.ConcreteTypes stub.ConcreteType stub.Contents,
+        state
 
     /// `fieldDescArgumentFor` on `Holder`'s field named `fieldName`.
     let fieldDescArgument (fixture : Fixture) (fieldName : string) (state : IlMachineState) : CliType * IlMachineState =

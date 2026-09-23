@@ -50,27 +50,6 @@ module FieldHandleRegistry =
             NextHandle = 1L
         }
 
-    let rec private isReferenceShaped (typeDefn : TypeDefn) : bool =
-        match typeDefn with
-        | TypeDefn.PrimitiveType PrimitiveType.Object
-        | TypeDefn.PrimitiveType PrimitiveType.String
-        | TypeDefn.Array _
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _
-        | TypeDefn.FromReference (_, System.Reflection.Metadata.SignatureTypeKind.Class)
-        | TypeDefn.FromDefinition (_, System.Reflection.Metadata.SignatureTypeKind.Class) -> true
-        | TypeDefn.GenericInstantiation (generic, _) -> isReferenceShaped generic
-        | TypeDefn.Modified m -> isReferenceShaped m.Unmodified
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.Pinned _
-        | TypeDefn.Pointer _
-        | TypeDefn.Byref _
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.FunctionPointer _
-        | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _
-        | TypeDefn.Void -> false
-
     /// The assembly that defines the field a handle with this declaring type would name.
     ///
     /// Derived rather than supplied by the caller, because a `FieldDefinitionHandle` indexes the
@@ -175,76 +154,8 @@ module FieldHandleRegistry =
 
         let newHandle = reg.NextHandle
 
-        let runtimeFieldHandleInternal =
-            let field = baseClassTypes.RuntimeFieldHandleInternal.Fields |> List.exactlyOne
-
-            if field.Name <> "m_handle" then
-                failwith $"unexpected field name %s{field.Name} for BCL type RuntimeFieldHandleInternal"
-
-            match field.Signature with
-            | TypeDefn.PrimitiveType PrimitiveType.IntPtr -> ()
-            | s -> failwith $"bad sig: {s}"
-
-            // https://github.com/dotnet/runtime/blob/2b21c73fa2c32fa0195e4a411a435dda185efd08/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1380
-            FieldIdentity.cliField
-                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
-                field
-                (CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle newHandle))
-                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.IntPtr)
-            |> List.singleton
-            |> CliValueType.OfFields
-                baseClassTypes
-                allConcreteTypes
-                (AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal)
-                (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeFieldHandleInternal)
-            |> CliType.ValueType
-
-        // https://github.com/dotnet/runtime/blob/1d1bf92fcf43aa6981804dc53c5174445069c9e4/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs#L1074
         let runtimeFieldInfoStub =
-            let objType =
-                AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.Object
-
-            let intType =
-                AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.Int32
-
-            let runtimeFieldInfoStubHandle =
-                AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldInfoStub
-
-            let runtimeFieldHandleInternalType =
-                AllConcreteTypes.getRequiredNonGenericHandle allConcreteTypes baseClassTypes.RuntimeFieldHandleInternal
-
-            let fieldHandleField =
-                FieldIdentity.requiredOwnInstanceField baseClassTypes.RuntimeFieldInfoStub "m_fieldHandle"
-
-            // LayoutKind.Sequential
-            baseClassTypes.RuntimeFieldInfoStub.Fields
-            |> List.filter (fun field -> not field.IsStatic)
-            |> List.map (fun field ->
-                if field.Handle = fieldHandleField.Handle then
-                    FieldIdentity.cliField
-                        runtimeFieldInfoStubHandle
-                        field
-                        runtimeFieldHandleInternal
-                        runtimeFieldHandleInternalType
-                else
-                    match field.Signature with
-                    | TypeDefn.PrimitiveType PrimitiveType.Int32 ->
-                        FieldIdentity.cliField
-                            runtimeFieldInfoStubHandle
-                            field
-                            (CliType.Numeric (CliNumericType.Int32 0))
-                            intType
-                    | signature when isReferenceShaped signature ->
-                        FieldIdentity.cliField runtimeFieldInfoStubHandle field (CliType.ObjectRef None) objType
-                    | signature ->
-                        failwith
-                            $"RuntimeFieldInfoStub field %s{field.Name} was expected to be reference-shaped or int32, got %O{signature}"
-            )
-            |> CliValueType.OfFields
-                baseClassTypes
-                allConcreteTypes
-                runtimeFieldInfoStubHandle
-                (DeclaredTypeFacts.ofCorelibType baseClassTypes baseClassTypes.RuntimeFieldInfoStub) // explicitly sequential but no custom packing size
+            RuntimeFieldInfoStubLayout.build baseClassTypes allConcreteTypes newHandle
 
         let alloc, state = allocate runtimeFieldInfoStub allocState
 

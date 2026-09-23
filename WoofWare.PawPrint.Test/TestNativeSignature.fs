@@ -174,11 +174,17 @@ public sealed class MethodSignatureHost
             | other -> failwith $"Expected RuntimeFieldHandle.m_ptr to be an object ref, got %O{other}"
         | other -> failwith $"Expected RuntimeFieldHandle value type, got %O{other}"
 
-    let private runtimeFieldHandleInternalInRuntimeFieldInfoStub (allocated : AllocatedNonArrayObject) : CliType =
-        match CliValueType.DereferenceField "m_fieldHandle" allocated.Contents with
-        | CliType.ValueType _ as runtimeFieldHandleInternal -> runtimeFieldHandleInternal
-        | other ->
-            failwith $"Expected RuntimeFieldInfoStub.m_fieldHandle to be a RuntimeFieldHandleInternal, got %O{other}"
+    let private runtimeFieldHandleInternalInRuntimeFieldInfoStub
+        (fixture : SignatureFixture)
+        (state : IlMachineState)
+        (allocated : AllocatedNonArrayObject)
+        : CliType
+        =
+        RuntimeFieldInfoStubLayout.value
+            fixture.BaseClassTypes
+            state.ConcreteTypes
+            allocated.ConcreteType
+            allocated.Contents
 
     let private closedGenericFieldHandle
         (fixture : SignatureFixture)
@@ -235,7 +241,7 @@ public sealed class MethodSignatureHost
         let stubAddress = runtimeFieldInfoStubAddress runtimeFieldHandle
         let stub = ManagedHeap.get stubAddress state.ManagedHeap
 
-        runtimeFieldHandleInternalInRuntimeFieldInfoStub stub, distinctiveHandle, state
+        runtimeFieldHandleInternalInRuntimeFieldInfoStub fixture state stub, distinctiveHandle, state
 
     let private signatureInitMethod
         (fixture : SignatureFixture)

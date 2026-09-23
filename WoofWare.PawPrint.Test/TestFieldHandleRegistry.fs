@@ -182,23 +182,40 @@ public class GenericHolder<T>
             | other -> failwith $"Expected RuntimeFieldHandle.m_ptr to be an object ref, got %O{other}"
         | other -> failwith $"Expected RuntimeFieldHandle value type, got %O{other}"
 
-    let private runtimeFieldHandleInternalInRuntimeFieldInfoStub (allocated : AllocatedNonArrayObject) : CliType =
-        match CliValueType.DereferenceField "m_fieldHandle" allocated.Contents with
-        | CliType.ValueType _ as runtimeFieldHandleInternal -> runtimeFieldHandleInternal
-        | other ->
-            failwith $"Expected RuntimeFieldInfoStub.m_fieldHandle to be a RuntimeFieldHandleInternal, got %O{other}"
+    let private runtimeFieldHandleInternalInRuntimeFieldInfoStub
+        (fixture : FieldHandleFixture)
+        (state : IlMachineState)
+        (allocated : AllocatedNonArrayObject)
+        : CliType
+        =
+        RuntimeFieldInfoStubLayout.value
+            fixture.BaseClassTypes
+            state.ConcreteTypes
+            allocated.ConcreteType
+            allocated.Contents
 
-    let private fieldHandleIdInRuntimeFieldInfoStub (allocated : AllocatedNonArrayObject) : int64 =
+    let private fieldHandleIdInRuntimeFieldInfoStub
+        (fixture : FieldHandleFixture)
+        (state : IlMachineState)
+        (allocated : AllocatedNonArrayObject)
+        : int64
+        =
         let runtimeFieldHandleInternal =
-            runtimeFieldHandleInternalInRuntimeFieldInfoStub allocated
+            runtimeFieldHandleInternalInRuntimeFieldInfoStub fixture state allocated
 
         NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal
             "fieldHandleIdInRuntimeFieldInfoStub"
             runtimeFieldHandleInternal
         |> Option.defaultWith (fun () -> failwith "Expected RuntimeFieldInfoStub.m_fieldHandle to be non-null")
 
-    let private fieldHandleIdAtAddress (address : ManagedHeapAddress) (state : IlMachineState) : int64 =
-        ManagedHeap.get address state.ManagedHeap |> fieldHandleIdInRuntimeFieldInfoStub
+    let private fieldHandleIdAtAddress
+        (fixture : FieldHandleFixture)
+        (address : ManagedHeapAddress)
+        (state : IlMachineState)
+        : int64
+        =
+        ManagedHeap.get address state.ManagedHeap
+        |> fieldHandleIdInRuntimeFieldInfoStub fixture state
 
     let private allocatePlainObject
         (fixture : FieldHandleFixture)
@@ -233,7 +250,7 @@ public class GenericHolder<T>
 
         allocated.ConcreteType |> shouldEqual runtimeFieldInfoStubType
 
-        let fieldHandleId = fieldHandleIdInRuntimeFieldInfoStub allocated
+        let fieldHandleId = fieldHandleIdInRuntimeFieldInfoStub fixture state allocated
 
         let resolved =
             FieldHandleRegistry.resolveFieldFromId fieldHandleId state.FieldHandles
@@ -243,13 +260,91 @@ public class GenericHolder<T>
         resolved.GetFieldDefinitionHandle().Get |> shouldEqual fixture.Field.Handle
 
     [<Test>]
+    let ``IRuntimeFieldInfo readers read a stub through its layout`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+        let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
+        let stubAddr = runtimeFieldInfoStubAddress fieldHandle
+        let id = fieldHandleIdAtAddress fixture stubAddr state
+
+        // Control: the stub as the registry wrote it reads back as the id it names.
+        IlMachineState.runtimeFieldInfoValue fixture.BaseClassTypes stubAddr state
+        |> NativeCall.fieldHandleIdOfRuntimeFieldHandleInternal "test"
+        |> shouldEqual (Some id)
+
+        // The layout declares `m_fieldHandle` a `RuntimeFieldHandleInternal`, so a stub holding
+        // anything else there is refused rather than read as whatever it holds: first the bare
+        // `IntPtr` of the kind `RtFieldInfo` holds, then a value of another value type.
+        let contradictions =
+            [
+                CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id))
+                fieldHandle
+            ]
+
+        for contradiction in contradictions do
+            let state =
+                IlMachineState.setOwnInstanceField stubAddr "m_fieldHandle" contradiction state
+
+            let e =
+                Assert.Throws<System.Exception> (fun () ->
+                    IlMachineState.runtimeFieldInfoValue fixture.BaseClassTypes stubAddr state
+                    |> ignore<CliType>
+                )
+
+            e.Message
+            |> shouldContainText "RuntimeFieldInfoStub.m_fieldHandle is declared a RuntimeFieldHandleInternal, but held"
+
+    [<Test>]
+    let ``a CoreLib whose RuntimeFieldInfoStub has another layout is refused by writer and reader`` () : unit =
+        let fixture = makeFieldHandleFixture ()
+        let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
+        let stubAddr = runtimeFieldInfoStubAddress fieldHandle
+        let stub = ManagedHeap.get stubAddr state.ManagedHeap
+
+        // Stand a CoreLib type with one `IntPtr` field in for the stub.
+        let otherLayout =
+            { fixture.BaseClassTypes with
+                RuntimeFieldInfoStub = fixture.BaseClassTypes.RuntimeFieldHandleInternal
+            }
+
+        let refusal =
+            "CoreLib declares System.RuntimeFieldHandleInternal { intptr m_handle } with System.RuntimeFieldHandleInternal { intptr m_handle }, which is not a RuntimeFieldInfoStub layout PawPrint knows how to write and read"
+
+        let declaringType =
+            AllConcreteTypes.findExistingNonGenericConcreteType
+                state.ConcreteTypes
+                fixture.OtherField.DeclaringType.Identity
+            |> Option.defaultWith (fun () -> failwith "HasField was not concretized by the first allocation")
+
+        // `OtherField` has no stub yet, so this reaches the writer rather than the registry's cache.
+        let written =
+            Assert.Throws<System.Exception> (fun () ->
+                IlMachineState.getOrAllocateField
+                    fixture.LoggerFactory
+                    otherLayout
+                    (RuntimeTypeHandleTarget.Closed declaringType)
+                    fixture.OtherField.Handle
+                    state
+                |> ignore<CliType * IlMachineState>
+            )
+
+        written.Message |> shouldContainText refusal
+
+        let read =
+            Assert.Throws<System.Exception> (fun () ->
+                RuntimeFieldInfoStubLayout.value otherLayout state.ConcreteTypes stub.ConcreteType stub.Contents
+                |> ignore<CliType>
+            )
+
+        read.Message |> shouldContainText refusal
+
+    [<Test>]
     let ``RuntimeFieldInfoStub address resolves to field handle id`` () : unit =
         let fixture = makeFieldHandleFixture ()
 
         let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
 
         let runtimeFieldInfoStubAddr = runtimeFieldInfoStubAddress fieldHandle
-        let fieldHandleId = fieldHandleIdAtAddress runtimeFieldInfoStubAddr state
+        let fieldHandleId = fieldHandleIdAtAddress fixture runtimeFieldInfoStubAddr state
 
         let resolvedId =
             FieldHandleRegistry.resolveFieldIdFromAddress runtimeFieldInfoStubAddr state.FieldHandles
@@ -303,7 +398,7 @@ public class GenericHolder<T>
         let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
 
         let runtimeFieldInfoStubAddr = runtimeFieldInfoStubAddress fieldHandle
-        let fieldHandleId = fieldHandleIdAtAddress runtimeFieldInfoStubAddr state
+        let fieldHandleId = fieldHandleIdAtAddress fixture runtimeFieldInfoStubAddr state
 
         let fieldHandleAgain, state = getOrAllocateField fixture fixture.Field state
 
@@ -326,7 +421,7 @@ public class GenericHolder<T>
         let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
 
         let runtimeFieldInfoStubAddr = runtimeFieldInfoStubAddress fieldHandle
-        let fieldHandleId = fieldHandleIdAtAddress runtimeFieldInfoStubAddr state
+        let fieldHandleId = fieldHandleIdAtAddress fixture runtimeFieldInfoStubAddr state
 
         let otherFieldHandle, state = getOrAllocateField fixture fixture.OtherField state
 
@@ -452,8 +547,8 @@ public class GenericHolder<T>
 
         closedAddr |> shouldNotEqual openAddr
 
-        let openId = fieldHandleIdAtAddress openAddr state
-        let closedId = fieldHandleIdAtAddress closedAddr state
+        let openId = fieldHandleIdAtAddress fixture openAddr state
+        let closedId = fieldHandleIdAtAddress fixture closedAddr state
         closedId |> shouldNotEqual openId
 
         let resolveOpen =
@@ -493,8 +588,8 @@ public class GenericHolder<T>
 
         secondAddr |> shouldEqual firstAddr
 
-        fieldHandleIdAtAddress secondAddr state
-        |> shouldEqual (fieldHandleIdAtAddress firstAddr state)
+        fieldHandleIdAtAddress fixture secondAddr state
+        |> shouldEqual (fieldHandleIdAtAddress fixture firstAddr state)
 
     let private requiredTopLevelType
         (assembly : DumpedAssembly)
@@ -844,7 +939,9 @@ public class GenericHolder<T>
         let fieldHandle, state = getOrAllocateField fixture fixture.Field fixture.State
         let runtimeFieldInfoStubAddr = runtimeFieldInfoStubAddress fieldHandle
         let allocated = ManagedHeap.get runtimeFieldInfoStubAddr state.ManagedHeap
-        let fieldHandleInternal = runtimeFieldHandleInternalInRuntimeFieldInfoStub allocated
+
+        let fieldHandleInternal =
+            runtimeFieldHandleInternalInRuntimeFieldInfoStub fixture state allocated
 
         let returnValue, _ =
             invokeRuntimeFieldHandleGetAttributes fixture fieldHandleInternal state

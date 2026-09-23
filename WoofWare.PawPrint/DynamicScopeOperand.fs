@@ -482,25 +482,21 @@ module internal DynamicScopeOperand =
     /// <c>new RuntimeFieldHandle(this)</c> (<c>RtFieldInfo.cs:115</c>), so every handle a guest gets
     /// out of <c>Type.GetField</c> points at the reflection object itself, whose
     /// <c>m_fieldHandle</c> is a bare <c>IntPtr</c>. The other is the <c>RuntimeFieldInfoStub</c>
-    /// the field-handle registry mints, whose <c>m_fieldHandle</c> is a
-    /// <c>RuntimeFieldHandleInternal</c>. Both spell the same registry id, which is why this reads
-    /// the field by name and lets <see cref="fieldRegistryId"/> accept either shape, rather than
-    /// keying on the stub's address as <c>FieldHandleRegistry.resolveFieldFromAddress</c> does —
-    /// that lookup cannot see the <c>RtFieldInfo</c> shape at all.
+    /// the field-handle registry mints, read according to its <c>RuntimeFieldInfoStubLayout</c>.
+    /// Both spell the same registry id, which is why this reads what <c>IRuntimeFieldInfo.Value</c>
+    /// reads and lets <see cref="fieldRegistryId"/> accept either shape, rather than keying on the
+    /// stub's address as <c>FieldHandleRegistry.resolveFieldFromAddress</c> does — that lookup
+    /// cannot see the <c>RtFieldInfo</c> shape at all.
     /// </remarks>
     let private fieldOfRuntimeFieldHandlePtr
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (ptr : ManagedHeapAddress)
         : FieldHandle option
         =
-        let holder = ManagedHeap.get ptr state.ManagedHeap
-
-        let handleField =
-            IlMachineState.requiredOwnInstanceFieldId state holder.ConcreteType "m_fieldHandle"
-
         match
-            AllocatedNonArrayObject.DereferenceFieldById handleField holder
+            IlMachineState.runtimeFieldInfoValue baseClassTypes ptr state
             |> fieldRegistryId operation
         with
         | None -> None
@@ -581,7 +577,7 @@ module internal DynamicScopeOperand =
                 // to nothing at all.
                 badImage $"DynamicScope entry %d{scopeIndex}'s %s{what} is a RuntimeFieldHandle whose m_ptr is null"
             | CliType.ObjectRef (Some ptr) ->
-                match fieldOfRuntimeFieldHandlePtr operation state ptr with
+                match fieldOfRuntimeFieldHandlePtr baseClassTypes operation state ptr with
                 | Some fieldHandle -> Ok fieldHandle
                 | None ->
                     badImage
