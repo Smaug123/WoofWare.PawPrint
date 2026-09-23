@@ -98,4 +98,10 @@ privilege the suite happens to run at, which is why the truncation table is
   wins, an entry with no `=` is a variable with an empty value, and a lookup name
   is converted to UTF-8 with U+FFFD for each unpaired surrogate before the
   byte-wise comparison (measured on real .NET: `"\uD800"` finds an entry named
-  U+FFFD).
+  U+FFFD). An empty entry is representable and is a lone NUL in the
+  `GetEnvironmentStringsW` block, so every reader that walks the block stops
+  there: CoreLib's `GetEnvironmentVariables`, and `CLRConfig::Initialize`, whose
+  256-bit Bloom filter of `DOTNET_`/`COMPlus_` knob names then makes a knob set
+  only after the empty entry read as unset (unless `DisableConfigCache` is
+  non-zero, or a recorded name collides with it). `ClrConfigEnvironment` models
+  that exactly; its measured rows are in `TestClrConfigEnvironment`.

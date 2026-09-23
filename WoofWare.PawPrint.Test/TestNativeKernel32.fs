@@ -323,10 +323,15 @@ module TestNativeKernel32 =
         }
 
     [<Test>]
-    let ``environment block carries every entry, in order`` () : unit =
-        // The block is the PAL's walk of its snapshot of `environ`: every entry,
-        // decoded, in the order the process was started with, whatever CoreLib
-        // goes on to make of it.
+    let ``environment block holds every entry, in order`` () : unit =
+        // The block is the PAL's conversion of its snapshot of `environ`: every
+        // entry, decoded, in the order the process was started with, whatever
+        // its reader goes on to make of it. That includes the entries after an
+        // empty one, whose lone NUL reads as the end of the block to every
+        // reader that walks it (CoreLib's `GetEnvironmentVariables`, and
+        // `CLRConfig::Initialize`), so those entries are in the memory the guest
+        // is handed but no such reader reaches them; the parse property below
+        // pins that half.
         let property (entries : string list) : unit =
             let units =
                 NativeKernel32.environmentBlockBytes (List.map bytesOf entries)

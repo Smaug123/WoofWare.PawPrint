@@ -19,9 +19,9 @@ open WoofWare.PosixKernel
 /// arms fire.
 ///
 /// What this pins down:
-///   * `tryParseClrConfigDword` matches CoreCLR's hex-default DWORD
+///   * `ClrConfigEnvironment.tryParseDword` matches CoreCLR's hex-default DWORD
 ///     parsing (radix 16, optional `0x` prefix tolerated).
-///   * `lookupClrConfigString` honours the `DOTNET_*` → `COMPlus_*`
+///   * `ClrConfigEnvironment.tryGetValue` honours the `DOTNET_*` → `COMPlus_*`
 ///     priority and discards empty values, mirroring
 ///     `clrconfig.cpp`:`EnvGetString`.
 ///   * The `IsEventSourceLoggingEnabled` arm of `tryExecuteQCall` returns
@@ -153,59 +153,57 @@ public static class Entry
     // ---------- Pure helper tests ----------
 
     [<Test>]
-    let ``tryParseClrConfigDword: empty and whitespace return None`` () : unit =
-        NativeEventSource.tryParseClrConfigDword "" |> shouldEqual None
-        NativeEventSource.tryParseClrConfigDword "   " |> shouldEqual None
-        NativeEventSource.tryParseClrConfigDword "\t" |> shouldEqual None
+    let ``tryParseDword: empty and whitespace return None`` () : unit =
+        ClrConfigEnvironment.tryParseDword "" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "   " |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "\t" |> shouldEqual None
 
     [<Test>]
-    let ``tryParseClrConfigDword: hex by default (matches CoreCLR's GetConfigDWORD default radix)`` () : unit =
+    let ``tryParseDword: hex by default (matches CoreCLR's GetConfigDWORD default radix)`` () : unit =
         // No `ParseIntegerAsBase10` flag on EnableEventLog ⇒ radix 16.
-        NativeEventSource.tryParseClrConfigDword "1" |> shouldEqual (Some 1u)
-        NativeEventSource.tryParseClrConfigDword "0" |> shouldEqual (Some 0u)
-        NativeEventSource.tryParseClrConfigDword "10" |> shouldEqual (Some 16u)
-        NativeEventSource.tryParseClrConfigDword "ff" |> shouldEqual (Some 255u)
-        NativeEventSource.tryParseClrConfigDword "FF" |> shouldEqual (Some 255u)
+        ClrConfigEnvironment.tryParseDword "1" |> shouldEqual (Some 1u)
+        ClrConfigEnvironment.tryParseDword "0" |> shouldEqual (Some 0u)
+        ClrConfigEnvironment.tryParseDword "10" |> shouldEqual (Some 16u)
+        ClrConfigEnvironment.tryParseDword "ff" |> shouldEqual (Some 255u)
+        ClrConfigEnvironment.tryParseDword "FF" |> shouldEqual (Some 255u)
 
-        NativeEventSource.tryParseClrConfigDword "deadbeef"
+        ClrConfigEnvironment.tryParseDword "deadbeef" |> shouldEqual (Some 0xdeadbeefu)
+
+    [<Test>]
+    let ``tryParseDword: 0x prefix is tolerated (matches wcstoul base-16)`` () : unit =
+        ClrConfigEnvironment.tryParseDword "0x1" |> shouldEqual (Some 1u)
+        ClrConfigEnvironment.tryParseDword "0X10" |> shouldEqual (Some 16u)
+
+        ClrConfigEnvironment.tryParseDword "0xDEADBEEF"
         |> shouldEqual (Some 0xdeadbeefu)
 
     [<Test>]
-    let ``tryParseClrConfigDword: 0x prefix is tolerated (matches wcstoul base-16)`` () : unit =
-        NativeEventSource.tryParseClrConfigDword "0x1" |> shouldEqual (Some 1u)
-        NativeEventSource.tryParseClrConfigDword "0X10" |> shouldEqual (Some 16u)
-
-        NativeEventSource.tryParseClrConfigDword "0xDEADBEEF"
-        |> shouldEqual (Some 0xdeadbeefu)
-
-    [<Test>]
-    let ``tryParseClrConfigDword: input with no parseable digits returns None`` () : unit =
-        NativeEventSource.tryParseClrConfigDword "garbage" |> shouldEqual None
-        NativeEventSource.tryParseClrConfigDword "+" |> shouldEqual None
-        NativeEventSource.tryParseClrConfigDword "-" |> shouldEqual None
+    let ``tryParseDword: input with no parseable digits returns None`` () : unit =
+        ClrConfigEnvironment.tryParseDword "garbage" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "+" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "-" |> shouldEqual None
         // No hex digit after the sign: `wcstoul` resets endPtr to val and
         // returns 0; we surface None (the gate treats both as disabled).
-        NativeEventSource.tryParseClrConfigDword "--1" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "--1" |> shouldEqual None
 
     [<Test>]
-    let ``tryParseClrConfigDword: positive overflow past UINT32_MAX returns None (PAL HOST_64BIT arm)`` () : unit =
+    let ``tryParseDword: positive overflow past UINT32_MAX returns None (PAL HOST_64BIT arm)`` () : unit =
         // PAL_wcstoul's HOST_64BIT post-processing sets `errno = ERANGE` and
         // clamps to UINT32_MAX whenever the parsed (positive) magnitude is
         // greater than UINT32_MAX. GetConfigDWORD then rejects.
-        NativeEventSource.tryParseClrConfigDword "100000000" |> shouldEqual None
-        NativeEventSource.tryParseClrConfigDword "0x100000000" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "100000000" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "0x100000000" |> shouldEqual None
         // Just past UINT32_MAX still fits in `unsigned long` on a 64-bit host.
-        NativeEventSource.tryParseClrConfigDword "100000001" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "100000001" |> shouldEqual None
         // Magnitudes that exceed UINT64_MAX (and therefore `unsigned long`)
         // make `strtoul` itself set `errno = ERANGE`. PAL_wcstoul never
         // clears that errno, so we reject for either sign.
-        NativeEventSource.tryParseClrConfigDword "10000000000000000" |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "10000000000000000" |> shouldEqual None
 
-        NativeEventSource.tryParseClrConfigDword "-10000000000000000"
-        |> shouldEqual None
+        ClrConfigEnvironment.tryParseDword "-10000000000000000" |> shouldEqual None
 
     [<Test>]
-    let ``tryParseClrConfigDword: negative overflow past UINT32_MAX truncates to low 32 bits`` () : unit =
+    let ``tryParseDword: negative overflow past UINT32_MAX truncates to low 32 bits`` () : unit =
         // Pins the PAL_wcstoul HOST_64BIT special case: with a leading `-`,
         // `strtoul` parses the magnitude in 64-bit `unsigned long`, applies
         // two's-complement negation mod 2^64, and the PAL returns that
@@ -213,49 +211,49 @@ public static class Entry
         // ERANGE. So `DOTNET_EnableEventLog=-100000001` enables logging on
         // real CoreCLR, and any strict UInt32-based parser would miss it.
         // -0x100000001 mod 2^64 = 0xFFFFFFFEFFFFFFFF; low 32 bits = 0xFFFFFFFF.
-        NativeEventSource.tryParseClrConfigDword "-100000001"
+        ClrConfigEnvironment.tryParseDword "-100000001"
         |> shouldEqual (Some 0xFFFFFFFFu)
         // -0x100000000 mod 2^64 = 0xFFFFFFFF00000000; low 32 bits = 0.
-        NativeEventSource.tryParseClrConfigDword "-100000000" |> shouldEqual (Some 0u)
+        ClrConfigEnvironment.tryParseDword "-100000000" |> shouldEqual (Some 0u)
         // -0x1FFFFFFFF mod 2^64 = 0xFFFFFFFE00000001; low 32 bits = 1.
-        NativeEventSource.tryParseClrConfigDword "-1FFFFFFFF" |> shouldEqual (Some 1u)
+        ClrConfigEnvironment.tryParseDword "-1FFFFFFFF" |> shouldEqual (Some 1u)
 
     [<Test>]
-    let ``tryParseClrConfigDword: parses longest valid prefix (1garbage -> 1)`` () : unit =
+    let ``tryParseDword: parses longest valid prefix (1garbage -> 1)`` () : unit =
         // `wcstoul` does not require the whole string to be valid — it
         // returns the prefix and sets endPtr past it. CoreCLR's
         // `endPtr != val` check then accepts the result. We must too,
         // otherwise `DOTNET_EnableEventLog=1garbage` reads as disabled
         // here but enabled on real CoreCLR.
-        NativeEventSource.tryParseClrConfigDword "1garbage" |> shouldEqual (Some 1u)
-        NativeEventSource.tryParseClrConfigDword "ff thanks" |> shouldEqual (Some 0xffu)
-        NativeEventSource.tryParseClrConfigDword "0XYZ" |> shouldEqual (Some 0u)
+        ClrConfigEnvironment.tryParseDword "1garbage" |> shouldEqual (Some 1u)
+        ClrConfigEnvironment.tryParseDword "ff thanks" |> shouldEqual (Some 0xffu)
+        ClrConfigEnvironment.tryParseDword "0XYZ" |> shouldEqual (Some 0u)
 
     [<Test>]
-    let ``tryParseClrConfigDword: 0x without trailing hex digit parses the leading 0`` () : unit =
+    let ``tryParseDword: 0x without trailing hex digit parses the leading 0`` () : unit =
         // `wcstoul` sees the `0` as a digit and the `x` as a stop character.
         // The leading `0` is consumed (endPtr advances past it), so
         // CoreCLR returns success with value 0.
-        NativeEventSource.tryParseClrConfigDword "0x" |> shouldEqual (Some 0u)
-        NativeEventSource.tryParseClrConfigDword "0xZZ" |> shouldEqual (Some 0u)
+        ClrConfigEnvironment.tryParseDword "0x" |> shouldEqual (Some 0u)
+        ClrConfigEnvironment.tryParseDword "0xZZ" |> shouldEqual (Some 0u)
 
     [<Test>]
-    let ``tryParseClrConfigDword: sign is honoured via two's complement wraparound`` () : unit =
+    let ``tryParseDword: sign is honoured via two's complement wraparound`` () : unit =
         // `wcstoul` accepts a leading sign and wraps the negation modulo
         // 2^32, so `-1` becomes `0xFFFFFFFF` (non-zero → enables the
         // gate). CoreCLR's `IsEventSourceLoggingEnabled` therefore treats
         // `DOTNET_EnableEventLog=-1` as enabled; we must as well.
-        NativeEventSource.tryParseClrConfigDword "+1" |> shouldEqual (Some 1u)
-        NativeEventSource.tryParseClrConfigDword "-1" |> shouldEqual (Some 0xFFFFFFFFu)
-        NativeEventSource.tryParseClrConfigDword "-0" |> shouldEqual (Some 0u)
+        ClrConfigEnvironment.tryParseDword "+1" |> shouldEqual (Some 1u)
+        ClrConfigEnvironment.tryParseDword "-1" |> shouldEqual (Some 0xFFFFFFFFu)
+        ClrConfigEnvironment.tryParseDword "-0" |> shouldEqual (Some 0u)
 
     [<Test>]
-    let ``tryParseClrConfigDword: leading whitespace is skipped`` () : unit =
-        NativeEventSource.tryParseClrConfigDword "  1" |> shouldEqual (Some 1u)
-        NativeEventSource.tryParseClrConfigDword "\t0x10" |> shouldEqual (Some 16u)
+    let ``tryParseDword: leading whitespace is skipped`` () : unit =
+        ClrConfigEnvironment.tryParseDword "  1" |> shouldEqual (Some 1u)
+        ClrConfigEnvironment.tryParseDword "\t0x10" |> shouldEqual (Some 16u)
         // Whitespace after the digits stops parsing but does not invalidate
         // the prefix.
-        NativeEventSource.tryParseClrConfigDword "  1  " |> shouldEqual (Some 1u)
+        ClrConfigEnvironment.tryParseDword "  1  " |> shouldEqual (Some 1u)
 
     /// An environment holding `NAME=VALUE` for each pair, in order.
     let private environmentOf (pairs : (string * string) list) : UnixByteString list =
@@ -267,39 +265,36 @@ public static class Entry
         )
 
     [<Test>]
-    let ``lookupClrConfigString: DOTNET_ wins over COMPlus_ when both set`` () : unit =
+    let ``tryGetValue: DOTNET_ wins over COMPlus_ when both set`` () : unit =
         let env =
             environmentOf [ "DOTNET_TestKnob", "dotnet-value" ; "COMPlus_TestKnob", "complus-value" ]
 
-        NativeEventSource.lookupClrConfigString env "TestKnob"
+        ClrConfigEnvironment.tryGetValue "test" env "TestKnob"
         |> shouldEqual (Some "dotnet-value")
 
     [<Test>]
-    let ``lookupClrConfigString: COMPlus_ is used when DOTNET_ is unset`` () : unit =
+    let ``tryGetValue: COMPlus_ is used when DOTNET_ is unset`` () : unit =
         let env = environmentOf [ "COMPlus_TestKnob", "complus-value" ]
 
-        NativeEventSource.lookupClrConfigString env "TestKnob"
+        ClrConfigEnvironment.tryGetValue "test" env "TestKnob"
         |> shouldEqual (Some "complus-value")
 
     [<Test>]
-    let ``lookupClrConfigString: empty value is treated as unset (matches CoreCLR's '*ret != W('\0')' filter)``
-        ()
-        : unit
-        =
+    let ``tryGetValue: empty value is treated as unset (matches CoreCLR's '*ret != W('\0')' filter)`` () : unit =
         // DOTNET_ is present but empty: skip past it.
         let env = environmentOf [ "DOTNET_TestKnob", "" ; "COMPlus_TestKnob", "fallback" ]
 
-        NativeEventSource.lookupClrConfigString env "TestKnob"
+        ClrConfigEnvironment.tryGetValue "test" env "TestKnob"
         |> shouldEqual (Some "fallback")
 
         // Both empty: None
         let env = environmentOf [ "DOTNET_TestKnob", "" ; "COMPlus_TestKnob", "" ]
 
-        NativeEventSource.lookupClrConfigString env "TestKnob" |> shouldEqual None
+        ClrConfigEnvironment.tryGetValue "test" env "TestKnob" |> shouldEqual None
 
     [<Test>]
-    let ``lookupClrConfigString: nothing set returns None`` () : unit =
-        NativeEventSource.lookupClrConfigString [] "EnableEventLog" |> shouldEqual None
+    let ``tryGetValue: nothing set returns None`` () : unit =
+        ClrConfigEnvironment.tryGetValue "test" [] "EnableEventLog" |> shouldEqual None
 
     // ---------- Dispatcher tests ----------
 

@@ -1339,26 +1339,14 @@ module EmulatedKernel =
     /// Reading the knob out of the *kernel's* environment table (rather than
     /// the host process's) is what keeps this deterministic: the table is
     /// recorded state that a replay reconstructs exactly, so honouring the
-    /// standard knob costs nothing in reproducibility. `CLRConfig` tries the
-    /// `DOTNET_` prefix first and falls back to the legacy `COMPlus_` prefix
-    /// only when the former is absent (coreclr/utilcode/clrconfig.cpp), and
-    /// both lookups are case-sensitive on the Unix hosts this project targets.
+    /// standard knob costs nothing in reproducibility. The knob is read the
+    /// way `CLRConfig` reads it; see `ClrConfigEnvironment.tryGetValue`.
     let effectiveProcessorCount (kernel : EmulatedKernel) : int =
-        // An empty value counts as absent, and so falls through to the legacy
-        // prefix: CLRConfig's fallback is gated on
-        // `WszGetEnvironmentVariable` returning length zero, which is what a
-        // variable set to the empty string reports. `DOTNET_PROCESSOR_COUNT=`
-        // with `COMPlus_PROCESSOR_COUNT=9` set therefore yields 9 upstream, not
-        // the detected count.
-        let lookup (name : string) : string option =
-            match EnvironmentPal.tryGetValue "EmulatedKernel.effectiveProcessorCount" name kernel.Environment with
-            | Some "" -> None
-            | other -> other
-
         let configured =
-            match lookup "DOTNET_PROCESSOR_COUNT" with
-            | Some v -> Some v
-            | None -> lookup "COMPlus_PROCESSOR_COUNT"
+            ClrConfigEnvironment.tryGetValue
+                "EmulatedKernel.effectiveProcessorCount"
+                kernel.Environment
+                "PROCESSOR_COUNT"
 
         match configured |> Option.bind tryParseConfigBase10 with
         | Some count when count > 0 && count <= maxConfiguredProcessorCount -> count

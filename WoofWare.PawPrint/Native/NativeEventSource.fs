@@ -1,135 +1,7 @@
 namespace WoofWare.PawPrint
 
-open WoofWare.PosixKernel
-
 [<RequireQualifiedAccess>]
 module NativeEventSource =
-    /// Parse a CLRConfig DWORD env-var value the way CoreCLR does for
-    /// `EnableEventLog` — `u16_strtoul(val, &endPtr, 16)` with the
-    /// success condition `errno != ERANGE && endPtr != val` (see
-    /// `GetConfigDWORD` in `clrconfig.cpp:228`). The radix is 16
-    /// because `EnableEventLog` is declared via `RETAIL_CONFIG_DWORD_INFO`
-    /// with no `ParseIntegerAsBase10` flag (`clrconfigvalues.h:580`).
-    ///
-    /// The Unix PAL's `PAL_wcstoul` (`pal/src/cruntime/wchar.cpp:281–324`)
-    /// is a thin wrapper around glibc `strtoul`, which on a 64-bit host
-    /// works in `unsigned long` (64-bit). On `HOST_64BIT` the PAL post-
-    /// processes the result: if `strtoul` returned > UINT32_MAX and the
-    /// input was *positive*, it clamps to `UINT32_MAX` and sets
-    /// `errno = ERANGE`; if the input was *negative*, it leaves the
-    /// value untouched and lets the final `(ULONG)res` cast truncate to
-    /// the low 32 bits (because that mirrors Windows' 32-bit `long`
-    /// behaviour). This means a guest setting
-    /// `DOTNET_EnableEventLog=-100000001` reads as enabled on real
-    /// CoreCLR — the 64-bit two's-complement wrap leaves the low 32
-    /// bits at `0xFFFFFFFF`, non-zero.
-    ///
-    /// We return `None` in CoreCLR's two failure arms only:
-    ///   * `endPtr == val` — no digits were consumed.
-    ///   * `errno == ERANGE` — either the magnitude exceeded `uint64`
-    ///     (`strtoul` itself sets ERANGE, regardless of sign) or the
-    ///     magnitude fit in 64 bits but was positive and exceeded
-    ///     `UINT32_MAX` (PAL's HOST_64BIT post-processing arm). The
-    ///     caller treats `None` as the default `0`, i.e. disabled.
-    ///
-    /// `IsEventSourceLoggingEnabled` only asks whether the parsed value
-    /// is non-zero, but the parser is shaped to surface the full DWORD
-    /// so future knobs that care about the numeric magnitude can reuse it.
-    ///
-    /// Exposed as `internal` so the test assembly can pin the parser's
-    /// behaviour directly without going through the QCall dispatcher.
-    let internal tryParseClrConfigDword (raw : string) : uint32 option =
-        let isHexDigit (c : char) : bool =
-            (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-
-        // Skip leading whitespace, as `wcstoul` does.
-        let trimmed = raw.TrimStart ()
-
-        if System.String.IsNullOrEmpty trimmed then
-            None
-        else
-            // A single optional `+` / `-` sign.
-            let signStart, negate =
-                match trimmed.[0] with
-                | '+' -> 1, false
-                | '-' -> 1, true
-                | _ -> 0, false
-
-            // Optional `0x` / `0X` radix prefix — only treated as a prefix
-            // when at least one hex digit follows it. Otherwise the `0`
-            // is itself the parsed digit and the `x` becomes the
-            // stop character (matching `wcstoul`'s longest-valid-prefix
-            // semantics).
-            let bodyStart =
-                if
-                    signStart + 2 < trimmed.Length
-                    && trimmed.[signStart] = '0'
-                    && (trimmed.[signStart + 1] = 'x' || trimmed.[signStart + 1] = 'X')
-                    && isHexDigit trimmed.[signStart + 2]
-                then
-                    signStart + 2
-                else
-                    signStart
-
-            let mutable idx = bodyStart
-
-            // Consume the longest hex-digit prefix and ignore everything
-            // after it (so `1garbage` parses as 1, matching `wcstoul`).
-            while idx < trimmed.Length && isHexDigit trimmed.[idx] do
-                idx <- idx + 1
-
-            if idx = bodyStart then
-                None
-            else
-                let hexBody = trimmed.Substring (bodyStart, idx - bodyStart)
-
-                // Parse the magnitude as `uint64` to capture values that fit
-                // in `unsigned long` but exceed `UInt32.MaxValue`.
-                match
-                    System.UInt64.TryParse (
-                        hexBody,
-                        System.Globalization.NumberStyles.HexNumber,
-                        System.Globalization.CultureInfo.InvariantCulture
-                    )
-                with
-                | false, _ ->
-                    // Magnitude exceeds `uint64`, so glibc `strtoul`
-                    // itself sets `errno = ERANGE`. PAL_wcstoul never
-                    // clears that errno (its HOST_64BIT post-processing
-                    // only adds an additional ERANGE arm for positive
-                    // 32-bit overflows), so `GetConfigDWORD` rejects
-                    // via the errno arm for both signs.
-                    None
-                | true, magnitude ->
-                    if (not negate) && magnitude > uint64 System.UInt32.MaxValue then
-                        // Positive value whose magnitude exceeds
-                        // UINT32_MAX. PAL_wcstoul's HOST_64BIT branch
-                        // clamps to UINT32_MAX and sets `errno = ERANGE`,
-                        // which `GetConfigDWORD` then rejects.
-                        None
-                    else
-                        // Negation happens in `unsigned long` (mod 2^64)
-                        // inside strtoul, and the final `(ULONG)res`
-                        // cast truncates to the low 32 bits. We mirror
-                        // both steps explicitly.
-                        let wrapped = if negate then 0UL - magnitude else magnitude
-                        Some (uint32 wrapped)
-
-    /// Look up a CLRConfig string knob in the guest's emulated environment,
-    /// mirroring CoreCLR's `EnvGetString` priority: try `DOTNET_<name>` first,
-    /// then `COMPlus_<name>` as a fallback. Returns `None` for an unset or
-    /// empty value (CoreCLR's `GetConfigString` also discards the empty
-    /// string via the `*ret != W('\0')` check in `clrconfig.cpp:288`).
-    let internal lookupClrConfigString (env : UnixByteString list) (name : string) : string option =
-        let tryEnv (key : string) : string option =
-            match EnvironmentPal.tryGetValue "EventSource_GetClrConfig" key env with
-            | Some value when value.Length > 0 -> Some value
-            | _ -> None
-
-        match tryEnv $"DOTNET_%s{name}" with
-        | Some v -> Some v
-        | None -> tryEnv $"COMPlus_%s{name}"
-
     /// Encode `s` as UTF-16-LE bytes followed by a two-byte NUL terminator,
     /// ready to be written into a freshly-allocated native-memory block whose
     /// address is then handed back to the guest as a `char*`. The CoreLib
@@ -155,17 +27,17 @@ module NativeEventSource =
     /// All three handlers are faithful to CoreCLR with respect to the guest's
     /// emulated environment:
     ///
-    ///   * `EventSource_GetClrConfig(name)` returns the value of
-    ///     `DOTNET_<name>` (or the `COMPlus_<name>` fallback) from
-    ///     `state.Kernel.Environment`, encoded as a freshly-allocated
+    ///   * `EventSource_GetClrConfig(name)` returns the value CLRConfig
+    ///     reads for the knob `name` (see `ClrConfigEnvironment.tryGetValue`),
+    ///     encoded as a freshly-allocated
     ///     UTF-16 buffer with a NUL terminator. Unset/empty values yield a
     ///     null pointer, matching CoreCLR's behaviour when the knob is
     ///     absent (CoreLib's `new string((char*)null)` then collapses to
     ///     `String.Empty`).
     ///
     ///   * `IsEventSourceLoggingEnabled()` returns the value of
-    ///     `DOTNET_EnableEventLog` parsed as a CLRConfig DWORD (hex by
-    ///     default; see `tryParseClrConfigDword`), defaulting to `0`
+    ///     the `EnableEventLog` knob parsed as a CLRConfig DWORD (hex by
+    ///     default; see `ClrConfigEnvironment.tryParseDword`), defaulting to `0`
     ///     (FALSE) when unset or malformed. This matches
     ///     `XplatEventLogger::IsEventLoggingEnabled()` in
     ///     `eventtracebase.h:489`. When the result is FALSE the persistent
@@ -203,7 +75,7 @@ module NativeEventSource =
             let configName =
                 NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
 
-            match lookupClrConfigString state.Kernel.Environment configName with
+            match ClrConfigEnvironment.tryGetValue operation state.Kernel.Environment configName with
             | None ->
                 state
                 |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ManagedPointerSource.Null) ctx.Thread
@@ -229,10 +101,15 @@ module NativeEventSource =
             // underlying QCall as `int32`-returning (the wrapper converts via
             // `cgt.un`).
             let enabled =
-                match lookupClrConfigString state.Kernel.Environment "EnableEventLog" with
+                match
+                    ClrConfigEnvironment.tryGetValue
+                        "IsEventSourceLoggingEnabled"
+                        state.Kernel.Environment
+                        "EnableEventLog"
+                with
                 | None -> false
                 | Some raw ->
-                    match tryParseClrConfigDword raw with
+                    match ClrConfigEnvironment.tryParseDword raw with
                     | None -> false
                     | Some value -> value <> 0u
 
