@@ -172,16 +172,50 @@ module internal NativeReflectionInvocation =
 
         ManagedPointerByteView.addByteOffset state byteType (index * NativeRuntimeTypeHelpers.nativeIntSize) buffer
 
-    /// The type view to re-impose on a byref the caller built for a value of type `ty`: `ty` itself
-    /// for a value type, `System.Object` for a reference type.
+    /// What the caller's byref for one argument addresses. This is the split
+    /// `MethodInvokerCommon.Initialize` records as `InvokerArgFlags.IsValueType`
+    /// (MethodInvokerCommon.cs:40-67), and by which `MethodBaseInvoker` decided whether to hand over
+    /// the address of a box's payload or of an `object?` slot (MethodBaseInvoker.cs:167).
+    [<RequireQualifiedAccess>]
+    type private ArgumentStorage =
+        /// The payload of a box of this value type.
+        | ValueTypePayload of ConcreteTypeHandle
+        /// The payload of a boxed `System.IntPtr`. A pointer or function-pointer parameter always
+        /// arrives this way: `RuntimeType.CheckValue` turns a `null`, an `IntPtr` or a
+        /// `System.Reflection.Pointer` argument into an `IntPtr` before the byref is formed
+        /// (RuntimeType.cs:993-999, `TryChangeTypeSpecial` in RuntimeType.CoreCLR.cs), and
+        /// `InvokeUtil::CopyArg` copies its pointer-width payload (invokeutil.cpp:247-253).
+        | IntPtrPayload
+        /// An `object?` slot. `InvokeUtil::CopyArg` copies a reference-type argument as a bare
+        /// `OBJECTREF` without regard to its exact type.
+        | ObjectSlot
+
+    /// Classify the storage the caller's byref addresses for a value of type `ty`, which must not
+    /// itself be a byref: a byref parameter's byref addresses the storage for its *element*.
+    let private argumentStorageOf
+        (ctx : NativeCallContext)
+        (state : IlMachineState)
+        (ty : ConcreteTypeHandle)
+        : ArgumentStorage
+        =
+        match ty with
+        | ConcreteTypeHandle.Byref _ ->
+            failwith
+                $"argumentStorageOf: %O{ty} is a byref, which never occupies argument storage of its own; classify its element instead"
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> ArgumentStorage.IntPtrPayload
+        | ConcreteTypeHandle.Concrete _
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ ->
+            if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state ty then
+                ArgumentStorage.ValueTypePayload ty
+            else
+                ArgumentStorage.ObjectSlot
+
+    /// The type view to re-impose on a byref to `storage`.
     ///
-    /// This is `_invokerArgFlags[i] & InvokerArgFlags.IsValueType` (MethodBaseInvoker.cs:167), the
-    /// split by which the caller decided what its byref addresses: a value type's byref addresses
-    /// the *payload* of a box, a reference type's an `object?` slot. `InvokeUtil::CopyArg` splits on
-    /// it too, and copies a reference-type argument as a bare `OBJECTREF` without regard to its
-    /// exact type — so `System.Object` is the honest view there, and it is also the only one
-    /// available, since an array type has no nominal `ConcreteType` to name as a reinterpret
-    /// target.
+    /// `System.Object` is the honest view of an `object?` slot, and also the only one available,
+    /// since an array type has no nominal `ConcreteType` to name as a reinterpret target.
     ///
     /// One classifier for both the value-parameter path (which dereferences through the view) and
     /// the byref-parameter path (which hands the viewed byref to the callee), so the two cannot
@@ -189,15 +223,18 @@ module internal NativeReflectionInvocation =
     let private viewTypeOf
         (ctx : NativeCallContext)
         (state : IlMachineState)
-        (ty : ConcreteTypeHandle)
+        (storage : ArgumentStorage)
         : ConcreteTypeHandle
         =
-        if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state ty then
-            ty
-        else
+        match storage with
+        | ArgumentStorage.ValueTypePayload ty -> ty
+        | ArgumentStorage.IntPtrPayload ->
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.IntPtr
+        | ArgumentStorage.ObjectSlot ->
             AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes ctx.BaseClassTypes.Object
 
-    /// The byref the caller placed at `args[index]`, re-viewed as a byref to `ty`.
+    /// The byref the caller placed at `args[index]`, re-viewed as a byref to what `storage` says it
+    /// addresses.
     ///
     /// `args[i]` is a `ByReference`, whose sole field is a `ref byte`: the caller type-erases every
     /// argument through `Unsafe.As<T, byte>` on the way in (`ByReference.Create<T>`), so the byref
@@ -214,7 +251,7 @@ module internal NativeReflectionInvocation =
         (byReferenceZero : CliType)
         (buffer : ManagedPointerSource)
         (index : int)
-        (ty : ConcreteTypeHandle)
+        (storage : ArgumentStorage)
         : ManagedPointerSource
         =
         let slot = argumentByrefSlot ctx.BaseClassTypes state buffer index
@@ -233,7 +270,7 @@ module internal NativeReflectionInvocation =
             failwith
                 $"%s{operation}: args[%d{index}] was a null byref; the managed argument-marshalling layer is expected to have materialised every argument before the QCall"
 
-        let viewType = viewTypeOf ctx state ty
+        let viewType = viewTypeOf ctx state storage
 
         let viewConcreteType =
             AllConcreteTypes.lookup viewType state.ConcreteTypes
@@ -265,12 +302,78 @@ module internal NativeReflectionInvocation =
         =
         match parameterType with
         | ConcreteTypeHandle.Byref element ->
-            argumentByref ctx operation state byReferenceZero buffer index element
+            argumentByref ctx operation state byReferenceZero buffer index (argumentStorageOf ctx state element)
             |> CliRuntimePointer.Managed
             |> CliType.RuntimePointer
         | _ ->
-            argumentByref ctx operation state byReferenceZero buffer index parameterType
-            |> IlMachineState.readManagedByref ctx.BaseClassTypes state
+            let storage = argumentStorageOf ctx state parameterType
+
+            let value =
+                argumentByref ctx operation state byReferenceZero buffer index storage
+                |> IlMachineState.readManagedByref ctx.BaseClassTypes state
+
+            match storage with
+            | ArgumentStorage.ValueTypePayload _
+            | ArgumentStorage.ObjectSlot -> value
+            | ArgumentStorage.IntPtrPayload ->
+                // `CopyValueClassArg` copies the `IntPtr`'s bits into a pointer-typed argument slot
+                // (invokeutil.cpp:252), so the callee receives the `IntPtr`'s own field, with
+                // whatever provenance it carries, rather than the `IntPtr` wrapper.
+                match value with
+                | CliType.ValueType vt -> (CliValueType.PrimitiveLikeField vt).Contents
+                | other ->
+                    failwith
+                        $"%s{operation}: args[%d{index}] for the pointer parameter %O{parameterType} should address a boxed IntPtr, but read %O{other}"
+
+    /// CoreCLR's `InvokeUtil::CreatePointer` (invokeutil.cpp:58): a fresh `System.Reflection.Pointer`
+    /// whose `_ptr` is `value` and whose `_ptrType` is the `RuntimeType` of `pointerType` itself,
+    /// not of its pointee. That is the shape `Pointer.Box` produces, and `_ptrType` is what
+    /// `RuntimeType.TryChangeTypeSpecial` reads back when the `Pointer` is later passed as an
+    /// argument. CoreCLR writes both fields directly rather than running `Pointer`'s constructor,
+    /// and so does this.
+    let private createPointer
+        (ctx : NativeCallContext)
+        (pointerType : ConcreteTypeHandle)
+        (value : EvalStackValue)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        match pointerType with
+        | ConcreteTypeHandle.Pointer _ -> ()
+        | other -> failwith $"createPointer: %O{other} is not an unmanaged pointer type"
+
+        let state, _, pointerClass =
+            NativeRuntimeTypeHelpers.concretizeNonGenericCorelibType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                state
+                "System.Reflection"
+                "Pointer"
+
+        let addr, state =
+            IlMachineState.allocateUninitialisedInstance ctx.LoggerFactory ctx.BaseClassTypes pointerClass state
+
+        let ptrTypeObject, state =
+            IlMachineState.getOrAllocateType
+                ctx.LoggerFactory
+                ctx.BaseClassTypes
+                (RuntimeTypeHandleTarget.Closed pointerType)
+                state
+
+        // Coerce against the field's own zero so the stored cell has the `void*` field's shape
+        // while keeping whatever provenance `value` carries.
+        let ptrField = IlMachineState.requiredOwnInstanceFieldId state pointerClass "_ptr"
+
+        let ptrZero =
+            ManagedHeap.get addr state.ManagedHeap
+            |> AllocatedNonArrayObject.DereferenceFieldById ptrField
+
+        let state =
+            state
+            |> IlMachineState.setInstanceFieldById addr ptrField (EvalStackValue.toCliTypeCoerced ptrZero value)
+            |> IlMachineState.setOwnInstanceField addr "_ptrType" (CliType.ObjectRef (Some ptrTypeObject))
+
+        addr, state
 
     /// Reject the invocation shapes CoreCLR handles but this does not, naming the triggering
     /// condition rather than diverging quietly.
@@ -382,8 +485,8 @@ module internal NativeReflectionInvocation =
         // `what` names the thing being classified in the message: the parameter itself, or the
         // element a byref parameter points at. The managed layer classifies the two identically
         // (`MethodInvokerCommon.Initialize` strips the byref first and sets `IsValueType` from what
-        // remains, MethodInvokerCommon.cs:42), so the same shapes are unservable in both positions
-        // and for the same reasons.
+        // remains, MethodInvokerCommon.cs:42), so a `Nullable<T>` is unservable in both positions
+        // and for the same reason.
         let rejectValueShape (index : int) (what : string) (ty : ConcreteTypeHandle) : unit =
             match ty with
             | ConcreteTypeHandle.Byref _ ->
@@ -391,18 +494,6 @@ module internal NativeReflectionInvocation =
                 // is a malformed image rather than a guest shape.
                 failwith
                     $"%s{operation} on %s{describe ()}: %s{what} of parameter %d{index} is itself a byref, which no signature can encode"
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ ->
-                // `InvokerArgFlags.IsValueType` is set for a pointer
-                // (`MethodInvokerCommon.Initialize`), so the caller's byref addresses the payload of
-                // a boxed `IntPtr` rather than an `object?` slot — reachable with a plain `null`
-                // argument, which `CheckValue` converts to `IntPtr.Zero`. `argumentIsValueType` says
-                // false for a structural pointer handle, so `viewTypeOf` would choose the
-                // reference-type view and misaddress the payload. Reject here instead: the view
-                // needs a pointer-width payload path of its own, and a `System.Reflection.Pointer`
-                // argument needs unwrapping besides.
-                failwith
-                    $"TODO: %s{operation} on %s{describe ()}: %s{what} of parameter %d{index} is a pointer or function pointer, whose argument buffer entry addresses a boxed IntPtr payload rather than an object slot"
             | _ ->
 
             if NativeRuntimeTypeHelpers.argumentIsNullable ctx.BaseClassTypes state ty then
@@ -418,7 +509,16 @@ module internal NativeReflectionInvocation =
             | ConcreteTypeHandle.Byref element ->
                 // `ref`, `out` and `in` alike: all are `ELEMENT_TYPE_BYREF` here, and the
                 // distinction lives on the `ParameterInfo`, which the QCall never sees.
-                rejectValueShape index "the byref element" element
+                match element with
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
+                    // `argumentStorageOf` would classify the element as an `IntPtr` payload, but
+                    // what `RuntimeType.CheckValue` and `MethodBaseInvoker.CopyBack` make of a
+                    // byref-to-pointer argument is unmeasured, so refuse rather than guess what the
+                    // byref addresses.
+                    failwith
+                        $"TODO: %s{operation} on %s{describe ()}: parameter %d{index} is a byref to the pointer or function pointer %O{element}, whose argument storage and copy-back are not modelled"
+                | _ -> rejectValueShape index "the byref element" element
             | _ -> rejectValueShape index "the type" parameterType
 
         target.Method.Signature.ParameterTypes |> List.iteri rejectParameterShape
@@ -433,22 +533,10 @@ module internal NativeReflectionInvocation =
                 // one. PawPrint's call path returns the byref itself.
                 failwith
                     $"TODO: %s{operation} on %s{describe ()}: a byref return must be dereferenced and boxed before it leaves the QCall"
-            | ConcreteTypeHandle.Pointer _
-            | ConcreteTypeHandle.FunctionPointer _ ->
-                // The callee leaves a native int on the eval stack, not an object reference, so the
-                // reference-return branch below could not take it. CoreCLR does not hand the raw
-                // value back either: `InvokeUtil::CreateObjectAfterInvoke` wraps an
-                // `ELEMENT_TYPE_PTR` return in a `System.Reflection.Pointer` (which also carries the
-                // pointed-to Type, so `Pointer.Unbox` and `GetPointerType` work), and boxes a
-                // function pointer as an `IntPtr`. Constructing a `Pointer` is its own piece of
-                // work; reject rather than invent a representation.
-                failwith
-                    $"TODO: %s{operation} on %s{describe ()}: a pointer return must be boxed as System.Reflection.Pointer, and a function-pointer return as IntPtr, before it leaves the QCall"
             | _ ->
-                // A `Nullable<T>` return is accepted: CoreCLR boxes it as a true `Nullable<T>` and
-                // then `Nullable::NormalizeBox`es that to a boxed `T` or to null, and the
-                // resumption branch reaches the same result by boxing the returned value through
-                // `Boxing.boxValue`.
+                // A pointer or function-pointer return is accepted, and so is a `Nullable<T>`: the
+                // resumption branch gives each the object `InvokeUtil::CreateObjectAfterInvoke`
+                // does.
                 ()
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
@@ -786,6 +874,26 @@ module internal NativeReflectionInvocation =
                         EvalStackValue.NativeInt (NativeIntSource.TypeHandlePtr (RuntimeTypeHandleTarget.Closed returnType)) ] ->
                         let _returnValue, state = IlMachineState.popEvalStack ctx.Thread state
                         let _marker, state = IlMachineState.popEvalStack ctx.Thread state
+
+                        match returnType with
+                        | ConcreteTypeHandle.Pointer _ ->
+                            // `InvokeUtil::CreateObjectAfterInvoke`'s `ELEMENT_TYPE_PTR` case
+                            // (invokeutil.cpp:555): a `Pointer` even when the pointer is null.
+                            let addr, state = createPointer ctx returnType returnValue state
+                            CliType.ObjectRef (Some addr), state
+                        | ConcreteTypeHandle.FunctionPointer _ ->
+                            // `InvokeUtil::CreateObjectAfterInvoke`'s `ELEMENT_TYPE_FNPTR` case
+                            // (invokeutil.cpp:570): a boxed `IntPtr` carrying the pointer's bits.
+                            let intPtr =
+                                AllConcreteTypes.getRequiredNonGenericHandle
+                                    state.ConcreteTypes
+                                    ctx.BaseClassTypes.IntPtr
+
+                            let addr, state =
+                                Boxing.boxValueType ctx.LoggerFactory ctx.BaseClassTypes intPtr returnValue state
+
+                            CliType.ObjectRef (Some addr), state
+                        | _ ->
 
                         if NativeRuntimeTypeHelpers.argumentIsValueType ctx.BaseClassTypes state returnType then
                             // `InvokeUtil::CreateObjectAfterInvoke` (reflectioninvocation.cpp:678):

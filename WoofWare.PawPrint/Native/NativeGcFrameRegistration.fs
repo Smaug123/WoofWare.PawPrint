@@ -99,8 +99,9 @@ module NativeGcFrameRegistration =
     ///   * A guest going through reflection. `RuntimeMethodHandle.InvokeMethod` issues the call
     ///     itself, so the immediate caller frame is CoreLib's even though the registration and
     ///     the code that inspects it afterwards are both the guest's. An assembly-level check
-    ///     would wave that through. It is not reachable today — pointer-typed parameters are
-    ///     refused by that QCall, see below.
+    ///     would wave that through. Measured: a reflective `Invoke(null, new object[] { IntPtr.Zero })`
+    ///     arrives with `System.RuntimeMethodHandle::InvokeMethod` as the calling frame, and the
+    ///     caller check refuses it.
     ///
     /// The frames on the list qualify because the registration cannot escape them, not because
     /// they are CoreLib: `_reserved1`/`_reserved2` are private, are written only by the
@@ -170,18 +171,15 @@ module NativeGcFrameRegistration =
             // catch: `ofBitPattern` normalises a zero `NativeIntPlaceholder` into it, so the
             // placeholder case never carries zero.
             //
-            // No guest can reach this refusal today (measured): a guest doing exactly the
+            // No guest can reach this refusal (measured): a guest doing exactly the
             // forged-pointer reflection call from the doc comment
             // (`GetType("System.Runtime.GCFrameRegistration")`, then
-            // `Invoke(null, new object[] { IntPtr.Zero })`) stops one level earlier, in
-            // `RuntimeMethodHandle_InvokeMethod`, with "parameter 0 is a pointer or function
-            // pointer, whose argument buffer entry addresses a boxed IntPtr payload rather than
-            // an object slot" — the gap the parked
-            // `sourcesPure/ReflectionInvokePointerSignature.cs` is filed against. So the only
-            // live route into this handler is CoreLib's own, and CoreLib always passes
+            // `Invoke(null, new object[] { IntPtr.Zero })`) is stopped one check earlier, by the
+            // caller check above, because its calling frame is `RuntimeMethodHandle::InvokeMethod`.
+            // So the only route past that check is CoreLib's own, and CoreLib always passes
             // `&someLocal`. No test can currently kill this refusal; without it PawPrint would
-            // *silently succeed* where CoreCLR faults, and un-parking that reflection gap makes
-            // it reachable.
+            // *silently succeed* where CoreCLR faults if `permittedCallers` ever admitted a frame
+            // that forwards a pointer it was handed.
             match NativeCall.managedPointerOfPointerArgument operation "pRegistration" instruction.Arguments.[0] with
             | ManagedPointerSource.Null ->
                 failwith
