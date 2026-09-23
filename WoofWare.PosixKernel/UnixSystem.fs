@@ -830,8 +830,8 @@ module UnixSystem =
                     SoMaxConn = UnixMachineState.defaultSoMaxConn flavour
                     LocalAddresses = defaultLocalAddresses
                     LocalRoutes = defaultLocalRoutes
-                    VirtualClockTicks = 0L
-                    WallClockEpochMs = 0L
+                    NanosecondsSinceBoot = 0L
+                    BootTime = UnixTimestamp.epoch
                     NonCryptoRandomState = defaultNonCryptoRandomState
                     CryptoRandomState = defaultCryptoRandomState
                     ProcessorCount = defaultProcessorCount
@@ -870,7 +870,7 @@ module UnixSystem =
     /// out.
     ///
     /// Takes the moment explicitly rather than reading
-    /// `system.Machine.WallClockEpochMs`, so that the result does not depend
+    /// the machine's realtime clock, so that the result does not depend
     /// on whether the caller happened to set the clock before or after the
     /// filesystem — an ordering dependence between two `with` functions is
     /// exactly the kind of thing that works until someone reorders the calls.

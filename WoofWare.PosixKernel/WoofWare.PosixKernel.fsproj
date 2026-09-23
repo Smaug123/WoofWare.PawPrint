@@ -48,6 +48,7 @@
         <Compile Include="ProcessId.fs" />
         <Compile Include="UnixProcess.fs" />
         <Compile Include="UnixMachine.fs" />
+        <Compile Include="UnixClock.fs" />
         <Compile Include="UnixSystemState.fs" />
         <Compile Include="UnixSocket.fs" />
         <Compile Include="UnixConnection.fs" />

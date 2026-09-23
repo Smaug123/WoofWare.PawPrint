@@ -287,8 +287,7 @@ module System_Threading_Monitor =
                     // deadline fire (`SyncBlockMonitor.fireAcquireTimeout` rewrites
                     // to `Int32 0`).
                     let deadlineTicks =
-                        state.Kernel.VirtualClockTicks
-                        + int64 timeout * UnixMachineState.ticksPerMillisecond
+                        state.Kernel.VirtualClockTicks + int64 timeout * ClockPal.ticksPerMillisecond
 
                     state
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.Int32 (Int32Source.Verbatim 1)) currentThread

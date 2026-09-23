@@ -108,12 +108,7 @@ module NativeThreading =
                 // `timeout > 0` is the finite-wait case. `int64` keeps the addition
                 // safe against an `Int32.MaxValue` timeout against a long-running
                 // virtual clock.
-                Some (
-                    Some (
-                        state.Kernel.VirtualClockTicks
-                        + int64 timeout * UnixMachineState.ticksPerMillisecond
-                    )
-                )
+                Some (Some (state.Kernel.VirtualClockTicks + int64 timeout * ClockPal.ticksPerMillisecond))
 
         let targetThreadId = threadIdFromThreadAddr state "Thread.Join" threadAddr
 
@@ -681,7 +676,7 @@ module NativeThreading =
                 else
                     let deadline =
                         state.Kernel.VirtualClockTicks
-                        + int64 millisecondsTimeout * UnixMachineState.ticksPerMillisecond
+                        + int64 millisecondsTimeout * ClockPal.ticksPerMillisecond
 
                     Scheduler.blockOnSleep ctx.Thread (Some deadline) state
 

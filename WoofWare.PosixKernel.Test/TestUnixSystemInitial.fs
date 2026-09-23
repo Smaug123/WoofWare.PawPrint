@@ -142,8 +142,8 @@ module TestUnixSystemInitial =
     let ``both clocks boot at zero on every flavour`` (platform : SimulatedUnixPlatform) : unit =
         let system : UnixSystem<int, string> = UnixSystem.initial platform
 
-        system.Machine.VirtualClockTicks |> shouldEqual 0L
-        system.Machine.WallClockEpochMs |> shouldEqual 0L
+        system.Machine.NanosecondsSinceBoot |> shouldEqual 0L
+        system.Machine.BootTime |> shouldEqual UnixTimestamp.epoch
 
     /// The cursor is where `bind(2)` for port 0 begins its sweep, and
     /// `allocateEphemeralPort` walks *upward* from it, wrapping at the top. A

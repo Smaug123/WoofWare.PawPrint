@@ -179,7 +179,7 @@ type ClockJitterStrategy =
     /// monotonic) or above `ClockJitter.maxOvershootBoundTicks`. A bound that is
     /// legal here but still large enough to run the clock past its representable
     /// range is not rejected — that fault belongs to
-    /// `UnixMachineState.withVirtualClockTicks`, which raises it naming the wait
+    /// `EmulatedKernel.withVirtualClockTicks`, which raises it naming the wait
     /// responsible.
     ///
     /// Keep the probability small. Every jump discards the interval between the
@@ -286,7 +286,7 @@ module ClockJitter =
     /// nothing more.
     ///
     /// A returned target is always strictly greater than `currentClock`, so a
-    /// caller can hand it straight to `UnixMachineState.withVirtualClockTicks`.
+    /// caller can hand it straight to `EmulatedKernel.withVirtualClockTicks`.
     /// `pendingDeadlines` may contain duplicates and need not be sorted: the
     /// answer depends only on the *set* of deadlines strictly ahead of the
     /// clock, so a caller need not enumerate threads in any particular order.
@@ -740,8 +740,37 @@ type EmulatedKernel =
     member this.LocalAddresses : uint32 list = this.Machine.LocalAddresses
     member this.LocalRoutes : Ipv4Prefix list = this.Machine.LocalRoutes
     member this.NextSocketId : SocketId = this.Machine.NextSocketId
-    member this.VirtualClockTicks : int64 = this.Machine.VirtualClockTicks
-    member this.WallClockEpochMs : int64 = this.Machine.WallClockEpochMs
+
+    /// The virtual clock in 100 ns ticks (`ClockPal.nanosecondsPerTick`): the
+    /// machine's uptime, which PawPrint only ever advances by whole ticks, so
+    /// every reading the guest gets from it is exact in `DateTime`'s unit. So too
+    /// is every inode timestamp: the kernel stamps its realtime clock, which moves
+    /// with this one, so PawPrint's instruction cost and deadlines are the reason a
+    /// file's nanosecond part is always a multiple of 100.
+    ///
+    /// The driver loop advances it by `InstructionCostTicks` each time it
+    /// increments `StepCounter`; see that field for the rate and what it means
+    /// as a machine speed. Elapsed-time polling loops such as
+    /// `while (TickCount64 - start < N)` therefore terminate in
+    /// `N * ClockPal.ticksPerMillisecond / InstructionCostTicks` scheduler ticks,
+    /// which is the cost to keep in mind when choosing the rate: it buys sleep
+    /// fidelity and is paid for in run length.
+    ///
+    /// Reading the clock never moves it, so two threads reading on the same tick
+    /// observe the same value; the scheduler is its sole writer. *Not* derived from
+    /// `StepCounter`: the driver's deadline jump moves the clock forward to the
+    /// next deadline when no thread is Runnable, and that jump must not require a
+    /// matching jump in `StepCounter` (which would skew the spurious-wakeup
+    /// schedule).
+    member this.VirtualClockTicks : int64 =
+        let nanoseconds = this.Machine.NanosecondsSinceBoot
+
+        if nanoseconds % ClockPal.nanosecondsPerTick <> 0L then
+            failwith
+                $"EmulatedKernel.VirtualClockTicks: the machine has been up for %d{nanoseconds} ns, which is not a whole number of 100 ns ticks. PawPrint advances the clock only by whole ticks, so something else advanced it."
+
+        nanoseconds / ClockPal.nanosecondsPerTick
+
     member this.NonCryptoRandomState : uint64 = this.Machine.NonCryptoRandomState
     member this.CryptoRandomState : uint64 = this.Machine.CryptoRandomState
     member this.ProcessorCount : int = this.Machine.ProcessorCount
@@ -1091,6 +1120,22 @@ module EmulatedKernel =
             ClockJitter = strategy
         }
 
+    /// Boot the machine's realtime clock at `epochMs` milliseconds since the Unix
+    /// epoch. Rejects a value outside `[0, ClockPal.maxWallClockEpochMs]` at the
+    /// boundary, rather than letting it reach a guest that would receive a silently
+    /// corrupt `DateTime` from `DateTime.UtcNow`'s unvalidated ctor.
+    let withWallClockEpochMs (epochMs : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        if epochMs < 0L then
+            failwith
+                $"WallClockEpochMs must be non-negative (PawPrint does not model a simulated process booting before the Unix epoch); got %d{epochMs}"
+
+        if epochMs > ClockPal.maxWallClockEpochMs then
+            failwith
+                $"WallClockEpochMs must be at most %d{ClockPal.maxWallClockEpochMs} (9999-12-31T23:59:59.999Z, the last instant System.DateTime can represent); got %d{epochMs}"
+
+        kernel
+        |> mapMachine (UnixMachineState.withBootTime (UnixTimestamp.ofMillisecondsSinceEpoch epochMs))
+
 
 
 
@@ -1112,6 +1157,49 @@ module EmulatedKernel =
         }
 
 
+    /// Largest `VirtualClockTicks`: the most whole 100 ns ticks whose nanoseconds
+    /// fit the machine's `int64` uptime, about 292 years.
+    [<Literal>]
+    let maxVirtualClockTicks : int64 = 92233720368547758L
+
+    /// The checks `withVirtualClockTicks` and `retireStep` share: shared so that the fused
+    /// per-instruction advance cannot drift from the general setter's contract.
+    let validateVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : unit =
+        // Checked independently of the monotonicity comparison below, which on its own would
+        // wave through a negative target whenever the current value is more negative still —
+        // reachable because a machine assembled by record-copy never passed through here.
+        if ticks < 0L then
+            failwith
+                $"virtual clock would be set to %d{ticks} ticks; simulated uptime starts at zero and cannot be negative"
+
+        if ticks < kernel.VirtualClockTicks then
+            failwith
+                $"virtual clock would move backwards, from %d{kernel.VirtualClockTicks} to %d{ticks} ticks; it is monotonic by construction and every guest-visible clock derives from it"
+
+        // The bound also keeps deadline arithmetic total. A finite deadline is
+        // `clock + timeoutMs * ticksPerMillisecond`, and `Thread.Sleep(Int32.MaxValue)`
+        // contributes about 2.1e13 ticks; with the clock bounded at 9.2e16 the sum cannot
+        // approach `Int64.MaxValue`, so the seven deadline sites need no checked arithmetic of
+        // their own. Without the bound they would need it, and the horizon is close enough to
+        // matter: the deadline jump advances the clock to a deadline *without* retiring a step,
+        // so a loop of `Sleep(Int32.MaxValue)` reaches the wrap in about 430,000 iterations — a
+        // few million interpreted instructions.
+        if ticks > maxVirtualClockTicks then
+            failwith
+                $"simulated uptime has reached %d{ticks} ticks (100 ns each), past the %d{maxVirtualClockTicks} whose nanoseconds the kernel's clock can hold — about 292 years. The guest has almost certainly been jumping the clock with long timed waits; PawPrint cannot represent time beyond this."
+
+    /// Advance the virtual clock to `ticks`, which must not move it backwards and must keep it
+    /// inside `maxVirtualClockTicks`.
+    ///
+    /// Enforcing the bound at the writer means a guest that runs the clock off the end faults at
+    /// the wait that did it, naming the operation responsible, rather than at whichever unlucky
+    /// later clock read happens to trip over the value.
+    let withVirtualClockTicks (ticks : int64) (kernel : EmulatedKernel) : EmulatedKernel =
+        validateVirtualClockTicks ticks kernel
+
+        kernel
+        |> mapMachine (UnixMachineState.advanceClock ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick))
+
     /// Retire one interpreted instruction: bump `StepCounter` by one and charge
     /// `InstructionCostTicks` of virtual time, subject to exactly the checks `withVirtualClockTicks`
     /// applies.
@@ -1129,14 +1217,14 @@ module EmulatedKernel =
         // by record-copy bypasses that setter entirely, which is the same hole the monotonicity
         // check below already exists to cover. Revalidating keeps this path's guarantee independent
         // of how its caller's kernel was assembled.
-        UnixMachineState.validateVirtualClockTicks ticks kernel.Machine
+        validateVirtualClockTicks ticks kernel
 
         { kernel with
             StepCounter = kernel.StepCounter + 1L
             Machine =
-                { kernel.Machine with
-                    VirtualClockTicks = ticks
-                }
+                UnixMachineState.advanceClock
+                    ((ticks - kernel.VirtualClockTicks) * ClockPal.nanosecondsPerTick)
+                    kernel.Machine
         }
 
 
@@ -1690,12 +1778,17 @@ type KernelConfig =
         /// Wall-clock reading, in milliseconds since the Unix epoch, that the
         /// simulated process boots at — the instant `DateTime.UtcNow` reports
         /// before the virtual clock has advanced. Must lie in
-        /// `[0, UnixMachineState.maxWallClockEpochMs]`. See
-        /// `EmulatedKernel.WallClockEpochMs` for why the default of 0 (and
-        /// hence a guest that thinks it is 1970) is the honest choice, and note
-        /// that whatever a host picks here becomes part of that run's replay
-        /// contract: reading the host's real clock to fill it in would make a
-        /// recorded trace's timestamps depend on when it was recorded.
+        /// `[0, ClockPal.maxWallClockEpochMs]`, the range `DateTime` can
+        /// represent; see `EmulatedKernel.withWallClockEpochMs`.
+        ///
+        /// Defaults to 0, so a default run reports a `DateTime.UtcNow` a few
+        /// milliseconds after 1970-01-01T00:00:00Z. That is chosen precisely
+        /// because it looks wrong to a human: a timestamp in a PawPrint trace
+        /// is synthetic, and a plausible-looking "today" would invite someone
+        /// to read meaning into it. Whatever a host picks here becomes part of
+        /// that run's replay contract, exactly like the PRNG seeds: reading the
+        /// host's real clock to fill it in would make a recorded trace's
+        /// timestamps depend on when it was recorded.
         WallClockEpochMs : int64
         /// Unix platform identity the guest observes via
         /// `Environment.OSVersion` (on a Unix CoreLib).
@@ -1841,7 +1934,7 @@ module KernelConfig =
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks
         |> EmulatedKernel.withClockJitter config.ClockJitter
         |> EmulatedKernel.withOptimalMaxSpinWaitsPerSpinIteration config.OptimalMaxSpinWaitsPerSpinIteration
-        |> EmulatedKernel.mapMachine (UnixMachineState.withWallClockEpochMs config.WallClockEpochMs)
+        |> EmulatedKernel.withWallClockEpochMs config.WallClockEpochMs
         |> EmulatedKernel.mapMachine (UnixMachineState.withFileSystemType config.FileSystemType)
         |> EmulatedKernel.mapProcess (UnixProcessState.withProcessPath "KernelConfig.ProcessPath" config.ProcessPath)
         |> EmulatedKernel.withFileSystemAndCurrentDirectory

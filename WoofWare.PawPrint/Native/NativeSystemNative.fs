@@ -2006,20 +2006,13 @@ module NativeSystemNative =
         | Some "SystemNative_GetLowResolutionTimestamp",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int64) ->
-            // PAL entry behind `Environment.TickCount64` on Unix. Real
-            // CoreCLR returns `clock_gettime(CLOCK_MONOTONIC_COARSE)`
-            // converted to milliseconds; PawPrint substitutes the
-            // deterministic virtual clock the scheduler maintains so the
-            // result is bit-for-bit reproducible. The clock counts 100 ns
-            // ticks, so the conversion to the milliseconds this entry point
-            // returns is an explicit divide — truncating, which is faithful:
-            // upstream's coarse clock truncates too. Read-only: the
-            // scheduler is the sole writer of `VirtualClockTicks`.
+            // PAL entry behind `Environment.TickCount64` on Unix: the kernel's
+            // monotonic clock in milliseconds, read from whichever clock the
+            // real shim reads on the simulated flavour (see `ClockPal`).
+            // Read-only: the scheduler is the sole writer of the clock.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (
-                    Int64Source.Verbatim (UnixMachineState.lowResolutionTimestampMs state.Kernel.Machine)
-                ))
+                (EvalStackValue.Int64 (Int64Source.Verbatim (ClockPal.lowResolutionTimestampMs state.Kernel.Machine)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2149,22 +2142,19 @@ module NativeSystemNative =
             // on Unix (Stopwatch.Unix.cs) — so the units here are pinned by
             // CoreLib rather than chosen.
             //
-            // The reading derives from the same `VirtualClockTicks` that backs
+            // The reading comes from the same kernel clock that backs
             // `SystemNative_GetLowResolutionTimestamp` above, because upstream
             // *that* entry point is `minipal_lowres_ticks()`, which reads the
-            // very same monotonic clock in milliseconds. One field for both
-            // reproduces a relationship the guest can observe:
-            // `Environment.TickCount64` and `Stopwatch` cannot disagree about
-            // elapsed time. The scaling and its overflow guard live in
-            // `UnixMachineState.monotonicTimestampNanos`.
+            // same monotonic time in milliseconds. That reproduces a
+            // relationship the guest can observe: `Environment.TickCount64` and
+            // `Stopwatch` cannot disagree about elapsed time. Which clock each
+            // reads, and the conversion, live in `ClockPal`.
             //
             // Read-only, like every other clock observer: the scheduler is the
-            // sole writer of `VirtualClockTicks`.
+            // sole writer of the clock.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (
-                    Int64Source.Verbatim (UnixMachineState.monotonicTimestampNanos state.Kernel.Machine)
-                ))
+                (EvalStackValue.Int64 (Int64Source.Verbatim (ClockPal.monotonicTimestampNanos state.Kernel.Machine)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
@@ -2174,15 +2164,14 @@ module NativeSystemNative =
             // PAL entry behind `DateTime.UtcNow` on Unix: 100ns ticks since the
             // Unix epoch, which CoreLib offsets by `UnixEpochTicks` and stamps
             // `DateTimeKind.Utc` (DateTime.Unix.cs). Real CoreCLR reads
-            // `clock_gettime(CLOCK_REALTIME)`; PawPrint derives the wall clock
-            // from the same deterministic virtual clock that backs
-            // `Environment.TickCount64`, offset by the kernel's boot-time
-            // wall-clock reading. Read-only, like every other clock observer:
-            // the scheduler is the sole writer of `VirtualClockTicks`, and
-            // `WallClockEpochMs` never changes after configuration.
+            // `clock_gettime(CLOCK_REALTIME)`, and so does this, from the
+            // kernel's realtime clock, which moves with the monotonic clock
+            // behind `Environment.TickCount64`. Read-only, like every other
+            // clock observer: the scheduler is the sole writer of the clock,
+            // and the boot instant never changes after configuration.
             state
             |> IlMachineState.pushToEvalStack'
-                (EvalStackValue.Int64 (Int64Source.Verbatim (UnixMachineState.systemTimeAsTicks state.Kernel.Machine)))
+                (EvalStackValue.Int64 (Int64Source.Verbatim (ClockPal.systemTimeAsTicks state.Kernel.Machine)))
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some

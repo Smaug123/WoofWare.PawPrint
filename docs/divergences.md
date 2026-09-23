@@ -740,12 +740,14 @@ Thread.Sleep(1);
 Console.WriteLine(Environment.TickCount64 - before);
 ```
 
-**Where this lives in code**: `EmulatedKernel.VirtualClockTicks` is the clock and
+**Where this lives in code**: `EmulatedKernel.VirtualClockTicks` is the clock, a view in
+100 ns ticks of the kernel's `UnixMachineState.NanosecondsSinceBoot`, and
 `EmulatedKernel.InstructionCostTicks` the rate; `Program.stepPrepared` is its only writer, via
-the validating `EmulatedKernel.withVirtualClockTicks`. The three projections the guest sees are
-`systemTimeAsTicks`, `monotonicTimestampNanos` and `lowResolutionTimestampMs`, all in
-`EmulatedKernel.fs`. `TestSchedulerSleepFairness` pins that a sleeping thread is observably
-asleep.
+the validating `EmulatedKernel.withVirtualClockTicks`. The three shim entry points the guest
+sees are `systemTimeAsTicks`, `monotonicTimestampNanos` and `lowResolutionTimestampMs` in
+`Native/ClockPal.fs`, each reading the kernel's `UnixClock.clockGettime` for the clock the real
+shim reads on the simulated flavour. `TestSchedulerSleepFairness` pins that a sleeping thread
+is observably asleep.
 
 ## Rendered stack traces apply none of `StackTrace.ToString`'s display policy
 

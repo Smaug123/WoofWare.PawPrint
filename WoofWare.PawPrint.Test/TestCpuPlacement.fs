@@ -286,7 +286,7 @@ module TestCpuPlacement =
                     StepCounter = 5678L
                     Machine =
                         { plain.Machine with
-                            VirtualClockTicks = 1234L
+                            NanosecondsSinceBoot = 1234L * ClockPal.nanosecondsPerTick
                             NonCryptoRandomState = 0xDEADBEEFUL
                         }
                 }

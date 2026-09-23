@@ -480,7 +480,7 @@ module Program =
     /// The clock-jump must not bump `StepCounter` — the spurious-wakeup
     /// schedules are keyed on `StepCounter`, and a jump-driven tick is
     /// deliberately *not* a real scheduler tick. Keeping the two clocks
-    /// separate is exactly why `VirtualClockTicks` is its own field rather
+    /// separate is exactly why `VirtualClockTicks` is its own clock rather
     /// than derived from `StepCounter`.
     let private nextDeadline (state : IlMachineState) : int64 option =
         state.ThreadState
@@ -642,7 +642,7 @@ module Program =
             // own timeout arithmetic has run the clock off the representable
             // range; `chooseJump` guarantees the target is ahead of the clock,
             // so the monotonicity half of that check cannot fire here.
-            | Some target -> state.MapKernel (EmulatedKernel.mapMachine (UnixMachineState.withVirtualClockTicks target))
+            | Some target -> state.MapKernel (EmulatedKernel.withVirtualClockTicks target)
 
         // After advancing `VirtualClockTicks`, fire any wait deadlines that
         // are now in the past. This runs every tick (not just on
@@ -714,9 +714,7 @@ module Program =
                         // ran time off the end, instead of letting the addition wrap and hand
                         // some later sleeper a negative deadline that fires immediately.
                         state.MapKernel (
-                            EmulatedKernel.mapMachine (
-                                UnixMachineState.withVirtualClockTicks (max state.Kernel.VirtualClockTicks target)
-                            )
+                            EmulatedKernel.withVirtualClockTicks (max state.Kernel.VirtualClockTicks target)
                         )
 
                     advanceUntilRunnableOrQuiescent (fireExpiredDeadlines state)

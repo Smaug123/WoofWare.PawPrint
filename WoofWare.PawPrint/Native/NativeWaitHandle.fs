@@ -343,8 +343,7 @@ module NativeWaitHandle =
             // `int64` keeps the addition safe even for
             // `Int32.MaxValue` timeouts against a long-running clock.
             let deadlineTicks =
-                state.Kernel.VirtualClockTicks
-                + int64 timeout * UnixMachineState.ticksPerMillisecond
+                state.Kernel.VirtualClockTicks + int64 timeout * ClockPal.ticksPerMillisecond
 
             match blockingWait (Some deadlineTicks) state with
             | WaitHandle.WaitOutcome.Acquired state -> state, waitObjectZero
@@ -720,8 +719,7 @@ module NativeWaitHandle =
                     $"%s{operation}: negative timeout %d{timeout} ms is not Infinite (-1); WaitHandle.WaitMultiple validates this argument before the QCall, so reaching here means the wrapper was bypassed."
             else
                 let deadlineTicks =
-                    state.Kernel.VirtualClockTicks
-                    + int64 timeout * UnixMachineState.ticksPerMillisecond
+                    state.Kernel.VirtualClockTicks + int64 timeout * ClockPal.ticksPerMillisecond
 
                 match WaitHandle.waitMultiple ctx.Thread handles waitAll (Some deadlineTicks) state with
                 | WaitHandle.MultiWaitOutcome.Acquired (index, abandoned, state) ->

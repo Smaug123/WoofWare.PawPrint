@@ -14,8 +14,8 @@
     <Compile Include="BindingProbes.fs" />
     <Compile Include="TestUnixTaskTable.fs" />
     <Compile Include="TestUnixProcessState.fs" />
-    <Compile Include="TestMonotonicTimestamp.fs" />
-    <Compile Include="TestSystemTimeAsTicks.fs" />
+    <Compile Include="TestClock.fs" />
+    <Compile Include="TestClockAgainstHost.fs" />
         <Compile Include="TestUnixSystemStep.fs" />
     <Compile Include="TestUnixSystemInitial.fs" />
     <Compile Include="TestUnixSystemInvariants.fs" />

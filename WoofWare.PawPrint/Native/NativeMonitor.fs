@@ -153,10 +153,7 @@ module NativeMonitor =
                     // driver tick's `fireExpiredDeadlines` pass — observably an immediate
                     // timeout. `int64` keeps the addition safe for `Int32.MaxValue`
                     // timeouts against a long-running clock.
-                    Some (
-                        state.Kernel.VirtualClockTicks
-                        + int64 timeout * UnixMachineState.ticksPerMillisecond
-                    )
+                    Some (state.Kernel.VirtualClockTicks + int64 timeout * ClockPal.ticksPerMillisecond)
 
             // The optimistic `Int32 1` (signalled), pushed before parking; see the contract
             // comment at the top of this arm.
