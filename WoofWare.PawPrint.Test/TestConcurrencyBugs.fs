@@ -4,7 +4,6 @@ open System.Collections.Concurrent
 open System.Collections.Immutable
 open System.IO
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Harness for "find the bad interleaving" concurrency-bug demonstrations.
@@ -112,7 +111,7 @@ module TestConcurrencyBugs =
     let private assy = typeof<RunResult>.Assembly
 
     let private dotnetRuntimes : ImmutableArray<string> =
-        DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        FrameworkUnderTest.runtimeDirs ()
 
     /// Everything about the simulated process except which of its schedules
     /// we are exploring. `Program.runToFirstFork` takes this rather than a

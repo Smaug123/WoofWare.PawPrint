@@ -1,10 +1,8 @@
 namespace WoofWare.Pawprint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 
@@ -27,8 +25,6 @@ open WoofWare.PawPrint.Test
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestVariableSizeNewobj =
-    let private assy = typeof<RunResult>.Assembly
-
     /// Is this the concrete handle for `System.String`?
     let private isSystemString (state : IlMachineState) (handle : ConcreteTypeHandle) : bool =
         match AllConcreteTypes.lookup handle state.ConcreteTypes with
@@ -82,8 +78,7 @@ module TestVariableSizeNewobj =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

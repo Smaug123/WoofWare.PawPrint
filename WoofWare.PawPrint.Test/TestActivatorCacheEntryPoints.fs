@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Which constructor entry points `RuntimeTypeHandle_GetActivationInfo` hands to
@@ -19,8 +17,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestActivatorCacheEntryPoints =
-
-    let private assy = typeof<RunResult>.Assembly
 
     let private guestSource : string =
         """
@@ -58,8 +54,7 @@ public static class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

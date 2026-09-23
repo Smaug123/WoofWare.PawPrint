@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open System.Reflection
 open System.Reflection.Emit
@@ -10,7 +9,6 @@ open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// An entry point whose IL no C# source can spell: a `Main` that returns with the wrong number
@@ -127,9 +125,7 @@ module TestFabricatedEntryPoint =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
         BoundedRun.run loggerFactory name (Some name) peImage (HostConfig.Default dotnetRuntimes)

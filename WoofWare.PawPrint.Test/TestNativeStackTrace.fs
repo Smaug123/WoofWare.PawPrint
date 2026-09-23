@@ -5,7 +5,6 @@ open System.IO
 open System.Reflection.Metadata
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// <summary>
@@ -38,9 +37,7 @@ public static class Entry
 """
 
     let private prepareGuest (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory) : Program.PreparedProgram =
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         let image = Roslyn.compile [ guestSource ]
 

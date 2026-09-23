@@ -5,7 +5,6 @@ open System.IO
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Direct-call tests for the two halves of Thread's spin-wait surface:
@@ -56,9 +55,7 @@ public static class Entry
                 []
                 [ trivialSource ]
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

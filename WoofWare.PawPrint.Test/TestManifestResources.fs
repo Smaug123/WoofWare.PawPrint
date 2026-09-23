@@ -11,7 +11,6 @@ open System.Runtime.InteropServices
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
@@ -74,9 +73,7 @@ public static class Entry
         (image : byte[])
         : Program.PreparedProgram
         =
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

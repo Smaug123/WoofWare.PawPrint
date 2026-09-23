@@ -1,11 +1,9 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open System.Runtime.InteropServices
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 open WoofWare.PosixKernel.Test
@@ -34,8 +32,6 @@ open WoofWare.PosixKernel.Test
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestPlatformSocketSupport =
-
-    let private assy = System.Reflection.Assembly.GetExecutingAssembly ()
 
     /// The real export, in the shim this test host is running against. This is
     /// the fact the model claims to reproduce — not a proxy for it — because the
@@ -90,8 +86,7 @@ class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

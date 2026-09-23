@@ -4,7 +4,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// End-to-end acceptance for issue #844 itself. The guest's spinners use the BCL's `SpinWait`,
@@ -31,7 +30,7 @@ module TestSchedulerSleepFairness =
     let private testAssy = typeof<Marker>.Assembly
 
     let private dotnetRuntimes : ImmutableArray<string> =
-        DotnetRuntime.SelectForDll testAssy.Location |> ImmutableArray.CreateRange
+        FrameworkUnderTest.runtimeDirs ()
 
     /// Compiled once and reused across seeds: recompiling per seed would dominate the run
     /// without changing semantics.

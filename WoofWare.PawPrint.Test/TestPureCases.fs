@@ -6,7 +6,6 @@ open System.IO
 open FsUnitTyped
 open Microsoft.Extensions.Logging
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 open WoofWare.PosixKernel
@@ -442,8 +441,7 @@ module TestPureCases =
         (image : byte array)
         : RunOutcome
         =
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

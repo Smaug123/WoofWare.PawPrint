@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// An `[UnsafeAccessor]` naming a value type's generic virtual method, called with a type argument
@@ -18,8 +16,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestUnsafeAccessorSharedGenericVirtual =
-
-    let private assy = typeof<RunResult>.Assembly
 
     let private source (typeArgument : string) : string =
         $$"""
@@ -93,8 +89,7 @@ public static class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         let run () : RunOutcome =
             use peImage = new MemoryStream (image)

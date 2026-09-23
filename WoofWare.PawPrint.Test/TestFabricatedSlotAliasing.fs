@@ -8,7 +8,6 @@ open System.Reflection.Emit
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// A MethodImpl on a class replaces the *slot's* implementation, and a slot is shared by every
@@ -151,7 +150,7 @@ public static class Driver
             let dotnetRuntimeDirs =
                 seq {
                     yield tempDir
-                    yield! DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
+                    yield! FrameworkUnderTest.runtimeDirs ()
                 }
                 |> ImmutableArray.CreateRange
 

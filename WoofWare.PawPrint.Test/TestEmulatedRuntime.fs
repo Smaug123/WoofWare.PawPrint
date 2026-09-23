@@ -1,17 +1,13 @@
 namespace WoofWare.PawPrint.Test
 
 open System
-open System.Buffers.Binary
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
-open System.Reflection.Metadata.Ecma335
-open System.Reflection.PortableExecutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Which runtime a run serves is read from the CoreLib it loaded: `EmulatedRuntime.classify`
@@ -24,8 +20,6 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestEmulatedRuntime =
 
-    let private assy = typeof<RunResult>.Assembly
-
     let private trivialGuest : string =
         """
 public static class Program
@@ -33,11 +27,6 @@ public static class Program
     public static void Main() { }
 }
 """
-
-    let private coreLibFileName : string = "System.Private.CoreLib.dll"
-
-    let private hostRuntimeDirs () : ImmutableArray<string> =
-        DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
 
     /// The CoreLib PawPrint resolves when it starts a trivial guest along `runtimeDirs`.
     let private resolvedCoreLib (runtimeDirs : ImmutableArray<string>) : DumpedAssembly =
@@ -110,7 +99,7 @@ public static class Program
 
     [<Test>]
     let ``The CoreLib the suite resolves is the build EmulatedRuntime pins for its major`` () =
-        assertMatchesPin (resolvedCoreLib (hostRuntimeDirs ()))
+        assertMatchesPin (resolvedCoreLib (FrameworkUnderTest.runtimeDirs ()))
 
     [<Test>]
     let ``The pinned linux-x64 CoreLib is the build EmulatedRuntime pins for its major`` () =
@@ -165,39 +154,6 @@ public static class Program
             Prop.forAll cores (fun core -> Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<string>) (property core))
         )
 
-    /// A copy of the host's CoreLib whose AssemblyDef row states `major`, written into `dir`.
-    ///
-    /// Assembly binding is by simple name and ignores the referenced version, so a directory
-    /// holding this at the head of `DotnetRuntimeDirs` is where the guest's CoreLib comes from.
-    let private writeCoreLibWithMajor (major : uint16) (dir : string) : string =
-        let bytes = File.ReadAllBytes typeof<obj>.Assembly.Location
-
-        let offset =
-            use peReader = new PEReader (ImmutableArray.Create<byte> bytes)
-            let metadata = peReader.GetMetadataReader ()
-            // ECMA-335 II.22.2: an Assembly row is HashAlgId (4 bytes), then MajorVersion (2 bytes).
-            peReader.PEHeaders.MetadataStartOffset
-            + metadata.GetTableMetadataOffset TableIndex.Assembly
-            + 4
-
-        // The offset is right if it finds the major the unpatched image states.
-        BinaryPrimitives.ReadUInt16LittleEndian (ReadOnlySpan (bytes, offset, 2))
-        |> int
-        |> shouldEqual (typeof<obj>.Assembly.GetName().Version.Major)
-
-        BinaryPrimitives.WriteUInt16LittleEndian (Span (bytes, offset, 2), major)
-
-        let path = Path.Combine (dir, coreLibFileName)
-        File.WriteAllBytes (path, bytes)
-
-        use peReader = new PEReader (ImmutableArray.Create<byte> bytes)
-
-        let patchedDefinition = peReader.GetMetadataReader().GetAssemblyDefinition ()
-
-        patchedDefinition.Version.Major |> shouldEqual (int major)
-
-        path
-
     [<TestCase 0us>]
     [<TestCase 9us>]
     [<TestCase 11us>]
@@ -209,12 +165,12 @@ public static class Program
         Directory.CreateDirectory dir |> ignore<DirectoryInfo>
 
         try
-            let patched = writeCoreLibWithMajor major dir
+            let patched = PatchedCoreLib.write major dir
 
             let runtimeDirs =
                 seq {
                     yield dir
-                    yield! hostRuntimeDirs ()
+                    yield! FrameworkUnderTest.runtimeDirs ()
                 }
                 |> ImmutableArray.CreateRange
 

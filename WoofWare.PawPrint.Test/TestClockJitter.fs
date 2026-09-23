@@ -7,7 +7,6 @@ open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -686,10 +685,8 @@ public static class Entry
 }
 """
 
-    let private assy = typeof<RunResult>.Assembly
-
     let private dotnetRuntimes : ImmutableArray<string> =
-        DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        FrameworkUnderTest.runtimeDirs ()
 
     /// Run `joinTimeoutSource` under the given jitter strategy, returning the
     /// exit code and the state the guest left behind.

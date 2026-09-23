@@ -5,7 +5,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 open WoofWare.PosixKernel
@@ -38,7 +37,7 @@ module TestUnmanagedCallersOnlyEntry =
     let private assy = typeof<RunResult>.Assembly
 
     let private dotnetRuntimes : ImmutableArray<string> =
-        DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        FrameworkUnderTest.runtimeDirs ()
 
     /// The guests, each named by the interpreter path it arrives through.
     let private cases : string list =

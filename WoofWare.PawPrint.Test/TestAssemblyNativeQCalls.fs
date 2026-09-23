@@ -8,7 +8,6 @@ open System.Reflection.PortableExecutable
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Tests for the `AssemblyNative_*` QCalls that answer questions about an assembly's own
@@ -445,9 +444,7 @@ public static class StreamVersionLibrary
         (image : byte[])
         : Program.PreparedProgram
         =
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

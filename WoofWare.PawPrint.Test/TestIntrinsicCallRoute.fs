@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Pins the half of `IlMachineStateExecution.CallRoute` that no passing guest can: an
@@ -19,8 +17,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestIntrinsicCallRoute =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// `Unsafe.IsAddressGreaterThan<T>` is method-level `[Intrinsic]`, PawPrint does not implement
     /// it, and its CoreLib body is `throw new PlatformNotSupportedException()`: real .NET
@@ -61,8 +57,7 @@ unsafe class CallsUnimplementedIntrinsicThroughCalli
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

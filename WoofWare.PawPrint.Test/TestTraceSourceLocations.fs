@@ -2,12 +2,10 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.Collections.Generic
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open Microsoft.Extensions.Logging
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Covers the wiring between the sequence points an assembly carries and the trace log that
@@ -16,8 +14,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestTraceSourceLocations =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// `Triple` occupies lines 3-7 and `Main` lines 8-11; both are the guest's own code, and so
     /// both should be attributed to File0.cs.
@@ -122,8 +118,7 @@ module TestTraceSourceLocations =
             (let image = Roslyn.compileWithSymbols [ source ]
              let seen, loggerFactory = harvestingLoggerFactory ()
 
-             let dotnetRuntimes =
-                 DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+             let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
              use peImage = new MemoryStream (image)
 

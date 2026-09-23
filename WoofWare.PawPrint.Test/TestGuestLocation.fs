@@ -1,11 +1,9 @@
 namespace WoofWare.PawPrint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// `GuestLocation` is what turns "the guest is stuck" into "the guest is stuck *here*". The
@@ -19,8 +17,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestGuestLocation =
-
-    let private assy = typeof<RunResult>.Assembly
 
     // ---------------------------------------------------------------------------------------
     // The pure renderer.
@@ -142,8 +138,7 @@ module TestGuestLocation =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

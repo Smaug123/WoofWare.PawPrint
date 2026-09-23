@@ -6,7 +6,6 @@ open System.Reflection.Metadata
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
@@ -97,9 +96,7 @@ public static class Entry
         let image =
             Roslyn.compileAssemblyWithResources "NativeEnumTest" OutputKind.ConsoleApplication [] [] [ enumSource ]
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

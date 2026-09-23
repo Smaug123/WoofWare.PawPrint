@@ -7,7 +7,6 @@ open System.Reflection.Metadata
 open System.Reflection.PortableExecutable
 open FsUnitTyped
 open Microsoft.CodeAnalysis
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 type CrossAssemblySpec =
@@ -114,8 +113,6 @@ module CrossAssemblyHarness =
     /// (an unhandled guest exception, an abort, a signal, or a host failure inside the
     /// interpreter) is raised, with the guest's log on stderr.
     let executeWithPawPrint (entryPath : string) (entryBytes : byte[]) : int =
-        let assy = typeof<RunResult>.Assembly
-
         let messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "entry_assembly", entryPath ]
 
@@ -124,15 +121,20 @@ module CrossAssemblyHarness =
         let dotnetRuntimeDirs =
             seq {
                 yield Path.GetDirectoryName entryPath
-                yield! DotnetRuntime.SelectForDll assy.Location
+                yield! FrameworkUnderTest.runtimeDirs ()
             }
             |> ImmutableArray.CreateRange
 
         use peImage = new MemoryStream (entryBytes)
 
         try
+            let outcome =
+                Program.run loggerFactory (Some entryPath) peImage (HostConfig.Default dotnetRuntimeDirs)
+
+            FrameworkUnderTest.assertOutcomeServes outcome
+
             let terminalState =
-                match Program.run loggerFactory (Some entryPath) peImage (HostConfig.Default dotnetRuntimeDirs) with
+                match outcome with
                 | RunOutcome.GuestUnhandledException (_, _, exn) ->
                     failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
                 | RunOutcome.Aborted (_, _, fatal) ->

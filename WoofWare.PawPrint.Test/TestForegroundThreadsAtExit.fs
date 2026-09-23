@@ -1,11 +1,9 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open System.Text
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -19,8 +17,6 @@ open WoofWare.PosixKernel
 [<Parallelizable(ParallelScope.All)>]
 module TestForegroundThreadsAtExit =
 
-    let private assy = typeof<RunResult>.Assembly
-
     let private runSource (name : string) (source : string) : RunOutcome =
         let image = Roslyn.compile [ source ]
 
@@ -29,8 +25,7 @@ module TestForegroundThreadsAtExit =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
         BoundedRun.run loggerFactory name (Some name) peImage (HostConfig.Default dotnetRuntimes)

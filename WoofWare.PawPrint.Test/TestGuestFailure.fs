@@ -1,11 +1,9 @@
 namespace WoofWare.PawPrint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// PawPrint has ~2,400 `failwith` sites and almost none of them can say where the guest was:
@@ -19,8 +17,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestGuestFailure =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// A guest that reaches a native entry point PawPrint does not implement. `failUnimplemented`
     /// is the single most common way PawPrint fails in practice, and its message names the
@@ -62,8 +58,7 @@ class CallsMissingNative
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

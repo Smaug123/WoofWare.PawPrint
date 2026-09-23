@@ -4,7 +4,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 
@@ -21,7 +20,7 @@ module TestRaces =
         Roslyn.compile [ source ]
 
     let private dotnetRuntimes : ImmutableArray<string> =
-        DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        FrameworkUnderTest.runtimeDirs ()
 
     /// Everything about the simulated process except which of its schedules we
     /// are exploring. Naming it separately from `HostConfig` is what lets the

@@ -8,7 +8,6 @@ open System.Runtime.InteropServices
 open System.Text.RegularExpressions
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 
@@ -168,7 +167,7 @@ module TestFSharpPureCases =
         let dotnetRuntimes =
             seq {
                 yield publishDir
-                yield! DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+                yield! FrameworkUnderTest.runtimeDirs ()
             }
             |> ImmutableArray.CreateRange
 
@@ -193,6 +192,9 @@ module TestFSharpPureCases =
                                     }
                             }
                     )
+
+            // The publish is self-contained, so the guest runs on the publish's own CoreLib.
+            FrameworkUnderTest.assertOutcomeServes pawPrintResult
 
             match realResult, pawPrintResult with
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _) ->
@@ -364,7 +366,7 @@ module TestFSharpPureCases =
         let dotnetRuntimes =
             seq {
                 yield publishDir
-                yield! DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
+                yield! FrameworkUnderTest.runtimeDirs ()
             }
             |> ImmutableArray.CreateRange
 

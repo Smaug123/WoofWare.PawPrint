@@ -4,7 +4,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// `MethodTable::InstantiationArg0` is CoreCLR's `mt->GetInstantiation()[0].AsMethodTable()`, and
@@ -16,8 +15,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInstantiationArg0 =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// Two `Pair` instantiations rather than one, and with *different* first arguments, so that a
     /// projection reading the wrong index — or ignoring the index and answering something
@@ -83,8 +80,7 @@ public static class Program
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestInstantiationArg0"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

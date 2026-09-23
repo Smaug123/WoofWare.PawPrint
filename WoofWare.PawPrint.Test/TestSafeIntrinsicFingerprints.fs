@@ -10,7 +10,6 @@ open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// A `safeIntrinsics` row admits an `[Intrinsic]` method's IL only when that IL is a body the row's
@@ -23,8 +22,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSafeIntrinsicFingerprints =
-
-    let private assy = typeof<RunResult>.Assembly
 
     let private coreLibFileName : string = "System.Private.CoreLib.dll"
 
@@ -503,7 +500,7 @@ public static class Program
             let runtimeDirs =
                 seq {
                     yield dir
-                    yield! DotnetRuntime.SelectForDll assy.Location
+                    yield! FrameworkUnderTest.runtimeDirs ()
                 }
                 |> ImmutableArray.CreateRange
 

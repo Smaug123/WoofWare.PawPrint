@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// A float's width at a control-flow join is decided over every incoming path, as CoreCLR's
@@ -30,8 +28,7 @@ module TestFloatWidthJoin =
             failwith $"real runtime terminated with an unhandled exception:\n%s{report}"
         | RealRuntimeResult.Aborted (code, report) -> failwith $"real runtime aborted (%O{code}):\n%s{report}"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

@@ -1,11 +1,9 @@
 namespace WoofWare.Pawprint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 
@@ -343,16 +341,13 @@ public class TestBulkMoveCellAccessSweep
             .Replace("MAKE_ARR", shape.Make.Replace ("SEED", "(i + 10)"))
             .Replace ("ELEMTYPE", elementType)
 
-    let private assy = typeof<RunResult>.Assembly
-
     let private runUnderPawPrint (sourceName : string) (image : byte[]) : int =
         let messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

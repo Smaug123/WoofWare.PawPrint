@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Pins the *shape* of minting a `DynamicMethod` a `call` names: the instruction runs twice, the
@@ -25,8 +23,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestDynamicMethodMintOutcome =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// `outer` calls `inner`, and nothing ever mints `inner`: no `CreateDelegate`, no `Invoke`.
     /// Deliberately the smallest such program, so that the single `call` against a `DynamicScope`
@@ -85,8 +81,7 @@ class CallsUnmintedCallee
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestDynamicMethodMintOutcome"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

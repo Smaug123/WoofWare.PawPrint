@@ -1,11 +1,9 @@
 namespace WoofWare.Pawprint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 
@@ -200,16 +198,13 @@ public class Probe
             .Replace("PROBE1", shape.FieldProbe.Replace("BUF", "buf").Replace ("IDX", "1"))
             .Replace ("PROBE2", shape.FieldProbe.Replace("BUF", "buf").Replace ("IDX", "2"))
 
-    let private assy = typeof<RunResult>.Assembly
-
     let private runUnderPawPrint (sourceName : string) (image : byte[]) : int =
         let messages, loggerFactory =
             LoggerFactory.makeTestWithProperties [ "source_file", sourceName ]
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

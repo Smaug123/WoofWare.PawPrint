@@ -4,7 +4,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -24,8 +23,6 @@ open WoofWare.PosixKernel
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestBufferRangeFit =
-
-    let private assy = System.Reflection.Assembly.GetExecutingAssembly ()
 
     /// A file of 32 bytes, so that a transfer bounded by the file is still
     /// larger than any buffer below.
@@ -130,8 +127,7 @@ class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

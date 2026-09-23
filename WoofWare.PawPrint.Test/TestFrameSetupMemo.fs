@@ -5,7 +5,6 @@ open System.IO
 open System.Reflection.Metadata.Ecma335
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// `IlMachineState._ConcretisedMethods` and `_ZeroValues` each claim that a hit answers what a
@@ -85,8 +84,7 @@ static class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
