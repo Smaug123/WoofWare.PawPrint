@@ -1,20 +1,17 @@
 // Variant dispatch onto an interface-map entry a *base class* contributed asks two questions
-// with different answers, and `tryResolveVirtualImplementation` has to keep them apart.
+// with different answers.
 //
-// Which method implements the slot is settled at the entry's owner: only the owner's own methods
-// and its bases' are eligible, never a method a more-derived type happens to introduce with a
-// matching signature. (PawPrint's class walk matches implicit interface implementations by name
-// and signature, so it cannot tell the difference on its own — hence resolving with the owner as
-// the dispatch type rather than the receiver.)
+// Which method implements the slot is settled at the type that declared the interface: only its own
+// methods and its bases' are eligible, never a method a more-derived type happens to introduce with
+// a matching signature.
 //
 // Which body that method lands on is then ordinary virtual dispatch from the receiver: an
 // implementing method may be `virtual` or `abstract` and overridden further down. Answering the
 // first question alone would run the base's body — or, for an `abstract` implementation, reach a
 // method with no body at all.
 //
-// The complementary cases that PawPrint still gets wrong — where a derived type *does* need to
-// take over an inherited slot without overriding it — are in
-// `InterfaceSlotHiddenByDerivedMethod.cs`.
+// The complementary cases — where a derived type *does* take over an inherited slot, by
+// re-declaring the interface — are in `InterfaceSlotHiddenByDerivedMethod.cs`.
 
 using System;
 

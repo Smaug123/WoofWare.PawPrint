@@ -116,7 +116,7 @@ module VirtualSlotLayout =
     /// ordinary method -- so a prefix match alone would accept images the runtime rejects. Upstream
     /// raises that as `COR_E_BADIMAGEFORMAT` with `IDS_CLASSLOAD_BADSPECIALMETHOD`, but what a guest
     /// (and the fabricated test) observes is a `TypeLoadException`.
-    let private declaredMethodsOf
+    let internal declaredMethodsOf
         (operation : string)
         (owner : SlotOwner)
         (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -224,7 +224,7 @@ module VirtualSlotLayout =
         )
 
     /// The assembly and metadata of the type a definition-level walk is laid out on.
-    let private definitionMetadata
+    let internal definitionMetadata
         (operation : string)
         (state : IlMachineState)
         (identity : ResolvedTypeIdentity)
@@ -286,7 +286,7 @@ module VirtualSlotLayout =
     /// comparison against this type's methods.
     ///
     /// `None` is `System.Object`, which extends nothing.
-    let private baseOfDefinition
+    let internal baseOfDefinition
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)

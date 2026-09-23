@@ -27,6 +27,8 @@ module IlMachineState =
     let signaturesEquivalentWithoutSubstitution =
         IlMachineTypeResolution.signaturesEquivalentWithoutSubstitution
 
+    let substitutionsEquivalent = IlMachineTypeResolution.substitutionsEquivalent
+
     let methodConstraintsMatch = IlMachineTypeResolution.methodConstraintsMatch
 
     let internal resolveTopLevelTypeFromName =

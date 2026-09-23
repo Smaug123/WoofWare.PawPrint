@@ -131,6 +131,16 @@ type IlMachineState =
         /// Add through `WithVirtualSlotTable`, never by assignment: an entry that disagreed with the
         /// walk would be undetectable, every later read taking the memo's word for it.
         _VirtualSlotTables : Map<ResolvedTypeIdentity, DispatchTable>
+        /// Memo of `InterfaceDispatch.ownDispatchMapOf`: the interface dispatch entries each type
+        /// contributes, keyed on the type's *instantiation*, because which instantiation of an
+        /// interface an entry names depends on it.
+        ///
+        /// A memo and not state, for the reason `_VirtualSlotTables` gives: the walk is a pure function
+        /// of metadata, and the registrations it performs on the way are idempotent. It exists because
+        /// interface dispatch consults it once per `callvirt` for every type on the receiver's chain.
+        ///
+        /// Add through `WithInterfaceDispatchMap`, never by assignment.
+        _InterfaceDispatchMaps : Map<ConcreteTypeHandle, InterfaceDispatchMap>
         /// Memo of `IlMachineMemberResolution.resolveMember`, keyed on the row and the generic
         /// context it is read in.
         ///
@@ -352,6 +362,11 @@ type IlMachineState =
     member this.WithVirtualSlotTable (definition : ResolvedTypeIdentity) (table : DispatchTable) =
         { this with
             _VirtualSlotTables = this._VirtualSlotTables |> Map.add definition table
+        }
+
+    member this.WithInterfaceDispatchMap (owner : ConcreteTypeHandle) (map : InterfaceDispatchMap) =
+        { this with
+            _InterfaceDispatchMaps = this._InterfaceDispatchMaps |> Map.add owner map
         }
 
     member this.WithMemberResolution (key : MemberResolutionKey) (resolved : ResolvedMemberReference) =

@@ -10,9 +10,8 @@
 //
 // CoreCLR gets this ordering structurally: its dispatch map — which records class
 // implementations — is consulted for every variance-compatible entry before
-// `MethodTable::FindDefaultInterfaceImplementation` runs at all. PawPrint resolves per entry, so
-// `tryResolveVirtualImplementation` has to resolve every compatible entry and compare afterwards.
-// Selecting the first entry outright gets this case wrong.
+// `MethodTable::FindDefaultInterfaceImplementation` runs at all. Selecting the first compatible
+// entry outright, and taking whatever it resolves to, gets this case wrong.
 //
 // `VariantInterfaceMapOrder.cs` covers the complementary case, where all the compatible entries
 // have real implementations and first-declared wins.
@@ -44,9 +43,8 @@ sealed class DimOnly : IDim<object>, IDim<Exception>
 // The *exact* instantiation of the call site is present, but its slot also falls back to the
 // default body — `Accept(object)` does not implicitly implement `IDim<ArgumentException>`'s
 // `Accept(ArgumentException)`, which needs an exact signature match. A real implementation
-// reached through a variance-compatible entry still outranks it, so this is 400, not 100. This
-// is the case that stops `tryResolveVirtualImplementation` short-circuiting the moment ordinary
-// resolution returns anything at all: it has to keep looking unless what it found is real.
+// reached through a variance-compatible entry still outranks it, so this is 400, not 100: the
+// exact instantiation's default body must not end the search for a class implementation.
 sealed class ExactSlotIsDefault : IDim<object>, IDim<ArgumentException>
 {
     public long Accept(object value) => 400;

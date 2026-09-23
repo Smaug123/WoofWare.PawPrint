@@ -1,32 +1,20 @@
-// PawPrint does not model interface *slot ownership* — which type's method implements a given
-// interface-map entry's slot. Its class walk (`IlMachineStateExecution.findClassImplementation`)
-// starts at the receiver and takes the first method matching the target's name and signature,
-// and when the call target's declaring type is an interface, `methodMatches` sets
-// `allowImplicitInterfaceImplementation`, which skips the guard that would otherwise reject
-// non-virtual and `newslot` candidates. So any same-signature method on the way down wins,
-// whether or not it has anything to do with the slot.
+// Interface slot *ownership*: which type's method implements a given interface-map entry's slot.
+// A same-signature method on the receiver is not enough on its own; what decides it is which type
+// declares the interface (see `InterfaceDispatch.ownDispatchMapOf`).
 //
-// Both cases below are that gap. They are the two directions of it, so that a fix has to get
-// ownership right rather than flip a bias:
+// The two cases below are the two directions of that rule, so that getting one right cannot be
+// done by biasing towards the base or towards the derived type:
 //
 //   * `Hidden` — the derived type must NOT take the slot. It only hides (`new`) the base's
 //     implicit implementation and never declares the interface, so the slot stays on the base.
-//     We answer with the derived method. This half involves no variance at all.
+//     This half involves no variance at all.
 //
 //   * `Redeclared` — the derived type MUST take the slot. It re-declares the base's
-//     instantiation *and* supplies a matching method, which re-implements the slot. We answer
-//     with the derived type's other overload instead, because we pick the interface-map entry by
-//     order and never ask which type implements each slot. (The metadata cannot be read by
-//     entry order alone here: `Redeclared` and the *passing* `InheritedParent` case in
-//     `VariantInterfaceMapOrder.cs` have the same InterfaceImpl row shape and opposite correct
-//     answers, because the C# compiler flattens the interface closure into the row list. Only
-//     slot ownership separates them.)
-//
-// `tryResolveVirtualImplementation` scopes each retargeted entry to the entry's owner, which is
-// as far as the interface map alone can go (see the cases it *does* fix in
-// `VariantInterfaceSlotOwnership.cs`). Getting the rest right needs a real dispatch map — slot
-// to implementing method, per interface entry — which changes ordinary non-variant interface
-// dispatch too and so wants its own change.
+//     instantiation *and* supplies a matching method, which re-implements the slot. (The
+//     metadata cannot be read by entry order alone here: `Redeclared` and the `InheritedParent`
+//     case in `VariantInterfaceMapOrder.cs` have the same InterfaceImpl row shape and opposite
+//     correct answers, because the C# compiler flattens the interface closure into the row list.
+//     Only slot ownership separates them.)
 
 using System;
 
@@ -66,12 +54,11 @@ class Program
     {
         ArgumentException e = new ArgumentException("boom");
 
-        // No variance: the root cause, reproducible without any of the variant-dispatch code.
-        // PawPrint answers 2.
+        // No variance: the base keeps the slot.
         if (CallExact(new Hidden(), e) != 1) return 1;
 
         // `Redeclared` re-implements ISlot<object>, so that slot binds to its own Accept(object)
-        // and wins over its ISlot<Exception> slot. PawPrint answers 5.
+        // and wins over its ISlot<Exception> slot.
         if (CallVariant(new Redeclared(), e) != 4) return 2;
 
         return 0;

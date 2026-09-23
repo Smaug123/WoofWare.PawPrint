@@ -258,6 +258,35 @@ module IlMachineTypeResolution =
 
         state, equivalent
 
+    /// Do these two instantiations of one generic definition name the same type, in the sense of
+    /// CoreCLR's `MetaSig::CompareTypeDefsUnderSubstitutions`? See
+    /// `TypeConcretization.substitutionsEquivalent`.
+    let substitutionsEquivalent
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (left : TypeConcretization.SubstitutionContext)
+        (right : TypeConcretization.SubstitutionContext)
+        : IlMachineState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let equivalent, ctx =
+            TypeConcretization.substitutionsEquivalent ctx (loader loggerFactory state) left right
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, equivalent
+
     let internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (ns : string option)

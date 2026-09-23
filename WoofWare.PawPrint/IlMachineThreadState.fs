@@ -335,6 +335,7 @@ module IlMachineThreadState =
             {
                 ConcreteTypes = AllConcreteTypes.Empty
                 _VirtualSlotTables = Map.empty
+                _InterfaceDispatchMaps = Map.empty
                 _MemberResolutions = Map.empty
                 _ConcretisedMethods = Map.empty
                 _ZeroValues = Map.empty

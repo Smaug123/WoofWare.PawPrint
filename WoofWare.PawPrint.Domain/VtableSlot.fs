@@ -59,3 +59,31 @@ type DispatchTable =
         /// cache. That is precisely the property a deterministic replay cannot afford.
         Occupants : ImmutableArray<VtableSlot>
     }
+
+/// One entry of a type's own interface dispatch map: an interface method as reached through one entry
+/// of the type's interface map, and the vtable slot that implements it.
+type InterfaceDispatchEntry =
+    {
+        /// The interface instantiation, exactly as the type's interface map holds it.
+        Interface : ConcreteTypeHandle
+        /// Where that instantiation sits in the type's interface map. A type's entries are searched in
+        /// this order, which is what decides between two entries that are both variance-compatible
+        /// with a call site.
+        InterfaceMapIndex : int
+        /// The vtable slot whose content implements the interface method.
+        ///
+        /// A slot rather than a method, because what runs is the *receiver's* occupant of that slot:
+        /// an implementing method may be overridden further down the chain than the type that mapped
+        /// it.
+        ImplementationSlot : int
+    }
+
+/// The interface dispatch entries one type *contributes*: CoreCLR's `DispatchMap` for a single
+/// MethodTable, which excludes everything the type inherits from its parent. Dispatch consults the
+/// receiver's map and then each ancestor's in turn.
+type InterfaceDispatchMap =
+    {
+        /// Keyed on the interface method's own declaration, which every instantiation of the interface
+        /// shares. Each list is in interface-map order.
+        ByInterfaceMethod : ImmutableDictionary<SlotIdentity, InterfaceDispatchEntry list>
+    }
