@@ -17,6 +17,7 @@ open WoofWare.PawPrint
 /// parsed and that it agrees with the key the assembly files it under.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestTypeRefHandle =
 
     /// An assembly with enough references to be worth walking. Corelib has no TypeRef rows at all,

@@ -14,6 +14,7 @@ open NUnit.Framework
 /// malformed blob. `TypeBuilder.SetCustomAttribute(ConstructorInfo, byte[])` writes the bytes to
 /// metadata without validating them, which is what makes the refusal reachable here.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedAttributeUsage =
 
     let private serString (s : string) : byte array =

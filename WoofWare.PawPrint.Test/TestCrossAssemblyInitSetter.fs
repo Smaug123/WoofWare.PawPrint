@@ -13,6 +13,7 @@ open NUnit.Framework
 /// sides have to agree about what a modified `void` return means, which they only do if both went
 /// through the one signature-concretisation function.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyInitSetter =
 
     [<Test>]

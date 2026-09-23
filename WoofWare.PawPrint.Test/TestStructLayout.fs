@@ -125,6 +125,7 @@ module private AutoLayoutOracle =
     let size (fields : FieldShape list) : int = fst (finalise fields)
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestStructLayout =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

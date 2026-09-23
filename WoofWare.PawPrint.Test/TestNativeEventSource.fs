@@ -31,6 +31,7 @@ open WoofWare.PosixKernel
 ///     surfaces a clear diagnostic, rather than silently losing the
 ///     event).
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeEventSource =
 
     let private trivialSource : string =

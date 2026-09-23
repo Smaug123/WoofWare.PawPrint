@@ -13,6 +13,7 @@ open NUnit.Framework
 /// (`TypeDefn.FromReference` on the declaring side, a different `TypeRef` on the accessor's side)
 /// rather than both being self-describing `FromDefinition`s that would compare equal by accident.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyUnsafeAccessor =
 
     let private payloadLibrary : CrossAssemblySpec =

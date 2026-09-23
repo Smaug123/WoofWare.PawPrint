@@ -23,6 +23,7 @@ open WoofWare.PawPrint
 /// region does not cover the offset the prologue raises from. Optimized IL — which is what every
 /// BCL assembly PawPrint interprets — starts the try at 0.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestPrologueExceptionScope =
 
     // The factory is intentionally not disposed: the DumpedAssembly keeps the logger.

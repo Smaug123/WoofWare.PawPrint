@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open NUnit.Framework
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyIsAssignableFrom =
 
     [<Test>]

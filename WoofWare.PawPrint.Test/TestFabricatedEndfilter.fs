@@ -20,6 +20,7 @@ open NUnit.Framework
 /// The fabricated method takes its filter result as an argument, so one body serves every row,
 /// and the driver's expectation is asserted against the host runtime as well as against PawPrint.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedEndfilter =
 
     /// `Filt::Run(int filterResult)`: throws an `InvalidOperationException` inside a `try` whose

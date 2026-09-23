@@ -11,6 +11,7 @@ open WoofWare.PawPrint
 /// conversion algorithms. An allowlist that could not tell them apart would admit all sixteen on the
 /// strength of having reviewed one.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestIntrinsicReturnShape =
 
     let private corelib =

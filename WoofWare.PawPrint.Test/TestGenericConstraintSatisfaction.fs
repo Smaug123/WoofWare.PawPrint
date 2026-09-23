@@ -30,6 +30,7 @@ open WoofWare.PawPrint
 ///     for want of `ResolveVirtualStaticMethod`. No interface in the corpus declares a static
 ///     abstract member, so the refinement never fires on either side.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestGenericConstraintSatisfaction =
 
     /// Every holder is single-parameter except the `H2_` pair, which exists so the reported

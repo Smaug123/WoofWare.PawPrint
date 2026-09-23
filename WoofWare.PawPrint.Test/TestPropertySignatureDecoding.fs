@@ -20,6 +20,7 @@ open WoofWare.PawPrint
 /// answer arrived at without consulting this decoder.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestPropertySignatureDecoding =
 
     let private corelibReader : PEReader =

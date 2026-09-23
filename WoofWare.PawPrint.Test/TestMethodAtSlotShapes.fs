@@ -15,6 +15,7 @@ open WoofWare.PawPrint
 /// `GetMethodAt`) stops first. A Roslyn-compiled corpus is read by PawPrint and loaded into the
 /// host CLR, whose own `GetMethodAt` and `GetMethodBase` say what the answer is.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodAtSlotShapes =
 
     let private corpusSource : string =

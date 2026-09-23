@@ -31,6 +31,7 @@ open WoofWare.PawPrint
 /// MethodTable builder, and its `RuntimeMethodHandle.GetSlot` is the same function the BCL's
 /// `PopulateMethods` calls. Nothing derived from PawPrint's own walk feeds the expected values.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedVtableLayout =
 
     /// Sets `MethodAttributes.Virtual` on the named MethodDef row, in the emitted bytes.

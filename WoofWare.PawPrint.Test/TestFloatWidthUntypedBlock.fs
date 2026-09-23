@@ -12,6 +12,7 @@ open WoofWare.PawPrint
 /// which the analysis does not decide. The guest emits its IL with `Reflection.Emit`, since no
 /// compiler leaves an int32 and a float32 on the stack at one join.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 [<Category("Guest")>]
 [<Explicit>]
 module TestFloatWidthUntypedBlock =

@@ -30,6 +30,7 @@ open WoofWare.PawPrint
 /// MemberRef on a TypeSpec naming a method that holds no slot, which CoreCLR rejects with
 /// `IDS_CLASSLOAD_MI_MUSTBEVIRTUAL` -- checked against the real runtime below rather than assumed.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestUnresolvableDeclaration =
 
     /// `AG<T>` declares `M` *non-virtually*, taking its own type parameter `T`; `BG : AG<int>`

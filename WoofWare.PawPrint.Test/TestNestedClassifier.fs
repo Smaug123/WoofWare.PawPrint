@@ -26,6 +26,7 @@ open WoofWare.PawPrint
 /// it, and no program that runs.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNestedClassifier =
 
     /// An image with a top-level `Probe.Outer` and a second type `Inner` whose nesting metadata

@@ -15,6 +15,7 @@ open WoofWare.PawPrint
 /// have.
 /// </summary>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodSpecToken =
 
     /// A MethodSpec over a MethodDef (`Local.Ident<int>`) and one over a MemberRef

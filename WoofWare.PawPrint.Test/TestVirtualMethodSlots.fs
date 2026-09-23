@@ -22,6 +22,7 @@ open WoofWare.PawPrint
 /// is exactly what `PopulateMethods`' `overrides[slot]` dedupe achieves. Comparing against that is
 /// a genuinely outside check: nothing about PawPrint's own walk feeds into the expected value.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestVirtualMethodSlots =
 
     // Undisposed on purpose: the returned DumpedAssembly.Logger closes over its sinks, and

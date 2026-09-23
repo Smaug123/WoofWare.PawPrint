@@ -14,6 +14,7 @@ open WoofWare.PawPrint
 /// resolves overlaps by replaying field writes in `EditedAtTime` order — so the rebuild must
 /// carry per-field timestamps across. This test locks the invariant in place.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCliValueTypeCoerceFrom =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

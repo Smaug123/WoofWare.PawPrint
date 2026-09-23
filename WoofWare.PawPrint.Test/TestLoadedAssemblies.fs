@@ -12,6 +12,7 @@ open WoofWare.PawPrint
 /// `LoadedAssemblies` is the one place that knows an assembly's definition identity is not its
 /// reference identity. These tests pin its laws directly.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestLoadedAssemblies =
 
     let private corelibPath : string = typeof<obj>.Assembly.Location

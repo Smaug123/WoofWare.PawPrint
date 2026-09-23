@@ -10,6 +10,7 @@ open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeEnum =
     type private EnumQCallResult =
         {

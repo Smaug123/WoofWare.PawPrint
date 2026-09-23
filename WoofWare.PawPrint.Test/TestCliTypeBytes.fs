@@ -16,6 +16,7 @@ open WoofWare.PawPrint
 /// `BitConverter.GetBytes(Half)` for sbyte, producing 2 bytes instead of 1)
 /// and endian mistakes in either direction.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCliTypeBytes =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

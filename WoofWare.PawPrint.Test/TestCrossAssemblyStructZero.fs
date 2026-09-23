@@ -11,6 +11,7 @@ open WoofWare.PawPrint
 /// live in an assembly that nothing else in the guest has any reason to name. The real runtime
 /// loads that assembly as part of building the struct's MethodTable; PawPrint must do the same.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyStructZero =
 
     /// `External` is the *only* thing `ArrCopy.Dep` contributes, and only `ArrCopy.Lib` names it.

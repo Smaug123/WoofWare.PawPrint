@@ -5,6 +5,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestGenericParamConstraints =
 
     let private loadAssembly (assemblyName : string) (source : string) : DumpedAssembly =

@@ -15,6 +15,7 @@ open NUnit.Framework
 /// result to a `ret` whose return type is `nuint`, a `stloc` into a `nint` local, comparisons
 /// against a `nint` and an int32, and an `add` against an int32.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedLdlen =
 
     /// `Len::AsNativeUInt(int[]) : nuint`, `Len::ThroughNativeIntLocal(int[]) : nint`,

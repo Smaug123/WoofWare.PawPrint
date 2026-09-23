@@ -25,6 +25,7 @@ open WoofWare.PosixKernel
 /// whatever path launched the test host — so they assert the exact bytes a configured
 /// `GuestConfig.AssemblyPath` produces, and the exact bytes its absence falls back to.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 [<Category("Guest")>]
 [<Explicit "Runs a guest end-to-end under the interpreter">]
 module TestCommandLineArgs =

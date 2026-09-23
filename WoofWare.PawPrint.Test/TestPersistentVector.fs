@@ -8,6 +8,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestPersistentVector =
 
     /// The trie's shape changes at each power of 32, so lengths are drawn per regime rather

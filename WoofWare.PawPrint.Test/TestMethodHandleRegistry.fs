@@ -8,6 +8,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodHandleRegistry =
 
     let private loadAssemblyFromSource

@@ -14,6 +14,7 @@ open WoofWare.PawPrint
 /// allocates value types of several shapes, then recompute every memoised entry from scratch
 /// against the final state and compare.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFrameSetupMemo =
 
     let private assy = System.Reflection.Assembly.GetExecutingAssembly ()

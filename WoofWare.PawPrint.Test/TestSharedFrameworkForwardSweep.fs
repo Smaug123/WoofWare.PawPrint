@@ -17,6 +17,7 @@ open WoofWare.PawPrint
 /// If the load context is ever keyed by reference identity, this fails in bulk rather than
 /// waiting for a user report.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestSharedFrameworkForwardSweep =
 
     let private corelibPath : string = typeof<obj>.Assembly.Location

@@ -22,6 +22,7 @@ open WoofWare.PawPrint
 /// project prefers a loud refusal to a silently wrong answer, so these assert that the in-range
 /// arithmetic is exact and that the out-of-range arithmetic fails loudly rather than wrapping.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestElementOffsetOverflow =
 
     // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over its

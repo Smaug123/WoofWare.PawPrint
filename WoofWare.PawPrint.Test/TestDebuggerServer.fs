@@ -16,6 +16,7 @@ open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestDebuggerServer =
     let private token = "test-debugger-token"
 

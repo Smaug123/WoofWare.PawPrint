@@ -9,6 +9,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestAssemblyReadCache =
     let private readAssembly
         (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)

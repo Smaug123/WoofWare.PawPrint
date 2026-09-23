@@ -9,6 +9,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeSignature =
 
     /// Mint a bare `RuntimeMethodHandleInternal` for a method on a *closed* declaring type, the way

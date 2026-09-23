@@ -13,6 +13,7 @@ open WoofWare.PawPrint
 /// covers everything the guest *can* see; the refusal arms are here because each is a shape the
 /// managed caller cannot produce.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeRuntimeFieldHandleGetValue =
     open NativeRuntimeFieldHandleFixture
 

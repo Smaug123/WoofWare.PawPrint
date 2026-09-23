@@ -19,6 +19,7 @@ open WoofWare.PawPrint
 /// against, and getting that threading wrong yields a *wrong handle*, not a failure. Most of what
 /// is asserted below exists to make that visible.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestLdtokenMemberTokens =
 
     /// Every member-reference shape this fixture needs, in one assembly.

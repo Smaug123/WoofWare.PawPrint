@@ -11,6 +11,7 @@
     <Compile Include="SynthesisedLayoutKind.fs" />
     <Compile Include="TestGcHeapHardLimit.fs" />
     <Compile Include="TestNoMissedInterpolation.fs" />
+    <Compile Include="TestFixturesDeclareParallelism.fs" />
     <Compile Include="Assembly.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />

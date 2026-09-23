@@ -21,6 +21,7 @@ open NUnit.Framework
 /// resolution accidentally succeeds. That requirement is asserted by `runTestRequiring` rather than
 /// assumed; see `AssemblyRefRowDivergence`.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyFieldScope =
 
     let private payloadLibrary : CrossAssemblySpec =

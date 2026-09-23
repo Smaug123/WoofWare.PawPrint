@@ -20,6 +20,7 @@ open WoofWare.PawPrint
 /// types like `IntPtr` and enums, which `PrimitiveLikeStruct` flattens on push so they never
 /// reach the stack as a `UserDefinedValueType` at all.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestEvalStackBoxedPrimitiveView =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

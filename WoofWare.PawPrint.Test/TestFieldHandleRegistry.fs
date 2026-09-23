@@ -13,6 +13,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFieldHandleRegistry =
 
     let private fieldHandleSource =

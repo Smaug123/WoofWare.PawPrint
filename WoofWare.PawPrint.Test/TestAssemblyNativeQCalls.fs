@@ -25,6 +25,7 @@ open WoofWare.PawPrint
 /// for it is what a guest cannot reach: the `File`-row refusal, which needs an image no
 /// single-source guest can be compiled into.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestAssemblyNativeQCalls =
 
     /// Deliberately dotted. CoreCLR reads the simple name straight out of metadata, so a

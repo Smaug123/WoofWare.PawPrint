@@ -27,6 +27,7 @@ open WoofWare.PawPrint
 /// which handles every `ByrefRoot` case but not a heap-field root. So this fixture, not a
 /// `sourcesPure` case, is what pins the behaviour.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestBaseChainLayout =
 
     let private loggerFactory = snd (LoggerFactory.makeTest ())

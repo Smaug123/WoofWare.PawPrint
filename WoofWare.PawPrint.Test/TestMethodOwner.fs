@@ -22,6 +22,7 @@ open WoofWare.PawPrint
 /// </para>
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodOwner =
 
     let private assemblyName (name : string) : AssemblyName = AssemblyName name

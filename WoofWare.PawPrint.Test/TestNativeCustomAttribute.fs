@@ -9,6 +9,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeCustomAttribute =
 
     let private attributeSource =

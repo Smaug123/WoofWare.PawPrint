@@ -26,6 +26,7 @@ open WoofWare.PawPrint
 /// emits a MethodImpl whose declaration is a MemberRef on a TypeSpec, whose signature mentions a
 /// foreign nominal type. No hand-emitted IL is needed to reach it -- only a second assembly.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblySlotContent =
 
     /// `AG<T>` declares `M`, `BG` closes it at `int` and declares nothing, so a covariant override in

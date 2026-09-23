@@ -18,6 +18,7 @@ open WoofWare.PawPrint
 /// `IlMachineRuntimeMetadata.unboxMaterialisesFlattened` reports it unflattened and `unboxPermitted`
 /// would fail loudly on a legal unbox if the two disagreed.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestEnumClassification =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

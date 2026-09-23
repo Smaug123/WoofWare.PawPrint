@@ -15,6 +15,7 @@ open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestManifestResources =
     let private embeddedResource (resourceName : string) (resourceBytes : byte array) : ResourceDescription =
         ResourceDescription (resourceName, Func<Stream> (fun () -> new MemoryStream (resourceBytes) :> Stream), true)

@@ -13,6 +13,7 @@ open WoofWare.PawPrint
 /// A type-keyed lookup that spells its key as `AssemblyName.FullName` therefore hashes corelib's
 /// public key once per lookup, which is what the allocation budget below is watching for.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestTypeInfoAssemblyIdentity =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

@@ -204,6 +204,7 @@ class Program
     /// These tests exist because a refusal is invisible to a green suite: nothing else in the
     /// repository configures a Darwin platform and then calls `flock`, so without them the arms
     /// could be dead, or could fire on operations the two platforms actually agree about.
+    [<Parallelizable(ParallelScope.All)>]
     module Darwin =
 
         /// The operations both platforms handle identically must still work under Darwin. This is

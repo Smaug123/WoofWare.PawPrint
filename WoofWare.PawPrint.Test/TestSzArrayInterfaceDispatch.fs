@@ -16,6 +16,7 @@ open WoofWare.PawPrint
 /// is instantiated per CoreCLR's rule — the interface's type argument, canonicalised to
 /// `System.Object` for reference types on every interface but `IEnumerable<T>`.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestSzArrayInterfaceDispatch =
 
     // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over

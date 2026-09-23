@@ -13,6 +13,7 @@ open WoofWare.PawPrint
 /// shape, so the guest emits it with `Reflection.Emit`, which needs dynamic code enabled and so
 /// cannot be a pure case. The guest passes on real .NET (exit 0, measured 2026-09-10).
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 [<Category("Guest")>]
 [<Explicit>]
 module TestFloatWidthJoin =
