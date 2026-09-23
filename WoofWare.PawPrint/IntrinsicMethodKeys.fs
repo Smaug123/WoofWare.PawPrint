@@ -199,10 +199,6 @@ module IntrinsicMethodKeys =
                 "System.String"
                 "get_Chars"
                 [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            // IL body is `ldarg.0; ldflda _firstChar; ret`; PawPrint projects `_firstChar`
-            // to the string character data side-table.
-            pattern "System.Private.CoreLib" "System.String" "GetRawStringData" []
-            pattern "System.Private.CoreLib" "System.String" "GetRawStringDataAsUInt16" []
             // IL body constructs a span over the string contents; PawPrint's string field
             // projection handles the `_firstChar` boundary it depends on.
             pattern
