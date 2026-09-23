@@ -165,12 +165,12 @@ module TypeResolution =
     /// loading its base type, and so has the same closure property for free.
     /// </para>
     /// </remarks>
-    let private tryPrimeBaseChain
+    let internal tryPrimeBaseChain
         (loggerFactory : ILoggerFactory)
         (dotnetRuntimeDirs : string seq)
         (assemblies : LoadedAssemblies)
         (definedIn : DumpedAssembly)
-        (ty : WoofWare.PawPrint.TypeInfo<TypeDefn, TypeDefn>)
+        (ty : WoofWare.PawPrint.TypeInfo<'generic, TypeDefn>)
         : LoadedAssemblies * BaseChainFailure option
         =
         Concretization.tryEnsureTypeDefinitionBaseAssembliesLoaded
