@@ -196,4 +196,8 @@ leaving them open for the three that already exist. It would also strip `Conv_U`
 
 ## Ladder
 
-To be filled in after (B): re-run `run-ladder.sh -o DIR RungJ` with `LADDER_FLAVOUR=linux`.
+With (B) in, **rung J exits 42 under both CoreLib flavours**, measured at `main` 3796229e. That is
+the rung's full check, not merely an absence of refusals: the matched request answers 200 with the
+body `{"id":5,"q":"hi"}`, and the request whose route constraint rejects it answers 404. So the
+request pipeline short of Kestrel — routing, parameter binding, the handler and JSON
+serialisation — now runs end to end under the interpreter.
