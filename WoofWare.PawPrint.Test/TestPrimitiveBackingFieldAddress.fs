@@ -168,6 +168,19 @@ module TestPrimitiveBackingFieldAddress =
             Check.One (config, property)
 
     [<Test>]
+    let ``through untyped bytes the backing field is the bytes' own address`` () : unit =
+        // A `ref int` over `stackalloc` or native memory addresses bytes with no typed cell, and
+        // uninitialised ones cannot be read at all, so taking the field's address must not read.
+        for name, ti, _ in barePrimitiveCases do
+            let src, state =
+                IlMachineState.allocateNativeMemory MemoryBlockInitialization.Uninitialized 8 (state ())
+
+            let pointer, _ = fieldAddress ti src state
+
+            if pointer <> src then
+                failwithf "%s: expected the bytes' own address %O, got %O" name src pointer
+
+    [<Test>]
     let ``a native int's backing field is an ordinary projection`` () : unit =
         // `System.IntPtr` is stored as a field map even outside a box, so the near miss beside the
         // bare primitives keeps the projection.

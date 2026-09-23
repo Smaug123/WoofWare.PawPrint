@@ -12,8 +12,8 @@ using System.Runtime.CompilerServices;
 // is the same near miss from inside CoreLib.
 //
 // The primitive reaches the accessor from several kinds of storage -- a local, an array element, a
-// struct's field, a class's field and a static -- and as several primitives, since the address is
-// the container's whatever holds it and whatever its width.
+// struct's field, a class's field, a static and stack memory -- and as several primitives, since the
+// address is the container's whatever holds it and whatever its width.
 public class TestUnsafeAccessorPrimitiveBackingField
 {
     private struct OneField
@@ -103,6 +103,12 @@ public class TestUnsafeAccessorPrimitiveBackingField
         // A static.
         IntValue(ref s_static) = 50;
         if (s_static != 50) return 13;
+
+        // Stack memory, whose storage is bytes rather than typed cells.
+        Span<int> stack = stackalloc int[2];
+        IntValue(ref stack[1]) = 60;
+        if (stack[0] != 0 || stack[1] != 60) return 23;
+        if (!Unsafe.AreSame(ref IntValue(ref stack[1]), ref stack[1])) return 24;
 
         // Other primitives, of other widths.
         bool b = false;

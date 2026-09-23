@@ -213,9 +213,10 @@ module internal UnaryMetadataFieldOps =
     /// `System.Boolean`, `System.Double`, ...) declares one instance field, holding the value itself
     /// (`System.Int32::m_value`) at offset 0 and as wide as the type, so on real .NET that field's
     /// address is its container's. PawPrint stores such a value as a bare cell with no field map
-    /// (`CliType.zeroOf`) everywhere except inside a box, where `box` wraps it in a single-field
-    /// struct holding that very field. The storage `src` addresses therefore decides: a bare cell
-    /// *is* the field, and a wrapper contains it.
+    /// (`CliType.zeroOf`), or as untyped bytes, everywhere except inside a box, where `box` wraps it
+    /// in a single-field struct holding that very field. The shape of `src` therefore decides, and
+    /// nothing is read through it: a pointer to a heap object's whole value addresses the wrapper,
+    /// which contains the field, and any other pointer addresses the primitive, which *is* it.
     let private classifyFieldThroughByref
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (fieldId : FieldId)
@@ -258,13 +259,12 @@ module internal UnaryMetadataFieldOps =
         | CliType.Numeric _
         | CliType.Bool _
         | CliType.Char _ ->
-            match IlMachineState.readManagedByref baseClassTypes state src with
-            | CliType.ValueType _ -> FieldThroughByref.Projected, state
-            | CliType.Numeric _
-            | CliType.Bool _
-            | CliType.Char _
-            | CliType.ObjectRef _
-            | CliType.RuntimePointer _ -> FieldThroughByref.IsContainer declaringZero, state
+            match src with
+            | ManagedPointerSource.Byref (ByrefRoot.HeapValue _, []) -> FieldThroughByref.Projected, state
+            | ManagedPointerSource.Byref _ -> FieldThroughByref.IsContainer declaringZero, state
+            // Neither addresses storage; the projection is what refuses them.
+            | ManagedPointerSource.Null
+            | ManagedPointerSource.NativeIntPlaceholder _ -> FieldThroughByref.Projected, state
 
     let executeStfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
