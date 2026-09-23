@@ -218,15 +218,23 @@ module BoxedValue =
                 // both cases the box's storage is one field holding the value itself — the
                 // primitive's own backing field (`System.Int32::m_value`) or an enum's `value__` —
                 // and that cell holds a value of `T`'s primitive element type, which is what the two
-                // types agree on.
+                // types agree on. Where the cell's own type is not `T` (a boxed int unboxed as an
+                // enum, or one enum's box as another), the byref still views it as `T`, so `T`'s
+                // own members — an enum's `value__` — resolve through it.
                 match CliValueType.TryAllFields boxed.Contents with
                 | [ field ] ->
                     let field = CliConcreteField.ToCliField field
 
-                    state,
-                    UnboxAddress.Address (
+                    let cell =
                         ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [ ByrefProjection.Field field.Id ])
-                    )
+
+                    let address =
+                        if field.Type = targetConcreteTypeHandle then
+                            cell
+                        else
+                            ManagedPointerSource.reinterpretAs targetConcreteType cell
+
+                    state, UnboxAddress.Address address
                 | fields ->
                     failwith
                         $"%s{opName}: box of %O{boxed.ConcreteType} accepted as %O{targetConcreteTypeHandle} must hold exactly one field, the value itself, but holds %d{fields.Length}"

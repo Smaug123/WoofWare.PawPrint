@@ -52,6 +52,12 @@ public enum ByteEnum : byte
 
 public class TestUnsafeUnbox
 {
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "value__")]
+    static extern ref int IntEnumValue(ref IntEnum e);
+
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "value__")]
+    static extern ref int OtherIntEnumValue(ref OtherIntEnum e);
+
     static int Bump(ref int x)
     {
         x += 100;
@@ -192,6 +198,20 @@ public class TestUnsafeUnbox
         object boxedLongEnum = LongEnum.X;
         if (Interlocked.Add(ref Unsafe.Unbox<long>(boxedLongEnum), 5) != 8) return 58;
         if ((long) (LongEnum) boxedLongEnum != 8) return 59;
+
+        // A byref handed out under the relaxation is a byref to the token's type, so the token's
+        // own fields are reachable through it: here an enum's `value__`, over a boxed int and over
+        // a box of a different enum.
+        object boxedIntForField = 4;
+        ref int viaEnumField = ref IntEnumValue(ref Unsafe.Unbox<IntEnum>(boxedIntForField));
+        if (viaEnumField != 4) return 60;
+        viaEnumField = 44;
+        if ((int) boxedIntForField != 44) return 61;
+        object boxedEnumForField = IntEnum.A;
+        ref int viaOtherField = ref OtherIntEnumValue(ref Unsafe.Unbox<OtherIntEnum>(boxedEnumForField));
+        if (viaOtherField != 1) return 62;
+        viaOtherField = 2;
+        if ((IntEnum) boxedEnumForField != IntEnum.B) return 63;
 
         // Null raises NullReferenceException.
         try
