@@ -45,6 +45,7 @@ type FunctionPointerOutcomeStruct<'T> =
 /// over `System.Type`; the guest cases in `sourcesPure/MethodHandleGetFunctionPointer*.cs` exercise
 /// the interpreter's own.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFunctionPointerOutcome =
 
     let rec private hostIsSharedTypeArgument (t : Type) : bool =
