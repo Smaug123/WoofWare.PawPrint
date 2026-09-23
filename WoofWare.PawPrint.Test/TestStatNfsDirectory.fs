@@ -4,7 +4,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -14,8 +13,6 @@ open WoofWare.PosixKernel
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStatNfsDirectory =
-
-    let private assy = System.Reflection.Assembly.GetExecutingAssembly ()
 
     /// One five-byte file and one directory, on an NFS mount.
     let private nfs : KernelConfig =
@@ -87,8 +84,7 @@ class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
