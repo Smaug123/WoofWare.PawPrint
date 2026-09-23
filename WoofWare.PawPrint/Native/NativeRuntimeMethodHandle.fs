@@ -51,6 +51,68 @@ type StubOutcome =
     /// CoreCLR throws `ArgumentException` (genmeth.cpp:1261-1262).
     | ArityMismatch
 
+/// The properties of a closed declaring type that decide what `RuntimeMethodHandle_GetFunctionPointer`
+/// answers for a method of it.
+type ClosedFunctionPointerDeclaringType =
+    {
+        IsValueType : bool
+        IsInterface : bool
+        /// CoreCLR's `MethodTable::IsSharedByGenericInstantiations`: at least one type argument is
+        /// one `IlMachineRuntimeMetadata.isSharedTypeArgument` accepts, so the type's code is compiled once
+        /// over `System.__Canon` for every instantiation that shares its canonical form.
+        IsSharedByGenericInstantiations : bool
+    }
+
+/// A method's declaring type, as `RuntimeMethodHandle_GetFunctionPointer` needs to see it.
+[<RequireQualifiedAccess>]
+type FunctionPointerDeclaringType =
+    /// The declaring type still names a generic variable: a generic type definition such as
+    /// `G<>`, or an open construction over one's variables.
+    | ContainsGenericVariables
+    /// A declaring type with every type argument bound.
+    | Closed of ClosedFunctionPointerDeclaringType
+
+/// The properties of a method that decide what `RuntimeMethodHandle_GetFunctionPointer` answers for
+/// it, alongside those of its declaring type.
+type FunctionPointerMethod =
+    {
+        IsStatic : bool
+        /// Whether the method is marked `virtual` in metadata, which a C# implicit interface
+        /// implementation is (`virtual final`) as well as an override.
+        IsVirtual : bool
+        /// The method's own declared generic arity, as `isGenericMethodDefinition` takes it.
+        GenericParamCount : int
+        /// How many method type arguments the handle binds, as `isGenericMethodDefinition` takes it.
+        HandleInstantiationCount : int
+    }
+
+/// Which entry point of a method a function pointer names.
+[<RequireQualifiedAccess>]
+type FunctionPointerEntry =
+    /// The method's own entry point, which for an instance method of a value type takes `this` by
+    /// reference: `FunctionPointerTarget.Managed`.
+    | Direct
+    /// The boxed entry point of an instance method of a value type, which takes a box as `this`:
+    /// `FunctionPointerTarget.UnboxingStub`.
+    | UnboxingStub
+
+/// What `RuntimeMethodHandle_GetFunctionPointer` answers for a method handle that reflection handed
+/// out, as a description rather than an action.
+[<RequireQualifiedAccess>]
+type FunctionPointerOutcome =
+    /// The method or its declaring type still names a generic variable, so there is no code to
+    /// point at: CoreCLR's `MethodDesc::TryGetMultiCallableAddrOfCode` throws
+    /// `InvalidOperationException` (`IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`, method.cpp:2091).
+    | ContainsGenericVariables
+    /// One address shared by every instantiation that shares the method's code, which reads its
+    /// type context from its receiver: measured, `GC<string>.Inst` and `GC<object>.Inst` compare
+    /// equal, and calling either on a `GC<string>` answers for `string`.
+    | SharedCode
+    /// An address unique to this exact instantiation: the method's own code where nothing is
+    /// shared, or else the instantiating stub reflection hands out, which carries the
+    /// instantiation into the shared code.
+    | ExactInstantiation of FunctionPointerEntry
+
 [<RequireQualifiedAccess>]
 module NativeRuntimeMethodHandle =
     /// The predicate behind CoreCLR's `MethodDesc::IsGenericMethodDefinition`
@@ -134,6 +196,65 @@ module NativeRuntimeMethodHandle =
             false
         else
             true
+
+    /// The message of the `InvalidOperationException` CoreCLR throws on asking for the code of a
+    /// method that still names a generic variable: the `mscorrc` string
+    /// `IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`, thrown from
+    /// `MethodDesc::TryGetMultiCallableAddrOfCode` (method.cpp:2091-2093).
+    let containsGenericVariablesMessage : string =
+        "Could not execute the method because either the method itself or the containing type is not fully instantiated."
+
+    /// CoreCLR's `RuntimeMethodHandle_GetFunctionPointer` (runtimehandles.cpp:1276), which answers
+    /// `MethodDesc::GetMultiCallableAddrOfCode` -- the same address the JIT gives `ldftn` -- for a
+    /// method handle as reflection hands it out, i.e. after
+    /// `MethodDesc::FindOrCreateAssociatedMethodDescForReflection` (genmeth.cpp:1233) has chosen
+    /// between the method's own `MethodDesc`, an instantiating stub and an unboxing stub.
+    ///
+    /// Two of those choices are visible in the answer. A virtual method of a value type gets its
+    /// unboxing stub, so its address is the *boxed* entry point, whereas every other instance
+    /// method of a value type answers its unboxed one. And the address is shared between
+    /// instantiations exactly when the entry point reads its type context from the receiver
+    /// rather than from a stub: an instance method, of no generic arity of its own, on a shared
+    /// class, or behind the unboxing stub of a shared value type. Reflection gives an
+    /// instantiating stub even to an *abstract* method of a generic interface, which
+    /// `MethodDesc::RequiresInstArg` exempts, so those stay per-instantiation too.
+    let functionPointerOutcome
+        (declaringType : FunctionPointerDeclaringType)
+        (method : FunctionPointerMethod)
+        : FunctionPointerOutcome
+        =
+        if
+            method.HandleInstantiationCount <> 0
+            && method.HandleInstantiationCount <> method.GenericParamCount
+        then
+            failwith
+                $"RuntimeMethodHandle.GetFunctionPointer: a handle binds %d{method.HandleInstantiationCount} method type argument(s) to a method declaring %d{method.GenericParamCount}; MethodHandleRegistry mints either none or all of them"
+
+        match declaringType with
+        | FunctionPointerDeclaringType.ContainsGenericVariables -> FunctionPointerOutcome.ContainsGenericVariables
+        | FunctionPointerDeclaringType.Closed facts ->
+
+        if isGenericMethodDefinition method.GenericParamCount method.HandleInstantiationCount then
+            FunctionPointerOutcome.ContainsGenericVariables
+        else
+
+        let unboxingStub = facts.IsValueType && method.IsVirtual
+
+        if unboxingStub && method.IsStatic then
+            failwith
+                "TODO: RuntimeMethodHandle.GetFunctionPointer on a static virtual method declared by a value type; CoreCLR would ask for an unboxing stub over a method with no receiver, and no C# compiler emits the shape"
+
+        let readsContextFromReceiver =
+            not method.IsStatic
+            && not (hasMethodInstantiation method.GenericParamCount)
+            && (unboxingStub || (not facts.IsValueType && not facts.IsInterface))
+
+        if facts.IsSharedByGenericInstantiations && readsContextFromReceiver then
+            FunctionPointerOutcome.SharedCode
+        elif unboxingStub then
+            FunctionPointerOutcome.ExactInstantiation FunctionPointerEntry.UnboxingStub
+        else
+            FunctionPointerOutcome.ExactInstantiation FunctionPointerEntry.Direct
 
     /// The predicate behind CoreCLR's `MethodDesc::IsNoMetadata` (method.hpp:1932), which
     /// `RuntimeMethodHandle::IsDynamicMethod` (runtimehandles.cpp:1746) returns verbatim:
@@ -583,6 +704,63 @@ module NativeRuntimeMethodHandle =
             failwith
                 $"TODO: %s{operation} was given %O{dynamicHandle} (%s{name}), a Reflection.Emit method with no MethodDef token to read; PawPrint mints these in ModuleHandle_GetDynamicMethod but cannot yet answer metadata queries about them"
 
+    /// The method a metadata handle names, concretized under its declaring type's instantiation and
+    /// the handle's own method instantiation, as a frame for it would be pushed. Returns the
+    /// declaring type alongside.
+    ///
+    /// Refuses a handle whose declaring type is not closed (see `requireClosedDeclaringType`), and one
+    /// on a generic method that binds none of its type arguments; a caller for which CoreCLR has a
+    /// defined answer on such a handle must give it before asking for this.
+    let concretizeClosedMetadataIdentity
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (identity : MetadataMethodIdentity)
+        (state : IlMachineState)
+        : IlMachineState * MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> * ConcreteTypeHandle
+        =
+        let methodInfo = methodInfoOfMetadataIdentity operation state identity
+
+        let declaringTypeHandle = requireClosedDeclaringType operation identity
+
+        let typeGenerics =
+            match declaringTypeHandle with
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
+                | Some declaringType -> declaringType.Generics
+                | None ->
+                    failwith
+                        $"%s{operation}: declaring type handle %O{declaringTypeHandle} was not concretized, so the target method cannot be resolved"
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ ->
+                // The runtime-generated array methods (Get/Set/Address/.ctor) are the only members
+                // of a structural type. CoreCLR resolves their signatures against
+                // `GetClassOrArrayInstantiation`, which PawPrint does not model — it stores array
+                // element types structurally in the handle rather than as a generic argument
+                // vector. `Array_CreateInstance` is the supported route to those.
+                failwith
+                    $"TODO: %s{operation} on a method whose declaring type is the structural type %O{declaringTypeHandle}; CoreCLR resolves such a signature against GetClassOrArrayInstantiation, which PawPrint does not model"
+
+        let methodGenerics = identity.GetMethodGenerics () |> ImmutableArray.CreateRange
+
+        if methodInfo.Generics.Length <> methodGenerics.Length then
+            failwith
+                $"TODO: %s{operation} on generic method definition %s{methodInfo.Name}: it declares %d{methodInfo.Generics.Length} generic parameter(s) but the handle carries %d{methodGenerics.Length} generic argument(s); the managed reflection layer is expected to reject an uninstantiated generic method before the QCall"
+
+        let state, concretized, _declaringTypeHandle =
+            ExecutionConcretization.concretizeMethodWithAllGenerics
+                loggerFactory
+                baseClassTypes
+                typeGenerics
+                methodInfo
+                methodGenerics
+                state
+
+        state, concretized, declaringTypeHandle
+
     let private resolveMethodInfoFromHandleArg
         (operation : string)
         (state : IlMachineState)
@@ -955,6 +1133,102 @@ module NativeRuntimeMethodHandle =
                         0
 
                 IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 ret)) ctx.Thread state
+
+            NativeHandlerResult.completed state |> Some
+        | "RuntimeMethodHandle_GetFunctionPointer",
+          "System.Private.CoreLib",
+          "System",
+          "RuntimeMethodHandle",
+          "GetFunctionPointer",
+          [ CorelibType state.ConcreteTypes ("System", "RuntimeMethodHandleInternal", handleGenerics) ],
+          MethodReturnType.Returns (ConcreteIntPtr state.ConcreteTypes) when handleGenerics.IsEmpty ->
+            // CoreCLR runtimehandles.cpp:1276:
+            //   pMethod->EnsureActive();
+            //   pMethod->PrepareForUseAsAFunctionPointer();
+            //   funcPtr = (void*)pMethod->GetMultiCallableAddrOfCode();
+            // Neither preparation step runs a class constructor, and PawPrint has no code to
+            // activate, so only the address is modelled. See `functionPointerOutcome` for which
+            // address that is.
+            let operation = "RuntimeMethodHandle.GetFunctionPointer"
+
+            if instruction.Arguments.Length <> 1 then
+                failwith $"%s{operation}: expected one native argument, got %d{instruction.Arguments.Length}"
+
+            // A `DynamicMethod` refuses to hand out its `MethodHandle` (`DynamicMethod.MethodHandle`
+            // throws `InvalidOperationException`), so a guest has no route here with one.
+            let identity =
+                resolveMetadataIdentityFromArg operation state instruction.Arguments.[0]
+
+            let methodInfo = methodInfoOfMetadataIdentity operation state identity
+
+            let declaringType =
+                match identity.GetDeclaringType () with
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+                | RuntimeTypeHandleTarget.OpenConstructed _ -> FunctionPointerDeclaringType.ContainsGenericVariables
+                | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+                    let concreteType, typeInfo =
+                        AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+                        |> Option.defaultWith (fun () ->
+                            failwith $"%s{operation}: declaring type handle %O{handle} names no registered type"
+                        )
+
+                    FunctionPointerDeclaringType.Closed
+                        {
+                            IsValueType = DumpedAssembly.isValueType ctx.BaseClassTypes state._LoadedAssemblies typeInfo
+                            IsInterface = typeInfo.TypeAttributes.HasFlag TypeAttributes.Interface
+                            IsSharedByGenericInstantiations =
+                                concreteType.Generics
+                                |> Seq.exists (
+                                    IlMachineRuntimeMetadata.isSharedTypeArgument ctx.BaseClassTypes state operation
+                                )
+                        }
+                | RuntimeTypeHandleTarget.Closed structural ->
+                    // Arrays are the only structural types that declare methods.
+                    failwith
+                        $"TODO: %s{operation} on %s{methodInfo.Name}, a method of the structural type %O{structural}; CoreCLR's array methods are runtime-generated stubs, which PawPrint does not model"
+                | other ->
+                    failwith
+                        $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
+
+            let method =
+                {
+                    IsStatic = methodInfo.IsStatic
+                    IsVirtual = methodInfo.IsVirtual
+                    GenericParamCount = methodInfo.Generics.Length
+                    HandleInstantiationCount = (identity.GetMethodGenerics ()).Length
+                }
+
+            match functionPointerOutcome declaringType method with
+            | FunctionPointerOutcome.ContainsGenericVariables ->
+                NativeHandlerResult.raiseExceptionWithMessage
+                    ctx.BaseClassTypes.InvalidOperationException
+                    (Some containsGenericVariablesMessage)
+                    state
+                |> Some
+            | FunctionPointerOutcome.SharedCode ->
+                let declaringTypeName =
+                    requireClosedDeclaringType operation identity
+                    |> AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes
+
+                failwith
+                    $"TODO: %s{operation} on %s{methodInfo.Name} of %s{declaringTypeName}, an instance method of a shared generic instantiation; CoreCLR answers the one address of the code every instantiation sharing its canonical form runs, which takes its instantiation from the receiver, and PawPrint does not model shared generic code"
+            | FunctionPointerOutcome.ExactInstantiation entry ->
+
+            let state, concretized, _declaringType =
+                concretizeClosedMetadataIdentity ctx.LoggerFactory ctx.BaseClassTypes operation identity state
+
+            // `Managed` is the target `ldftn` pushes for this method, so the two compare equal as
+            // they do on CoreCLR.
+            let target =
+                match entry with
+                | FunctionPointerEntry.Direct -> FunctionPointerTarget.Managed concretized
+                | FunctionPointerEntry.UnboxingStub -> FunctionPointerTarget.UnboxingStub concretized
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)))
+                    ctx.Thread
+                    state
 
             NativeHandlerResult.completed state |> Some
         | "RuntimeMethodHandle_GetMethodInstantiation",
