@@ -30,6 +30,7 @@ type ByteBackedEnum =
 /// rather than asserted by hand.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodSignatureDecoding =
 
     /// A real metadata reader for the decoder to resolve tokens against. A blob whose types are

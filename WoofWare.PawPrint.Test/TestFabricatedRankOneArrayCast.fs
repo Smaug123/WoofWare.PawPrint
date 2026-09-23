@@ -16,6 +16,7 @@ open NUnit.Framework
 /// array target it compares ranks, and an SZ array's rank is 1. So `int[]` is an `int[*]` while
 /// `int[*]` is not an `int[]`. C# cannot spell `int[*]`, so the tokens come from fabricated IL.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedRankOneArrayCast =
 
     /// `Arrays::IsIntRankOne(object) : object` is `ldarg.0; isinst int32[*]; ret`, and

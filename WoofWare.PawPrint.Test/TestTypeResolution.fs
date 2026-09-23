@@ -10,6 +10,7 @@ open WoofWare.PawPrint
 open TypeIdentityTestHelpers
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestTypeResolution =
     /// A row handle for `TypeRef`s these tests build by hand rather than parse. They correspond to
     /// no real TypeRef row, and resolution consumes name, namespace and resolution scope but never

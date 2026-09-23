@@ -23,6 +23,7 @@ open NUnit.Framework
 /// oracle for every row rather than a remembered number: `expectedOnHost` is asserted too, so a
 /// fabrication that stopped exercising the shape fails here instead of passing vacuously.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedInitblk =
 
     /// `Blk::Init(ref byte, int, uint)` and `Blk::InitPtr(byte*, int, uint)`, each a bare

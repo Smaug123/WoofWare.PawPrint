@@ -18,6 +18,7 @@ open WoofWare.PawPrint
 /// one answer is normal and not an ambiguity — a transparent wrapper and the field it wraps occupy
 /// the same bytes, and which one a caller wants depends on the type it is reinterpreting to.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCliTypeCellPaths =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

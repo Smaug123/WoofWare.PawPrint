@@ -18,6 +18,7 @@ open WoofWare.PawPrint
 /// These pin the boundary between the three.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCaseInsensitiveTypeLookup =
 
     let private source =

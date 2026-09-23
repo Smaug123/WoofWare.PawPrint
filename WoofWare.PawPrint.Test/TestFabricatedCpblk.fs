@@ -25,6 +25,7 @@ open NUnit.Framework
 /// can put any operands it likes in front of the instruction. `expectedOnHost` is asserted too, so
 /// a fabrication that stopped exercising the shape fails here instead of passing vacuously.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedCpblk =
 
     /// `Cp::Copy(ref byte, ref byte, uint)` and `Cp::CopyPtr(byte*, byte*, uint)`, each a bare

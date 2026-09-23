@@ -17,6 +17,7 @@ open NUnit.Framework
 ///   the field, its signature would decode as a self-describing `FromDefinition`
 ///   and the scope would never be consulted.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyLdsflda =
 
     let private payloadLibrary : CrossAssemblySpec =

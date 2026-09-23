@@ -12,6 +12,7 @@ open WoofWare.PawPrint
 /// emit at all, so these cannot be pure cases; each guest passes on real .NET (exit 0, measured
 /// 2026-09-11).
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 [<Category("Guest")>]
 [<Explicit>]
 module TestStackShapeDynamicScope =

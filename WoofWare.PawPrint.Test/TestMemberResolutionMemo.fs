@@ -13,6 +13,7 @@ open WoofWare.PawPrint
 /// guest that reads MemberRef rows under several generic contexts, then resolve every key the
 /// run memoised from scratch against the final state and compare.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMemberResolutionMemo =
 
     let private assy = System.Reflection.Assembly.GetExecutingAssembly ()

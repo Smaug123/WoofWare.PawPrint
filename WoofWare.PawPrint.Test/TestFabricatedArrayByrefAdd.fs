@@ -21,6 +21,7 @@ open NUnit.Framework
 /// answer by way of a byte cursor must still fold a whole-element advance back to an element,
 /// because a byref into the middle of an object reference has no byte image to read.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedArrayByrefAdd =
 
     /// A static method per shape, each of them literally `ldarg.0; ldarg.1; add; ldind.*; ret`,

@@ -9,6 +9,7 @@ open WoofWare.PawPrint
 open WoofWare.PawPrint.Test
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestRaces =
     let private assy = typeof<RunResult>.Assembly
 

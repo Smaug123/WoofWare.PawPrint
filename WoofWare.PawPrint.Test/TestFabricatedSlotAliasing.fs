@@ -32,6 +32,7 @@ open WoofWare.PawPrint
 /// `B::M`, which names neither the MethodImpl's declaration nor anything D's own declaration was
 /// placed onto -- a dispatch rule keyed on a single declaration answers `B.M` and is wrong.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedSlotAliasing =
 
     /// `A`/`B`/`C`/`D` as above, as a PE image. `PersistedAssemblyBuilder` writes exactly the method

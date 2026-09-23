@@ -33,6 +33,7 @@ open WoofWare.PawPrint
 /// handler, so a field name that had drifted from CoreLib would make that guest fail
 /// differentially. What the guest cannot see is the decoded *result*, which this file pins.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeGetDynamicMethod =
 
     /// A trivial guest; nothing here reads it, but `Program.prepare` needs an entry assembly and

@@ -17,6 +17,7 @@ open NUnit.Framework
 /// <c>AssemblyNative_InternalLoad</c>, which PawPrint does not implement.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyTypeForwarding =
 
     /// The defining assembly's sources, shared by every case below. Nothing in the entry assemblies

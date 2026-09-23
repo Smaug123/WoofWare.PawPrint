@@ -18,6 +18,7 @@ open WoofWare.PawPrint
 /// where they coincided could not tell the correct rule from the resume-point mutant.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestStackFrameCapture =
 
     // The factory is intentionally not disposed: the DumpedAssembly keeps the logger.

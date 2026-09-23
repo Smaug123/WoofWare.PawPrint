@@ -31,6 +31,7 @@ open NUnit.Framework
 /// generic arguments with a *type* parameter index runs off the end there rather than silently
 /// picking a wrong instantiation.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedCallvirtMethodSpecMethodDef =
 
     /// The builders for one fabricated generic type, needed to reference it from another.

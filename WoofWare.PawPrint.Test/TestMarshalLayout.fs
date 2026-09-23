@@ -20,6 +20,7 @@ open WoofWare.PawPrint
 /// is checked against the implementation's own output rather than against a transcription of the
 /// same arithmetic (which would only re-check the transcription).
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMarshalLayout =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

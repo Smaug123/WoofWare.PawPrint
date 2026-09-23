@@ -6,6 +6,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeMethodDetection =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

@@ -33,6 +33,7 @@ open WoofWare.PawPrint
 /// `int Main`; the classifier that decides whether `Main`'s return latches the exit code must
 /// look through them too.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedEntryPoint =
 
     /// The custom modifiers on a fabricated `Main`'s return column.

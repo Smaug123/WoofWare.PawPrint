@@ -29,6 +29,7 @@ open WoofWare.PawPrint
 /// </para>
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestDynamicMethodTracing =
 
     let private assy = typeof<RunResult>.Assembly

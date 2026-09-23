@@ -15,6 +15,7 @@ open WoofWare.PawPrint
 /// <see cref="MethodSignatureDecoding" />.
 /// </summary>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestLocalSignatureDecoding =
 
     let private corelibReader : PEReader =

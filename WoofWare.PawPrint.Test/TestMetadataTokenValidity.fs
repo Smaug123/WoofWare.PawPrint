@@ -26,6 +26,7 @@ open WoofWare.PawPrint
 /// not, and omits the user-string case, which it has.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMetadataTokenValidity =
 
     let private source =

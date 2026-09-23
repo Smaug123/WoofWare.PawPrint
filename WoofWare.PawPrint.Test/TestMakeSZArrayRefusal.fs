@@ -19,6 +19,7 @@ open WoofWare.PawPrint
 /// so a classification that is self-consistent but wrong about which targets are TypeDescs cannot
 /// pass.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMakeSZArrayRefusal =
 
     let private corpusSource : string =

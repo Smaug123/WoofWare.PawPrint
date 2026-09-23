@@ -21,6 +21,7 @@ open WoofWare.PawPrint
 /// 64-bit target, which is what lets the guest `StructLayoutInt128Alignment.cs` be an ordinary
 /// differential test rather than a host-conditional one.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNominalAlignment =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

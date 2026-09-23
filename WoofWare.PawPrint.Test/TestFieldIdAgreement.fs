@@ -30,6 +30,7 @@ open WoofWare.PawPrint
 /// declares this field definition, and round-trips through the access-site concretization
 /// unchanged".
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFieldIdAgreement =
 
     let private loggerFactory = snd (LoggerFactory.makeTest ())

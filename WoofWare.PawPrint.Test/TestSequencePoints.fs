@@ -9,6 +9,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestSequencePoints =
 
     let private loc (line : int) : SourceLocation =

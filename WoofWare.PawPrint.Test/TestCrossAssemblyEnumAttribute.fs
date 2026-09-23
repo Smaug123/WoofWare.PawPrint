@@ -3,6 +3,7 @@ namespace WoofWare.PawPrint.Test
 open NUnit.Framework
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyEnumAttribute =
 
     /// `sourcesPure/CustomAttributeEnumArg.cs` covers an enum-valued attribute argument whose enum

@@ -22,6 +22,7 @@ open WoofWare.PawPrint
 /// (vm/assembly.cpp) answers for the same bytes.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestEntryPointToken =
 
     let private source =

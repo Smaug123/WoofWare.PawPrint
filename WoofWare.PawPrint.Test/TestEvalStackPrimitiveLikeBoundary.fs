@@ -9,6 +9,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestEvalStackPrimitiveLikeBoundary =
 
     // Load corelib once and concretise every primitive-like BCL type so that

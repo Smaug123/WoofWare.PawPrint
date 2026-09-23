@@ -14,6 +14,7 @@ open WoofWare.PawPrint
 /// methods were entered. The control guest asks the same questions through a `Type` local, the
 /// shape the fold must leave alone, and shows the memo does record the chain when it runs.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestTypeofIsValueTypeFold =
 
     let private assy = System.Reflection.Assembly.GetExecutingAssembly ()

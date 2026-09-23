@@ -19,6 +19,7 @@ open WoofWare.PawPrint
 /// So those arms are pinned here, against signatures either decoded from a compiled assembly or
 /// built directly.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodSignatureComparison =
 
     let private loadAssemblyFromSource

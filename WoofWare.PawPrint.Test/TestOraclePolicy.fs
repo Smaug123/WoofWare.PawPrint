@@ -15,6 +15,7 @@ open WoofWare.PosixKernel.Test
 /// one of those still runs the comparison, and the comparison still passes, having
 /// measured nothing.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestOraclePolicy =
 
     /// The real export, in the shim this test host runs against. Declared here as

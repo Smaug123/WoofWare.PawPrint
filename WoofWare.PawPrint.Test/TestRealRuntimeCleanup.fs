@@ -11,6 +11,7 @@ open FsUnitTyped
 /// rightly, since a leaked temp directory must not fail a test — which is
 /// exactly why the guard against it needs a test of its own.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestRealRuntimeCleanup =
 
     /// A tree shaped like the `FileModeSeeded.cs` seed's awkward corner: a

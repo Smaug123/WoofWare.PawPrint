@@ -25,6 +25,7 @@ open WoofWare.PawPrint
 /// comparison from a byte comparison.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestSignatureComparison =
 
     let private corpusSource =

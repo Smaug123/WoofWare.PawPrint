@@ -20,6 +20,7 @@ open WoofWare.PawPrint.Test
 /// plain `delegate* unmanaged<...>`, and a classifier reading only the header calls them the same
 /// thing — which would let a fatal entry through.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCallSiteTransition =
 
     let private assy = typeof<RunResult>.Assembly

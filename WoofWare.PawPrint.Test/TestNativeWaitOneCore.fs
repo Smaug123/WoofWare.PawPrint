@@ -13,6 +13,7 @@ open WoofWare.PawPrint
 /// when it is set, and no guest can yet observe the difference except through
 /// `Thread.ThreadState`, so this pins the decoding directly.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeWaitOneCore =
 
     let private trivialSource : string =

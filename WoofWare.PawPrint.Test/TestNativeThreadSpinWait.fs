@@ -29,6 +29,7 @@ open WoofWare.PawPrint
 /// for the differential coverage of the public `Thread.SpinWait(int)` half,
 /// which has no such problem.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeThreadSpinWait =
 
     let private trivialSource : string =

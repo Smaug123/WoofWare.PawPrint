@@ -23,6 +23,7 @@ open WoofWare.PawPrint
 /// claim about what the handler did rather than about what the guest saw.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeStackTrace =
 
     let private guestSource =

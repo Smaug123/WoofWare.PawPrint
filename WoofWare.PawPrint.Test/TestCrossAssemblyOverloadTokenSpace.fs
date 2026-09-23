@@ -16,6 +16,7 @@ open NUnit.Framework
 /// occupies in the entry assembly. Without it the two tables coincide and a mis-scoped resolution
 /// succeeds by accident; `runTestRequiring` asserts the divergence rather than assuming it.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyOverloadTokenSpace =
 
     let private payloadLibrary : CrossAssemblySpec =

@@ -5,6 +5,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestGcHandleRegistry =
     [<Test>]
     let ``compare-exchange updates only when the target matches`` () : unit =

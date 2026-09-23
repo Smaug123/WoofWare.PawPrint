@@ -18,6 +18,7 @@ open NUnit.Framework
 /// test's oracle.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyExecutingAssembly =
 
     [<Test>]

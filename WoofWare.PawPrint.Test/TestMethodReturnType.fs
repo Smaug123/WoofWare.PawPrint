@@ -7,6 +7,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodReturnType =
 
     let private loadAssemblyFromSource

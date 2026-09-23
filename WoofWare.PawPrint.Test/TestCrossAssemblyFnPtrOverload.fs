@@ -13,6 +13,7 @@ open NUnit.Framework
 /// `MemberLoader::FindMethod` -> `MetaSig::CompareMethodSigs`, which compares the modifier tokens;
 /// a comparison of concretised signatures sees one candidate twice.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyFnPtrOverload =
 
     [<Test>]

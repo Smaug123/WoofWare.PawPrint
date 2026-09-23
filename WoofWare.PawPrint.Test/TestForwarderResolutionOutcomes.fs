@@ -19,6 +19,7 @@ open WoofWare.PawPrint
 /// here — a host <c>failwith</c> inside the resolver, which no caller could react to.
 /// </remarks>
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestForwarderResolutionOutcomes =
 
     /// The assembly the forwarder points at, in the layout where it declares the type.

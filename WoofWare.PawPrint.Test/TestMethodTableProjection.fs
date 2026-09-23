@@ -12,6 +12,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestMethodTableProjection =
 
     // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over

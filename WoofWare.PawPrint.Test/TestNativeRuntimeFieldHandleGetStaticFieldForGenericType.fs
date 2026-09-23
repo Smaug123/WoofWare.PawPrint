@@ -13,6 +13,7 @@ open WoofWare.PawPrint
 /// refusals are here because each is a shape that caller cannot produce, and each stands for an
 /// assumption the answering arm depends on.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeRuntimeFieldHandleGetStaticFieldForGenericType =
     open NativeRuntimeFieldHandleFixture
 

@@ -29,6 +29,7 @@ open NUnit.Framework
 /// the prefix, which is what makes "the prefix is inert" a claim this fixture states directly
 /// rather than one inferred from agreement with the oracle.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedUnaligned =
 
     /// A static class whose methods are `unaligned.`-prefixed IL over their arguments, plus the

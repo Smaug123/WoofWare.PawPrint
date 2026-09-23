@@ -21,6 +21,7 @@ open NUnit.Framework
 /// this is the end-to-end half, which shows a guest's own `int` and `nint` values reach those
 /// arms through argument loading and the real dispatch.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedUnsignedDivision =
 
     /// `UDiv::DivUnIntNint(int, nint)`, `UDiv::DivUnNintInt(nint, int)`, and the `RemUn` pair,

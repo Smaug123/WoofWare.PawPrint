@@ -19,6 +19,7 @@ open WoofWare.PawPrint
 /// QCall would silently report the *wrong* interface set rather than fail, and the only
 /// symptom would be a differential test's exit code.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestArrayInterfaceMap =
 
     // The factory is intentionally undisposed: the returned DumpedAssembly.Logger closes over

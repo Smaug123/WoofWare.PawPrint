@@ -16,6 +16,7 @@ open WoofWare.PawPrint
 /// `TestInlineArrayLayout`. What is pinned here is the part that sweep cannot see: the *identity*
 /// of the synthesised cells, and the conditions CoreCLR rejects a type-load for.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestInlineArrayStorage =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

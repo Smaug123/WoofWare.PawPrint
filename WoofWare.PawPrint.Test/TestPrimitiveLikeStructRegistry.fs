@@ -7,6 +7,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestPrimitiveLikeStructRegistry =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

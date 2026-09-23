@@ -23,6 +23,7 @@ open WoofWare.PawPrint
 /// reinterpret to say what type the raw bytes are being viewed as. `appendProjection` refuses to
 /// construct that, and the walk refuses to fold it.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestProjectionByteOffset =
 
     // Factory intentionally undisposed: corelib.Logger outlives this scope.

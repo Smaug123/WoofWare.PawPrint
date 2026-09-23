@@ -30,6 +30,7 @@ open WoofWare.PawPrint
 /// Reading PawPrint's table directly rather than running the guest is deliberate: this fixture is
 /// about the table, and virtual dispatch does not consult it yet.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedSlotContent =
 
     /// One tag per body, so a wrong answer names the body that ran. Kept below 128: a guest's exit

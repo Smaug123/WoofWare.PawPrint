@@ -10,6 +10,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFaultHandlers =
 
     // The factory is intentionally not disposed: the DumpedAssembly keeps the logger.

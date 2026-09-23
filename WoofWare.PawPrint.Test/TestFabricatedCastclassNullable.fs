@@ -16,6 +16,7 @@ open NUnit.Framework
 /// fixture supplies it with a closed token and with a generic-parameter token that the driver
 /// instantiates at `Nullable<T>`.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedCastclassNullable =
 
     /// `Cast::ChkNullableInt(object) : object` is `ldarg.0; castclass Nullable<int>; ret`,

@@ -11,6 +11,7 @@ open NUnit.Framework
 /// those things across an assembly boundary, so it also checks that the sibling assembly
 /// resolves when the guest is a child process rather than an `AssemblyLoadContext`.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestCrossAssemblyOracle =
 
     [<Test>]

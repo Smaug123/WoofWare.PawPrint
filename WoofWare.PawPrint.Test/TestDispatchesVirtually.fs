@@ -23,6 +23,7 @@ open WoofWare.PawPrint
 /// contain every flag combination — which the fixture asserts rather than assumes, so a corpus that
 /// stopped exercising a case would fail here rather than quietly stop testing it.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestDispatchesVirtually =
 
     let private loggerFactory = snd (LoggerFactory.makeTest ())

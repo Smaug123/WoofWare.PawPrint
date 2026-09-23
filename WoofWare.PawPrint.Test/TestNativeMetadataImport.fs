@@ -10,6 +10,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeMetadataImport =
     let private metadataImportSource =
         """

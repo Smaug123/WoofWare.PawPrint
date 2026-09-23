@@ -195,6 +195,7 @@ class Program
     /// Only two-fault inputs can tell the orders apart, so these are the tests that keep the Darwin
     /// branch from being dead code, and the Linux assertions in `PReadRawSeeded.cs` are the other
     /// half of the same claim.
+    [<Parallelizable(ParallelScope.All)>]
     module CheckOrder =
 
         let private darwin : KernelConfig =

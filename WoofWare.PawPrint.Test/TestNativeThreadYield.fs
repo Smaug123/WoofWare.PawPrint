@@ -15,6 +15,7 @@ open WoofWare.PawPrint
 /// the return value. See `NativeThreading.fs` for the reasoning behind FALSE
 /// over TRUE under the current `chooseNext` contract.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeThreadYield =
 
     let private trivialSource : string =

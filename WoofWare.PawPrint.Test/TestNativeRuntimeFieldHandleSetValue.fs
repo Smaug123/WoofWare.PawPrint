@@ -14,6 +14,7 @@ open WoofWare.PawPrint
 /// `sourcesPure/ReflectionFieldSetValue.cs` and `ReflectionFieldSetValueInitOnly.cs` cover
 /// everything the guest *can* see.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestNativeRuntimeFieldHandleSetValue =
     open NativeRuntimeFieldHandleFixture
 

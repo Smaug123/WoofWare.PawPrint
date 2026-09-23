@@ -32,6 +32,7 @@ open WoofWare.PosixKernel
 /// The routes that must keep working are the control, `sourcesPure/UnmanagedCallersOnlyFunctionPointer.cs`:
 /// the legal `delegate* unmanaged<...>` call site, and binding a delegate without invoking it.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestUnmanagedCallersOnlyEntry =
 
     let private assy = typeof<RunResult>.Assembly

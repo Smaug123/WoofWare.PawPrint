@@ -11,6 +11,7 @@ open WoofWare.PawPrint
 open TypeIdentityTestHelpers
 
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestTypeIdentityProperties =
 
     type private CompiledReferenceScenario =

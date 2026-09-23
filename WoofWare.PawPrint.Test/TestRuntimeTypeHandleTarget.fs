@@ -12,6 +12,7 @@ open WoofWare.PawPrint
 /// a shape over a closed element is the closed shape, so that `TypeHandleRegistry`, which keys
 /// guest `Type` identity on the target, never holds two spellings of one type.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestRuntimeTypeHandleTarget =
 
     let private identity (row : int) : ResolvedTypeIdentity =
