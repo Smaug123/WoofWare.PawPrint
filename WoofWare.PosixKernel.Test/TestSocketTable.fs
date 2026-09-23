@@ -474,7 +474,7 @@ module TestSocketTable =
                                 UnbindTargetEffect.LostALink
                                 holder
                                 chosen
-                                (UnixMachineState.fileTimestamp kernel.Machine)
+                                (UnixMachineState.realtime kernel.Machine)
                                 kernel.Machine.FileSystem
                         with
                         | Error e -> failwith $"unexpected unbind error: %O{e}"

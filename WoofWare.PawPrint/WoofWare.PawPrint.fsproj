@@ -71,6 +71,7 @@
     <Compile Include="HardwareIntrinsicsProfile.fs" />
     <Compile Include="DebuggerState.fs" />
     <Compile Include="SignalHandler.fs" />
+    <Compile Include="Native\ClockPal.fs" />
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="RuntimeConfig.fs" />
     <Compile Include="HostConfig.fs" />

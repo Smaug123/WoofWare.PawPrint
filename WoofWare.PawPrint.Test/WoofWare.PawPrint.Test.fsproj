@@ -295,6 +295,8 @@
     <Compile Include="TestUnmanagedCallersOnlyEntry.fs" />
     <Compile Include="TestConcurrencyBugs.fs" />
     <Compile Include="TestRetireStep.fs" />
+    <Compile Include="TestSystemTimeAsTicks.fs" />
+    <Compile Include="TestMonotonicTimestamp.fs" />
     <Compile Include="TestKernelConfig.fs" />
     <Compile Include="TestClockJitter.fs" />
     <Compile Include="TestClockJitterFindsBugs.fs" />

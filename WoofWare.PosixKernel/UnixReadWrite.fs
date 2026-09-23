@@ -726,7 +726,7 @@ module UnixReadWrite =
             )
         | Ok (WriteTarget.File (inode, offset)) ->
 
-        let now = UnixMachineState.fileTimestamp system.Machine
+        let now = UnixMachineState.realtime system.Machine
 
         // A content-changing write strips a file's set-user-ID and set-group-ID
         // bits unless the writer is root; measured on both platforms, which
@@ -968,7 +968,7 @@ module UnixReadWrite =
             Ok (WriteAnswer.Completed 0, system)
         else
 
-        let now = UnixMachineState.fileTimestamp system.Machine
+        let now = UnixMachineState.realtime system.Machine
 
         // A content-changing write strips a file's set-user-ID and set-group-ID
         // bits unless the writer is root, exactly as `write`'s does: the bits

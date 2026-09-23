@@ -257,7 +257,7 @@ module UnixNamespace =
             let permissions =
                 CreatingOpenRules.createdPermissions rules system.Process.Umask mode
 
-            let now = UnixMachineState.fileTimestamp system.Machine
+            let now = UnixMachineState.realtime system.Machine
 
             match
                 VirtualFileSystem.createFile
@@ -637,7 +637,7 @@ module UnixNamespace =
         let permissions =
             MkDirRules.createdPermissions rules parentPermissions system.Process.Umask mode
 
-        let now = UnixMachineState.fileTimestamp system.Machine
+        let now = UnixMachineState.realtime system.Machine
 
         match VirtualFileSystem.createDirectory directory name permissions now system.Machine.FileSystem with
         | Error error ->
@@ -686,7 +686,7 @@ module UnixNamespace =
         | UnlinkVerdict.Refuse error -> SyscallAnswer.Failed error, system
         | UnlinkVerdict.Remove (directory, name) ->
 
-        let now = UnixMachineState.fileTimestamp system.Machine
+        let now = UnixMachineState.realtime system.Machine
 
         match VirtualFileSystem.unbind UnbindTargetEffect.LostALink directory name now system.Machine.FileSystem with
         | Error error ->
@@ -739,7 +739,7 @@ module UnixNamespace =
         | RmDirVerdict.Refuse error -> SyscallAnswer.Failed error, system
         | RmDirVerdict.Remove (directory, name) ->
 
-        let now = UnixMachineState.fileTimestamp system.Machine
+        let now = UnixMachineState.realtime system.Machine
 
         match VirtualFileSystem.unbind rules.RemovedDirectoryEffect directory name now system.Machine.FileSystem with
         | Error error ->
@@ -963,7 +963,7 @@ module UnixNamespace =
         | RenameVerdict.NoOp -> Ok (SyscallAnswer.Completed 0L, system)
         | RenameVerdict.Move (sourceDirectory, sourceName, destinationDirectory, destinationName) ->
 
-        let now = UnixMachineState.fileTimestamp system.Machine
+        let now = UnixMachineState.realtime system.Machine
 
         match
             VirtualFileSystem.rename

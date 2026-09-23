@@ -31,9 +31,7 @@ module TestRetireStep =
         { kernel with
             StepCounter = kernel.StepCounter + 1L
         }
-        |> EmulatedKernel.mapMachine (
-            UnixMachineState.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
-        )
+        |> EmulatedKernel.withVirtualClockTicks (kernel.VirtualClockTicks + kernel.InstructionCostTicks)
 
     /// Run `f`, reporting either the value or the fact that it threw. Which inputs are rejected is
     /// half of what is being compared, so a throw is an outcome rather than a test failure.
@@ -49,7 +47,7 @@ module TestRetireStep =
             StepCounter = step
             Machine =
                 { EmulatedKernel.initial.Machine with
-                    VirtualClockTicks = clock
+                    NanosecondsSinceBoot = clock * ClockPal.nanosecondsPerTick
                 }
         }
 
@@ -119,7 +117,7 @@ module TestRetireStep =
                 StepCounter = 12L
                 Machine =
                     { kernel.Machine with
-                        VirtualClockTicks = 507L
+                        NanosecondsSinceBoot = 507L * ClockPal.nanosecondsPerTick
                     }
             }
 
@@ -160,7 +158,7 @@ module TestRetireStep =
     /// that would cross it, and must fault in both implementations on the same input.
     [<Test>]
     let ``rejects crossing the clock horizon exactly as the composition does`` () =
-        let horizon = UnixMachineState.maxMonotonicTimestampClockTicks
+        let horizon = EmulatedKernel.maxVirtualClockTicks
 
         let gen =
             gen {
@@ -234,7 +232,7 @@ module TestRetireStep =
     /// or the test above passes by never reaching a rejection at all.
     [<Test>]
     let ``horizon generator straddles the boundary`` () =
-        let horizon = UnixMachineState.maxMonotonicTimestampClockTicks
+        let horizon = EmulatedKernel.maxVirtualClockTicks
 
         let outcomes =
             [ 0L .. 1000L ]

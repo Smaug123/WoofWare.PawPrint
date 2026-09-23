@@ -433,8 +433,8 @@ module TestClockJitter =
             (ClockJitterStrategy.EagerDeadlines (1UL, 1.0, 0L))
             0L
             0L
-            [ UnixMachineState.maxMonotonicTimestampClockTicks + 1L ]
-        |> shouldEqual (Some (UnixMachineState.maxMonotonicTimestampClockTicks + 1L))
+            [ EmulatedKernel.maxVirtualClockTicks + 1L ]
+        |> shouldEqual (Some (EmulatedKernel.maxVirtualClockTicks + 1L))
 
     [<Test>]
     let ``the overshoot does not disturb which deadline was chosen`` () : unit =

@@ -564,7 +564,7 @@ module UnixDescriptor =
         (system : UnixSystem<'Task, 'Handler>)
         : Result<UnixSystem<'Task, 'Handler>, TruncationRefusal>
         =
-        let now = UnixMachineState.fileTimestamp system.Machine
+        let now = UnixMachineState.realtime system.Machine
         let rule = SimulatedUnixPlatform.setIdBitsOnTruncation system.Machine.UnixPlatform
         let privilege = UnixProcessState.callerPrivilege system.Process
 

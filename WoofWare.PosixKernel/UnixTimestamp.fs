@@ -1,8 +1,9 @@
 namespace WoofWare.PosixKernel
 
 /// <summary>
-/// A filesystem timestamp, measured in whole seconds since the Unix epoch
-/// plus a nanosecond part in <c>[0, 1e9)</c>.
+/// A timestamp, measured in whole seconds plus a nanosecond part in <c>[0, 1e9)</c>:
+/// since the Unix epoch for a filesystem timestamp or the realtime clock, and since
+/// boot for a monotonic clock.
 /// </summary>
 /// <remarks>
 /// This is a model of <c>struct timespec</c>.
@@ -91,9 +92,6 @@ module UnixTimestamp =
     /// <summary>
     /// A timestamp from an integer count of milliseconds since the Unix epoch.
     /// </summary>
-    /// <remarks>
-    /// This is how the emulated kernel holds its wall clock.
-    /// </remarks>
     let ofMillisecondsSinceEpoch (milliseconds : int64) : UnixTimestamp =
         // Floor division, so that a negative millisecond count keeps the
         // nanosecond part non-negative rather than producing a `timespec` no
@@ -121,7 +119,7 @@ module UnixTimestamp =
     /// The Unix epoch.
     /// </summary>
     /// <remarks>
-    /// This is what what a kernel booted at the default
-    /// <c>WallClockEpochMs</c> of 0 believes the time to be.
+    /// This is what the realtime clock of a kernel from <c>UnixSystem.initial</c>
+    /// reads before any time has passed.
     /// </remarks>
     let epoch : UnixTimestamp = UnixTimestamp (0L, 0)

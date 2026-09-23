@@ -1,15 +1,17 @@
-namespace WoofWare.PosixKernel.Test
+namespace WoofWare.PawPrint.Test
 
 open System
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
+open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// `UnixMachineState.systemTimeAsTicks` is the value
+/// `ClockPal.systemTimeAsTicks` is the value
 /// `SystemNative_GetSystemTimeAsTicks` returns: 100ns ticks since the Unix
-/// epoch, derived affinely from the deterministic virtual clock. CoreLib turns
+/// epoch, read from the emulated kernel's realtime clock, which is the boot
+/// instant plus the deterministic virtual clock. CoreLib turns
 /// it into `DateTime.UtcNow` with
 /// `new DateTime(((ulong)(ticks + UnixEpochTicks)) | KindUtc)`
 /// (DateTime.Unix.cs) — the *unvalidated* private ctor, so "every value we can
@@ -21,13 +23,13 @@ module TestSystemTimeAsTicks =
 
     let private propertyConfig : Config = Config.QuickThrowOnFailure.WithMaxTest 500
 
-    let private maxEpochMs : int64 = UnixMachineState.maxWallClockEpochMs
+    let private maxEpochMs : int64 = ClockPal.maxWallClockEpochMs
 
-    /// The machine a simulated process boots with. Nothing this module reads is
-    /// flavour-dependent -- both flavours boot the clock at zero -- so the
-    /// flavour here is arbitrary.
+    /// The machine a simulated process boots with, on Linux, whose realtime
+    /// clock reports to the nanosecond. Darwin's reports whole microseconds, and
+    /// has its own tests below.
     let private initialMachine : UnixMachineState =
-        (UnixSystem.initial<int, string> SimulatedUnixPlatform.linuxX64).Machine
+        (EmulatedKernel.create SimulatedUnixPlatform.linuxX64).Machine
 
     /// Fold an arbitrary int64 into `[0, bound]`. Deliberately not `abs`, which
     /// throws on `Int64.MinValue` — a value FsCheck does generate.
@@ -35,33 +37,38 @@ module TestSystemTimeAsTicks =
         let modulus = bound + 1L
         ((seed % modulus) + modulus) % modulus
 
-    /// A kernel booting at `epochMs` whose virtual clock has since advanced to
-    /// `clockTicks` — note the units differ: the boot instant is a millisecond
-    /// offset, which is the unit a host configures it in, while the clock is in
-    /// the 100 ns ticks it is denominated in.
-    let private machineWith (epochMs : int64) (clockTicks : int64) : UnixMachineState =
-        let machine = UnixMachineState.withWallClockEpochMs epochMs initialMachine
+    /// A kernel on `platform` booting at `epochMs` whose virtual clock has since
+    /// advanced to `clockTicks` — note the units differ: the boot instant is a
+    /// millisecond offset, which is the unit a host configures it in, while the
+    /// clock is in the 100 ns ticks PawPrint counts it in. Reached through the
+    /// setters `KernelConfig.toKernel` and the driver loop use.
+    let private machineOn (platform : SimulatedUnixPlatform) (epochMs : int64) (clockTicks : int64) : UnixMachineState =
+        (EmulatedKernel.create platform
+         |> EmulatedKernel.withWallClockEpochMs epochMs
+         |> EmulatedKernel.withVirtualClockTicks clockTicks)
+            .Machine
 
-        // The clock is set by record-copy because the driver loop is its only
-        // production writer.
-        { machine with
-            VirtualClockTicks = clockTicks
-        }
+    let private machineWith (epochMs : int64) (clockTicks : int64) : UnixMachineState =
+        machineOn SimulatedUnixPlatform.linuxX64 epochMs clockTicks
 
     /// The guest-visible instant, computed exactly as CoreLib does but through
     /// the range-*checking* `DateTime` ctor, so a reading the private ctor would
     /// have silently corrupted surfaces here as an exception instead.
     let private guestUtcNow (machine : UnixMachineState) : DateTime =
-        DateTime (DateTime.UnixEpoch.Ticks + UnixMachineState.systemTimeAsTicks machine, DateTimeKind.Utc)
+        DateTime (DateTime.UnixEpoch.Ticks + ClockPal.systemTimeAsTicks machine, DateTimeKind.Utc)
 
     /// Draw an epoch (ms) and a virtual-clock reading (100 ns ticks) whose
     /// combination is still representable — i.e. exactly the states a
-    /// legally-configured kernel can reach.
+    /// legally-configured kernel can reach, with the wall clock inside
+    /// `DateTime`'s range and the virtual clock inside
+    /// `EmulatedKernel.maxVirtualClockTicks`.
     let private reachable (epochSeed : int64, clockSeed : int64) : int64 * int64 =
         let epochMs = intoRange maxEpochMs epochSeed
 
         let clockTicks =
-            intoRange ((maxEpochMs - epochMs) * UnixMachineState.ticksPerMillisecond) clockSeed
+            intoRange
+                (min ((maxEpochMs - epochMs) * ClockPal.ticksPerMillisecond) EmulatedKernel.maxVirtualClockTicks)
+                clockSeed
 
         epochMs, clockTicks
 
@@ -72,8 +79,8 @@ module TestSystemTimeAsTicks =
         // Pinned against the BCL rather than against the arithmetic that
         // produced the literal, so a slip in that arithmetic is caught here.
         (DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks)
-        / UnixMachineState.ticksPerMillisecond
-        |> shouldEqual UnixMachineState.maxWallClockEpochMs
+        / ClockPal.ticksPerMillisecond
+        |> shouldEqual ClockPal.maxWallClockEpochMs
 
         guestUtcNow (machineWith maxEpochMs 0L)
         |> shouldEqual (DateTime (9999, 12, 31, 23, 59, 59, 999, DateTimeKind.Utc))
@@ -86,23 +93,26 @@ module TestSystemTimeAsTicks =
         // than that, so deriving it would reject the final sub-millisecond of
         // representable time.
         DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks
-        |> shouldEqual UnixMachineState.maxWallClockTicks
+        |> shouldEqual ClockPal.maxWallClockTicks
 
-        UnixMachineState.maxWallClockTicks
-        - maxEpochMs * UnixMachineState.ticksPerMillisecond
-        |> shouldEqual (UnixMachineState.ticksPerMillisecond - 1L)
+        // The last representable instant is the last tick of a whole second, which
+        // is what lets `systemTimeAsTicks` bound its reading in whole seconds.
+        ClockPal.maxWallClockTicks % 10_000_000L |> shouldEqual 9_999_999L
+
+        ClockPal.maxWallClockTicks - maxEpochMs * ClockPal.ticksPerMillisecond
+        |> shouldEqual (ClockPal.ticksPerMillisecond - 1L)
 
         // The last representable instant really is accepted, not rejected one
         // sub-millisecond early: this is the exact case the derived ceiling got
         // wrong, so assert the boundary itself rather than only the constant.
-        guestUtcNow (machineWith maxEpochMs (UnixMachineState.ticksPerMillisecond - 1L))
+        guestUtcNow (machineWith maxEpochMs (ClockPal.ticksPerMillisecond - 1L))
         |> shouldEqual DateTime.MaxValue
 
     [<Test>]
     let ``a default kernel boots at the Unix epoch`` () =
         // The replay contract: change this and every recorded trace's timestamps
         // change with it.
-        UnixMachineState.systemTimeAsTicks initialMachine |> shouldEqual 0L
+        ClockPal.systemTimeAsTicks initialMachine |> shouldEqual 0L
 
         guestUtcNow initialMachine |> shouldEqual DateTime.UnixEpoch
 
@@ -126,7 +136,7 @@ module TestSystemTimeAsTicks =
             let epochMs, clockTicks = reachable seeds
 
             guestUtcNow (machineWith epochMs clockTicks) = DateTime.UnixEpoch
-                .AddTicks(epochMs * UnixMachineState.ticksPerMillisecond)
+                .AddTicks(epochMs * ClockPal.ticksPerMillisecond)
                 .AddTicks (clockTicks)
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
@@ -144,10 +154,10 @@ module TestSystemTimeAsTicks =
         // that the reading is unchanged, is the substance of the property.
         let property (seeds : int64 * int64) : bool =
             let epochMs, clockTicks = reachable seeds
-            let wholeMs = clockTicks / UnixMachineState.ticksPerMillisecond
-            let remainder = clockTicks % UnixMachineState.ticksPerMillisecond
+            let wholeMs = clockTicks / ClockPal.ticksPerMillisecond
+            let remainder = clockTicks % ClockPal.ticksPerMillisecond
 
-            UnixMachineState.systemTimeAsTicks (machineWith epochMs clockTicks) = UnixMachineState.systemTimeAsTicks (
+            ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks) = ClockPal.systemTimeAsTicks (
                 machineWith (epochMs + wholeMs) remainder
             )
 
@@ -164,9 +174,9 @@ module TestSystemTimeAsTicks =
             let first = intoRange headroom firstSeed
             let second = intoRange headroom secondSeed
 
-            let firstTicks = UnixMachineState.systemTimeAsTicks (machineWith epochMs first)
+            let firstTicks = ClockPal.systemTimeAsTicks (machineWith epochMs first)
 
-            let secondTicks = UnixMachineState.systemTimeAsTicks (machineWith epochMs second)
+            let secondTicks = ClockPal.systemTimeAsTicks (machineWith epochMs second)
 
             compare firstTicks secondTicks = compare first second
 
@@ -182,15 +192,16 @@ module TestSystemTimeAsTicks =
         let property (seeds : int64 * int64) : bool =
             let epochMs, clockTicks = reachable seeds
 
-            let ticks = UnixMachineState.systemTimeAsTicks (machineWith epochMs clockTicks)
+            let ticks = ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks)
 
-            ticks % UnixMachineState.ticksPerMillisecond = clockTicks % UnixMachineState.ticksPerMillisecond
+            ticks % ClockPal.ticksPerMillisecond = clockTicks % ClockPal.ticksPerMillisecond
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
     [<Test>]
     let ``the inode stamp is the same instant, in a timespec`` () =
-        // `fileTimestamp` is what a write stamps on an inode's mtime and ctime.
+        // `UnixMachineState.realtime` is what a write stamps on an inode's mtime
+        // and ctime.
         // It must be a *re-denomination* of the wall clock rather than a second
         // clock: a guest that writes a file and then reads `DateTime.UtcNow` sees
         // two readings of one instant. Stated as an exact identity, because a
@@ -201,29 +212,29 @@ module TestSystemTimeAsTicks =
             let epochMs, clockTicks = reachable seeds
             let machine = machineWith epochMs clockTicks
 
-            let ticks = UnixMachineState.systemTimeAsTicks machine
-            let stamp = UnixMachineState.fileTimestamp machine
+            let ticks = ClockPal.systemTimeAsTicks machine
+            let stamp = UnixMachineState.realtime machine
 
             // Reassembled with the BCL's own arithmetic rather than by inverting
             // the implementation's division.
             let reassembled =
                 DateTime.UnixEpoch
                     .AddSeconds(float (UnixTimestamp.seconds stamp))
-                    .AddTicks (int64 (UnixTimestamp.nanoseconds stamp) / UnixMachineState.nanosecondsPerTick)
+                    .AddTicks (int64 (UnixTimestamp.nanoseconds stamp) / ClockPal.nanosecondsPerTick)
 
             UnixTimestamp.seconds stamp >= 0L
             && UnixTimestamp.nanoseconds stamp >= 0
             && UnixTimestamp.nanoseconds stamp < 1_000_000_000
-            // 100 ns is the clock's own quantum, so the nanosecond part can never
-            // carry a finer digit.
-            && int64 (UnixTimestamp.nanoseconds stamp) % UnixMachineState.nanosecondsPerTick = 0L
+            // PawPrint advances the clock only by whole 100 ns ticks, so the
+            // nanosecond part can never carry a finer digit.
+            && int64 (UnixTimestamp.nanoseconds stamp) % ClockPal.nanosecondsPerTick = 0L
             && reassembled = DateTime.UnixEpoch.AddTicks ticks
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
 
     [<Test>]
     let ``a default kernel stamps inodes at the Unix epoch`` () =
-        UnixMachineState.fileTimestamp initialMachine |> shouldEqual UnixTimestamp.epoch
+        UnixMachineState.realtime initialMachine |> shouldEqual UnixTimestamp.epoch
 
     /// Did the thunk complete, rather than failing the way PawPrint reports a
     /// violated kernel invariant?
@@ -240,32 +251,61 @@ module TestSystemTimeAsTicks =
             let representable = epochMs >= 0L && epochMs <= maxEpochMs
 
             let accepted =
-                succeeds (fun () -> UnixMachineState.withWallClockEpochMs epochMs initialMachine)
+                succeeds (fun () -> EmulatedKernel.withWallClockEpochMs epochMs EmulatedKernel.initial)
 
             accepted = representable
 
         Check.One (propertyConfig, Prop.forAll (ArbMap.defaults |> ArbMap.arbitrary<int64>) property)
 
     [<Test>]
-    let ``a kernel record-copied out of range is rejected at the point of use`` () =
-        // The setter can be bypassed by record-copy, so `systemTimeAsTicks`
-        // re-asserts: a guest must never observe a tick count naming no
-        // `DateTime`, and it must fail loudly rather than quietly wrapping.
+    let ``a wall clock run past DateTime's range is rejected at the point of use`` () =
+        // A legal boot instant late in `DateTime`'s range and a legal uptime can
+        // together name an instant past its end, so `systemTimeAsTicks` must
+        // assert: a guest must never observe a tick count naming no `DateTime`,
+        // and it must fail loudly rather than quietly wrapping.
         let property (epochSeed : int64, overshootSeed : int64) : bool =
-            let epochMs = intoRange maxEpochMs epochSeed
+            // Late enough that the virtual clock can reach past the end.
+            let earliest =
+                maxEpochMs - EmulatedKernel.maxVirtualClockTicks / ClockPal.ticksPerMillisecond
+                + 1_000L
 
-            let headroom =
-                UnixMachineState.maxWallClockTicks
-                - epochMs * UnixMachineState.ticksPerMillisecond
+            let epochMs = earliest + intoRange (maxEpochMs - earliest) epochSeed
+
+            let headroom = ClockPal.maxWallClockTicks - epochMs * ClockPal.ticksPerMillisecond
             // Strictly past the representable end of time.
             let clockTicks = headroom + 1L + intoRange 1_000_000L overshootSeed
 
-            let machine =
-                { initialMachine with
-                    WallClockEpochMs = epochMs
-                    VirtualClockTicks = clockTicks
-                }
-
-            not (succeeds (fun () -> UnixMachineState.systemTimeAsTicks machine))
+            not (succeeds (fun () -> ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks)))
 
         Check.One (propertyConfig, Prop.forAll int64Pairs property)
+
+    /// A Darwin kernel's realtime clock reports whole microseconds through
+    /// `clock_gettime`, and the shim reads it there, so `DateTime.UtcNow` on the
+    /// Darwin flavour drops the tick digit a Linux one keeps.
+    [<Test>]
+    let ``the Darwin flavour reports whole microseconds`` () =
+        let property (seeds : int64 * int64) : bool =
+            let epochMs, clockTicks = reachable seeds
+
+            let darwin =
+                ClockPal.systemTimeAsTicks (machineOn SimulatedUnixPlatform.macOsArm64 epochMs clockTicks)
+
+            let linux = ClockPal.systemTimeAsTicks (machineWith epochMs clockTicks)
+
+            darwin = linux - linux % 10L
+
+        Check.One (propertyConfig, Prop.forAll int64Pairs property)
+
+        // Pinned where the two differ, so the property is not vacuously true of a
+        // Darwin flavour that happened to read the Linux clock.
+        ClockPal.systemTimeAsTicks (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L)
+        |> shouldEqual 10L
+
+        ClockPal.systemTimeAsTicks (machineWith 0L 17L) |> shouldEqual 17L
+
+    /// The inode stamp is the kernel's own realtime clock, which is not truncated
+    /// on Darwin: only `clock_gettime` reports whole microseconds.
+    [<Test>]
+    let ``the Darwin flavour stamps inodes to the tick`` () =
+        UnixMachineState.realtime (machineOn SimulatedUnixPlatform.macOsArm64 0L 17L)
+        |> shouldEqual (UnixTimestamp.createOrFail "TestSystemTimeAsTicks" 0L 1_700)
