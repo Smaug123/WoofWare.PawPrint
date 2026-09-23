@@ -125,6 +125,39 @@ module TestAssemblyProbe =
             |> shouldEqual (Some testAssemblySimpleName)
         )
 
+    /// A directory that exists but cannot be listed is not the same as one that does not exist:
+    /// skipping it would bind from a later directory, and the runtime-dir order is what picks the
+    /// CoreLib flavour. Here the directory sits beneath an ancestor without search permission,
+    /// for which `Directory.Exists` answers false.
+    [<Test>]
+    let ``a runtime dir that cannot be searched is an error, not a miss`` () =
+        if OperatingSystem.IsWindows () then
+            Assert.Ignore "Unix permissions"
+
+        withTempRoot (fun root ->
+            let locked = Path.Combine (root, "locked")
+            let inner = Path.Combine (locked, "inner")
+            let later = Path.Combine (root, "later")
+            copyTestAssembly inner (testAssemblySimpleName + ".dll")
+            copyTestAssembly later (testAssemblySimpleName + ".dll")
+
+            File.SetUnixFileMode (locked, UnixFileMode.None)
+
+            try
+                if Directory.Exists inner then
+                    Assert.Ignore "permissions are not enforced for this user"
+
+                Assert.Throws<UnauthorizedAccessException> (fun () ->
+                    probedName [ inner ; later ] testAssemblySimpleName |> ignore<string option>
+                )
+                |> ignore<UnauthorizedAccessException>
+            finally
+                File.SetUnixFileMode (
+                    locked,
+                    UnixFileMode.UserRead ||| UnixFileMode.UserWrite ||| UnixFileMode.UserExecute
+                )
+        )
+
     /// A directory entry that lists under the name but cannot be opened, such as a dangling
     /// symlink, holds nothing, and the probe goes on to the next directory.
     [<Test>]

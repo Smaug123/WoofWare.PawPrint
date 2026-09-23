@@ -14,8 +14,9 @@ module AssemblyProbe =
     /// </summary>
     /// <remarks>
     /// <c>Path.GetDirectoryName "Guest.dll"</c> is <c>""</c>, so a bare file name's own
-    /// directory arrives spelled that way. <c>Directory.Exists ""</c> is false, where
-    /// <c>Path.Combine ("", name)</c> is <c>name</c> relative to the current directory.
+    /// directory arrives spelled that way. <c>Directory.EnumerateFiles</c> refuses the empty
+    /// path, where <c>Path.Combine ("", name)</c> is <c>name</c> relative to the current
+    /// directory.
     /// </remarks>
     let runtimeDirPath (dir : string) : string = if dir = "" then "." else dir
 
@@ -23,7 +24,7 @@ module AssemblyProbe =
     /// Read <c>&lt;simpleName&gt;.dll</c> from the first of <paramref name="dotnetRuntimeDirs"/>
     /// that holds it, matching the file name ignoring case. A directory that does not exist
     /// holds nothing, and neither does an entry that cannot be opened, such as a dangling
-    /// symlink.
+    /// symlink; a directory that exists but cannot be listed is an error.
     /// </summary>
     /// <remarks>
     /// CoreCLR's table of trusted platform assemblies compares simple names ignoring case
@@ -49,22 +50,26 @@ module AssemblyProbe =
         |> Seq.tryPick (fun dir ->
             let dir = runtimeDirPath dir
 
-            if not (Directory.Exists dir) then
-                None
-            else
-
             // The directory is listed rather than asked for the exact name, so that the answer
             // is the same on a case-sensitive host and a case-insensitive one, and the same
             // however the request spells the name. Every file, not `*.dll`: a case-sensitive
             // host's pattern match would drop `Foo.DLL` before the comparison saw it.
+            //
+            // Only a directory that is not there holds nothing. `Directory.Exists` would also say
+            // false for one that is there but cannot be searched, and skipping that would bind
+            // from a later directory -- possibly another CoreLib flavour -- so any other failure
+            // to list escapes.
             let matches =
-                Directory.EnumerateFiles dir
-                |> Seq.filter (fun candidate ->
-                    String.Equals (Path.GetFileName candidate, fileName, StringComparison.OrdinalIgnoreCase)
-                )
-                // Enumeration order is not reproducible; the refusal below names them in order.
-                |> Seq.sort
-                |> List.ofSeq
+                try
+                    Directory.EnumerateFiles dir
+                    |> Seq.filter (fun candidate ->
+                        String.Equals (Path.GetFileName candidate, fileName, StringComparison.OrdinalIgnoreCase)
+                    )
+                    // Enumeration order is not reproducible; the refusal below names them in order.
+                    |> Seq.sort
+                    |> List.ofSeq
+                with :? DirectoryNotFoundException ->
+                    []
 
             match matches with
             | [] -> None
