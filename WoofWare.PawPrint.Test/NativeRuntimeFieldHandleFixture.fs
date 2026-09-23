@@ -5,12 +5,20 @@ open System.IO
 open Microsoft.Extensions.Logging
 open WoofWare.PawPrint
 
-/// The machinery for driving the `RuntimeFieldHandle_GetValue` and `RuntimeFieldHandle_SetValue`
-/// QCalls directly: a guest assembly with the field shapes the two fixtures need, and builders
-/// for each argument spelling the QCalls take — a `FieldDesc*` as a registry id, a
-/// `QCallTypeHandle`, an `ObjectHandleOnStack` over a one-cell `object[]`, and the four-byte cell
-/// a `[MarshalAs(UnmanagedType.Bool)] ref bool` addresses.
+/// The machinery for driving `RuntimeFieldHandle`'s native methods directly: a guest assembly
+/// with the field shapes the fixtures need, and builders for each argument spelling the methods
+/// take — a `FieldDesc*` as a registry id, a `QCallTypeHandle`, an `ObjectHandleOnStack` over a
+/// one-cell `object[]`, and the four-byte cell a `[MarshalAs(UnmanagedType.Bool)] ref bool`
+/// addresses.
 module NativeRuntimeFieldHandleFixture =
+
+    /// Which native method of `System.RuntimeFieldHandle` a fixture drives.
+    [<RequireQualifiedAccess>]
+    type NativeEntry =
+        /// A QCall stub, named by its entry point; Roslyn mangles the stub's own name.
+        | QCall of entryPoint : string
+        /// An `[MethodImpl(MethodImplOptions.InternalCall)]` method, named by its method name.
+        | InternalCall of methodName : string
 
     /// `Holder` deliberately has no static initialisers, so Roslyn emits no `.cctor` for it and
     /// `ensureTypeInitialised` completes in place. `LazyHolder` has one, so the same call suspends
@@ -41,6 +49,12 @@ public sealed unsafe class PointerHolder
 {
     public int* Ptr;
 }
+
+public sealed class GenericHolder<T>
+{
+    public T Value;
+    public static int Count;
+}
 """
 
     type Fixture =
@@ -50,9 +64,9 @@ public sealed unsafe class PointerHolder
             Corelib : DumpedAssembly
             GuestAssembly : DumpedAssembly
             RuntimeFieldHandleType : TypeInfo<GenericParamFromMetadata, TypeDefn>
-            /// The QCall entry point this fixture drives.
-            EntryPoint : string
-            QCallMethod : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+            /// The native method this fixture drives.
+            Entry : NativeEntry
+            NativeMethod : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
             HolderType : TypeInfo<GenericParamFromMetadata, TypeDefn>
             HolderTypeHandle : ConcreteTypeHandle
             Int32Handle : ConcreteTypeHandle
@@ -89,25 +103,33 @@ public sealed unsafe class PointerHolder
             ImmutableArray.Empty
             typeDefn
 
-    /// Roslyn mangles the QCall stub's own name, so the entry point is the only stable handle
-    /// on it.
-    let private findQCallStub
-        (entryPoint : string)
+    let private findNativeMethod
+        (entry : NativeEntry)
         (declaringType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
         =
+        let isEntry (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) : bool =
+            match entry with
+            | NativeEntry.QCall entryPoint ->
+                match method.TryNativeImport with
+                | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
+                | None -> false
+            | NativeEntry.InternalCall methodName ->
+                match method.Body with
+                | MethodBody.InternalCall -> method.Name = methodName
+                | MethodBody.Il _
+                | MethodBody.PInvoke
+                | MethodBody.RuntimeProvided _
+                | MethodBody.Abstract -> false
+
         declaringType.Methods
-        |> List.filter (fun method ->
-            match method.TryNativeImport with
-            | Some import -> import.ModuleName = "QCall" && import.EntryPointName = entryPoint
-            | None -> false
-        )
+        |> List.filter isEntry
         |> function
             | [ method ] -> method
-            | [] -> failwith $"QCall entry point %s{entryPoint} not found on %s{declaringType.Name}"
-            | methods -> failwith $"QCall entry point %s{entryPoint} was ambiguous: %d{methods.Length} matches"
+            | [] -> failwith $"%A{entry} not found on %s{declaringType.Name}"
+            | methods -> failwith $"%A{entry} was ambiguous: %d{methods.Length} matches"
 
-    let make (entryPoint : string) : Fixture =
+    let make (entry : NativeEntry) : Fixture =
         let image =
             Roslyn.compileAssembly
                 "RuntimeFieldHandleQCallTestAssembly"
@@ -141,14 +163,14 @@ public sealed unsafe class PointerHolder
         let runtimeFieldHandleType =
             requiredTopLevelType corelib "System" "RuntimeFieldHandle"
 
-        // Concretizing the stub also concretizes its parameter types, which is what lets the
+        // Concretizing the method also concretizes its parameter types, which is what lets the
         // handler's active-pattern match on the signature succeed at dispatch time.
-        let state, qCallMethod, _ =
+        let state, nativeMethod, _ =
             ExecutionConcretization.concretizeMethodWithTypeGenerics
                 loggerFactory
                 baseClassTypes
                 ImmutableArray.Empty
-                (findQCallStub entryPoint runtimeFieldHandleType)
+                (findNativeMethod entry runtimeFieldHandleType)
                 None
                 corelib.DefinitionFullName
                 ImmutableArray.Empty
@@ -168,8 +190,8 @@ public sealed unsafe class PointerHolder
             Corelib = corelib
             GuestAssembly = guestAssembly
             RuntimeFieldHandleType = runtimeFieldHandleType
-            EntryPoint = entryPoint
-            QCallMethod = qCallMethod
+            Entry = entry
+            NativeMethod = nativeMethod
             HolderType = holderType
             HolderTypeHandle = holderTypeHandle
             Int32Handle = int32Handle
@@ -178,6 +200,30 @@ public sealed unsafe class PointerHolder
 
     let fieldNamed (fixture : Fixture) (name : string) : FieldInfo<GenericParamFromMetadata, TypeDefn> =
         fixture.HolderType.Fields |> List.find (fun f -> f.Name = name)
+
+    /// The `RuntimeFieldInfoStub` behind a freshly allocated handle for `field`, declared on
+    /// `declaringType`.
+    let private fieldInfoStubFor
+        (fixture : Fixture)
+        (declaringType : RuntimeTypeHandleTarget)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let runtimeFieldHandle, state =
+            IlMachineState.getOrAllocateField
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                declaringType
+                field.Handle
+                state
+
+        match runtimeFieldHandle with
+        | CliType.ValueType vt ->
+            match CliValueType.DereferenceField "m_ptr" vt with
+            | CliType.ObjectRef (Some addr) -> addr, state
+            | other -> failwith $"expected RuntimeFieldHandle.m_ptr to be an object ref, got %O{other}"
+        | other -> failwith $"expected RuntimeFieldHandle value type, got %O{other}"
 
     /// The `IntPtr` a `FieldDesc*` argument is spelled as: the registry id of a freshly
     /// allocated handle for `field`, declared on the closed type `declaringTypeHandle`.
@@ -188,27 +234,32 @@ public sealed unsafe class PointerHolder
         (state : IlMachineState)
         : CliType * IlMachineState
         =
-        let runtimeFieldHandle, state =
-            IlMachineState.getOrAllocateField
-                fixture.LoggerFactory
-                fixture.BaseClassTypes
-                (RuntimeTypeHandleTarget.Closed declaringTypeHandle)
-                field.Handle
-                state
-
-        let stubAddress =
-            match runtimeFieldHandle with
-            | CliType.ValueType vt ->
-                match CliValueType.DereferenceField "m_ptr" vt with
-                | CliType.ObjectRef (Some addr) -> addr
-                | other -> failwith $"expected RuntimeFieldHandle.m_ptr to be an object ref, got %O{other}"
-            | other -> failwith $"expected RuntimeFieldHandle value type, got %O{other}"
+        let stubAddress, state =
+            fieldInfoStubFor fixture (RuntimeTypeHandleTarget.Closed declaringTypeHandle) field state
 
         let id =
             FieldHandleRegistry.resolveFieldIdFromAddress stubAddress state.FieldHandles
             |> Option.defaultWith (fun () -> failwith "freshly allocated field handle was not in the registry")
 
         CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FieldHandlePtr id)), state
+
+    /// The `RuntimeFieldHandleInternal` value a freshly allocated handle for `field`, declared on
+    /// `declaringType`, carries: the struct the managed side passes wherever a parameter is
+    /// typed `RuntimeFieldHandleInternal` rather than `IntPtr`.
+    let runtimeFieldHandleInternalFor
+        (fixture : Fixture)
+        (declaringType : RuntimeTypeHandleTarget)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : CliType * IlMachineState
+        =
+        let stubAddress, state = fieldInfoStubFor fixture declaringType field state
+        let stub = ManagedHeap.get stubAddress state.ManagedHeap
+
+        match CliValueType.DereferenceField "m_fieldHandle" stub.Contents with
+        | CliType.ValueType _ as handle -> handle, state
+        | other ->
+            failwith $"expected RuntimeFieldInfoStub.m_fieldHandle to be a RuntimeFieldHandleInternal, got %O{other}"
 
     /// `fieldDescArgumentFor` on `Holder`'s field named `fieldName`.
     let fieldDescArgument (fixture : Fixture) (fieldName : string) (state : IlMachineState) : CliType * IlMachineState =
@@ -345,7 +396,7 @@ public sealed unsafe class PointerHolder
 
         IlMachineState.allocateManagedObject fixture.HolderTypeHandle contents state
 
-    /// Install the QCall frame for `fixture.EntryPoint` on a fresh thread and run the handler.
+    /// Install the frame for `fixture.Entry` on a fresh thread and run the handler.
     let invoke (fixture : Fixture) (args : CliType list) (state : IlMachineState) : ThreadId * NativeHandlerResult =
         let methodState =
             match
@@ -354,13 +405,13 @@ public sealed unsafe class PointerHolder
                     fixture.BaseClassTypes
                     state._LoadedAssemblies
                     fixture.Corelib
-                    fixture.QCallMethod
+                    fixture.NativeMethod
                     ImmutableArray.Empty
                     (ImmutableArray.CreateRange args)
                     None
             with
             | Ok methodState -> methodState
-            | Error missing -> failwith $"Unexpected missing assembly references creating QCall frame: %O{missing}"
+            | Error missing -> failwith $"Unexpected missing assembly references creating native frame: %O{missing}"
 
         let thread = ThreadId 0
 
@@ -380,9 +431,14 @@ public sealed unsafe class PointerHolder
                 TargetType = fixture.RuntimeFieldHandleType
             }
 
-        match NativeRuntimeFieldHandle.tryExecuteQCall fixture.EntryPoint ctx with
+        let result =
+            match fixture.Entry with
+            | NativeEntry.QCall entryPoint -> NativeRuntimeFieldHandle.tryExecuteQCall entryPoint ctx
+            | NativeEntry.InternalCall _ -> NativeRuntimeFieldHandle.tryExecute ctx
+
+        match result with
         | Some result -> thread, result
-        | None -> failwith $"NativeRuntimeFieldHandle handler did not match %s{fixture.EntryPoint}"
+        | None -> failwith $"NativeRuntimeFieldHandle handler did not match %A{fixture.Entry}"
 
     /// The RVA-backed blob field Roslyn generates for `RvaHolder.Data`, with its declaring type
     /// concretized. `<PrivateImplementationDetails>` is unspeakable in C# but perfectly reachable

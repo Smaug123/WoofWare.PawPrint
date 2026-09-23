@@ -17,7 +17,8 @@ open WoofWare.PawPrint
 module TestNativeRuntimeFieldHandleSetValue =
     open NativeRuntimeFieldHandleFixture
 
-    let private makeFixture () : Fixture = make "RuntimeFieldHandle_SetValue"
+    let private makeFixture () : Fixture =
+        make (NativeEntry.QCall "RuntimeFieldHandle_SetValue")
 
     /// Arguments for setting `Holder.Number` on a freshly allocated instance, with the
     /// out-cell pre-poisoned so that "the handler never wrote it" is distinguishable from
