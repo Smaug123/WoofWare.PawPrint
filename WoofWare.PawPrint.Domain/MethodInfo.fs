@@ -194,6 +194,17 @@ type RuntimeBehaviour =
     /// <see cref="MethodInfo.Synthesised"/>, so it has no MethodDef row.
     | StructMarshalStub
 
+    /// The multicast invoke stub for the declaring delegate type: what CoreCLR builds as
+    /// synthesised IL in <c>Delegate_GetMulticastInvokeSlow</c> (comdelegate.cpp:2177) and stores
+    /// in a multicast delegate's <c>_methodPtr</c>. It takes the delegate's <c>Invoke</c>
+    /// signature with the multicast delegate itself as <c>this</c>, calls <c>Invoke</c> on each of
+    /// <c>_invocationList[0 .. _invocationCount - 1]</c> in order with its own arguments, and
+    /// returns the last call's result. PawPrint interprets it directly instead.
+    ///
+    /// Like <see cref="StructMarshalStub"/>, a method carrying this is a
+    /// <see cref="MethodInfo.Synthesised"/> with no MethodDef row.
+    | MulticastDelegateInvoke
+
     /// <summary>
     /// A C# 12+ <c>[UnsafeAccessor]</c> <c>extern static</c> method. The runtime
     /// synthesises the body to forward to a (possibly inaccessible) member of the
@@ -339,6 +350,10 @@ type SynthesisedMethod =
     /// <c>MarshalNative_TryGetStructMarshalStub</c>'s has-layout-non-blittable arm.
     | StructMarshalStub
 
+    /// The multicast invoke stub for this method's declaring delegate type, as returned by
+    /// <c>Delegate.GetMulticastInvoke</c>.
+    | MulticastDelegateInvokeStub
+
     /// <summary>
     /// The placeholder frame the entry thread carries before <c>Main</c> is installed.
     /// </summary>
@@ -393,6 +408,10 @@ module SynthesisedMethod =
         // question should be put.
         match kind with
         | SynthesisedMethod.StructMarshalStub -> false
+        // A delegate type has no `.cctor` of its own to run, and entering the stub is not a use
+        // of any other type: each `Invoke` it makes initialises its own target's declaring type as
+        // that target's prologue, exactly as a single-cast invocation does.
+        | SynthesisedMethod.MulticastDelegateInvokeStub -> false
         // Never reached: the placeholder is pushed onto the entry thread directly rather than
         // called, so no call site asks. Answering `false` states the semantics anyway — startup
         // drives the entry type's initialiser as part of its own class-init sweep, and having

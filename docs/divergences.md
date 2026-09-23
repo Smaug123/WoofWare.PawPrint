@@ -531,11 +531,11 @@ The same reasoning is why the case carries no `MethodTable` payload. That would 
 
 **Where this lives in code**: `FunctionPointerTarget.RuntimeAllocator` in `NativeIntSource.fs` carries the reasoning; `NativeRuntimeTypeQCall.fs` is the only producer, and `UnaryMetadataCallOps.executeAllocatorCalli` the only consumer. `CanonicalPointerKey.RuntimeAllocatorFunctionPointer` gives it a single synthesised hash-bit identity to match.
 
-## An open delegate stores no shuffle thunk, and `_methodPtrAux` is always zero
+## An open delegate stores no shuffle thunk, and a single-cast delegate's `_methodPtrAux` is always zero
 
 **CoreCLR**: a delegate's three code-related fields carry different things depending on whether the delegate is open (its `Invoke` supplies every argument the target takes) or closed (it supplies one fewer, and the missing first argument was bound at creation time). `COMDelegate::BindToMethod` (`comdelegate.cpp:1184`) writes, for a *closed* delegate, the bound object into `_target` and the target's code address into `_methodPtr`, leaving `_methodPtrAux` null; and for an *open* one, the delegate **itself** into `_target`, the address of a generated *shuffle thunk* into `_methodPtr`, and the target's real code address into `_methodPtrAux`. The thunk exists because the calling convention puts `this` in the first argument register, and an open delegate's first `Invoke` argument is not a receiver, so the arguments have to be moved down before the target is entered.
 
-**PawPrint**: `_target` holds the bound object for a closed delegate and null for an open one; `_methodPtr` names the target method directly; `_methodPtrAux` is never written, so it stays at the zero `Delegate.InternalAlloc` left.
+**PawPrint**: `_target` holds the bound object for a closed delegate and null for an open one; `_methodPtr` names the target method directly; `_methodPtrAux` is never written, so it stays at the zero `Delegate.InternalAlloc` left. (A multicast delegate is different, and follows CoreCLR's layout; see point 2 below.)
 
 **Spec status**: Outside ECMA-335. II.14.6 describes delegates in terms of their observable behaviour and says nothing about the layout of `System.Delegate`'s private fields — which is why the divergence is representational rather than semantic.
 
@@ -553,7 +553,7 @@ The managed observables agree with CoreCLR for every shape a dynamic method can 
 **What this costs later**: two things, both of which have to be paid by the slices that make them reachable rather than here.
 
 1. **Openness is no longer recoverable from the fields.** A delegate closed over `null` and an open delegate are both `(_target = null, _methodPtrAux = 0)` here, where CoreCLR distinguishes them by the aux field. So whoever makes a dynamic method *executable* must derive the shuffle from the arity — the delegate's `Invoke` parameter count against the target's — and not from whether `_target` is null. `sourcesImpure/DynamicMethodDelegateBinding.cs` pins the closed-over-null case existing.
-2. **Multicast (issue #959) must revisit this.** `MulticastDelegate.Equals` has a whole branch keyed on `_invocationCount != 0` for wrapper delegates and unmanaged function pointers, both of which read `_methodPtrAux`; and `Delegate.GetMulticastInvoke`/`GetInvokeMethod` are what would populate it. That work has to decide what `_methodPtrAux` means before it can use it.
+2. **A multicast delegate does not share this divergence.** `NewMulticastDelegate` writes all three fields itself, and PawPrint gives them CoreCLR's meaning: `_target` is the multicast delegate, `_methodPtr` names the delegate type's multicast invoke stub (`Delegate.GetMulticastInvoke`, `MulticastDelegateStub`), and `_methodPtrAux` holds `Invoke`'s method handle (`Delegate.GetInvokeMethod`). The stub reaches its elements only through their own `Invoke`, so the single-cast representation above never meets the multicast one. The other shapes `MulticastDelegate.Equals` keys on `_invocationCount != 0` for — wrapper delegates and unmanaged function pointers, which read `_methodPtrAux` — are still not built.
 3. **Two shapes are refused at binding rather than served**, both because the aux field is where CoreCLR would have put the answer: an open delegate over a virtual method on a reference type, and one over a static abstract interface method. Each is parked with its measured refusal.
 
 **Observable example**:

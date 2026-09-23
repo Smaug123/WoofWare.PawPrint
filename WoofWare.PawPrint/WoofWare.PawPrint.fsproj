@@ -106,6 +106,7 @@
     <Compile Include="Intrinsics.fs" />
     <Compile Include="IlMachineStateExecution.fs" />
     <Compile Include="StructMarshalStub.fs" />
+    <Compile Include="MulticastDelegateStub.fs" />
     <Compile Include="NullaryIlOp.fs" />
     <Compile Include="DynamicScopeOperand.fs" />
     <Compile Include="DynamicMethodBody.fs" />

@@ -13,8 +13,9 @@ using System.Reflection;
 //
 // This became reachable when `Delegate_BindToMethodInfo` learned to bind a metadata method:
 // `Delegate.CreateDelegate(Type, MethodInfo)` is the only route to an open instance delegate, since
-// C# has no method-group syntax for one. Un-park with issue #959, which is the same
-// `_methodPtrAux`/`_invocationCount` representation gap.
+// C# has no method-group syntax for one. Un-park when an open delegate records its target in
+// `_methodPtrAux`, as CoreCLR's does (docs/divergences.md, "An open delegate stores no shuffle
+// thunk").
 //
 // Returns 0 on success, or the number of the first check that failed.
 

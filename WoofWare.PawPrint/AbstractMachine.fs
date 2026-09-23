@@ -446,6 +446,8 @@ module AbstractMachine =
         | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> dispatchDelegateInvoke ()
         | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
             StructMarshalStub.executeStubCall loggerFactory baseClassTypes thread instruction state
+        | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
+            MulticastDelegateStub.execute loggerFactory baseClassTypes thread instruction state
         | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessorInvalidKind (_, hasTypeNameOverrides)) ->
             UnsafeAccessorDispatch.executeInvalidKind
                 loggerFactory

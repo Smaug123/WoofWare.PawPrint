@@ -26,6 +26,7 @@ module StackShapeOfMethod =
             )
         | MethodInfo.Synthesised (_, SynthesisedMethod.DynamicMethod handle) -> Some (StackShapeKey.Dynamic handle)
         | MethodInfo.Synthesised (_, SynthesisedMethod.StructMarshalStub)
+        | MethodInfo.Synthesised (_, SynthesisedMethod.MulticastDelegateInvokeStub)
         | MethodInfo.Synthesised (_, SynthesisedMethod.EntryPointPlaceholder) -> None
 
     let private shapeOfConcreteType (state : IlMachineState) (handle : ConcreteTypeHandle) : SlotShape =
@@ -415,6 +416,7 @@ module StackShapeOfMethod =
                     | MethodInfo.Synthesised (_, SynthesisedMethod.DynamicMethod handle) ->
                         analyseDynamic baseClassTypes state handle
                     | MethodInfo.Synthesised (_, SynthesisedMethod.StructMarshalStub)
+                    | MethodInfo.Synthesised (_, SynthesisedMethod.MulticastDelegateInvokeStub)
                     | MethodInfo.Synthesised (_, SynthesisedMethod.EntryPointPlaceholder) ->
                         failwith "BUG: keyOf gave a synthesised non-dynamic body a stack-shape key"
 

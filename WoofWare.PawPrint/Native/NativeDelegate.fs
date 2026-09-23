@@ -281,58 +281,6 @@ module NativeDelegate =
 
         state, (fromIsObjRef = toIsObjRef)
 
-    /// Concretise a `TypeDefn` decoded out of a dynamic method's signature blob. The blob's token
-    /// universe is the scope assembly's (see `MethodSignatureDecoding`), and neither a type nor a
-    /// method instantiation can be in scope: a dynamic method is never generic, and it is declared
-    /// on the synthetic per-module class rather than on any generic type.
-    /// The `Invoke` method of a delegate type, fully concretised. CoreCLR reaches it through
-    /// `COMDelegate::FindDelegateInvokeMethod` (comdelegate.cpp:2516), which reads the slot the
-    /// `DelegateEEClass` caches; PawPrint has no such cache and looks the method up by name, which
-    /// is the same thing given that the runtime is what synthesises `Invoke` in the first place
-    /// and gives every delegate type exactly one.
-    let private delegateInvokeMethod
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (operation : string)
-        (delegateType : ConcreteTypeHandle)
-        (state : IlMachineState)
-        : IlMachineState * WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
-        =
-        let concreteType, typeInfo =
-            IlMachineState.tryGetConcreteTypeInfo state delegateType
-            |> Option.defaultWith (fun () ->
-                failwith $"%s{operation}: the delegate's type %O{delegateType} has no TypeDef row"
-            )
-
-        let invoke =
-            typeInfo.Methods
-            |> List.filter (fun method -> method.Name = "Invoke" && not method.IsStatic)
-            |> function
-                | [ single ] -> single
-                | [] ->
-                    // CoreCLR raises `MissingMethodException("Invoke")` here
-                    // (comdelegate.cpp:2530). Unreachable from either caller. From
-                    // `Delegate_BindToMethodInfo`, because `CreateDelegate`'s callers all check
-                    // `rtType.IsDelegate()` first; from `Delegate.GetInvokeMethod`, because the
-                    // MethodTable it is handed is that of a live delegate instance. Either way, a
-                    // type whose base is `MulticastDelegate` got its `Invoke` from the runtime.
-                    failwith
-                        $"%s{operation}: delegate type %s{typeInfo.Namespace}.%s{typeInfo.Name} declares no instance method named Invoke"
-                | several ->
-                    failwith
-                        $"%s{operation}: delegate type %s{typeInfo.Namespace}.%s{typeInfo.Name} declares %d{several.Length} instance methods named Invoke; a delegate type has exactly one"
-
-        let state, concretised, _declaringHandle =
-            ExecutionConcretization.concretizeMethodWithAllGenerics
-                loggerFactory
-                baseClassTypes
-                concreteType.Generics
-                invoke
-                ImmutableArray.Empty
-                state
-
-        state, concretised
-
     /// <summary>
     /// <c>COMDelegate::IsMethodDescCompatible</c> (comdelegate.cpp:2544).
     /// </summary>
@@ -607,8 +555,8 @@ module NativeDelegate =
             // (Delegate.CoreCLR.cs:80-86), and `MulticastDelegate.NewMulticastDelegate`, which
             // stores it in the new delegate's `_methodPtrAux` (MulticastDelegate.CoreCLR.cs:183).
             // A registry id is therefore the right answer, and a `FunctionPointerTarget` would
-            // not be: the sibling `GetMulticastInvoke`, which really does return code, is
-            // separately unimplemented.
+            // not be: that is what the sibling `GetMulticastInvoke`, which really does return
+            // code, answers.
             //
             // The id names the `Invoke` of the *exact* instantiation, which is deliberately not
             // what CoreCLR answers: `GetInvokeMethod()` is a field of the `DelegateEEClass`, and
@@ -632,7 +580,7 @@ module NativeDelegate =
             let delegateType = NativeCall.methodTableOfEvalStackValue operation methodTableArg
 
             let state, invoke =
-                delegateInvokeMethod ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
+                MulticastDelegateStub.invokeMethodOf ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
 
             let registryId, registry =
                 MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes invoke state.MethodHandles
@@ -645,6 +593,38 @@ module NativeDelegate =
             let state =
                 IlMachineState.pushToEvalStack
                     (CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId))
+                    ctx.Thread
+                    state
+
+            NativeHandlerResult.completed state |> Some
+        | "System.Private.CoreLib",
+          "System",
+          "Delegate",
+          "GetMulticastInvoke",
+          [ ConcretePointer (CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                              "MethodTable",
+                                                              methodTableGenerics)) ],
+          MethodReturnType.Returns (ConcretePointer (ConcreteVoid state.ConcreteTypes)) when methodTableGenerics.IsEmpty ->
+            // `COMDelegate::GetMulticastInvoke` (comdelegate.cpp:2167): the code address of the
+            // delegate type's multicast invoke stub, which `NewMulticastDelegate` stores in a new
+            // multicast delegate's `_methodPtr` (MulticastDelegate.CoreCLR.cs:182). CoreCLR answers
+            // null until `Delegate_GetMulticastInvokeSlow` has generated and cached the stub; the
+            // stub here is data rather than generated code, so it is always available, and CoreLib
+            // never takes the slow path.
+            let operation = "Delegate.GetMulticastInvoke"
+
+            let state = IlMachineState.loadArgument ctx.Thread 0 state
+            let methodTableArg, state = IlMachineState.popEvalStack ctx.Thread state
+            let delegateType = NativeCall.methodTableOfEvalStackValue operation methodTableArg
+
+            let state, stub =
+                MulticastDelegateStub.synthesise ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
+
+            let state =
+                IlMachineState.pushToEvalStack
+                    (CliType.Numeric (
+                        CliNumericType.NativeInt (NativeIntSource.FunctionPointer (FunctionPointerTarget.Managed stub))
+                    ))
                     ctx.Thread
                     state
 
@@ -889,7 +869,7 @@ module NativeDelegate =
             let delegateType = ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap
 
             let state, invokeMethod =
-                delegateInvokeMethod ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
+                MulticastDelegateStub.invokeMethodOf ctx.LoggerFactory ctx.BaseClassTypes operation delegateType state
 
             // The bound argument's type is the *runtime* type of the object supplied, which is
             // what CoreCLR's `refFirstArg->GetTypeHandle()` reads.
@@ -971,7 +951,8 @@ module NativeDelegate =
                             // `AbstractMachine.dispatchDelegateInvoke` calls whatever `_methodPtr`
                             // names without virtualising, so binding the declared method here would
                             // silently ignore an override -- measured, real .NET does dispatch per
-                            // argument for this shape. That is issue #959's representation gap, and
+                            // argument for this shape. That is the open-delegate representation gap
+                            // (docs/divergences.md, "An open delegate stores no shuffle thunk"), and
                             // `Delegate_FindMethodHandle` already refuses a nonzero
                             // `_invocationCount` for the same reason.
                             //
@@ -1136,21 +1117,21 @@ module NativeDelegate =
             // (MulticastDelegate.CoreCLR.cs:499-513), so neither gets this far.
             if not (NativeIntSource.isZero invocationCount) then
                 failwith
-                    $"TODO: %s{operation} was handed a delegate whose _invocationCount is %O{invocationCount}; PawPrint builds no unmanaged-function-pointer or open-virtual delegate, and the target of such a delegate is not the method named in _methodPtr (issue #959)"
+                    $"TODO: %s{operation} was handed a delegate whose _invocationCount is %O{invocationCount}; a multicast delegate is answered in managed code and never gets here, PawPrint builds no unmanaged-function-pointer or open-virtual delegate, and the target of such a delegate is not the method named in _methodPtr"
 
             // `_methodPtrAux` is CoreCLR's open-delegate slot: it holds the target's real code
             // address while `_methodPtr` holds a shuffle thunk. PawPrint writes no shuffle thunks
             // and leaves it zero, naming the target in `_methodPtr` for open and closed alike --
-            // see docs/divergences.md, "An open delegate stores no shuffle thunk". Zero today
-            // because nothing writes it; the managed writer in `MulticastDelegate` does exist
-            // (`NewMulticastDelegate`, MulticastDelegate.CoreCLR.cs:168-190, sets it from
-            // `GetInvokeMethod`), and is blocked only on that InternalCall, so this guard is what
-            // stops #959 turning `Delegate.Method` into a silently wrong answer.
+            // see docs/divergences.md, "An open delegate stores no shuffle thunk". The one
+            // delegate PawPrint gives a nonzero one is a multicast delegate, which
+            // `NewMulticastDelegate` points at its `Invoke` (MulticastDelegate.CoreCLR.cs:183), and
+            // which the `_invocationCount` guard above has already turned away. So nonzero here
+            // means a shape PawPrint does not build, whose target `_methodPtr` does not name.
             let methodPtrAux = nativeIntField ctx.BaseClassTypes.DelegateType "_methodPtrAux"
 
             if not (NativeIntSource.isZero methodPtrAux) then
                 failwith
-                    $"TODO: %s{operation} was handed a delegate whose _methodPtrAux is %O{methodPtrAux}; PawPrint leaves that field zero and names the target in _methodPtr for open and closed delegates alike (issue #959)"
+                    $"TODO: %s{operation} was handed a delegate whose _methodPtrAux is %O{methodPtrAux}; PawPrint leaves that field zero and names the target in _methodPtr for open and closed single-cast delegates alike"
 
             let methodPtr =
                 match nativeIntField ctx.BaseClassTypes.DelegateType "_methodPtr" with
