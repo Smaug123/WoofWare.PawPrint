@@ -102,14 +102,12 @@ module NativeCastHelpers =
     /// 1. `Nullable::IsNullableForType` first, and deliberately never cached, because object
     ///    castability and type castability disagree on `T -> Nullable<T>`: the two share a
     ///    boxed representation, so a boxed `T` *is* a `Nullable<T>` for this question.
-    /// 2. A `TypeDesc` target is a flat `false`. Taking this before the structural walk is
-    ///    what keeps this function total: PawPrint's cast oracle refuses generic-parameter
-    ///    targets outright (`IlMachineRuntimeMetadata.isRuntimeTypeHandleTargetAssignableTo`),
-    ///    but CoreCLR never asks it about one.
+    /// 2. A `TypeDesc` target is a flat `false`, without consulting the structural walk. The
+    ///    walk would agree for a generic-parameter target, but it refuses a byref or pointer
+    ///    over a type variable, which CoreCLR never asks it about here.
     /// 3. Otherwise the ordinary structural walk (`MethodTable::CanCastTo`). An *open
-    ///    constructed* target reaches this walk (it is not a TypeDesc) and the cast oracle
-    ///    refuses it loudly; such a target only arises from a reflected generic-parameter
-    ///    constraint.
+    ///    constructed* target reaches this walk (it is not a TypeDesc); such a target only
+    ///    arises from a reflected generic-parameter constraint.
     /// 4. If that failed and the target is an interface, CoreCLR consults the COM and
     ///    `IDynamicInterfaceCastable` fallbacks. COM is unreachable here — `FEATURE_COMINTEROP`
     ///    is Windows-only and PawPrint has no RCWs — but `IDynamicInterfaceCastable` is real

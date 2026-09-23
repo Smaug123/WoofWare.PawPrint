@@ -403,6 +403,54 @@ module MethodHandleRegistry =
 
         buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle, reg
 
+    /// As `getOrAllocateInternalHandle`, but with `methodGenerics` bound as the method's
+    /// instantiation, on a declaring type that is a generic type definition or an open
+    /// construction: CoreCLR's instantiated `MethodDesc` over a typical or open MethodTable, which
+    /// is what `typeof(G&lt;&gt;).GetMethod("M").MakeGenericMethod(typeof(int))` hands back. Its
+    /// declaring type still has type variables, so reflection reports it as containing generic
+    /// parameters, and it cannot be invoked.
+    ///
+    /// A closed declaring type is refused: its instantiated methods are minted from the
+    /// concretized method by `getOrAllocateConcreteInternalHandle`, and a second route to the same
+    /// identity would have to agree with that one by discipline.
+    let getOrAllocateInstantiatedInternalHandle
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (assemblyFullName : string)
+        (declaringType : RuntimeTypeHandleTarget)
+        (method : MethodInfo<'tyGen, GenericParamFromMetadata, TypeDefn>)
+        (methodGenerics : ConcreteTypeHandle list)
+        (reg : MethodHandleRegistry)
+        : CliValueType * MethodHandleRegistry
+        =
+        let operation = "MethodHandleRegistry.getOrAllocateInstantiatedInternalHandle"
+
+        match declaringType with
+        | RuntimeTypeHandleTarget.Closed _ ->
+            failwith
+                $"%s{operation}: %s{method.Name} is declared by the closed type %O{declaringType}; mint its instantiation from the concretized method with getOrAllocateConcreteInternalHandle"
+        | _ -> requireMethodBearingDeclaringType operation declaringType
+
+        if List.length methodGenerics <> method.Generics.Length || methodGenerics.IsEmpty then
+            failwith
+                $"%s{operation}: %s{method.Name} declares %d{method.Generics.Length} generic parameter(s), but %d{List.length methodGenerics} argument(s) were supplied; an instantiation binds every one of at least one"
+
+        let handle =
+            {
+                AssemblyFullName = assemblyFullName
+                DeclaringType = declaringType
+                MethodDefinition = ComparableMethodDefinitionHandle.Make (requireDeclaredMethod method)
+                MethodGenerics = methodGenerics
+            }
+            |> MethodHandle.FromMetadata
+
+        let registryId, reg = idOfHandle handle reg
+
+        let mHandle =
+            CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
+
+        buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle, reg
+
     /// Build a zero-valued `RuntimeMethodHandleInternal`. Matches the BCL's `IsNullHandle()`
     /// sentinel used to terminate `IntroducedMethodEnumerator`: `m_handle` is a verbatim
     /// `IntPtr.Zero`, so managed `m_handle == IntPtr.Zero` checks see it as null.

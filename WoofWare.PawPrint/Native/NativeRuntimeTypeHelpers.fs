@@ -1048,26 +1048,6 @@ module NativeRuntimeTypeHelpers =
 
         state, typeInfo, typeHandle
 
-    /// Render a method for a diagnostic: its declaring type and name, plus its MethodDef token, so
-    /// that overloads sharing a name stay distinguishable.
-    let private describeMethodDefinition
-        (assembly : DumpedAssembly)
-        (declaringTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-        (handle : System.Reflection.Metadata.MethodDefinitionHandle)
-        (methodInfo : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
-        : string
-        =
-        let token =
-            let handle : System.Reflection.Metadata.EntityHandle =
-                System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle
-
-            System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken handle
-
-        let declaringTypeName =
-            TypeInfo.fullName (fun h -> assembly.TypeDefs.[h]) declaringTypeInfo
-
-        $"%s{declaringTypeName}::%s{methodInfo.Name} (MethodDef 0x%08x{token})"
-
     /// The types a generic parameter is constrained to be assignable to, in metadata row order.
     /// This is exactly what <c>RuntimeType.GetGenericParameterConstraints</c> reports, and the list
     /// <c>RuntimeType.GetBaseType</c> picks a type variable's base type out of.
@@ -1087,130 +1067,8 @@ module NativeRuntimeTypeHelpers =
         (target : RuntimeTypeHandleTarget)
         : IlMachineState * RuntimeTypeHandleTarget list
         =
-        let declaringType =
-            match target with
-            | RuntimeTypeHandleTarget.GenericParameter (declaringType, _)
-            | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, _, _) -> declaringType
-            | RuntimeTypeHandleTarget.Closed _
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-            | RuntimeTypeHandleTarget.OpenConstructed _
-            | RuntimeTypeHandleTarget.DynamicMethodsClass _
-            | RuntimeTypeHandleTarget.Composite _
-            | RuntimeTypeHandleTarget.FunctionPointer _ ->
-                failwith
-                    $"%s{operation}: genericParameterConstraintTargets requires a generic-parameter target, got %O{target}"
-
-        let assembly =
-            state.LoadedAssembly declaringType.AssemblyFullName
-            |> Option.defaultWith (fun () ->
-                failwith
-                    $"%s{operation}: assembly for the declaring type of %O{target} is not loaded: %s{declaringType.AssemblyFullName}"
-            )
-
-        let declaringTypeInfo = assembly.TypeDefs.[declaringType.TypeDefinition.Get]
-
-        let declaringTypeName =
-            TypeInfo.fullName (fun h -> assembly.TypeDefs.[h]) declaringTypeInfo
-
-        // `!!n` inside a constraint signature names the owning *method*'s n-th formal, so it can be
-        // given a target only under a method owner; the vector is empty for a type owner.
-        // ECMA-335 §II.10.1.7 scopes a type parameter's constraints to the type, so no signature
-        // the metadata model permits spells `!!n` there, and an empty vector stays a loud failure.
-        let ownerDescription, parameterMetadata, methodVariables =
-            match target with
-            | RuntimeTypeHandleTarget.GenericParameter (_, position) ->
-                if position < 0 || position >= declaringTypeInfo.Generics.Length then
-                    failwith
-                        $"%s{operation}: generic parameter position %d{position} is out of range for %s{declaringTypeName}, which declares %d{declaringTypeInfo.Generics.Length} parameter(s)"
-
-                let description = $"type-generic parameter #%d{position} of %s{declaringTypeName}"
-
-                description, snd declaringTypeInfo.Generics.[position], ImmutableArray.Empty
-            | RuntimeTypeHandleTarget.MethodGenericParameter (_, declaringMethod, position) ->
-                let methodInfo = assembly.Methods.[declaringMethod.Get]
-
-                let methodDescription =
-                    describeMethodDefinition assembly declaringTypeInfo declaringMethod.Get methodInfo
-
-                // The MethodDef row is read out of the *declaring type's* assembly, and a
-                // constraint's `!n` is resolved against that same type's formals. A target pairing
-                // a method with a type that does not declare it would therefore answer about some
-                // other method's parameter list rather than fail.
-                match methodInfo.TryDeclaringType with
-                | Some owner when owner.Identity = declaringType -> ()
-                | Some owner ->
-                    failwith
-                        $"%s{operation}: %s{methodDescription} is declared on %O{owner.Identity}, but %O{target} names %s{declaringTypeName} as its declaring type"
-                | None ->
-                    failwith
-                        $"%s{operation}: %s{methodDescription} has no declaring type, so it cannot be a method of %s{declaringTypeName} as %O{target} claims"
-
-                if position < 0 || position >= methodInfo.Generics.Length then
-                    failwith
-                        $"%s{operation}: method-generic parameter position %d{position} is out of range for %s{methodDescription}, which declares %d{methodInfo.Generics.Length} parameter(s)"
-
-                let description = $"method-generic parameter #%d{position} of %s{methodDescription}"
-
-                let methodVariables =
-                    Seq.init
-                        methodInfo.Generics.Length
-                        (fun index ->
-                            RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, index)
-                        )
-                    |> ImmutableArray.CreateRange
-
-                description, snd methodInfo.Generics.[position], methodVariables
-            | RuntimeTypeHandleTarget.Closed _
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
-            | RuntimeTypeHandleTarget.OpenConstructed _
-            | RuntimeTypeHandleTarget.DynamicMethodsClass _
-            | RuntimeTypeHandleTarget.Composite _
-            | RuntimeTypeHandleTarget.FunctionPointer _ ->
-                failwith
-                    $"logic error: %s{operation}: %O{target} is not a generic-parameter target, which binding `declaringType` above has already refused"
-
-        // Both axes are `Open`: a constraint is read against the declaring owner's own
-        // variables, never against an instantiation of them, so nothing here can take the closed
-        // path on account of the environment. An all-closed constraint like `where T : List<int>`
-        // still does, by mentioning no variable at all.
-        let environment =
-            {
-                ReflectedTypeTarget.ReflectionTypeEnvironment.TypeVariables =
-                    Seq.init
-                        declaringTypeInfo.Generics.Length
-                        (fun index -> RuntimeTypeHandleTarget.GenericParameter (declaringType, index))
-                    |> ImmutableArray.CreateRange
-                    |> ReflectedTypeTarget.ReflectionVariableBinding.Open
-                ReflectedTypeTarget.ReflectionTypeEnvironment.MethodVariables =
-                    methodVariables |> ReflectedTypeTarget.ReflectionVariableBinding.Open
-            }
-
-        let constraintTarget (state : IlMachineState) (ty : TypeDefn) : IlMachineState * RuntimeTypeHandleTarget =
-            ReflectedTypeTarget.reflectedTypeTarget
-                loggerFactory
-                baseClassTypes
-                operation
-                $"a constraint on %s{ownerDescription}"
-                assembly
-                environment
-                state
-                ty
-
-        // No variance validation happens here. CoreCLR's `TypeVarTypeDesc::LoadConstraints` runs
-        // `EEClass::CheckVarianceInSig` over each TypeSpec constraint of a method declared on a
-        // variant type, and throws TypeLoadException on violation; PawPrint validates variance
-        // nowhere, and C# rejects the violating shape, so only hand-written IL could tell.
-        // A constraint mentioning no type variable -- `where T : List<int>` -- is an ordinary closed
-        // type; one that mentions a variable (`where T2 : T1`, `where T : IComparable<T>`) comes
-        // back as a parameter target or an open construction over one. The walk decides which.
-        let baseTargets, state =
-            ((List.empty, state), parameterMetadata.Constraints)
-            ||> Seq.fold (fun (acc, state) ty ->
-                let state, target = constraintTarget state ty
-                target :: acc, state
-            )
-
-        let baseTargets = List.rev baseTargets
+        let state, parameterMetadata, baseTargets =
+            ReflectedTypeTarget.declaredConstraintTargets loggerFactory baseClassTypes operation state target
 
         // GenericParameter.fs filters out the synthetic System.ValueType row that Roslyn
         // emits alongside the NotNullableValueTypeConstraint flag for `where T : struct`,
@@ -1570,13 +1428,21 @@ module NativeRuntimeTypeHelpers =
     /// 3. the general "must be assignable to" constraints from the GenericParamConstraint table
     ///    (ECMA-335 §II.22.21), i.e. base-class and interface requirements.
     ///
-    /// Each general constraint is concretized in the *caller's* substitution context —
-    /// `declaringAssemblyFullName` / `typeGenerics` / `methodGenerics` — before the assignability check,
+    /// Each general constraint is read in the *caller's* substitution context —
+    /// `declaringAssemblyFullName` / `typeVariables` / `methodGenerics` — before the assignability check,
     /// exactly as CoreCLR loads it under `pTypeContextOfConstraintDeclarer` rather than deferring
     /// to `CanCastTo` on a typical instantiation. The comment at typedesc.cpp:1565-1580 gives the
     /// motivating example: verifying `S : A&lt;R&gt;` against `U : A&lt;T&gt;` requires substituting
     /// to `A&lt;int&gt;`, and the same is what makes `where T : IComparable&lt;T&gt;` satisfiable at
     /// all.
+    ///
+    /// `typeVariables` is `Open` when a generic method's declaring type is a definition or an open
+    /// construction, as for `typeof(G&lt;&gt;).GetMethod("M").MakeGenericMethod(...)`: CoreCLR then
+    /// validates against the declaring type's unbound formals (genmeth.cpp:1614-1642), so a
+    /// constraint may still mention them, and `isRuntimeTypeHandleTargetAssignableTo` decides
+    /// whether a closed argument casts to it. `where U : T` then admits no closed argument, while
+    /// `where U : IComparer&lt;T&gt;` admits `IComparer&lt;object&gt;` when `T : class`, by
+    /// contravariance.
     ///
     /// CoreCLR additionally walks the *constraining chain* of the argument when the argument is
     /// itself a type variable (`GatherConstraintsRecursive`), because `class A&lt;S, T&gt; where S : T`
@@ -1609,7 +1475,7 @@ module NativeRuntimeTypeHelpers =
         (state : IlMachineState)
         (ownerDisplayName : string)
         (declaringAssemblyFullName : string)
-        (typeGenerics : ImmutableArray<ConcreteTypeHandle>)
+        (typeVariables : ReflectedTypeTarget.ReflectionVariableBinding)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (generics : GenericParamFromMetadata ImmutableArray)
         (genericArguments : ConcreteTypeHandle list)
@@ -1623,6 +1489,23 @@ module NativeRuntimeTypeHelpers =
 
         let violation (param : GenericParameter) (constraintName : string) : string =
             $"GenericArguments[%i{param.SequenceNumber}], '%s{param.Name}', on '%s{ownerDisplayName}', violates the constraint of type '%s{constraintName}'."
+
+        let declaringAssembly =
+            state.LoadedAssembly declaringAssemblyFullName
+            |> Option.defaultWith (fun () ->
+                failwith
+                    $"validateConstraintsOn: assembly %s{declaringAssemblyFullName} declaring %s{ownerDisplayName} is not loaded"
+            )
+
+        // CoreCLR loads each constraint under the declarer's `SigTypeContext` (typedesc.cpp:1627):
+        // the method arguments being bound, and whatever the declaring type's variables denote,
+        // which is the type's own formals when it is a definition rather than an instantiation.
+        let environment =
+            {
+                ReflectedTypeTarget.ReflectionTypeEnvironment.TypeVariables = typeVariables
+                ReflectedTypeTarget.ReflectionTypeEnvironment.MethodVariables =
+                    ReflectedTypeTarget.ReflectionVariableBinding.Bound methodGenerics
+            }
 
         /// The flag-style constraints plus the byref-like rejection. None of these need to load
         /// anything, so they stay off the state-threading path.
@@ -1684,14 +1567,15 @@ module NativeRuntimeTypeHelpers =
                 | Some _ -> state, found
                 | None ->
 
-                let state, constraintHandle =
-                    IlMachineState.concretizeType
+                let state, constraintTarget =
+                    ReflectedTypeTarget.reflectedTypeTarget
                         loggerFactory
                         baseClassTypes
+                        "validateConstraintsOn"
+                        $"a constraint on generic parameter '%s{param.Name}' of %s{ownerDisplayName}"
+                        declaringAssembly
+                        environment
                         state
-                        declaringAssemblyFullName
-                        typeGenerics
-                        methodGenerics
                         constraintTypeDefn
 
                 // "System.Object constraint will be always satisfied" (typedesc.cpp:1637).
@@ -1699,21 +1583,35 @@ module NativeRuntimeTypeHelpers =
                 // reaches this branch. It keeps the verdict independent of whether the cast
                 // relation grants object-assignability to every shape an argument can take.
                 let isObjectConstraint =
-                    match nominalTypeInfoOfArgument state constraintHandle with
-                    | Some typeInfo -> TypeInfo.NominallyEqual typeInfo baseClassTypes.Object
-                    | None -> false
+                    match constraintTarget with
+                    | RuntimeTypeHandleTarget.Closed constraintHandle ->
+                        match nominalTypeInfoOfArgument state constraintHandle with
+                        | Some typeInfo -> TypeInfo.NominallyEqual typeInfo baseClassTypes.Object
+                        | None -> false
+                    | _ -> false
 
                 if isObjectConstraint then
                     state, None
                 else
 
                 let state, satisfied =
-                    IlMachineState.isConcreteTypeAssignableTo loggerFactory baseClassTypes state arg constraintHandle
+                    IlMachineState.isRuntimeTypeHandleTargetAssignableTo
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        (RuntimeTypeHandleTarget.Closed arg)
+                        constraintTarget
 
                 if satisfied then
                     state, None
                 else
-                    state, Some (violation param (constraintDisplayName state constraintHandle))
+                    let constraintName =
+                        match constraintTarget with
+                        | RuntimeTypeHandleTarget.Closed constraintHandle ->
+                            constraintDisplayName state constraintHandle
+                        | open' -> string<RuntimeTypeHandleTarget> open'
+
+                    state, Some (violation param constraintName)
             )
 
         ((state, None), Seq.zip generics genericArguments)
@@ -1743,7 +1641,7 @@ module NativeRuntimeTypeHelpers =
             state
             $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
             typeInfo.AssemblyFullName
-            (ImmutableArray.CreateRange genericArguments)
+            (ReflectedTypeTarget.ReflectionVariableBinding.Bound (ImmutableArray.CreateRange genericArguments))
             ImmutableArray.Empty
             typeInfo.Generics
             genericArguments

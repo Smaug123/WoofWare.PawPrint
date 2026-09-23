@@ -1309,43 +1309,45 @@ module NativeRuntimeMethodHandle =
                 |> Some
             | _ ->
 
-            // Rebinding needs the declaring type's own generic arguments as the substitution
-            // context, which only a nominal closed type carries.
-            let declaringTypeGenerics : ImmutableArray<ConcreteTypeHandle> =
+            // What the declaring type's own variables denote while binding. For a closed type they
+            // are its arguments. For a definition or an open construction some of them are still
+            // variables -- `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))` is the
+            // ordinary route to the first (genmeth.cpp:1256-1270) -- and CoreCLR binds under them
+            // as they stand, validating constraints against the unbound formals.
+            let typeVariables : ReflectedTypeTarget.ReflectionVariableBinding =
                 match declaringTarget with
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
                     AllConcreteTypes.lookup handle state.ConcreteTypes
                     |> Option.defaultWith (fun () ->
                         failwith $"%s{operation}: declaring type handle %O{handle} is not registered in ConcreteTypes"
                     )
-                    |> fun concreteType -> concreteType.Generics
+                    |> fun concreteType -> ReflectedTypeTarget.ReflectionVariableBinding.Bound concreteType.Generics
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
+                | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
+                    if definition <> methodInfo.RequiredDeclaringType.Identity then
+                        // As in the arm above: the MethodDef token names a row of the handle's
+                        // assembly, and the declaring type here comes from `instType` instead.
+                        failwith
+                            $"%s{operation}: rebinding %s{methodInfo.Name} onto %O{declaringTarget}, but its MethodDef row is declared by %s{MethodOwner.describe methodInfo.Owner} in %s{identity.GetAssemblyFullName ()}"
+
+                    let arguments =
+                        match declaringTarget with
+                        | RuntimeTypeHandleTarget.OpenConstructed (_, arguments) -> arguments
+                        | _ ->
+                            List.init
+                                methodInfo.RequiredDeclaringType.Generics.Length
+                                (fun index -> RuntimeTypeHandleTarget.GenericParameter (definition, index))
+
+                    ReflectedTypeTarget.ReflectionVariableBinding.Open (ImmutableArray.CreateRange arguments)
                 | other ->
                     // `stubOutcome` only says `Rebind` for a MethodTable-backed declaring type, and
-                    // the arm above has served the definition-level rebind that binds no method
-                    // generic arguments, so what is left here is an array declaring type, and an open
-                    // generic definition or open construction that *is* binding some.
-                    //
-                    // The definition case is `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))`, an
-                    // ordinary reflection idiom (genmeth.cpp:1256-1270) whose *identity* PawPrint
-                    // could already name. What it cannot do is check the constraints, and CoreCLR
-                    // checks them against the definition's own formals: for `M<U>(U) where U : T` on
-                    // `G<T>`, every closed argument is rejected, while for the contravariant
-                    // `where U : IComparer<T>` the closed `IComparer<object>` is *accepted* (both
-                    // measured against the real runtime). So this needs a variance-aware
-                    // assignability check against a formal, with the formal's own constraints in
-                    // play, and `validateConstraintsOn` wants each of those formals as a
-                    // `ConcreteTypeHandle`, which is closed by construction. Serving the shape
-                    // without the check would hand back a usable handle where real .NET throws. An
-                    // open construction's arguments may be variables too, and meet the same limit.
-                    //
-                    // A guest reaches it by the plain idiom, now that `RuntimeTypeHandle.GetNumVirtuals`
-                    // answers for an open definition and so `typeof(G<>).GetMethod` succeeds;
-                    // `sourcesPure/MakeGenericMethodOnOpenDefinition.cs` is parked on it.
+                    // with a method instantiation only for a generic method, which no array or
+                    // other structural type declares.
                     failwith
-                        $"TODO: %s{operation}: rebinding onto %O{other} is not supported; a closed nominal declaring type carries the generic arguments needed as a substitution context, and constraint validation under an open declaring context is unimplemented"
+                        $"%s{operation}: rebinding %s{methodInfo.Name} onto %O{other}, which cannot declare a generic method"
 
             // CoreCLR validates the method's generic constraints while binding
-            // (`FindOrCreateAssociatedMethodDesc` -> `SatisfiesClassConstraints`) and surfaces a
+            // (`FindOrCreateAssociatedMethodDesc` -> `SatisfiesMethodConstraints`) and surfaces a
             // violation to the caller of `MakeGenericMethod` as `ArgumentException`: the binder
             // raises `VerificationException`, which `RuntimeMethodInfo.MakeGenericMethod` catches
             // and rewrites via `ValidateGenericArguments`
@@ -1358,7 +1360,7 @@ module NativeRuntimeMethodHandle =
             //
             // A method's generic parameters live in the same substitution scope as its declaring
             // type's, so a constraint on one of them may mention either (`!0` or `!!0`). Both
-            // contexts therefore have to go in: the declaring type's arguments as `typeGenerics`,
+            // contexts therefore have to go in: the declaring type's variables as `typeVariables`,
             // the instantiation being bound as `methodGenerics`.
             let state, constraintViolation =
                 NativeRuntimeTypeHelpers.validateConstraintsOn
@@ -1367,7 +1369,7 @@ module NativeRuntimeMethodHandle =
                     state
                     $"%s{MethodOwner.describe methodInfo.Owner}.%s{methodInfo.Name}"
                     methodInfo.DeclaringAssemblyFullName
-                    declaringTypeGenerics
+                    typeVariables
                     (ImmutableArray.CreateRange methodInstantiation)
                     methodInfo.Generics
                     methodInstantiation
@@ -1378,21 +1380,40 @@ module NativeRuntimeMethodHandle =
                 |> Some
             | None ->
 
-            let state, concretizedMethod, _ =
-                ExecutionConcretization.concretizeMethodWithAllGenerics
-                    ctx.LoggerFactory
-                    ctx.BaseClassTypes
-                    declaringTypeGenerics
-                    methodInfo
-                    (ImmutableArray.CreateRange methodInstantiation)
-                    state
+            let state, handleValue, registry =
+                match typeVariables with
+                | ReflectedTypeTarget.ReflectionVariableBinding.Bound declaringTypeGenerics ->
+                    let state, concretizedMethod, _ =
+                        ExecutionConcretization.concretizeMethodWithAllGenerics
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            declaringTypeGenerics
+                            methodInfo
+                            (ImmutableArray.CreateRange methodInstantiation)
+                            state
 
-            let handleValue, registry =
-                MethodHandleRegistry.getOrAllocateConcreteInternalHandle
-                    ctx.BaseClassTypes
-                    state.ConcreteTypes
-                    concretizedMethod
-                    state.MethodHandles
+                    let handleValue, registry =
+                        MethodHandleRegistry.getOrAllocateConcreteInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            concretizedMethod
+                            state.MethodHandles
+
+                    state, handleValue, registry
+                | ReflectedTypeTarget.ReflectionVariableBinding.Open _ ->
+                    // Nothing to concretize: the result still has the declaring type's variables
+                    // in it, which is what makes it inspectable but not invokable.
+                    let handleValue, registry =
+                        MethodHandleRegistry.getOrAllocateInstantiatedInternalHandle
+                            ctx.BaseClassTypes
+                            state.ConcreteTypes
+                            (identity.GetAssemblyFullName ())
+                            declaringTarget
+                            methodInfo
+                            methodInstantiation
+                            state.MethodHandles
+
+                    state, handleValue, registry
 
             let state =
                 { state with
