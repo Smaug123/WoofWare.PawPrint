@@ -676,6 +676,18 @@ module ArithmeticOperation =
                 ->
                 subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 offset2
                 |> Choice2Of2
+            // A byte cursor over an array and a bare element byref, in either order. `conv.u`
+            // anchors a view on the one and `Unsafe.AsPointer` leaves the other bare, so two
+            // spellings of the same address arrive in different representations. The bare cell
+            // is byte offset zero within itself.
+            | ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr1, index1), [], _, offset1),
+              ArithmeticTarget.ArrayTarget (arr2, index2) ->
+                subtractArrayByteLocations baseClassTypes state arr1 index1 offset1 arr2 index2 0
+                |> Choice2Of2
+            | ArithmeticTarget.ArrayTarget (arr1, index1),
+              ArithmeticTarget.ByteViewTarget (ByrefRoot.ArrayElement (arr2, index2), [], _, offset2) ->
+                subtractArrayByteLocations baseClassTypes state arr1 index1 0 arr2 index2 offset2
+                |> Choice2Of2
             | ArithmeticTarget.ByteViewTarget (ByrefRoot.StackMemoryByte (thread1, frame1, block1, rootOffset1),
                                                prefix1,
                                                _,

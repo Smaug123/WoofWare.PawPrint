@@ -1104,6 +1104,8 @@ module TestBinaryArithmetic =
                 arrayPointer arr1 1, arrayPointer arr1 3
                 arrayPointer arr1 1, arrayPointer arr2 0
                 byteViewPointer arr1 1 3, byteViewPointer arr1 0 1
+                byteViewPointer arr1 1 3, arrayPointer arr1 0
+                arrayPointer arr1 0, byteViewPointer arr1 1 3
                 arrayPointer arr1 2, nullPtr
                 nullPtr, nullPtr
                 placeholder 64L, placeholder 24L
@@ -1112,11 +1114,25 @@ module TestBinaryArithmetic =
                 EvalStackValue.Int32 (Int32Source.Verbatim 7), nullPtr
             ]
 
-        // Shapes our pointer model declines to subtract at all (here: an array
-        // byte view against a plain array byref). Both ops must refuse them;
-        // only the refusal is compared, not the messages.
+        // Shapes our pointer model declines to subtract at all (here: a byte view
+        // under a field of an array element, against a plain array byref). Both ops
+        // must refuse them; only the refusal is compared, not the messages.
+        let byteViewUnderField : EvalStackValue =
+            ManagedPointerSource.Byref (
+                ByrefRoot.ArrayElement (arr1, 1),
+                [
+                    ByrefProjection.Field (FieldId.named "X")
+                    ByrefProjection.ReinterpretAs byteType
+                    ByrefProjection.ByteOffset 1
+                ]
+            )
+            |> EvalStackValue.ManagedPointer
+
         let refused : (EvalStackValue * EvalStackValue) list =
-            [ byteViewPointer arr1 1 3, arrayPointer arr1 0 ]
+            [
+                byteViewUnderField, arrayPointer arr1 0
+                arrayPointer arr1 0, byteViewUnderField
+            ]
 
         let run (op : IArithmeticOperation) (val1 : EvalStackValue) (val2 : EvalStackValue) : EvalStackValue option =
             try
@@ -1453,12 +1469,13 @@ module TestBinaryArithmetic =
             | ManagedPointerSource.Byref (_, [ ByrefProjection.ReinterpretAs _ ]) -> ()
             | other -> failwith $"expected the round trip to leave no byte offset behind, got %O{other}"
 
-            // Subtracting the two byrefs reports the byte distance. Only the whole-cell case is
-            // asked here: subtracting a bare element byref from a byte cursor over the same array
-            // is a shape `subManagedPtrs` has no arm for yet.
-            if case.Residue = 0 then
-                execute ArithmeticOperation.sub state afterFirst ptr
-                |> expectNativeInt (int64 firstBytes)
+            // Subtracting the two byrefs reports the byte distance, in both directions, whether
+            // the advance left a bare element byref or a byte cursor mid-cell.
+            execute ArithmeticOperation.sub state afterFirst ptr
+            |> expectNativeInt (int64 firstBytes)
+
+            execute ArithmeticOperation.sub state ptr afterFirst
+            |> expectNativeInt -(int64 firstBytes)
 
             true
 
@@ -1536,6 +1553,204 @@ module TestBinaryArithmetic =
         if emptyArrayCases = 0 || nonEmptyArrayCases = 0 || nonZeroByteOffsetCases = 0 then
             failwith
                 $"generator missed required regimes: empty=%d{emptyArrayCases}, nonEmpty=%d{nonEmptyArrayCases}, nonZeroByteOffsets=%d{nonZeroByteOffsetCases}"
+
+    /// An array element type for the mixed-representation subtraction property: the corelib
+    /// type, a zero cell of that type, and the stride the host runtime lays its cells out at.
+    type private MixedElementKind =
+        {
+            Name : string
+            TypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>
+            Zero : CliType
+            Stride : int
+        }
+
+    let private mixedElementKinds : MixedElementKind list =
+        [
+            {
+                Name = "sbyte"
+                TypeInfo = baseClassTypes.SByte
+                Zero = CliType.Numeric (CliNumericType.Int8 0y)
+                Stride = sizeof<sbyte>
+            }
+            {
+                Name = "short"
+                TypeInfo = baseClassTypes.Int16
+                Zero = CliType.Numeric (CliNumericType.Int16 0s)
+                Stride = sizeof<int16>
+            }
+            {
+                Name = "int"
+                TypeInfo = baseClassTypes.Int32
+                Zero = CliType.Numeric (CliNumericType.Int32 0)
+                Stride = sizeof<int32>
+            }
+            {
+                Name = "double"
+                TypeInfo = baseClassTypes.Double
+                Zero = CliType.Numeric (CliNumericType.Float64 0.0)
+                Stride = sizeof<float>
+            }
+        ]
+
+    /// Which of the two operands of `sub` carries the byte view; the other is a bare element byref.
+    [<RequireQualifiedAccess>]
+    type private ByteViewSide =
+        | Left
+        | Right
+
+    type private MixedArraySubtractionCase =
+        {
+            Element : MixedElementKind
+            Length : int
+            /// Whether the bare byref points into a second array rather than the byte view's.
+            CrossArray : bool
+            ViewSide : ByteViewSide
+            /// Anchored on the element's own shape, as `conv.u` does, or on `System.Byte`.
+            ViewIsElementShape : bool
+            ViewIndex : int
+            /// In `[0, Stride)`: the normalised in-cell part of the byte cursor.
+            ViewByteOffset : int
+            BareIndex : int
+        }
+
+    let private genMixedArraySubtractionCase : Gen<MixedArraySubtractionCase> =
+        gen {
+            let! element = Gen.elements mixedElementKinds
+            let! length = genArrayLength
+            let! crossArray = Gen.frequency [ 4, Gen.constant false ; 1, Gen.constant true ]
+            let! viewSide = Gen.elements [ ByteViewSide.Left ; ByteViewSide.Right ]
+            let! viewIsElementShape = Gen.elements [ true ; false ]
+            let! viewIndex = genSmallOffset
+            let! viewByteOffset = Gen.choose (0, element.Stride - 1)
+            let! bareIndex = genSmallOffset
+
+            return
+                {
+                    Element = element
+                    Length = length
+                    CrossArray = crossArray
+                    ViewSide = viewSide
+                    ViewIsElementShape = viewIsElementShape
+                    ViewIndex = viewIndex
+                    ViewByteOffset = viewByteOffset
+                    BareIndex = bareIndex
+                }
+        }
+
+    let private stateWithArraysOf
+        (element : MixedElementKind)
+        (length : int)
+        : IlMachineState * ManagedHeapAddress * ManagedHeapAddress
+        =
+        let handle =
+            AllConcreteTypes.getRequiredNonGenericHandle concreteTypes element.TypeInfo
+
+        let array : AllocatedArray =
+            {
+                Shape =
+                    {
+                        ConcreteType = ConcreteTypeHandle.OneDimArrayZero handle
+                        Length = length
+                        Lengths = ImmutableArray.Create length
+                        ElementStride = element.Stride
+                        ElementZero = element.Zero
+                    }
+                Elements = PersistentVector.ofSeq (List.replicate length element.Zero)
+            }
+
+        let state = state ()
+        let arr1, heap = ManagedHeap.allocateArray array state.ManagedHeap
+        let arr2, heap = ManagedHeap.allocateArray array heap
+
+        { state with
+            ManagedHeap = heap
+        },
+        arr1,
+        arr2
+
+    [<Test>]
+    let ``subtracting a bare array byref and a byte cursor gives the layout's byte distance`` () : unit =
+        let mutable leftViews = 0
+        let mutable rightViews = 0
+        let mutable crossArrays = 0
+        let mutable midCellViews = 0
+        let mutable nonZeroBothIndices = 0
+        let elementsSeen = System.Collections.Generic.HashSet<string> ()
+
+        let property (case : MixedArraySubtractionCase) : bool =
+            match case.ViewSide with
+            | ByteViewSide.Left -> leftViews <- leftViews + 1
+            | ByteViewSide.Right -> rightViews <- rightViews + 1
+
+            if case.CrossArray then
+                crossArrays <- crossArrays + 1
+
+            if case.ViewByteOffset <> 0 then
+                midCellViews <- midCellViews + 1
+
+            if case.ViewIndex <> 0 && case.BareIndex <> 0 then
+                nonZeroBothIndices <- nonZeroBothIndices + 1
+
+            elementsSeen.Add case.Element.Name |> ignore
+
+            let state, viewArr, otherArr = stateWithArraysOf case.Element case.Length
+            let bareArr = if case.CrossArray then otherArr else viewArr
+
+            let viewType =
+                if case.ViewIsElementShape then
+                    concreteTypeFor case.Element.TypeInfo
+                else
+                    byteType
+
+            let view = byteViewPointerAs viewType viewArr case.ViewIndex case.ViewByteOffset
+            let bare = arrayPointer bareArr case.BareIndex
+
+            // The oracle: each operand's byte position from the start of its array's data, as the
+            // element's real stride lays the cells out.
+            let viewPosition =
+                int64 case.ViewIndex * int64 case.Element.Stride + int64 case.ViewByteOffset
+
+            let barePosition = int64 case.BareIndex * int64 case.Element.Stride
+
+            let left, right, leftArr, leftPosition, rightArr, rightPosition =
+                match case.ViewSide with
+                | ByteViewSide.Left -> view, bare, viewArr, viewPosition, bareArr, barePosition
+                | ByteViewSide.Right -> bare, view, bareArr, barePosition, viewArr, viewPosition
+
+            for result in
+                [
+                    execute ArithmeticOperation.sub state left right
+                    executeFaultingOk ArithmeticOperation.subOvf state left right
+                ] do
+                if case.CrossArray then
+                    let synthetic = expectSyntheticNativeIntValue result
+
+                    SyntheticCrossArrayOffset.targetRoot synthetic
+                    |> shouldEqual (ByteStorageIdentity.Array leftArr)
+
+                    SyntheticCrossArrayOffset.targetOffset synthetic |> shouldEqual leftPosition
+
+                    SyntheticCrossArrayOffset.sourceRoot synthetic
+                    |> shouldEqual (ByteStorageIdentity.Array rightArr)
+
+                    SyntheticCrossArrayOffset.sourceOffset synthetic |> shouldEqual rightPosition
+                else
+                    result |> expectNativeInt (leftPosition - rightPosition)
+
+            true
+
+        Check.One (propertyConfig, Prop.forAll (Arb.fromGen genMixedArraySubtractionCase) property)
+
+        if
+            leftViews = 0
+            || rightViews = 0
+            || crossArrays = 0
+            || midCellViews = 0
+            || nonZeroBothIndices = 0
+            || elementsSeen.Count <> mixedElementKinds.Length
+        then
+            failwith
+                $"generator missed required regimes: left=%d{leftViews}, right=%d{rightViews}, cross=%d{crossArrays}, midCell=%d{midCellViews}, nonZeroBoth=%d{nonZeroBothIndices}, elements=%d{elementsSeen.Count}"
 
     [<Test>]
     let ``cross-storage byte offsets are generated anti-symmetric for all byte storage identities`` () : unit =
