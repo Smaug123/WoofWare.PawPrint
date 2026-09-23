@@ -1237,11 +1237,16 @@ module IlMachineManagedByref =
     /// where a coordinate that does not fit is outside every container PawPrint
     /// can allocate and so is refused rather than truncated — see
     /// `byteViewOffsetWithinInt32`.
-    let internal walkProjectionByteOffset
+    ///
+    /// Alongside the offset this returns the template of the type the chain's *end* is viewed
+    /// as: the target of the last `ReinterpretAs`, narrowed by every `Field` after it, and
+    /// `rootTemplate` itself when the chain has neither. It is a thunk for the same reason the
+    /// cursor is, so a caller that only wants the offset never resolves a template.
+    let internal walkProjectionView
         (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
         (rootTemplate : unit -> CliType)
         (projs : ByrefProjection list)
-        : int64
+        : int64 * (unit -> CliType)
         =
         // Structural precondition, a property of the chain alone; checked once
         // up front so the walk stays a plain accumulation.
@@ -1257,9 +1262,14 @@ module IlMachineManagedByref =
 
         // `int64` needs no overflow check of its own: every step is an `int32`, so overflowing
         // it would take ~2^32 projections in a single chain.
-        let rec walk (templateThunk : unit -> CliType) (offset : int64) (remaining : ByrefProjection list) : int64 =
+        let rec walk
+            (templateThunk : unit -> CliType)
+            (offset : int64)
+            (remaining : ByrefProjection list)
+            : int64 * (unit -> CliType)
+            =
             match remaining with
-            | [] -> offset
+            | [] -> offset, templateThunk
             | ByrefProjection.Field field :: rest ->
                 let template = templateThunk ()
                 let fieldOffset, _ = CliType.getFieldLayoutById field template
@@ -1269,6 +1279,15 @@ module IlMachineManagedByref =
             | ByrefProjection.ByteOffset n :: rest -> walk templateThunk (offset + int64<int> n) rest
 
         walk rootTemplate 0L projs
+
+    /// `walkProjectionView`'s byte coordinate alone.
+    let internal walkProjectionByteOffset
+        (templateFor : ConcreteType<ConcreteTypeHandle> -> CliType)
+        (rootTemplate : unit -> CliType)
+        (projs : ByrefProjection list)
+        : int64
+        =
+        walkProjectionView templateFor rootTemplate projs |> fst
 
     /// Narrow a byte coordinate produced by `walkProjectionByteOffset` to the in-container `int`
     /// offset the byte read/write paths index with.
@@ -1308,6 +1327,23 @@ module IlMachineManagedByref =
         int64<int> containerBaseOffset + int64<int> viewByteOffset
         |> byteViewOffsetWithinInt32 projs
 
+    /// Where a projection chain containing a `ReinterpretAs` lands, as `peelByteView` computes it.
+    ///
+    /// Every such chain reduces to this, however its `Field`, `ByteOffset` and further
+    /// `ReinterpretAs` steps are interleaved: a byref is an address plus the type it is viewed as,
+    /// and a `ReinterpretAs` is the point after which the address is all that the rest of the
+    /// chain can change.
+    type private ByteView =
+        {
+            /// Everything before the first `ReinterpretAs`: `Field` navigation only, naming the
+            /// storage cell the byte view is taken over.
+            StructuralPrefix : ByrefProjection list
+            /// Where the chain's end sits, in bytes from the start of that storage cell.
+            ByteOffset : int
+            /// The template of the type the chain's end is viewed as; see `walkProjectionView`.
+            ViewTemplate : unit -> CliType
+        }
+
     /// Split a projection chain at the first `ReinterpretAs` and collapse
     /// everything beyond that point into an accumulated byte offset. Once a
     /// `ReinterpretAs` appears the underlying storage is being treated as raw
@@ -1318,14 +1354,14 @@ module IlMachineManagedByref =
     /// structural prefix (everything before the first `ReinterpretAs`) for
     /// the dispatcher.
     ///
-    /// Returns `ValueSome (structuralPrefix, offset)` when the chain contains
-    /// at least one `ReinterpretAs`, else `ValueNone`. The `structuralPrefix`
-    /// never contains a `ReinterpretAs` by construction. A `ByteOffset` hung
-    /// off a `Field` navigation, with no reinterpret to anchor it, is a
+    /// `ValueSome` exactly when the chain contains at least one `ReinterpretAs`,
+    /// so this is a total classification: a chain it answers `ValueNone` for
+    /// is `Field` navigation alone and is served structurally. A `ByteOffset`
+    /// hung off a `Field` navigation, with no reinterpret to anchor it, is a
     /// construction-site invariant violation and is raised by the walk; see
-    /// `walkProjectionByteOffset`.
+    /// `walkProjectionView`.
     ///
-    /// The `offset` is an `int`, narrowed from the walk's `int64`
+    /// The offset is an `int`, narrowed from the walk's `int64`
     /// coordinate: this function serves
     /// the byte read/write paths, which index *inside one container*, and no
     /// container PawPrint can allocate is 2^31 bytes long. A chain whose
@@ -1334,22 +1370,23 @@ module IlMachineManagedByref =
     /// which compares two byrefs by arithmetic rather than dereferencing
     /// either — call the walk directly and keep the `int64`.
     ///
-    /// `baseClassTypes` is required only when the byte-view suffix navigates
-    /// through a `Field` projection (Field layout is resolved against the
-    /// current type template, which requires metadata). Metadata-light
-    /// callers (the BCT-less `writeManagedByref` entry point used by
-    /// primitive/external boundaries that do not currently carry type
+    /// `baseClassTypes` is required only when a template must be resolved:
+    /// when the byte-view suffix navigates through a `Field` projection
+    /// (Field layout is resolved against the current type template, which
+    /// requires metadata), or when the caller forces `ViewTemplate`.
+    /// Metadata-light callers (the BCT-less `writeManagedByref` entry point
+    /// used by primitive/external boundaries that do not currently carry type
     /// metadata) may pass `None`; their canonical chain shapes are
     /// `[..., ReinterpretAs T]` and `[..., ReinterpretAs T; ByteOffset n]`,
     /// whose suffixes contain no `Field` and therefore need no template. A
     /// BCT-less call with a `Field` in the byte-view suffix is an interpreter
     /// bug (the construction site that emitted such a chain ought to carry
     /// BCT) and is raised here with a descriptive message.
-    let private peelTrailingByteView
+    let private peelByteView
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
         (projs : ByrefProjection list)
-        : (ByrefProjection list * int) voption
+        : ByteView voption
         =
         let rec findFirstReinterpret
             (revPrefix : ByrefProjection list)
@@ -1375,18 +1412,51 @@ module IlMachineManagedByref =
                 | Some bct -> zeroForConcreteType bct state ty
                 | None ->
                     failwith
-                        $"peelTrailingByteView: BaseClassTypes required to navigate `Field` projection after `ReinterpretAs` %s{ty.Namespace}.%s{ty.Name} in projection chain: %A{projs} (metadata-light entry points cannot resolve Field layout; pass BaseClassTypes via writeManagedByrefWithBase)"
+                        $"peelByteView: BaseClassTypes required to resolve the layout of `ReinterpretAs` %s{ty.Namespace}.%s{ty.Name} in projection chain: %A{projs} (metadata-light entry points cannot resolve Field layout; pass BaseClassTypes via writeManagedByrefWithBase)"
 
             // The forward walk is strictly more general than a right-to-left per-pair peel: it
             // handles `[ReinterpretAs Outer; Field I; Field Y]` (e.g.
             // `Volatile.Write(ref view.I.Y, _)` on `Unsafe.As<int, Outer>(ref arr[0])`), where
             // the second `Field` would be unreachable from the right because its layout depends
             // on the type chosen by the preceding `Field`.
-            let totalOffset =
-                walkProjectionByteOffset templateFor (fun () -> templateFor firstReinTy) afterReinterpret
-                |> byteViewOffsetWithinInt32 projs
+            let totalOffset, viewTemplate =
+                walkProjectionView templateFor (fun () -> templateFor firstReinTy) afterReinterpret
 
-            ValueSome (structuralPrefix, totalOffset)
+            ValueSome
+                {
+                    StructuralPrefix = structuralPrefix
+                    ByteOffset = byteViewOffsetWithinInt32 projs totalOffset
+                    ViewTemplate = viewTemplate
+                }
+
+    /// `peelByteView`, for callers that need only where the chain lands and not what it is viewed
+    /// as.
+    let private peelTrailingByteView
+        (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
+        (state : IlMachineState)
+        (projs : ByrefProjection list)
+        : (ByrefProjection list * int) voption
+        =
+        peelByteView baseClassTypes state projs
+        |> ValueOption.map (fun view -> view.StructuralPrefix, view.ByteOffset)
+
+    /// Raise for a chain `peelByteView` classified as structural that nonetheless carries a
+    /// `ByteOffset`: with no `ReinterpretAs` anywhere there is no type the raw bytes are being
+    /// viewed as, and `ManagedPointerSource.appendProjection` refuses to build such a chain.
+    let private requireNoUnanchoredByteOffset (src : ManagedPointerSource) (projs : ByrefProjection list) : unit =
+        match
+            projs
+            |> List.tryPick (fun proj ->
+                match proj with
+                | ByrefProjection.ByteOffset n -> Some n
+                | ByrefProjection.Field _
+                | ByrefProjection.ReinterpretAs _ -> None
+            )
+        with
+        | Some n ->
+            failwith
+                $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
+        | None -> ()
 
 
     /// Serve a byte read from the container that holds `root`, `rootRelativeOffset` bytes
@@ -1701,18 +1771,19 @@ module IlMachineManagedByref =
             failwith
                 $"readManagedByref: cannot dereference fake non-null byref @ 0x%x{bits}; the placeholder must never be read"
         | ManagedPointerSource.Byref (root, projs) ->
-            match List.rev projs with
-            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
-            | ByrefProjection.ReinterpretAs ty :: _ ->
-                let targetTemplate = zeroForConcreteType baseClassTypes state ty
+            match peelByteView (Some baseClassTypes) state projs with
+            | ValueSome view ->
+                // The pointer's own type view is the only shape a caller of this function has to
+                // go on; that is the type the chain's end is viewed as, whatever follows its
+                // `ReinterpretAs`.
+                let targetTemplate = view.ViewTemplate ()
 
                 match tryReadNamedCellThrough baseClassTypes state root projs targetTemplate with
                 | Some cell -> cell
                 | None -> readManagedByrefBytesAs baseClassTypes state src targetTemplate
-            | ByrefProjection.ByteOffset n :: _ ->
-                failwith
-                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
-            | _ -> readProjectedValue (readRootValue state root) projs
+            | ValueNone ->
+                requireNoUnanchoredByteOffset src projs
+                readProjectedValue (readRootValue state root) projs
 
     /// Read a `template`-shaped value from the byte address `src` denotes.
     ///
@@ -1744,17 +1815,17 @@ module IlMachineManagedByref =
         | Some cell -> cell
         | None -> readManagedByrefBytesAs baseClassTypes state src template
 
-    /// Outcome of classifying the projection
-    /// `[..., ReinterpretAs reinterpretTy, Field field]` over storage of some
-    /// `CliType` value.
+    /// Outcome of classifying an access to `field` of a byte view whose end is viewed as some
+    /// type (`[..., ReinterpretAs T, Field field]` is the canonical shape, with the view `T`),
+    /// over storage of some `CliType` value.
     ///
-    /// `ElideAsField` (Phase A) signals that the reinterpret target is a
+    /// `ElideAsField` (Phase A) signals that the view is a
     /// transparent offset-0 single-field wrapper whose only field is
     /// layout-compatible with the storage value itself, so reads return the
     /// storage cell and writes overwrite the storage cell directly.
     ///
-    /// `ElideAsStorageInnerField` (Phase B) signals that *both* the reinterpret
-    /// target and the storage are transparent offset-0 single-field wrappers
+    /// `ElideAsStorageInnerField` (Phase B) signals that *both* the view
+    /// and the storage are transparent offset-0 single-field wrappers
     /// of a layout-compatible primitive (the canonical example is the BCL
     /// `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif, where both are
     /// single-`object`-field structs). Reads return the storage's inner field;
@@ -1771,41 +1842,34 @@ module IlMachineManagedByref =
         | ElideAsStorageInnerField of FieldId list
         | NotTransparent
 
-    /// The storage cell a `ReinterpretAs`-then-`Field` byref names, if any. The field sits
-    /// `fieldOffset` bytes into the reinterpret target, which itself sits `byteOffset` bytes into
-    /// the storage, so the byref addresses whatever cell occupies that sum.
+    /// The storage cell that `field` of a byte view names, if any. The field sits `fieldOffset`
+    /// bytes into the view, whose template is `viewTemplate` and which itself sits `byteOffset`
+    /// bytes into the storage, so the byref addresses whatever cell occupies that sum.
     ///
     /// Shared by the write-side dispatcher, which asks whether such a cell exists in order to
     /// route the write, and by the writer that then installs into it. Asking and answering with
     /// one function is what keeps them from disagreeing about which accesses are serviceable.
-    let private tryNameCellThroughReinterpretField
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
+    let private tryNameCellThroughViewField
         (byteOffset : int)
         (storageValue : CliType)
-        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (viewTemplate : CliType)
         (field : FieldId)
         : FieldId list option
         =
-        let reinterpretZero = zeroForConcreteType baseClassTypes state reinterpretTy
-        let fieldOffset, _ = CliType.getFieldLayoutById field reinterpretZero
-        let fieldTemplate = CliType.getFieldById field reinterpretZero
+        let fieldOffset, _ = CliType.getFieldLayoutById field viewTemplate
+        let fieldTemplate = CliType.getFieldById field viewTemplate
 
         tryNameCellForByrefAccess (byteOffset + fieldOffset) storageValue fieldTemplate
 
-    /// Classifier shared by the read- and write-side `ReinterpretAs+Field`
-    /// dispatchers. See `TransparentWrapperOutcome` for the cases.
+    /// Classifier shared by the read- and write-side dispatchers for an access to `field` of a
+    /// byte view whose template is `viewTemplate`. See `TransparentWrapperOutcome` for the cases.
     let private classifyTransparentWrapper
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
         (storageValue : CliType)
-        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (viewTemplate : CliType)
         (field : FieldId)
         : TransparentWrapperOutcome
         =
-        let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
-
-        match targetTemplate with
+        match viewTemplate with
         | CliType.ValueType cvt ->
             // `FieldsAt 0` lists every field that *starts* at offset 0; an
             // explicit-layout overlap there yields more than one, in which case
@@ -1819,7 +1883,7 @@ module IlMachineManagedByref =
             | [ f ] when
                 f.Id = field
                 && f.Size = CliType.sizeOf f.Contents
-                && CliType.sizeOf targetTemplate = f.Size
+                && CliType.sizeOf viewTemplate = f.Size
                 ->
                 // Phase A: storage IS layout-compatible with the field cell
                 // (the bare ObjectRef case, e.g. `Unsafe.As<object,
@@ -1838,17 +1902,20 @@ module IlMachineManagedByref =
             | _ -> TransparentWrapperOutcome.NotTransparent
         | _ -> TransparentWrapperOutcome.NotTransparent
 
-    let private readReinterpretedByrefField
+    /// Read `field` of the value a byte-view byref `src` addresses, `view` being `src`'s chain as
+    /// `peelByteView` classified it.
+    let private readByteViewField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (src : ManagedPointerSource)
-        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (root : ByrefRoot)
+        (view : ByteView)
         (field : FieldId)
         : CliType
         =
-        let targetTemplate = zeroForConcreteType baseClassTypes state reinterpretTy
-        let fieldTemplate = CliType.getFieldById field targetTemplate
-        let fieldOffset, _ = CliType.getFieldLayoutById field targetTemplate
+        let viewTemplate = view.ViewTemplate ()
+        let fieldTemplate = CliType.getFieldById field viewTemplate
+        let fieldOffset, _ = CliType.getFieldLayoutById field viewTemplate
 
         match fieldTemplate with
         | CliType.ObjectRef _ ->
@@ -1858,52 +1925,48 @@ module IlMachineManagedByref =
             // wrapper that we can pass through to the underlying ObjectRef
             // cell, and otherwise we surface a diagnostic in place of the
             // unreachable bytewise fallback.
-            match splitTrailingByteView src with
-            | ValueSome (root, prefixProjs, byteOffset) ->
-                let storageValue = readProjectedValue (readRootValue state root) prefixProjs
+            let byteOffset = view.ByteOffset
 
-                // The field sits at `fieldOffset` within the reinterpret target, which itself sits
-                // at `byteOffset` within the storage, so the reference the byref names occupies
-                // that sum. When some cell has exactly that extent, that cell *is* the reference
-                // and no wrapper reasoning is needed — this is the general case, of which the
-                // classifier below handles the shapes it cannot reach: storage that is itself a
-                // bare `ObjectRef` has no cells to name.
-                let named =
-                    tryNameCellForByrefAccess (byteOffset + fieldOffset) storageValue fieldTemplate
-                    |> Option.map (fun path -> CliType.getCellAtPath path storageValue)
+            let storageValue =
+                readProjectedValue (readRootValue state root) view.StructuralPrefix
 
-                match named with
-                | Some cell -> cell
-                | None ->
+            // The field sits at `fieldOffset` within the view, which itself sits at `byteOffset`
+            // within the storage, so the reference the byref names occupies that sum. When some
+            // cell has exactly that extent, that cell *is* the reference and no wrapper reasoning
+            // is needed — this is the general case, of which the classifier below handles the
+            // shapes it cannot reach: storage that is itself a bare `ObjectRef` has no cells to
+            // name.
+            let named =
+                tryNameCellForByrefAccess (byteOffset + fieldOffset) storageValue fieldTemplate
+                |> Option.map (fun path -> CliType.getCellAtPath path storageValue)
 
-                match classifyTransparentWrapper baseClassTypes state storageValue reinterpretTy field with
-                | TransparentWrapperOutcome.ElideAsField _ when byteOffset = 0 -> storageValue
-                | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath when byteOffset = 0 ->
-                    CliType.getCellAtPath innerPath storageValue
-                | TransparentWrapperOutcome.ElideAsField _
-                | TransparentWrapperOutcome.ElideAsStorageInnerField _ ->
-                    failwith
-                        $"TODO: transparent-wrapper read of object-reference field %O{field} through %O{reinterpretTy} at byte offset %d{byteOffset}; object-reference interior byte views are not modelled"
-                | TransparentWrapperOutcome.NotTransparent ->
-                    failwith
-                        $"TODO: object-reference field %O{field} through %O{reinterpretTy} is not a transparent single-field wrapper of object-reference storage (storage cell %O{storageValue}); bytewise reinterpret over object-reference storage is not modelled"
-            | ValueNone ->
+            match named with
+            | Some cell -> cell
+            | None ->
+
+            match classifyTransparentWrapper storageValue viewTemplate field with
+            | TransparentWrapperOutcome.ElideAsField _ when byteOffset = 0 -> storageValue
+            | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath when byteOffset = 0 ->
+                CliType.getCellAtPath innerPath storageValue
+            | TransparentWrapperOutcome.ElideAsField _
+            | TransparentWrapperOutcome.ElideAsStorageInnerField _ ->
                 failwith
-                    $"TODO: object-reference field %O{field} through %O{reinterpretTy} without a trailing ReinterpretAs byte-view shape: %O{src}"
+                    $"TODO: transparent-wrapper read of object-reference field %O{field} at byte offset %d{byteOffset}; object-reference interior byte views are not modelled: %O{src}"
+            | TransparentWrapperOutcome.NotTransparent ->
+                failwith
+                    $"TODO: object-reference field %O{field} of a byte view is not a transparent single-field wrapper of object-reference storage (storage cell %O{storageValue}); bytewise reinterpret over object-reference storage is not modelled: %O{src}"
         | CliType.RuntimePointer _ ->
             failwith
-                $"TODO: runtime-pointer field %O{field} through %O{reinterpretTy}; pointer byte views are not modelled"
+                $"TODO: runtime-pointer field %O{field} of a byte view; pointer byte views are not modelled: %O{src}"
         | CliType.Numeric _
         | CliType.Bool _
         | CliType.Char _
         | CliType.ValueType _ ->
-            let fieldPtr =
-                if fieldOffset = 0 then
-                    src
-                else
-                    ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset fieldOffset) src
-
-            readManagedByrefBytesAs baseClassTypes state fieldPtr fieldTemplate
+            readManagedByrefBytesAs
+                baseClassTypes
+                state
+                (ManagedPointerSource.appendProjection (ByrefProjection.Field field) src)
+                fieldTemplate
 
     let readManagedByrefField
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -1918,13 +1981,11 @@ module IlMachineManagedByref =
             failwith
                 $"readManagedByrefField: cannot read field %O{field} through fake non-null byref @ 0x%x{bits}; the placeholder must never be dereferenced"
         | ManagedPointerSource.Byref (root, projs) ->
-            match List.rev projs with
-            | ByrefProjection.ByteOffset _ :: ByrefProjection.ReinterpretAs ty :: _
-            | ByrefProjection.ReinterpretAs ty :: _ -> readReinterpretedByrefField baseClassTypes state src ty field
-            | ByrefProjection.ByteOffset n :: _ ->
-                failwith
-                    $"ByteOffset %d{n} without a preceding ReinterpretAs in projection chain: %O{src} (this is an interpreter bug)"
-            | _ ->
+            match peelByteView (Some baseClassTypes) state projs with
+            | ValueSome view -> readByteViewField baseClassTypes state src root view field
+            | ValueNone ->
+                requireNoUnanchoredByteOffset src projs
+
                 readProjectedValue (readRootValue state root) projs
                 |> CliType.getFieldById field
 
@@ -2916,6 +2977,182 @@ module IlMachineManagedByref =
         | ByrefProjection.ByteOffset n :: revPrefix -> List.rev revPrefix, n
         | _ -> projs, 0
 
+    let private reinterpretWriteOperation (reinterpretTy : ConcreteType<ConcreteTypeHandle>) : string =
+        $"write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name}"
+
+    /// The structural route for a write through a byte view: install `newValue` into the one
+    /// storage cell the view names, without rendering either side as bytes. `storageValue` is the
+    /// cell the view is taken over, `byteOffset` where the `ReinterpretAs reinterpretTy` sits in
+    /// it, and `reinterpretProjs` everything after that `ReinterpretAs`.
+    ///
+    /// `ValueSome None` means the write is provably unobservable, `ValueSome (Some updated)` is the
+    /// rewritten storage, and `ValueNone` means this route cannot serve the write and the caller
+    /// must go bytewise.
+    ///
+    /// Total over `reinterpretProjs`: the chain's end is reduced by `walkProjectionView` to a
+    /// position and a view type however its `Field`, `ByteOffset` and further `ReinterpretAs` steps
+    /// are interleaved, so `buffer[k].I.P = box` is the same question as `buffer[k].P = box`, one
+    /// field further in.
+    let private tryWriteByteViewByNaming
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (storageValue : CliType)
+        (byteOffset : int)
+        (reinterpretTy : ConcreteType<ConcreteTypeHandle>)
+        (reinterpretProjs : ByrefProjection list)
+        (newValue : CliType)
+        : CliType option voption
+        =
+        let operation = reinterpretWriteOperation reinterpretTy
+
+        // Transparent single-field wrapper write fast path. CoreLib lowers
+        // `Volatile.Write<T>(ref T, T) where T : class?` to
+        // `Unsafe.As<T, VolatileObject>(ref location).Value = value`, which
+        // produces a byref over `CliType.ObjectRef` storage with a trailing
+        // `ReinterpretAs VolatileObject` and a `Field "Value"` projection.
+        // Bytewise reinterpret over an `ObjectRef` is meaningless because
+        // ObjectRef storage is not byte-addressable; the classifier reuses the
+        // same predicate as `readByteViewField` to decide whether
+        // this is a transparent wrapper access we can pass through. A bare
+        // reference is not the only storage with no byte image — a value type
+        // holding references has none either — so each leg below accepts
+        // exactly what the classifier's `isCellIdentityCompatible` accepts,
+        // rather than object references alone. Anything narrower would refuse
+        // writes the classifier has already declared elidable.
+        // Install `newValue` into the cell at `path`, the byref having been shown to name exactly
+        // that cell. The cell was chosen because it is identity-compatible with what the byref
+        // reinterprets it as, so the value being stored must be too, or the cell would end up
+        // holding a different kind of thing than it claims to.
+        // `compatible` is the rule the caller *selected* this cell by, passed back in so the install
+        // holds the value to the same standard the selection did. The two must agree: a caller that
+        // named the cell strictly would otherwise accept a value here that could not have named it,
+        // and one that named it coercibly would reject the very value it was looking for. Under the
+        // strict rule `coerceToCellShape` is the identity, so those callers are unaffected by it.
+        let writeIntoNamedCell
+            (compatible : CliType -> CliType -> bool)
+            (path : FieldId list)
+            (describeCell : string)
+            : CliType option voption
+            =
+            let current = CliType.getCellAtPath path storageValue
+
+            // Where a wrapper layer is allowed at all, it is bridged rather than installed: the cell
+            // keeps its own declared shape, because that is what decides how the *next* read of it
+            // flattens. Anything the flattening cannot explain still fails, now from inside
+            // `coerceToCellShape`; the check below keeps the message that names the two shapes and
+            // the cell, which a bare coercion failure would not.
+            if compatible current newValue then
+                let coerced = coerceToCellShape current newValue
+
+                if isProvableNoOpWrite current coerced then
+                    ValueSome None
+                else
+                    ValueSome (Some (CliType.withCellAtPathSet path coerced storageValue))
+            else
+                failwith
+                    $"%s{operation}: assigning %s{describeCliStorage state newValue}, which is not the same kind of value as the %s{describeCliStorage state current} held by %s{describeCell}"
+
+        let templateFor (ty : ConcreteType<ConcreteTypeHandle>) : CliType =
+            zeroForConcreteType baseClassTypes state ty
+
+        // Where `projs` (a prefix of `reinterpretProjs`) lands in the storage, and the template of
+        // the type it is viewed as there. The two cursors add: `byteOffset` is the prefix cursor
+        // into `storageValue` taken before the reinterpret, and the walk moves the reinterpreted
+        // view on from there — exactly what `peelByteView`'s forward walk computes for the byte
+        // path.
+        let landing (projs : ByrefProjection list) : int * (unit -> CliType) =
+            let offset, viewTemplate =
+                walkProjectionView templateFor (fun () -> templateFor reinterpretTy) projs
+
+            int64<int> byteOffset + offset |> byteViewOffsetWithinInt32 reinterpretProjs, viewTemplate
+
+        match List.rev reinterpretProjs with
+        // A trailing `Field`: the byref names that field of whatever its parent chain lands on.
+        // `buffer[0].Payload = box` is the shallowest case, with the parent the reinterpret target
+        // itself; `buffer[k].Payload = box` walks the view on by whole elements first, giving
+        // `[ByteOffset k*sizeof(Elem); Field Payload]`; `buffer[k].I.P = box` then descends one
+        // field further before selecting `P`.
+        //
+        // Only a *non-byte-renderable* value arrives here at all: `writeManagedByrefCore`
+        // routes on `CliType.ByteAddressability newValue`, so the sibling
+        // `buffer[k].Tag = someByte` goes to the bytes-or-typed-cell writer instead and is
+        // served by its own cell naming.
+        | ByrefProjection.Field field :: revParent ->
+            let parentOffset, parentTemplate = landing (List.rev revParent)
+            let parentTemplate = parentTemplate ()
+
+            // The write mirror of the naming step in `readByteViewField`: the field lands
+            // `fieldOffset` bytes into its parent, which itself sits `parentOffset` bytes into the
+            // storage, so the byref names whatever cell occupies that sum. The classifier cannot
+            // serve `buffer[0].Payload = box` — `Elem` is not a transparent single-field wrapper of
+            // anything.
+            let tryNameThroughField () : CliType option voption =
+                match tryNameCellThroughViewField parentOffset storageValue parentTemplate field with
+                | None -> ValueNone
+                | Some path ->
+                    writeIntoNamedCell isCellIdentityCompatible path $"the cell %O{path} named by field %O{field}"
+
+            // The transparent-wrapper classifier asks whether the wrapper's single field spans
+            // the storage exactly, which is only a meaningful question at offset zero. At any
+            // other offset the byref necessarily names an interior cell, so only the naming
+            // route applies.
+            if parentOffset <> 0 then
+                tryNameThroughField ()
+            else
+
+            match classifyTransparentWrapper storageValue parentTemplate field with
+            | TransparentWrapperOutcome.ElideAsField _ ->
+                // The classifier chose this outcome because the storage is identity-compatible
+                // with the wrapper's only field, which spans the wrapper; writing that field
+                // therefore replaces the storage outright. Hold the value being stored to the
+                // same standard, so the storage cannot end up holding a different kind of
+                // thing than it claims to.
+                match newValue with
+                | _ when isCellIdentityCompatible newValue storageValue ->
+                    if isProvableNoOpWrite storageValue newValue then
+                        ValueSome None
+                    else
+                        ValueSome (Some newValue)
+                | other ->
+                    failwith
+                        $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the same kind of value as the %s{describeCliStorage state storageValue} it would replace, to field %O{field} of a single-instance-field wrapper"
+            | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath ->
+                writeIntoNamedCell
+                    isCellIdentityCompatible
+                    innerPath
+                    $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
+            | TransparentWrapperOutcome.NotTransparent ->
+                // Not a wrapper the classifier recognises, but the byref may still name a cell
+                // outright — the same naming route the non-zero-offset case above takes.
+                tryNameThroughField ()
+        // No trailing `Field`: the byref reinterprets the storage directly as some other
+        // type, possibly walked forward by `Unsafe.Add`. When the byte range it picks out is
+        // exactly one reference-typed cell of the storage, the write lands squarely on that
+        // cell — the `[InlineArray(N)]`-over-a-reference-element write, at slot 0 for the
+        // bare shape and at slot `n / sizeof(T)` for the `ByteOffset` one — mirroring the
+        // read-side elision in `readManagedByref`.
+        //
+        // This is *not* the array-element zero-fill that `writeArrayBytes` handles via
+        // `CliType.WithZeroedRangeIfChanged`: the value written here is an arbitrary
+        // reference rather than a zero, so there is nothing to decompose — the field is
+        // replaced.
+        | _ ->
+            let offset, _ = landing reinterpretProjs
+
+            // The extent of the write is the *value's*, not the reinterpret view's. Those
+            // coincide for `Unsafe.As<TBuffer, T>(ref buffer)` followed by a `T` store, but
+            // come apart the moment the
+            // view is a byte cursor: `(ByReference*)((byte*)&byrefs + 8) = b` reinterprets as
+            // `System.Byte` and then stores eight bytes, and asking for a one-byte cell at
+            // offset 8 finds nothing — the storage has an eight-byte pointer cell there.
+            match tryNameCellForByrefAccessCoercible offset storageValue newValue with
+            | Some innerPath ->
+                writeIntoNamedCell
+                    isCellCoercionCompatible
+                    innerPath
+                    $"the storage cell %O{innerPath} that the byref names"
+            | None -> ValueNone
+
     let rec private writeProjectedValueIfChanged
         (baseClassTypes : BaseClassTypes<DumpedAssembly> option)
         (state : IlMachineState)
@@ -2956,165 +3193,18 @@ module IlMachineManagedByref =
         // Reinterpret writes are byte updates to the original storage shape. This covers patterns
         // such as `Unsafe.As<bool, VolatileBoolean>(ref location).Value = value`, and recurses for
         // nested `Unsafe.As` chains before rebuilding the original cell.
-        let operation =
-            $"write through `ReinterpretAs` as %s{reinterpretTy.Namespace}.%s{reinterpretTy.Name}"
+        let operation = reinterpretWriteOperation reinterpretTy
 
-        // Transparent single-field wrapper write fast path. CoreLib lowers
-        // `Volatile.Write<T>(ref T, T) where T : class?` to
-        // `Unsafe.As<T, VolatileObject>(ref location).Value = value`, which
-        // produces a byref over `CliType.ObjectRef` storage with a trailing
-        // `ReinterpretAs VolatileObject` and a `Field "Value"` projection.
-        // Bytewise reinterpret over an `ObjectRef` is meaningless because
-        // ObjectRef storage is not byte-addressable; the classifier reuses the
-        // same predicate as `readReinterpretedByrefField` to decide whether
-        // this is a transparent wrapper access we can pass through. A bare
-        // reference is not the only storage with no byte image — a value type
-        // holding references has none either — so each leg below accepts
-        // exactly what the classifier's `isCellIdentityCompatible` accepts,
-        // rather than object references alone. Anything narrower would refuse
-        // writes the classifier has already declared elidable.
-        // Install `newValue` into the cell at `path`, the byref having been shown to name exactly
-        // that cell. The cell was chosen because it is identity-compatible with what the byref
-        // reinterprets it as, so the value being stored must be too, or the cell would end up
-        // holding a different kind of thing than it claims to.
-        // `compatible` is the rule the caller *selected* this cell by, passed back in so the install
-        // holds the value to the same standard the selection did. The two must agree: a caller that
-        // named the cell strictly would otherwise accept a value here that could not have named it,
-        // and one that named it coercibly would reject the very value it was looking for. Under the
-        // strict rule `coerceToCellShape` is the identity, so those callers are unaffected by it.
-        let writeIntoNamedCell
-            (compatible : CliType -> CliType -> bool)
-            (path : FieldId list)
-            (describeCell : string)
-            : CliType option voption
-            =
-            let current = CliType.getCellAtPath path storageValue
-
-            // Where a wrapper layer is allowed at all, it is bridged rather than installed: the cell
-            // keeps its own declared shape, because that is what decides how the *next* read of it
-            // flattens. Anything the flattening cannot explain still fails, now from inside
-            // `coerceToCellShape`; the check below keeps the message that names the two shapes and
-            // the cell, which a bare coercion failure would not.
-            if compatible current newValue then
-                let coerced = coerceToCellShape current newValue
-
-                if isProvableNoOpWrite current coerced then
-                    ValueSome None
-                else
-                    ValueSome (Some (CliType.withCellAtPathSet path coerced storageValue))
-            else
-                failwith
-                    $"%s{operation}: assigning %s{describeCliStorage state newValue}, which is not the same kind of value as the %s{describeCliStorage state current} held by %s{describeCell}"
-
-        // The write mirror of the naming step in `readReinterpretedByrefField`: a trailing `Field`
-        // lands `fieldOffset` bytes into the reinterpret target, which itself sits `offset`
-        // bytes into the storage, so the byref names whatever cell occupies that sum.
-        // `buffer[0].Payload = box` is exactly this shape, and the classifier cannot serve it —
-        // `Elem` is not a transparent single-field wrapper of anything.
-        let tryNameThroughFieldAt (offset : int) (field : FieldId) : CliType option voption =
-            match tryNameCellThroughReinterpretField baseClassTypes state offset storageValue reinterpretTy field with
-            | None -> ValueNone
-            | Some path ->
-                writeIntoNamedCell
-                    isCellIdentityCompatible
-                    path
-                    $"the cell %O{path} named by field %O{field} of %O{reinterpretTy}"
-
-        let transparentWrapperFastPath () : CliType option voption =
-            match reinterpretProjs with
-            // A trailing `Field` may be preceded by a `ByteOffset`: `buffer[k].Payload = box`
-            // walks the reinterpreted view on by whole elements before selecting the field, giving
-            // `[ByteOffset k*sizeof(Elem); Field Payload]`. The two cursors add, exactly as in the
-            // no-field arm below — `byteOffset` is the prefix cursor into `storageValue` taken
-            // before the reinterpret, and the trailing `ByteOffset` moves the reinterpreted view
-            // on from there.
-            //
-            // Only a *non-byte-renderable* value arrives here at all: `writeManagedByrefCore`
-            // routes on `CliType.ByteAddressability newValue`, so the sibling
-            // `buffer[k].Tag = someByte` goes to the bytes-or-typed-cell writer instead and is
-            // served by its own cell naming. Both shapes need the `ByteOffset`-then-`Field` chain
-            // to fold to an offset in the first place, which is why they were blocked together.
-            | [ ByrefProjection.Field field ]
-            | [ ByrefProjection.ByteOffset _ ; ByrefProjection.Field field ] ->
-                let trailingOffset =
-                    match reinterpretProjs with
-                    | [ ByrefProjection.ByteOffset n ; _ ] -> n
-                    | _ -> 0
-
-                let totalOffset = byteOffset + trailingOffset
-
-                // The transparent-wrapper classifier asks whether the wrapper's single field spans
-                // the storage exactly, which is only a meaningful question at offset zero. At any
-                // other offset the byref necessarily names an interior cell, so only the naming
-                // route applies.
-                if totalOffset <> 0 then
-                    tryNameThroughFieldAt totalOffset field
-                else
-
-                match classifyTransparentWrapper baseClassTypes state storageValue reinterpretTy field with
-                | TransparentWrapperOutcome.ElideAsField _ ->
-                    // The classifier chose this outcome because the storage is identity-compatible
-                    // with the wrapper's only field, which spans the wrapper; writing that field
-                    // therefore replaces the storage outright. Hold the value being stored to the
-                    // same standard, so the storage cannot end up holding a different kind of
-                    // thing than it claims to.
-                    match newValue with
-                    | _ when isCellIdentityCompatible newValue storageValue ->
-                        if isProvableNoOpWrite storageValue newValue then
-                            ValueSome None
-                        else
-                            ValueSome (Some newValue)
-                    | other ->
-                        failwith
-                            $"%s{operation}: assigning %s{describeCliStorage state other}, which is not the same kind of value as the %s{describeCliStorage state storageValue} it would replace, to field %O{field} of a single-instance-field wrapper"
-                | TransparentWrapperOutcome.ElideAsStorageInnerField innerPath ->
-                    writeIntoNamedCell
-                        isCellIdentityCompatible
-                        innerPath
-                        $"inner cell %O{innerPath} of a nested single-instance-field wrapper"
-                | TransparentWrapperOutcome.NotTransparent ->
-                    // Not a wrapper the classifier recognises, but the byref may still name a cell
-                    // outright — the same naming route the non-zero-offset case above takes.
-                    tryNameThroughFieldAt 0 field
-            // No trailing `Field`: the byref reinterprets the storage directly as some other
-            // type, possibly walked forward by `Unsafe.Add`. When the byte range it picks out is
-            // exactly one reference-typed cell of the storage, the write lands squarely on that
-            // cell — the `[InlineArray(N)]`-over-a-reference-element write, at slot 0 for the
-            // bare shape and at slot `n / sizeof(T)` for the `ByteOffset` one — mirroring the
-            // read-side elision in `readManagedByref`.
-            //
-            // The two cursors add: `byteOffset` is the prefix cursor into `storageValue` taken
-            // before the reinterpret, and a trailing `ByteOffset n` moves the reinterpreted view
-            // on by a further `n` bytes. Both index the same storage, which is exactly what
-            // `peelTrailingByteView`'s forward walk computes for the byte path.
-            //
-            // This is *not* the array-element zero-fill that `writeArrayBytes` handles via
-            // `CliType.WithZeroedRangeIfChanged`: the value written here is an arbitrary
-            // reference rather than a zero, so there is nothing to decompose — the field is
-            // replaced.
-            | []
-            | [ ByrefProjection.ByteOffset _ ] ->
-                let trailingOffset =
-                    match reinterpretProjs with
-                    | [ ByrefProjection.ByteOffset n ] -> n
-                    | _ -> 0
-
-                // The extent of the write is the *value's*, not the reinterpret view's. Those
-                // coincide for `Unsafe.As<TBuffer, T>(ref buffer)` followed by a `T` store, but
-                // come apart the moment the
-                // view is a byte cursor: `(ByReference*)((byte*)&byrefs + 8) = b` reinterprets as
-                // `System.Byte` and then stores eight bytes, and asking for a one-byte cell at
-                // offset 8 finds nothing — the storage has an eight-byte pointer cell there.
-                match tryNameCellForByrefAccessCoercible (byteOffset + trailingOffset) storageValue newValue with
-                | Some innerPath ->
-                    writeIntoNamedCell
-                        isCellCoercionCompatible
-                        innerPath
-                        $"the storage cell %O{innerPath} that the byref names"
-                | None -> ValueNone
-            | _ -> ValueNone
-
-        match transparentWrapperFastPath () with
+        match
+            tryWriteByteViewByNaming
+                baseClassTypes
+                state
+                storageValue
+                byteOffset
+                reinterpretTy
+                reinterpretProjs
+                newValue
+        with
         | ValueSome result -> result
         | ValueNone ->
 
@@ -3277,81 +3367,47 @@ module IlMachineManagedByref =
                 | None -> state
                 | Some updatedRoot -> writeRootValue state root updatedRoot
 
-            // Transparent-wrapper writes (Phase A, where the storage *is* the
-            // wrapper's only field; and Phase B, where the storage is itself a
-            // transparent offset-0 single-field wrapper of the same primitive,
-            // e.g. CoreLib's `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif)
-            // reach the bytes-or-typed-cell writer via the byte-addressable
-            // roots (HeapValue/HeapObjectField/ArrayElement). Its precise-write
-            // helpers reject a cross-constructor write (`ValueType` storage,
-            // `ObjectRef` payload) and the byte-scatter fallback then hits
-            // `CliType.ToBytes` on a live reference — which refuses. Re-route
-            // both elidable outcomes to the structural writer, whose
-            // `transparentWrapperFastPath` serves them from the same
-            // classifier. Where the byte path also works (Phase A over a bare
-            // `ObjectRef`) the two agree, so routing on the classifier's answer
-            // rather than on which storage shapes the byte writer happens to
-            // cope with keeps this decision in one place.
+            // A non-byte-renderable value written through a byte view rooted in the heap
+            // (HeapValue/HeapObjectField/ArrayElement) would otherwise reach the
+            // bytes-or-typed-cell writer. Its precise-write helpers serve only a top-level cell at
+            // an exact offset and reject a cross-constructor write (`ValueType` storage,
+            // `ObjectRef` payload), and its byte-scatter fallback then hits `CliType.ToBytes` on a
+            // live reference — which refuses. The structural writer's naming step serves exactly
+            // those writes: transparent wrappers (Phase A, where the storage *is* the wrapper's only
+            // field; Phase B, where the storage is itself a transparent offset-0 single-field
+            // wrapper, e.g. CoreLib's `Unsafe.As<TaskAwaiter<T>, TaskAwaiter>` motif), and a byref
+            // that names one cell of reference-holding storage outright — `buffer[k].P = box` or
+            // `buffer[k].I.P = box` over an `[InlineArray(N)]` reached by `ldelema` or by `ldflda`
+            // on a class field. Locals, arguments and statics fall to `useStructuralWriter` anyway.
             //
-            // `NotTransparent` must stay on the precise-write path: for e.g.
-            // `Unsafe.As<object, StructWithMultipleFields>(ref h.Field).Obj = x`
-            // only that path succeeds, because the structural writer would fall
-            // through to `reinterpretStorageBytes` on byte-unaddressable
-            // storage.
+            // Anything the naming step declines must stay on the precise-write path: for e.g.
+            // `Unsafe.As<object, StructWithMultipleFields>(ref h.Field).Obj = x` only that path
+            // succeeds, because the structural writer would fall through to
+            // `reinterpretStorageBytes` on byte-unaddressable storage.
             //
-            // The classifier requires a typed `ValueType` reinterpret target, so
-            // raw byte roots (`StackMemoryByte`, `NativeMemoryByte`) can never
-            // reach it; `readRootValue` would also throw for them when no typed
-            // cell covers the root offset, so we must not probe those roots
-            // here.
-            //
-            // The same argument applies unchanged to the no-`Field` shapes
-            // `[ReinterpretAs T]` and `[ReinterpretAs T; ByteOffset n]` over
-            // storage whose byte range `n` is exactly one reference cell — the
-            // `[InlineArray(N)]`-over-a-reference-element write, at slot 0 and
-            // at every later slot respectively. There the
-            // storage is a `ValueType` wrapper and the payload an `ObjectRef`,
-            // so the precise-write helpers reject the cross-constructor write
-            // and the byte-scatter fallback again reaches `CliType.ToBytes` on
-            // a live reference. Without this the fix would cover only locals,
-            // whose roots fall to `useStructuralWriter` anyway, and a wrapper
-            // reached by `ldflda` on a class field or `ldelema` on an array
-            // element would still fail.
+            // Raw byte roots (`StackMemoryByte`, `NativeMemoryByte`) are never probed:
+            // `readRootValue` throws for them when no typed cell covers the root offset.
             let isTransparentWrapperStructuralWrite () : bool =
-                match baseClassTypes, root, projs with
-                | Some bct,
-                  (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
-                  [ ByrefProjection.ReinterpretAs reinterpretTy ; ByrefProjection.Field field ] ->
-                    let storageValue = readRootValue state root
-
-                    match classifyTransparentWrapper bct state storageValue reinterpretTy field with
-                    | TransparentWrapperOutcome.ElideAsField _
-                    | TransparentWrapperOutcome.ElideAsStorageInnerField _ -> true
-                    | TransparentWrapperOutcome.NotTransparent ->
-                        // Not a wrapper, but the byref may still name a cell outright —
-                        // `buffer[0].Payload = box`, where `Elem` wraps nothing. Only the
-                        // structural writer reaches the naming step, so route on whether that
-                        // step would find a cell, using the very function that will look.
-                        tryNameCellThroughReinterpretField bct state 0 storageValue reinterpretTy field
-                        |> Option.isSome
-                // These two ask the question `transparentWrapperFastPath`'s no-`Field` arm will
-                // answer, so they must ask it the same way: the extent comes from `newValue`, not
-                // from the reinterpret view. Asking with the view's extent here while answering
-                // with the value's there would route a byte-cursor store to the byte writer, which
-                // then refuses it.
-                | Some _,
-                  (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
-                  [ ByrefProjection.ReinterpretAs _ ] ->
-                    let storageValue = readRootValue state root
-
-                    tryNameCellForByrefAccessCoercible 0 storageValue newValue |> Option.isSome
-                | Some _,
-                  (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _),
-                  [ ByrefProjection.ReinterpretAs _ ; ByrefProjection.ByteOffset byteOffset ] ->
-                    let storageValue = readRootValue state root
-
-                    tryNameCellForByrefAccessCoercible byteOffset storageValue newValue
-                    |> Option.isSome
+                match baseClassTypes, root with
+                | Some bct, (ByrefRoot.HeapValue _ | ByrefRoot.HeapObjectField _ | ByrefRoot.ArrayElement _) ->
+                    // Ask the structural writer's own naming step whether it would serve this write,
+                    // rather than restating its conditions here: two statements of which accesses
+                    // that step serves would only drift apart. A chain the step serves this way
+                    // is exactly one the bytes-or-typed-cell writer cannot, because there the value
+                    // has no byte image to scatter.
+                    match splitFirstReinterpret projs with
+                    | Some ([], reinterpretTy, reinterpretProjs) ->
+                        tryWriteByteViewByNaming
+                            bct
+                            state
+                            (readRootValue state root)
+                            0
+                            reinterpretTy
+                            reinterpretProjs
+                            newValue
+                        |> ValueOption.isSome
+                    | Some (_ :: _, _, _)
+                    | None -> false
                 | _ -> false
 
             match peeled, valueIsByteRenderable with

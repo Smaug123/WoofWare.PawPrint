@@ -4,23 +4,15 @@ using System.Runtime.CompilerServices;
 // Reading a field of a *nested* struct directly through an inline-array index: `buf[k].I.P`.
 //
 // This is one step deeper than `ReinterpretReadInsideValueCellWithReference.cs`, which reads
-// `buf[k].Field`. The extra step is what breaks it, and not in the cell resolver:
-// `CliType.CellPathsExactlyCovering` descends to any depth, and `TestCliTypeCellPaths` covers
-// depth 3 directly.
+// `buf[k].Field`. `buf[k].I` is `[ReinterpretAs Elem; ByteOffset k*sizeof(Elem); Field I]`, and
+// reading `.P` off that is an `ldfld` through a byref whose `ReinterpretAs` is followed by a
+// `Field` rather than being the last projection. The read has to be served from where that whole
+// chain lands and the type it lands on (`Inner`), not from the reinterpret target (`Elem`).
 //
-// The blocker is routing, in `readManagedByrefField`. `buf[k].I` is
-// `[ReinterpretAs Elem; ByteOffset k*sizeof(Elem); Field I]`, and reading `.P` off that appends a
-// second `Field`. That function's reinterpret-aware arms only fire when `ReinterpretAs` is the last
-// projection (or last-but-a-`ByteOffset`), so a trailing `Field` falls through to
-// `readProjectedValue`, which cannot navigate across a `ReinterpretAs` and fails with
-// "read through `ReinterpretAs` from value ...; needs a bytewise implementation".
-//
-// `walkProjectionByteOffset` folds the `ByteOffset`-then-`Field` shape, so the peeled chain
-// `[ByteOffset k*sizeof(Elem); Field I; Field P]` resolves to a byte offset fine. Only the routing
-// blocks this, and it is a change to the read dispatcher rather than to the projection walk.
-//
-// Un-park when `readManagedByrefField` learns to route a chain that *contains* a `ReinterpretAs`
-// but does not end at one to the byte-view reader.
+// The element holds a reference, so the storage has no byte image and both leaves are served by
+// naming the storage cell the chain picks out. The reference-free counterpart, where the same
+// chain is served bytewise, is `ReinterpretNestedFieldThroughIndexReferenceFree.cs`; writes are
+// `ReinterpretWriteNestedFieldThroughIndex.cs`.
 public class TestReinterpretReadNestedFieldThroughIndex
 {
     private sealed class Box { public int V; }
