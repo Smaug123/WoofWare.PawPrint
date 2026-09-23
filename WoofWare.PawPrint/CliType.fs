@@ -351,14 +351,17 @@ type CliType =
                 $"%s{AllConcreteTypes.describe assemblies concreteTypes declaringType} is a class with [StructLayout], and PawPrint does not compute a class's native layout"
             |> Result.Error
         | CliType.ValueType vt ->
+            if vt.Declared <> declaringType then
+                failwith
+                    $"CliType.TryComputeMarshalFieldOffset: the zero value passed is of %s{AllConcreteTypes.describe assemblies concreteTypes vt.Declared}, not of the declaring type %s{AllConcreteTypes.describe assemblies concreteTypes declaringType}"
+
             CliValueType.TryComputeMarshalLayout concreteTypes assemblies corelib vt
             |> Result.map (fun (_, placements) ->
                 let matching =
                     placements
                     |> List.filter (fun placement ->
                         match placement.Field.Id with
-                        | FieldId.Metadata (placedDeclaringType, placedField, _) ->
-                            placedDeclaringType = declaringType && placedField = field
+                        | FieldId.Metadata (field = placedField) -> placedField = field
                         // An inline array's later slots are storage, not fields: its one
                         // declared field is slot 0, which is `FieldId.Metadata`.
                         | FieldId.InlineArrayElement _
