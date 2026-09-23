@@ -2058,6 +2058,8 @@ module DebuggerServer =
             Base : byte[]
             /// The JSON of the array of step records.
             Steps : byte[]
+            /// The JSON of the record of what discovering a deadlock changed, if this page did.
+            Deadlock : byte[] option
             Tables : TraceTables
         }
 
@@ -2121,9 +2123,16 @@ module DebuggerServer =
             + int64 stepsWriter.BytesPending
             + tables.Characters
 
-        let recordStep (cursor : TraceCursor) (session : SessionState) (event : DebugEvent) : TraceCursor =
+        /// Writes the record taking a client from `cursor` to `session`, which `event` produced.
+        let writeRecord
+            (writer : Utf8JsonWriter)
+            (cursor : TraceCursor)
+            (session : SessionState)
+            (event : DebugEvent)
+            : TraceCursor
+            =
             let state = sessionState session
-            stepsWriter.WriteStartObject ()
+            writer.WriteStartObject ()
 
             let eventIndex =
                 renderer.Render (fun writer ->
@@ -2133,13 +2142,13 @@ module DebuggerServer =
                 )
                 |> tables.Events.Intern
 
-            stepsWriter.WriteNumber ("e", eventIndex)
+            writer.WriteNumber ("e", eventIndex)
 
             match event.Effect with
             | StepEffect.NoEffect -> ()
             | StepEffect.WroteToFd (role, bytes) ->
-                stepsWriter.WritePropertyName "o"
-                writeOutputEntry stepsWriter role bytes
+                writer.WritePropertyName "o"
+                writeOutputEntry writer role bytes
 
             let counts =
                 if Object.ReferenceEquals (cursor.Heap, state.ManagedHeap) then
@@ -2148,19 +2157,22 @@ module DebuggerServer =
                     heapCounts state.ManagedHeap
 
             if counts <> cursor.HeapCounts then
-                writeHeapCounts stepsWriter counts
+                writeHeapCounts writer counts
 
             let threads = project cursor.Threads state
-            writeThreadDeltas stepsWriter cursor.Threads threads
-            stepsWriter.WriteEndObject ()
+            writeThreadDeltas writer cursor.Threads threads
+            writer.WriteEndObject ()
 
             {
                 Session = session
-                StepsRun = cursor.StepsRun + 1
+                StepsRun = cursor.StepsRun
                 Threads = threads
                 Heap = state.ManagedHeap
                 HeapCounts = counts
             }
+
+        let deadlockBuffer = ArrayBufferWriter<byte> ()
+        use deadlockWriter = new Utf8JsonWriter (deadlockBuffer :> IBufferWriter<byte>)
 
         let rec advance (cursor : TraceCursor) : TraceCursor * TraceStop =
             match cursor.Session with
@@ -2188,19 +2200,23 @@ module DebuggerServer =
                 commitSession session
 
                 if countedStep then
-                    advance (recordStep cursor session event)
-                else
-                    // Only the discovery of a deadlock is not a step; it executed nothing, so it
-                    // changed nothing to record.
+                    let cursor = writeRecord stepsWriter cursor session event
+
                     advance
                         { cursor with
-                            Session = session
+                            StepsRun = cursor.StepsRun + 1
                         }
+                else
+                    // Only the discovery of a deadlock is not a step. It executed no instruction,
+                    // but looking for one can still change state — a timed wait that expires moves
+                    // its thread on to reacquiring the lock — so it gets a record of its own.
+                    advance (writeRecord deadlockWriter cursor session event)
 
         let finish, stop = advance start
 
         stepsWriter.WriteEndArray ()
         stepsWriter.Flush ()
+        deadlockWriter.Flush ()
 
         {
             Request = request
@@ -2210,6 +2226,11 @@ module DebuggerServer =
             Session = finish.Session
             Base = baseBuffer.WrittenSpan.ToArray ()
             Steps = stepsBuffer.WrittenSpan.ToArray ()
+            Deadlock =
+                if deadlockBuffer.WrittenCount = 0 then
+                    None
+                else
+                    Some (deadlockBuffer.WrittenSpan.ToArray ())
             Tables = tables
         }
 
@@ -2227,6 +2248,11 @@ module DebuggerServer =
     /// - `hp`: `[nonArrayObjects, arrays, stringContents]`, present in `base` and when it changed;
     /// - `th`: a delta for each thread that changed, which a client applies to its copy of that thread;
     /// - `gone`: ids of threads that no longer exist.
+    ///
+    /// `deadlock` is null unless this page discovered that the guest is deadlocked, in which case it
+    /// is a record of the same shape, applied after the last step. It is not a step and does not
+    /// count towards `stepsRun`: it executed no instruction, but the scheduler looking for one can
+    /// still change state, as when a timed wait expires into reacquiring a lock that is held.
     ///
     /// A thread delta has `id`, and then only what changed, in this order:
     /// - `s`: index into `statuses`; `a`: index into `strings` of the active assembly, or null;
@@ -2267,6 +2293,11 @@ module DebuggerServer =
         writer.WriteRawValue (ReadOnlySpan<byte> page.Base, true)
         writer.WritePropertyName "steps"
         writer.WriteRawValue (ReadOnlySpan<byte> page.Steps, true)
+        writer.WritePropertyName "deadlock"
+
+        match page.Deadlock with
+        | Some deadlock -> writer.WriteRawValue (ReadOnlySpan<byte> deadlock, true)
+        | None -> writer.WriteNullValue ()
 
         writeValueArray writer "strings" page.Tables.Strings.Items (fun writer s -> writer.WriteStringValue s)
 

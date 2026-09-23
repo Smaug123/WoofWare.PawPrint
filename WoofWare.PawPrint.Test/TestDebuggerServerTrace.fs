@@ -63,6 +63,37 @@ class Program
 }
 """
 
+    /// Main waits on the lock with a timeout while the worker takes the lock and sleeps for ever.
+    /// When the wait times out, Main must reacquire a lock that will never be released: a
+    /// deadlock whose discovery itself moves Main from waiting to acquiring.
+    let private timedWaitDeadlockSource =
+        """
+using System.Threading;
+
+class Program
+{
+    static readonly object Gate = new object();
+
+    static void Worker()
+    {
+        lock (Gate)
+        {
+            Thread.Sleep(-1);
+        }
+    }
+
+    static void Main(string[] args)
+    {
+        lock (Gate)
+        {
+            var t = new Thread(Worker);
+            t.Start();
+            Monitor.Wait(Gate, 100000);
+        }
+    }
+}
+"""
+
     let private simpleSource =
         """
 class Program
@@ -276,6 +307,8 @@ class Program
             StoppedBecause : string
             Base : Snapshot
             Steps : Step list
+            /// The page's `deadlock` record, applied after its steps.
+            Deadlock : Step option
             Session : string
         }
 
@@ -484,16 +517,17 @@ class Program
                 }
                 baseRecord
 
+        let applyRecord (previous : Snapshot) (record : JsonElement) : Step =
+            {
+                Event = events.[record.GetProperty("e").GetInt32 ()]
+                Output = tryProperty "o" record |> Option.map canonical
+                After = applySnapshot previous record
+            }
+
         let steps =
             root.GetProperty("steps").EnumerateArray ()
             |> Seq.scan
-                (fun (previous : Step) record ->
-                    {
-                        Event = events.[record.GetProperty("e").GetInt32 ()]
-                        Output = tryProperty "o" record |> Option.map canonical
-                        After = applySnapshot previous.After record
-                    }
-                )
+                (fun (previous : Step) record -> applyRecord previous.After record)
                 {
                     Event = ""
                     Output = None
@@ -502,6 +536,16 @@ class Program
             |> Seq.skip 1
             |> Seq.toList
 
+        let beforeDeadlock =
+            match List.tryLast steps with
+            | Some step -> step.After
+            | None -> baseSnapshot
+
+        let deadlock =
+            match root.GetProperty "deadlock" with
+            | d when d.ValueKind = JsonValueKind.Null -> None
+            | d -> Some (applyRecord beforeDeadlock d)
+
         {
             MaxSteps = root.GetProperty("maxSteps").GetInt32 ()
             FirstStep = root.GetProperty("firstStep").GetInt64 ()
@@ -509,6 +553,7 @@ class Program
             StoppedBecause = root.GetProperty("stoppedBecause").GetString ()
             Base = baseSnapshot
             Steps = steps
+            Deadlock = deadlock
             Session = canonical (root.GetProperty "session")
         }
 
@@ -530,6 +575,9 @@ class Program
         {
             Initial : Snapshot
             Steps : Step list
+            /// What discovering the deadlock did, if the run ended in one. It is not a step: it
+            /// executed no instruction, but the scheduler may have changed state looking for one.
+            Deadlock : Step option
             Session : string
         }
 
@@ -538,6 +586,9 @@ class Program
             match pages with
             | previous :: (next :: _ as rest) ->
                 next.FirstStep |> shouldEqual (previous.FirstStep + int64 previous.StepsRun)
+
+                // A deadlock ends the session, so no page may follow one.
+                previous.Deadlock |> shouldEqual None
 
                 let previousEnd =
                     match List.tryLast previous.Steps with
@@ -556,6 +607,7 @@ class Program
         {
             Initial = (List.head pages).Base
             Steps = pages |> List.collect (fun page -> page.Steps)
+            Deadlock = (List.last pages).Deadlock
             Session = (List.last pages).Session
         }
 
@@ -652,6 +704,7 @@ class Program
             let! initial = observe client initialSession
 
             let steps = ResizeArray<Step> ()
+            let mutable deadlock = None
             let mutable session = canonical initialSession
             let mutable running = initialSession.GetProperty("status").GetString () = "running"
 
@@ -670,26 +723,31 @@ class Program
                 session <- canonical stepSession
                 running <- stepSession.GetProperty("status").GetString () = "running"
 
-                // Detecting a deadlock executes nothing, so it is not a step.
-                if event.GetProperty("kind").GetString () <> "deadlocked" then
-                    let! after = observe client stepSession
+                let! after = observe client stepSession
 
-                    let output =
-                        match event.GetProperty "output" with
-                        | o when o.ValueKind = JsonValueKind.Null -> None
-                        | o -> Some (canonical o)
+                let output =
+                    match event.GetProperty "output" with
+                    | o when o.ValueKind = JsonValueKind.Null -> None
+                    | o -> Some (canonical o)
 
-                    steps.Add
-                        {
-                            Event = canonicalWithout [ "step" ; "output" ] event
-                            Output = output
-                            After = after
-                        }
+                let observed =
+                    {
+                        Event = canonicalWithout [ "step" ; "output" ] event
+                        Output = output
+                        After = after
+                    }
+
+                // Detecting a deadlock executes nothing, so it is not a step, and it ends the run.
+                if event.GetProperty("kind").GetString () = "deadlocked" then
+                    deadlock <- Some observed
+                else
+                    steps.Add observed
 
             return
                 {
                     Initial = initial
                     Steps = List.ofSeq steps
+                    Deadlock = deadlock
                     Session = session
                 }
         }
@@ -703,18 +761,19 @@ class Program
                 failwith $"step %d{i + 1} differs.\nexpected: %A{e}\nactual: %A{a}"
 
         actual.Steps.Length |> shouldEqual expected.Steps.Length
+        actual.Deadlock |> shouldEqual expected.Deadlock
         actual.Session |> shouldEqual expected.Session
+
+    let private stripStep (step : Step) : Step =
+        { step with
+            After = withoutValues step.After
+        }
 
     let private stripValues (recording : Recording) : Recording =
         {
             Initial = withoutValues recording.Initial
-            Steps =
-                recording.Steps
-                |> List.map (fun step ->
-                    { step with
-                        After = withoutValues step.After
-                    }
-                )
+            Steps = recording.Steps |> List.map stripStep
+            Deadlock = recording.Deadlock |> Option.map stripStep
             Session = recording.Session
         }
 
@@ -769,6 +828,42 @@ class Program
                     | None -> false
                 )
             )
+            |> shouldEqual true
+        }
+
+    [<Test>]
+    let ``a trace records what discovering a deadlock changed`` () : Task =
+        task {
+            use tracedServer = startServerWith Roslyn.compile timedWaitDeadlockSource
+            use tracedClient = client tracedServer
+            use steppedServer = startServerWith Roslyn.compile timedWaitDeadlockSource
+            use steppedClient = client steppedServer
+
+            let! traced = traceWholeRun tracedClient (fun _ -> "maxSteps=97&values=active")
+            let! stepped = singleStepWholeRun steppedClient
+
+            assertSameRun stepped traced
+
+            // Not vacuous: the discovery moved a thread from waiting on the lock to acquiring it.
+            let deadlock =
+                match traced.Deadlock with
+                | Some deadlock -> deadlock
+                | None -> failwith "the guest did not deadlock"
+
+            let statuses (snapshot : Snapshot) : string list =
+                snapshot.Threads |> Map.toList |> List.map (fun (_, t) -> t.Status)
+
+            let before =
+                match List.tryLast traced.Steps with
+                | Some step -> step.After
+                | None -> traced.Initial
+
+            statuses before
+            |> List.exists (fun s -> s.Contains ("blockedOnSyncBlockWait", StringComparison.Ordinal))
+            |> shouldEqual true
+
+            statuses deadlock.After
+            |> List.exists (fun s -> s.Contains ("blockedOnSyncBlockAcquire", StringComparison.Ordinal))
             |> shouldEqual true
         }
 
