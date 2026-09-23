@@ -2040,11 +2040,11 @@ module Intrinsics =
             // The address-keyed registry index is populated when PawPrint allocates a
             // RuntimeFieldInfoStub. Reflection-produced RtFieldInfo objects are not in that
             // index — they are constructed in managed code from the IntPtr field ids that
-            // RuntimeTypeHandle.GetFields returned, so we recover the FieldHandle by reading
-            // the heap object's `m_fieldHandle` slot and resolving it against the id-keyed
-            // index. Both RuntimeFieldInfoStub and RtFieldInfo declare a field with that name.
-            // `None` means `m_fieldHandle` was zero, i.e. the `RuntimeFieldHandle` points at a
-            // field info that names no field.
+            // RuntimeTypeHandle.GetFields returned — and nor is a stub the guest's own
+            // `RuntimeFieldHandle.FromIntPtr` constructs, so we recover the FieldHandle by
+            // reading what `IRuntimeFieldInfo.Value` reads and resolving it against the id-keyed
+            // index. `None` means that was zero, i.e. the `RuntimeFieldHandle` points at a field
+            // info that names no field.
             let fieldHandle : FieldHandle option =
                 match FieldHandleRegistry.resolveFieldFromAddress runtimeFieldInfoAddr state.FieldHandles with
                 | Some fh -> Some fh
@@ -2059,19 +2059,9 @@ module Intrinsics =
                         failwith
                             $"InitializeArray: object at %O{runtimeFieldInfoAddr} has concrete type %O{heapObj.ConcreteType} with no TypeDef row"
 
-                let fieldHandleField =
-                    typeInfo.Fields
-                    |> List.tryFind (fun field -> field.Name = "m_fieldHandle" && not field.IsStatic)
-                    |> Option.defaultWith (fun () ->
-                        failwith
-                            $"InitializeArray: object at %O{runtimeFieldInfoAddr} (type %s{typeInfo.Namespace}.%s{typeInfo.Name}) is not in the field handle registry and has no instance field 'm_fieldHandle' to recover the field id from"
-                    )
-
                 let fieldHandleId =
-                    let fieldId = FieldIdentity.fieldId heapObj.ConcreteType fieldHandleField
-
                     match
-                        AllocatedNonArrayObject.DereferenceFieldById fieldId heapObj
+                        IlMachineState.runtimeFieldInfoValue baseClassTypes runtimeFieldInfoAddr state
                         |> CliType.unwrapPrimitiveLikeDeep
                     with
                     | CliType.RuntimePointer (CliRuntimePointer.FieldRegistryHandle id) -> Some id

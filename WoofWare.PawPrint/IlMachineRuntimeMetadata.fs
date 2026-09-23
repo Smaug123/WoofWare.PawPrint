@@ -1817,6 +1817,26 @@ module IlMachineRuntimeMetadata =
             failwith
                 $"requiredOwnInstanceFieldId: %O{declaringType} has no TypeDef row; cannot resolve field '%s{fieldName}'"
 
+    /// The field `IRuntimeFieldInfo.Value` reads, on the non-array heap object at `addr`, which
+    /// must implement `IRuntimeFieldInfo`. For a `RuntimeFieldInfoStub` that is read according to
+    /// the stub's classified `RuntimeFieldInfoStubLayout`, and is the `RuntimeFieldHandleInternal`
+    /// the stub names; for an `RtFieldInfo` it is its own `m_fieldHandle`, a bare `IntPtr`. Either
+    /// holds a field-registry id or a zero pointer.
+    let runtimeFieldInfoValue
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (addr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : CliType
+        =
+        let heapObj = ManagedHeap.get addr state.ManagedHeap
+
+        if RuntimeFieldInfoStubLayout.isStub baseClassTypes state.ConcreteTypes heapObj.ConcreteType then
+            RuntimeFieldInfoStubLayout.value baseClassTypes state.ConcreteTypes heapObj.ConcreteType heapObj.Contents
+        else
+            let field = requiredOwnInstanceFieldId state heapObj.ConcreteType "m_fieldHandle"
+
+            AllocatedNonArrayObject.DereferenceFieldById field heapObj
+
     /// CoreCLR's `Nullable::IsNullableForType` (`coreclr/vm/object.cpp:1516`): is
     /// `nullableCandidate` the type `System.Nullable`1[T]` for a `T` equivalent to `boxed`?
     ///

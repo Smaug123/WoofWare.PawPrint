@@ -271,6 +271,8 @@ module IlMachineState =
 
     let requiredOwnInstanceFieldId = IlMachineRuntimeMetadata.requiredOwnInstanceFieldId
 
+    let runtimeFieldInfoValue = IlMachineRuntimeMetadata.runtimeFieldInfoValue
+
     let setInstanceFieldById = IlMachineThreadState.setInstanceFieldById
 
     /// Overwrite the field named `fieldName` on the non-array heap object at `addr`, resolving
