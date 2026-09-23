@@ -8,14 +8,19 @@ open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 
-/// Names the test assembly, whose image the probe tests copy about.
-type private ProbeTestMarker = class end
-
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestAssemblyProbe =
 
-    let private testAssemblySimpleName = "WoofWare.PawPrint.Test"
+    /// The image the tests copy about: a small one, because `Assembly.readFile` keeps every parse
+    /// it makes, keyed by full path, for the life of the process, and each test here reads a
+    /// fresh copy. A copy of the ten-megabyte test assembly per read is more than the test host's
+    /// capped heap can keep. This image also sits in the test host's output directory, which is
+    /// its current directory.
+    let private imageSimpleName = "WoofWare.PawPrint.Logging"
+
+    let private imagePath : string =
+        typeof<WoofWare.PawPrint.Logging.LoggingConfig>.Assembly.Location
 
     /// A fresh directory, deleted afterwards, into which the test copies what it needs.
     let private withTempRoot (body : string -> unit) : unit =
@@ -29,9 +34,9 @@ module TestAssemblyProbe =
         finally
             Directory.Delete (root, true)
 
-    let private copyTestAssembly (dir : string) (fileName : string) : unit =
+    let private copyImage (dir : string) (fileName : string) : unit =
         Directory.CreateDirectory dir |> ignore<DirectoryInfo>
-        File.Copy (typeof<ProbeTestMarker>.Assembly.Location, Path.Combine (dir, fileName))
+        File.Copy (imagePath, Path.Combine (dir, fileName))
 
     let private probedName (dirs : string list) (simpleName : string) : string option =
         let _messages, loggerFactory = LoggerFactory.makeTest ()
@@ -57,17 +62,17 @@ module TestAssemblyProbe =
 
         let gen =
             gen {
-                let! fileCase = caseFlags (testAssemblySimpleName.Length + 4)
-                let! requestCase = caseFlags testAssemblySimpleName.Length
+                let! fileCase = caseFlags (imageSimpleName.Length + 4)
+                let! requestCase = caseFlags imageSimpleName.Length
                 return fileCase, requestCase
             }
 
         let property (fileCase : bool list, requestCase : bool list) : unit =
             withTempRoot (fun root ->
-                copyTestAssembly root (recase fileCase (testAssemblySimpleName + ".dll"))
+                copyImage root (recase fileCase (imageSimpleName + ".dll"))
 
-                probedName [ root ] (recase requestCase testAssemblySimpleName)
-                |> shouldEqual (Some testAssemblySimpleName)
+                probedName [ root ] (recase requestCase imageSimpleName)
+                |> shouldEqual (Some imageSimpleName)
             )
 
         Check.One (Config.QuickThrowOnFailure.WithMaxTest 30, Prop.forAll (Arb.fromGen gen) property)
@@ -75,9 +80,9 @@ module TestAssemblyProbe =
     [<Test>]
     let ``a name no file carries is a miss`` () =
         withTempRoot (fun root ->
-            copyTestAssembly root (testAssemblySimpleName + ".dll")
+            copyImage root (imageSimpleName + ".dll")
             probedName [ root ] "WoofWare.PawPrint.Tes" |> shouldEqual None
-            probedName [ root ] (testAssemblySimpleName + "X") |> shouldEqual None
+            probedName [ root ] (imageSimpleName + "X") |> shouldEqual None
         )
 
     /// The empty runtime-dir entry, which is how `Path.GetDirectoryName` spells a bare file name's
@@ -91,23 +96,22 @@ module TestAssemblyProbe =
         AssemblyProbe.runtimeDirPath dir |> shouldEqual expected
 
     /// End to end through the probe: the test host's current directory is its output directory,
-    /// which holds the test assembly. Nothing in the suite changes the current directory.
+    /// which holds the image. Nothing in the suite changes the current directory.
     [<Test>]
     let ``the empty runtime dir finds an assembly in the current directory`` () =
-        if not (File.Exists (testAssemblySimpleName + ".dll")) then
-            Assert.Ignore "the test host's current directory does not hold the test assembly"
+        if not (File.Exists (imageSimpleName + ".dll")) then
+            Assert.Ignore "the test host's current directory does not hold the image"
 
-        probedName [ "" ] testAssemblySimpleName
-        |> shouldEqual (Some testAssemblySimpleName)
+        probedName [ "" ] imageSimpleName |> shouldEqual (Some imageSimpleName)
 
     [<Test>]
     let ``a directory that does not exist is skipped`` () =
         withTempRoot (fun root ->
             let present = Path.Combine (root, "present")
-            copyTestAssembly present (testAssemblySimpleName + ".dll")
+            copyImage present (imageSimpleName + ".dll")
 
-            probedName [ Path.Combine (root, "absent") ; present ] testAssemblySimpleName
-            |> shouldEqual (Some testAssemblySimpleName)
+            probedName [ Path.Combine (root, "absent") ; present ] imageSimpleName
+            |> shouldEqual (Some imageSimpleName)
         )
 
     /// The first directory holding the name is the binding, so a later one is never read: here
@@ -117,12 +121,12 @@ module TestAssemblyProbe =
         withTempRoot (fun root ->
             let first = Path.Combine (root, "first")
             let second = Path.Combine (root, "second")
-            copyTestAssembly first (testAssemblySimpleName + ".dll")
+            copyImage first (imageSimpleName + ".dll")
             Directory.CreateDirectory second |> ignore<DirectoryInfo>
-            File.WriteAllText (Path.Combine (second, testAssemblySimpleName + ".dll"), "not an image")
+            File.WriteAllText (Path.Combine (second, imageSimpleName + ".dll"), "not an image")
 
-            probedName [ first ; second ] testAssemblySimpleName
-            |> shouldEqual (Some testAssemblySimpleName)
+            probedName [ first ; second ] imageSimpleName
+            |> shouldEqual (Some imageSimpleName)
         )
 
     /// A directory that exists but cannot be listed is not the same as one that does not exist:
@@ -138,8 +142,8 @@ module TestAssemblyProbe =
             let locked = Path.Combine (root, "locked")
             let inner = Path.Combine (locked, "inner")
             let later = Path.Combine (root, "later")
-            copyTestAssembly inner (testAssemblySimpleName + ".dll")
-            copyTestAssembly later (testAssemblySimpleName + ".dll")
+            copyImage inner (imageSimpleName + ".dll")
+            copyImage later (imageSimpleName + ".dll")
 
             File.SetUnixFileMode (locked, UnixFileMode.None)
 
@@ -148,7 +152,7 @@ module TestAssemblyProbe =
                     Assert.Ignore "permissions are not enforced for this user"
 
                 Assert.Throws<UnauthorizedAccessException> (fun () ->
-                    probedName [ inner ; later ] testAssemblySimpleName |> ignore<string option>
+                    probedName [ inner ; later ] imageSimpleName |> ignore<string option>
                 )
                 |> ignore<UnauthorizedAccessException>
             finally
@@ -168,15 +172,15 @@ module TestAssemblyProbe =
             Directory.CreateDirectory first |> ignore<DirectoryInfo>
 
             File.CreateSymbolicLink (
-                Path.Combine (first, testAssemblySimpleName + ".dll"),
+                Path.Combine (first, imageSimpleName + ".dll"),
                 Path.Combine (root, "nowhere.dll")
             )
             |> ignore<FileSystemInfo>
 
-            copyTestAssembly second (testAssemblySimpleName + ".dll")
+            copyImage second (imageSimpleName + ".dll")
 
-            probedName [ first ; second ] testAssemblySimpleName
-            |> shouldEqual (Some testAssemblySimpleName)
+            probedName [ first ; second ] imageSimpleName
+            |> shouldEqual (Some imageSimpleName)
         )
 
     /// Two files differing only by case are a collision however the request spells the name, so
@@ -185,15 +189,15 @@ module TestAssemblyProbe =
     [<Test>]
     let ``files differing only by case are refused whatever the request's casing`` () =
         withTempRoot (fun root ->
-            copyTestAssembly root (testAssemblySimpleName + ".dll")
-            let lower = testAssemblySimpleName.ToLowerInvariant () + ".dll"
+            copyImage root (imageSimpleName + ".dll")
+            let lower = imageSimpleName.ToLowerInvariant () + ".dll"
 
             if File.Exists (Path.Combine (root, lower)) then
                 Assert.Ignore "the filesystem is case-insensitive, so the pair cannot exist"
 
-            copyTestAssembly root lower
+            copyImage root lower
 
-            for name in [ testAssemblySimpleName ; testAssemblySimpleName.ToLowerInvariant () ] do
+            for name in [ imageSimpleName ; imageSimpleName.ToLowerInvariant () ] do
                 let exn =
                     Assert.Throws<Exception> (fun () -> probedName [ root ] name |> ignore<string option>)
 
