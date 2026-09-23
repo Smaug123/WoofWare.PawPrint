@@ -21,6 +21,7 @@ open WoofWare.PawPrint
 /// pointer, byref or `void` argument, which `SanityCheckGenericArguments` screens before the
 /// QCall, and no interface declaring a static abstract member.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestOpenDeclaringConstraintSatisfaction =
 
     /// (method name, constraint clause) for the methods each declaring definition declares, over
