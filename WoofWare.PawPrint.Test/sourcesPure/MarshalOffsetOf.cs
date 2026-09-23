@@ -41,6 +41,11 @@ public class Program
     [StructLayout(LayoutKind.Sequential)]
     struct Gen<T> { public byte A; public T V; }
 
+    // CoreCLR aligns Int128 to 16 by name, natively as well as in managed layout, though its
+    // two ulong fields alone would imply 8.
+    [StructLayout(LayoutKind.Sequential)]
+    struct WithInt128 { public byte A; public Int128 I; public byte B; }
+
     [StructLayout(LayoutKind.Auto)]
     struct AutoS { public int A; public int B; }
 
@@ -106,6 +111,10 @@ public class Program
         // its single field still starts the image.
         if (Marshal.OffsetOf<bool>("m_value") != (IntPtr)0) return 25;
         if (Marshal.OffsetOf<char>("m_value") != (IntPtr)0) return 26;
+
+        if (Marshal.OffsetOf<WithInt128>("I") != (IntPtr)16) return 27;
+        if (Marshal.OffsetOf<WithInt128>("B") != (IntPtr)32) return 28;
+        if (Marshal.SizeOf<WithInt128>() != 48) return 29;
 
         int r;
         // No layout at all: an auto-layout struct, an ordinary class, an enum, and DateTime,

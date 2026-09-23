@@ -47,6 +47,9 @@ module internal MarshalOffsetOfCorpus =
             "DateTime"
             "Guid"
             "TimeSpan"
+            // CoreCLR stamps these 16-byte alignment by name, over the 8 their fields imply.
+            "Int128"
+            "UInt128"
             "NestSeq"
             "NestPacked"
             "NestExplicit"
@@ -163,6 +166,7 @@ public struct NestAuto { public int A; public int B; }
             // A field with no native layout makes its container unmarshalable.
             ShapeLayout.Sequential (0, 0), [ "int", None ; "NestAuto", None ]
             ShapeLayout.Explicit 0, [ "long", Some 0 ; "E32", Some 3 ; "decimal", Some 5 ]
+            ShapeLayout.Sequential (0, 0), [ "byte", None ; "Int128", None ]
         ]
 
     /// A fixed, seeded sample rather than a fresh FsCheck run: the whole corpus has to be compiled
@@ -355,6 +359,8 @@ module TestMarshalOffsetOf =
 
         hostAnswer shapes.[0] 2 |> shouldEqual (HostAnswer.Offset 16)
         hostAnswer shapes.[2] 2 |> shouldEqual (HostAnswer.Offset 5)
+        // Not 8, which is what `Int128`'s own two `ulong`s would imply.
+        hostAnswer shapes.[3] 1 |> shouldEqual (HostAnswer.Offset 16)
 
         match hostAnswer shapes.[1] 0 with
         | HostAnswer.CannotMarshal _ -> ()

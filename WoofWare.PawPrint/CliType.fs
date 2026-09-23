@@ -3727,7 +3727,10 @@ and CliValueType =
                 bumpZeroSized
                     {
                         Size = totalSize
-                        Alignment = alignment
+                        // The native layout takes a nominally-aligned type's managed alignment
+                        // too, stamped after the size has been computed from the fields
+                        // (classlayoutinfo.cpp:992), exactly as the managed layout does.
+                        Alignment = vt._NominalAlignment |> Option.defaultValue alignment
                     }
 
             let seqFields, nonSeqFields =
