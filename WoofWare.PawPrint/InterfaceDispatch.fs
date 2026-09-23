@@ -267,7 +267,8 @@ module InterfaceDispatch =
         ||> Seq.fold (fun acc row -> expand acc true assembly owner.Substitution ty row)
 
     /// The interface method a MethodImpl declaration names, together with the interface instantiation
-    /// it names it on; `None` when the declaration is not an interface instance method, which makes
+    /// it names it on -- closed, and read in the vocabulary of the owner's generic definition, whose
+    /// substitution is `ownerSubstitution`; `None` when the declaration is not an interface instance method, which makes
     /// the row a vtable write (see `VirtualSlotLayout.contentVtableOfDefinition`) or a static virtual
     /// implementation (resolved through MethodImpl rows by the caller, not through this map).
     let private interfaceMethodImplDeclaration
@@ -277,9 +278,10 @@ module InterfaceDispatch =
         (state : IlMachineState)
         (ownerTy : ConcreteType<ConcreteTypeHandle>)
         (ownerDescription : string)
+        (ownerSubstitution : TypeConcretization.SubstitutionContext)
         (assembly : DumpedAssembly)
         (declaration : MetadataToken)
-        : IlMachineState * (ConcreteTypeHandle * SlotIdentity) option
+        : IlMachineState * (ConcreteTypeHandle * TypeConcretization.SubstitutionContext * SlotIdentity) option
         =
         let concretizeParent (state : IlMachineState) (parent : MetadataToken) =
             let state, parentTypeDefn, parentAssembly =
@@ -323,7 +325,14 @@ module InterfaceDispatch =
                 let state, interfaceHandle, _, _ =
                     concretizeParent state (MetadataToken.TypeDefinition method.RequiredDeclaringType.Definition.Get)
 
-                state, Some (interfaceHandle, (assembly.DefinitionFullName, method.IdentityKey))
+                state,
+                Some (
+                    interfaceHandle,
+                    {
+                        TypeConcretization.SubstitutionContext.Arguments = ImmutableArray.Empty
+                    },
+                    (assembly.DefinitionFullName, method.IdentityKey)
+                )
         | MetadataToken.MemberReference handle ->
             let memberRef = assembly.Members.[handle]
 
@@ -384,8 +393,20 @@ module InterfaceDispatch =
 
                 match matches with
                 | [ interfaceMethod ] ->
+                    let substitution =
+                        spelledInterfaceSubstitution
+                            operation
+                            assembly
+                            ownerSubstitution
+                            interfaceTypeInfo
+                            memberRef.Parent
+
                     state,
-                    Some (interfaceHandle, (interfaceMethod.DeclaringAssemblyFullName, interfaceMethod.IdentityKey))
+                    Some (
+                        interfaceHandle,
+                        substitution,
+                        (interfaceMethod.DeclaringAssemblyFullName, interfaceMethod.IdentityKey)
+                    )
                 | [] ->
                     failwith
                         $"%s{operation}: a MethodImpl on %s{ownerDescription} declares an implementation of %s{memberRef.PrettyName} on %s{interfaceTypeInfo.Namespace}.%s{interfaceTypeInfo.Name}, which declares no instance method of that name and signature; CoreCLR rejects this type at load time"
@@ -579,22 +600,20 @@ module InterfaceDispatch =
 
                     let key = index, interfaceMethodKey
 
+                    // Asked of the entry by its position, not its closed handle: an ancestor's map is a
+                    // prefix of this one, so the position names the same entry at every level, whereas
+                    // two distinct entries can close to one handle.
                     let state, implementedAbove =
                         match parentHandle with
                         | Some parentHandle when inheritedOnly ->
-                            let state, slot =
-                                findSlotOnChain
-                                    loggerFactory
-                                    baseClassTypes
-                                    operation
-                                    state
-                                    parentHandle
-                                    true
-                                    false
-                                    entry.Interface
-                                    interfaceMethodKey
-
-                            state, slot.IsSome
+                            isMappedOnChain
+                                loggerFactory
+                                baseClassTypes
+                                operation
+                                state
+                                parentHandle
+                                index
+                                interfaceMethodKey
                         | _ -> state, false
 
                     if implementedAbove then
@@ -667,12 +686,13 @@ module InterfaceDispatch =
                         state
                         ty
                         owner.Description
+                        owner.Substitution
                         assembly
                         impl.Declaration
 
                 match declaration with
                 | None -> state, placed, alreadyImplemented
-                | Some (interfaceHandle, interfaceMethod) ->
+                | Some (interfaceHandle, declaredSubstitution, interfaceMethod) ->
 
                 let body =
                     match impl.Body with
@@ -681,31 +701,42 @@ module InterfaceDispatch =
                         failwith
                             $"TODO: %s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{other} rather than a MethodDef of the type itself"
 
-                let indices =
-                    interfaceMap
-                    |> List.indexed
-                    |> List.choose (fun (index, entry) ->
-                        if entry.Interface = interfaceHandle then
-                            Some index
-                        else
-                            None
-                    )
+                // The entry the declaration names, identified on the generic definition as the interface
+                // map itself is: the first that is the same instantiation there
+                // (`ComputeDispatchMapTypeIDs`), not every entry that happens to close to the same type.
+                let rec namedEntry (state : IlMachineState) (entries : (int * InterfaceMapEntry) list) =
+                    match entries with
+                    | [] -> state, None
+                    | (_, entry) :: rest when entry.Interface <> interfaceHandle -> namedEntry state rest
+                    | (index, entry) :: rest ->
+                        let state, same =
+                            IlMachineState.substitutionsEquivalent
+                                loggerFactory
+                                baseClassTypes
+                                state
+                                entry.Substitution
+                                declaredSubstitution
 
-                if indices.IsEmpty then
-                    failwith
-                        $"%s{operation}: a MethodImpl on %s{owner.Description} implements a method of %O{interfaceHandle}, which is not in its interface map; CoreCLR rejects this type at load time"
+                        if same then state, Some index else namedEntry state rest
 
-                if alreadyImplemented.Contains ((interfaceHandle, interfaceMethod)) then
+                let state, index = namedEntry state (List.indexed interfaceMap)
+
+                let index =
+                    match index with
+                    | Some index -> index
+                    | None ->
+                        failwith
+                            $"%s{operation}: a MethodImpl on %s{owner.Description} implements a method of %O{interfaceHandle}, which is not in its interface map; CoreCLR rejects this type at load time"
+
+                if alreadyImplemented.Contains ((index, interfaceMethod)) then
                     failwith
                         $"%s{operation}: two MethodImpls on %s{owner.Description} implement the same method of %O{interfaceHandle}; CoreCLR rejects this type at load time (IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES)"
 
                 let slot = slotOfOwnMethod body
 
-                let placed =
-                    (placed, indices)
-                    ||> List.fold (fun placed index -> placed.SetItem ((index, interfaceMethod), slot))
-
-                state, placed, alreadyImplemented.Add ((interfaceHandle, interfaceMethod))
+                state,
+                placed.SetItem ((index, interfaceMethod), slot),
+                alreadyImplemented.Add ((index, interfaceMethod))
             )
 
         let byInterfaceMethod =
@@ -736,29 +767,65 @@ module InterfaceDispatch =
 
         state.WithInterfaceDispatchMap typeHandle computed, computed
 
-    /// `tryFindImplementationSlot`, with the variance pass optional: placement asks whether a parent
-    /// already implements an instantiation *exactly*.
-    and private findSlotOnChain
+    /// Does `level` or any type above it map `interfaceMethod` through the interface-map entry at
+    /// `index`? Positions agree down a chain, because each type's interface map begins with its
+    /// parent's.
+    and private isMappedOnChain
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (level : ConcreteTypeHandle)
+        (index : int)
+        (interfaceMethod : SlotIdentity)
+        : IlMachineState * bool
+        =
+        let state, own = ownDispatchMapOf loggerFactory baseClassTypes operation state level
+
+        let mapped =
+            match own.ByInterfaceMethod.TryGetValue interfaceMethod with
+            | true, entries -> entries |> List.exists (fun entry -> entry.InterfaceMapIndex = index)
+            | false, _ -> false
+
+        if mapped then
+            state, true
+        else
+            let state, baseType =
+                IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state level
+
+            match baseType with
+            | None -> state, false
+            | Some baseType ->
+                isMappedOnChain loggerFactory baseClassTypes operation state baseType index interfaceMethod
+
+    /// The vtable slot whose content implements `interfaceMethod` of the interface instantiation
+    /// `target` on a receiver of runtime type `receiver`, or `None` if no type on the receiver's chain
+    /// maps it -- in which case only a default interface body can answer.
+    ///
+    /// Each level is asked for an entry at `target` itself and then, if the interface is variant, for
+    /// the first entry in its interface-map order that is variance-compatible with it
+    /// (`MethodTable::FindEncodedMapDispatchEntry`). The passes run per level, so a variance-compatible
+    /// entry on a more-derived type beats an exact one on its base.
+    ///
+    /// `walkBaseTypes` false asks the receiver's own level alone: the `constrained.` probe of whether
+    /// a value type supplies the method itself.
+    let tryFindImplementationSlot
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)
         (state : IlMachineState)
         (receiver : ConcreteTypeHandle)
         (walkBaseTypes : bool)
-        (allowVariance : bool)
         (target : ConcreteTypeHandle)
         (interfaceMethod : SlotIdentity)
         : IlMachineState * int option
         =
         let targetHasVariance =
-            allowVariance
-            && (
-                match IlMachineState.tryGetConcreteTypeInfo state target with
-                | Some (_, targetTypeInfo) ->
-                    targetTypeInfo.Generics
-                    |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
-                | None -> failwith $"%s{operation}: interface %O{target} has no TypeDef row"
-            )
+            match IlMachineState.tryGetConcreteTypeInfo state target with
+            | Some (_, targetTypeInfo) ->
+                targetTypeInfo.Generics
+                |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+            | None -> failwith $"%s{operation}: interface %O{target} has no TypeDef row"
 
         let rec firstCompatible (state : IlMachineState) (entries : InterfaceDispatchEntry list) =
             match entries with
@@ -810,27 +877,3 @@ module InterfaceDispatch =
                 | Some baseType -> atLevel state baseType
 
         atLevel state receiver
-
-    /// The vtable slot whose content implements `interfaceMethod` of the interface instantiation
-    /// `target` on a receiver of runtime type `receiver`, or `None` if no type on the receiver's chain
-    /// maps it -- in which case only a default interface body can answer.
-    ///
-    /// Each level is asked for an entry at `target` itself and then, if the interface is variant, for
-    /// the first entry in its interface-map order that is variance-compatible with it
-    /// (`MethodTable::FindEncodedMapDispatchEntry`). The passes run per level, so a variance-compatible
-    /// entry on a more-derived type beats an exact one on its base.
-    ///
-    /// `walkBaseTypes` false asks the receiver's own level alone: the `constrained.` probe of whether
-    /// a value type supplies the method itself.
-    let tryFindImplementationSlot
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (operation : string)
-        (state : IlMachineState)
-        (receiver : ConcreteTypeHandle)
-        (walkBaseTypes : bool)
-        (target : ConcreteTypeHandle)
-        (interfaceMethod : SlotIdentity)
-        : IlMachineState * int option
-        =
-        findSlotOnChain loggerFactory baseClassTypes operation state receiver walkBaseTypes true target interfaceMethod

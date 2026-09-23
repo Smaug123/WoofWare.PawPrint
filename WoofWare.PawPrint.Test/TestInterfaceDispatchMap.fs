@@ -340,6 +340,16 @@ public class Gen1<T> : IIn<int> { public long V(T x) => 1; public long V(int x) 
 public class Gen2<T> : IIn<T> { public long V(int x) => 3; public long V(T x) => 4; }
 public class Gen3<T> : Gen2<T>, IIn<int> { }
 public class Gen4<T> : Gen2<int>, IIn<T> { public new long V(T x) => 5; }
+public interface IDefaultOf<T> { long W(T x) => 102; }
+public class Gen5<T> : IDefaultOf<T> { public long W(T x) => 6; }
+public abstract class Gen6<T> : Gen5<T>, IDefaultOf<int> { }
+public class Gen7<T> : Gen6<T> { public virtual long W(int x) => 7; }
+public abstract class Gen8<T> : Gen2<T>, IIn<int> { long IIn<int>.V(int x) => 8; }
+public class Gen9<T> : Gen8<T> { public new virtual long V(T x) => 9; }
+public class Gen10<T> : Gen8<T> { public new virtual long V(int x) => 10; }
+public class Gen11<T> : IIn<T> { public long V(T x) => 11; }
+public abstract class Gen12<T> : Gen11<T>, IIn<int> { long IIn<int>.V(int x) => 12; }
+public class Gen13<T> : Gen12<T> { public virtual long V(int x) => 13; }
 """
 
     /// Each interface a generated class may list, and the interfaces listing it brings with it.
@@ -700,9 +710,11 @@ public class Gen4<T> : Gen2<int>, IIn<T> { public new long V(T x) => 5; }
                     )
                     |> List.ofArray
 
-                let closedAt (definition : string) (argument : Type) =
+                // Every fixed generic shape in `interfaceSource`, at two instantiations: `int` is the one
+                // that makes their distinct declarations coincide.
+                let closedAt (definition : Type) (argument : Type) =
                     fun (state : IlMachineState) ->
-                        let host = hostAssembly.GetType(definition).MakeGenericType argument
+                        let host = definition.MakeGenericType argument
 
                         let argumentInfo =
                             corelib.TypeDefs.[MetadataTokens.TypeDefinitionHandle (argument.MetadataToken &&& 0xFFFFFF)]
@@ -710,17 +722,21 @@ public class Gen4<T> : Gen2<int>, IIn<T> { public new long V(T x) => 5; }
                         let state, argumentHandle = concretizeDefinition state corelib argumentInfo []
 
                         let state, handle =
-                            concretizeDefinition
-                                state
-                                dumped
-                                (typeInfoOf (host.GetGenericTypeDefinition ()))
-                                [ argumentHandle ]
+                            concretizeDefinition state dumped (typeInfoOf definition) [ argumentHandle ]
 
                         state, handle, host
 
+                let genericShapes =
+                    hostAssembly.GetTypes ()
+                    |> Array.filter (fun t -> t.Name.StartsWith "Gen" && t.IsGenericTypeDefinition)
+                    |> List.ofArray
+
+                // Guards the enumeration itself: a shape silently missing from it is a shape untested.
+                genericShapes.Length |> shouldEqual 13
+
                 nonGeneric
                 @ [
-                    for definition in [ "Gen1`1" ; "Gen2`1" ; "Gen3`1" ; "Gen4`1" ] do
+                    for definition in genericShapes do
                         for argument in [ typeof<int> ; typeof<string> ] do
                             closedAt definition argument
                 ]
