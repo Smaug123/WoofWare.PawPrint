@@ -22,6 +22,18 @@ type StructMarshalFieldKind =
     /// field with `DateTime(long ticks)`, so a round trip keeps only whole milliseconds and always
     /// comes back with `DateTimeKind.Unspecified`.
     | OADate
+    /// CoreCLR's `MARSHAL_TYPE_WINBOOL`: a `bool` field becomes a four-byte `BOOL`, 1 for true and
+    /// 0 for false whatever non-zero byte the managed `bool` holds, and any non-zero `BOOL` comes
+    /// back as a `bool` holding 1. `ILBoolMarshaler` (ilmarshalers.cpp:187) does both with `ceq`.
+    | WinBool
+    /// CoreCLR's `MARSHAL_TYPE_CBOOL`: as `WinBool`, but the native form is a single byte.
+    | CBool
+    /// CoreCLR's `MARSHAL_TYPE_ANSICHAR`: a `char` field becomes one byte, by
+    /// `StubHelpers.AnsiCharMarshaler.ConvertToNative(char, bestFit, throwOnUnmappableChar)` on
+    /// the way out and `ConvertToManaged(byte)` on the way back (ilmarshalers.cpp:1448). Both are
+    /// the guest CoreLib's own code; the flags are the struct's `BestFitMappingAttribute`, as
+    /// `StructMarshalStub.bestFitFlags` reads it.
+    | AnsiChar of bestFit : bool * throwOnUnmappableChar : bool
 
 /// One field's contribution to the unmanaged image: where it goes, how it gets there, and the
 /// managed value it starts from.
@@ -62,12 +74,18 @@ type StructMarshalPlan =
 /// guest-visible exceptions for dates outside the OLE Automation range) belongs to the guest's
 /// CoreLib — so the stub calls the guest's own `StubHelpers.DateMarshaler` and `DateTime`
 /// constructor, once per conversion field, by pushing each as a callee and not returning its own
-/// frame; the result lands on the stub's own evaluation stack.
+/// frame; the result lands on the stub's own evaluation stack. `MARSHAL_TYPE_ANSICHAR` is the same:
+/// what a `char` becomes as an ANSI byte, and back, is the guest CoreLib's
+/// `StubHelpers.AnsiCharMarshaler`, not something the stub decides.
 [<RequireQualifiedAccess>]
 module StructMarshalStub =
 
     /// Whether a field's managed byte image is also its native image, i.e. whether CoreCLR's
-    /// `IsFieldBlittable` would accept it.
+    /// `IsFieldBlittable` would accept it. `charSet` is the declaring type's and `descriptor` the
+    /// field's own `[MarshalAs]`, which between them decide whether a `char` field is a UTF-16
+    /// code unit (blittable) or an ANSI byte (not). The descriptor is consulted for `bool` and
+    /// `char` fields only: a `[MarshalAs]` that CoreCLR would refuse on a numeric or struct field
+    /// is not caught here.
     ///
     /// Shared by the blittable arm of `MarshalNative_TryGetStructMarshalStub` (which needs the
     /// bare yes/no) and by `tryComputePlan` (which needs it per field). One recursion, so the two
@@ -77,10 +95,22 @@ module StructMarshalStub =
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
+        (charSet : System.Runtime.InteropServices.CharSet)
+        (descriptor : FieldMarshalDescriptor option)
         (t : CliType)
         : bool
         =
+        // `GetNestedFieldFlags` judges an enum field by its underlying element type
+        // (classlayoutinfo.cpp:445), under the *containing* type's `CharSet`: an enum over `char`
+        // is a `char` field, not a struct with a `CharSet` of its own.
+        match CliValueType.TryEnumUnderlying concreteTypes assemblies corelib t with
+        | Some (_, underlying) -> isBlittableField concreteTypes assemblies corelib charSet descriptor underlying
+        | None ->
+
         match t with
+        | CliType.Bool _
+        | CliType.Char _ ->
+            CliValueType.TryBoolCharFieldMarshal charSet descriptor t = Some (Result.Ok BoolCharMarshal.Utf16Char)
         // `NativeInt` cells carry provenance under PawPrint (e.g. a pointer from
         // `Marshal.AllocHGlobal`, or `TypeHandlePtr` from `typeof(T).TypeHandle.Value`). CoreCLR
         // memmoves the integer-width bits regardless; PawPrint cannot, because
@@ -93,8 +123,6 @@ module StructMarshalStub =
         // (`Marshal.ReadIntPtr`) is refused by `executeLdind` (#801).
         | CliType.Numeric (CliNumericType.NativeInt _) -> true
         | CliType.Numeric _ -> true
-        | CliType.Bool _
-        | CliType.Char _
         | CliType.ObjectRef _
         | CliType.RuntimePointer _ -> false
         | CliType.ValueType vt ->
@@ -122,9 +150,22 @@ module StructMarshalStub =
                 // conservatively reject so we don't quietly accept primitive wrappers whose
                 // CoreCLR marshal size diverges from the byte image.
                 | CliValueTypeStorage.RawBytes _ -> false
-                | CliValueTypeStorage.Fields storage ->
-                    storage.Fields
-                    |> List.forall (fun field -> isBlittableField concreteTypes assemblies corelib field.Contents)
+                | CliValueTypeStorage.Fields storage -> areFieldsBlittable concreteTypes assemblies corelib vt storage
+
+    /// Whether every field of `vt` is blittable, each judged under `vt`'s own `CharSet`: CoreCLR
+    /// computes a nested struct's blittability once, for its own `MethodTable`.
+    and private areFieldsBlittable
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (vt : CliValueType)
+        (storage : CliFieldBackedStorage)
+        : bool
+        =
+        storage.Fields
+        |> List.forall (fun field ->
+            isBlittableField concreteTypes assemblies corelib vt.CharSet field.MarshallingDescriptor field.Contents
+        )
 
     /// Whether the whole struct is blittable, i.e. whether CoreCLR's `th.IsBlittable()` arm of
     /// `MarshalNative_TryGetStructMarshalStub` applies and the guest can memmove.
@@ -132,7 +173,7 @@ module StructMarshalStub =
     /// Walks the outer struct's fields via `isBlittableField`. The host-known field-only
     /// rejections (Decimal) do not apply to the outer type's own declared type; a top-level
     /// DateTime is filtered earlier by the AutoLayout gate.
-    let isStructStrictlyNumericBlittable
+    let isBlittableStruct
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -143,14 +184,70 @@ module StructMarshalStub =
         | CliType.ValueType vt ->
             match vt._Storage with
             | CliValueTypeStorage.RawBytes _ -> false
-            | CliValueTypeStorage.Fields storage ->
-                storage.Fields
-                |> List.forall (fun field -> isBlittableField concreteTypes assemblies corelib field.Contents)
-        | _ ->
-            // Top-level primitive (e.g. `Marshal.StructureToPtr<int>`): defer to the field walker.
-            // Primitives are unconditionally blittable; Bool/Char/etc. are not — same semantics
-            // either way.
-            isBlittableField concreteTypes assemblies corelib t
+            | CliValueTypeStorage.Fields storage -> areFieldsBlittable concreteTypes assemblies corelib vt storage
+        // A top-level primitive (e.g. `Marshal.StructureToPtr<int>`). A number's image is its own
+        // native image. A top-level `bool` or `char` has no containing type to take a `CharSet`
+        // from, and is not modelled: calling it non-blittable sends it to `tryComputePlan`, which
+        // refuses anything but a value type.
+        | CliType.Numeric _ -> true
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> false
+
+    /// The `bestFit` and `throwOnUnmappableChar` flags CoreCLR builds `typeHandle`'s struct stub
+    /// with (`CreateStructMarshalILStub`, dllimport.cpp:5312): `ReadBestFitCustomAttribute`
+    /// (interoputil.cpp:817), where a `BestFitMappingAttribute` on the type overrides one on its
+    /// assembly, and with neither best-fit mapping is on and throwing is off.
+    let bestFitFlags
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (typeHandle : ConcreteTypeHandle)
+        : bool * bool
+        =
+        let concreteType =
+            AllConcreteTypes.lookup typeHandle concreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith $"StructMarshalStub.bestFitFlags: %O{typeHandle} is not a registered concrete type"
+            )
+
+        let assembly = assemblies.ByDefinitionName concreteType.AssemblyFullName
+
+        let mr =
+            System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader assembly.PeReader
+
+        let describe () = $"type %O{typeHandle}"
+
+        let readFrom
+            (attributes : System.Reflection.Metadata.CustomAttributeHandleCollection)
+            (flags : bool * bool)
+            : bool * bool
+            =
+            let blob =
+                attributes
+                |> Seq.map mr.GetCustomAttribute
+                |> Seq.tryFind (fun attr ->
+                    CustomAttribute.constructorParentName mr describe attr.Constructor = Some (
+                        "System.Runtime.InteropServices",
+                        "BestFitMappingAttribute"
+                    )
+                )
+                |> Option.map (fun attr -> mr.GetBlobBytes attr.Value)
+
+            // CoreCLR reads the blob at fixed offsets rather than parsing it: the constructor's
+            // `bool` follows the two-byte prolog, and a blob exactly long enough to carry the
+            // `ThrowOnUnmappableChar` named argument ends with that argument's value.
+            match blob with
+            | Some bytes when bytes.Length > 4 && bytes.[0] = 1uy && bytes.[1] = 0uy ->
+                let throwOnUnmappableChar =
+                    if bytes.Length = 30 then bytes.[29] <> 0uy else snd flags
+
+                bytes.[2] <> 0uy, throwOnUnmappableChar
+            | _ -> flags
+
+        (true, false)
+        |> readFrom (mr.GetAssemblyDefinition().GetCustomAttributes ())
+        |> readFrom (mr.GetTypeDefinition(concreteType.Definition.Get).GetCustomAttributes ())
 
     /// Derive the write plan for `value`'s unmanaged image, or say why we can't.
     ///
@@ -195,13 +292,19 @@ module StructMarshalStub =
             // value and `stobj`s it at the field's native offset. `isBlittableField` still says no,
             // because the *outer* struct is not blittable when it holds one — a Decimal's native
             // placement is decided by the native layout walk, not the managed one.
+            //
+            // Only a field with no `[MarshalAs]` descriptor reaches this (see below), so the
+            // descriptor it is judged under is `None`.
+            let isBlittableUndescribed (contents : CliType) : bool =
+                isBlittableField concreteTypes assemblies corelib vt.CharSet None contents
+
             let isCopyableVerbatim (contents : CliType) : bool =
                 match contents with
                 | CliType.ValueType vt when CliValueType.IsHostKnownDecimal concreteTypes assemblies corelib vt -> true
-                | CliType.ValueType vt ->
-                    vt.PrimitiveLikeKind.IsSome
-                    && isBlittableField concreteTypes assemblies corelib contents
-                | _ -> isBlittableField concreteTypes assemblies corelib contents
+                | CliType.ValueType vt -> vt.PrimitiveLikeKind.IsSome && isBlittableUndescribed contents
+                | _ -> isBlittableUndescribed contents
+
+            let bestFit = lazy (bestFitFlags concreteTypes assemblies vt._Declared)
 
             let steps =
                 placements
@@ -213,6 +316,27 @@ module StructMarshalStub =
                     // sequential layout, and most explicit ones — returns the cell directly and
                     // is unaffected.
                     let contents = CliValueType.DereferenceFieldById placement.Field.Id vt
+
+                    match
+                        CliValueType.TryBoolCharFieldMarshal vt.CharSet placement.Field.MarshallingDescriptor contents
+                    with
+                    | Some (Result.Error err) -> Result.Error (MarshalSizeError.prefixField placement.Field.Name err)
+                    | Some (Result.Ok marshal) ->
+                        let kind =
+                            match marshal with
+                            | BoolCharMarshal.WinBool -> StructMarshalFieldKind.WinBool
+                            | BoolCharMarshal.CBool -> StructMarshalFieldKind.CBool
+                            | BoolCharMarshal.AnsiChar -> StructMarshalFieldKind.AnsiChar bestFit.Value
+                            // A UTF-16 code unit's managed image is its native image.
+                            | BoolCharMarshal.Utf16Char -> StructMarshalFieldKind.CopyBytes
+
+                        Result.Ok
+                            {
+                                Placement = placement
+                                Kind = kind
+                                Value = contents
+                            }
+                    | None ->
 
                     // A `[MarshalAs]` descriptor selects the field's native type, and CoreCLR
                     // rejects most pairings outright: `Int32` admits only `I4`/`U4`
@@ -268,7 +392,7 @@ module StructMarshalStub =
                                 Kind = StructMarshalFieldKind.OADate
                                 Value = contents
                             }
-                    | _ when isBlittableField concreteTypes assemblies corelib contents ->
+                    | _ when isBlittableUndescribed contents ->
                         MarshalSizeError.NotImplemented
                             $"field %s{placement.Field.Name} is a nested composite whose fields are individually blittable, but writing it verbatim would assume its managed and unmanaged interiors coincide; that needs a recursive marshal plan"
                         |> Result.Error
@@ -403,17 +527,10 @@ module StructMarshalStub =
     /// inputs that cannot change between passes. It is: the order comes from the type's field
     /// layout (assembly loads and concretizations only extend, never reorder) and from the source
     /// box, which no conversion helper is given a reference to.
-    let private completedConversions (frame : MethodState) : float list =
-        frame.EvaluationStack.Values
-        |> List.map (fun v ->
-            match v with
-            // Every conversion helper the stub calls today returns a `double` (an OA date).
-            | EvalStackValue.Float (EvalStackFloat.Double f) -> f
-            | other ->
-                failwith
-                    $"struct-marshal stub: expected only conversion results on the stub's own evaluation stack, found %O{other}"
-        )
-        |> List.rev
+    ///
+    /// Each result is checked against the conversion it answers when it is consumed, not here.
+    let private completedConversions (frame : MethodState) : EvalStackValue list =
+        frame.EvaluationStack.Values |> List.rev
 
     let private operationOf (operation : string) (value : EvalStackValue) : Operation =
         match value with
@@ -445,13 +562,19 @@ module StructMarshalStub =
         AllConcreteTypes.lookup handle state.ConcreteTypes
         |> Option.defaultWith (fun () -> failwith $"%s{operation}: concrete System.Byte handle %O{handle} not found")
 
-    /// One of the guest's `StubHelpers.DateMarshaler` conversions, both of which are static and
-    /// take one argument: `ConvertToNative(DateTime) -> double`, which CoreCLR's date marshaller
-    /// calls on the way out (ilmarshalers.cpp:1247), and `ConvertToManaged(double) -> long`, which
-    /// it calls on the way back (ilmarshalers.cpp:1260).
-    let private dateMarshalerMethod
+    /// One of the guest's static `System.StubHelpers` conversions, by class, name and arity:
+    ///
+    /// - `DateMarshaler.ConvertToNative(DateTime) -> double`, which CoreCLR's date marshaller calls
+    ///   on the way out (ilmarshalers.cpp:1247), and `DateMarshaler.ConvertToManaged(double) -> long`,
+    ///   which it calls on the way back (ilmarshalers.cpp:1260);
+    /// - `AnsiCharMarshaler.ConvertToNative(char, bool, bool) -> byte` and
+    ///   `AnsiCharMarshaler.ConvertToManaged(byte) -> char`, likewise for its ANSI `char`
+    ///   marshaller (ilmarshalers.cpp:1448, :1459).
+    let private stubHelperMethod
         (operation : string)
+        (className : string)
         (name : string)
+        (arity : int)
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -460,20 +583,21 @@ module StructMarshalStub =
         let declaringType =
             baseClassTypes.Corelib.TypeDefs
             |> Seq.tryPick (fun (KeyValue (_, v)) ->
-                if v.Namespace = "System.StubHelpers" && v.Name = "DateMarshaler" then
+                if v.Namespace = "System.StubHelpers" && v.Name = className then
                     Some v
                 else
                     None
             )
             |> Option.defaultWith (fun () ->
-                failwith $"%s{operation}: System.StubHelpers.DateMarshaler not found in corelib"
+                failwith $"%s{operation}: System.StubHelpers.%s{className} not found in corelib"
             )
 
         let method =
             declaringType.Methods
-            |> List.tryFind (fun m -> m.Name = name && m.IsStatic && MethodInfo.arity m = 1)
+            |> List.tryFind (fun m -> m.Name = name && m.IsStatic && MethodInfo.arity m = arity)
             |> Option.defaultWith (fun () ->
-                failwith $"%s{operation}: static System.StubHelpers.DateMarshaler.%s{name} of one argument not found"
+                failwith
+                    $"%s{operation}: static System.StubHelpers.%s{className}.%s{name} of %d{arity} argument(s) not found"
             )
 
         let state, concretized, _ =
@@ -763,17 +887,30 @@ module StructMarshalStub =
         let nativeZero (step : StructMarshalStep) : CliType =
             match step.Kind with
             | StructMarshalFieldKind.OADate -> CliType.Numeric (CliNumericType.Float64 0.0)
+            | StructMarshalFieldKind.WinBool -> CliType.Numeric (CliNumericType.Int32 0)
+            | StructMarshalFieldKind.CBool
+            | StructMarshalFieldKind.AnsiChar _ -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim 0uy))
             | StructMarshalFieldKind.CopyBytes -> CliType.ZeroLike step.Value
 
         let clearImage (plan : StructMarshalPlan) (state : IlMachineState) : IlMachineState =
             writeImage plan nativeZero state
 
+        /// Read a step's native value, which for every kind but `CopyBytes` is a single scalar of
+        /// the width and type its `nativeZero` has.
+        let readNativeScalar
+            (step : StructMarshalStep)
+            (native : ManagedPointerSource)
+            (state : IlMachineState)
+            : CliType
+            =
+            IlMachineState.readManagedByrefAs baseClassTypes state (nativeZero step) native
+
         match op with
         | Operation.Cleanup ->
             // CoreLib calls the stub with `Cleanup` before `Marshal` when `fDeleteOld` is set, to
             // release whatever the previous contents owned. Every field kind we support owns
-            // nothing — a copied value and an OADate double both live entirely inside the
-            // destination buffer — so there is nothing to release, and a field kind that *did*
+            // nothing — a copied value, an OADate double, a BOOL and an ANSI byte all live
+            // entirely inside the destination buffer — so there is nothing to release, and a field kind that *did*
             // own native memory (a `ByValTStr`, an allocated array) would have to release it
             // here; `tryComputePlan` refuses every such kind today.
             //
@@ -790,16 +927,21 @@ module StructMarshalStub =
             // a later-declared field overwrites an earlier one it overlaps. The managed homes are
             // the fields of the box `PtrToStructureHelper` handed us (Marshal.CoreCLR.cs:291).
             //
-            // A `CopyBytes` field is a load of its native bytes and a store to its home. An
+            // A `CopyBytes` field is a load of its native bytes and a store to its home, and a
+            // `WinBool` or `CBool` field the same with a comparison against zero between. An
             // `OADate` field is `ldflda home; ldind.r8 native; call DateMarshaler.ConvertToManaged;
             // call DateTime::.ctor(long)` (ilmarshalers.cpp:1251), so each takes two guest calls,
-            // and the stub is re-entered after each. Progress is kept on this frame's evaluation
-            // stack, which nothing but this code pushes to. Top first, it holds one of:
+            // and an `AnsiChar` field is `ldind.u1 native; call AnsiCharMarshaler.ConvertToManaged`
+            // and a store (ilmarshalers.cpp:1459), so one; the stub is re-entered after each call.
+            // Progress is kept on this frame's evaluation stack, which nothing but this code pushes
+            // to. Top first, it holds one of:
             //
             //   (empty)                       no field has been unmarshalled yet;
             //   k                             fields 0..k-1 have been unmarshalled;
             //   ticks; &home; k               field k-1 is a DateTime whose tick count is in hand,
-            //                                 and whose constructor is next.
+            //                                 and whose constructor is next;
+            //   c; k                          field k-1 is an ANSI char converted to `c`, which is
+            //                                 yet to be stored.
             //
             // The counter is sound only while the plan's step order is a deterministic function
             // of the type, which `planFor` below makes it: it is computed from the type's zero,
@@ -827,38 +969,6 @@ module StructMarshalStub =
 
             let homeOf (step : StructMarshalStep) : ManagedPointerSource =
                 ManagedPointerSource.Byref (ByrefRoot.HeapValue box, [ ByrefProjection.Field step.Placement.Field.Id ])
-
-            let frame = IlMachineState.getFrame thread frameId state
-
-            match frame.EvaluationStack.Values with
-            | [ EvalStackValue.Int64 _
-                EvalStackValue.ManagedPointer home
-                EvalStackValue.Int32 (Int32Source.Verbatim k) ] ->
-                let inProgress =
-                    if 0 < k && k <= steps.Length then
-                        Some steps.[k - 1]
-                    else
-                        None
-
-                match inProgress with
-                | Some step when step.Kind = StructMarshalFieldKind.OADate && home = homeOf step -> ()
-                | _ ->
-                    failwith
-                        $"%s{operation}: unmarshalling %O{typeHandle}, found a tick count for field %d{k - 1} addressed at %O{home}, which is not the home of a DateTime field of that index"
-
-                let state, ctor = dateTimeTicksCtor operation loggerFactory baseClassTypes state
-                callGuest ctor state
-            | stack ->
-
-            let resumeAt, state =
-                match stack with
-                | [] -> 0, state
-                | [ EvalStackValue.Int32 (Int32Source.Verbatim k) ] when 0 < k && k <= steps.Length ->
-                    let _, state = IlMachineState.popEvalStack thread state
-                    k, state
-                | other ->
-                    failwith
-                        $"%s{operation}: unmarshalling %O{typeHandle}, expected this frame's evaluation stack to hold the stub's own progress record, but it holds %O{other}"
 
             let rec unmarshalFrom (index : int) (state : IlMachineState) : ExecutionResult =
                 if index = steps.Length then
@@ -897,13 +1007,102 @@ module StructMarshalStub =
                             native
 
                     let state, convertToManaged =
-                        dateMarshalerMethod operation "ConvertToManaged" loggerFactory baseClassTypes state
+                        stubHelperMethod
+                            operation
+                            "DateMarshaler"
+                            "ConvertToManaged"
+                            1
+                            loggerFactory
+                            baseClassTypes
+                            state
 
                     state
                     |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 (index + 1))) thread
                     |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer (homeOf step)) thread
                     |> IlMachineState.pushToEvalStack oaDate thread
                     |> callGuest convertToManaged
+                | StructMarshalFieldKind.WinBool
+                | StructMarshalFieldKind.CBool ->
+                    let isTrue =
+                        match step.Kind, readNativeScalar step native state with
+                        | StructMarshalFieldKind.WinBool, CliType.Numeric (CliNumericType.Int32 v) -> v <> 0
+                        | StructMarshalFieldKind.CBool, CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim v)) ->
+                            v <> 0uy
+                        | _, other ->
+                            failwith
+                                $"%s{operation}: unmarshalling field %s{step.Placement.Field.Name} of %O{typeHandle}, the native bool read back as %O{other}"
+
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state (homeOf step) (CliType.ofBool isTrue)
+                    |> unmarshalFrom (index + 1)
+                | StructMarshalFieldKind.AnsiChar _ ->
+                    let nativeByte = readNativeScalar step native state
+
+                    let state, convertToManaged =
+                        stubHelperMethod
+                            operation
+                            "AnsiCharMarshaler"
+                            "ConvertToManaged"
+                            1
+                            loggerFactory
+                            baseClassTypes
+                            state
+
+                    state
+                    |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 (index + 1))) thread
+                    |> IlMachineState.pushToEvalStack nativeByte thread
+                    |> callGuest convertToManaged
+
+            let frame = IlMachineState.getFrame thread frameId state
+
+            match frame.EvaluationStack.Values with
+            | [ EvalStackValue.Int64 _
+                EvalStackValue.ManagedPointer home
+                EvalStackValue.Int32 (Int32Source.Verbatim k) ] ->
+                let inProgress =
+                    if 0 < k && k <= steps.Length then
+                        Some steps.[k - 1]
+                    else
+                        None
+
+                match inProgress with
+                | Some step when step.Kind = StructMarshalFieldKind.OADate && home = homeOf step -> ()
+                | _ ->
+                    failwith
+                        $"%s{operation}: unmarshalling %O{typeHandle}, found a tick count for field %d{k - 1} addressed at %O{home}, which is not the home of a DateTime field of that index"
+
+                let state, ctor = dateTimeTicksCtor operation loggerFactory baseClassTypes state
+                callGuest ctor state
+            | [ EvalStackValue.Int32 _ as converted ; EvalStackValue.Int32 (Int32Source.Verbatim k) ] ->
+                let step =
+                    if 0 < k && k <= steps.Length then
+                        Some steps.[k - 1]
+                    else
+                        None
+
+                match step with
+                | Some ({
+                            Kind = StructMarshalFieldKind.AnsiChar _
+                        } as step) ->
+                    let _, state = IlMachineState.popEvalStack thread state
+                    let _, state = IlMachineState.popEvalStack thread state
+                    let value = EvalStackValue.toCliTypeCoerced (CliType.Char (0uy, 0uy)) converted
+
+                    IlMachineState.writeManagedByrefWithBase baseClassTypes state (homeOf step) value
+                    |> unmarshalFrom k
+                | _ ->
+                    failwith
+                        $"%s{operation}: unmarshalling %O{typeHandle}, found a converted value %O{converted} for field %d{k - 1}, which is not an ANSI char field"
+            | stack ->
+
+            let resumeAt, state =
+                match stack with
+                | [] -> 0, state
+                | [ EvalStackValue.Int32 (Int32Source.Verbatim k) ] when 0 < k && k <= steps.Length ->
+                    let _, state = IlMachineState.popEvalStack thread state
+                    k, state
+                | other ->
+                    failwith
+                        $"%s{operation}: unmarshalling %O{typeHandle}, expected this frame's evaluation stack to hold the stub's own progress record, but it holds %O{other}"
 
             unmarshalFrom resumeAt state
         | Operation.Marshal ->
@@ -938,8 +1137,11 @@ module StructMarshalStub =
             plan.Steps
             |> List.filter (fun step ->
                 match step.Kind with
-                | StructMarshalFieldKind.OADate -> true
-                | StructMarshalFieldKind.CopyBytes -> false
+                | StructMarshalFieldKind.OADate
+                | StructMarshalFieldKind.AnsiChar _ -> true
+                | StructMarshalFieldKind.CopyBytes
+                | StructMarshalFieldKind.WinBool
+                | StructMarshalFieldKind.CBool -> false
             )
 
         if completedCount > List.length conversions then
@@ -952,12 +1154,34 @@ module StructMarshalStub =
             // our evaluation stack.
             let next = conversions.[completedCount]
 
-            let state, convertToNative =
-                dateMarshalerMethod operation "ConvertToNative" loggerFactory baseClassTypes state
+            match next.Kind with
+            | StructMarshalFieldKind.OADate ->
+                let state, convertToNative =
+                    stubHelperMethod operation "DateMarshaler" "ConvertToNative" 1 loggerFactory baseClassTypes state
 
-            state
-            |> IlMachineState.pushToEvalStack next.Value thread
-            |> callGuest convertToNative
+                state
+                |> IlMachineState.pushToEvalStack next.Value thread
+                |> callGuest convertToNative
+            | StructMarshalFieldKind.AnsiChar (bestFit, throwOnUnmappableChar) ->
+                let state, convertToNative =
+                    stubHelperMethod
+                        operation
+                        "AnsiCharMarshaler"
+                        "ConvertToNative"
+                        3
+                        loggerFactory
+                        baseClassTypes
+                        state
+
+                state
+                |> IlMachineState.pushToEvalStack next.Value thread
+                |> IlMachineState.pushToEvalStack (CliType.ofBool bestFit) thread
+                |> IlMachineState.pushToEvalStack (CliType.ofBool throwOnUnmappableChar) thread
+                |> callGuest convertToNative
+            | StructMarshalFieldKind.CopyBytes
+            | StructMarshalFieldKind.WinBool
+            | StructMarshalFieldKind.CBool ->
+                failwith $"unreachable: %O{next.Kind} is not a conversion kind, but was filtered in as one"
         else
 
         // Every conversion has completed. Only now do we touch the destination with real values,
@@ -967,17 +1191,41 @@ module StructMarshalStub =
         // Conversion results are consumed in plan order, which is the order they were requested.
         let mutable remainingConversions = completed
 
+        let nextConversion (step : StructMarshalStep) : EvalStackValue =
+            match remainingConversions with
+            | [] ->
+                failwith
+                    $"%s{operation}: ran out of conversion results while writing field %s{step.Placement.Field.Name}"
+            | head :: rest ->
+                remainingConversions <- rest
+                head
+
+        let managedBool (step : StructMarshalStep) : bool =
+            match step.Value with
+            | CliType.Bool b -> b <> 0uy
+            | other ->
+                failwith $"%s{operation}: field %s{step.Placement.Field.Name} marshals as a bool, but holds %O{other}"
+
         let valueFor (step : StructMarshalStep) : CliType =
             match step.Kind with
             | StructMarshalFieldKind.CopyBytes -> step.Value
+            | StructMarshalFieldKind.WinBool ->
+                CliType.Numeric (CliNumericType.Int32 (if managedBool step then 1 else 0))
+            | StructMarshalFieldKind.CBool ->
+                CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (if managedBool step then 1uy else 0uy)))
             | StructMarshalFieldKind.OADate ->
-                match remainingConversions with
-                | [] ->
+                match nextConversion step with
+                | EvalStackValue.Float (EvalStackFloat.Double f) -> CliType.Numeric (CliNumericType.Float64 f)
+                | other ->
                     failwith
-                        $"%s{operation}: ran out of conversion results while writing field %s{step.Placement.Field.Name}"
-                | head :: rest ->
-                    remainingConversions <- rest
-                    CliType.Numeric (CliNumericType.Float64 head)
+                        $"%s{operation}: expected DateMarshaler.ConvertToNative's double for field %s{step.Placement.Field.Name}, found %O{other}"
+            | StructMarshalFieldKind.AnsiChar _ ->
+                match nextConversion step with
+                | EvalStackValue.Int32 (Int32Source.Verbatim b) when 0 <= b && b <= 255 ->
+                    CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (byte b)))
+                | other ->
+                    failwith
+                        $"%s{operation}: expected AnsiCharMarshaler.ConvertToNative's byte for field %s{step.Placement.Field.Name}, found %O{other}"
 
         let state = writeImage plan valueFor state
 

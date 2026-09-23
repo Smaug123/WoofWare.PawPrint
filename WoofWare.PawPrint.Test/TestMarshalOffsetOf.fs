@@ -59,6 +59,15 @@ module internal MarshalOffsetOfCorpus =
             "NestGeneric<E16>"
             // Auto-layout, so any struct holding one cannot be marshalled at all.
             "NestAuto"
+            // A four-byte BOOL, and a `char` whose width the containing struct's `CharSet` decides.
+            "bool"
+            "char"
+            // The same, with the width fixed by the nested struct's own `CharSet` or `[MarshalAs]`.
+            "NestBoolU1"
+            "NestCharUnicode"
+            "NestCharAuto"
+            "NestCharU1"
+            "NestCharU2"
         ]
 
     let private fixedCorpus : string =
@@ -84,6 +93,14 @@ public struct NestDate { public byte T; public DateTime D; }
 public struct NestGeneric<T> { public byte T0; public T V; }
 [StructLayout(LayoutKind.Auto)]
 public struct NestAuto { public int A; public int B; }
+public struct NestBoolU1 { public byte T; [MarshalAs(UnmanagedType.U1)] public bool K; }
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct NestCharUnicode { public byte T; public char K; }
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+public struct NestCharAuto { public byte T; public char K; }
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct NestCharU1 { public byte T; [MarshalAs(UnmanagedType.U1)] public char K; }
+public struct NestCharU2 { public byte T; [MarshalAs(UnmanagedType.U2)] public char K; }
 """
 
     [<RequireQualifiedAccess>]
@@ -99,15 +116,22 @@ public struct NestAuto { public int A; public int B; }
         {
             Name : string
             Layout : ShapeLayout
+            /// The `CharSet` argument to `[StructLayout]`, which decides a `char` field's native
+            /// width; `None` omits it.
+            CharSet : CharSet option
             /// Field type as C# spells it, and its `[FieldOffset]` under explicit layout.
             Fields : (string * int option) list
         }
 
-    let private genShape : Gen<ShapeLayout * (string * int option) list> =
+    let private genCharSet : Gen<CharSet option> =
+        Gen.elements [ None ; None ; Some CharSet.Ansi ; Some CharSet.Unicode ; Some CharSet.Auto ]
+
+    let private genShape : Gen<ShapeLayout * CharSet option * (string * int option) list> =
         gen {
             let! count = Gen.choose (1, 5)
             let! kinds = Gen.listOfLength count (Gen.elements fieldKinds)
             let! size = Gen.elements [ 0 ; 0 ; 0 ; 1 ; 7 ; 13 ; 40 ]
+            let! charSet = genCharSet
 
             let! layout =
                 Gen.frequency
@@ -122,11 +146,11 @@ public struct NestAuto { public int A; public int B; }
                 // None of these fields is a reference, so overlap and misalignment are both legal,
                 // and CoreCLR takes the offsets as written.
                 let! offsets = Gen.listOfLength count (Gen.choose (0, 24))
-                return ShapeLayout.Explicit size, List.zip kinds (offsets |> List.map Some)
-            | "auto" -> return ShapeLayout.Auto, kinds |> List.map (fun kind -> kind, None)
+                return ShapeLayout.Explicit size, charSet, List.zip kinds (offsets |> List.map Some)
+            | "auto" -> return ShapeLayout.Auto, charSet, kinds |> List.map (fun kind -> kind, None)
             | _ ->
                 let! pack = Gen.elements [ 0 ; 0 ; 1 ; 2 ; 4 ; 8 ; 16 ]
-                return ShapeLayout.Sequential (pack, size), kinds |> List.map (fun kind -> kind, None)
+                return ShapeLayout.Sequential (pack, size), charSet, kinds |> List.map (fun kind -> kind, None)
         }
 
     let fieldName (index : int) : string = $"f%d{index}"
@@ -135,13 +159,18 @@ public struct NestAuto { public int A; public int B; }
         let sizeArg (size : int) : string =
             if size = 0 then "" else $", Size = %d{size}"
 
+        let charSetArg =
+            match shape.CharSet with
+            | None -> ""
+            | Some charSet -> $", CharSet = CharSet.%O{charSet}"
+
         let attribute =
             match shape.Layout with
             | ShapeLayout.Sequential (pack, size) ->
                 let packArg = if pack = 0 then "" else $", Pack = %d{pack}"
-                $"[StructLayout(LayoutKind.Sequential%s{packArg}%s{sizeArg size})]"
-            | ShapeLayout.Explicit size -> $"[StructLayout(LayoutKind.Explicit%s{sizeArg size})]"
-            | ShapeLayout.Auto -> "[StructLayout(LayoutKind.Auto)]"
+                $"[StructLayout(LayoutKind.Sequential%s{packArg}%s{sizeArg size}%s{charSetArg})]"
+            | ShapeLayout.Explicit size -> $"[StructLayout(LayoutKind.Explicit%s{sizeArg size}%s{charSetArg})]"
+            | ShapeLayout.Auto -> $"[StructLayout(LayoutKind.Auto%s{charSetArg})]"
 
         let fields =
             shape.Fields
@@ -159,14 +188,19 @@ public struct NestAuto { public int A; public int B; }
 
     /// Shapes whose real .NET answers the vacuity guards rely on, so that those do not depend on
     /// what the generator happened to draw.
-    let private pinnedShapes : (ShapeLayout * (string * int option) list) list =
+    let private pinnedShapes : (ShapeLayout * CharSet option * (string * int option) list) list =
         [
             // `DateTime` marshals as an 8-byte date, 8-aligned.
-            ShapeLayout.Sequential (0, 0), [ "byte", None ; "DateTime", None ; "byte", None ]
+            ShapeLayout.Sequential (0, 0), None, [ "byte", None ; "DateTime", None ; "byte", None ]
             // A field with no native layout makes its container unmarshalable.
-            ShapeLayout.Sequential (0, 0), [ "int", None ; "NestAuto", None ]
-            ShapeLayout.Explicit 0, [ "long", Some 0 ; "E32", Some 3 ; "decimal", Some 5 ]
-            ShapeLayout.Sequential (0, 0), [ "byte", None ; "Int128", None ]
+            ShapeLayout.Sequential (0, 0), None, [ "int", None ; "NestAuto", None ]
+            ShapeLayout.Explicit 0, None, [ "long", Some 0 ; "E32", Some 3 ; "decimal", Some 5 ]
+            ShapeLayout.Sequential (0, 0), None, [ "byte", None ; "Int128", None ]
+            // A `bool` is a 4-byte BOOL, and a `char` is 1 byte or 2 by the struct's `CharSet`.
+            ShapeLayout.Sequential (0, 0), None, [ "byte", None ; "bool", None ; "char", None ; "byte", None ]
+            ShapeLayout.Sequential (0, 0),
+            Some CharSet.Unicode,
+            [ "byte", None ; "bool", None ; "char", None ; "byte", None ]
         ]
 
     /// A fixed, seeded sample rather than a fresh FsCheck run: the whole corpus has to be compiled
@@ -175,10 +209,11 @@ public struct NestAuto { public int A; public int B; }
     let shapes : Shape list =
         pinnedShapes
         @ List.ofArray (Gen.sampleWithSeed (Rnd 0x4F66667365744F66UL) 10 300 genShape)
-        |> List.mapi (fun i (layout, fields) ->
+        |> List.mapi (fun i (layout, charSet, fields) ->
             {
                 Name = $"Shape%d{i}"
                 Layout = layout
+                CharSet = charSet
                 Fields = fields
             }
         )
@@ -361,6 +396,23 @@ module TestMarshalOffsetOf =
         hostAnswer shapes.[2] 2 |> shouldEqual (HostAnswer.Offset 5)
         // Not 8, which is what `Int128`'s own two `ulong`s would imply.
         hostAnswer shapes.[3] 1 |> shouldEqual (HostAnswer.Offset 16)
+        // The BOOL is 4-aligned and 4 wide, and the `char` after it 1 wide or 2.
+        [ 1 ; 2 ; 3 ]
+        |> List.map (hostAnswer shapes.[4])
+        |> shouldEqual [ HostAnswer.Offset 4 ; HostAnswer.Offset 8 ; HostAnswer.Offset 9 ]
+
+        [ 1 ; 2 ; 3 ]
+        |> List.map (hostAnswer shapes.[5])
+        |> shouldEqual [ HostAnswer.Offset 4 ; HostAnswer.Offset 8 ; HostAnswer.Offset 10 ]
+
+        // Every `CharSet` spelling reaches a `char` field, directly rather than through a nested
+        // struct, somewhere the offset comparison sees it.
+        shapes
+        |> List.filter (fun shape -> shape.Layout <> ShapeLayout.Auto)
+        |> List.filter (fun shape -> shape.Fields |> List.exists (fun (kind, _) -> kind = "char"))
+        |> List.map _.CharSet
+        |> Set.ofList
+        |> shouldEqual (Set.ofList [ None ; Some CharSet.Ansi ; Some CharSet.Unicode ; Some CharSet.Auto ])
 
         match hostAnswer shapes.[1] 0 with
         | HostAnswer.CannotMarshal _ -> ()

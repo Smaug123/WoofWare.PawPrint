@@ -23,8 +23,7 @@ type MarshalSizeError =
     /// width-mismatched scalar `[MarshalAs]`, mixed explicit/automatic field offsets.
     | NotMarshalable of reason : string
     /// CoreCLR would compute a size here, but PawPrint hasn't implemented the case yet.
-    /// Examples: `CharSet.Auto` (deliberately not chosen platform-dependent), bare `System.Boolean`
-    /// (CoreCLR marshals as a 4-byte BOOL), `UnmanagedType` variants we don't decode yet.
+    /// Examples: object-reference fields, `UnmanagedType` variants we don't decode yet.
     | NotImplemented of reason : string
 
     member this.Reason : string =
@@ -46,6 +45,106 @@ module MarshalSizeError =
         match err with
         | MarshalSizeError.NotMarshalable reason -> MarshalSizeError.NotMarshalable $"%s{label}%s{reason}"
         | MarshalSizeError.NotImplemented reason -> MarshalSizeError.NotImplemented $"%s{label}%s{reason}"
+
+/// The character encoding a type's `CharSet` selects for its fields' native form: CoreCLR's
+/// `MethodTable::GetCharSet` (class.cpp:2165), which is what decides `MarshalInfo`'s `m_fAnsi` for
+/// every field of a struct.
+[<RequireQualifiedAccess>]
+type NativeCharSet =
+    /// One byte per `char` (`nltAnsi`), which off Windows means UTF-8.
+    | Ansi
+    /// A two-byte UTF-16 code unit per `char` (`nltUnicode`).
+    | Unicode
+
+[<RequireQualifiedAccess>]
+module NativeCharSet =
+    /// Resolve a type's declared `CharSet`. `CharSet.Auto` is Unicode on Windows and Ansi
+    /// everywhere else (class.cpp:2181, under `TARGET_WINDOWS`), and PawPrint emulates a
+    /// non-Windows CoreCLR. `CharSet.None` is what PawPrint reads for a `CustomFormatClass` type,
+    /// for which `GetCharSet` leaves its `nltAnsi` default in place.
+    let ofCharSet (charSet : CharSet) : Result<NativeCharSet, MarshalSizeError> =
+        match charSet with
+        | CharSet.None
+        | CharSet.Ansi
+        | CharSet.Auto -> Result.Ok NativeCharSet.Ansi
+        | CharSet.Unicode -> Result.Ok NativeCharSet.Unicode
+        | other ->
+            MarshalSizeError.NotImplemented $"unrecognised CharSet %O{other}"
+            |> Result.Error
+
+/// The native form CoreCLR's `MarshalInfo::MarshalInfo` (mlinfo.cpp:1009-1072) gives a
+/// `System.Boolean` or `System.Char` field of a struct, on a build without `FEATURE_COMINTEROP`.
+[<RequireQualifiedAccess>]
+type BoolCharMarshal =
+    /// `MARSHAL_TYPE_WINBOOL`: a four-byte Win32 `BOOL` holding 1 for true and 0 for false. Any
+    /// non-zero `BOOL` reads back as true.
+    | WinBool
+    /// `MARSHAL_TYPE_CBOOL`: a one-byte C `bool` holding 1 for true and 0 for false. Any non-zero
+    /// byte reads back as true.
+    | CBool
+    /// `MARSHAL_TYPE_ANSICHAR`: one byte, converted each way by CoreLib's
+    /// `StubHelpers.AnsiCharMarshaler`.
+    | AnsiChar
+    /// `MARSHAL_TYPE_GENERIC_U2`: the UTF-16 code unit itself. The only one of these whose native
+    /// image is its managed image, and so the only one CoreCLR's `IsFieldBlittable` admits.
+    | Utf16Char
+
+    member this.NativeSize : SizeofResult =
+        match this with
+        | BoolCharMarshal.WinBool ->
+            {
+                Size = 4
+                Alignment = 4
+            }
+        | BoolCharMarshal.CBool
+        | BoolCharMarshal.AnsiChar ->
+            {
+                Size = 1
+                Alignment = 1
+            }
+        | BoolCharMarshal.Utf16Char ->
+            {
+                Size = 2
+                Alignment = 2
+            }
+
+[<RequireQualifiedAccess>]
+module BoolCharMarshal =
+    /// A `bool` field: a Win32 `BOOL` unless `[MarshalAs]` says otherwise. `VariantBool` is
+    /// accepted only under `FEATURE_COMINTEROP`, so here it is refused along with every other
+    /// native type.
+    let ofBoolField (descriptor : FieldMarshalDescriptor option) : Result<BoolCharMarshal, MarshalSizeError> =
+        match descriptor with
+        | None
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.Bool) -> Result.Ok BoolCharMarshal.WinBool
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.I1)
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.U1) -> Result.Ok BoolCharMarshal.CBool
+        | Some other ->
+            MarshalSizeError.NotMarshalable
+                $"[MarshalAs(%O{other})] is not a native type a System.Boolean field accepts"
+            |> Result.Error
+
+    /// A `char` field: its declaring type's `CharSet` decides, unless `[MarshalAs]` names a width.
+    let ofCharField
+        (charSet : CharSet)
+        (descriptor : FieldMarshalDescriptor option)
+        : Result<BoolCharMarshal, MarshalSizeError>
+        =
+        match descriptor with
+        | None ->
+            NativeCharSet.ofCharSet charSet
+            |> Result.map (fun native ->
+                match native with
+                | NativeCharSet.Ansi -> BoolCharMarshal.AnsiChar
+                | NativeCharSet.Unicode -> BoolCharMarshal.Utf16Char
+            )
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.I1)
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.U1) -> Result.Ok BoolCharMarshal.AnsiChar
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.I2)
+        | Some (FieldMarshalDescriptor.Other UnmanagedType.U2) -> Result.Ok BoolCharMarshal.Utf16Char
+        | Some other ->
+            MarshalSizeError.NotMarshalable $"[MarshalAs(%O{other})] is not a native type a System.Char field accepts"
+            |> Result.Error
 
 type CliByteAddressabilityRejection =
     | ObjectReference
@@ -3267,21 +3366,30 @@ and CliValueType =
             )
 
     /// Bytes per character for the declaring type's `CharSet`, used to size
-    /// `[MarshalAs(ByValTStr)]` fields. `None` is treated as the runtime default (Ansi). `Auto`
-    /// is platform-dependent (Unicode on Windows, Ansi on Unix), so we reject it explicitly
-    /// rather than picking a host-dependent answer in a deterministic interpreter.
+    /// `[MarshalAs(ByValTStr)]` fields; see `NativeCharSet.ofCharSet` for how the `CharSet` resolves.
     static member private CharSetByteSize (charSet : CharSet) : Result<int, MarshalSizeError> =
-        match charSet with
-        | CharSet.None
-        | CharSet.Ansi -> Result.Ok 1
-        | CharSet.Unicode -> Result.Ok 2
-        | CharSet.Auto ->
-            MarshalSizeError.NotImplemented
-                "CharSet.Auto is platform-dependent and not yet supported by marshalled-size computation"
-            |> Result.Error
-        | other ->
-            MarshalSizeError.NotImplemented $"unrecognised CharSet %O{other}"
-            |> Result.Error
+        NativeCharSet.ofCharSet charSet
+        |> Result.map (fun native ->
+            match native with
+            | NativeCharSet.Ansi -> 1
+            | NativeCharSet.Unicode -> 2
+        )
+
+    /// How a `bool` or `char` field marshals, given its declaring type's `CharSet` and its own
+    /// `[MarshalAs]` descriptor; `None` when `contents` is neither.
+    static member TryBoolCharFieldMarshal
+        (charSet : CharSet)
+        (descriptor : FieldMarshalDescriptor option)
+        (contents : CliType)
+        : Result<BoolCharMarshal, MarshalSizeError> option
+        =
+        match contents with
+        | CliType.Bool _ -> Some (BoolCharMarshal.ofBoolField descriptor)
+        | CliType.Char _ -> Some (BoolCharMarshal.ofCharField charSet descriptor)
+        | CliType.Numeric _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _
+        | CliType.ValueType _ -> None
 
     /// Unmanaged size of a fixed-width scalar `UnmanagedType`. Used both as the per-element
     /// size for `[MarshalAs(ByValArray)]` and as the basis for the compatibility check when a
@@ -3483,7 +3591,7 @@ and CliValueType =
 
     /// If `contents` is a value of a CLR enum type, the declared type and contents of its single
     /// `value__` field, i.e. of the enum's underlying primitive; `None` for anything else.
-    static member private TryEnumUnderlying
+    static member TryEnumUnderlying
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
@@ -3518,9 +3626,9 @@ and CliValueType =
 
     /// Compute the unmanaged size of a single field, consulting `[MarshalAs(...)]` descriptors
     /// and the declaring type's `CharSet`. An enum-typed field is sized as its underlying
-    /// primitive. Without a descriptor, falls back to the managed
-    /// layout size for byte-stable primitives, recurses into nested value types, and rejects
-    /// shapes (Bool/Char/ObjectRef) whose unmanaged size deviates from the managed one.
+    /// primitive, and a `bool` or `char` field by `TryBoolCharFieldMarshal`. Otherwise, without a
+    /// descriptor, falls back to the managed layout size for byte-stable primitives, recurses into
+    /// nested value types, and rejects object references.
     /// The field's nominal `ConcreteTypeHandle` is consulted to validate `ByValTStr`/`ByValArray`
     /// descriptors against the declared field shape (CoreCLR rejects mismatches).
     static member TryFieldMarshalSize
@@ -3541,6 +3649,10 @@ and CliValueType =
             match CliValueType.TryEnumUnderlying concreteTypes assemblies corelib contents with
             | Some underlying -> underlying
             | None -> fieldType, contents
+
+        match CliValueType.TryBoolCharFieldMarshal charSet descriptor contents with
+        | Some marshal -> marshal |> Result.map _.NativeSize
+        | None ->
 
         match descriptor with
         | Some (FieldMarshalDescriptor.ByValTStr sizeConst) ->
@@ -3632,14 +3744,10 @@ and CliValueType =
             match contents with
             | CliType.Numeric _
             | CliType.RuntimePointer _ -> Result.Ok (CliType.SizeOf contents)
-            | CliType.Bool _ ->
-                MarshalSizeError.NotImplemented
-                    "System.Boolean marshals as a 4-byte BOOL by default, not a 1-byte CLI bool"
-                |> Result.Error
+            | CliType.Bool _
             | CliType.Char _ ->
-                MarshalSizeError.NotImplemented
-                    "System.Char marshalling depends on CharSet and does not always match 2-byte CLI char"
-                |> Result.Error
+                failwith
+                    $"unreachable: TryBoolCharFieldMarshal classifies every bool and char field, but %O{contents} fell through"
             | CliType.ObjectRef _ ->
                 MarshalSizeError.NotImplemented "object references require managed-to-unmanaged marshalling"
                 |> Result.Error
