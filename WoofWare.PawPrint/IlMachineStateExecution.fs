@@ -2675,7 +2675,11 @@ module IlMachineStateExecution =
         | Some (TypeInitState.Failed (tieAddr, tieType)) ->
             // The .cctor previously threw. Per ECMA-335, subsequent access should throw
             // TypeInitializationException. We rethrow the *same* cached instance to match
-            // CLR identity semantics (ReferenceEquals across repeated accesses).
+            // CLR identity semantics (ReferenceEquals across repeated accesses), clearing
+            // whatever trace its previous raise left as CoreCLR's `DoRunClassInitThrowing` does.
+            let state =
+                ExceptionDispatching.clearStackTraceForThrow baseClassTypes tieAddr state
+
             match
                 ExceptionDispatching.throwExceptionObject
                     loggerFactory
