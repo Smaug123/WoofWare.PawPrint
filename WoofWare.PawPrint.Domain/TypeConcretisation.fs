@@ -1333,7 +1333,8 @@ module TypeConcretization =
     /// `Closed`, which is what any question about a live object needs, or the whole comparison is
     /// rooted at a generic *definition* and unsubstituted variables survive to be compared
     /// positionally, which is how a method table is laid out. Mixing the two is a bug rather than a
-    /// third case, and the comparison says so rather than answering.
+    /// third case, and the comparison says so rather than answering. (A comparison that substitutes
+    /// nothing at all takes no context: that is `signaturesEquivalentWithoutSubstitution`.)
     type SubstitutionContext =
         {
             Arguments : ImmutableArray<SubstitutionArgument>
@@ -1429,20 +1430,40 @@ module TypeConcretization =
             DeclaringTypeGenerics : SubstitutionContext
         }
 
+    /// One side of a comparison that applies no substitution to either signature: a signature as its
+    /// own blob spells it, and the assembly whose token space those spellings live in.
+    ///
+    /// Nothing says which type declared the signature, because nothing needs to: with no
+    /// substitution, a type variable is identified by its index alone.
+    type UnsubstitutedComparand =
+        {
+            Signature : TypeMethodSignature<TypeDefn>
+            AssemblyFullName : string
+        }
+
+    /// How the `!i` of one element context are read.
+    type private TypeVariables =
+        /// Through the declaring type's instantiation: `!i` denotes the `i`th argument.
+        | Substituted of ImmutableArray<SubstitutionArgument>
+        /// Not at all: `!i` is left standing and compared by index alone, whichever type it belongs
+        /// to. This is `MetaSig::CompareElementType` given a null `Substitution`.
+        | Unsubstituted
+
     /// The token space and generic context one signature element is spelled in.
     type private ElementContext =
         {
             AssemblyFullName : string
-            TypeGenerics : ImmutableArray<SubstitutionArgument>
+            TypeVariables : TypeVariables
         }
 
     /// A signature element under comparison: still spelled in a blob, a closed runtime type that a
-    /// substitution supplied in place of a generic type parameter, or a type variable that no
-    /// substitution replaced.
+    /// substitution supplied in place of a generic type parameter, a type variable of a definition
+    /// that no substitution replaced, or a type variable in a comparison that substitutes nothing.
     type private Element =
         | Spelled of ElementContext * TypeDefn
         | Substituted of ConcreteTypeHandle
         | Formal of owner : ResolvedTypeIdentity * index : int
+        | Positional of index : int
 
     /// What a substitution supplied for one `!i`, as an element of a comparison.
     let private elementOfArgument (argument : SubstitutionArgument) : Element =
@@ -1453,7 +1474,7 @@ module TypeConcretization =
             Element.Spelled (
                 {
                     ElementContext.AssemblyFullName = assembly
-                    ElementContext.TypeGenerics = context
+                    ElementContext.TypeVariables = TypeVariables.Substituted context
                 },
                 spelling
             )
@@ -1467,9 +1488,15 @@ module TypeConcretization =
     /// representation exists to prevent.
     let private requireClosedArguments
         (assembly : string)
-        (arguments : ImmutableArray<SubstitutionArgument>)
+        (variables : TypeVariables)
         : ImmutableArray<ConcreteTypeHandle>
         =
+        match variables with
+        | TypeVariables.Unsubstituted ->
+            failwith
+                $"Signature comparison in %s{assembly} met a closed runtime type on one side and a signature read with no substitution on the other; a comparison either substitutes on both sides or on neither"
+        | TypeVariables.Substituted arguments ->
+
         arguments
         |> ImmutableArray.map (fun argument ->
             match argument with
@@ -1481,6 +1508,20 @@ module TypeConcretization =
                 failwith
                     $"Signature comparison in %s{assembly} needs the runtime type of a substituted argument, but the substitution supplied %O{spelling} still spelled in %s{spelledAssembly}; only a definition-rooted comparison carries those, and it never concretises"
         )
+
+    /// What one context's `!index` is, as an element of a comparison.
+    let private readTypeVariable (context : ElementContext) (index : int) : Element =
+        match context.TypeVariables with
+        | TypeVariables.Unsubstituted -> Element.Positional index
+        | TypeVariables.Substituted arguments ->
+            if index >= arguments.Length then
+                failwithf
+                    "Signature comparison in %s reached generic type parameter !%d, but the declaring type's instantiation supplies only %d argument(s); the comparand was built with the wrong instantiation"
+                    context.AssemblyFullName
+                    index
+                    arguments.Length
+
+            elementOfArgument arguments.[index]
 
     /// Does this element mention a method generic parameter, so that it does not denote a single
     /// closed runtime type? Substitution never reaches an `ELEMENT_TYPE_MVAR`, so such an element
@@ -1552,23 +1593,9 @@ module TypeConcretization =
         // `carriesCustomModifier` arm below, which is what stops concretising the *other* side from
         // stripping its modifiers.
         | Element.Spelled (leftCtx, TypeDefn.GenericTypeParameter index), _ ->
-            if index >= leftCtx.TypeGenerics.Length then
-                failwithf
-                    "Signature comparison in %s reached generic type parameter !%d, but the declaring type's instantiation supplies only %d argument(s); the comparand was built with the wrong instantiation"
-                    leftCtx.AssemblyFullName
-                    index
-                    leftCtx.TypeGenerics.Length
-
-            compareElements ctx loadAssembly (elementOfArgument leftCtx.TypeGenerics.[index]) right
+            compareElements ctx loadAssembly (readTypeVariable leftCtx index) right
         | _, Element.Spelled (rightCtx, TypeDefn.GenericTypeParameter index) ->
-            if index >= rightCtx.TypeGenerics.Length then
-                failwithf
-                    "Signature comparison in %s reached generic type parameter !%d, but the declaring type's instantiation supplies only %d argument(s); the comparand was built with the wrong instantiation"
-                    rightCtx.AssemblyFullName
-                    index
-                    rightCtx.TypeGenerics.Length
-
-            compareElements ctx loadAssembly left (elementOfArgument rightCtx.TypeGenerics.[index])
+            compareElements ctx loadAssembly left (readTypeVariable rightCtx index)
 
         | Element.Substituted leftHandle, Element.Substituted rightHandle -> leftHandle = rightHandle, ctx
 
@@ -1591,6 +1618,24 @@ module TypeConcretization =
         | Element.Substituted handle, Element.Formal (owner, index) ->
             failwith
                 $"Signature comparison compared runtime type %O{handle} against type variable !%d{index} of %s{owner.AssemblyFullName}/%O{owner.TypeDefinition.Get}; a comparison is rooted either at closed instantiations or at a generic definition, so the two comparands were built against different declaring contexts"
+
+        // `varNum1 == varNum2` with no owner to check, because there is none to have: the
+        // comparison substitutes nothing on either side, so each variable is whichever of its own
+        // declaring type's variables sits at that index.
+        | Element.Positional leftIndex, Element.Positional rightIndex -> leftIndex = rightIndex, ctx
+
+        // Only a comparison that substitutes on neither side produces a `Positional`, and only one
+        // that substitutes produces anything else but `Spelled`; `signaturesEquivalentWithoutSubstitution`
+        // is the sole entry to the first and builds both of its sides the same way.
+        | Element.Positional index, (Element.Substituted _ | Element.Formal _)
+        | (Element.Substituted _ | Element.Formal _), Element.Positional index ->
+            failwith
+                $"Signature comparison compared type variable !%d{index}, read with no substitution, against an element that a substitution supplied; a comparison either substitutes on both sides or on neither"
+
+        // As for `Formal` against `Spelled`, below: the spelled side is not a bare
+        // `ELEMENT_TYPE_VAR`, so it is a different element type.
+        | Element.Positional _, Element.Spelled _
+        | Element.Spelled _, Element.Positional _ -> false, ctx
 
         // The spelled side is not a bare `ELEMENT_TYPE_VAR`: the arms above resolve those through the
         // substitution before anything else, exactly as `CompareElementType` consumes VAR ahead of the
@@ -1623,7 +1668,7 @@ module TypeConcretization =
                     ctx
                     loadAssembly
                     spelledCtx.AssemblyFullName
-                    (requireClosedArguments spelledCtx.AssemblyFullName spelledCtx.TypeGenerics)
+                    (requireClosedArguments spelledCtx.AssemblyFullName spelledCtx.TypeVariables)
                     ImmutableArray.Empty
                     ty
 
@@ -1917,13 +1962,13 @@ module TypeConcretization =
         let implCtx : ElementContext =
             {
                 AssemblyFullName = impl.AssemblyFullName
-                TypeGenerics = impl.DeclaringTypeGenerics.Arguments
+                TypeVariables = TypeVariables.Substituted impl.DeclaringTypeGenerics.Arguments
             }
 
         let declCtx : ElementContext =
             {
                 AssemblyFullName = decl.AssemblyFullName
-                TypeGenerics = decl.DeclaringTypeGenerics.Arguments
+                TypeVariables = TypeVariables.Substituted decl.DeclaringTypeGenerics.Arguments
             }
 
         // A constraint naming `System.Object` says nothing, and neither does one naming
@@ -2037,7 +2082,38 @@ module TypeConcretization =
         let toElementContext (comparand : SignatureComparand) : ElementContext =
             {
                 AssemblyFullName = comparand.AssemblyFullName
-                TypeGenerics = comparand.DeclaringTypeGenerics.Arguments
+                TypeVariables = TypeVariables.Substituted comparand.DeclaringTypeGenerics.Arguments
+            }
+
+        compareSignatureTypes
+            ctx
+            loadAssembly
+            (toElementContext caller)
+            (toElementContext callee)
+            true
+            skipReturnType
+            caller.Signature
+            callee.Signature
+
+    /// `signaturesEquivalent` with no substitution applied to either side: `MetaSig::CompareElementType`
+    /// handed a null `Substitution` for both blobs, which is how `[UnsafeAccessor]` matching compares
+    /// a declaration against a candidate (unsafeaccessors.cpp:399 and :409).
+    ///
+    /// A generic type parameter is then compared by its index alone, like a generic method
+    /// parameter, so `!0` in one signature equals `!0` in the other whichever types declared them,
+    /// and equals nothing else: not a type an instantiation might supply for it, and not `!!0`.
+    let signaturesEquivalentWithoutSubstitution
+        (ctx : ConcretizationContext<DumpedAssembly>)
+        (loadAssembly : IAssemblyLoad)
+        (skipReturnType : bool)
+        (caller : UnsubstitutedComparand)
+        (callee : UnsubstitutedComparand)
+        : bool * ConcretizationContext<DumpedAssembly>
+        =
+        let toElementContext (comparand : UnsubstitutedComparand) : ElementContext =
+            {
+                AssemblyFullName = comparand.AssemblyFullName
+                TypeVariables = TypeVariables.Unsubstituted
             }
 
         compareSignatureTypes

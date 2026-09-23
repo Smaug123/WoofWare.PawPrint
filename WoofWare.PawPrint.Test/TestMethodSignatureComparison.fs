@@ -3,6 +3,8 @@ namespace WoofWare.PawPrint.Test
 open System.Collections.Immutable
 open System.IO
 open System.Reflection.Metadata
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -1321,3 +1323,145 @@ public class OpenGeneric<T>
             )
 
         failure.Message |> shouldContainText "the substitution chain was built wrong"
+
+    /// Both sides read in the test assembly's own token space, with no substitution on either: the
+    /// comparison `[UnsafeAccessor]` matching makes.
+    let private equivalentWithoutSubstitution
+        (fixture : Fixture)
+        (left : TypeMethodSignature<TypeDefn>)
+        (right : TypeMethodSignature<TypeDefn>)
+        : bool
+        =
+        let comparand (signature : TypeMethodSignature<TypeDefn>) : TypeConcretization.UnsubstitutedComparand =
+            {
+                Signature = signature
+                AssemblyFullName = fixture.Assembly.DefinitionFullName
+            }
+
+        let _, equivalent =
+            IlMachineState.signaturesEquivalentWithoutSubstitution
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                fixture.State
+                false
+                (comparand left)
+                (comparand right)
+
+        equivalent
+
+    /// With nothing substituted, a type variable is its index and nothing more, so `!0` equals `!0`
+    /// and nothing else -- neither another index, nor a type an instantiation might supply, nor a
+    /// method's `!!0`.
+    [<Test>]
+    let ``without substitution, a type parameter is identified by its index alone`` () =
+        let fixture = fixture ()
+
+        equivalentWithoutSubstitution fixture (takesFormal 0) (takesFormal 0)
+        |> shouldEqual true
+
+        equivalentWithoutSubstitution fixture (takesFormal 0) (takesFormal 1)
+        |> shouldEqual false
+
+        equivalentWithoutSubstitution fixture (takesFormal 0) takesString
+        |> shouldEqual false
+
+        equivalentWithoutSubstitution fixture takesString (takesFormal 0)
+        |> shouldEqual false
+
+        let takesTypeParameter =
+            (findMethod "OpenGeneric`1" "GenericMethodTakingTypeParameter" fixture.Assembly).Signature
+
+        let takesMethodParameter =
+            (findMethod "OpenGeneric`1" "GenericMethodTakingMethodParameter" fixture.Assembly).Signature
+
+        equivalentWithoutSubstitution fixture takesTypeParameter takesMethodParameter
+        |> shouldEqual false
+
+        equivalentWithoutSubstitution fixture takesMethodParameter takesTypeParameter
+        |> shouldEqual false
+
+    /// The comparison without substitution is the definition-rooted one with the owner check taken
+    /// away: when both sides' variables belong to one definition, the two must agree on every pair of
+    /// signatures. `forDefinition`'s `Formal` is compared by index once the owners agree, and that is
+    /// the only thing the unsubstituted comparison does with a type variable.
+    [<Test>]
+    let ``without substitution agrees with a definition-rooted comparison over one owner`` () =
+        let fixture = fixture ()
+
+        let definition =
+            TypeConcretization.SubstitutionContext.forDefinition (openGenericIdentity fixture) 2
+
+        let openGeneric =
+            TypeDefn.FromDefinition (openGenericIdentity fixture, SignatureTypeKind.Class)
+
+        let rec genElement (depth : int) : Gen<TypeDefn> =
+            let leaves =
+                [
+                    Gen.constant (TypeDefn.PrimitiveType PrimitiveType.Int32)
+                    Gen.constant (TypeDefn.PrimitiveType PrimitiveType.String)
+                    Gen.choose (0, 1) |> Gen.map TypeDefn.GenericTypeParameter
+                    Gen.choose (0, 1) |> Gen.map TypeDefn.GenericMethodParameter
+                ]
+
+            if depth <= 0 then
+                Gen.oneof leaves
+            else
+                let inner = genElement (depth - 1)
+
+                Gen.oneof (
+                    leaves
+                    @ [
+                        inner |> Gen.map TypeDefn.Byref
+                        inner |> Gen.map TypeDefn.OneDimensionalArrayLowerBoundZero
+                        inner
+                        |> Gen.map (fun arg -> TypeDefn.GenericInstantiation (openGeneric, ImmutableArray.Create arg))
+                    ]
+                )
+
+        let genSignature : Gen<TypeMethodSignature<TypeDefn>> =
+            gen {
+                let! count = Gen.choose (0, 2)
+                let! parameters = Gen.listOfLength count (genElement 2)
+                let! returns = Gen.optionOf (genElement 2)
+
+                return
+                    { staticSignature parameters with
+                        ReturnType =
+                            match returns with
+                            | None -> MethodReturnType.Void
+                            | Some ty -> MethodReturnType.Returns ty
+                    }
+            }
+
+        // Independently generated signatures are rarely equal, so a third of the pairs compare a
+        // signature against itself to make sure the `true` answer is exercised too.
+        let genPair =
+            gen {
+                let! left = genSignature
+                let! same = Gen.choose (0, 2)
+                let! right = if same = 0 then Gen.constant left else genSignature
+                return left, right
+            }
+
+        let mutable sawEqual = 0
+        let mutable sawUnequal = 0
+
+        let property =
+            Prop.forAll
+                (Arb.fromGen genPair)
+                (fun (left, right) ->
+                    let expected = equivalentBetween fixture definition definition left right
+                    let actual = equivalentWithoutSubstitution fixture left right
+
+                    if expected then
+                        sawEqual <- sawEqual + 1
+                    else
+                        sawUnequal <- sawUnequal + 1
+
+                    actual |> shouldEqual expected
+                )
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, property)
+
+        sawEqual |> shouldBeGreaterThan 50
+        sawUnequal |> shouldBeGreaterThan 50
