@@ -28,6 +28,7 @@ open WoofWare.PawPrint
 /// checks PawPrint still classifies each method as `[Intrinsic]` so it cannot pass vacuously once
 /// the difference is gone.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedIntrinsicWithoutIl =
 
     let private fabricatedName = "IntrinsicWithoutIl"
