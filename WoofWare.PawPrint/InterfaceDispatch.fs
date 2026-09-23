@@ -676,7 +676,7 @@ module InterfaceDispatch =
             |> List.ofSeq
 
         let state, placed, _ =
-            ((state, placed, ImmutableHashSet.Empty), methodImpls)
+            ((state, placed, ImmutableDictionary.Empty), methodImpls)
             ||> List.fold (fun (state, placed, alreadyImplemented) impl ->
                 let state, declaration =
                     interfaceMethodImplDeclaration
@@ -728,15 +728,19 @@ module InterfaceDispatch =
                         failwith
                             $"%s{operation}: a MethodImpl on %s{owner.Description} implements a method of %O{interfaceHandle}, which is not in its interface map; CoreCLR rejects this type at load time"
 
-                if alreadyImplemented.Contains ((index, interfaceMethod)) then
+                // A second row naming the same body is the same mapping; only a different body is a
+                // conflict (`AddMethodImplDispatchMapping`).
+                match alreadyImplemented.TryGetValue ((index, interfaceMethod)) with
+                | true, previous when previous <> body.IdentityKey ->
                     failwith
-                        $"%s{operation}: two MethodImpls on %s{owner.Description} implement the same method of %O{interfaceHandle}; CoreCLR rejects this type at load time (IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES)"
+                        $"%s{operation}: two MethodImpls on %s{owner.Description} implement the same method of %O{interfaceHandle} with different bodies; CoreCLR rejects this type at load time (IDS_CLASSLOAD_MI_MULTIPLEOVERRIDES)"
+                | _ -> ()
 
                 let slot = slotOfOwnMethod body
 
                 state,
                 placed.SetItem ((index, interfaceMethod), slot),
-                alreadyImplemented.Add ((index, interfaceMethod))
+                alreadyImplemented.SetItem ((index, interfaceMethod), body.IdentityKey)
             )
 
         let byInterfaceMethod =
