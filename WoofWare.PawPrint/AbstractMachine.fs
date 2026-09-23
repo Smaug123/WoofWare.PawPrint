@@ -192,12 +192,28 @@ module AbstractMachine =
                 executionResult
 
         let dispatchDelegateCtor () =
-            IlMachineState.executeDelegateConstructor baseClassTypes instruction state
-            // can't advance the program counter here - there's no IL instructions executing!
-            |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
-            |> function
-                | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
-                | result -> failwith $"unexpected ReturnFrameResult from delegate constructor: %A{result}"
+            match DelegateRepresentation.construct loggerFactory baseClassTypes instruction state with
+            | Some state ->
+                state
+                // can't advance the program counter here - there's no IL instructions executing!
+                |> IlMachineState.returnStackFrame loggerFactory baseClassTypes thread
+                |> function
+                    | ReturnFrameResult.NormalReturn state -> (state, WhatWeDid.Executed) |> ExecutionResult.stepped
+                    | result -> failwith $"unexpected ReturnFrameResult from delegate constructor: %A{result}"
+            | None ->
+                // `Delegate_Construct`'s `COMPlusThrow(kArgumentException, W("Arg_DlgtNullInst"))`
+                // (comdelegate.cpp:1755), raised from inside the constructor as CoreCLR's is. The
+                // frame is left up for dispatch to unwind through, as a native method's is.
+                let state, _whatWeDid =
+                    IlMachineStateExecution.raiseRuntimeExceptionWithMessage
+                        loggerFactory
+                        baseClassTypes
+                        baseClassTypes.ArgumentException
+                        (Some "Delegate to an instance method cannot have null 'this'.")
+                        thread
+                        state
+
+                ExecutionResult.stepped (state, WhatWeDid.SuspendedForManagedCall)
 
         let dispatchDelegateInvoke () =
             // We've been instructed to run a delegate.
@@ -206,32 +222,20 @@ module AbstractMachine =
                 | CliType.ObjectRef (Some addr) -> addr
                 | _ -> failwith "expected a managed object ref to delegate"
 
-            let delegateToRun = ManagedHeap.get delegateToRunAddr state.ManagedHeap
+            let invocation =
+                DelegateRepresentation.invocationOf baseClassTypes "delegate invocation" delegateToRunAddr state
 
-            let delegateTypeHandle =
-                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
-
-            let delegateFieldId (fieldName : string) : FieldId =
-                FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType fieldName
-                |> FieldIdentity.fieldId delegateTypeHandle
-
-            let target =
-                match
-                    delegateToRun
-                    |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_target")
-                with
-                | CliType.ObjectRef addr -> addr
-                | x -> failwith $"TODO: delegate target wasn't an object ref: %O{x}"
-
-            let methodPtrTarget =
-                // Delegate._methodPtr is typed IntPtr (primitive-like); unwrap to the inner NativeInt.
-                match
-                    delegateToRun
-                    |> AllocatedNonArrayObject.DereferenceFieldById (delegateFieldId "_methodPtr")
-                    |> CliType.unwrapPrimitiveLike
-                with
-                | CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target)) -> target
-                | d -> failwith $"unexpectedly not a method pointer in delegate invocation: {d}"
+            // What gets called, what is prepended to `Invoke`'s arguments, and whether the call
+            // dispatches on its receiver. CoreCLR's `Invoke` calls `_methodPtr` with `_target`
+            // first; when that is the shuffle thunk, the thunk drops `_target` and calls
+            // `_methodPtrAux`, which is either the target or a virtual call stub over it. Both
+            // stubs are performed here rather than entered, as CoreCLR's stack walk hides them.
+            let callee, prepended, dispatchesOnReceiver =
+                match invocation with
+                | DelegateInvocation.ThroughMethodPtr (target, methodPtr) -> methodPtr, Some target, false
+                | DelegateInvocation.ThroughShuffleThunk (FunctionPointerTarget.VirtualCallStub declared) ->
+                    FunctionPointerTarget.Managed declared, None, true
+                | DelegateInvocation.ThroughShuffleThunk aux -> aux, None, false
 
             // A method minted by `Reflection.Emit` has no `MethodInfo` sitting in the pointer: it
             // has no MethodDef row for one to be read from, so `Delegate_BindToMethodInfo` stored
@@ -239,12 +243,14 @@ module AbstractMachine =
             // see `DynamicMethodExecution.concretize` for why not earlier, and for what the first
             // such invocation latches.
             let state, methodPtr =
-                match methodPtrTarget with
+                match callee with
                 | FunctionPointerTarget.Managed methodPtr -> state, methodPtr |> Ok
                 | FunctionPointerTarget.Dynamic handle ->
                     DynamicMethodExecution.concretize loggerFactory baseClassTypes "delegate invocation" handle state
-                | FunctionPointerTarget.RuntimeAllocator ->
-                    FunctionPointerTarget.requireManaged "delegate invocation" methodPtrTarget
+                | FunctionPointerTarget.RuntimeAllocator
+                | FunctionPointerTarget.OpenDelegateShuffleThunk
+                | FunctionPointerTarget.VirtualCallStub _ ->
+                    FunctionPointerTarget.requireManaged "delegate invocation" callee
                     |> fun m -> state, Ok m
 
             // Preserve the original call-site offset from the callvirt Invoke that
@@ -279,20 +285,21 @@ module AbstractMachine =
             | ReturnFrameResult.DispatchException _ -> failwith "unexpected exception dispatch from delegate frame pop"
             | ReturnFrameResult.NormalReturn state ->
 
-            // Both failures below happen *after* the delegate's synthetic `Invoke` frame is popped,
-            // and with the caller's program counter put back to its call site: the `callvirt Invoke`
-            // advanced past it, and exception dispatch reads that offset both to decide which of the
-            // caller's `try` regions cover the throw and to name the frame.
+            // Every failure below happens *after* the delegate's synthetic `Invoke` frame is
+            // popped, and with the caller's program counter put back to its call site: the
+            // `callvirt Invoke` advanced past it, and exception dispatch reads that offset both to
+            // decide which of the caller's `try` regions cover the throw and to name the frame.
             //
             // Popping first costs a frame in the guest's trace, which real .NET shows and PawPrint
-            // does not: both failures happen while CoreCLR is preparing to enter the target, so the
-            // target is on its stack. That is a deliberate trade rather than an oversight — leaving
-            // the stub frame up instead puts a `System.Action.Invoke` frame in the trace that real
-            // .NET never shows, whose absence `sourcesPure/DelegateCctorFailureTraceHasNoStubFrame.cs`
-            // pins. See docs/divergences.md, "A delegate invocation that fails before entering its
-            // target names no frame for it", for what closing it would take: neither failure has a
-            // frame available to name, so the fix is to push one that has executed nothing, and the
-            // existing machinery for that (`MethodState.PendingTypeInit`) carries a type to
+            // does not: each failure happens while CoreCLR is preparing to enter the target, or
+            // inside a stub on the way there, so the target or stub is on its stack. That is a
+            // deliberate trade rather than an oversight — leaving the stub frame up instead puts a
+            // `System.Action.Invoke` frame in the trace that real .NET never shows, whose absence
+            // `sourcesPure/DelegateCctorFailureTraceHasNoStubFrame.cs` pins. See
+            // docs/divergences.md, "A delegate invocation that fails before entering its target
+            // names no frame for it", for what closing it would take: none of these failures has a
+            // frame available to name, so the fix is to push one that has executed nothing, and
+            // the existing machinery for that (`MethodState.PendingTypeInit`) carries a type to
             // initialise and would run its `.cctor`.
             let raiseFromPoppedStub
                 (exceptionType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -346,11 +353,33 @@ module AbstractMachine =
                 raiseFromPoppedStub exceptionType (DynamicScopeOperand.clrMessageFor baseClassTypes exceptionType) state
             | Ok methodPtr ->
 
+            // A virtual call stub over a *static* virtual — a static abstract interface method —
+            // has no receiver to resolve the slot on. Measured: real .NET binds such a delegate
+            // and raises `EntryPointNotFoundException`, with the parameterless constructor's
+            // message, only when it is invoked.
+            // `sourcesPure/DelegateBindStaticAbstractInterfaceMethod.cs` pins that.
+            if dispatchesOnReceiver && methodPtr.IsStatic then
+                raiseFromPoppedStub baseClassTypes.EntryPointNotFoundException None state
+            // A virtual call stub reads the receiver's type before anything else, so a null one
+            // faults there — measured on real .NET as a `NullReferenceException` — where an open
+            // delegate over a non-virtual method enters its target with a null `this` and faults
+            // only if the target dereferences it.
+            elif
+                dispatchesOnReceiver
+                && (
+                    match instruction.Arguments.[1] with
+                    | CliType.ObjectRef None -> true
+                    | _ -> false
+                )
+            then
+                raiseFromPoppedStub baseClassTypes.NullReferenceException None state
+            else
+
             // An abstract target has no body to run. Reachable only through
             // `Delegate.CreateDelegate` closed over a *null* receiver: a non-null receiver's runtime
             // type is necessarily a subclass of the abstract declaring type, so binding virtualises
-            // to a concrete override, and the open shape is refused by
-            // `Delegate_BindToMethodInfo` (see `sourcesPure/DelegateBindOpenVirtual.cs`).
+            // to a concrete override, and an open delegate over an abstract method dispatches
+            // through a virtual call stub, which resolves it before the body is read.
             //
             // Real .NET builds that delegate and fails only here, with a catchable
             // `BadImageFormatException` whose HResult is `COR_E_BADIMAGEFORMAT`. The message is
@@ -362,42 +391,41 @@ module AbstractMachine =
             // Both an abstract class's method and an interface's behave identically, which
             // `sourcesPure/DelegateToAbstractMethodOverNull.cs` pins.
             match methodPtr.Body with
-            | MethodBody.Abstract ->
+            | MethodBody.Abstract when not dispatchesOnReceiver ->
                 raiseFromPoppedStub
                     baseClassTypes.BadImageFormatException
                     (Some "An attempt was made to load a program with an incorrect format.\n (0x8007000B)")
                     state
+            | MethodBody.Abstract
             | MethodBody.Il _
             | MethodBody.InternalCall
             | MethodBody.PInvoke
             | MethodBody.RuntimeProvided _ ->
 
-            // Rebuild the stack in normal instance-call shape: the bound argument below the real
-            // ones, so it ends up at the bottom.
-            //
-            // Whether there *is* a bound argument comes from the arity, not from whether `_target`
-            // happens to be null. The two differ for a delegate closed over `null` — legal, and
-            // what `CreateDelegate(t, null)` produces for a static target one argument wider than
-            // `Invoke` (`NativeDelegate.isCompatible` classifies it `Closed` on arity for exactly
-            // this reason). Reading null as "nothing to push" would then hand the callee one
-            // argument too few: measured on real .NET, a `(string, int) -> int` closed over null
-            // and invoked with 7 receives `(null, 7)` and returns accordingly, so the null is a
-            // value that is passed, not an absence.
-            //
-            // `Invoke` supplies `instruction.Arguments.Length - 1` (its own `this` is index 0), so
-            // the callee taking one more than that is precisely the closed case.
+            // `Invoke` supplies `instruction.Arguments.Length - 1` arguments (its own `this` is
+            // index 0). Whether anything is prepended is settled by the fields, which binding set
+            // by arity, so the callee's arity is asserted here rather than consulted.
             let suppliedArgs = instruction.Arguments.Length - 1
             let calleeArgs = MethodInfo.arity methodPtr + (if methodPtr.IsStatic then 0 else 1)
 
+            let expectedCalleeArgs =
+                match prepended with
+                | Some _ -> suppliedArgs + 1
+                | None -> suppliedArgs
+
+            if calleeArgs <> expectedCalleeArgs then
+                failwith
+                    $"delegate invocation: %O{methodPtr} takes %d{calleeArgs} argument(s) but the delegate's fields say it receives %d{expectedCalleeArgs}; binding should have refused this pairing"
+
+            // The bound argument goes below the real ones. It is pushed even when null: a delegate
+            // closed over `null` is legal, and what `CreateDelegate(t, null)` produces for a static
+            // target one argument wider than `Invoke`. Measured on real .NET, a
+            // `(string, int) -> int` closed over null and invoked with 7 receives `(null, 7)`, so
+            // the null is a value that is passed, not an absence.
             let state =
-                if calleeArgs = suppliedArgs then
-                    // Open: `Invoke` supplies everything, and nothing was bound.
-                    state
-                elif calleeArgs = suppliedArgs + 1 then
-                    IlMachineState.pushToEvalStack (CliType.ObjectRef target) thread state
-                else
-                    failwith
-                        $"delegate invocation: %O{methodPtr} takes %d{calleeArgs} argument(s) but Invoke supplied %d{suppliedArgs}; binding should have refused this pairing"
+                match prepended with
+                | Some target -> IlMachineState.pushToEvalStack (CliType.ObjectRef target) thread state
+                | None -> state
 
             // Push the real invoke parameters, skipping instruction.Arguments.[0] which is the
             // delegate object itself (not needed by the target method).
@@ -419,7 +447,7 @@ module AbstractMachine =
                     baseClassTypes
                     None
                     ConstructionState.NotConstructing
-                    false
+                    dispatchesOnReceiver
                     false
                     false
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative

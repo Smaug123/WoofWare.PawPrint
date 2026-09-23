@@ -181,6 +181,13 @@ module PointerHashSynthesis =
             // now would commit to keeping them stable for a consumer that does not exist.
             failwith
                 $"PointerHashSynthesis.canonicalKey: %O{handle} has no synthesised address bits; nothing hashes or does arithmetic on a dynamic method's code address today, so widening CanonicalPointerKey is work for whichever consumer first needs it"
+        | NativeIntSource.FunctionPointer (FunctionPointerTarget.OpenDelegateShuffleThunk as target)
+        | NativeIntSource.FunctionPointer (FunctionPointerTarget.VirtualCallStub _ as target) ->
+            // As for a dynamic method: the guest reads these only from a delegate's own fields, and
+            // `Delegate.Equals` and `MulticastDelegate.TrySetSlot` compare them with `ceq`, which
+            // needs no bits.
+            failwith
+                $"PointerHashSynthesis.canonicalKey: %O{target} has no synthesised address bits; nothing hashes or does arithmetic on a delegate stub's address today"
         | NativeIntSource.MethodHandlePtr id -> CanonicalPointerKey.MethodHandle id
         | NativeIntSource.FieldHandlePtr id -> CanonicalPointerKey.FieldHandle id
         // The canonical key is the handle's *identity*; its tag bits are a view

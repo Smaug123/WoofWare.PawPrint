@@ -8,52 +8,6 @@ open Microsoft.Extensions.Logging
 
 [<RequireQualifiedAccess>]
 module IlMachineRuntimeMetadata =
-    let executeDelegateConstructor
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (instruction : MethodState)
-        (state : IlMachineState)
-        : IlMachineState
-        =
-        // We've been called with arguments already popped from the stack into local arguments.
-        let constructing = instruction.Arguments.[0]
-        let targetObj = instruction.Arguments.[1]
-        let methodPtr = instruction.Arguments.[2]
-
-        let targetObj =
-            match targetObj with
-            | CliType.ObjectRef (Some target) -> Some target
-            | CliType.ObjectRef None -> None
-            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) -> None
-            | _ -> failwith $"Unexpected target type for delegate: {targetObj}"
-
-        let constructing =
-            match constructing with
-            | CliType.ObjectRef None -> failwith "unexpectedly constructing the null delegate"
-            | CliType.RuntimePointer (CliRuntimePointer.Managed ManagedPointerSource.Null) ->
-                failwith "unexpectedly constructing the null delegate"
-            | CliType.ObjectRef (Some target) -> target
-            | _ -> failwith $"Unexpectedly not constructing a managed object: {constructing}"
-
-        let delegateTypeHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
-
-        let targetField =
-            FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType "_target"
-            |> FieldIdentity.fieldId delegateTypeHandle
-
-        let methodPtrField =
-            FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType "_methodPtr"
-            |> FieldIdentity.fieldId delegateTypeHandle
-
-        let updatedHeap =
-            state.ManagedHeap
-            |> ManagedHeap.setFieldById constructing targetField (CliType.ObjectRef targetObj)
-            |> ManagedHeap.setFieldById constructing methodPtrField methodPtr
-
-        { state with
-            ManagedHeap = updatedHeap
-        }
-
     /// Returns the type handle and an allocated System.RuntimeType.
     let getOrAllocateType
         (loggerFactory : ILoggerFactory)

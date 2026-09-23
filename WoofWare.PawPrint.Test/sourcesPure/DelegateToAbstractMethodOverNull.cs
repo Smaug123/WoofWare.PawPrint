@@ -7,8 +7,9 @@ using System.Reflection;
 // only at invocation, with a catchable `BadImageFormatException`.
 //
 // This is the only route to an abstract target: a non-null receiver's runtime type is necessarily a
-// subclass of the abstract declaring type, so binding virtualises to a concrete override, and the
-// open shape is refused (`DelegateBindOpenVirtual.cs`).
+// subclass of the abstract declaring type, so binding virtualises to a concrete override, and an
+// open delegate over it dispatches through a virtual call stub, which resolves an override before
+// any body is read (`DelegateBindOpenVirtual.cs`).
 //
 // The exception is faithful; its *trace* is not. Real .NET names the abstract target as the top
 // frame, because the failure happens while it is preparing to enter it; PawPrint pops the

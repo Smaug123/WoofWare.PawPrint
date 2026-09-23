@@ -148,6 +148,9 @@ module Corelib =
         let ambiguousMatchException =
             findCorelibType corelib "System.Reflection" "AmbiguousMatchException"
 
+        let entryPointNotFoundException =
+            findCorelibType corelib "System" "EntryPointNotFoundException"
+
         let nullReferenceException =
             findCorelibType corelib "System" "NullReferenceException"
 
@@ -247,6 +250,7 @@ module Corelib =
             DuplicateWaitObjectException = duplicateWaitObjectException
             VerificationException = verificationException
             AmbiguousMatchException = ambiguousMatchException
+            EntryPointNotFoundException = entryPointNotFoundException
             NullReferenceException = nullReferenceException
             OutOfMemoryException = outOfMemoryException
             ArgumentException = argumentException

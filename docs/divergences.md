@@ -531,41 +531,34 @@ The same reasoning is why the case carries no `MethodTable` payload. That would 
 
 **Where this lives in code**: `FunctionPointerTarget.RuntimeAllocator` in `NativeIntSource.fs` carries the reasoning; `NativeRuntimeTypeQCall.fs` is the only producer, and `UnaryMetadataCallOps.executeAllocatorCalli` the only consumer. `CanonicalPointerKey.RuntimeAllocatorFunctionPointer` gives it a single synthesised hash-bit identity to match.
 
-## An open delegate stores no shuffle thunk, and a single-cast delegate's `_methodPtrAux` is always zero
+## Every open delegate shares one shuffle thunk, and neither delegate stub can be called directly
 
-**CoreCLR**: a delegate's three code-related fields carry different things depending on whether the delegate is open (its `Invoke` supplies every argument the target takes) or closed (it supplies one fewer, and the missing first argument was bound at creation time). `COMDelegate::BindToMethod` (`comdelegate.cpp:1184`) writes, for a *closed* delegate, the bound object into `_target` and the target's code address into `_methodPtr`, leaving `_methodPtrAux` null; and for an *open* one, the delegate **itself** into `_target`, the address of a generated *shuffle thunk* into `_methodPtr`, and the target's real code address into `_methodPtrAux`. The thunk exists because the calling convention puts `this` in the first argument register, and an open delegate's first `Invoke` argument is not a receiver, so the arguments have to be moved down before the target is entered.
+**CoreCLR**: a delegate's fields follow the kinds table in `COMDelegate::GetDelegateCtor` (`comdelegate.cpp:2857-2867`). A *closed* delegate — one whose `Invoke` supplies one argument fewer than its target takes — holds the bound first argument in `_target` and the target's code in `_methodPtr`. An *open* one holds the delegate **itself** in `_target`, a generated *shuffle thunk* in `_methodPtr`, and the target's code in `_methodPtrAux`; when the target is virtual and declared on a reference type, `_methodPtrAux` holds a virtual call stub instead and `_invocationCount` holds the target's `MethodDesc*`, so the receiver is resolved at each invocation. The thunk exists because the calling convention puts `this` in the first argument register and an open delegate's first `Invoke` argument is not a receiver. Thunks are cached per delegate class and then canonicalised by the shuffle they perform, so delegate types of the same shape share one: measured on arm64, an open `Func<int, int>` and an open `Func<Base, string>` hold the same `_methodPtr`.
 
-**PawPrint**: `_target` holds the bound object for a closed delegate and null for an open one; `_methodPtr` names the target method directly; `_methodPtrAux` is never written, so it stays at the zero `Delegate.InternalAlloc` left. (A multicast delegate is different, and follows CoreCLR's layout; see point 2 below.)
+**PawPrint**: every field holds what the kinds table says, with two stubs represented as data — `FunctionPointerTarget.OpenDelegateShuffleThunk` and `FunctionPointerTarget.VirtualCallStub` — and `_invocationCount` holding the target's method-registry id. Two things differ:
 
-**Spec status**: Outside ECMA-335. II.14.6 describes delegates in terms of their observable behaviour and says nothing about the layout of `System.Delegate`'s private fields — which is why the divergence is representational rather than semantic.
+1. The shuffle thunk is a single address shared by *every* open delegate, whatever its shape.
+2. Neither stub can be called on its own. `AbstractMachine.dispatchDelegateInvoke` performs both as part of `Invoke`, pushing no frame for either (CoreCLR's stack walk shows neither), so `calli` through one refuses by name.
 
-**Why we chose this**: there are no shuffle thunks to point at. PawPrint does not have a calling convention in the sense that makes one necessary: `AbstractMachine.dispatchDelegateInvoke` rebuilds the callee's evaluation stack explicitly, pushing the receiver first only when there is one, so argument positions are decided at the call rather than baked into a stub. Synthesising a thunk to hold a place in a layout nothing reads would be inventing a runtime artefact to imitate its own shadow.
+**Spec status**: Outside ECMA-335. II.14.6 describes delegates by their observable behaviour and says nothing about the layout of `System.Delegate`'s private fields.
 
-Note this is not a convention introduced for `Reflection.Emit`. `IlMachineRuntimeMetadata.executeDelegateConstructor` — the ordinary `newobj` path every C# `Func<int, int> f = SomeStatic;` takes — has always written the target into `_target` and the method into `_methodPtr` without regard to open-versus-closed. `Delegate_BindToMethodInfo` applies that same convention rather than adding a second one.
+**Why we chose this**: CoreCLR's thunk partition is by the register shuffle each shape needs, which depends on a calling convention PawPrint does not have, so no partition it could compute would be right. Sharing one is right for delegates of the same shape, which is the common comparison. Neither difference reaches any public accessor: `Target`, `Method`, `Equals`, `GetHashCode` and `MulticastDelegate.TrySetSlot` read `_methodPtr` only alongside `_target`, which is the delegate itself for an open delegate, so two distinct open delegates never agree there under either runtime. The difference is visible only through reflection on the private fields, or by calling through a pointer read that way.
 
-The managed observables agree with CoreCLR for every shape a dynamic method can produce, which is what makes this safe to do:
-
-* `Delegate.Target` is `_methodPtrAux == IntPtr.Zero ? _target : null` (`Delegate.CoreCLR.cs:553`). Open: CoreCLR returns null because the aux field is set; PawPrint returns null because `_target` is. Closed: both return the bound object.
-* `Delegate.GetHashCode` (`Delegate.CoreCLR.cs:152`) branches on the same field, and both branches reduce to `GetType().GetHashCode()` for an open delegate under either representation.
-* `Delegate.Equals` (`Delegate.CoreCLR.cs:88`) compares all three fields optimistically and then falls back to `_methodBase`. Two delegates over the same dynamic method agree in every field under both representations; two over different dynamic methods disagree in `_methodPtr` under both.
-* `Delegate.Method` reaches the runtime through the QCall `Delegate_FindMethodHandle`, whose `COMDelegate::GetMethodDesc` (`comdelegate.cpp:1815`) reads `_methodPtrAux` for an open delegate and `_methodPtr` for a closed one. Both name the target method and PawPrint's `_methodPtr` names it for either shape, so the two agree. `sourcesPure/DelegateMethodInfo.cs` exercises both halves: every static method group in it (`Func<int, int> f = Twice`) is an *open* delegate, because `Invoke` supplies each of the target's arguments, and each instance method group is a closed one. The shape it cannot reach is an open delegate over an *instance* method, where `Invoke` supplies the receiver — C# has no method-group syntax for it, so the routes are raw `ldnull; ldftn; newobj` IL, which the C# test harness cannot emit, and `Delegate.CreateDelegate(Type, MethodInfo)`. That second route is now live: `Delegate_BindToMethodInfo` binds a metadata method, so the shape is buildable and `sourcesPure/DelegateBindToMetadataMethod.cs` builds and invokes it. It is the one place the missing `_methodPtrAux` is not merely representational: `Delegate.GetMethodImpl` reads a zero one as "closed" and dereferences `_target` to walk the base chain when the declaring type is generic (`Delegate.CoreCLR.cs:189`), so `Delegate_FindMethodHandle` refuses that combination by name rather than letting CoreLib raise a `NullReferenceException` — parked as `sourcesPure/DelegateFindMethodHandleOpenInstanceGeneric.cs`, with the non-generic declaring type served. The *open over a virtual method* shape is refused at binding for the same reason, since CoreCLR resolves it at invocation through the aux field (`sourcesPure/DelegateBindOpenVirtual.cs`).
-
-**What this costs later**: two things, both of which have to be paid by the slices that make them reachable rather than here.
-
-1. **Openness is no longer recoverable from the fields.** A delegate closed over `null` and an open delegate are both `(_target = null, _methodPtrAux = 0)` here, where CoreCLR distinguishes them by the aux field. So whoever makes a dynamic method *executable* must derive the shuffle from the arity — the delegate's `Invoke` parameter count against the target's — and not from whether `_target` is null. `sourcesImpure/DynamicMethodDelegateBinding.cs` pins the closed-over-null case existing.
-2. **A multicast delegate does not share this divergence.** `NewMulticastDelegate` writes all three fields itself, and PawPrint gives them CoreCLR's meaning: `_target` is the multicast delegate, `_methodPtr` names the delegate type's multicast invoke stub (`Delegate.GetMulticastInvoke`, `MulticastDelegateStub`), and `_methodPtrAux` holds `Invoke`'s method handle (`Delegate.GetInvokeMethod`). The stub reaches its elements only through their own `Invoke`, so the single-cast representation above never meets the multicast one. The other shapes `MulticastDelegate.Equals` keys on `_invocationCount != 0` for — wrapper delegates and unmanaged function pointers, which read `_methodPtrAux` — are still not built.
-3. **Two shapes are refused at binding rather than served**, both because the aux field is where CoreCLR would have put the answer: an open delegate over a virtual method on a reference type, and one over a static abstract interface method. Each is parked with its measured refusal.
+**A related trace difference**: CoreCLR refuses a delegate closed over a null receiver of an instance method with `ArgumentException(Arg_DlgtNullInst)`, which PawPrint reproduces with the same message and HResult. The JIT reaches that refusal through `MulticastDelegate.CtorClosed`, so the real trace begins `at System.MulticastDelegate.ThrowNullThisInDelegateToInstance()` and `at System.MulticastDelegate.CtorClosed(Object target, IntPtr methodPtr)`. PawPrint runs the delegate constructor as a runtime-provided frame and raises from it, so its trace begins `at System.Func`1..ctor(Object object, IntPtr method)`. `sourcesPure/DelegateOverNullInstanceReceiver.cs` pins the exception, not the trace.
 
 **Observable example**:
 
 ```csharp
 // Reachable only by reflecting on System.Delegate's private fields.
-// CoreCLR:  for `Func<int,int> f = SomeStaticIntToInt;`, _target is f itself and _methodPtrAux is non-zero.
-// PawPrint: _target is null and _methodPtrAux is zero.
-// Every public accessor (Target, Method, Equals, GetHashCode) agrees between the two.
+Func<int, int> a = Twice;                  // open over a static method
+Func<int, int, int> b = Add;               // open, but a different shuffle
+var methodPtr = typeof(Delegate).GetField("_methodPtr", BindingFlags.NonPublic | BindingFlags.Instance);
+Console.WriteLine(methodPtr.GetValue(a).Equals(methodPtr.GetValue(b)));
+// CoreCLR:  False (measured on arm64), since the two shapes shuffle differently.
+// PawPrint: True.
 ```
 
-**Where this lives in code**: `IlMachineRuntimeMetadata.executeDelegateConstructor` for the `newobj` path, `NativeDelegate.tryExecuteQCall` for the `CreateDelegate` path, and `AbstractMachine.dispatchDelegateInvoke` for the consumer that makes the convention work.
+**Where this lives in code**: `DelegateRepresentation` writes and reads the fields, and is used by the `newobj` path (`DelegateRepresentation.construct`), by `Delegate_BindToMethodInfo`, by `Delegate_FindMethodHandle` and `Delegate_InternalEqualMethodHandles` (`DelegateRepresentation.methodDescOf`), and by `AbstractMachine.dispatchDelegateInvoke` (`DelegateRepresentation.invocationOf`). `sourcesPure/DelegateOpenInstanceRepresentation.cs` covers the public accessors over open delegates.
 
 ## A method handle is per-instantiation, where CoreCLR shares one per canonical form
 
@@ -664,9 +657,14 @@ trade. A stub frame still on the stack when the exception is raised lands in the
 between one frame too many (the stub) and one too few (the target); popping first picks the latter,
 which is the smaller lie because the missing frame is a method that genuinely never ran.
 
-Both delegate-invocation failures have this shape: a `Reflection.Emit` target that could not be
-compiled, and an abstract target. Neither has a frame available to name — the first because PawPrint
-refused to build the method, the second because an abstract method has no body to enter.
+Three delegate-invocation failures have this shape: a `Reflection.Emit` target that could not be
+compiled, an abstract target, and an open delegate over a static abstract interface method, whose
+virtual call stub raises `EntryPointNotFoundException` (measured: real .NET's trace begins
+`at IStaticAbstract.Describe()`). None has a frame available to name — the first because PawPrint
+refused to build the method, the others because an abstract method has no body to enter. A fourth
+failure raised the same way is *not* a divergence: an open virtual delegate invoked with a null
+receiver faults in its virtual call stub, and real .NET's `NullReferenceException` trace begins at
+the caller too.
 
 **What it would take to close**: push the target's frame anyway and fail in its prologue, which is
 what a failed `.cctor` already does. The machinery is `MethodState.PendingTypeInit` and
@@ -675,7 +673,7 @@ own clauses are therefore out of scope. It cannot be reused as it stands, becaus
 carries the handle of a type to initialise and `AbstractMachine`'s driver runs that initialiser on
 the next step — so a frame parked there for another reason would run a `.cctor` that nothing asked
 for. Closing this means generalising that field into a reason DU, which is a change to
-`MethodState` and to exception dispatch and so is its own slice; it would fix both failures at once.
+`MethodState` and to exception dispatch and so is its own slice; it would fix all three failures at once.
 
 **Observable example**:
 
@@ -689,8 +687,9 @@ catch (BadImageFormatException e) { Console.WriteLine(e.StackTrace); }
 ```
 
 **Where this lives in code**: `AbstractMachine.dispatchDelegateInvoke`, whose `raiseFromPoppedStub`
-is the shared ordering both failures use. `sourcesPure/DelegateToAbstractMethodOverNull.cs` pins the
-exception itself, which is faithful; only the trace is not.
+is the ordering every such failure uses. `sourcesPure/DelegateToAbstractMethodOverNull.cs` and
+`sourcesPure/DelegateBindStaticAbstractInterfaceMethod.cs` pin the exceptions themselves, which are
+faithful; only the traces are not.
 
 ## Simulated time advances per retired instruction
 
@@ -814,8 +813,7 @@ Rendering from the concretised signature for this case alone would be straightfo
 obvious fix whenever the parameter text starts mattering; it is not done here because the two
 halves of that decision (formal names for metadata methods, actual types for synthesised ones)
 should be made together. Note the *name* half of such a frame is faithful, including the absence
-of a declaring type — see "An open delegate stores no shuffle thunk" for why a `Reflection.Emit`
-method has none, and `sourcesImpure/DynamicMethodStackTrace.cs`, which asserts only the
+of a declaring type — see `sourcesImpure/DynamicMethodStackTrace.cs`, which asserts only the
 cross-runtime facts for exactly this reason.
 
 ## A captured stack frame has no native offset

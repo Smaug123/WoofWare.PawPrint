@@ -198,8 +198,6 @@ module IlMachineState =
 
     let writeIndirectPrimitiveStore = IlMachineManagedByref.writeIndirectPrimitiveStore
 
-    let executeDelegateConstructor = IlMachineRuntimeMetadata.executeDelegateConstructor
-
     let getOrAllocateType = IlMachineRuntimeMetadata.getOrAllocateType
 
     let getOrAllocateField = IlMachineRuntimeMetadata.getOrAllocateField

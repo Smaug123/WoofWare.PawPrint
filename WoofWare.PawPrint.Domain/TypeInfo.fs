@@ -383,6 +383,10 @@ type BaseClassTypes<'corelib> =
         /// `System.Reflection.AmbiguousMatchException`. Raised by the runtime — not the BCL — when
         /// an `[UnsafeAccessor]` declaration matches more than one member of its target type.
         AmbiguousMatchException : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        /// Thrown by the runtime — not the BCL — when a virtual call stub is asked to dispatch a
+        /// method no implementation can be found for, as happens when a delegate open over a
+        /// static abstract interface method is invoked.
+        EntryPointNotFoundException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         NullReferenceException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         OutOfMemoryException : TypeInfo<GenericParamFromMetadata, TypeDefn>
         ArgumentException : TypeInfo<GenericParamFromMetadata, TypeDefn>

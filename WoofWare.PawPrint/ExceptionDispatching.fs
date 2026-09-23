@@ -1336,6 +1336,8 @@ module ExceptionDispatching =
             ExceptionHResults.lookup "System.InvalidOperationException"
         elif id = baseClassTypes.DuplicateWaitObjectException.Identity then
             ExceptionHResults.lookup "System.DuplicateWaitObjectException"
+        elif id = baseClassTypes.EntryPointNotFoundException.Identity then
+            ExceptionHResults.lookup "System.EntryPointNotFoundException"
         elif id = baseClassTypes.InvalidProgramException.Identity then
             ExceptionHResults.lookup "System.InvalidProgramException"
         elif id = baseClassTypes.BadImageFormatException.Identity then

@@ -404,14 +404,15 @@ module internal NativeReflectionInvocation =
             // `Delegate_Construct` — which in turn decides open versus closed binding by comparing
             // the target method's argument count against `Invoke`'s, builds a shuffle thunk for the
             // open case, and throws `Arg_DlgtNullInst` for a null instance on a closed one
-            // (comdelegate.cpp:1712-1756). PawPrint models the ctor as `RuntimeBehaviour.DelegateCtor`
-            // and writes `_target`/`_methodPtr` verbatim, which is exact for a `newobj` whose
-            // arguments the compiler produced with `ldftn`, and wrong for arguments a guest chose.
+            // (comdelegate.cpp:1712-1756). PawPrint models the ctor as `RuntimeBehaviour.DelegateCtor`,
+            // which performs `Delegate_Construct` alone (`DelegateRepresentation.construct`). That is
+            // exact for a `newobj` whose method pointer the compiler produced with `ldftn`, and
+            // wrong for arguments a guest chose, which the managed screen would have rejected.
             // Measured: `ConstructorInfo.Invoke(new object[] { null, IntPtr.Zero })` on a delegate
             // type gives `TargetInvocationException(ArgumentNullException)` on .NET 10 and a
             // successfully constructed delegate here.
             failwith
-                $"TODO: %s{operation} on %s{describe ()}, a delegate constructor; PawPrint services it by writing the target and method pointer straight into the instance, which skips the validation CoreCLR's managed Delegate.DelegateConstruct and its Delegate_Construct QCall perform on arguments reflection let the guest choose"
+                $"TODO: %s{operation} on %s{describe ()}, a delegate constructor; PawPrint services it with Delegate_Construct alone, which skips the validation CoreCLR's managed Delegate.DelegateConstruct performs on arguments reflection let the guest choose"
         | _ -> ()
 
         if isConstructor then

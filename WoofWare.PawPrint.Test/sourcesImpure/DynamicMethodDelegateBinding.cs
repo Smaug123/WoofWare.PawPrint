@@ -170,9 +170,10 @@ public class Program
 
         // Closed over null. This is the case that separates "the shape comes from the arity" from
         // "the shape comes from whether a target was supplied": both classifications accept the
-        // binding, and under PawPrint's field convention both produce a delegate whose `_target` is
-        // null, so nothing observable here distinguishes them *yet* — but the arity is the only
-        // thing that will tell invocation how many arguments to shuffle.
+        // binding, but only the arity makes it closed, with `_target` null and `_methodPtrAux`
+        // zero, where the other would make it open. `Target` is null either way, so this file
+        // pins only that the binding succeeds; invocation is what would pass the null on as the
+        // target's first argument.
         Delegate closedOverNull = stringIntToInt.CreateDelegate(typeof(Func<int, int>), null);
         if (closedOverNull == null)
         {

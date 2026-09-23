@@ -393,9 +393,10 @@ module internal UnaryMetadataTokenOps =
     /// ECMA-335 III.4.18. Pops an object reference and pushes a function pointer to the body that
     /// a `callvirt` of the same token on the same receiver would have run.
     ///
-    /// The dispatch has to happen here rather than at the call: a delegate built from this pointer
-    /// is invoked with `performInterfaceResolution = false` (`AbstractMachine.dispatchDelegateInvoke`),
-    /// so whatever method the pointer names is the method that runs. That matches CoreCLR, which
+    /// The dispatch has to happen here rather than at the call: a closed delegate built from this
+    /// pointer is invoked with `performInterfaceResolution = false`
+    /// (`AbstractMachine.dispatchDelegateInvoke`), so whatever method the pointer names is the
+    /// method that runs. That matches CoreCLR, which
     /// also binds the target eagerly — `Delegate.Equals` compares the stored `_methodPtr`, so two
     /// delegates over receivers of different runtime types must hold different pointers.
     let executeLdvirtftn (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =

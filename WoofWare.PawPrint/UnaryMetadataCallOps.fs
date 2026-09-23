@@ -1684,6 +1684,13 @@ module internal UnaryMetadataCallOps =
             // than be silently mistaken for some other target.
             failwith
                 $"calli: the function pointer names %O{handle}; PawPrint can mint and bind a Reflection.Emit method but cannot yet execute one"
+        | Some (FunctionPointerTarget.OpenDelegateShuffleThunk as stub)
+        | Some (FunctionPointerTarget.VirtualCallStub _ as stub) ->
+            // These live only in a delegate's `_methodPtr` and `_methodPtrAux`, so a guest can
+            // hold one only by reading those private fields reflectively. CoreCLR would enter the
+            // stub; `dispatchDelegateInvoke` interprets both inline rather than as callable
+            // methods, so there is nothing here to call.
+            failwith $"TODO: calli through %O{stub}, which PawPrint interprets only as part of a delegate invocation"
         | Some (FunctionPointerTarget.Managed methodToCall) ->
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the

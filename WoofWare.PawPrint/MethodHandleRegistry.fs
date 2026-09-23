@@ -727,6 +727,24 @@ module MethodHandleRegistry =
         =
         Map.tryFind handle reg.DynamicMethods
 
+    /// A *fresh* `RuntimeMethodInfoStub` naming the method whose registry id is `registryId`, as
+    /// `allocateFreshStub` does for a method in hand. For a caller that already holds the id,
+    /// as `COMDelegate::GetMethodDesc`'s transcription does.
+    let allocateFreshStubForId
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (allConcreteTypes : AllConcreteTypes)
+        (allocState : 'allocState)
+        (allocate : CliValueType -> 'allocState -> ManagedHeapAddress * 'allocState)
+        (registryId : int64)
+        : ManagedHeapAddress * 'allocState
+        =
+        let runtimeMethodInfoStub =
+            internalHandleFromId baseClassTypes allConcreteTypes registryId
+            |> CliType.ValueType
+            |> buildRuntimeMethodInfoStub baseClassTypes allConcreteTypes
+
+        allocate runtimeMethodInfoStub allocState
+
     /// A *fresh* `RuntimeMethodInfoStub` naming this method, which is what
     /// `MethodDesc::AllocateStubMethodInfo` (method.cpp:3809) hands back: CoreCLR allocates one
     /// unconditionally at every call site, and never caches. The registry id inside it is reused,
@@ -754,17 +772,8 @@ module MethodHandleRegistry =
         // `getOrAllocateInternalHandle` while iterating introduced methods).
         let registryId, reg = idOfHandle (MethodHandle.FromMetadata identity) reg
 
-        let runtimeMethodHandleInternal =
-            let mHandle =
-                CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle registryId)
-
-            buildRuntimeMethodHandleInternal baseClassTypes allConcreteTypes mHandle
-            |> CliType.ValueType
-
-        let runtimeMethodInfoStub =
-            buildRuntimeMethodInfoStub baseClassTypes allConcreteTypes runtimeMethodHandleInternal
-
-        let alloc, allocState = allocate runtimeMethodInfoStub allocState
+        let alloc, allocState =
+            allocateFreshStubForId baseClassTypes allConcreteTypes allocState allocate registryId
 
         alloc, reg, allocState
 
