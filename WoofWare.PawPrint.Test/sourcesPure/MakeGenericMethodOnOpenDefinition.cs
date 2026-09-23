@@ -27,15 +27,12 @@ public static class Program
     // `MakeGenericMethod` on a generic method of an open generic type *definition*. CoreCLR binds it
     // (genmeth.cpp:1256-1270) and validates the method's constraints against the declaring type's
     // *unbound formals*, which is a variance-aware assignability question rather than a syntactic
-    // one -- so PawPrint's `RuntimeMethodHandle_GetStubIfNeededSlow` refuses the shape rather than
-    // handing back a handle real .NET would have rejected.
+    // one.
     //
-    // The measured rows below are why the refusal cannot be replaced by a blanket "a constraint
-    // mentioning a type formal admits no closed argument": `IComparer<in T>` is contravariant and
-    // `T : class` bounds `T` above by `object`, so `IComparer<object>` is assignable to
-    // `IComparer<T>` for every legal `T` and is accepted, while `IComparer<string>` is not.
-    //
-    // Un-park when constraint validation can run against a declaring type's formals.
+    // The measured rows below rule out a blanket "a constraint mentioning a type formal admits no
+    // closed argument": `IComparer<in T>` is contravariant and `T : class` makes `T` an object
+    // reference that casts to `object`, so `IComparer<object>` is assignable to `IComparer<T>` and
+    // is accepted, while `IComparer<string>` is not.
     //
     // Exit code is the index of the first failing check, so a failure names itself.
     public static int Main()

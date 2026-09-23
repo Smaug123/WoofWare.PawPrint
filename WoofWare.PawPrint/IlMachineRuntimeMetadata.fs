@@ -2231,216 +2231,177 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> walk state objType
 
-    /// Apply a `TypeDefn` substitution to every `GenericTypeParameter` reference inside `ty`.
-    /// This is purely syntactic; assembly identifiers and primitives pass through unchanged.
-    /// `GenericMethodParameter` references are left in place because they have no legitimate
-    /// appearance in a type definition's base or interface signatures (method generics belong
-    /// to method signatures, not type metadata edges).
-    let rec private substituteTypeDefn (subs : ImmutableArray<TypeDefn>) (ty : TypeDefn) : TypeDefn =
-        match ty with
-        | TypeDefn.GenericTypeParameter idx ->
-            if idx < subs.Length then
-                subs.[idx]
-            else
-                failwithf
-                    "substituteTypeDefn: GenericTypeParameter %d out of bounds (substitution arity %d)"
-                    idx
-                    subs.Length
-        | TypeDefn.GenericMethodParameter _ -> ty
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            let builder = ImmutableArray.CreateBuilder args.Length
+    /// The definition a MethodTable-backed nominal target instantiates, and its instantiation as
+    /// targets: a closed type's own arguments, a definition's own variables (the typical
+    /// instantiation), or an open construction's mix of the two. `None` for every other shape,
+    /// none of which CoreCLR gives an instantiation that `CanCastByVarianceToInterfaceOrDelegate`
+    /// could compare.
+    let private nominalInstantiation
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        : (ResolvedTypeIdentity * RuntimeTypeHandleTarget list) option
+        =
+        match target with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+            match tryGetConcreteTypeInfo state handle with
+            | Some (concreteType, _) ->
+                Some (
+                    concreteType.Identity,
+                    concreteType.Generics |> Seq.map RuntimeTypeHandleTarget.Closed |> List.ofSeq
+                )
+            | None -> failwith $"logic error: tryGetConcreteTypeInfo refused the Concrete handle %O{handle}"
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+            let typeInfo =
+                state._LoadedAssemblies
+                    .ByDefinitionName(identity.AssemblyFullName)
+                    .TypeDefs.[identity.TypeDefinition.Get]
 
-            for arg in args do
-                builder.Add (substituteTypeDefn subs arg)
+            Some (
+                identity,
+                List.init
+                    typeInfo.Generics.Length
+                    (fun index -> RuntimeTypeHandleTarget.GenericParameter (identity, index))
+            )
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, arguments) -> Some (identity, arguments)
+        | RuntimeTypeHandleTarget.Closed _
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> None
 
-            TypeDefn.GenericInstantiation (substituteTypeDefn subs generic, builder.ToImmutable ())
-        | TypeDefn.Array (element, rank) -> TypeDefn.Array (substituteTypeDefn subs element, rank)
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
-            TypeDefn.OneDimensionalArrayLowerBoundZero (substituteTypeDefn subs element)
-        | TypeDefn.Pointer element -> TypeDefn.Pointer (substituteTypeDefn subs element)
-        | TypeDefn.Byref element -> TypeDefn.Byref (substituteTypeDefn subs element)
-        | TypeDefn.Pinned element -> TypeDefn.Pinned (substituteTypeDefn subs element)
-        | TypeDefn.Modified m ->
-            TypeDefn.Modified
-                {
-                    Unmodified = substituteTypeDefn subs m.Unmodified
-                    Modifier = substituteTypeDefn subs m.Modifier
-                    IsRequired = m.IsRequired
-                }
-        | TypeDefn.FunctionPointer _
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.Void -> ty
+    let private typeInfoOfIdentity
+        (state : IlMachineState)
+        (identity : ResolvedTypeIdentity)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
 
-    /// Strip outer `GenericInstantiation` layers and resolve the underlying definition to
-    /// `(assembly, TypeInfo, genericArgs)`. Returns `None` when the stripped TypeDefn is not a
-    /// nominal type definition (e.g. an array, pointer, byref, primitive, or generic
-    /// parameter) — none of which is a legitimate `BaseType` or interface implementation, so
-    /// the caller treats them as dead-end edges for the identity walk. The returned
-    /// `genericArgs` are the args from the outermost `GenericInstantiation` (already
-    /// substituted by the caller), or `ImmutableArray.Empty` when the type was a plain
-    /// definition without an explicit generic instantiation around it.
-    let rec private stripToTypeInfo
+    /// CoreCLR's `CorTypeInfo::IsObjRef` of a target's element type, for every target that is not a
+    /// type variable: whether values of it are object references. A type variable's answer is
+    /// `TypeVarTypeDesc::ConstrainedAsObjRef`, which needs its constraints, so it is refused here.
+    let private isObjRefTarget
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (target : RuntimeTypeHandleTarget)
+        : bool
+        =
+        match target with
+        | RuntimeTypeHandleTarget.Closed handle -> isReferenceTypeHandle baseClassTypes "isObjRefTarget" state handle
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
+            DumpedAssembly.isReferenceType baseClassTypes state._LoadedAssemblies (typeInfoOfIdentity state identity)
+        | RuntimeTypeHandleTarget.DynamicMethodsClass _ -> true
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) -> true
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+        | RuntimeTypeHandleTarget.FunctionPointer _ -> false
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _ ->
+            failwith $"logic error: isObjRefTarget asked about the type variable %O{target}"
+
+    let private isInterfaceTarget (state : IlMachineState) (target : RuntimeTypeHandleTarget) : bool =
+        match nominalInstantiation state target with
+        | Some (identity, _) -> (typeInfoOfIdentity state identity).IsInterface
+        | None -> false
+
+    /// Whether `target` is the closed type `typeInfo` names, which must be a non-generic type.
+    let private isClosedNonGeneric
+        (state : IlMachineState)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (target : RuntimeTypeHandleTarget)
+        : bool
+        =
+        match target with
+        | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+            match tryGetConcreteTypeInfo state handle with
+            | Some (concreteType, _) -> concreteType.Identity = typeInfo.Identity
+            | None -> false
+        | _ -> false
+
+    /// The interfaces a nominal MethodTable-backed target declares directly, each read under that
+    /// target's own instantiation, so an open construction's interfaces mention its arguments.
+    let private declaredInterfaceTargets
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
-        (declaringAssembly : DumpedAssembly)
-        (ty : TypeDefn)
-        : IlMachineState *
-          (DumpedAssembly * TypeInfo<GenericParamFromMetadata, TypeDefn> * ImmutableArray<TypeDefn>) option
+        (target : RuntimeTypeHandleTarget)
+        : IlMachineState * RuntimeTypeHandleTarget list
         =
-        match ty with
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            let state, inner =
-                stripToTypeInfo loggerFactory baseClassTypes state declaringAssembly generic
+        let typeVariables =
+            match target with
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
+                match tryGetConcreteTypeInfo state handle with
+                | Some (concreteType, _) -> ReflectedTypeTarget.ReflectionVariableBinding.Bound concreteType.Generics
+                | None -> failwith $"logic error: tryGetConcreteTypeInfo refused the Concrete handle %O{handle}"
+            | _ ->
+                match nominalInstantiation state target with
+                | Some (_, arguments) ->
+                    ReflectedTypeTarget.ReflectionVariableBinding.Open (ImmutableArray.CreateRange arguments)
+                | None -> failwith $"declaredInterfaceTargets: %O{target} is not a nominal MethodTable-backed type"
 
-            match inner with
-            | Some (assy, typeInfo, _) -> state, Some (assy, typeInfo, args)
-            | None -> state, None
-        | TypeDefn.FromDefinition (identity, _) ->
-            match state.LoadedAssembly identity.AssemblyFullName with
-            | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get], ImmutableArray.Empty)
-            | None ->
-                failwithf "stripToTypeInfo: assembly for type definition %s was not loaded" identity.AssemblyFullName
-        | TypeDefn.FromReference _ ->
-            // resolveTypeFromDefn handles FromReference and returns a TypeInfo<TypeDefn,TypeDefn>;
-            // the un-substituted raw TypeInfo<GenericParamFromMetadata,TypeDefn> is what the walk
-            // wants, so re-fetch from the resolved identity's assembly TypeDefs table.
-            let state, _, resolved =
-                IlMachineTypeResolution.resolveTypeFromDefn
-                    loggerFactory
-                    baseClassTypes
-                    ty
-                    ImmutableArray.Empty
-                    ImmutableArray.Empty
-                    declaringAssembly
-                    state
+        let identity =
+            match nominalInstantiation state target with
+            | Some (identity, _) -> identity
+            | None -> failwith $"declaredInterfaceTargets: %O{target} is not a nominal MethodTable-backed type"
 
-            let identity = resolved.Identity
+        let assy = state._LoadedAssemblies.ByDefinitionName identity.AssemblyFullName
+        let typeInfo = typeInfoOfIdentity state identity
 
-            match state.LoadedAssembly identity.AssemblyFullName with
-            | Some assy -> state, Some (assy, assy.TypeDefs.[identity.TypeDefinition.Get], ImmutableArray.Empty)
-            | None ->
-                failwithf
-                    "stripToTypeInfo: assembly for resolved type reference %s was not loaded"
-                    identity.AssemblyFullName
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.Array _
-        | TypeDefn.OneDimensionalArrayLowerBoundZero _
-        | TypeDefn.Pointer _
-        | TypeDefn.Byref _
-        | TypeDefn.Pinned _
-        | TypeDefn.Modified _
-        | TypeDefn.FunctionPointer _
-        | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _
-        | TypeDefn.Void -> state, None
+        let environment =
+            {
+                ReflectedTypeTarget.ReflectionTypeEnvironment.TypeVariables = typeVariables
+                ReflectedTypeTarget.ReflectionTypeEnvironment.MethodVariables =
+                    ReflectedTypeTarget.ReflectionVariableBinding.Open ImmutableArray.Empty
+            }
 
-    /// Walk a `TypeDefn` and rewrite every `FromReference` (assembly-relative) into the
-    /// equivalent `FromDefinition` (carrying a fully-resolved identity), preserving structure
-    /// elsewhere. The caller supplies the assembly whose TypeRef tables interpret the input;
-    /// after this transform the result is assembly-independent and can be substituted into a
-    /// TypeDefn that lives in a different assembly without resolution errors.
+        let state, interfaces =
+            ((state, []), typeInfo.ImplementedInterfaces)
+            ||> Seq.fold (fun (state, acc) impl ->
+                let implAssy =
+                    match state.LoadedAssembly impl.RelativeToAssembly.FullName with
+                    | Some a -> a
+                    | None -> assy
+
+                let state, implTypeDefn, implResolvedAssy =
+                    resolveTypeMetadataToken loggerFactory baseClassTypes state implAssy impl.InterfaceHandle
+
+                let state, implTarget =
+                    ReflectedTypeTarget.reflectedTypeTarget
+                        loggerFactory
+                        baseClassTypes
+                        "declaredInterfaceTargets"
+                        $"an interface implemented by %O{target}"
+                        implResolvedAssy
+                        environment
+                        state
+                        implTypeDefn
+
+                state, implTarget :: acc
+            )
+
+        state, List.rev interfaces
+
+    /// CoreCLR's `TypeHandle::CanCastTo` over the full `RuntimeTypeHandleTarget` DU: whether a
+    /// value of type `source` can be treated as one of type `target`, where either may mention
+    /// type variables. This is the relation both the `TypeHandle_CanCastTo_NoCacheLookup` QCall
+    /// and generic-constraint validation (`TypeVarTypeDesc::SatisfiesConstraints`) ask.
     ///
-    /// Used by the open-generic cast walk at the strip boundary: when a recursion crosses
-    /// from `currentAssy` to a different `strippedAssy`, the args carried into the deeper
-    /// walk may contain TypeRefs declared in the outer assembly (e.g. `Derived<T> :
-    /// Base<Arg, T>` in assembly E, where `Arg` lives in A and `Base` in B). Without
-    /// canonicalisation, deeper materialisations would try to resolve those TypeRefs against
-    /// the wrong assembly's reference tables and fail. `GenericTypeParameter` positions are
-    /// positional and assembly-independent, so they pass through unchanged.
-    let rec private canonicalizeTypeDefn
-        (loggerFactory : ILoggerFactory)
-        (state : IlMachineState)
-        (sourceAssy : DumpedAssembly)
-        (ty : TypeDefn)
-        : IlMachineState * TypeDefn
-        =
-        match ty with
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.Void
-        | TypeDefn.GenericTypeParameter _
-        | TypeDefn.GenericMethodParameter _
-        | TypeDefn.FromDefinition _ -> state, ty
-        | TypeDefn.FromReference (typeRef, sigKind) ->
-            let state, _, resolved =
-                IlMachineTypeResolution.resolveTypeFromRef loggerFactory sourceAssy typeRef ImmutableArray.Empty state
-
-            state, TypeDefn.FromDefinition (resolved.Identity, sigKind)
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            let state, generic' = canonicalizeTypeDefn loggerFactory state sourceAssy generic
-
-            let state, argsList =
-                ((state, []), args)
-                ||> Seq.fold (fun (state, acc) arg ->
-                    let state, arg' = canonicalizeTypeDefn loggerFactory state sourceAssy arg
-                    state, arg' :: acc
-                )
-
-            let argsArr = argsList |> List.rev |> ImmutableArray.CreateRange
-            state, TypeDefn.GenericInstantiation (generic', argsArr)
-        | TypeDefn.Array (element, rank) ->
-            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
-            state, TypeDefn.Array (element', rank)
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element ->
-            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
-            state, TypeDefn.OneDimensionalArrayLowerBoundZero element'
-        | TypeDefn.Pointer element ->
-            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
-            state, TypeDefn.Pointer element'
-        | TypeDefn.Byref element ->
-            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
-            state, TypeDefn.Byref element'
-        | TypeDefn.Pinned element ->
-            let state, element' = canonicalizeTypeDefn loggerFactory state sourceAssy element
-            state, TypeDefn.Pinned element'
-        | TypeDefn.Modified m ->
-            let state, unmodified' =
-                canonicalizeTypeDefn loggerFactory state sourceAssy m.Unmodified
-
-            let state, modifier' =
-                canonicalizeTypeDefn loggerFactory state sourceAssy m.Modifier
-
-            state,
-            TypeDefn.Modified
-                {
-                    Unmodified = unmodified'
-                    Modifier = modifier'
-                    IsRequired = m.IsRequired
-                }
-        | TypeDefn.FunctionPointer _ ->
-            // FunctionPointer carries a TypeMethodSignature with parameter and return TypeDefns;
-            // canonicalising those requires walking the signature shape. None of the current
-            // open-generic walk targets exercises this case (you can't author
-            // `delegate*<X, void>` as a generic argument in C#), so defer until a real test
-            // case forces it.
-            failwithf
-                "TODO: canonicalizeTypeDefn: FunctionPointer not yet supported in cross-assembly substitutions (%O)"
-                ty
-
-    /// Cast oracle entry point over the full `RuntimeTypeHandleTarget` DU. The Closed/Closed case
-    /// delegates to `isConcreteTypeAssignableTo`; the open-generic and generic-parameter variants
-    /// are handled at this layer so that callers (e.g. the `TypeHandle_CanCastTo_NoCacheLookup`
-    /// QCall) need not coerce open handles back to closed ones.
+    /// Two closed types are answered by `isConcreteTypeAssignableTo`. Otherwise the rules are
+    /// CoreCLR's, case by case:
+    /// - a type variable source casts to `System.Object`, to `System.ValueType` iff it carries
+    ///   the `struct` constraint, and to anything one of its declared constraints casts to
+    ///   (`TypeDesc::CanCastTo`);
+    /// - nothing but the variable itself casts to a type variable;
+    /// - a MethodTable-backed source walks its parent chain (for a class target) or its interface
+    ///   map (for an interface target), accepting an exact match or, where the target has
+    ///   variant parameters, a same-definition match that `CanCastByVarianceToInterfaceOrDelegate`
+    ///   accepts. A variant argument compares by `IsBoxedAndCanCastTo`, under which a type
+    ///   variable counts as a reference only when `ConstrainedAsObjRef`;
+    /// - an array source casts to an open generic interface only through the implicit `T[]`
+    ///   interfaces (`ArraySupportsBizarreInterface`).
     ///
-    /// The rule table:
-    /// - Closed / Closed                 → existing oracle
-    /// - Closed / OpenGenericTypeDefinition → false (open defs are not instantiable; nothing
-    ///   closed can be assigned to a type token that names "the open def" itself)
-    /// - OpenGenericTypeDefinition s / OpenGenericTypeDefinition t → s = t (identity only;
-    ///   stripping during a parent walk is for traversal, not for matching an open target)
-    /// - OpenGenericTypeDefinition / Closed → walk the source's base chain and implemented
-    ///   interfaces, threading a substitution context so that partially-closed inheritance
-    ///   like `class C<T> : B<int,T>` propagates the `int` binding into B's own walk. At
-    ///   each edge: substitute with the current context, then if no `GenericTypeParameter`
-    ///   reference remains, materialise to a `ConcreteTypeHandle` and delegate to
-    ///   Closed/Closed; otherwise strip to the definition's `TypeInfo` and recurse with the
-    ///   (substituted) generic args as the new context. The fallback when both the base and
-    ///   the interface chain are exhausted is to accept iff the target is System.Object,
-    ///   matching the closed oracle's `walkBase` `None` branch for interfaces.
-    /// - GenericParameter / MethodGenericParameter (either side) → TODO until constraints
-    ///   are modelled in the cast oracle
+    /// A composite (array, byref, pointer or function pointer) over a type variable, on either
+    /// side, is refused loudly.
     let isRuntimeTypeHandleTargetAssignableTo
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2449,236 +2410,301 @@ module IlMachineRuntimeMetadata =
         (target : RuntimeTypeHandleTarget)
         : IlMachineState * bool
         =
-        match source, target with
-        // Every type is assignable to System.Object — a reference type by inheritance, a value
-        // type by boxing — regardless of what its generic arguments are. That makes this one
-        // answer decidable without the substitution the general case needs, and it is the query
-        // reflection over a returned constraint object actually makes
-        // (`typeof(object).IsAssignableFrom(constraint)`).
-        // The dynamic-methods class is assignable to nothing but itself, and nothing but itself is
-        // assignable to it: `CreateMinimalMethodTable` gives it no parent and no interfaces, so the
-        // usual "everything is assignable to System.Object" shortcut below does not apply to it
-        // either. One per scope assembly, so identity is the name.
-        | RuntimeTypeHandleTarget.DynamicMethodsClass a, RuntimeTypeHandleTarget.DynamicMethodsClass b -> state, a = b
-        | RuntimeTypeHandleTarget.DynamicMethodsClass _, _
-        | _, RuntimeTypeHandleTarget.DynamicMethodsClass _ -> state, false
-        | (RuntimeTypeHandleTarget.Composite _ | RuntimeTypeHandleTarget.FunctionPointer _ as composite), _
-        | _, (RuntimeTypeHandleTarget.Composite _ | RuntimeTypeHandleTarget.FunctionPointer _ as composite) ->
-            RuntimeTypeHandleTarget.refuseComposite "isRuntimeTypeHandleTargetAssignableTo" composite
-        | RuntimeTypeHandleTarget.OpenConstructed _, RuntimeTypeHandleTarget.Closed t when
-            (match AllConcreteTypes.lookup t state.ConcreteTypes with
-             | Some ct -> ct.Identity = baseClassTypes.Object.Identity
-             | None -> false)
-            ->
-            state, true
-        // Anything else needs variance and argument substitution over the instantiation, which
-        // the cast oracle does not model. Reachable — a constraint object can be handed to any
-        // reflection assignability API — so it fails loudly rather than guessing.
-        | (RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed), _
-        | _, (RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed) ->
-            failwith
-                $"TODO: isRuntimeTypeHandleTargetAssignableTo does not model open constructed types except assignability to System.Object; got %O{openConstructed} (source %O{source}, target %O{target})"
-        | RuntimeTypeHandleTarget.Closed s, RuntimeTypeHandleTarget.Closed t ->
-            isConcreteTypeAssignableTo loggerFactory baseClassTypes state s t
-        | RuntimeTypeHandleTarget.Closed _, RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ ->
-            // An OpenGenericTypeDefinition handle represents "the open generic definition itself"
-            // (e.g. typeof(Box<>)), which is not an instantiable type. No closed type is assignable
-            // to it. CoreCLR's managed wrapper short-circuits the "ref-type → TypeDesc" case before
-            // ever invoking the QCall; this branch is the analogue at the cast-oracle level.
-            state, false
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition s, RuntimeTypeHandleTarget.OpenGenericTypeDefinition t ->
-            state, s = t
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition s, RuntimeTypeHandleTarget.Closed t ->
-            let sAssy =
-                match state.LoadedAssembly s.AssemblyFullName with
-                | Some assy -> assy
-                | None ->
-                    failwithf "isRuntimeTypeHandleTargetAssignableTo: source assembly %s not loaded" s.AssemblyFullName
+        let isObject (target : RuntimeTypeHandleTarget) : bool =
+            isClosedNonGeneric state baseClassTypes.Object target
 
-            let sTypeInfo = sAssy.TypeDefs.[s.TypeDefinition.Get]
+        // A type variable's metadata (for its flag-style constraints) and its declared
+        // constraints as targets.
+        let typeVariableFacts
+            (state : IlMachineState)
+            (variable : RuntimeTypeHandleTarget)
+            : IlMachineState * GenericParamMetadata * RuntimeTypeHandleTarget list
+            =
+            ReflectedTypeTarget.declaredConstraintTargets
+                loggerFactory
+                baseClassTypes
+                "isRuntimeTypeHandleTargetAssignableTo"
+                state
+                variable
 
-            // Capture target's identity and whether any of its generic parameters carry
-            // variance. CoreCLR can assign an open generic interface to a closed
-            // instantiation of itself when the parameter is variant and its constraints
-            // are satisfied (e.g. `IOut<out T> where T : class` makes
-            // `typeof(IOut<object>).IsAssignableFrom(typeof(IOut<>))` true). We don't yet
-            // model constraint-aware variance during an open walk, so when the walk
-            // encounters a node whose identity matches a variant target we crash loudly
-            // rather than silently returning false. The mirror at the closed/closed oracle
-            // uses the same shape.
-            let targetIdentityWithVariance =
-                match AllConcreteTypes.lookup t state.ConcreteTypes with
-                | Some targetCt ->
-                    let targetAssy =
-                        state._LoadedAssemblies.ByDefinitionName targetCt.Identity.AssemblyFullName
+        let isTypeVariable (target : RuntimeTypeHandleTarget) : bool =
+            match target with
+            | RuntimeTypeHandleTarget.GenericParameter _
+            | RuntimeTypeHandleTarget.MethodGenericParameter _ -> true
+            | _ -> false
 
-                    let targetTypeInfo = targetAssy.TypeDefs.[targetCt.Identity.TypeDefinition.Get]
+        // `TypeVarTypeDesc::ConstrainedAsObjRefHelper` (typedesc.cpp:1036): some declared
+        // constraint is a class other than Object, ValueType and Enum, or is itself a variable so
+        // constrained. The `class` flag is deliberately not consulted here: it does not propagate
+        // through a variable-to-variable constraint.
+        let rec constrainedAsObjRefByConstraints
+            (state : IlMachineState)
+            (variable : RuntimeTypeHandleTarget)
+            : IlMachineState * bool
+            =
+            let state, _, constraints = typeVariableFacts state variable
 
-                    let hasVariantGenericParams =
-                        targetTypeInfo.Generics
-                        |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
-
-                    Some (targetCt.Identity, hasVariantGenericParams)
-                | None -> None
-
-            // The walk begins by treating every one of the source's generic parameters as
-            // unbound: each `GenericTypeParameter i` substitutes to itself, so the source's
-            // own metadata edges keep their original parameter references when first
-            // inspected, and only fully-bound positions get materialised as we descend.
-            let initialSubstitutions =
-                let builder = ImmutableArray.CreateBuilder sTypeInfo.Generics.Length
-
-                for i in 0 .. sTypeInfo.Generics.Length - 1 do
-                    builder.Add (TypeDefn.GenericTypeParameter i)
-
-                builder.ToImmutable ()
-
-            let rec walkOpen
-                (state : IlMachineState)
-                (visited : Set<ResolvedTypeIdentity>)
-                (substitutions : ImmutableArray<TypeDefn>)
-                (currentAssy : DumpedAssembly)
-                (currentTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
-                : IlMachineState * bool
-                =
-                let currentIdentity = currentTypeInfo.Identity
-
-                if Set.contains currentIdentity visited then
-                    state, false
+            ((state, false), constraints)
+            ||> List.fold (fun (state, found) constraintTarget ->
+                if found then
+                    state, true
+                elif isTypeVariable constraintTarget then
+                    constrainedAsObjRefByConstraints state constraintTarget
+                elif
+                    not (isInterfaceTarget state constraintTarget)
+                    && isObjRefTarget baseClassTypes state constraintTarget
+                    && not (isObject constraintTarget)
+                    && not (isClosedNonGeneric state baseClassTypes.ValueType constraintTarget)
+                    && not (isClosedNonGeneric state baseClassTypes.Enum constraintTarget)
+                then
+                    state, true
                 else
+                    state, false
+            )
 
-                match targetIdentityWithVariance with
-                | Some (targetIdentity, true) when currentIdentity = targetIdentity ->
-                    failwithf
-                        "TODO: isRuntimeTypeHandleTargetAssignableTo: open source %O reaches target identity %O which has variant generic parameters; need constraint-aware variance check"
-                        s.TypeDefinition.Get
-                        targetIdentity.TypeDefinition.Get
-                | _ ->
+        // `TypeVarTypeDesc::ConstrainedAsObjRef` (typedesc.cpp:1006).
+        let constrainedAsObjRef (state : IlMachineState) (variable : RuntimeTypeHandleTarget) : IlMachineState * bool =
+            let state, metadata, _ = typeVariableFacts state variable
 
-                let visited = Set.add currentIdentity visited
+            if metadata.Constraint = Some GenericConstraint.Reference then
+                state, true
+            else
+                constrainedAsObjRefByConstraints state variable
 
-                let tryEdge
-                    (state : IlMachineState)
-                    (edgeAssy : DumpedAssembly)
-                    (edgeTypeDefn : TypeDefn)
-                    : IlMachineState * bool
-                    =
-                    let substituted = substituteTypeDefn substitutions edgeTypeDefn
+        // `visited` is CoreCLR's `TypeHandlePairList`: the (source, target) pairs already being
+        // compared further up this path. Revisiting one through variance answers false, exactly
+        // as `CanCastByVarianceToInterfaceOrDelegate` does, which is what makes an expansive
+        // hierarchy such as `class C : IIn<IIn<C>>` terminate.
+        let rec canCast
+            (visited : Set<RuntimeTypeHandleTarget * RuntimeTypeHandleTarget>)
+            (state : IlMachineState)
+            (source : RuntimeTypeHandleTarget)
+            (target : RuntimeTypeHandleTarget)
+            : IlMachineState * bool
+            =
+            if source = target then
+                state, true
+            else
 
-                    if not (containsAnyGenericParameter substituted) then
-                        // Edge is fully closed under the current substitution. Materialise and
-                        // delegate to the closed oracle, which handles all variance, array, and
-                        // base-chain rules.
-                        let state, edgeHandle =
-                            IlMachineTypeResolution.concretizeType
-                                loggerFactory
-                                baseClassTypes
-                                state
-                                edgeAssy.DefinitionFullName
-                                ImmutableArray.Empty
-                                ImmutableArray.Empty
-                                substituted
+            match source, target with
+            // The dynamic-methods class is assignable to nothing but itself, and nothing but itself
+            // is assignable to it: `CreateMinimalMethodTable` gives it no parent and no interfaces,
+            // so even the "everything is assignable to System.Object" rule does not apply to it.
+            | RuntimeTypeHandleTarget.DynamicMethodsClass _, _
+            | _, RuntimeTypeHandleTarget.DynamicMethodsClass _ -> state, false
+            | RuntimeTypeHandleTarget.Closed s, RuntimeTypeHandleTarget.Closed t ->
+                isConcreteTypeAssignableTo loggerFactory baseClassTypes state s t
+            | (RuntimeTypeHandleTarget.GenericParameter _ | RuntimeTypeHandleTarget.MethodGenericParameter _), _ ->
+                // `TypeDesc::CanCastTo` (typedesc.cpp:322). The ValueType arm reads only the
+                // `struct` flag, not the declared constraints, so `where T : Enum` does not make
+                // `T` castable to ValueType here.
+                if isObject target then
+                    state, true
+                elif isClosedNonGeneric state baseClassTypes.ValueType target then
+                    let state, metadata, _ = typeVariableFacts state source
+                    state, metadata.Constraint = Some GenericConstraint.NonNullableValue
+                else
+                    // A constraint graph with a cycle is malformed metadata that CoreCLR refuses at
+                    // type load; without this, the walk below would never return.
+                    if Set.contains (source, target) visited then
+                        failwith
+                            $"isRuntimeTypeHandleTargetAssignableTo: the constraints of %O{source} lead back to asking whether it casts to %O{target}; the constraint graph has a cycle"
 
-                        isConcreteTypeAssignableTo loggerFactory baseClassTypes state edgeHandle t
-                    else
-                        // Edge still mentions an unbound parameter from the original open
-                        // source. It can never be identical to a closed target, but its own
-                        // base/interface chain might be. Strip to the edge's `TypeInfo` and
-                        // recurse, threading the (already-substituted) generic args as the
-                        // edge's substitution context.
-                        let state, stripped =
-                            stripToTypeInfo loggerFactory baseClassTypes state edgeAssy substituted
+                    let visited = Set.add (source, target) visited
+                    let state, _, constraints = typeVariableFacts state source
 
-                        match stripped with
-                        | None -> state, false
-                        | Some (strippedAssy, strippedTypeInfo, strippedArgs) ->
-                            // Canonicalise each arg against the edge's authoring assembly
-                            // before recursing. `strippedArgs` are the GenericInstantiation
-                            // args from `substituted`, which inherits TypeRefs from
-                            // `edgeAssy` (where the edge was authored) plus whatever the
-                            // outer substitutions had filled in (already canonical by this
-                            // function's invariant at this point of the recursion). The
-                            // deeper walk's currentAssy becomes `strippedAssy`, which is a
-                            // different assembly's reference tables, so unresolved TypeRefs
-                            // must be turned into `FromDefinition` here to remain
-                            // interpretable downstream.
-                            let state, canonicalisedArgs =
-                                ((state, []), strippedArgs)
-                                ||> Seq.fold (fun (state, acc) arg ->
-                                    let state, arg' = canonicalizeTypeDefn loggerFactory state edgeAssy arg
-
-                                    state, arg' :: acc
-                                )
-
-                            let canonicalisedArgs = canonicalisedArgs |> List.rev |> ImmutableArray.CreateRange
-
-                            walkOpen state visited canonicalisedArgs strippedAssy strippedTypeInfo
-
-                let state, interfaceMatch =
-                    ((state, false), currentTypeInfo.ImplementedInterfaces)
-                    ||> Seq.fold (fun (state, found) impl ->
+                    ((state, false), constraints)
+                    ||> List.fold (fun (state, found) constraintTarget ->
                         if found then
                             state, true
                         else
-                            let implAssy =
-                                match state.LoadedAssembly impl.RelativeToAssembly.FullName with
-                                | Some a -> a
-                                | None -> currentAssy
+                            canCast visited state constraintTarget target
+                    )
+            // `TypeHandle::CanCastTo` (typehandle.cpp:608): a MethodTable never casts to a TypeDesc,
+            // and a closed byref, pointer or function pointer is a TypeDesc of a different kind from
+            // a type variable, which `TypeDesc::CanCastTo` refuses too.
+            | _, (RuntimeTypeHandleTarget.GenericParameter _ | RuntimeTypeHandleTarget.MethodGenericParameter _) ->
+                state, false
+            | (RuntimeTypeHandleTarget.Composite _ | RuntimeTypeHandleTarget.FunctionPointer _ as composite), _
+            | _, (RuntimeTypeHandleTarget.Composite _ | RuntimeTypeHandleTarget.FunctionPointer _ as composite) ->
+                RuntimeTypeHandleTarget.refuseComposite "isRuntimeTypeHandleTargetAssignableTo" composite
+            // A TypeDesc never casts to a MethodTable (`TypeDesc::CanCastTo`'s last arm).
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Byref _ | ConcreteTypeHandle.Pointer _ | ConcreteTypeHandle.FunctionPointer _),
+              _ -> state, false
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero element), _ when
+                isInterfaceTarget state target
+                ->
+                // `ArraySupportsBizarreInterface` (methodtable.cpp:1433): an szarray is one of its
+                // implicit generic interfaces over an element `CanCastParam` accepts. Its
+                // primitive-width rule relates two closed primitives, so it cannot fire against
+                // an open target's argument; what is left is identity and `IsBoxedAndCanCastTo`.
+                match nominalInstantiation state target with
+                | Some (identity, [ targetElement ]) when baseClassTypes.IsImplicitInterfaceOfSzArray identity ->
+                    let sourceElement = RuntimeTypeHandleTarget.Closed element
 
-                            let state, implTypeDefn, implResolvedAssy =
-                                resolveTypeMetadataToken
-                                    loggerFactory
-                                    baseClassTypes
-                                    state
-                                    implAssy
-                                    impl.InterfaceHandle
+                    if sourceElement = targetElement then
+                        state, true
+                    else
+                        isBoxedAndCanCastTo visited state sourceElement targetElement
+                | _ -> state, false
+            // Any other array against an open target: an array is a class, so it matches an open
+            // class only through its parent chain (System.Array, System.Object), which is closed;
+            // and it is an interface only through the implicit ones above.
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ | ConcreteTypeHandle.Array _), _ ->
+                state, false
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _), _
+            | (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ | RuntimeTypeHandleTarget.OpenConstructed _), _ ->
+                methodTableCanCast visited state source target
 
-                            tryEdge state implResolvedAssy implTypeDefn
+        // `TypeHandle::IsBoxedAndCanCastTo` (typehandle.cpp:546), the comparison a variant
+        // argument is held to: `from` must be an object reference, which for a type variable means
+        // `ConstrainedAsObjRef`, and must then cast to `to`.
+        and isBoxedAndCanCastTo
+            (visited : Set<RuntimeTypeHandleTarget * RuntimeTypeHandleTarget>)
+            (state : IlMachineState)
+            (from : RuntimeTypeHandleTarget)
+            (``to`` : RuntimeTypeHandleTarget)
+            : IlMachineState * bool
+            =
+            let state, isObjRef =
+                if isTypeVariable from then
+                    constrainedAsObjRef state from
+                else
+                    state, isObjRefTarget baseClassTypes state from
+
+            if isObjRef then
+                canCast visited state from ``to``
+            else
+                state, false
+
+        // `MethodTable::CanCastByVarianceToInterfaceOrDelegate` (methodtable.cpp:1242), where
+        // `target` is known to be a variant interface or delegate.
+        and canCastByVariance
+            (visited : Set<RuntimeTypeHandleTarget * RuntimeTypeHandleTarget>)
+            (state : IlMachineState)
+            (candidate : RuntimeTypeHandleTarget)
+            (target : RuntimeTypeHandleTarget)
+            : IlMachineState * bool
+            =
+            match nominalInstantiation state candidate, nominalInstantiation state target with
+            | Some (candidateIdentity, candidateArgs), Some (targetIdentity, targetArgs) when
+                candidateIdentity = targetIdentity
+                && not (Set.contains (candidate, target) visited)
+                ->
+                let visited = Set.add (candidate, target) visited
+                let targetInfo = typeInfoOfIdentity state targetIdentity
+
+                ((state, true), List.zip candidateArgs targetArgs |> List.indexed)
+                ||> List.fold (fun (state, ok) (index, (candidateArg, targetArg)) ->
+                    if not ok then
+                        state, false
+                    elif candidateArg = targetArg then
+                        state, true
+                    else
+                        let _, parameterMetadata = targetInfo.Generics.[index]
+
+                        match parameterMetadata.Variance with
+                        | None -> state, false
+                        | Some GenericVariance.Covariant -> isBoxedAndCanCastTo visited state candidateArg targetArg
+                        | Some GenericVariance.Contravariant ->
+                            isBoxedAndCanCastTo visited state targetArg candidateArg
+                )
+            | _ -> state, false
+
+        // `MethodTable::CanCastTo` (methodtable.cpp:1385) for a nominal source that is not an
+        // array, against a MethodTable-backed target, at least one of the two being open.
+        and methodTableCanCast
+            (visited : Set<RuntimeTypeHandleTarget * RuntimeTypeHandleTarget>)
+            (state : IlMachineState)
+            (source : RuntimeTypeHandleTarget)
+            (target : RuntimeTypeHandleTarget)
+            : IlMachineState * bool
+            =
+            match target with
+            | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.OneDimArrayZero _ | ConcreteTypeHandle.Array _) ->
+                state, false
+            | _ when isObject target ->
+                // Every reference type (including an interface) and every boxed value type casts to
+                // System.Object, which is also where `isConcreteTypeAssignableTo` ends its walk.
+                state, true
+            | _ ->
+
+            let targetIdentity =
+                match nominalInstantiation state target with
+                | Some (identity, _) -> identity
+                | None -> failwith $"logic error: methodTableCanCast reached with the non-nominal target %O{target}"
+
+            let targetInfo = typeInfoOfIdentity state targetIdentity
+
+            let targetIsVariant =
+                targetInfo.Generics
+                |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
+
+            let matches (state : IlMachineState) (candidate : RuntimeTypeHandleTarget) : IlMachineState * bool =
+                if candidate = target then
+                    state, true
+                elif targetIsVariant then
+                    canCastByVariance visited state candidate target
+                else
+                    state, false
+
+            let rec anyMatch (state : IlMachineState) (candidates : RuntimeTypeHandleTarget list) =
+                match candidates with
+                | [] -> state, false
+                | candidate :: rest ->
+                    let state, found = matches state candidate
+                    if found then state, true else anyMatch state rest
+
+            // `source` and its parents, most derived first.
+            let rec parentChain
+                (state : IlMachineState)
+                (acc : RuntimeTypeHandleTarget list)
+                (current : RuntimeTypeHandleTarget)
+                : IlMachineState * RuntimeTypeHandleTarget list
+                =
+                let state, parent =
+                    resolveBaseRuntimeTypeHandleTarget loggerFactory baseClassTypes state current
+
+                match parent with
+                | None -> state, List.rev (current :: acc)
+                | Some parent -> parentChain state (current :: acc) parent
+
+            let state, chain = parentChain state [] source
+
+            if targetInfo.IsInterface then
+                // CoreCLR's interface map: every interface of every type in the chain, closed
+                // under the interfaces' own interfaces (`ExpandApproxInterface` recurses; Roslyn
+                // happens to list the closure on every type anyway, but ECMA-335 does not require
+                // it). The source itself stays a candidate, for an interface source.
+                let rec closeOver
+                    (state : IlMachineState)
+                    (seen : Set<RuntimeTypeHandleTarget>)
+                    (pending : RuntimeTypeHandleTarget list)
+                    : IlMachineState * Set<RuntimeTypeHandleTarget>
+                    =
+                    match pending with
+                    | [] -> state, seen
+                    | next :: rest ->
+                        if Set.contains next seen then
+                            closeOver state seen rest
+                        else
+                            let state, declared =
+                                declaredInterfaceTargets loggerFactory baseClassTypes state next
+
+                            closeOver state (Set.add next seen) (declared @ rest)
+
+                let state, fromChain =
+                    ((state, []), chain)
+                    ||> List.fold (fun (state, acc) current ->
+                        let state, declared =
+                            declaredInterfaceTargets loggerFactory baseClassTypes state current
+
+                        state, acc @ declared
                     )
 
-                if interfaceMatch then
-                    state, true
-                else
+                let state, interfaceMap = closeOver state Set.empty fromChain
+                anyMatch state (source :: Set.toList interfaceMap)
+            else
+                anyMatch state chain
 
-                match currentTypeInfo.BaseType with
-                | None ->
-                    // Interfaces (and System.Object itself) carry no `extends` clause, so
-                    // `BaseType` is `None` in metadata. Every reference type is assignable
-                    // to System.Object, so mirror the closed oracle's `walkBase` fallback:
-                    // when the chain runs out, accept iff the target is
-                    // System.Object. Open generic *classes* and *structs* never hit this
-                    // branch — their metadata BaseType is always System.Object or
-                    // System.ValueType — so in practice this fires for open interfaces with
-                    // no further parent interfaces.
-                    match t with
-                    | ConcreteActivePatterns.ConcreteObj state.ConcreteTypes -> state, true
-                    | _ -> state, false
-                | Some baseTypeInfo ->
-                    let state, baseAssy, baseTypeDefn =
-                        resolveBaseTypeInfo loggerFactory baseClassTypes state currentAssy baseTypeInfo
-
-                    tryEdge state baseAssy baseTypeDefn
-
-            walkOpen state Set.empty initialSubstitutions sAssy sTypeInfo
-        | RuntimeTypeHandleTarget.GenericParameter (declaringType, position), _ ->
-            failwithf
-                "TODO: isRuntimeTypeHandleTargetAssignableTo: generic parameter source #%d of %O; need to model constraint-based assignability"
-                position
-                declaringType.TypeDefinition.Get
-        | RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position), _ ->
-            failwithf
-                "TODO: isRuntimeTypeHandleTargetAssignableTo: method generic parameter source #%d of method %O on %O; need to model constraint-based assignability"
-                position
-                declaringMethod.Get
-                declaringType.TypeDefinition.Get
-        | _, RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
-            failwithf
-                "TODO: isRuntimeTypeHandleTargetAssignableTo: generic parameter target #%d of %O; need to model constraint-based assignability"
-                position
-                declaringType.TypeDefinition.Get
-        | _, RuntimeTypeHandleTarget.MethodGenericParameter (declaringType, declaringMethod, position) ->
-            failwithf
-                "TODO: isRuntimeTypeHandleTargetAssignableTo: method generic parameter target #%d of method %O on %O; need to model constraint-based assignability"
-                position
-                declaringMethod.Get
-                declaringType.TypeDefinition.Get
+        canCast Set.empty state source target
