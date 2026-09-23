@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// `typeof(X).IsValueType` is folded at its `ldtoken` (`TypeofIntrinsicFold`), so for that shape
@@ -16,8 +14,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestTypeofIsValueTypeFold =
-
-    let private assy = System.Reflection.Assembly.GetExecutingAssembly ()
 
     /// `__PROBE__` is the body of a `bool`-returning method with a type parameter `T`.
     let private template =
@@ -64,8 +60,7 @@ static class Program
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

@@ -1,12 +1,10 @@
 namespace WoofWare.PawPrint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open Microsoft.Extensions.Logging
 open NUnit.Framework
 open FsUnitTyped
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -113,9 +111,7 @@ class CommandLineArgsWithArguments
         // nothing. See the guest's own return codes for which assertion failed.
         realExitCode |> shouldEqual 0
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use loggerFactory =
             LoggerFactory.Create (fun b -> b.SetMinimumLevel LogLevel.Warning |> ignore)
@@ -155,9 +151,7 @@ class EchoArgv0
     /// Run `image` under PawPrint with `assemblyPath` as the host's name for it, and return
     /// what the guest wrote to stdout.
     let private argv0Reported (assemblyPath : string option) (image : byte[]) : string =
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use loggerFactory =
             LoggerFactory.Create (fun b -> b.SetMinimumLevel LogLevel.Warning |> ignore)
@@ -213,9 +207,7 @@ class EchoArgv0
     /// Run `image` under PawPrint with the given command-line configuration, returning the
     /// message it refused with. Fails the test if the run is *accepted*.
     let private refusalFor (assemblyPath : string option) (argv : string list) (image : byte[]) : string =
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use loggerFactory =
             LoggerFactory.Create (fun b -> b.SetMinimumLevel LogLevel.Warning |> ignore)

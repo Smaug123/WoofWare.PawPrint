@@ -5,7 +5,6 @@ open System.IO
 open System.Reflection.Metadata
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Tests for `RuntimeTypeHandle.InternalAllocNoChecks`, the allocation primitive underneath
@@ -77,9 +76,7 @@ public static class Program
         (image : byte[])
         : Program.PreparedProgram
         =
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

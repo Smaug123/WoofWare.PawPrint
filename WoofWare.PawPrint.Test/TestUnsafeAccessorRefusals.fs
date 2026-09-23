@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// The `[UnsafeAccessor]` shapes whose answer on real .NET PawPrint does not model, and so must
@@ -17,8 +15,6 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestUnsafeAccessorRefusals =
 
-    let private assy = typeof<RunResult>.Assembly
-
     let private runToFailure (name : string) (source : string) : exn =
         let image = Roslyn.compileWithSymbols [ source ]
 
@@ -27,8 +23,7 @@ module TestUnsafeAccessorRefusals =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

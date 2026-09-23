@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -23,8 +21,6 @@ open WoofWare.PosixKernel
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSocketEventsWait =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// Waits on a *duplicated* port descriptor, which is what makes the identity assertion
     /// below bite: `dup` gives fd 4 naming the same open file description as fd 3, so the park
@@ -78,8 +74,7 @@ class WaitsOnADuplicatedPort
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestSocketEventsWait"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
@@ -325,8 +320,7 @@ class TwoWaitersOnOnePort
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
@@ -478,8 +472,7 @@ class TwoPortsOneEdge
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestSocketEventsWait"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
@@ -611,8 +604,7 @@ class ClosesAParkedPort
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
@@ -721,8 +713,7 @@ class QuietParkedWaiter
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

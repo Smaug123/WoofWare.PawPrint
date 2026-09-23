@@ -5,7 +5,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open Microsoft.CodeAnalysis
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// How the driver terminated under PawPrint.
@@ -60,7 +59,7 @@ module FabricatedGuest =
             let dotnetRuntimeDirs =
                 seq {
                     yield tempDir
-                    yield! DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
+                    yield! FrameworkUnderTest.runtimeDirs ()
                 }
                 |> ImmutableArray.CreateRange
 
@@ -68,9 +67,12 @@ module FabricatedGuest =
 
             let onPawPrint =
                 try
-                    match
+                    let outcome =
                         Program.run loggerFactory (Some driverPath) peImage (HostConfig.Default dotnetRuntimeDirs)
-                    with
+
+                    FrameworkUnderTest.assertOutcomeServes outcome
+
+                    match outcome with
                     | RunOutcome.NormalExit (state, _)
                     | RunOutcome.ProcessExit (state, _) -> FabricatedOutcome.Exited state.LatchedExitCode
                     | RunOutcome.GuestUnhandledException (_, _, exn) -> failwith $"guest threw: %O{exn.ExceptionObject}"

@@ -1,13 +1,11 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
 open Microsoft.Extensions.Logging
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -108,9 +106,7 @@ class Program
         let assertDebuggerMatchesNormalRun (source : string) : unit =
             let image = Roslyn.compile [ source ]
 
-            let dotnetRuntimes =
-                DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
-                |> ImmutableArray.CreateRange
+            let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
             let _, normalLoggerFactory = LoggerFactory.makeTest ()
             use _normalLoggerFactoryResource = normalLoggerFactory

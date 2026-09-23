@@ -4,7 +4,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -24,8 +23,6 @@ open WoofWare.PosixKernel
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestSyscallPark =
-
-    let private assy = System.Reflection.Assembly.GetExecutingAssembly ()
 
     /// One regular file, for the lock waiter to contend on.
     let private seed : KernelConfig =
@@ -146,8 +143,7 @@ class LockAndPortWaiters
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestSyscallPark"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

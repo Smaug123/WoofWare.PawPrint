@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -23,8 +21,6 @@ open WoofWare.PosixKernel
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStepEffectStreaming =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// Guests here write via a direct `SystemNative_Write` P/Invoke rather than
     /// `Console.WriteLine`. That is not merely faster: `Console.Out` drags in the whole
@@ -74,8 +70,7 @@ module TestStepEffectStreaming =
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestStepEffectStreaming"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 
@@ -255,8 +250,7 @@ class Program
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestStepEffectStreaming"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

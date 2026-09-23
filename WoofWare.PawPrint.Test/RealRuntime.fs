@@ -80,24 +80,15 @@ module RealRuntime =
     /// depends on wall-clock time.
     let private guestTimeout : TimeSpan = TimeSpan.FromSeconds 120.0
 
-    /// The shared framework we are ourselves running on. `Roslyn` compiles guests against exactly
-    /// this directory's reference assemblies, so running them against anything else would be
-    /// comparing against a runtime the guest was never built for.
+    /// The shared framework guests run on: the framework under test, whose CoreLib is the one
+    /// PawPrint runs the same guest on.
     let private frameworkDirectory : string =
-        // A single-file or bundled host reports no location for CoreLib, and everything below is
-        // derived from this path; fail with the reason rather than with a null-deref three
-        // derivations later.
-        match typeof<obj>.Assembly.Location with
-        | null
-        | "" ->
-            failwith
-                "CoreLib reports no on-disk location, so the shared framework directory cannot be determined. The out-of-process oracle needs a normal (non-single-file) test host."
-        | location -> Path.GetDirectoryName location
+        FrameworkUnderTest.sharedFrameworkDirectory ()
 
     let private frameworkVersion : string = Path.GetFileName frameworkDirectory
 
     /// The `dotnet` muxer. Deriving it from the framework directory rather than from `PATH` keeps
-    /// the guest on the same runtime as the test host even when several SDKs are installed.
+    /// the guest on the framework under test even when several SDKs are installed.
     let private muxerPath : string =
         let exeName =
             if RuntimeInformation.IsOSPlatform OSPlatform.Windows then
@@ -127,14 +118,14 @@ module RealRuntime =
             let tried = String.Join (", ", candidates)
 
             failwith
-                $"Could not locate the dotnet muxer needed to run guests out of process. Tried: %s{tried}. CoreLib is at %s{typeof<obj>.Assembly.Location}."
+                $"Could not locate the dotnet muxer needed to run guests out of process. Tried: %s{tried}. The framework under test is %s{frameworkDirectory}."
 
     /// A guest is a framework-dependent console app, so it needs a runtimeconfig naming the
     /// framework to run on. Generating a minimal one rather than copying the test host's keeps the
     /// guest off the test host's own config properties (the GC heap cap, the ASP.NET Core
     /// framework reference), which a real guest process would not have. Roll-forward is disabled
-    /// because the version is by construction the one the guest was compiled against, so any
-    /// roll-forward would silently be a mismatch rather than a convenience.
+    /// because the version is by construction the framework under test's, the one PawPrint runs
+    /// the guest on, so any roll-forward would silently be a mismatch rather than a convenience.
     let private runtimeConfig : string =
         // Derived rather than hardcoded so this does not quietly start lying when the projects move
         // to a later target framework.

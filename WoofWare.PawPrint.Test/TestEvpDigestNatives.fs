@@ -2,12 +2,10 @@ namespace WoofWare.PawPrint.Test
 
 open System
 open System.IO
-open System.Collections.Immutable
 open System.Security.Cryptography
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint.Test.LinuxCoreLibFlavour
 open WoofWare.PosixKernel
 
@@ -217,8 +215,7 @@ public class Program
         use _loggerFactoryResource = loggerFactory
         use peImage = new MemoryStream (image)
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         match Program.run loggerFactory (Some name) peImage (HostConfig.Default dotnetRuntimes) with
         | RunOutcome.NormalExit (terminalState, _) -> terminalState

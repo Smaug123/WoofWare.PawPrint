@@ -1,7 +1,6 @@
 namespace WoofWare.PawPrint.Test
 
 open System
-open System.Collections.Immutable
 open System.IO
 open System.Net
 open System.Net.Http
@@ -12,7 +11,6 @@ open FsUnitTyped
 open Microsoft.AspNetCore.Builder
 open Microsoft.Extensions.Hosting
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 [<TestFixture>]
@@ -203,9 +201,7 @@ class Program
     let private startServerWith (compile : string list -> byte[]) (source : string) : RunningServer =
         let tempDir, dllPath = compileToTempDllWith compile source
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll typeof<RunResult>.Assembly.Location
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         let _, loggerFactory = LoggerFactory.makeTest ()
 

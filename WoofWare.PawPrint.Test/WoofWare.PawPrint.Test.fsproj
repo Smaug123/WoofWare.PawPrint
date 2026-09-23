@@ -13,6 +13,9 @@
     <Compile Include="TestNoMissedInterpolation.fs" />
     <Compile Include="TestFixturesDeclareParallelism.fs" />
     <Compile Include="Assembly.fs" />
+    <Compile Include="FrameworkUnderTest.fs" />
+    <Compile Include="TestFrameworkLocatorRatchet.fs" />
+    <Compile Include="PatchedCoreLib.fs" />
     <Compile Include="Roslyn.fs" />
     <Compile Include="TestAssemblyReadCache.fs" />
     <Compile Include="TestSequencePoints.fs" />
@@ -40,6 +43,7 @@
     <Compile Include="RealRuntime.fs" />
     <Compile Include="TestRealRuntimeOracle.fs" />
     <Compile Include="TestHarness.fs"/>
+    <Compile Include="TestFrameworkUnderTest.fs" />
     <Compile Include="DifferentialOracle.fs" />
     <Compile Include="TestDifferentialOracle.fs" />
     <Compile Include="TestBoundedRun.fs" />
@@ -360,6 +364,8 @@
     <EmbeddedResource Include="sourcesSignalTerminated\*.cs" />
     <EmbeddedResource Include="sources\*.cs" />
     <EmbeddedResource Include="sourcesConcurrencyBugs\*.cs" />
+    <!-- This project's own F# sources, which TestFrameworkLocatorRatchet scans. -->
+    <EmbeddedResource Include="@(Compile)" LogicalName="PawPrintTestSource/%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

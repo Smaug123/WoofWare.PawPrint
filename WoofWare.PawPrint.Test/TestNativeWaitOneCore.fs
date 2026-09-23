@@ -5,7 +5,6 @@ open System.IO
 open FsUnitTyped
 open Microsoft.CodeAnalysis
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Direct-call test for the `WaitHandle_WaitOneCore` QCall handler's third argument,
@@ -31,9 +30,7 @@ public static class Entry
         let image =
             Roslyn.compileAssemblyWithResources "WaitOneCoreTest" OutputKind.ConsoleApplication [] [] [ trivialSource ]
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll (typeof<RunResult>.Assembly.Location)
-            |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

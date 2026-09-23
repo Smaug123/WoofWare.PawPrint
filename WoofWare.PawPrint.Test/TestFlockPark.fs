@@ -4,7 +4,6 @@ open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
@@ -25,8 +24,6 @@ open WoofWare.PosixKernel
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestFlockPark =
-
-    let private assy = System.Reflection.Assembly.GetExecutingAssembly ()
 
     /// One regular file, which is all these guests open.
     let private seed : KernelConfig =
@@ -88,8 +85,7 @@ class Program
         let logger = loggerFactory.CreateLogger "TestFlockPark"
         ignore<Microsoft.Extensions.Logging.ILogger> logger
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// The stack-shape analysis of a body minted by `Reflection.Emit`, whose token effects come from
@@ -22,8 +20,7 @@ module TestStackShapeDynamicScope =
         let source = Assembly.getEmbeddedResourceAsString sourceName assy
         let image = Roslyn.compile [ source ]
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

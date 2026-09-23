@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// Pins that a `calli` commits exactly once, and that a class initialisation it triggers is
@@ -24,8 +22,6 @@ open WoofWare.PawPrint
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestCalliSuspensionOutcome =
-
-    let private assy = typeof<RunResult>.Assembly
 
     /// The IL op the thread is about to execute, when that is knowable. `None` for frames whose
     /// body is not IL (native/internal-call handlers), which we simply do not classify.
@@ -81,8 +77,7 @@ module TestCalliSuspensionOutcome =
         use _loggerFactoryResource = loggerFactory
         let logger = loggerFactory.CreateLogger "TestCalliSuspensionOutcome"
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
 

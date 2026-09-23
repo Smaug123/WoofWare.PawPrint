@@ -1,10 +1,8 @@
 namespace WoofWare.PawPrint.Test
 
-open System.Collections.Immutable
 open System.IO
 open FsUnitTyped
 open NUnit.Framework
-open WoofWare.DotnetRuntimeLocator
 open WoofWare.PawPrint
 
 /// The end-to-end harness runs guests in-process, so a guest that never terminates does not
@@ -17,8 +15,6 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestBoundedRun =
 
-    let private assy = typeof<RunResult>.Assembly
-
     let private runSource (maxSteps : int64) (name : string) (source : string) : RunOutcome =
         let image = Roslyn.compile [ source ]
 
@@ -27,8 +23,7 @@ module TestBoundedRun =
 
         use _loggerFactoryResource = loggerFactory
 
-        let dotnetRuntimes =
-            DotnetRuntime.SelectForDll assy.Location |> ImmutableArray.CreateRange
+        let dotnetRuntimes = FrameworkUnderTest.runtimeDirs ()
 
         use peImage = new MemoryStream (image)
         BoundedRun.runWith loggerFactory maxSteps name (Some name) peImage (HostConfig.Default dotnetRuntimes)
