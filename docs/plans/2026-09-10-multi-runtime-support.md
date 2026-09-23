@@ -475,10 +475,20 @@ Not consumers, by the test-host rule above:
   fixture" is visible as such. The same-image oracles among them *require* that the image PawPrint
   reads is the host's.
 
-The fixtures that assert a *shape* of CoreLib instead iterate the pinned image of every supported
-runtime. Those are `TestSetupShape`, `TestRuntimeFieldInfoStubLayout`,
-`TestNativeRuntimeMethodHandle`, `TestSafeIntrinsicFingerprints`' audit, and `TestEmulatedRuntime`'s
-drift check, where each runtime's framework and linux pack are compared against that runtime's pin.
+The fixtures that assert a *shape* of CoreLib are different: they are claims about a runtime's
+images, so they read **the selected runtime's** images rather than the host's, and they park like
+every other test on that leg:
+
+* `TestSetupShape`;
+* `TestRuntimeFieldInfoStubLayout`;
+* `TestNativeRuntimeMethodHandle`;
+* `TestSafeIntrinsicFingerprints`' audit;
+* `TestEmulatedRuntime`'s drift check, which compares the leg's framework and linux pack against
+  that runtime's pin.
+
+A leg never audits another runtime's images. If it did, net11's unreviewed intrinsic bodies
+(stage 7) would fail the net10 leg, and no net11 park could stop that. As today, a linux pack whose
+variable is unset is skipped, so a non-Nix checkout and `build-nix` still run the net10 leg.
 
 Three machine checks keep the selection honest:
 
@@ -603,8 +613,7 @@ mutation-testing skill applies to each table/classifier they introduce.
      the 82 `SelectForDll` calls and the `RealRuntime` framework binding routed through it; the
      precondition, the ratchet, and the harness postcondition. Behaviour-identical on net10.
    * **P2 `HostImage`.** The fixture reads of the host's CoreLib go through one named binding,
-     and the shape-asserting fixtures iterate the pinned image of each supported runtime (one,
-     today).
+     and the shape-asserting fixtures read the selected runtime's images.
    * **P3 the F# case publish becomes framework-dependent**, run on the selected framework.
    * **P4 parking keyed on `EmulatedRuntime`**, with per-runtime expected outcomes, across the
      `Guest` fixtures, and `ParkedOn.check` for the rest; every current park is `everywhere`.
