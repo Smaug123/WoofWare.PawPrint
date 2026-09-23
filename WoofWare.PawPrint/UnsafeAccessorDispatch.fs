@@ -530,6 +530,41 @@ module internal UnsafeAccessorDispatch =
         | first :: _ -> state, Ok first
         | [] -> state, Error (UnsafeAccessorRefusal.MissingField (describeTargetType targetTypeInfo, name))
 
+    /// Whether CoreCLR shares code over `System.__Canon` for an instantiation with this type
+    /// argument: `ClassLoader::CanonicalizeGenericArg` (generics.cpp:27) replaces a reference type,
+    /// arrays included, by `__Canon`, and a value type by its canonical MethodTable. So a value type
+    /// is shared exactly when one of its own type arguments is -- `ValueTuple<string>` shares with
+    /// `ValueTuple<object>` -- and a non-generic one never is.
+    ///
+    /// A byref, pointer or function pointer is not a valid type argument, and CoreCLR asserts that
+    /// none reaches the canonicalisation; one is refused rather than classified.
+    let rec private isSharedTypeArgument
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (describe : string)
+        (argument : ConcreteTypeHandle)
+        : bool
+        =
+        match argument with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> true
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"TODO: %s{describe} is instantiated with %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes argument}, which is not a valid type argument; PawPrint does not model how CoreCLR refuses it"
+        | ConcreteTypeHandle.Concrete _ ->
+
+        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
+        | None ->
+            failwith $"BUG: %s{describe} is instantiated with the handle %O{argument}, which names no registered type"
+        | Some (concrete, typeInfo) ->
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                concrete.Generics
+                |> Seq.exists (isSharedTypeArgument baseClassTypes state describe)
+            else
+                true
+
     /// The constraint checks CoreCLR makes once the lookup has found a target method, for the shapes
     /// whose answer this dispatcher can state: `VerifyDeclarationSatisfiesTargetConstraints`
     /// (unsafeaccessors.cpp:513), which compares the declaration's *typical* instantiation with the
@@ -805,26 +840,19 @@ module internal UnsafeAccessorDispatch =
 
             // A value type's generic virtual method has no unboxing stub, so it binds (see
             // `findTargetMethod`), and the stub's `callvirt` then runs it for a value-type
-            // instantiation. For an instantiation shared over `System.__Canon` -- any reference-type
-            // argument -- measured on real .NET 10 the process dies with SIGSEGV on the call, which
-            // is not an answer PawPrint can give.
+            // instantiation. For an instantiation shared over `System.__Canon` -- a reference-type
+            // argument, or a value type instantiated over one -- measured on real .NET 10 the
+            // process dies with SIGSEGV on the call, which is not an answer PawPrint can give.
             match kind with
             | UnsafeAccessorKind.Method when
                 targetIsValueType
                 && target.IsVirtual
                 && not target.Generics.IsEmpty
                 && accessor.Generics
-                   |> Seq.exists (fun argument ->
-                       match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
-                       | Some (_, typeInfo) ->
-                           not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
-                       // Structural: an array, which is a reference type, or a shape that is not a
-                       // valid type argument at all.
-                       | None -> true
-                   )
+                   |> Seq.exists (isSharedTypeArgument baseClassTypes state describe)
                 ->
                 failwith
-                    $"TODO: %s{describe} names the generic virtual method %s{name} of a value type and instantiates it with a reference type; real .NET 10 crashes the process with SIGSEGV calling such an accessor, which PawPrint cannot reproduce"
+                    $"TODO: %s{describe} names the generic virtual method %s{name} of a value type and instantiates it over System.__Canon; real .NET 10 crashes the process with SIGSEGV calling such an accessor, which PawPrint cannot reproduce"
             | _ -> ()
 
             // Two shapes the *body* CoreCLR emits refuses, both of them after the lookup has

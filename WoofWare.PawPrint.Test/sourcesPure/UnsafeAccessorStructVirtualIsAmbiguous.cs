@@ -48,7 +48,8 @@ namespace Outer.Inner
 // UnsafeAccessorAttribute.") for an `override` and for an implicitly implemented interface method.
 // (A non-virtual instance method and a static one bind: `sourcesPure/UnsafeAccessorNamespacedTargetName.cs`.
 // So does a generic virtual method, which gets no unboxing stub, when instantiated over a value type;
-// over a reference type, real .NET 10 crashes the process calling it.)
+// over one CoreCLR shares over `System.__Canon`, real .NET 10 crashes the process calling it:
+// `TestUnsafeAccessorSharedGenericVirtual.fs`.)
 public class TestUnsafeAccessorStructVirtualIsAmbiguous
 {
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "ToString")]
