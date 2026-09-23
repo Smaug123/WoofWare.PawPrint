@@ -43,49 +43,27 @@ open WoofWare.PosixKernel
 /// hit, the receiver id will be needed and this discard goes away.
 ///
 /// The handler's `int` return value (real CoreCLR's "0 = run default
-/// disposition, 1 = consumed") is dropped on the floor; the
-/// `SignalDelivery.Default*` cases a queue with no handler produces are
-/// refused loudly until the kill(2) stage of the signal-model plan wires
-/// them.
+/// disposition, 1 = consumed") is dropped on the floor. The
+/// `SignalDelivery.Default*` cases are refused loudly: a default that
+/// terminates or stops is applied when the signal is generated (see
+/// `SystemNative_Kill`), so one reaches this poll only by becoming receivable
+/// later, after an unblock, and nothing sets a signal mask yet.
 [<RequireQualifiedAccess>]
 module SignalDispatch =
 
-    /// Pull the eligible-receiver thread ids out of state. A thread is
-    /// only eligible to *receive* a signal if there's a kernel-level thread
-    /// behind it. In PawPrint terms three states correspond to "no OS
-    /// thread":
-    ///
-    ///   * `NotStarted` — the managed `Thread` object exists but `Start`
-    ///     hasn't been called, so the OS thread does not exist yet.
-    ///   * `Parked` — PawPrint-internal auxiliary threads (the dispatcher
-    ///     itself is the only inhabitant today); these never run guest IL
-    ///     and have no OS-level identity for the kernel to deliver a signal
-    ///     to.
-    ///   * `Terminated` — the thread has exited; its final frames are
-    ///     intentionally retained so other threads can observe state for
-    ///     `Join`, but the OS thread is gone.
+    /// Pull the eligible-receiver thread ids out of state: every thread
+    /// `ThreadStatus.canReceiveSignal` admits, other than the dispatcher.
     let private liveExcludingDispatcher (dispatcher : ThreadId) (state : IlMachineState) : ImmutableArray<ThreadId> =
         let builder = ImmutableArray.CreateBuilder<ThreadId> ()
 
         for KeyValue (tid, ts) in state.ThreadState do
-            // `NotStarted` and `Parked` are both classified as
-            // `hasNoActiveFrame`, so the `not hasNoActiveFrame` arm covers
-            // them and a new frameless `ThreadStatus` variant is
-            // automatically excluded. `Terminated` retains its frames (so
-            // `hasNoActiveFrame` returns `false` for it), hence the explicit
-            // `<> Terminated` arm.
-            //
-            // The explicit `tid <> dispatcher` exclusion is redundant today
-            // (the dispatcher is `Parked`, so `hasNoActiveFrame` already
-            // drops it), but enforces an invariant that must survive
-            // refactoring: the dispatcher runs the handler *for* a receiver
-            // and is never itself a candidate, even if a future change gave
-            // the dispatcher live frames between handler invocations.
-            if
-                tid <> dispatcher
-                && ts.Status <> ThreadStatus.Terminated
-                && not (ThreadStatus.hasNoActiveFrame ts.Status)
-            then
+            // The explicit `tid <> dispatcher` exclusion is redundant while
+            // the dispatcher is `Parked` between invocations (which
+            // `canReceiveSignal` already refuses), but enforces an invariant
+            // that must survive refactoring: the dispatcher runs the handler
+            // *for* a receiver and is never itself a candidate, even while it
+            // is running one.
+            if tid <> dispatcher && ThreadStatus.canReceiveSignal ts.Status then
                 builder.Add tid
 
         builder.ToImmutable ()
@@ -221,15 +199,16 @@ module SignalDispatch =
         | Some (SignalDelivery.DefaultStop signal)
         | Some (SignalDelivery.DefaultContinue signal) ->
             // A pending signal with no handler enabled for it, whose kernel
-            // default is to terminate, stop or continue the process. No
-            // production path can generate one yet — nothing calls `enqueue`
-            // until a kill(2)-shaped boundary lands — so this is a test
-            // driving the queue by hand, and it is refused rather than
-            // half-modelled. The kill(2) stage of
-            // docs/plans/2026-09-16-signal-state-kernel-model.md wires
-            // DefaultTerminate to ExecutionResult.SignalTerminated.
+            // default is to terminate, stop or continue the process.
+            // `SignalState.generate` applies a terminating or stopping default
+            // at generation whenever some thread can receive the signal, so it
+            // is pending here only if none could then; and every thread
+            // could, because nothing sets a signal mask yet. Reaching this is
+            // therefore a test driving the queue by hand, or a mask landing
+            // without this poll learning to apply defaults, and it is refused
+            // rather than half-modelled.
             failwith
-                $"SignalDispatch.trySpawnHandler: pending %O{signal} has no enabled handler and its kernel default is not Ignore; applying default dispositions is not wired up yet (see the kill(2) stage of the signal-model plan)."
+                $"SignalDispatch.trySpawnHandler: pending %O{signal} has no enabled handler and its kernel default is not Ignore; applying a default disposition at delivery rather than at generation is not modelled."
         | Some (SignalDelivery.RunHandler (entry, _receiver, handler)) ->
 
         let mi = SignalHandler.methodInfo handler

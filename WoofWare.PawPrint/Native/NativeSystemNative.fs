@@ -2424,6 +2424,57 @@ module NativeSystemNative =
                 ctx.Thread
             |> NativeHandlerResult.completed
             |> Some
+        | Some "SystemNative_Kill",
+          [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 ; signalArgument ],
+          MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32) when
+            (match signalArgument with
+             | ConcretePrimitive state.ConcreteTypes PrimitiveType.Int32 -> true
+             // `Interop.Sys.Signals`, the enum `Process.Kill` passes; a guest's
+             // own P/Invoke may declare the parameter as a plain `int`.
+             | NamedType state.ConcreteTypes ("", "Signals", generics) -> generics.IsEmpty
+             | _ -> false)
+            ->
+            // `int32_t SystemNative_Kill(int32_t pid, int32_t signal)`
+            // (pal_process.c:659): screen the PAL signal, then `kill(pid, signo)`.
+            let operation = "SystemNative_Kill"
+            let pid = NativeCall.int32Argument operation instruction.Arguments.[0]
+            let palSignal = NativeCall.int32Argument operation instruction.Arguments.[1]
+            let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
+
+            let returning (value : int) (state : IlMachineState) : NativeHandlerResult option =
+                state
+                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) ctx.Thread
+                |> NativeHandlerResult.completed
+                |> Some
+
+            match KillSignalPal.toKillSignal numbering palSignal with
+            | None -> withErrnoOnly ctx UnixError.EINVAL state |> returning -1
+            | Some signal ->
+
+            let liveThreads =
+                state.ThreadState
+                |> Seq.choose (fun (KeyValue (thread, ts)) ->
+                    if ThreadStatus.canReceiveSignal ts.Status then
+                        Some thread
+                    else
+                        None
+                )
+                |> ImmutableArray.CreateRange
+
+            match UnixSignal.kill liveThreads pid signal (EmulatedKernel.unix state.Kernel) with
+            | Error refusal ->
+                failwith
+                    $"%s{operation}: kill(%d{pid}, %O{signal}) from process %O{UnixSystem.processId (EmulatedKernel.unix state.Kernel)} is not modelled (%O{refusal}); only a signal to the calling process itself is."
+            | Ok (SignalGeneration.ProcessContinues, system) ->
+                state.MapKernel (EmulatedKernel.withUnix system) |> returning 0
+            | Ok (SignalGeneration.ProcessTerminated signal, system) ->
+                // The process never returns from this call.
+                ExecutionResult.SignalTerminated (state.MapKernel (EmulatedKernel.withUnix system), signal)
+                |> NativeHandlerResult.ofExecutionResult
+                |> Some
+            | Ok (SignalGeneration.ProcessStopped signal, _) ->
+                failwith
+                    $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
         | Some "SystemNative_GetEUid",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->

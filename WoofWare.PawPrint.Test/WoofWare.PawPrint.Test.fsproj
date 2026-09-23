@@ -189,6 +189,7 @@
     <Compile Include="TestEmulatedKernelCurrentDirectory.fs" />
     <Compile Include="TestUnixErrorPal.fs" />
     <Compile Include="TestPosixSignalPal.fs" />
+    <Compile Include="TestKillSignalPal.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
     <Compile Include="KernelSyscall.fs" />
@@ -283,6 +284,7 @@
     <Compile Include="TestPureCases.fs" />
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
+    <Compile Include="TestSignalTerminatedCases.fs" />
     <Compile Include="TestOraclePolicy.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestCallSiteTransition.fs" />
@@ -332,6 +334,7 @@
                       Link="socketMatrix\%(Filename)%(Extension)" />
     <EmbeddedResource Include="sourcesPure\*.cs" />
     <EmbeddedResource Include="sourcesImpure\*.cs" />
+    <EmbeddedResource Include="sourcesSignalTerminated\*.cs" />
     <EmbeddedResource Include="sources\*.cs" />
     <EmbeddedResource Include="sourcesConcurrencyBugs\*.cs" />
   </ItemGroup>

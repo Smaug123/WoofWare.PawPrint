@@ -190,8 +190,15 @@ handler:
   the signo is read under the platform numbering via `ofRawSignoUnder`.
 * A signal whose delivery answers `RunHandler` wakes the existing dispatcher
   (`SignalDispatch.trySpawnHandler` already consumes `nextDelivery`);
-* `DefaultTerminate` surfaces as `ExecutionResult.SignalTerminated`, which
-  already exists and already computes the `128 + signo` exit code;
+* a terminating default surfaces as `ExecutionResult.SignalTerminated`,
+  which already exists and already computes the `128 + signo` exit code.
+  Chosen (2026-09-22): it is applied *at generation*, by
+  `SignalState.generate`, when some live thread could receive the signal,
+  which is Linux's `complete_signal` rule and SIGKILL's rule on Darwin. The
+  generating native arm returns the termination itself, so the tick loop
+  is untouched. The alternative, a per-tick kernel poll applying defaults
+  before scheduling, is needed only once a signal can become receivable
+  later (an unblock), so it waits for the mask stage;
 * `DefaultStop`/`DefaultContinue` stay refused loudly, as the
   `HandleNonCanceledPosixSignal` arm refuses them today.
 

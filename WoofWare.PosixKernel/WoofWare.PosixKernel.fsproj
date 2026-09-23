@@ -58,6 +58,7 @@
         <Compile Include="UnixReadWrite.fs" />
         <Compile Include="UnixNamespace.fs" />
         <Compile Include="UnixSystem.fs" />
+        <Compile Include="UnixSignal.fs" />
         <EmbeddedResource Include="version.json" />
     </ItemGroup>
 
