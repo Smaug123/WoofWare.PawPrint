@@ -265,7 +265,7 @@
     <Compile Include="TestNativeRuntimeMethodHandle.fs" />
     <Compile Include="TestVirtualMethodSlots.fs" />
     <Compile Include="TestInterfaceDispatchMap.fs" />
-    <Compile Include="TestFabricatedDuplicateMethodImpl.fs" />
+    <Compile Include="TestFabricatedInterfaceMethodImpl.fs" />
     <Compile Include="TestMethodAtSlotShapes.fs" />
     <Compile Include="TestFabricatedVtableLayout.fs" />
     <Compile Include="TestFabricatedSlotAliasing.fs" />

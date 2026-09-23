@@ -252,7 +252,7 @@ module VirtualSlotLayout =
         }
 
     /// The type a nominal signature element names.
-    let private nominalIdentityOfSpelling
+    let internal nominalIdentityOfSpelling
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (operation : string)

@@ -420,6 +420,102 @@ module InterfaceDispatch =
             failwith
                 $"%s{operation}: a MethodImpl on %s{ownerDescription} names its declaration with the token %O{other}, which is neither a MethodDef nor a MemberRef; ECMA-335 II.22.27 permits only those two"
 
+    /// The method a MethodImpl body names, which must be one the owner itself declares. A MethodDef
+    /// row is that method; a MemberRef is resolved against the owner's own methods by name and
+    /// signature in its open vocabulary, as `EnumerateMethodImpls` normalises one.
+    let private methodImplBody
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (state : IlMachineState)
+        (owner : SlotOwner)
+        (ownerTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (assembly : DumpedAssembly)
+        (body : MetadataToken)
+        : IlMachineState * MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>
+        =
+        let refuse (detail : string) =
+            failwith
+                $"%s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{body}, %s{detail}; ECMA-335 II.22.27 requires the body to be a method of the type itself"
+
+        match body with
+        | MetadataToken.MethodDef handle ->
+            let method = assembly.Methods.[handle]
+
+            if method.RequiredDeclaringType.Identity <> owner.Identity then
+                refuse "a method of another type"
+
+            state, method
+        | MetadataToken.MemberReference handle ->
+            let memberRef = assembly.Members.[handle]
+
+            let signature =
+                match memberRef.Signature with
+                | MemberSignature.Method signature -> signature
+                | MemberSignature.Field _ -> refuse "which names a field"
+
+            let state, parentIdentity =
+                match memberRef.Parent with
+                | MetadataToken.TypeDefinition parent ->
+                    state, ResolvedTypeIdentity.ofDefinitionInAssembly assembly.DefinitionFullName parent
+                | MetadataToken.TypeReference parent ->
+                    let state, _, resolved =
+                        IlMachineTypeResolution.resolveTypeFromRef
+                            loggerFactory
+                            assembly
+                            assembly.TypeRefs.[parent]
+                            ImmutableArray.Empty
+                            state
+
+                    state, ResolvedTypeIdentity.ofDefinitionInAssembly resolved.AssemblyFullName resolved.TypeDefHandle
+                | MetadataToken.TypeSpecification parent ->
+                    let spelling =
+                        match assembly.TypeSpecs.[parent].Signature with
+                        | TypeDefn.GenericInstantiation (generic, _) -> generic
+                        | nominal -> nominal
+
+                    VirtualSlotLayout.nominalIdentityOfSpelling
+                        loggerFactory
+                        baseClassTypes
+                        operation
+                        state
+                        assembly
+                        spelling
+                | _ -> refuse "whose parent is not a type"
+
+            if parentIdentity <> owner.Identity then
+                refuse "a method of another type"
+
+            let rec first (state : IlMachineState) candidates =
+                match candidates with
+                | [] -> refuse "which names no method the type declares"
+                | (candidate : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>) :: rest ->
+                    if candidate.Name <> memberRef.PrettyName then
+                        first state rest
+                    else
+
+                    let state, equivalent =
+                        IlMachineState.signaturesEquivalent
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            false
+                            {
+                                Signature = signature
+                                AssemblyFullName = assembly.DefinitionFullName
+                                DeclaringTypeGenerics = owner.Substitution
+                            }
+                            {
+                                Signature = candidate.Signature
+                                AssemblyFullName = owner.AssemblyFullName
+                                DeclaringTypeGenerics = owner.Substitution
+                            }
+
+                    if equivalent then state, candidate else first state rest
+
+            first state ownerTypeInfo.Methods
+        | _ -> refuse "which is neither a MethodDef nor a MemberRef"
+
     /// The interface dispatch entries `typeHandle` itself contributes, excluding everything it
     /// inherits: `MethodTableBuilder::PlaceInterfaceMethods` followed by the interface half of
     /// `PlaceMethodImpls`.
@@ -693,12 +789,8 @@ module InterfaceDispatch =
                 | None -> state, placed, alreadyImplemented
                 | Some (interfaceHandle, declaredSubstitution, interfaceMethod) ->
 
-                let body =
-                    match impl.Body with
-                    | MetadataToken.MethodDef body -> assembly.Methods.[body]
-                    | other ->
-                        failwith
-                            $"TODO: %s{operation}: a MethodImpl on %s{owner.Description} names its body with %O{other} rather than a MethodDef of the type itself"
+                let state, body =
+                    methodImplBody loggerFactory baseClassTypes operation state owner typeInfo assembly impl.Body
 
                 // The entry the declaration names, identified on the generic definition as the interface
                 // map itself is: the first that is the same instantiation there

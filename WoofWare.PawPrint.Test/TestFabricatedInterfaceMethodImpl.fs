@@ -8,22 +8,33 @@ open System.Reflection.PortableExecutable
 open FsUnitTyped
 open NUnit.Framework
 
-/// Two MethodImpl rows naming the same interface method. CoreCLR's `AddMethodImplDispatchMapping`
-/// accepts them when they name the same body and rejects the type only when the bodies differ, so
-/// building a type's interface dispatch map must draw the same line: refusing the first shape would
-/// break every interface call on the type, not only calls to the doubly-mapped method. No C#
-/// compiler emits either shape.
+/// MethodImpl rows for interface methods in shapes no C# compiler emits, each of which CoreCLR
+/// either accepts or refuses at type load. A type's interface dispatch map is built from all its rows
+/// at once, so refusing a row CoreCLR accepts would break every interface call on the type, not only
+/// calls to the method the row names.
+///
+/// Two rows naming the same interface method are accepted when they name the same body, and refused
+/// only when the bodies differ (`AddMethodImplDispatchMapping`). A body named by a MemberRef rather
+/// than a MethodDef is normalised to the type's own method (`EnumerateMethodImpls`).
 [<TestFixture>]
-module TestFabricatedDuplicateMethodImpl =
+module TestFabricatedInterfaceMethodImpl =
+
+    [<RequireQualifiedAccess>]
+    type private Shape =
+        /// Two rows, both naming `MImpl` by MethodDef.
+        | SameBodyTwice
+        /// Two rows, naming `MImpl` and `MOther`.
+        | DifferentBodies
+        /// One row, naming `MImpl` through a MemberRef on `C`.
+        | MemberRefBody
 
     /// `IA { long M(); }`, `IB { long N(); }` and `C : IA, IB`, where `C` implements `IA.M` with a
-    /// private `MImpl` returning 4 named by two MethodImpl rows, and `IB.N` implicitly with a public
-    /// `N` returning 5. With `conflicting`, the second row names a different body, `MOther`,
-    /// returning 6.
+    /// private `MImpl` returning 4 through the MethodImpl rows `shape` describes, and `IB.N`
+    /// implicitly with a public `N` returning 5. `MOther` returns 6.
     ///
     /// Built from raw metadata because `TypeBuilder.DefineMethodOverride` refuses to override one
     /// declaration twice.
-    let private fabricate (conflicting : bool) : byte[] =
+    let private fabricate (shape : Shape) : byte[] =
         let metadata = MetadataBuilder ()
         let ilStream = BlobBuilder ()
         let bodies = MethodBodyStreamEncoder ilStream
@@ -147,11 +158,11 @@ module TestFabricatedDuplicateMethodImpl =
 
         let mImpl = addMethod explicitImpl "MImpl" true (returning 4L)
 
-        let secondBody =
-            if conflicting then
-                addMethod explicitImpl "MOther" true (returning 6L)
-            else
-                mImpl
+        let mOther =
+            match shape with
+            | Shape.DifferentBodies -> Some (addMethod explicitImpl "MOther" true (returning 6L))
+            | Shape.SameBodyTwice
+            | Shape.MemberRefBody -> None
 
         addMethod
             (MethodAttributes.Public
@@ -213,12 +224,30 @@ module TestFabricatedDuplicateMethodImpl =
         metadata.AddInterfaceImplementation (c, (TypeDefinitionHandle.op_Implicit ib : EntityHandle))
         |> ignore<InterfaceImplementationHandle>
 
-        for implementation in [ mImpl ; secondBody ] do
-            metadata.AddMethodImplementation (
-                c,
-                (MethodDefinitionHandle.op_Implicit implementation : EntityHandle),
-                (MethodDefinitionHandle.op_Implicit iaM : EntityHandle)
-            )
+        let bodies : EntityHandle list =
+            match shape with
+            | Shape.SameBodyTwice ->
+                [
+                    MethodDefinitionHandle.op_Implicit mImpl
+                    MethodDefinitionHandle.op_Implicit mImpl
+                ]
+            | Shape.DifferentBodies ->
+                [
+                    MethodDefinitionHandle.op_Implicit mImpl
+                    MethodDefinitionHandle.op_Implicit mOther.Value
+                ]
+            | Shape.MemberRefBody ->
+                [
+                    metadata.AddMemberReference (
+                        (TypeDefinitionHandle.op_Implicit c : EntityHandle),
+                        metadata.GetOrAddString "MImpl",
+                        signature true
+                    )
+                    |> MemberReferenceHandle.op_Implicit
+                ]
+
+        for body in bodies do
+            metadata.AddMethodImplementation (c, body, (MethodDefinitionHandle.op_Implicit iaM : EntityHandle))
             |> ignore<MethodImplementationHandle>
 
         let peBuilder =
@@ -253,12 +282,16 @@ public static class Driver
 
     [<Test>]
     let ``two MethodImpl rows naming the same body are one mapping`` () : unit =
-        FabricatedGuest.run "DupImpl" (fabricate false) "DupImplDriver" driver 45
+        FabricatedGuest.run "DupImpl" (fabricate Shape.SameBodyTwice) "DupImplDriver" driver 45
+
+    [<Test>]
+    let ``a MethodImpl body named by a MemberRef is the type's own method`` () : unit =
+        FabricatedGuest.run "DupImpl" (fabricate Shape.MemberRefBody) "DupImplDriver" driver 45
 
     [<Test>]
     let ``two MethodImpl rows naming different bodies are refused, as the real runtime refuses the type`` () : unit =
         let onHost, onPawPrint =
-            FabricatedGuest.runOnBoth "DupImpl" (fabricate true) "DupImplDriver" driver
+            FabricatedGuest.runOnBoth "DupImpl" (fabricate Shape.DifferentBodies) "DupImplDriver" driver
 
         match onHost with
         | RealRuntimeResult.NormalExit code ->
