@@ -205,6 +205,7 @@
     <Compile Include="TestPosixSignalPal.fs" />
     <Compile Include="TestKillSignalPal.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
+    <Compile Include="TestPollEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
     <Compile Include="KernelSyscall.fs" />
     <Compile Include="TestDirectoryStreamId.fs" />

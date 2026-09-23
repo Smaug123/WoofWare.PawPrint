@@ -179,10 +179,11 @@ type PollEntry =
         /// both kernels, it is ignored, reports nothing, and does not count
         /// towards the return value.
         Fd : int
-        /// What the caller asked about. `Err`, `Hup` and `Nval` are reported
-        /// whether or not they appear here, so a caller may leave them out and
-        /// still be told about them.
-        Requested : PollEvents
+        /// What the caller asked about: `events`, as raw bits in the simulated
+        /// flavour's own `<poll.h>` numbering. `POLLERR`, `POLLHUP` and
+        /// `POLLNVAL` are reported whether or not they appear here, so a caller
+        /// may leave them out and still be told about them.
+        Events : int16
     }
 
 /// Why this kernel will not answer a `poll`.
@@ -192,21 +193,24 @@ type PollEntry =
 /// answer to give.
 [<RequireQualifiedAccess>]
 type PollRefusal =
-    /// This kernel models `poll(2)`'s readiness for one flavour only, and it is
-    /// not this one.
+    /// This kernel models `poll(2)` for one flavour only, and it is not this
+    /// one.
     ///
-    /// Darwin's answers differ on almost every measured row -- an idle TCP
-    /// socket presents nothing where Linux presents `OUT|HUP`, a directory and a
-    /// character device answer `NVAL` where Linux answers `IN|OUT`, and `ERR`
-    /// and `HUP` are not output-only there -- so it is a second readiness model
-    /// rather than an extra column.
+    /// Darwin's answer is not one level masked by the request, as Linux's is:
+    /// what it reports depends on which bits were asked for together. A request
+    /// carrying `POLLEXTEND`, `POLLATTRIB`, `POLLNLINK` or `POLLWRITE` on a
+    /// socket answers `POLLNVAL`; a TCP socket whose peer has closed answers
+    /// `POLLOUT` to a request for `POLLOUT` but `POLLIN|POLLHUP` to a request
+    /// for `POLLIN|POLLOUT`; a request of 0 reports nothing, even for a
+    /// descriptor that is not open. So it is a second model rather than an
+    /// extra column.
     | UnmodelledFlavour of flavour : SimulatedUnixFlavour
-    /// The entry names a socket event port, and what `poll(2)` reports for one
-    /// is unmeasured.
+    /// The entry names a socket event port, which this kernel does not answer
+    /// `poll(2)` for.
     ///
     /// Reachable in a way epoll's equivalent is not: `epoll_ctl` screens the
     /// targets it will accept, and `poll(2)` accepts any descriptor.
-    | UnmeasuredTarget of fd : int
+    | UnmodelledTarget of fd : int
     /// No entry carries anything and the timeout is not zero, so a real `poll`
     /// sleeps here until a descriptor becomes ready or the timeout expires.
     ///
@@ -228,9 +232,9 @@ module PollRefusal =
     let describe (refusal : PollRefusal) : string =
         match refusal with
         | PollRefusal.UnmodelledFlavour flavour ->
-            $"this kernel is %O{flavour}-flavoured, and `poll(2)`'s readiness is modelled here for Linux only. The Darwin rows are measured but unimplemented, and they are a second readiness model rather than an extra column: ERR and HUP are not output-only there, an idle stream socket presents nothing, and file targets split by kind. Model Darwin readiness before polling under this flavour."
-        | PollRefusal.UnmeasuredTarget fd ->
-            $"fd %d{fd} names a socket event port, and what `poll(2)` reports for one is unmeasured. Measure what such a descriptor reports with and without ready events before answering."
+            $"this kernel is %O{flavour}-flavoured, and `poll(2)` is modelled here for Linux only. Darwin's answer is not one level masked by the request: it registers a kqueue filter per group of requested bits, so which bits were asked together decides what is reported (a vnode bit on a socket answers POLLNVAL, a reported HUP suppresses OUT, and a request of 0 reports nothing even for a descriptor that is not open). Model that before polling under this flavour."
+        | PollRefusal.UnmodelledTarget fd ->
+            $"fd %d{fd} names a socket event port, which this kernel does not answer `poll(2)` for. Linux answers it by re-polling the port's ready list, as `epoll_wait` does, and what that walk leaves in the list is unmeasured; model that before answering."
         | PollRefusal.WouldPark timeoutMilliseconds ->
             $"no entry carries anything and the timeout is %d{timeoutMilliseconds}ms, so a real `poll(2)` would sleep. This library models no parked poll: `WakeCondition` has no case carrying a poll's entry set and its deadline, so a park here would never end. A poll with anything already ready is answered at any timeout; only this case needs the park."
 
@@ -568,61 +572,118 @@ module UnixPoll =
         else
             Ok (SocketEventRegistrationAnswer.Changed, system)
 
-    /// The readiness of the descriptor `targetId` names, for a `poll(2)` caller.
-    ///
-    /// A sibling of `SocketEventPort.epollReadinessOfDescription` rather than a
-    /// widening of it: the two dispatchers refuse different things, because
-    /// `epoll_ctl` screens targets that `poll(2)` accepts. The per-socket level
-    /// they share (`socketReadinessLevel`) is the part measurement says is one
-    /// function.
-    ///
-    /// Linux rows only; `poll` refuses the Darwin flavour before calling this,
-    /// which is what lets the file row below be a single answer -- on Darwin a
-    /// regular file polls `IN|PRI|OUT` but a directory polls `NVAL`, so the same
-    /// `OpenFileTarget.File` would need two.
-    let pollReadinessOfDescription<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
+    // Linux's `<poll.h>` numbering: the bits a Linux-flavoured `poll(2)` reads
+    // in `events` and writes in `revents`.
+    //
+    // Measured 2026-09-23 on Linux 6.18.5 aarch64 (glibc 2.41) by
+    // `docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c`, which
+    // printed the header and then polled every object and state
+    // `linuxPollLevel` answers for with all 65536 request masks at timeout 0. On every object,
+    // every answer was `level & (events | POLLERR | POLLHUP)` and `rv` counted
+    // exactly the entries with a non-zero `revents`; a descriptor that is not
+    // open answered `POLLNVAL` alone to all 65536; no request failed.
+    //
+    // No modelled object presents `POLLPRI`, `POLLRDBAND` or `POLLMSG`, which
+    // is why they have no literal here. `POLLREMOVE` (0x1000), the unassigned
+    // 0x0800 and the kernel-internal 0x4000 and 0x8000 were never reported
+    // either, which is the shape of `do_pollfd`: it reads a request through
+    // `demangle_poll`, which maps only the named bits other than `POLLREMOVE`,
+    // so the rest never reach the filter the level is masked by. That held
+    // for 0x8000 even on a socket with `SO_BUSY_POLL` set, the one case in
+    // which a socket's own poll handler adds that bit to its mask.
+    let private linuxPollIn : int16 = 0x0001s
+    let private linuxPollOut : int16 = 0x0004s
+    let private linuxPollErr : int16 = 0x0008s
+    let private linuxPollHup : int16 = 0x0010s
+    let private linuxPollNval : int16 = 0x0020s
+    let private linuxPollRdNorm : int16 = 0x0040s
+    let private linuxPollWrNorm : int16 = 0x0100s
+    let private linuxPollWrBand : int16 = 0x0200s
+    let private linuxPollRdHup : int16 = 0x2000s
+
+    /// The conditions the descriptor `targetId` names presents to a
+    /// Linux-flavoured `poll(2)`, in Linux's `<poll.h>` numbering: what it
+    /// would report to a request of every bit.
+    let private linuxPollLevel<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (targetId : OpenFileDescriptionId)
         (system : UnixSystem<'Task, 'Handler>)
-        : ReadinessLevel
+        : int16
         =
         match Map.tryFind targetId (FileDescriptorRegistry.descriptions system.Process.FileDescriptors) with
         | None ->
             failwith
-                $"UnixPoll.pollReadinessOfDescription: %O{targetId} names no live open file description. `poll` answers POLLNVAL for an fd that names nothing, without ever reaching here, so this is a bug in the caller."
+                $"UnixPoll.linuxPollLevel: %O{targetId} names no live open file description. `poll` answers POLLNVAL for an fd that names nothing, without ever reaching here (this is a bug in this library)."
         | Some description ->
 
         match description.Target with
-        | OpenFileTarget.Socket socketId -> UnixMachineState.socketReadinessLevel socketId system.Machine
+        | OpenFileTarget.Socket socketId ->
+            // The per-socket level is the one epoll reads (`socketReadinessLevel`):
+            // both waiters take their mask from the socket's own `->poll`
+            // handler. That handler also sets bits epoll's interest cannot ask
+            // for, and measurement pins each to a condition the level already
+            // holds: every measured socket presents POLLRDNORM exactly when it
+            // presents POLLIN, and POLLWRNORM exactly when POLLOUT.
+            let level = UnixMachineState.socketReadinessLevel socketId system.Machine
+            let socket = UnixMachineState.socket socketId system.Machine
+
+            // POLLWRBAND is the one bit that depends on more than the level.
+            // Measured, it rides with POLLOUT on UDP (IPv4 and IPv6, with and
+            // without a peer) and on every Unix-domain socket (stream,
+            // datagram, raw and seqpacket, fresh), and never on TCP (idle,
+            // listening, established with the peer alive or gone, refused) --
+            // `tcp_poll` sets POLLOUT|POLLWRNORM, where `datagram_poll` and the
+            // Unix-domain handlers set POLLOUT|POLLWRNORM|POLLWRBAND.
+            let writeBand =
+                match socket.Domain, socket.Kind with
+                | SocketDomain.Unix, _ -> true
+                | SocketDomain.InterNetwork, SocketKind.Datagram
+                | SocketDomain.InterNetworkV6, SocketKind.Datagram -> true
+                | SocketDomain.InterNetwork, SocketKind.Stream
+                | SocketDomain.InterNetworkV6, SocketKind.Stream -> false
+                | SocketDomain.InterNetwork, (SocketKind.Raw | SocketKind.SeqPacket)
+                | SocketDomain.InterNetworkV6, (SocketKind.Raw | SocketKind.SeqPacket) ->
+                    failwith
+                        $"UnixPoll.linuxPollLevel: socket %O{socketId} is %O{socket.Kind} in %O{socket.Domain}, which this kernel never creates (an IP raw socket needs CAP_NET_RAW, and nothing here creates SCTP), so what `poll(2)` reports for it is unmeasured (this is a bug in the caller's state construction)."
+
+            (if level.In then linuxPollIn ||| linuxPollRdNorm else 0s)
+            ||| (if level.Out then
+                     linuxPollOut ||| linuxPollWrNorm ||| (if writeBand then linuxPollWrBand else 0s)
+                 else
+                     0s)
+            ||| (if level.RdHup then linuxPollRdHup else 0s)
+            ||| (if level.Hup then linuxPollHup else 0s)
+            ||| (if level.Err then linuxPollErr else 0s)
         | OpenFileTarget.File _ ->
-            // Measured (`pollgaps.c`): a regular file answers IN|OUT at every
-            // offset and under O_RDONLY as much as O_RDWR, and a directory
-            // answers the same. Files have no `->poll` handler, so the VFS
-            // default reports them always-ready; nothing about this varies
-            // with the file's contents or the description's position.
-            { ReadinessLevel.none with
-                In = true
-                Out = true
-            }
+            // Measured: a regular file answers IN|OUT|RDNORM|WRNORM at every
+            // offset, empty or not, and under every access mode, and a directory
+            // answers the same. Files have no `->poll` handler, so `vfs_poll`
+            // reports `DEFAULT_POLLMASK` for them; nothing about this varies with
+            // the file's contents or the description's position.
+            linuxPollIn ||| linuxPollOut ||| linuxPollRdNorm ||| linuxPollWrNorm
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardInput ->
-            // The same launch-shape constants `SocketEventPort.epollReadinessOfDescription`
-            // holds, and poll agrees with both on Linux (`pollmask.c` rows 19
-            // and 20). Not shared with that function: it refuses two of the
-            // targets this one answers, so the common part is the socket
-            // level, not the dispatch.
-            { ReadinessLevel.none with
-                Hup = true
-            }
+            // The launch shape `SocketEventPort.epollReadinessOfDescription`
+            // states too: stdin is the read end of a pipe whose writer the
+            // launcher closed, measured to present HUP alone.
+            linuxPollHup
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardOutput
         | OpenFileTarget.StandardStream FileDescriptorRole.StandardError ->
-            { ReadinessLevel.none with
-                Out = true
-            }
+            // The write end of a pipe with space and a live reader.
+            linuxPollOut ||| linuxPollWrNorm
         | OpenFileTarget.SocketEventPort _ ->
             failwith
-                $"UnixPoll.pollReadinessOfDescription: %O{targetId} is a socket event port, and what `poll(2)` reports for one is unmeasured. `poll` refuses such an entry before reaching here, so this is a bug in the caller."
+                $"UnixPoll.linuxPollLevel: %O{targetId} is a socket event port, and what `poll(2)` reports for one is unmeasured. `poll` refuses such an entry before reaching here (this is a bug in this library)."
 
     /// `poll(2)`: what each entry reports right now, and how many entries carry
     /// anything.
+    ///
+    /// Each entry's `Events`, and each `revents` answered for it, is the raw
+    /// bits in the simulated flavour's own `<poll.h>` numbering. Under the Linux
+    /// flavour every bit is answered as a real kernel answers it: each named
+    /// bit is reported when the descriptor presents it and the entry asked for
+    /// it, `POLLERR` and `POLLHUP` whether asked for or not, and `POLLNVAL`
+    /// alone for a descriptor that is not open. A bit Linux does not read
+    /// (`POLLREMOVE`, 0x0800, 0x4000 and 0x8000) is ignored, as it is there.
+    /// Under the Darwin flavour every poll is refused.
     ///
     /// The count is `poll(2)`'s own return value, and it is neither the number
     /// of entries nor the number of *conditions*: it counts entries carrying
@@ -639,48 +700,67 @@ module UnixPoll =
         (entries : PollEntry list)
         (milliseconds : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<PollEvents list * int, PollRefusal>
+        : Result<int16 list * int, PollRefusal>
         =
         // Ahead of the entries, and so ahead of an empty entry list too: a
         // zero-entry poll answers `rv = 0` identically on both flavours and
         // consults no readiness at all, but answering that one row would be a
         // branch reachable only from a flavour whose every other row refuses.
+        //
+        // Darwin's alphabet (`<poll.h>` on 25.6.0 arm64, 2026-09-23): the six
+        // shared bits, POLLRDNORM 0x40, POLLRDBAND 0x80, POLLWRNORM = POLLOUT,
+        // POLLWRBAND 0x100, POLLEXTEND 0x200, POLLATTRIB 0x400, POLLNLINK 0x800,
+        // POLLWRITE 0x1000. `poll-alphabet.c`'s full sweep there finds no
+        // request that fails, and no object for which the answer is one level
+        // masked by the request: `poll` registers EVFILT_READ for any of
+        // IN/RDNORM/PRI/RDBAND/HUP, EVFILT_WRITE for any of OUT/WRNORM/WRBAND,
+        // and EVFILT_VNODE for any of the four vnode bits, and a filter the
+        // descriptor cannot take turns the whole entry into POLLNVAL (a vnode
+        // bit on every socket, pipe and kqueue; a read or write bit on a
+        // directory; a write bit on a kqueue; any of them on a descriptor that
+        // is not open). ERR and NVAL, and 0x2000..0x8000, register nothing, so
+        // a request of only those reports nothing at all.
         match SimulatedUnixPlatform.flavour system.Machine.UnixPlatform with
         | SimulatedUnixFlavour.Darwin -> Error (PollRefusal.UnmodelledFlavour SimulatedUnixFlavour.Darwin)
         | SimulatedUnixFlavour.Linux ->
 
-        let reportOne (entry : PollEntry) : Result<PollEvents, PollRefusal> =
+        let reportOne (entry : PollEntry) : Result<int16, PollRefusal> =
             if entry.Fd < 0 then
                 // Measured on both kernels: a negative descriptor is ignored,
                 // reports nothing, and does not count towards the return value.
                 // It is not an error and not NVAL.
-                Ok PollEvents.none
+                Ok 0s
             else
 
             match FileDescriptorRegistry.tryFindWithId entry.Fd system.Process.FileDescriptors with
             | None ->
                 // POLLNVAL is a statement about the entry, not a readiness
-                // level, and it is reported whether or not anything was asked
-                // for.
-                Ok
-                    { PollEvents.none with
-                        Nval = true
-                    }
+                // level: measured, it is reported alone, whatever was asked
+                // for, `events = 0` included.
+                Ok linuxPollNval
             | Some (descriptionId, description) ->
 
             match description.Target with
-            | OpenFileTarget.SocketEventPort _ -> Error (PollRefusal.UnmeasuredTarget entry.Fd)
+            // Measured on Linux (`poll-alphabet.c`): POLLIN|POLLRDNORM when an
+            // event is deliverable, nothing otherwise, under the same
+            // `level & (events | POLLERR | POLLHUP)` rule. Refused anyway,
+            // because the kernel computes that level by re-polling the ready
+            // list, and whether the walk drops a stale entry, as `drain` does,
+            // is unmeasured.
+            | OpenFileTarget.SocketEventPort _ -> Error (PollRefusal.UnmodelledTarget entry.Fd)
             | OpenFileTarget.Socket _
             | OpenFileTarget.File _
             | OpenFileTarget.StandardStream _ ->
-                pollReadinessOfDescription descriptionId system
-                |> PollEvents.ofLevel entry.Requested
+                // `do_pollfd`'s own shape: the level, filtered by the request
+                // with POLLERR and POLLHUP added whatever was asked.
+                linuxPollLevel descriptionId system
+                &&& (entry.Events ||| linuxPollErr ||| linuxPollHup)
                 |> Ok
 
         // In list order, stopping at the first entry that cannot be answered:
         // a real `poll` inspects its entries in order, so that is the entry a
         // refusal names.
-        let rec report (remaining : PollEntry list) (acc : PollEvents list) : Result<PollEvents list, PollRefusal> =
+        let rec report (remaining : PollEntry list) (acc : int16 list) : Result<int16 list, PollRefusal> =
             match remaining with
             | [] -> Ok (List.rev acc)
             | entry :: rest ->
@@ -694,7 +774,8 @@ module UnixPoll =
         | Error refusal -> Error refusal
         | Ok reported ->
 
-        let triggered = reported |> List.filter (PollEvents.isEmpty >> not) |> List.length
+        let triggered =
+            reported |> List.filter (fun revents -> revents <> 0s) |> List.length
 
         if triggered = 0 && milliseconds <> 0 then
             Error (PollRefusal.WouldPark milliseconds)

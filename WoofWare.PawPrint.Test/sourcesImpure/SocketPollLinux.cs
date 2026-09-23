@@ -272,6 +272,16 @@ class SocketPollLinux
         one = new PollEvent { FileDescriptor = (int)listener, Events = POLLIN };
         if (Poll(&one, 1, 0, &triggered) != PAL_SUCCESS) return 38;
         if (one.TriggeredEvents != POLLIN || triggered != 1) return 39;
+        // 65-66: the same listener asked only for bits outside the six the PAL
+        // converts, POLLRDNORM (0x40) among them, which Linux presents here
+        // beside IN. `Common_ConvertPollEventsPalToPlatform` drops every one of
+        // them, so the kernel is asked for nothing: the entry reports nothing
+        // and is not counted. A shim that let POLLRDNORM through would have the
+        // kernel count this entry even though the conversion back drops the
+        // bit it reported.
+        one = new PollEvent { FileDescriptor = (int)listener, Events = unchecked((short)0x7FC0) };
+        if (Poll(&one, 1, 0, &triggered) != PAL_SUCCESS) return 65;
+        if (one.TriggeredEvents != 0 || triggered != 0) return 66;
 
         // A refused connect is the only phase whose level carries ERR, so it is
         // the only thing that can pin ERR as output-only. Asking for nothing

@@ -2,6 +2,9 @@
 # (6.18.5 arm64) through socketFuzz/harness.c — three stable runs each, so
 # every row below carries the harness's `=` agreement.
 #
+# Each `poll:<slot>:<events>` carries `events` in Linux's own <poll.h>
+# numbering, and the transcript names every bit Linux names.
+#
 # The random seed corpus reaches poll, but only at masks that happen to be
 # drawn; these rows pin each rule the projection can get wrong, and each names
 # the mutant it kills. `poll` mutates no kernel state, so a row is just
@@ -25,9 +28,9 @@ sock:1 poll:1:4	ok <OUT+HUP>
 #    <HUP>.
 sock:1 conndead:1 poll:1:0	ok EINPROGRESS <ERR+HUP>
 # 5. The same refusal asked for IN|OUT reports all four. Note RDHUP is in that
-#    phase's level and is absent here: the PAL has no RDHUP row in either
-#    direction of its conversion, so no guest can see the bit through this
-#    entry point. Kills a projection that carried RdHup across.
+#    phase's level and is absent here, because it was not asked for: unlike
+#    ERR and HUP it is not output-only. Kills a projection that reported RdHup
+#    unasked.
 sock:1 conndead:1 poll:1:5	ok EINPROGRESS <IN+OUT+ERR+HUP>
 # 6. THE IN MASK. A listener with a queued connection has IN in its level and
 #    nothing else; asked for OUT alone it must answer empty. Kills
@@ -48,3 +51,28 @@ sock:1 lstn:1 sock:2 conn:2:1 acpt:1:3 poll:3:5 poll:2:5	ok ok ok EINPROGRESS ok
 sock:1 poll:1:2	ok <HUP>
 # 11. ... including on the one phase that does carry an error.
 sock:1 conndead:1 poll:1:2	ok EINPROGRESS <ERR+HUP>
+# 12. POLLWRNORM rides with OUT, and is reported only when asked for itself.
+#     Kills a level that never sets WRNORM, which answers <HUP>.
+sock:1 poll:1:256	ok <HUP+WRNORM>
+# 13. ... and POLLWRBAND does not, on TCP: tcp_poll never sets it, where a
+#     datagram or Unix-domain socket would. Kills WRBAND set for every
+#     writable socket, which answers <HUP+WRBAND>.
+sock:1 poll:1:512	ok <HUP>
+# 14. POLLRDNORM rides with IN: a listener with a queued connection. Kills a
+#     level that never sets RDNORM, which answers <>.
+sock:1 lstn:1 sock:2 conn:2:1 poll:1:64	ok ok ok EINPROGRESS <RDNORM>
+# 15. An established end asked for WRNORM|WRBAND reports WRNORM alone.
+sock:1 lstn:1 sock:2 conn:2:1 acpt:1:3 poll:3:768	ok ok ok EINPROGRESS ok <WRNORM>
+# 16. POLLRDHUP is reported when asked for, and a pending refusal's level has
+#     it. Kills a projection that drops RdHup, which answers <ERR+HUP>.
+sock:1 conndead:1 poll:1:8192	ok EINPROGRESS <ERR+HUP+RDHUP>
+# 17. The whole level of a pending refusal, asked for with every bit.
+sock:1 conndead:1 poll:1:65535	ok EINPROGRESS <IN+OUT+ERR+HUP+RDNORM+WRNORM+RDHUP>
+# 18. RDHUP on an established end whose peer has closed.
+sock:1 lstn:1 sock:2 conn:2:1 acpt:1:3 close:2 poll:3:8192	ok ok ok EINPROGRESS ok ok <RDHUP>
+# 19. The bits Linux does not read (0x0800, POLLREMOVE 0x1000, 0x4000,
+#     0x8000), with RDHUP beside them: ignored, so only the unasked HUP comes
+#     back.
+sock:1 poll:1:63488	ok <HUP>
+# 20. PRI, RDBAND and MSG together: askable, and never presented.
+sock:1 poll:1:1154	ok <HUP>

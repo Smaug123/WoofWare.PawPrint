@@ -23,9 +23,9 @@ type FuzzOp =
     | Mod of port : int * target : int * mask : int
     | Del of port : int * target : int
     | Wait of port : int * maxEvents : int
-    /// `poll(2)` over a single slot, with timeout 0. The `events` mask is in
-    /// the PAL's `PollEvents` alphabet (`IN` 0x1, `PRI` 0x2, `OUT` 0x4,
-    /// `ERR` 0x8, `HUP` 0x10, `NVAL` 0x20) — a *different* alphabet from the
+    /// `poll(2)` over a single slot, with timeout 0. The `events` mask is
+    /// Linux's own `<poll.h>` numbering, any value in 0..0xFFFF, and it reaches
+    /// both kernels unconverted — a *different* alphabet from the
     /// `SocketEvents` bits `Add`/`Mod` carry, which number different
     /// conditions with the same small integers.
     | Poll of slot : int * events : int
@@ -154,25 +154,41 @@ module SocketFuzz =
         ]
         |> String.concat "+"
 
-    /// `poll(2)`'s `revents`, in the PAL's alphabet. Separate from
-    /// `maskString` because the two alphabets differ: poll has no `RDHUP` (the
-    /// PAL never asks for it) and does have `NVAL`, which is not a readiness
-    /// condition at all.
-    let private pollMaskString (r : PollEvents) : string =
+    /// Linux's `<poll.h>` names, in the order `harness.c`'s
+    /// `poll_mask_string` prints them.
+    let private pollBitNames : (int16 * string) list =
         [
-            if r.In then
-                "IN"
-            if r.Pri then
-                "PRI"
-            if r.Out then
-                "OUT"
-            if r.Err then
-                "ERR"
-            if r.Hup then
-                "HUP"
-            if r.Nval then
-                "NVAL"
+            0x0001s, "IN"
+            0x0002s, "PRI"
+            0x0004s, "OUT"
+            0x0008s, "ERR"
+            0x0010s, "HUP"
+            0x0020s, "NVAL"
+            0x0040s, "RDNORM"
+            0x0080s, "RDBAND"
+            0x0100s, "WRNORM"
+            0x0200s, "WRBAND"
+            0x0400s, "MSG"
+            0x2000s, "RDHUP"
         ]
+
+    /// `poll(2)`'s `revents`, in Linux's own numbering. Separate from
+    /// `maskString` because the two alphabets differ: poll has `NVAL`, which
+    /// is not a readiness condition at all, and the `*NORM`/`*BAND` bits epoll
+    /// interest cannot ask for.
+    ///
+    /// Refuses a bit with no name rather than printing it, as the harness does:
+    /// a kernel that reported one would be answering something neither side's
+    /// transcript can say.
+    let private pollMaskString (revents : int16) : string =
+        let known = pollBitNames |> List.fold (fun acc (bit, _) -> acc ||| bit) 0s
+
+        if revents &&& ~~~known <> 0s then
+            failwith
+                $"INTERPRETER-DRIVER BUG: poll reported revents 0x%04x{uint16 revents}, outside Linux's named bits."
+
+        pollBitNames
+        |> List.choose (fun (bit, name) -> if revents &&& bit <> 0s then Some name else None)
         |> String.concat "+"
 
     /// `UnixError` case names are errno names, which is also what the
@@ -499,19 +515,33 @@ module SocketFuzz =
                 Kernel = kernel
             }
         | FuzzOp.Poll (slot, events) ->
-            // The whole point of this op: it asks the *shared* level function
-            // the same question `poll(2)` asks the real kernel, so a generated
-            // sequence that drives a socket into any phase compares PawPrint's
-            // level against the kernel's rather than against a hand-written
-            // row. `poll(2)` mutates nothing, so the state passes through.
-            let reported =
-                match FileDescriptorRegistry.tryFindId (slotFd slot state) state.Kernel.Process.FileDescriptors with
-                | Some descriptionId ->
-                    UnixPoll.pollReadinessOfDescription descriptionId state.Kernel
-                    |> PollEvents.ofLevel (PollEvents.ofBits (int16 events))
-                | None -> failwith $"INTERPRETER-DRIVER BUG: poll's slot %d{slot} is not live."
+            // The whole point of this op: it asks `poll(2)` the same question
+            // the harness asks the real kernel, so a generated sequence that
+            // drives a socket into any phase compares this library's answer
+            // against the kernel's rather than against a hand-written row.
+            // `poll(2)` mutates nothing, so the state passes through.
+            if events < 0 || events > 0xFFFF then
+                failwith $"INTERPRETER-DRIVER BUG: poll events %d{events} is not a 16-bit mask."
 
-            $"<%s{pollMaskString reported}>", state
+            let fd = slotFd slot state
+
+            if
+                FileDescriptorRegistry.tryFindId fd state.Kernel.Process.FileDescriptors
+                |> Option.isNone
+            then
+                failwith $"INTERPRETER-DRIVER BUG: poll's slot %d{slot} is not live."
+
+            let entry : PollEntry =
+                {
+                    Fd = fd
+                    Events = int16 (uint16 events)
+                }
+
+            match UnixPoll.poll [ entry ] 0 state.Kernel with
+            | Error refusal -> raise (ModelRefusal $"poll of fd %d{fd} refused: %s{PollRefusal.describe refusal}")
+            | Ok ([ reported ], _) -> $"<%s{pollMaskString reported}>", state
+            | Ok (reported, _) ->
+                failwith $"INTERPRETER-DRIVER BUG: one poll entry was answered with %d{List.length reported} reports."
 
     /// Run one sequence against a fresh `UnixSystem.initial SimulatedUnixPlatform.linuxX64` (Linux
     /// flavour, matching the harness's kernel). Both invariant checkers run
@@ -621,16 +651,19 @@ module SocketFuzz =
         | 8 -> rng.Next 0x20 // anything, CLOSE/ERROR bits included
         | _ -> 0x1F
 
-    /// A `poll(2)` request mask, in the PAL's `PollEvents` alphabet.
+    /// A `poll(2)` request mask, in Linux's own `<poll.h>` numbering.
     ///
     /// 0 and the output-only bits are drawn deliberately, not as an
     /// afterthought: `ERR`, `HUP` and `NVAL` are reported whether or not they
     /// were asked for, so a generator that only ever asked for `IN`/`OUT`
     /// would never exercise the one rule this projection can get wrong. `PRI`
     /// is included for the same reason in the other direction — no modelled
-    /// level sets it, so every draw of it must come back empty.
+    /// level sets it, so every draw of it must come back empty. The bits the
+    /// .NET shim never asks for (`RDNORM`, `WRNORM`, `WRBAND`, `RDHUP`) are
+    /// drawn alone as well as inside the whole 16-bit space, so each is asked
+    /// of every phase a sequence reaches.
     let private randomPollMask (rng : Random) : int =
-        match rng.Next 10 with
+        match rng.Next 16 with
         | 0 -> 0x00 // ask for nothing; ERR/HUP/NVAL must still be reported
         | 1 -> 0x01 // IN
         | 2 -> 0x04 // OUT
@@ -640,7 +673,13 @@ module SocketFuzz =
         | 6 -> 0x08 // ERR alone, an output-only bit in the request
         | 7 -> 0x10 // HUP alone, likewise
         | 8 -> 0x20 // NVAL alone, likewise
-        | _ -> rng.Next 0x40 // anything inside the six the PAL knows
+        | 9 -> 0x40 // RDNORM, which rides with IN
+        | 10 -> 0x100 // WRNORM, which rides with OUT
+        | 11 -> 0x200 // WRBAND, which TCP never presents
+        | 12 -> 0x2000 // RDHUP, which the .NET shim never asks for
+        | 13 -> 0xFFFF // everything: the level itself
+        | 14 -> rng.Next 0x40 // anything inside the six bits the .NET shim asks for
+        | _ -> rng.Next 0x10000 // anything at all, unnamed bits included
 
     /// One generated sequence. Constructive: every op names live slots and
     /// stays inside the modelled envelope where the shadow can tell — e.g. no
