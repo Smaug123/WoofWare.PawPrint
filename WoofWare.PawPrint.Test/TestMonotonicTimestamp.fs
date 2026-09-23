@@ -341,3 +341,22 @@ module TestMonotonicTimestamp =
             |> ignore<EmulatedKernel>
 
         Assert.Throws<Exception> (TestDelegate forwardsButNegative) |> ignore<Exception>
+
+    [<Test>]
+    let ``a clock advanced by part of a tick is refused rather than rounded`` () : unit =
+        // PawPrint advances the kernel's clock only by whole ticks, which is what makes every
+        // tick-denominated reading exact. A kernel whose clock something else advanced by a
+        // fraction of one would read back rounded, so the view refuses it instead.
+        let kernel =
+            EmulatedKernel.initial
+            |> EmulatedKernel.mapMachine (UnixMachineState.advanceClock 150L)
+
+        let read () =
+            kernel.VirtualClockTicks |> ignore<int64>
+
+        Assert.Throws<Exception> (TestDelegate read) |> ignore<Exception>
+
+        (EmulatedKernel.initial
+         |> EmulatedKernel.mapMachine (UnixMachineState.advanceClock 200L))
+            .VirtualClockTicks
+        |> shouldEqual 2L

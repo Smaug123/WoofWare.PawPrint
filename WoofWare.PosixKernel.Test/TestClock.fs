@@ -179,8 +179,13 @@ module TestClock =
                 NanosecondsSinceBoot = -5L
             }
 
-        succeeds (fun () -> UnixMachineState.advanceClock 10L machine)
-        |> shouldEqual false
+        // Asserted on the message, not merely on a throw: for a negative uptime the
+        // overflow check's `Int64.MaxValue - uptime` wraps negative and throws too, so a
+        // bare "it threw" would pass without the guard that makes the arithmetic sound.
+        let thrown =
+            Assert.Throws<Exception> (fun () -> UnixMachineState.advanceClock 10L machine |> ignore<UnixMachineState>)
+
+        thrown.Message |> shouldContainText "which is negative"
 
     // ------------------------------------------------------------ booting
 

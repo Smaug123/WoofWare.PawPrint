@@ -95,6 +95,10 @@ module TestSystemTimeAsTicks =
         DateTime.MaxValue.Ticks - DateTime.UnixEpoch.Ticks
         |> shouldEqual ClockPal.maxWallClockTicks
 
+        // The last representable instant is the last tick of a whole second, which
+        // is what lets `systemTimeAsTicks` bound its reading in whole seconds.
+        ClockPal.maxWallClockTicks % 10_000_000L |> shouldEqual 9_999_999L
+
         ClockPal.maxWallClockTicks - maxEpochMs * ClockPal.ticksPerMillisecond
         |> shouldEqual (ClockPal.ticksPerMillisecond - 1L)
 

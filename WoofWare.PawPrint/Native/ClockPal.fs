@@ -98,23 +98,18 @@ module ClockPal =
             failwith
                 $"SystemNative_GetSystemTimeAsTicks: the realtime clock reads %O{reading}, before the Unix epoch, which PawPrint does not model a simulated process observing."
 
-        // Tested in seconds before the multiply, which would otherwise overflow for
-        // a realtime clock far beyond `DateTime`'s range.
+        // Tested in seconds, before the multiply would overflow for a realtime
+        // clock far beyond `DateTime`'s range. Exact, not merely safe: the last
+        // representable instant is the last tick of a whole second, so every
+        // nanosecond part of the last admitted second still fits.
         if seconds > maxWallClockTicks / ticksPerSecond then
             failwith
                 $"SystemNative_GetSystemTimeAsTicks: the realtime clock reads %O{reading} (seconds since the Unix epoch), past the %d{maxWallClockTicks} ticks that System.DateTime can represent; lower KernelConfig.WallClockEpochMs"
 
         // As `pal_datetime.c` computes it: whole seconds scaled, plus the
         // nanosecond part truncated to ticks.
-        let ticks =
-            seconds * ticksPerSecond
-            + int64 (UnixTimestamp.nanoseconds reading) / nanosecondsPerTick
-
-        if ticks > maxWallClockTicks then
-            failwith
-                $"SystemNative_GetSystemTimeAsTicks: the simulated wall clock has reached %d{ticks} ticks since the Unix epoch, past the %d{maxWallClockTicks} that System.DateTime can represent; lower KernelConfig.WallClockEpochMs"
-
-        ticks
+        seconds * ticksPerSecond
+        + int64 (UnixTimestamp.nanoseconds reading) / nanosecondsPerTick
 
     let private nanosecondsPerSecond : int64 = 1_000_000_000L
     let private nanosecondsPerMillisecond : int64 = 1_000_000L
