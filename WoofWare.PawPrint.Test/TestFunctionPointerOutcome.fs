@@ -36,6 +36,10 @@ type FunctionPointerOutcomeStruct<'T> =
 /// an address; the classifier, fed the facts the QCall would read, must say `SharedCode` for exactly
 /// the pairs that do, and `ContainsGenericVariables` for exactly the handles on which the host throws.
 ///
+/// The entry point is checked the same way: `ldftn`, emitted into a `DynamicMethod`, is the method's
+/// own (unboxed) entry, so `GetFunctionPointer` agrees with it exactly where the classifier says
+/// `Direct`.
+///
 /// The one fact the classifier is handed rather than computing, whether the declaring type is shared,
 /// comes from `hostIsSharedTypeArgument` here, a restatement of `IlMachineRuntimeMetadata.isSharedTypeArgument`
 /// over `System.Type`; the guest cases in `sourcesPure/MethodHandleGetFunctionPointer*.cs` exercise
@@ -211,7 +215,13 @@ module TestFunctionPointerOutcome =
                                 | Some lp, Some rp -> lp = rp
                                 | lp, rp -> failwith $"host refused %O{l} (%O{lp}) or %O{r} (%O{rp}), both closed"
 
-                            (outcome = FunctionPointerOutcome.SharedCode, l) |> shouldEqual (sameAddress, l)
+                            let classifiedShared =
+                                match outcome with
+                                | FunctionPointerOutcome.SharedCode _ -> true
+                                | FunctionPointerOutcome.ExactInstantiation _
+                                | FunctionPointerOutcome.ContainsGenericVariables -> false
+
+                            (classifiedShared, l) |> shouldEqual (sameAddress, l)
 
                             if sameAddress then
                                 shared <- shared + 1
@@ -249,3 +259,62 @@ module TestFunctionPointerOutcome =
                 | _ -> ()
 
         compared |> shouldBeGreaterThan 20
+
+    /// `ldftn` of the method, as the host's JIT answers it.
+    let private hostLdftn (m : MethodBase) : nativeint =
+        let dynamicMethod =
+            System.Reflection.Emit.DynamicMethod (
+                "ldftn",
+                typeof<nativeint>,
+                Type.EmptyTypes,
+                typeof<FunctionPointerOutcomeClass<obj>>.Module,
+                true
+            )
+
+        let il = dynamicMethod.GetILGenerator ()
+
+        match m with
+        | :? System.Reflection.MethodInfo as mi -> il.Emit (System.Reflection.Emit.OpCodes.Ldftn, mi)
+        | :? ConstructorInfo as ci -> il.Emit (System.Reflection.Emit.OpCodes.Ldftn, ci)
+        | other -> failwith $"unexpected MethodBase %O{other}"
+
+        il.Emit System.Reflection.Emit.OpCodes.Ret
+        dynamicMethod.CreateDelegate<Func<nativeint>>().Invoke ()
+
+    [<Test>]
+    let ``Direct exactly where GetFunctionPointer is ldftn`` () : unit =
+        let mutable direct = 0
+        let mutable unboxingStub = 0
+
+        for definition in definitions do
+            let closed =
+                sharedPairs @ unsharedPairs
+                |> List.collect (fun (a, b) -> [ a ; b ])
+                |> List.choose (tryInstantiate definition)
+
+            for ty in closed do
+                // The JIT refuses `ldftn` of a method with no body.
+                for m in
+                    methodsOf ty
+                    |> List.choose closeMethod
+                    |> List.filter (fun m -> not m.IsAbstract) do
+                    let entry =
+                        match outcomeOf m with
+                        | FunctionPointerOutcome.SharedCode entry
+                        | FunctionPointerOutcome.ExactInstantiation entry -> entry
+                        | FunctionPointerOutcome.ContainsGenericVariables ->
+                            failwith $"%O{m} on %O{ty} is closed, but classified as containing generic variables"
+
+                    let isLdftn =
+                        match hostFunctionPointer m with
+                        | Some pointer -> pointer = hostLdftn m
+                        | None -> failwith $"host refused %O{m} on %O{ty}, which is closed"
+
+                    match entry with
+                    | FunctionPointerEntry.Direct -> direct <- direct + 1
+                    | FunctionPointerEntry.UnboxingStub -> unboxingStub <- unboxingStub + 1
+
+                    (entry = FunctionPointerEntry.Direct, m) |> shouldEqual (isLdftn, m)
+
+        direct |> shouldBeGreaterThan 100
+        unboxingStub |> shouldBeGreaterThan 10

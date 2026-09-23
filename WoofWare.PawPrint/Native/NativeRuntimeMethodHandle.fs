@@ -107,7 +107,7 @@ type FunctionPointerOutcome =
     /// One address shared by every instantiation that shares the method's code, which reads its
     /// type context from its receiver: measured, `GC<string>.Inst` and `GC<object>.Inst` compare
     /// equal, and calling either on a `GC<string>` answers for `string`.
-    | SharedCode
+    | SharedCode of FunctionPointerEntry
     /// An address unique to this exact instantiation: the method's own code where nothing is
     /// shared, or else the instantiating stub reflection hands out, which carries the
     /// instantiation into the shared code.
@@ -249,12 +249,16 @@ module NativeRuntimeMethodHandle =
             && not (hasMethodInstantiation method.GenericParamCount)
             && (unboxingStub || (not facts.IsValueType && not facts.IsInterface))
 
+        let entry =
+            if unboxingStub then
+                FunctionPointerEntry.UnboxingStub
+            else
+                FunctionPointerEntry.Direct
+
         if facts.IsSharedByGenericInstantiations && readsContextFromReceiver then
-            FunctionPointerOutcome.SharedCode
-        elif unboxingStub then
-            FunctionPointerOutcome.ExactInstantiation FunctionPointerEntry.UnboxingStub
+            FunctionPointerOutcome.SharedCode entry
         else
-            FunctionPointerOutcome.ExactInstantiation FunctionPointerEntry.Direct
+            FunctionPointerOutcome.ExactInstantiation entry
 
     /// The predicate behind CoreCLR's `MethodDesc::IsNoMetadata` (method.hpp:1932), which
     /// `RuntimeMethodHandle::IsDynamicMethod` (runtimehandles.cpp:1746) returns verbatim:
@@ -1205,7 +1209,7 @@ module NativeRuntimeMethodHandle =
                     (Some containsGenericVariablesMessage)
                     state
                 |> Some
-            | FunctionPointerOutcome.SharedCode ->
+            | FunctionPointerOutcome.SharedCode _ ->
                 let declaringTypeName =
                     requireClosedDeclaringType operation identity
                     |> AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes
