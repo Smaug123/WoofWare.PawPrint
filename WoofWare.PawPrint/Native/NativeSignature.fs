@@ -603,7 +603,7 @@ module NativeSignature =
         let typeVariables =
             match declaringTypeContext with
             | DeclaringTypeContext.Instantiation typeGenerics ->
-                NativeRuntimeTypeHelpers.ReflectionVariableBinding.Bound typeGenerics
+                ReflectedTypeTarget.ReflectionVariableBinding.Bound typeGenerics
             | DeclaringTypeContext.Definition definition ->
                 // Each `!i` denotes the definition's own `i`th variable, which is the very target
                 // `RuntimeTypeHandle.GetInstantiation` hands the guest for
@@ -612,12 +612,12 @@ module NativeSignature =
                     methodInfo.DeclaringTypeGenerics.Length
                     (fun index -> RuntimeTypeHandleTarget.GenericParameter (definition, index))
                 |> ImmutableArray.CreateRange
-                |> NativeRuntimeTypeHelpers.ReflectionVariableBinding.Formal
+                |> ReflectedTypeTarget.ReflectionVariableBinding.Open
 
         let methodVariables =
             match methodGenericContext with
             | MethodGenericContext.Instantiation methodGenerics ->
-                NativeRuntimeTypeHelpers.ReflectionVariableBinding.Bound methodGenerics
+                ReflectedTypeTarget.ReflectionVariableBinding.Bound methodGenerics
             | MethodGenericContext.Definition ->
                 // A method variable is owned by the method as *declared*, so it is taken from the
                 // MethodDef row's own declaring type rather than from the handle's. The two agree
@@ -642,12 +642,12 @@ module NativeSignature =
                         RuntimeTypeHandleTarget.MethodGenericParameter (declaringDefinition, declaringMethod, index)
                     )
                 |> ImmutableArray.CreateRange
-                |> NativeRuntimeTypeHelpers.ReflectionVariableBinding.Formal
+                |> ReflectedTypeTarget.ReflectionVariableBinding.Open
 
         let environment =
             {
-                NativeRuntimeTypeHelpers.ReflectionTypeEnvironment.TypeVariables = typeVariables
-                NativeRuntimeTypeHelpers.ReflectionTypeEnvironment.MethodVariables = methodVariables
+                ReflectedTypeTarget.ReflectionTypeEnvironment.TypeVariables = typeVariables
+                ReflectedTypeTarget.ReflectionTypeEnvironment.MethodVariables = methodVariables
             }
 
         // The types come from PawPrint's already-parsed `MethodInfo.Signature` rather than from a
@@ -658,7 +658,7 @@ module NativeSignature =
         // closes -- which it must, because a single signature can hold both `List<!0>` (closed
         // under an instantiated declaring type) and `!!0` (still a variable).
         let resolve (state : IlMachineState) (defn : TypeDefn) : IlMachineState * RuntimeTypeHandleTarget =
-            NativeRuntimeTypeHelpers.reflectedTypeTarget
+            ReflectedTypeTarget.reflectedTypeTarget
                 ctx.LoggerFactory
                 ctx.BaseClassTypes
                 operation
