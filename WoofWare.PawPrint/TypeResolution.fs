@@ -53,8 +53,6 @@ type ExportChainArrival =
 [<RequireQualifiedAccess>]
 module TypeResolution =
 
-    type private Dummy = class end
-
     /// <summary>
     /// Bind an AssemblyReference to an assembly, loading it from the runtime dirs if this is the
     /// first time we have needed it. Returns the updated load context, the assembly, and the
@@ -62,11 +60,12 @@ module TypeResolution =
     /// so callers must not assume the returned name is what they asked for.
     /// </summary>
     /// <remarks>
-    /// Binding is by simple name: we look for <c>&lt;SimpleName&gt;.dll</c> in each runtime dir in
-    /// turn. Version, culture and public key token in the reference are therefore not honoured,
-    /// which is exactly why the reference's identity so often disagrees with the definition
-    /// identity of what it binds to (the .NET Framework compatibility facades reference
-    /// implementation assemblies as <c>Version=0.0.0.0</c>).
+    /// Binding is by simple name: we look for <c>&lt;SimpleName&gt;.dll</c>, ignoring case, in each
+    /// runtime dir in turn (<see cref="AssemblyProbe.tryReadFromRuntimeDirs"/>). Version, culture
+    /// and public key token in the reference are therefore not honoured, which is exactly why the
+    /// reference's identity so often disagrees with the definition identity of what it binds to
+    /// (the .NET Framework compatibility facades reference implementation assemblies as
+    /// <c>Version=0.0.0.0</c>).
     /// </remarks>
     let internal tryLoadAssembly
         (loggerFactory : ILoggerFactory)
@@ -81,25 +80,8 @@ module TypeResolution =
         match assemblies.TryResolveReference assemblyRef with
         | Some v -> Some (assemblies, v, v.Name)
         | None ->
-            let assemblyName = assemblyRef.Name
-            let logger = loggerFactory.CreateLogger typeof<Dummy>.DeclaringType
-
-            // `tryPick`, not `choose |> tryHead`: the first hit is the binding, so every
-            // later dir must go unread. Reading them anyway is not merely wasted parsing
-            // (though it is that too, and a runtime dir list often holds a whole second
-            // framework) — it lets a directory we were never going to bind against fail
-            // the load, because anything but FileNotFoundException escapes.
             let assy =
-                dotnetRuntimeDirs
-                |> Seq.tryPick (fun dir ->
-                    let file = Path.Combine (dir, assemblyName.Name + ".dll")
-
-                    try
-                        logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", file)
-                        Assembly.readFile loggerFactory file |> Some
-                    with :? FileNotFoundException ->
-                        None
-                )
+                AssemblyProbe.tryReadFromRuntimeDirs loggerFactory dotnetRuntimeDirs assemblyRef.Name.Name
 
             match assy with
             | None -> None
