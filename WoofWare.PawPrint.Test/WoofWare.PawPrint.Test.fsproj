@@ -146,6 +146,7 @@
     <Compile Include="TestNativeHeapFree.fs" />
     <Compile Include="TestFieldHandleRegistry.fs" />
     <Compile Include="TestRuntimeFieldInfoStubLayout.fs" />
+    <Compile Include="TestDelegateLayout.fs" />
     <Compile Include="TestNativeTypeParamInfo.fs" />
     <Compile Include="TestNativeMetadataImport.fs" />
     <Compile Include="TestLocalSignatureDecoding.fs" />
