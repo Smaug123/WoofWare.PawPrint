@@ -452,6 +452,7 @@ module AbstractMachine =
                     false
                     false
                     IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                    IlMachineStateExecution.CallRoute.ThroughEntryPoint // `Invoke` calls through a code pointer, never by name
                     methodPtr.Generics
                     methodPtr
                     thread

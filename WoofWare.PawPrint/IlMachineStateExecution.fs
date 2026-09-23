@@ -1621,6 +1621,30 @@ module IlMachineStateExecution =
         /// caller could usefully continue from: every caller must propagate rather than carry on.
         | Aborted of FatalError
 
+    /// How a call reaches its callee, which decides what a *type-level* `[Intrinsic]` on the
+    /// callee's declaring type demands.
+    ///
+    /// CoreCLR's JIT treats an intrinsic specially only at a call instruction that names it. A
+    /// callee entered through its entry point is compiled as an ordinary method, so the only
+    /// intrinsic-ness that still applies to it is the callee's own: a method-level `[Intrinsic]`,
+    /// under which the runtime may substitute the body (`getMethodInfoHelper`, jitinterface.cpp).
+    /// Whatever in that body relies on the JIT sits at the body's own call instructions, which are
+    /// themselves `NamedByInstruction`.
+    ///
+    /// So a member that only a type-level `[Intrinsic]` marks stops at the unimplemented-intrinsic
+    /// gate when `NamedByInstruction`, but when `ThroughEntryPoint` runs its IL unless PawPrint
+    /// implements it. An implementation, where there is one, serves either route, since it stands
+    /// for the member's body.
+    [<RequireQualifiedAccess>]
+    type CallRoute =
+        /// A `call`, `callvirt` or `newobj` names the callee, in guest code or in an IL stub the
+        /// runtime generates.
+        | NamedByInstruction
+        /// The callee is entered through its entry point: a delegate's invocation, a `calli`, a
+        /// reflective invoke, or the runtime itself running managed code (a class constructor, the
+        /// constructor of an exception it raises).
+        | ThroughEntryPoint
+
     /// What a call site does to the thread on the way into its callee: whether it is still in
     /// cooperative mode when the callee's prologue runs.
     ///
@@ -1820,6 +1844,7 @@ module IlMachineStateExecution =
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
         (callSiteTransition : CallSiteTransition)
+        (callRoute : CallRoute)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
@@ -1908,11 +1933,20 @@ module IlMachineStateExecution =
         //    it is keyed on the post-resolution method. For example,
         //    `callvirt ICloneable::Clone()` must be recognised as `Array::Clone`.
         //
-        //  * Type-level `[Intrinsic]` is a property of the call site's static type. It marks a
-        //    type whose own API surface the JIT knows (`Int128`, `Vector128<T>`, ...); it says
-        //    nothing about that type's `System.Object` overrides. `Int128.GetHashCode` is plain
+        //  * Type-level `[Intrinsic]` is a property of the call site's static type. CoreCLR makes
+        //    every member of such a type an intrinsic only for the hardware-intrinsic classes
+        //    (`fIsHardwareIntrinsic`, methodtablebuilder.cpp); on any other type (`Int128`,
+        //    `Vector128<T>`, ...) PawPrint treats the marker as a gate that sends the type's own
+        //    API surface through review. Either way it says nothing about that type's
+        //    `System.Object` overrides. `Int128.GetHashCode` is plain
         //    `HashCode.Combine(_lower, _upper)` and carries no method-level attribute, so
         //    `callvirt Object::GetHashCode()` on a boxed `Int128` must interpret it as normal.
+        //    A callee reached `CallRoute.ThroughEntryPoint` has no call site for the JIT to
+        //    treat specially, so there the type-level check only offers PawPrint's own
+        //    implementation, and an unimplemented member runs its IL rather than stopping at the
+        //    gate (see `IntrinsicResult.Unrecognised` below): a delegate bound by
+        //    `ldvirtftn Object::GetHashCode` on a boxed `Int128` holds `Int128::GetHashCode`
+        //    itself, and must run it just as the `callvirt` does.
         //
         // When no resolution happened the two coincide, so this only diverges for `callvirt`.
         let callSiteDeclaringAssy =
@@ -2182,6 +2216,7 @@ module IlMachineStateExecution =
                     false
                     false
                     advanceProgramCounterOfCaller
+                    CallRoute.ThroughEntryPoint
                     concretizedCtor.Generics
                     concretizedCtor
                     thread
@@ -2236,6 +2271,18 @@ module IlMachineStateExecution =
                     raiseRuntimeExceptionWithMessage loggerFactory baseClassTypes exnType message thread state
                     |> fst
                     |> fun state -> Some (state, CallCommitment.Raised)
+                | IntrinsicResult.Unrecognised when
+                    not methodHasIntrinsicAttribute
+                    && (
+                        match callRoute with
+                        | CallRoute.ThroughEntryPoint -> true
+                        | CallRoute.NamedByInstruction -> false
+                    )
+                    ->
+                    // Only the type-level gate sent this here, and it does not apply off a call
+                    // instruction; see `CallRoute`. A method-level `[Intrinsic]` still stops,
+                    // because the runtime may substitute that method's body on every route.
+                    None
                 | IntrinsicResult.Unrecognised ->
                     // Refusing guards against *interpreting* an `[Intrinsic]` body the JIT may
                     // always replace. Only an IL body can be interpreted. Any other body is
@@ -2555,6 +2602,7 @@ module IlMachineStateExecution =
         (performInterfaceResolution : bool)
         (wasClassConstructor : bool)
         (advanceProgramCounterOfCaller : bool)
+        (callRoute : CallRoute)
         (methodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (methodToCall : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
         (thread : ThreadId)
@@ -2580,6 +2628,7 @@ module IlMachineStateExecution =
             // and the wrapper's own guard below then fails loudly, because such a caller has no way
             // to propagate the abort.
             CallSiteTransition.StaysCooperative
+            callRoute
             methodGenerics
             methodToCall
             thread
@@ -2767,6 +2816,7 @@ module IlMachineStateExecution =
                     true
                     true
                     false
+                    CallRoute.ThroughEntryPoint
                     // constructor is surely not generic
                     ImmutableArray.Empty
                     fullyConvertedMethod
@@ -2902,6 +2952,7 @@ module IlMachineStateExecution =
                 false // no interface resolution
                 false // wasClassConstructor
                 false // do NOT advance caller PC — dispatch needs the faulting instruction's offset
+                CallRoute.ThroughEntryPoint
                 concretizedCtor.Generics
                 concretizedCtor
                 currentThread

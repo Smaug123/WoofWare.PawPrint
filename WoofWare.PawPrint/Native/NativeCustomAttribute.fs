@@ -590,6 +590,7 @@ module NativeCustomAttribute =
                             false
                             false
                             false
+                            IlMachineStateExecution.CallRoute.ThroughEntryPoint
                             concretizedResolver.Generics
                             concretizedResolver
                             ctx.Thread
@@ -747,6 +748,7 @@ module NativeCustomAttribute =
                         false
                         false
                         false
+                        IlMachineStateExecution.CallRoute.ThroughEntryPoint
                         concretizedCtor.Generics
                         concretizedCtor
                         ctx.Thread

@@ -49,6 +49,7 @@
     <Compile Include="TestGuestLocation.fs" />
     <Compile Include="TestGuestFailure.fs" />
     <Compile Include="TestUnsafeAccessorRefusals.fs" />
+    <Compile Include="TestIntrinsicCallRoute.fs" />
     <Compile Include="CrossAssemblyHarness.fs" />
     <Compile Include="FabricatedGuest.fs" />
     <Compile Include="TestCrossAssemblyOracle.fs" />
