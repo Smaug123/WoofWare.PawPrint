@@ -1,7 +1,5 @@
 namespace WoofWare.PosixKernel
 
-open System.Collections.Immutable
-
 /// The bits `getrandom(2)` accepts in its `flags` argument, as Linux's
 /// `<sys/random.h>` numbers them.
 ///
@@ -25,13 +23,15 @@ module GetRandomFlags =
 /// What `getrandom(2)` did, for a request this kernel could answer.
 [<RequireQualifiedAccess>]
 type GetRandomAnswer =
-    /// The bytes to place in the caller's buffer; the syscall returns how many
-    /// there are. That can be fewer than were asked for: see
-    /// `UnixEntropy.getRandomMaxTransfer`.
+    /// The bytes to place in the caller's buffer, which the caller fetches
+    /// from the draw, all at once or a range at a time; the syscall returns
+    /// `EntropyDraw.count draw`. That can be fewer than were asked for: see
+    /// `UnixEntropy.getRandomMaxTransfer`. The system that comes back with this
+    /// answer has already moved its pool past them.
     ///
-    /// Empty means the call moved nothing and the buffer was not touched at
-    /// all.
-    | Completed of bytes : ImmutableArray<byte>
+    /// A count of zero means the call moved nothing and the buffer was not
+    /// touched at all.
+    | Completed of draw : EntropyDraw
     /// The syscall returns -1 and the caller stores `error` wherever its libc
     /// keeps errno. Nothing was drawn from the pool.
     | Failed of error : UnixError
@@ -58,11 +58,13 @@ module GetRandomRefusal =
 [<RequireQualifiedAccess>]
 type GetEntropyAnswer =
     /// The bytes to place in the caller's buffer, exactly as many as were asked
-    /// for; the syscall returns 0.
+    /// for, which the caller fetches from the draw; the syscall returns 0. The
+    /// system that comes back with this answer has already moved its pool past
+    /// them.
     ///
-    /// Empty means the call was asked for nothing and the buffer was not
-    /// touched at all.
-    | Completed of bytes : ImmutableArray<byte>
+    /// A count of zero means the call was asked for nothing and the buffer was
+    /// not touched at all.
+    | Completed of draw : EntropyDraw
     /// The syscall returns -1 and the caller stores `error` wherever its libc
     /// keeps errno. Nothing was drawn from the pool.
     | Failed of error : UnixError
@@ -114,7 +116,7 @@ module UnixEntropy =
         (buffer : UserBuffer)
         (length : int)
         (system : UnixSystem<'Task, 'Handler>)
-        : Result<Result<ImmutableArray<byte> * UnixSystem<'Task, 'Handler>, UnixError>, BufferRefusal>
+        : Result<Result<EntropyDraw * UnixSystem<'Task, 'Handler>, UnixError>, BufferRefusal>
         =
         match
             UserBufferCheck.faultsBeforeOperationFor
@@ -131,7 +133,7 @@ module UnixEntropy =
             // a zero-length call through a null pointer returns success. On
             // Darwin, which screens nothing, so does one through the last
             // address there is.
-            Ok (Ok (ImmutableArray.Empty, system))
+            Ok (Ok (fst (EntropyPool.take 0 system.Machine.EntropyPool), system))
         else
 
         match buffer with
@@ -145,11 +147,11 @@ module UnixEntropy =
         | UserBuffer.Addressless -> Error BufferRefusal.AddresslessAtTransfer
         | UserBuffer.Mapped ->
 
-        let bytes, pool = EntropyPool.draw length system.Machine.EntropyPool
+        let draw, pool = EntropyPool.take length system.Machine.EntropyPool
 
         Ok (
             Ok (
-                bytes,
+                draw,
                 { system with
                     Machine =
                         { system.Machine with
@@ -198,7 +200,7 @@ module UnixEntropy =
         match transfer buffer length system with
         | Error refusal -> Error (GetRandomRefusal.Buffer refusal)
         | Ok (Error error) -> Ok (GetRandomAnswer.Failed error, system)
-        | Ok (Ok (bytes, system)) -> Ok (GetRandomAnswer.Completed bytes, system)
+        | Ok (Ok (draw, system)) -> Ok (GetRandomAnswer.Completed draw, system)
 
     /// `getentropy(2)`: fill all `length` bytes of the caller's buffer from the
     /// entropy pool.
@@ -225,4 +227,4 @@ module UnixEntropy =
         match transfer buffer (int length) system with
         | Error refusal -> Error (GetEntropyRefusal.Buffer refusal)
         | Ok (Error error) -> Ok (GetEntropyAnswer.Failed error, system)
-        | Ok (Ok (bytes, system)) -> Ok (GetEntropyAnswer.Completed bytes, system)
+        | Ok (Ok (draw, system)) -> Ok (GetEntropyAnswer.Completed draw, system)

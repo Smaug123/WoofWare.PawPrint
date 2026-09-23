@@ -87,6 +87,79 @@ module TestEntropyAgainstHost =
         else
             Error (Marshal.GetLastPInvokeError ())
 
+    [<DllImport("libc", EntryPoint = "memfd_create", SetLastError = true)>]
+    extern int private linuxMemfdCreate(string name, uint32 flags)
+
+    [<DllImport("libc", EntryPoint = "ftruncate", SetLastError = true)>]
+    extern int private linuxFtruncate(int fd, int64 length)
+
+    [<DllImport("libc", EntryPoint = "mmap", SetLastError = true)>]
+    extern nativeint private linuxMmap(nativeint address, unativeint length, int prot, int flags, int fd, int64 offset)
+
+    [<DllImport("libc", EntryPoint = "munmap", SetLastError = true)>]
+    extern int private linuxMunmap(nativeint address, unativeint length)
+
+    [<DllImport("libc", EntryPoint = "close")>]
+    extern int private linuxClose(int fd)
+
+    /// How much memory `mapAliased` really uses, however long a region it maps.
+    [<Literal>]
+    let private AliasedChunkBytes : int = 16 * 1024 * 1024
+
+    /// `size` bytes of writable address space, which must be a whole number of
+    /// `AliasedChunkBytes`, all of it backed by the same `AliasedChunkBytes` of
+    /// memory: one shared-memory file mapped end to end. Everything written
+    /// through it lands on those few pages, so a syscall that writes the whole
+    /// region costs this process no more than one chunk. Linux only; the
+    /// numbers below are Linux's, and the same on x86-64 and arm64.
+    let private mapAliased (size : uint64) : nativeint =
+        let PROT_NONE = 0
+        let PROT_READ_WRITE = 1 ||| 2
+        let MAP_SHARED = 0x01
+        let MAP_PRIVATE = 0x02
+        let MAP_FIXED = 0x10
+        let MAP_ANONYMOUS = 0x20
+        let MAP_NORESERVE = 0x4000
+        let chunk = uint64 AliasedChunkBytes
+
+        if size % chunk <> 0UL then
+            failwith $"mapAliased: %d{size} bytes is not a whole number of %d{chunk}-byte chunks"
+
+        let fail (what : string) : 'a =
+            failwith $"mapAliased: %s{what} failed with errno %d{Marshal.GetLastPInvokeError ()}"
+
+        let fd = linuxMemfdCreate ("entropy-probe", 0u)
+
+        if fd < 0 then
+            fail "memfd_create"
+
+        try
+            if linuxFtruncate (fd, int64 chunk) <> 0 then
+                fail "ftruncate"
+
+            // Reserve the whole range first, so that the chunks can then be
+            // placed over it without landing on anything else's mapping.
+            let reserved =
+                linuxMmap (0n, unativeint size, PROT_NONE, MAP_PRIVATE ||| MAP_ANONYMOUS ||| MAP_NORESERVE, -1, 0L)
+
+            if reserved = -1n then
+                fail "reserving the range"
+
+            for i in 0UL .. size / chunk - 1UL do
+                let at = reserved + nativeint (i * chunk)
+
+                if
+                    linuxMmap (at, unativeint chunk, PROT_READ_WRITE, MAP_SHARED ||| MAP_FIXED, fd, 0L)
+                    <> at
+                then
+                    linuxMunmap (reserved, unativeint size) |> ignore<int>
+                    fail $"mapping chunk %d{i}"
+
+            reserved
+        finally
+            // The mappings keep the file alive.
+            linuxClose fd |> ignore<int>
+
     [<Test>]
     let ``getrandom agrees with this kernel`` () : unit =
         match HostPlatform.flavour () with
@@ -107,7 +180,7 @@ module TestEntropyAgainstHost =
 
                         let modelled =
                             match UnixEntropy.getRandom (classify where) count flags system with
-                            | Ok (GetRandomAnswer.Completed bytes, _) -> Ok (int64 bytes.Length)
+                            | Ok (GetRandomAnswer.Completed draw, _) -> Ok (int64 (EntropyDraw.count draw))
                             | Ok (GetRandomAnswer.Failed error, _) -> Error (UnixError.toRawErrno error)
                             | Error refusal ->
                                 failwith $"%A{where}, %d{count} bytes, flags 0x%x{flags}: refused, %O{refusal}"
@@ -118,8 +191,8 @@ module TestEntropyAgainstHost =
         )
 
     /// However much is asked for, one call moves at most this much. Measured
-    /// with a buffer that really can hold it, which is 2 GiB of this process's
-    /// memory for the length of the call.
+    /// with a buffer that really can hold it: 2 GiB of address space, but
+    /// backed by only `AliasedChunkBytes` of memory, mapped over and over.
     [<Test>]
     let ``getrandom's largest transfer is this kernel's`` () : unit =
         match HostPlatform.flavour () with
@@ -136,7 +209,7 @@ module TestEntropyAgainstHost =
         // A page beyond the largest transfer, so that a kernel that moved more
         // would still be writing into storage rather than faulting.
         let size = UnixEntropy.getRandomMaxTransfer + 4096UL
-        let storage = Marshal.AllocHGlobal (nativeint size)
+        let storage = mapAliased size
 
         try
             // A signal arriving mid-copy ends the call early with however much
@@ -163,7 +236,7 @@ module TestEntropyAgainstHost =
 
             measure attempts []
         finally
-            Marshal.FreeHGlobal storage
+            linuxMunmap (storage, unativeint size) |> ignore<int>
 
     [<Test>]
     let ``getentropy agrees with this kernel`` () : unit =

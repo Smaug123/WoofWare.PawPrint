@@ -1,7 +1,6 @@
 namespace WoofWare.PosixKernel.Test
 
 open System
-open System.Collections.Immutable
 open FsCheck
 open FsCheck.FSharp
 open FsUnitTyped
@@ -110,8 +109,8 @@ module TestUnixEntropy =
 
             for flags in validFlags do
                 match UnixEntropy.getRandom UserBuffer.Mapped (uint64 count) flags system with
-                | Ok (GetRandomAnswer.Completed bytes, after) ->
-                    Seq.toArray bytes |> shouldEqual (Seq.toArray expected)
+                | Ok (GetRandomAnswer.Completed draw, after) ->
+                    Seq.toArray (EntropyDraw.bytes draw) |> shouldEqual (Seq.toArray expected)
                     after.Machine.EntropyPool |> shouldEqual pool
                     withPoolOf system after |> shouldEqual system
                 | other -> failwith $"flags 0x%x{flags}, count %d{count}: expected bytes, got %O{other}"
@@ -126,8 +125,11 @@ module TestUnixEntropy =
         let system = linux ()
 
         for buffer in [ UserBuffer.Mapped ; UserBuffer.Opaque ; UserBuffer.Unmapped 0UL ] do
-            UnixEntropy.getRandom buffer 0UL 0u system
-            |> shouldEqual (Ok (GetRandomAnswer.Completed ImmutableArray.Empty, system))
+            match UnixEntropy.getRandom buffer 0UL 0u system with
+            | Ok (GetRandomAnswer.Completed draw, after) ->
+                EntropyDraw.count draw |> shouldEqual 0
+                after |> shouldEqual system
+            | other -> failwith $"%O{buffer}: expected nothing to move, got %O{other}"
 
         UnixEntropy.getRandom (UserBuffer.Unmapped UInt64.MaxValue) 0UL 0u system
         |> shouldEqual (Ok (GetRandomAnswer.Failed UnixError.EFAULT, system))
@@ -153,13 +155,41 @@ module TestUnixEntropy =
         UnixEntropy.getRandom UserBuffer.Opaque 5UL 0u (linux ())
         |> shouldEqual (Error (GetRandomRefusal.Buffer BufferRefusal.OpaqueAtTransfer))
 
-    /// One call moves at most `UnixEntropy.getRandomMaxTransfer` bytes, however many
-    /// were asked for. Allocates the whole 2 GiB answer.
+    /// One call moves at most `UnixEntropy.getRandomMaxTransfer` bytes, however
+    /// many were asked for, and moves the pool past exactly those. Nothing here
+    /// produces more than a few bytes: `TestEntropyPool` shows that a draw's
+    /// pieces are the draw, so its last bytes stand in for the rest.
     [<Test>]
     let ``getrandom transfers at most the most one call can`` () : unit =
-        match UnixEntropy.getRandom UserBuffer.Mapped UInt64.MaxValue 0u (linux ()) with
-        | Ok (GetRandomAnswer.Completed bytes, _) -> uint64 bytes.Length |> shouldEqual UnixEntropy.getRandomMaxTransfer
-        | other -> failwith $"expected a short transfer, got %O{other}"
+        let limit = int UnixEntropy.getRandomMaxTransfer
+
+        for count in
+            [
+                UnixEntropy.getRandomMaxTransfer + 1UL
+                1UL <<< 31
+                1UL <<< 40
+                UInt64.MaxValue
+            ] do
+            let system = linux ()
+            let pool = system.Machine.EntropyPool
+
+            match UnixEntropy.getRandom UserBuffer.Mapped count 0u system with
+            | Ok (GetRandomAnswer.Completed draw, after) ->
+                EntropyDraw.count draw |> shouldEqual limit
+                after.Machine.EntropyPool |> shouldEqual (snd (EntropyPool.take limit pool))
+
+                // The draw's last bytes are the stream's bytes at that point.
+                let tailStart = limit - 16
+                let tail, _ = EntropyPool.draw 16 (snd (EntropyPool.take tailStart pool))
+
+                Seq.toArray (EntropyDraw.range tailStart 16 draw)
+                |> shouldEqual (Seq.toArray tail)
+            | other -> failwith $"%d{count} bytes: expected a short transfer, got %O{other}"
+
+        // At the limit itself nothing is cut short.
+        match UnixEntropy.getRandom UserBuffer.Mapped UnixEntropy.getRandomMaxTransfer 0u (linux ()) with
+        | Ok (GetRandomAnswer.Completed draw, _) -> EntropyDraw.count draw |> shouldEqual limit
+        | other -> failwith $"expected the whole request, got %O{other}"
 
     [<Test>]
     let ``Darwin has no getrandom`` () : unit =
@@ -185,8 +215,8 @@ module TestUnixEntropy =
             let expected, pool = EntropyPool.draw (int length) system.Machine.EntropyPool
 
             match UnixEntropy.getEntropy UserBuffer.Mapped (uint64 length) system with
-            | Ok (GetEntropyAnswer.Completed bytes, after) ->
-                Seq.toArray bytes |> shouldEqual (Seq.toArray expected)
+            | Ok (GetEntropyAnswer.Completed draw, after) ->
+                Seq.toArray (EntropyDraw.bytes draw) |> shouldEqual (Seq.toArray expected)
                 after.Machine.EntropyPool |> shouldEqual pool
                 withPoolOf system after |> shouldEqual system
             | other -> failwith $"length %d{length}: expected bytes, got %O{other}"
@@ -212,7 +242,8 @@ module TestUnixEntropy =
     [<Test>]
     let ``getentropy at the limit is answered`` () : unit =
         match UnixEntropy.getEntropy UserBuffer.Mapped UnixEntropy.getEntropyMaxLength (darwin ()) with
-        | Ok (GetEntropyAnswer.Completed bytes, _) -> uint64 bytes.Length |> shouldEqual UnixEntropy.getEntropyMaxLength
+        | Ok (GetEntropyAnswer.Completed draw, _) ->
+            uint64 (EntropyDraw.count draw) |> shouldEqual UnixEntropy.getEntropyMaxLength
         | other -> failwith $"expected bytes, got %O{other}"
 
     /// Darwin screens nothing up front, so a zero-length call returns 0 at any
@@ -229,8 +260,11 @@ module TestUnixEntropy =
                 UserBuffer.Unmapped 0UL
                 UserBuffer.Unmapped UInt64.MaxValue
             ] do
-            UnixEntropy.getEntropy buffer 0UL system
-            |> shouldEqual (Ok (GetEntropyAnswer.Completed ImmutableArray.Empty, system))
+            match UnixEntropy.getEntropy buffer 0UL system with
+            | Ok (GetEntropyAnswer.Completed draw, after) ->
+                EntropyDraw.count draw |> shouldEqual 0
+                after |> shouldEqual system
+            | other -> failwith $"%O{buffer}: expected nothing to move, got %O{other}"
 
     [<Test>]
     let ``getentropy into an unmapped buffer is EFAULT`` () : unit =
@@ -274,9 +308,10 @@ module TestUnixEntropy =
             | Ok (GetRandomAnswer.Completed a, afterFirst) ->
                 match UnixEntropy.getRandom UserBuffer.Mapped (uint64 second) 0u afterFirst with
                 | Ok (GetRandomAnswer.Completed b, _) ->
-                    Seq.toArray a |> shouldEqual (whole |> Seq.take (int first) |> Seq.toArray)
+                    Seq.toArray (EntropyDraw.bytes a)
+                    |> shouldEqual (whole |> Seq.take (int first) |> Seq.toArray)
 
-                    Seq.toArray b
+                    Seq.toArray (EntropyDraw.bytes b)
                     |> shouldEqual (whole |> Seq.skip firstRounded |> Seq.take (int second) |> Seq.toArray)
                 | other -> failwith $"second draw: %O{other}"
             | other -> failwith $"first draw: %O{other}"

@@ -1,6 +1,7 @@
 namespace WoofWare.PosixKernel.Test
 
 open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -90,8 +91,67 @@ module TestEntropyPool =
         Check.One (config, property)
 
     [<Test>]
+    let ``a range of a draw is that slice of its bytes`` () : unit =
+        let property (seed : uint64) (count : byte) (a : byte) (b : byte) : unit =
+            let count = int count
+            let offset = min (int a) count
+            let length = min (int b) (count - offset)
+            let taken, _ = EntropyPool.take count (EntropyPool.ofSeed seed)
+            let whole = EntropyDraw.bytes taken
+
+            Seq.toArray (EntropyDraw.range offset length taken)
+            |> shouldEqual (whole |> Seq.skip offset |> Seq.take length |> Seq.toArray)
+
+        Check.One (config, property)
+
+    /// Taking `a` bytes and then `b` is taking `a` rounded up to a whole output,
+    /// then `b`, in one go: the same pool afterwards, and the second draw's
+    /// bytes are the tail of the single one. Checked at counts up to 2^30,
+    /// which only costs anything because no byte is produced beyond the few
+    /// compared. This is what lets a few bytes at the end of a huge draw stand
+    /// in for the whole of it.
+    [<Test>]
+    let ``taking in pieces is taking once`` () : unit =
+        let big = Gen.choose (0, (1 <<< 30) - 8)
+
+        let gen = Gen.zip3 (ArbMap.defaults |> ArbMap.generate<uint64>) big big
+
+        let property (seed : uint64, a : int, b : int) : unit =
+            let pool = EntropyPool.ofSeed seed
+            let rounded = (a + 7) / 8 * 8
+            let first, afterFirst = EntropyPool.take a pool
+            let second, afterBoth = EntropyPool.take b afterFirst
+            let once, afterOnce = EntropyPool.take (rounded + b) pool
+
+            afterBoth |> shouldEqual afterOnce
+            EntropyDraw.count first |> shouldEqual a
+            EntropyDraw.count second |> shouldEqual b
+
+            let compared = min b 24
+
+            Seq.toArray (EntropyDraw.range 0 compared second)
+            |> shouldEqual (Seq.toArray (EntropyDraw.range rounded compared once))
+
+            let compared = min a 24
+
+            Seq.toArray (EntropyDraw.range (a - compared) compared first)
+            |> shouldEqual (Seq.toArray (EntropyDraw.range (a - compared) compared once))
+
+        Check.One (config, Prop.forAll (Arb.fromGen gen) property)
+
+    [<Test>]
+    let ``a range outside the draw is refused`` () : unit =
+        let taken, _ = EntropyPool.take 16 (EntropyPool.ofSeed 0UL)
+        (fun () -> EntropyDraw.range 8 9 taken |> ignore) |> shouldFail<exn>
+        (fun () -> EntropyDraw.range -1 1 taken |> ignore) |> shouldFail<exn>
+        (fun () -> EntropyDraw.range 0 -1 taken |> ignore) |> shouldFail<exn>
+
+        (fun () -> EntropyDraw.range System.Int32.MaxValue 1 taken |> ignore)
+        |> shouldFail<exn>
+
+    [<Test>]
     let ``a negative count is refused`` () : unit =
-        (fun () -> EntropyPool.draw -1 (EntropyPool.ofSeed 0UL) |> ignore)
+        (fun () -> EntropyPool.take -1 (EntropyPool.ofSeed 0UL) |> ignore)
         |> shouldFail<exn>
 
     /// Every client that does not state its own seed replays against this one,
