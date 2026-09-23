@@ -10,7 +10,7 @@ The dotnet/runtime source is pinned in `flake.nix` as `dotnet-runtime-src` (a sp
 Bumping is an edit to `flake.nix` and `WoofWare.PawPrint/EmulatedRuntime.fs` — there is no sibling checkout to manage any more. Two guards keep the pin honest, and both run in CI:
 
 - the `runtime-version-pin` flake check fails when `expectedRuntimeVersion` in `flake.nix` drifts from the version nixpkgs provides;
-- the `TestEmulatedRuntime` test fails when `EmulatedRuntime.current.Version` drifts from the runtime the test suite runs on.
+- the `TestEmulatedRuntime` drift tests fail when the CoreLib the test suite loads (the host's, and the pinned linux-x64 pack's when `$DOTNET_LINUX_FRAMEWORK_DIR` is set) is not the build `EmulatedRuntime.pin` records for its major. The pinned build is the CoreLib's `AssemblyInformationalVersion` up to its `+`, e.g. `10.0.7-servicing.26217.108`, compared as an exact string.
 
 ## Steps
 
@@ -33,7 +33,11 @@ Bumping is an edit to `flake.nix` and `WoofWare.PawPrint/EmulatedRuntime.fs` —
    - Set `dotnet-runtime-src.rev` to the public tag commit from step 2, set `hash = pkgs.lib.fakeHash;`, then run `nix develop -c true` and copy the real `got: sha256-…` value back into `hash`.
    - If you need a runtime tree outside the current sparse set, add it to `sparseCheckout` (then re-run the fakeHash → real-hash dance, since the hash covers the checked-out tree).
 
-4. Update `WoofWare.PawPrint/EmulatedRuntime.fs` so `Version`, `SourceRef`, and `SourceCommit` match (use the public tag and its commit, per step 2). The `runtime-version-pin` check and `TestEmulatedRuntime` both stay red until `flake.nix` and `EmulatedRuntime.fs` agree with the devshell runtime.
+4. Update `EmulatedRuntime.pin` in `WoofWare.PawPrint/EmulatedRuntime.fs` for the runtime's major:
+   - `Build` must become the new CoreLib's informational-version build identity. It carries a label and build number that `dotnet --info` does not show (a servicing build's is like `10.0.8-servicing.<build>`), so do not guess it: run `nix develop -c dotnet test WoofWare.PawPrint.Test/WoofWare.PawPrint.Test.fsproj --filter "FullyQualifiedName~TestEmulatedRuntime"`, and the failing drift test prints the exact string to paste.
+   - `SourceRef` and `SourceCommit` must name the public tag and its commit, per step 2.
+
+   The `runtime-version-pin` check and `TestEmulatedRuntime` both stay red until `flake.nix` and `EmulatedRuntime.fs` agree with the devshell runtime.
 
 5. Verify the source you care about looks right: e.g. for QCall work against RuntimeHandles, glance at `$DOTNET_RUNTIME_SRC/src/coreclr/System.Private.CoreLib/src/System/RuntimeHandles.cs` and `$DOTNET_RUNTIME_SRC/src/coreclr/vm/runtimehandles.cpp` to confirm they look like the .NET 10 shape you expect.
 

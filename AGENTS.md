@@ -7,7 +7,7 @@ WoofWare.PawPrint is an experimental .NET runtime implementation written in F#. 
 
 This is NOT a high-performance runtime - it's a very slow IL interpreter prioritizing determinism over speed.
 
-If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check and the `TestEmulatedRuntime` drift test). To keep the closure small it is sparse-checked-out to the trees we read most; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. Note that a fixed-output derivation is keyed by its declared `hash`, so Nix will silently reuse the old store path unless you invalidate the hash as well as editing `sparseCheckout`. See the `sync-dotnet-runtime` skill for how to bump the pin. (If you see a sibling checkout `../dotnet`, without the `-runtime` suffix, that is the .NET SDK source and is not what you want.)
+If you need to check upstream behaviour, the genuine .NET runtime's source is pinned in `flake.nix` (`dotnet-runtime-src`) and exposed inside the Nix devshell as `$DOTNET_RUNTIME_SRC`. The pin tracks the .NET 10 servicing version the devshell runs (kept honest by the `runtime-version-pin` flake check, and by the `TestEmulatedRuntime` drift test comparing the loaded CoreLib's build against `EmulatedRuntime.pin`). To keep the closure small it is sparse-checked-out to the trees we read most; if you need another tree, add it to the `sparseCheckout` list in `flake.nix`. Note that a fixed-output derivation is keyed by its declared `hash`, so Nix will silently reuse the old store path unless you invalidate the hash as well as editing `sparseCheckout`. See the `sync-dotnet-runtime` skill for how to bump the pin. (If you see a sibling checkout `../dotnet`, without the `-runtime` suffix, that is the .NET SDK source and is not what you want.)
 
 ## CoreLib flavour
 
@@ -34,7 +34,7 @@ Interpolate the appropriate platform/config strings as necessary.
 
 ```bash
 nix develop -c dotnet publish --self-contained --configuration Release --runtime osx-arm64 CSharpExample/
-nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CSharpExample/bin/Release/net9.0/osx-arm64/publish/CSharpExample.dll
+nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CSharpExample/bin/Release/net10.0/osx-arm64/publish/CSharpExample.dll
 ```
 
 ## Architecture

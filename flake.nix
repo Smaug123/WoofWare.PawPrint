@@ -21,8 +21,11 @@
       dotnet-runtime = pkgs.dotnetCorePackages.runtime_10_0;
       version = "0.6";
       # The .NET servicing version we emulate. This must equal what nixpkgs provides (enforced by
-      # the `runtime-version-pin` check below) and WoofWare.PawPrint/EmulatedRuntime.fs (enforced by
-      # the TestEmulatedRuntime drift test). When nixpkgs bumps the SDK, bump all of these together.
+      # the `runtime-version-pin` check below). The same build is pinned in
+      # WoofWare.PawPrint/EmulatedRuntime.fs (`EmulatedRuntime.pin`), as the build identity the
+      # CoreLib's AssemblyInformationalVersion states (e.g. "10.0.7-servicing.26217.108"); the
+      # TestEmulatedRuntime drift test compares that against the CoreLib the suite loads. When
+      # nixpkgs bumps the SDK, bump all of these together.
       expectedRuntimeVersion = "10.0.7";
       # Pinned, read-only dotnet/runtime source, for checking upstream behaviour (BCL / QCall /
       # native helpers) from the devshell as $DOTNET_RUNTIME_SRC. Sparse-checked-out to just the
@@ -197,7 +200,8 @@
           '';
         # Fails the build (and so `nix flake check` in CI) when nixpkgs's runtime version drifts
         # away from the version we pin. Forces a deliberate bump of dotnet-runtime-src, of
-        # expectedRuntimeVersion, and of WoofWare.PawPrint/EmulatedRuntime.fs in lockstep.
+        # expectedRuntimeVersion, and of `EmulatedRuntime.pin` in WoofWare.PawPrint/EmulatedRuntime.fs
+        # in lockstep.
         runtime-version-pin =
           pkgs.runCommand "runtime-version-pin" {}
           (
@@ -205,7 +209,7 @@
             then "touch $out"
             else ''
               echo "Runtime pin drift: nixpkgs provides ${dotnet-runtime.version} but expectedRuntimeVersion = ${expectedRuntimeVersion}." >&2
-              echo "Bump dotnet-runtime-src rev (to the public v<new> tag commit), expectedRuntimeVersion, and WoofWare.PawPrint/EmulatedRuntime.fs together." >&2
+              echo "Bump dotnet-runtime-src rev (to the public v<new> tag commit), expectedRuntimeVersion, and EmulatedRuntime.pin in WoofWare.PawPrint/EmulatedRuntime.fs together." >&2
               exit 1
             ''
           );

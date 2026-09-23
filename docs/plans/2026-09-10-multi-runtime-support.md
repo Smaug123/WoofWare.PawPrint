@@ -7,9 +7,9 @@ against more than one .NET major version.
 
 ## Problem
 
-PawPrint emulates exactly one runtime: `EmulatedRuntime.current` is a compile-time constant,
-the native handler set in `NativeDispatch` is "the net10 set", and every pin in `flake.nix`
-names one version. The net11 spike showed the consequences:
+PawPrint emulates exactly one runtime: the only native handler set in `NativeDispatch` is
+"the net10 set", `EmulatedRuntime.supported` admits only CoreLib major 10, and every pin in
+`flake.nix` names one version. The net11 spike showed the consequences:
 
 * The upgrade is a sequence of frontier blockers, each hiding the ones behind it (467 → 463 →
   446 failures across three real fixes). A single-version library forces all of them onto one
@@ -89,48 +89,63 @@ runtime):
 | fact | where | value on today's pin | used for |
 | --- | --- | --- | --- |
 | major version | CoreLib `AssemblyVersion` | `10.0.0.0` | selecting the contract |
-| servicing version | CoreLib `AssemblyInformationalVersion`, the SemVer before `+` | `10.0.7-servicing.26217.108` | drift validation |
+| build identity | CoreLib `AssemblyInformationalVersion`, the text before `+` | `10.0.7-servicing.26217.108` | drift validation |
 
 Major granularity is the right key: the CoreLib-to-runtime internal contract churns at major
 boundaries and holds within a servicing train (every divergence the spike found is a
 net10-vs-net11 fact, not a 10.0.x fact). The informational version's build metadata names an
-internal build commit, not the public tag — `EmulatedRuntime.SourceCommit`'s docstring already
-records that trap — so drift validation compares the SemVer core only.
+internal build commit, not the public tag — `RuntimePin.SourceCommit`'s docstring records that
+trap — so drift validation drops the build metadata and compares the rest exactly, as text.
+That text keeps its prerelease label even on a released servicing build (`-servicing.<build>`),
+which `RuntimeInformation.FrameworkDescription` omits for such a build (CoreLib's
+`ProductVersionInfoGenerator` strips it only when the build was stabilised); the label is part
+of the pin, so the pin names exactly one build.
 
 Note the prerelease wrinkle: a preview CoreLib's informational version carries a prerelease
 label, which is exactly what `WoofWare.DotnetRuntimeLocator` PR #206 taught the *locator* to
-parse. PawPrint's own drift comparison must not regress this by parsing with `System.Version`.
+parse. PawPrint's drift comparison does not parse the text at all, so it cannot regress this
+the way `System.Version` would.
 
 ### Where the active runtime lives
 
-`EmulatedRuntime.current` is deleted. `EmulatedRuntime` values become the support allowlist
-(`net10`, later `net11`), and the active one becomes a field established when CoreLib loads.
+`EmulatedRuntime` is the support allowlist, a DU with one case per supported major (`Net10`,
+later `Net11`), so every per-runtime selection is an exhaustive `match` that stops compiling
+when a case is added. `EmulatedRuntime.pin` gives each case the build our validation was
+measured against.
 
-Two placements were considered:
+The active runtime is not stored anywhere: it is a pure function of the CoreLib the run
+loaded. `EmulatedRuntime.ofCoreLib` reads it from that image's `AssemblyVersion` major, and the
+image is `BaseClassTypes.Corelib`, which every consumer already holds — `NativeCallContext`
+carries `BaseClassTypes`, and the intrinsic gate (`callMethodWithCommitment`),
+`AppContextSeed.prepareCall` and `SignalDispatch.trySpawnHandler` all take it. Because the
+runtime is computed from the image rather than recorded beside it, the two cannot disagree,
+and a fixture that loads some other CoreLib gets that CoreLib's runtime without saying so.
 
-* **A field on `BaseClassTypes`.** Coherent (it is a fact established at CoreLib load, like
-  everything else in that record) and already threaded everywhere — but `BaseClassTypes` lives
-  in `WoofWare.PawPrint.Domain`, a published package, and `EmulatedRuntime` is a main-library
-  concept. Moving it down or widening Domain's API for this is avoidable churn.
-* **A field on `IlMachineState`, established when CoreLib resolves. Chosen.**
-  `NativeCallContext` already carries `State`, so every native handler can see it; the
-  intrinsic gate and `AppContextSeed.prepareCall` already have the state in hand. No
-  published API changes.
+Two placements that store the runtime were considered and not taken:
 
-The establishment point is CoreLib *resolution*, not state construction:
-`IlMachineState.initial` takes the entry assembly, and CoreLib is resolved afterwards during
-`Program.beginStartup` — the same point that produces `BaseClassTypes`. The field is set
-exactly once, there, from the resolved CoreLib's `AssemblyVersion`; an unsupported major is
-refused at that moment, naming the major found and the majors supported. Every consumer of
-the field runs strictly after CoreLib resolution (no native call, intrinsic check, or host
-startup call happens without `BaseClassTypes` in hand), so a read before establishment is a
-PawPrint bug and fails loudly rather than being a reachable guest state. Whether the field is
-set-once or the state-construction API is reshaped to take the resolved CoreLib is stage 3's
-call; the contract is "established at resolution, refused on unsupported major, assigned
-once".
+* **A field on `BaseClassTypes`.** `BaseClassTypes` lives in `WoofWare.PawPrint.Domain`, a
+  published package, and `EmulatedRuntime` is a main-library concept; widening Domain's API
+  for it is avoidable churn.
+* **A field on `IlMachineState`.** Either set once during startup, which checks "read before
+  set" and "set only once" only at run time, or supplied at construction, which means moving
+  CoreLib discovery ahead of state construction and changing every hand-built test state.
+  Both keep a second copy of a fact that is already in the image, with nothing tying the
+  copy to it.
 
-The drift test stops comparing against a constant and instead asserts that the *loaded*
-runtime's servicing version matches the pin for its major.
+Admission happens at CoreLib *resolution*. `Program.beginStartup` walks the entry type's base
+chain to the assembly that defines `System.Object`, and classifies that assembly before it
+calls `Corelib.getBaseTypes`: a CoreLib of an unsupported major may lack a type `getBaseTypes`
+demands, and that failure would hide the real reason. An unsupported major raises
+`UnsupportedRuntimeException` naming the CoreLib, the major it states, the majors supported,
+and the runtime directories it was resolved along. No guest code has run at that point, and
+the refusal surfaces the same way from `beginStartup`, `prepare`, `run` and `runToFirstFork`.
+Every consumer of the runtime runs strictly after resolution (no native call, intrinsic check
+or host startup call happens without `BaseClassTypes` in hand), so `ofCoreLib` meeting an
+unsupported image means a state that did not come through startup, and it fails loudly.
+
+The `TestEmulatedRuntime` drift test starts a trivial guest, takes the CoreLib PawPrint
+resolved, and asserts that its build identity equals the pin for its major. The same check
+runs against the pinned linux-x64 pack when `$DOTNET_LINUX_FRAMEWORK_DIR` is set.
 
 ### Two kinds of version-sensitive fact, two mechanisms
 
@@ -172,7 +187,7 @@ image and lives in versioned data instead:
   core list plus per-version additions (e.g. net11's `AppContext_TryGetHostPropertyValue`
   QCall, `SystemNative_FileSystemSupportsLocking`) and removals (e.g. net10-only handlers for
   entry points net11 deleted, such as `Monitor.TryEnter_FastPath`'s InternalCall). Selection
-  is on the state's `EmulatedRuntime`.
+  is on `EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib`.
 * The PAL conversions beside `WoofWare.PawPrint/Native/` gain versioned rows where measured —
   the spike found `PosixSignal`'s managed enum membership and
   `SystemNative_GetPlatformSignalNumber`'s answers both changed. `WoofWare.PosixKernel`
@@ -336,11 +351,12 @@ mutation-testing skill applies to each table/classifier they introduce.
    the package. Prerequisite for anything net11 touching a real runtime directory.
 2. **Fix the intrinsic-gate-versus-native-dispatch ordering on net10** (the
    `FastAllocateString` finding). Version-agnostic; testable today.
-3. **De-singleton `EmulatedRuntime`.** Delete `current`; CoreLib resolution in
-   `Program.beginStartup` classifies the resolved image's major against the allowlist (of
-   one, at this stage) and establishes the state's runtime field; unknown majors are refused
-   with the supported set named. Drift test re-keys onto the loaded runtime. `NativeDispatch`'s comment becomes code: the handler list is selected by
-   the state's runtime, with one list to select from.
+3. **De-singleton `EmulatedRuntime`.** `EmulatedRuntime` becomes the allowlist DU (of one,
+   at this stage), and the active runtime is read from the resolved CoreLib; CoreLib
+   resolution in `Program.beginStartup` refuses unknown majors with the supported set named.
+   The drift test checks the loaded CoreLib's build against the pin for its major.
+   `NativeDispatch` selects its handler list by the CoreLib's runtime, with one list to select
+   from.
 4. **Shape classifications on net10.** `SetupShape` (three-arg arm live, four-arg arm refused
    as unrecognised until stage 6 adds it) and the `RuntimeFieldInfoStub` layout classifier
    (current layout live), each with its readers. The fabricated-image machinery
