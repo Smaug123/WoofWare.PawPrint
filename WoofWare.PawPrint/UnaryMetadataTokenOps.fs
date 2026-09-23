@@ -502,9 +502,9 @@ module internal UnaryMetadataTokenOps =
             // value type and the slot resolves to a struct instance method, CoreCLR hands back the
             // *unboxing* entry point — `GetMethodDescOfVirtualizedCode` (method.cpp) passes
             // `pTargetMT->IsValueType()` as `forceBoxedEntryPoint` to
-            // `FindOrCreateAssociatedMethodDesc` — whose address differs from `ldftn S::M`. A
-            // `FunctionPointerTarget.Managed` names only a method, and its equality is nominal, so
-            // the two collapse to one value here.
+            // `FindOrCreateAssociatedMethodDesc` — whose address differs from `ldftn S::M`.
+            // `FunctionPointerTarget.UnboxingStub` could name it, but this pushes
+            // `FunctionPointerTarget.Managed`, so the two collapse to one value here.
             //
             // Calling through the pointer is unaffected, which is why the boxed-receiver case in
             // `LdvirtftnVirtualDispatch.cs` passes: `callMethodWithCommitment` converts an
@@ -517,9 +517,10 @@ module internal UnaryMetadataTokenOps =
             // This cannot be guarded the way the sealed-declaring-type case above is: that shape is
             // unreachable from C#, whereas this one is ordinary code (`ICounter c = someStruct;
             // Func<int> f = c.Count;`) that works correctly today, so refusing it would remove
-            // working behaviour to protect an unobservable distinction. It is the same missing
-            // entry-point flavour already parked against `ActivatorCreateInstanceStructCtor.cs`;
-            // both consumers close together when `FunctionPointerTarget` can name one.
+            // working behaviour to protect an unobservable distinction. Nor can this simply push
+            // the stub: its main consumer is the delegate constructor, which takes only `Managed`
+            // today, and which on CoreCLR (`COMDelegate::DelegateConstruct`) stores the stub for
+            // *every* closed delegate over a value-type method, `ldftn`-built ones included.
             logger.LogDebug (
                 "Pushed pointer to virtual function {LdVirtFtnAssembly}.{LdVirtFtnType}.{LdVirtFtnMethodName}, dispatched from {LdVirtFtnCallSite}",
                 target.DeclaringAssemblyFullName,

@@ -174,7 +174,8 @@ module DelegateRepresentation =
                     | FunctionPointerTarget.Managed _
                     | FunctionPointerTarget.Dynamic _ -> state, NativeIntSource.Verbatim 0L
                     | FunctionPointerTarget.RuntimeAllocator
-                    | FunctionPointerTarget.OpenDelegateShuffleThunk ->
+                    | FunctionPointerTarget.OpenDelegateShuffleThunk
+                    | FunctionPointerTarget.UnboxingStub _ ->
                         failwith $"logic error: an open delegate's _methodPtrAux cannot be %O{aux}"
 
                 Some delegateAddr,
@@ -276,6 +277,11 @@ module DelegateRepresentation =
             | FunctionPointerTarget.OpenDelegateShuffleThunk
             | FunctionPointerTarget.RuntimeAllocator as aux ->
                 failwith $"%s{operation}: an open delegate's _methodPtrAux names %O{aux}, which is not a call target"
+            | FunctionPointerTarget.UnboxingStub _ as aux ->
+                // `COMDelegate::BindToMethod` swaps an unboxing stub for the unboxed entry point
+                // before storing it, since an open delegate passes a value-type receiver by byref.
+                failwith
+                    $"%s{operation}: an open delegate's _methodPtrAux names %O{aux}, which an open delegate never holds"
             | aux -> DelegateInvocation.ThroughShuffleThunk aux
         | methodPtr ->
             let target =
@@ -319,6 +325,11 @@ module DelegateRepresentation =
             | FunctionPointerTarget.OpenDelegateShuffleThunk
             | FunctionPointerTarget.VirtualCallStub _ ->
                 failwith $"%s{operation}: the delegate's %s{fieldName} names %O{target}, which is not a method"
+            | FunctionPointerTarget.UnboxingStub _ ->
+                // CoreCLR's closed delegates over a value-type method do hold one, but PawPrint's
+                // delegate constructor stores the method itself, so nothing writes one here.
+                failwith
+                    $"%s{operation}: the delegate's %s{fieldName} names %O{target}, which no PawPrint delegate binding produces"
 
         let invocationCount =
             nativeIntField

@@ -249,7 +249,8 @@ module AbstractMachine =
                     DynamicMethodExecution.concretize loggerFactory baseClassTypes "delegate invocation" handle state
                 | FunctionPointerTarget.RuntimeAllocator
                 | FunctionPointerTarget.OpenDelegateShuffleThunk
-                | FunctionPointerTarget.VirtualCallStub _ ->
+                | FunctionPointerTarget.VirtualCallStub _
+                | FunctionPointerTarget.UnboxingStub _ ->
                     FunctionPointerTarget.requireManaged "delegate invocation" callee
                     |> fun m -> state, Ok m
 

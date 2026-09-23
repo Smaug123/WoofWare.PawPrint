@@ -1597,101 +1597,98 @@ module internal UnaryMetadataCallOps =
         |> IlMachineState.advanceProgramCounter thread
         |> Tuple.withRight WhatWeDid.Executed
 
-    /// `calli` (ECMA-335 III.3.20). The function pointer sits on top of the eval stack,
-    /// above the arguments; the metadata token is a StandaloneSignature describing the
-    /// *call site*, not the callee.
-    ///
-    /// Design note. We drive the actual invocation from the `MethodInfo` carried by the
-    /// function-pointer value (`NativeIntSource.FunctionPointer`), exactly as the delegate
-    /// dispatch path does in `AbstractMachine.dispatchDelegateInvoke` — `callMethod` pops
-    /// arguments according to the callee's own signature, so that is the single source of
-    /// truth for argument handling. The call-site signature is used only to *validate*
-    /// that the two agree on how many eval-stack slots this call consumes. Without that
-    /// check, a mismatch (whether from a bug in our own `ldftn`/function-pointer
-    /// representation, or from genuinely divergent IL) would silently pop the wrong number
-    /// of values and corrupt the frame — a failure that surfaces arbitrarily far from its
-    /// cause.
-    ///
-    /// Known divergence. ECMA-335 defines `calli`'s marshalling by the call-site signature,
-    /// so a guest may legally pun a function pointer to a signature whose *types* differ from
-    /// the target's (C# permits `(delegate*&lt;int, long&gt;)p` where `p` is
-    /// `delegate*&lt;int, int&gt;`, and CoreCLR runs it). Driving invocation from the callee
-    /// cannot reproduce that: the result would be pushed as the target's `Int32` and the
-    /// caller's `int64` store would then have no legal coercion. Doing it properly means
-    /// coercing arguments and the result to the call-site types, which requires carrying the
-    /// call-site signature onto the frame and applying it in `returnStackFrame`. Until then we
-    /// detect the mismatch here and fail at the faulting instruction, rather than letting the
-    /// call proceed and die later inside `toCliTypeCoerced` with a message that never mentions
-    /// `calli`. See docs/divergences.md.
-    let executeCalli (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+    /// Which entry point of a managed method a `calli` enters, which decides what its receiver
+    /// slot must hold.
+    [<RequireQualifiedAccess>]
+    type private CalliEntry =
+        /// The method's own entry point: every slot, receiver included, is passed as pushed.
+        | Direct
+        /// `FunctionPointerTarget.UnboxingStub`: the receiver slot holds a boxed instance, which the
+        /// stub turns into a byref to the box's payload before entering the method.
+        | UnboxingStub
+
+    /// What an unboxing stub does before entering `method`: the receiver slot holds a boxed
+    /// instance of `method`'s declaring type, and becomes a byref to that box's payload, so that
+    /// `method`'s writes through `this` land in the box itself. The function pointer must already
+    /// have been popped, leaving the receiver on top.
+    let private enterUnboxingStub
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (thread : ThreadId)
+        (method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (declaringTypeHandle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let operation = "calli (unboxing stub)"
+
+        let describe = $"%s{MethodOwner.describe method.Owner}::%s{method.Name}"
+
+        if method.IsStatic then
+            failwith $"%s{operation}: %s{describe} is static, so it has no receiver to unbox and no unboxing stub"
+
+        let declaringType =
+            AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: declaring type %O{declaringTypeHandle} of %s{describe} is not registered"
+            )
+
+        let declaringTypeDefn =
+            state._LoadedAssemblies
+                .ByDefinitionName(declaringType.AssemblyFullName)
+                .TypeDefs.[declaringType.Definition.Get]
+
+        if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies declaringTypeDefn) then
+            failwith
+                $"%s{operation}: %s{describe} is declared on a reference type, whose methods take an object receiver already and so have no unboxing stub"
+
+        // The one producer, `RuntimeTypeHandle_GetActivationInfo`, hands out a stub only over a
+        // parameterless constructor, so the receiver is the only slot there is to translate.
+        if MethodInfo.arity method <> 0 then
+            failwith
+                $"TODO: %s{operation}: %s{describe} takes %d{MethodInfo.arity method} argument(s) besides its receiver; only a parameterless method's unboxing stub is modelled, since that is all RuntimeTypeHandle_GetActivationInfo produces"
+
+        let receiver, state = IlMachineState.popEvalStack thread state
+
+        let addr =
+            match receiver with
+            | EvalStackValue.ObjectRef addr -> addr
+            | EvalStackValue.NullObjectRef ->
+                // CoreCLR's stub offsets the null past the MethodTable pointer and enters the
+                // method anyway, which faults only if the method then touches `this`. Nothing
+                // that obtains one of these stubs passes null.
+                failwith
+                    $"TODO: %s{operation}: null receiver for %s{describe}; CoreCLR's behaviour depends on whether the method dereferences `this`"
+            | other -> failwith $"%s{operation}: expected a boxed receiver for %s{describe}, got %O{other}"
+
+        // Only an exact match is sound: a value type is sealed, so its methods' stubs are only
+        // ever reached with its own boxes, and CoreCLR's stub does not check.
+        match ManagedHeap.tryGet addr state.ManagedHeap with
+        | Some boxed when boxed.ConcreteType = declaringTypeHandle -> ()
+        | Some boxed ->
+            failwith
+                $"%s{operation}: receiver is a boxed %O{boxed.ConcreteType}, but %s{describe} is declared on %O{declaringTypeHandle}"
+        | None -> failwith $"%s{operation}: receiver %O{addr} for %s{describe} is not a boxed value"
+
+        IlMachineState.pushToEvalStack'
+            (EvalStackValue.ManagedPointer (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])))
+            thread
+            state
+
+    /// `calli` through a managed method's entry point, once `executeCalli` has classified the
+    /// function pointer. See `executeCalli` for how the call-site signature is used.
+    let private executeManagedCalli
+        (ctx : UnaryMetadataIlOpContext)
+        (callSiteSignature : TypeMethodSignature<TypeDefn>)
+        (entry : CalliEntry)
+        (methodToCall : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+        (state : IlMachineState)
+        : IlMachineState * WhatWeDid
+        =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
         let activeAssy = ctx.ActiveAssembly
         let thread = ctx.Thread
 
-        let callSiteSignature =
-            match ctx.MetadataToken with
-            | MetadataToken.StandaloneSignature handle ->
-                let metadataReader = activeAssy.PeReader.GetMetadataReader ()
-
-                (metadataReader.GetStandaloneSignature handle)
-                    .DecodeMethodSignature (TypeDefn.typeProvider activeAssy.Name, ())
-                |> TypeMethodSignature.make
-            | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
-
-        // Peek rather than pop: this read only inspects the pointer for validation. It stays
-        // on the stack (above the arguments) until the call is actually made, and is popped
-        // exactly once there.
-        let fnPtr = IlMachineState.peekEvalStack thread state
-
-        // A function pointer is recognised by its `FunctionPointer` provenance; anything
-        // that is semantically zero is a null pointer. Matching `FunctionPointer` first is
-        // not required for correctness — `NativeIntSource.isZero` answers `false` for
-        // it, because a function pointer is never null — but it keeps the two arms readable
-        // as "is it a pointer to something" then "is it null".
-        let target =
-            match fnPtr with
-            | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
-            | Some (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer target)) -> Some target
-            | Some (EvalStackValue.NativeInt src) when NativeIntSource.isZero src ->
-                // Every spelling of a null function pointer lands here, not just
-                // `Verbatim 0L`: `ldnull; conv.i` yields
-                // `ManagedPointer ManagedPointerSource.Null`, which is zero throughout
-                // PawPrint. Reusing the existing predicate keeps this arm honest as new
-                // `NativeIntSource` cases appear.
-                None
-            | Some other ->
-                // Anything else is either a genuinely bogus value or a pointer provenance
-                // our `NativeIntSource` model can't yet render as a callable target; either
-                // way, calling through it would be a guess.
-                failwith $"calli: expected a function pointer on top of the eval stack, got %O{other}"
-
-        match target with
-        | None ->
-            // The CLI does not specify this case. ECMA-335 III.3.20's "Exceptions" lists only
-            // `System.SecurityException`, and its "Correctness" requires `ftn` to hold a method
-            // address, so a null one is not correct CIL. PawPrint chooses a deterministic
-            // catchable exception over emulating CoreCLR's segfault; docs/divergences.md has the
-            // argument. Don't advance the PC; exception dispatch needs the faulting instruction's
-            // offset.
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
-        | Some FunctionPointerTarget.RuntimeAllocator -> executeAllocatorCalli ctx callSiteSignature state
-        | Some (FunctionPointerTarget.Dynamic handle) ->
-            // The same boundary `FunctionPointerTarget.requireManaged` enforces on the delegate
-            // path, stated separately because `calli` does not go through it. Reachable in
-            // principle — `Marshal.GetFunctionPointerForDelegate` over a delegate bound to a
-            // dynamic method would hand the guest one of these — and it must fail here rather
-            // than be silently mistaken for some other target.
-            failwith
-                $"calli: the function pointer names %O{handle}; PawPrint can mint and bind a Reflection.Emit method but cannot yet execute one"
-        | Some (FunctionPointerTarget.OpenDelegateShuffleThunk as stub)
-        | Some (FunctionPointerTarget.VirtualCallStub _ as stub) ->
-            // These live only in a delegate's `_methodPtr` and `_methodPtrAux`, so a guest can
-            // hold one only by reading those private fields reflectively. CoreCLR would enter the
-            // stub; `dispatchDelegateInvoke` interprets both inline rather than as callable
-            // methods, so there is nothing here to call.
-            failwith $"TODO: calli through %O{stub}, which PawPrint interprets only as part of a delegate invocation"
-        | Some (FunctionPointerTarget.Managed methodToCall) ->
 
         // Slots this call consumes: the callee's declared parameters, plus `this` when the
         // callee is an instance method. Arity comes from the signature, not the Param table:
@@ -1828,7 +1825,13 @@ module internal UnaryMetadataCallOps =
 
         // The pointer sits above the arguments, and arguments are popped from the top of the
         // stack, so it has to come off before we call in.
-        let fnPtrValue, state = IlMachineState.popEvalStack thread state
+        let _fnPtr, state = IlMachineState.popEvalStack thread state
+
+        let state =
+            match entry with
+            | CalliEntry.Direct -> state
+            | CalliEntry.UnboxingStub -> enterUnboxingStub baseClassTypes thread methodToCall declaringTypeHandle state
+
         let threadState = state.ThreadState.[thread]
 
         let state, commitment =
@@ -1857,3 +1860,102 @@ module internal UnaryMetadataCallOps =
         | IlMachineStateExecution.CallCommitment.Aborted fatal -> state, WhatWeDid.Aborted fatal
         | IlMachineStateExecution.CallCommitment.Committed
         | IlMachineStateExecution.CallCommitment.Raised -> state, WhatWeDid.Executed
+
+    /// `calli` (ECMA-335 III.3.20). The function pointer sits on top of the eval stack,
+    /// above the arguments; the metadata token is a StandaloneSignature describing the
+    /// *call site*, not the callee.
+    ///
+    /// Design note. We drive the actual invocation from the `MethodInfo` carried by the
+    /// function-pointer value (`NativeIntSource.FunctionPointer`), exactly as the delegate
+    /// dispatch path does in `AbstractMachine.dispatchDelegateInvoke` — `callMethod` pops
+    /// arguments according to the callee's own signature, so that is the single source of
+    /// truth for argument handling. The call-site signature is used only to *validate*
+    /// that the two agree on how many eval-stack slots this call consumes. Without that
+    /// check, a mismatch (whether from a bug in our own `ldftn`/function-pointer
+    /// representation, or from genuinely divergent IL) would silently pop the wrong number
+    /// of values and corrupt the frame — a failure that surfaces arbitrarily far from its
+    /// cause.
+    ///
+    /// Known divergence. ECMA-335 defines `calli`'s marshalling by the call-site signature,
+    /// so a guest may legally pun a function pointer to a signature whose *types* differ from
+    /// the target's (C# permits `(delegate*&lt;int, long&gt;)p` where `p` is
+    /// `delegate*&lt;int, int&gt;`, and CoreCLR runs it). Driving invocation from the callee
+    /// cannot reproduce that: the result would be pushed as the target's `Int32` and the
+    /// caller's `int64` store would then have no legal coercion. Doing it properly means
+    /// coercing arguments and the result to the call-site types, which requires carrying the
+    /// call-site signature onto the frame and applying it in `returnStackFrame`. Until then we
+    /// detect the mismatch here and fail at the faulting instruction, rather than letting the
+    /// call proceed and die later inside `toCliTypeCoerced` with a message that never mentions
+    /// `calli`. See docs/divergences.md.
+    let executeCalli (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
+        let loggerFactory = ctx.LoggerFactory
+        let baseClassTypes = ctx.BaseClassTypes
+        let activeAssy = ctx.ActiveAssembly
+        let thread = ctx.Thread
+
+        let callSiteSignature =
+            match ctx.MetadataToken with
+            | MetadataToken.StandaloneSignature handle ->
+                let metadataReader = activeAssy.PeReader.GetMetadataReader ()
+
+                (metadataReader.GetStandaloneSignature handle)
+                    .DecodeMethodSignature (TypeDefn.typeProvider activeAssy.Name, ())
+                |> TypeMethodSignature.make
+            | k -> failwith $"calli: expected a StandaloneSignature metadata token describing the call site, got %O{k}"
+
+        // Peek rather than pop: this read only inspects the pointer for validation. It stays
+        // on the stack (above the arguments) until the call is actually made, and is popped
+        // exactly once there.
+        let fnPtr = IlMachineState.peekEvalStack thread state
+
+        // A function pointer is recognised by its `FunctionPointer` provenance; anything
+        // that is semantically zero is a null pointer. Matching `FunctionPointer` first is
+        // not required for correctness — `NativeIntSource.isZero` answers `false` for
+        // it, because a function pointer is never null — but it keeps the two arms readable
+        // as "is it a pointer to something" then "is it null".
+        let target =
+            match fnPtr with
+            | None -> failwith "calli: eval stack was empty; expected a function pointer on top"
+            | Some (EvalStackValue.NativeInt (NativeIntSource.FunctionPointer target)) -> Some target
+            | Some (EvalStackValue.NativeInt src) when NativeIntSource.isZero src ->
+                // Every spelling of a null function pointer lands here, not just
+                // `Verbatim 0L`: `ldnull; conv.i` yields
+                // `ManagedPointer ManagedPointerSource.Null`, which is zero throughout
+                // PawPrint. Reusing the existing predicate keeps this arm honest as new
+                // `NativeIntSource` cases appear.
+                None
+            | Some other ->
+                // Anything else is either a genuinely bogus value or a pointer provenance
+                // our `NativeIntSource` model can't yet render as a callable target; either
+                // way, calling through it would be a guess.
+                failwith $"calli: expected a function pointer on top of the eval stack, got %O{other}"
+
+        match target with
+        | None ->
+            // The CLI does not specify this case. ECMA-335 III.3.20's "Exceptions" lists only
+            // `System.SecurityException`, and its "Correctness" requires `ftn` to hold a method
+            // address, so a null one is not correct CIL. PawPrint chooses a deterministic
+            // catchable exception over emulating CoreCLR's segfault; docs/divergences.md has the
+            // argument. Don't advance the PC; exception dispatch needs the faulting instruction's
+            // offset.
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
+        | Some FunctionPointerTarget.RuntimeAllocator -> executeAllocatorCalli ctx callSiteSignature state
+        | Some (FunctionPointerTarget.Dynamic handle) ->
+            // The same boundary `FunctionPointerTarget.requireManaged` enforces on the delegate
+            // path, stated separately because `calli` does not go through it. Reachable in
+            // principle — `Marshal.GetFunctionPointerForDelegate` over a delegate bound to a
+            // dynamic method would hand the guest one of these — and it must fail here rather
+            // than be silently mistaken for some other target.
+            failwith
+                $"calli: the function pointer names %O{handle}; PawPrint can mint and bind a Reflection.Emit method but cannot yet execute one"
+        | Some (FunctionPointerTarget.OpenDelegateShuffleThunk as stub)
+        | Some (FunctionPointerTarget.VirtualCallStub _ as stub) ->
+            // These live only in a delegate's `_methodPtr` and `_methodPtrAux`, so a guest can
+            // hold one only by reading those private fields reflectively. CoreCLR would enter the
+            // stub; `dispatchDelegateInvoke` interprets both inline rather than as callable
+            // methods, so there is nothing here to call.
+            failwith $"TODO: calli through %O{stub}, which PawPrint interprets only as part of a delegate invocation"
+        | Some (FunctionPointerTarget.Managed methodToCall) ->
+            executeManagedCalli ctx callSiteSignature CalliEntry.Direct methodToCall state
+        | Some (FunctionPointerTarget.UnboxingStub methodToCall) ->
+            executeManagedCalli ctx callSiteSignature CalliEntry.UnboxingStub methodToCall state
