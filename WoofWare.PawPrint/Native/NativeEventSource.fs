@@ -1,5 +1,7 @@
 namespace WoofWare.PawPrint
 
+open WoofWare.PosixKernel
+
 [<RequireQualifiedAccess>]
 module NativeEventSource =
     /// Parse a CLRConfig DWORD env-var value the way CoreCLR does for
@@ -118,9 +120,9 @@ module NativeEventSource =
     /// then `COMPlus_<name>` as a fallback. Returns `None` for an unset or
     /// empty value (CoreCLR's `GetConfigString` also discards the empty
     /// string via the `*ret != W('\0')` check in `clrconfig.cpp:288`).
-    let internal lookupClrConfigString (env : Map<string, string>) (name : string) : string option =
+    let internal lookupClrConfigString (env : UnixByteString list) (name : string) : string option =
         let tryEnv (key : string) : string option =
-            match Map.tryFind key env with
+            match EnvironmentPal.tryGetValue "EventSource_GetClrConfig" key env with
             | Some value when value.Length > 0 -> Some value
             | _ -> None
 

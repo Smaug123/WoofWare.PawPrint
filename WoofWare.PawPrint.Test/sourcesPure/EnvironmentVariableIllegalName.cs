@@ -15,9 +15,8 @@ using System.Collections;
 // loop underneath, `FindEnvVarValue`, would otherwise happily resolve the name
 // `A=B` against an entry `A=B=C`.
 //
-// PawPrint reaches the same answers by a different route — its environment map
-// cannot hold such a name at all, so the lookup misses and reports the identical
-// ERROR_ENVVAR_NOT_FOUND — and this file is what pins that they really do agree.
+// PawPrint's lookup (`EnvironmentPal.tryFindValue`) refuses the same names in
+// the same place, and this file is what pins that the two really do agree.
 public class TestEnvironmentVariableIllegalName
 {
     public static int Main(string[] argv)

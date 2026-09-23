@@ -238,6 +238,7 @@
     <Compile Include="TestSocketEventBuffer.fs" />
     <Compile Include="TestEffectiveProcessorCount.fs" />
     <Compile Include="TestEnvironmentEntryInvariant.fs" />
+    <Compile Include="TestEnvironmentPal.fs" />
     <Compile Include="TestProcessPath.fs" />
     <Compile Include="TestCpuPlacement.fs" />
     <Compile Include="TestOsThreadId.fs" />

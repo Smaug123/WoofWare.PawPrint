@@ -28,8 +28,11 @@ module TestEffectiveProcessorCount =
             EmulatedKernel.initial
             |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount detected)
 
-        kernel
-        |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "test" (Map.ofList overrides))
+        let entries =
+            overrides
+            |> List.map (fun (name, value) -> EnvironmentPal.nameValueEntry name value)
+
+        kernel |> EmulatedKernel.withEnvironment "test" entries
 
     [<Test>]
     let ``with no override, the configured count is reported`` () =
@@ -78,13 +81,17 @@ module TestEffectiveProcessorCount =
         let property (detectedSeed : int, raw : NonNull<string>) : bool =
             let detected = 1 + abs (detectedSeed % maxConfigured)
 
-            // NULs removed rather than shrunk away, because a NUL is not a value
-            // an environment variable can hold: entries in a real `environ` are
-            // NUL-terminated C strings, and `UnixProcessState.withEnvironment`
-            // refuses such a table for that reason. Narrowing the alphabet here
-            // is aligning it with what the table can contain, not dodging a rule
-            // — every other byte sequence FsCheck produces still arrives intact.
-            let value = raw.Get.Replace (string (char 0), "")
+            // NULs and surrogates removed rather than shrunk away, because
+            // neither a NUL nor an unpaired surrogate is something an environment
+            // entry can hold: entries in a real `environ` are NUL-terminated byte
+            // strings, which the PAL decodes as UTF-8, and
+            // `EmulatedKernel.withEnvironment` refuses both for that reason.
+            // Narrowing the alphabet here is aligning it with what the table can
+            // contain, not dodging a rule. Well-formed pairs go too, which costs
+            // nothing: no astral character is a digit the knob's parse accepts.
+            let value =
+                raw.Get
+                |> String.filter (fun c -> c <> char 0 && not (System.Char.IsSurrogate c))
 
             let kernel = kernelWith detected [ "DOTNET_PROCESSOR_COUNT", value ]
 

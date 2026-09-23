@@ -846,7 +846,7 @@ module UnixSystem =
                     DirectoryStreams = Map.empty
                     NextDirectoryStreamId = DirectoryStreamId 0L
                     OutputLog = ImmutableArray<OutputLogEntry>.Empty
-                    Environment = Map.empty
+                    Environment = []
                     // The default current directory is the root, which every filesystem
                     // has and no operation can remove, so the pair starts consistent
                     // whatever else a host goes on to set.

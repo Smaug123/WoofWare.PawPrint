@@ -39,13 +39,15 @@ let runGuest (dllPath : string) : int * ImmutableArray<OutputLogEntry> =
         { HostConfig.Default dotnetRuntimes with
             Kernel =
                 { KernelConfig.Default with
-                    // Whatever you pass here is overlaid on top of
-                    // `EmulatedKernel.defaultEnvironment`, so even `Map.empty` gets you
+                    // The guest's environment entries, in order, conventionally
+                    // `NAME=VALUE` (`EnvironmentPal.nameValueEntry` builds one). They
+                    // follow whichever `EmulatedKernel.defaultEnvironment` entries they
+                    // do not name, so even `[]` gets you
                     // DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 (invariant globalization is
-                    // the only mode PawPrint implements); the keys you supply win over the
-                    // defaults. Pass the host's own environment if you want the guest to
-                    // see it.
-                    Environment = Map.empty
+                    // the only mode PawPrint implements), and an entry of your own for
+                    // that name replaces it. Pass the host's own environment if you want
+                    // the guest to see it.
+                    Environment = []
                 }
             // `None` uses the default round-robin thread scheduler; `Some yourChoiceOfSeed`
             // explores thread scheduling intelligently. See ./fuzz-over-thread-scheduler.md.

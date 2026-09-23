@@ -41,37 +41,18 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
         /// matching real-CLR behaviour. Per-stream views are derived in
         /// `OutputLogEntry.bytesFor`.
         OutputLog : ImmutableArray<OutputLogEntry>
-        /// Simulated process environment variable table, and the analogue of the
-        /// Unix PAL's `palEnvironment` — which is likewise a snapshot taken once
-        /// at startup rather than a view of the host, because libc's `setenv` is
-        /// not usable concurrently. Consulted by
-        /// `Environment.GetEnvironmentVariable` through the Win32
-        /// `GetEnvironmentVariableW` shim, and flattened into an environment
-        /// block by the `GetEnvironmentStringsW` shim that backs
-        /// `Environment.GetEnvironmentVariables`. Seeded with
-        /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` so guest BCL code that
-        /// reads it during startup gets the invariant-globalization mode
-        /// PawPrint requires; the CLI overlays the host process's env on top
-        /// of this default at startup, and tests can pass their own overlay
-        /// via `Program.run`.
+        /// The environment the process was started with: the `envp` that
+        /// `execve(2)` received, one entry per element, in order.
         ///
-        /// No guest can write to this: PawPrint services no
-        /// `SetEnvironmentVariableW`, so `Environment.SetEnvironmentVariable`
-        /// aborts loudly rather than mutating the table.
+        /// An entry is conventionally `NAME=VALUE`, but the kernel does not parse
+        /// it. An entry with no `=`, an entry beginning with `=`, and two entries
+        /// naming the same variable are all held exactly as given; the only
+        /// constraint is that of any C string, that it contains no NUL.
         ///
-        /// Every name here is one a real process could hold: non-empty, free of
-        /// `=`, and free of NUL, as is every value. `UnixProcessState
-        /// .withEnvironment` — the only way an entry enters the table — rejects
-        /// anything else, so readers may rely on it. See
-        /// `environmentEntryProblem` for why those are exactly the expressible
-        /// names.
-        ///
-        /// That invariant is what makes `GetEnvironmentVariableW`'s plain
-        /// `Map.tryFind` faithful without reproducing the PAL's own two
-        /// name guards: for a name the PAL would refuse, the lookup misses and
-        /// reports `ERROR_ENVVAR_NOT_FOUND`, which is exactly what the PAL
-        /// returns on that path.
-        Environment : Map<string, string>
+        /// This is the process's exec-time image, not libc's `environ`:
+        /// `setenv(3)` and `putenv(3)` change the process's own copy in user
+        /// space, and nothing here models them.
+        Environment : UnixByteString list
         /// The directory the simulated process is standing in: the inode it
         /// holds its current directory *open on*, which is what a real process
         /// holds rather than a name it re-walks.
@@ -193,60 +174,6 @@ type UnixProcessState<'Task, 'Handler when 'Task : comparison and 'Handler : equ
 [<RequireQualifiedAccess>]
 module UnixProcessState =
 
-    /// Why `name`/`value` could not be a variable of a real process, or `None` if
-    /// it could. The string describes the problem for a caller to prefix with its
-    /// own context. Total: a null name or value is itself one of the answers,
-    /// rather than something this dereferences.
-    ///
-    /// A real process's environment is not a name-to-value map at all: it is a
-    /// list of `name=value` strings, and the map every environment API presents
-    /// is a *view* of that list, obtained by splitting each entry at its first
-    /// `=`. CoreCLR makes that view total by refusing, in
-    /// `GetEnvironmentVariableA` (`pal/src/misc/environ.cpp`), to look up a name
-    /// that is empty or contains `=`; `Environment.GetEnvironmentVariables`
-    /// likewise discards any entry whose first `=` is not after the first
-    /// character. So the set of names the view can ever produce is exactly the
-    /// non-empty, `=`-free ones, and a NUL cannot occur at all because the
-    /// entries are C strings.
-    ///
-    /// PawPrint stores the map rather than the list, which is the more convenient
-    /// representation but admits names that view could never yield. Such a name
-    /// has no consistent behaviour to model: measured against real .NET, an
-    /// inherited entry `A=B=C` is the variable `A` with value `B=C`, and looking
-    /// up `A=B` returns null — so a PawPrint table holding the key `A=B` would
-    /// have to answer that lookup both ways at once. Rejecting the table is what
-    /// keeps the two environment APIs in agreement with each other and with the
-    /// real runtime.
-    ///
-    /// Shared with the `GetEnvironmentStringsW` shim, which flattens the map back
-    /// into a list and so re-checks; keeping one copy of the rule is what stops
-    /// the two disagreeing about which tables are legal.
-    let environmentEntryProblem (name : string) (value : string) : string option =
-        // Null first, and as its own case rather than lumped in with the empty
-        // name. `Map<string, string>` holds a null key or value quite happily —
-        // F#'s comparer sorts null first, and a consumer of this package writing
-        // C# has nothing stopping it — so this function would otherwise dereference
-        // null and abort a run with a bare NullReferenceException, which is the
-        // opposite of what a validating classifier is for. Same reason
-        // `AbsoluteUnixPath.assertValid` exists.
-        if isNull name then
-            Some "a variable whose name is null, which is not a string an environment list could hold"
-        elif isNull value then
-            // `name` is known non-null by now, so it is safe to name the offender.
-            Some $"a variable (%s{name}) whose value is null, which is not a string an environment list could hold"
-        elif name = "" then
-            Some
-                "a variable with an empty name, which no environment list can express (the entry would read `=value`, which every reader discards)"
-        elif name.Contains '=' then
-            Some
-                $"a variable whose name contains '=' (%s{name}), which no environment list can express unambiguously: a reader splits at the first '=', so it would see a different name and value"
-        elif name.Contains (char 0) then
-            Some $"a variable whose name contains a NUL code unit (%s{name}), which would terminate its entry early"
-        elif value.Contains (char 0) then
-            Some $"a variable (%s{name}) whose value contains a NUL code unit, which would terminate its entry early"
-        else
-            None
-
     /// Set the path to the executable that started the simulated process, or
     /// `None` to report that it has none. `None` is preserved rather than
     /// defaulted; see `UnixProcessState.ProcessPath`.
@@ -330,36 +257,20 @@ module UnixProcessState =
         else
             CallerPrivilege.Unprivileged
 
-    /// Overlay `env` onto the environment the simulated process already holds:
-    /// a name in both takes its value from `env`, and one only the process holds
-    /// survives. An overlay rather than a replacement so that a host can set the
-    /// variables it cares about without having to restate whatever its own
-    /// startup seeded.
+    /// Set the environment the simulated process was started with, replacing
+    /// whatever it held. The entries are kept in the order given, duplicates and
+    /// all; see `UnixProcessState.Environment`.
     ///
-    /// Refuses, loudly, an entry no real environment list could express — see
-    /// `environmentEntryProblem` for which those are. Rejecting rather than
-    /// dropping, because a variable that silently failed to arrive would show up
-    /// as the guest taking a different branch much later.
-    ///
-    /// `context` prefixes that rejection; see `withProcessPath` for why the
-    /// client supplies it.
+    /// `context` prefixes the rejection a forged entry earns; see
+    /// `withProcessPath` for why the client supplies it.
     let withEnvironment<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (context : string)
-        (env : Map<string, string>)
+        (env : UnixByteString list)
         (proc : UnixProcessState<'Task, 'Handler>)
         : UnixProcessState<'Task, 'Handler>
         =
-        for KeyValue (name, value) in env do
-            match environmentEntryProblem name value with
-            | None -> ()
-            | Some problem -> failwith $"%s{context}: refusing to install %s{problem}."
-
-        let merged =
-            (proc.Environment, env)
-            ||> Map.fold (fun acc key value -> Map.add key value acc)
-
         { proc with
-            Environment = merged
+            Environment = env |> List.map (UnixByteString.assertValid context)
         }
 
     /// Every live open file description naming `socketId`.

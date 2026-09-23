@@ -709,7 +709,7 @@ type EmulatedKernel =
     // call sites learn to say `kernel.Process.X`.
     member this.FileDescriptors : FileDescriptorRegistry = this.Process.FileDescriptors
     member this.OutputLog : ImmutableArray<OutputLogEntry> = this.Process.OutputLog
-    member this.Environment : Map<string, string> = this.Process.Environment
+    member this.Environment : UnixByteString list = this.Process.Environment
     member this.CurrentDirectoryInode : InodeNumber = this.Process.CurrentDirectoryInode
     member this.ProcessPath : AbsoluteUnixPath option = this.Process.ProcessPath
 
@@ -871,15 +871,27 @@ module EmulatedKernel =
         =
         withUnix (f (unix kernel)) kernel
 
-    /// Default environment variables for a freshly-minted simulated process.
-    /// PawPrint only implements invariant-globalization today, so this seed
-    /// must always be applied: callers that supply a custom environment
-    /// overlay it on top of these defaults, which means the host (or a test)
-    /// can override `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT` if it really
-    /// needs to, while forgetting to set it keeps the runtime in the regime
-    /// it actually supports.
-    let defaultEnvironment : Map<string, string> =
-        Map.ofList [ "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1" ]
+    /// Environment entries every simulated process starts with, ahead of
+    /// whatever the host configures; see `withEnvironment` for how the two
+    /// compose.
+    ///
+    /// PawPrint only implements invariant globalization, so this seed must
+    /// always be applied: a host (or a test) can still set
+    /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT` itself if it really needs to,
+    /// while forgetting to set it keeps the runtime in the regime it actually
+    /// supports.
+    let defaultEnvironment : string list =
+        [ EnvironmentPal.nameValueEntry "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT" "1" ]
+
+    /// `entries` as the bytes the kernel holds, failing with `context` on the
+    /// first entry no real process could hold; see `EnvironmentPal.tryEncodeEntry`.
+    let private encodeEnvironment (context : string) (entries : string list) : UnixByteString list =
+        entries
+        |> List.map (fun entry ->
+            match EnvironmentPal.tryEncodeEntry entry with
+            | Ok bytes -> bytes
+            | Error problem -> failwith $"%s{context}: refusing to install %s{problem}."
+        )
 
     /// Seed for `EmulatedKernel.CryptoRandomState`. The first 64 bits of the
     /// fractional part of pi — a nothing-up-my-sleeve constant chosen purely
@@ -1017,7 +1029,7 @@ module EmulatedKernel =
                 }
             Process =
                 { system.Process with
-                    Environment = defaultEnvironment
+                    Environment = encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment
                 }
         }
 
@@ -1036,6 +1048,32 @@ module EmulatedKernel =
         { kernel with
             Process = f kernel.Process
         }
+
+    /// Set the environment the simulated process was started with: every
+    /// `defaultEnvironment` entry whose name no entry of `entries` supplies, in
+    /// order, followed by `entries` exactly as given. This replaces whatever
+    /// environment the kernel held.
+    ///
+    /// An entry supplies the name a lookup finds it under (see
+    /// `EnvironmentPal.entryName`), so `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0`
+    /// displaces the default and so does a bare `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT`.
+    /// `entries` is otherwise kept verbatim, duplicates and entries with no `=`
+    /// included, so its order is the order of the guest's environment block.
+    ///
+    /// Refuses, loudly, an entry no real process could hold (see
+    /// `EnvironmentPal.tryEncodeEntry`), with `context` naming the knob it came
+    /// from. Rejecting rather than dropping, because a variable that silently
+    /// failed to arrive would show up as the guest taking a different branch much
+    /// later.
+    let withEnvironment (context : string) (entries : string list) (kernel : EmulatedKernel) : EmulatedKernel =
+        let entries = encodeEnvironment context entries
+        let supplied = entries |> List.map EnvironmentPal.entryName |> Set.ofList
+
+        let defaults =
+            encodeEnvironment "EmulatedKernel.defaultEnvironment" defaultEnvironment
+            |> List.filter (fun entry -> not (Set.contains (EnvironmentPal.entryName entry) supplied))
+
+        mapProcess (UnixProcessState.withEnvironment context (defaults @ entries)) kernel
 
 
 
@@ -1313,7 +1351,7 @@ module EmulatedKernel =
         // with `COMPlus_PROCESSOR_COUNT=9` set therefore yields 9 upstream, not
         // the detected count.
         let lookup (name : string) : string option =
-            match Map.tryFind name kernel.Environment with
+            match EnvironmentPal.tryGetValue "EmulatedKernel.effectiveProcessorCount" name kernel.Environment with
             | Some "" -> None
             | other -> other
 
@@ -1727,17 +1765,23 @@ module EmulatedKernel =
 /// `prepare`/`run`, so that adding one does not churn every call site.
 type KernelConfig =
     {
-        /// Environment variables overlaid on top of
-        /// `EmulatedKernel.defaultEnvironment`. Keys the caller does not set
-        /// keep their seeded defaults, so the invariant-globalization switch
-        /// survives a caller who supplies an unrelated overlay.
+        /// The simulated process's environment, as the entries of its `envp` in
+        /// order: conventionally `NAME=VALUE`, which
+        /// `EnvironmentPal.nameValueEntry` builds. The order is the order of the
+        /// guest's environment block, and duplicates and entries with no `=` are
+        /// kept, so a host can hand the guest any environment a real process
+        /// could have.
         ///
-        /// A name must be non-empty and free of `=`, and neither a name nor a
-        /// value may contain a NUL: those are exactly the variables a real
-        /// process can have, and applying a config that breaks the rule fails
-        /// rather than handing a guest an environment it could not observe on
-        /// real .NET. See `UnixProcessState.environmentEntryProblem`.
-        Environment : Map<string, string>
+        /// Each `EmulatedKernel.defaultEnvironment` entry whose name this list
+        /// does not supply comes first; see `EmulatedKernel.withEnvironment`. So
+        /// the invariant-globalization switch survives a caller who configures
+        /// unrelated variables.
+        ///
+        /// An entry may not be null, contain a NUL, or contain an unpaired UTF-16
+        /// surrogate: no real process could hold such an entry, and applying a
+        /// config that has one fails rather than handing a guest an environment
+        /// it could not observe on real .NET. See `EnvironmentPal.tryEncodeEntry`.
+        Environment : string list
         /// Logical processor count the guest observes via
         /// `Environment.ProcessorCount`. Must be at least 1.
         ProcessorCount : int
@@ -1881,11 +1925,12 @@ type KernelConfig =
     }
 
     /// Configuration a host gets if it expresses no preference: no environment
-    /// overlay, the default single processor, a wall clock booting at the Unix
-    /// epoch, the default Unix platform, and the root as the current directory.
+    /// beyond the defaults, the default single processor, a wall clock booting
+    /// at the Unix epoch, the default Unix platform, and the root as the current
+    /// directory.
     static member Default : KernelConfig =
         {
-            Environment = Map.empty
+            Environment = []
             ProcessorCount = UnixSystem.defaultProcessorCount
             UserAddressLimit = UnixSystem.defaultUserAddressLimit
             InstructionCostTicks = EmulatedKernel.defaultInstructionCostTicks
@@ -1928,7 +1973,7 @@ module KernelConfig =
         let flavour = SimulatedUnixPlatform.flavour platform
 
         EmulatedKernel.create platform
-        |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "KernelConfig.Environment" config.Environment)
+        |> EmulatedKernel.withEnvironment "KernelConfig.Environment" config.Environment
         |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount config.ProcessorCount)
         |> EmulatedKernel.mapMachine (UnixMachineState.withUserAddressLimit config.UserAddressLimit)
         |> EmulatedKernel.withInstructionCostTicks config.InstructionCostTicks

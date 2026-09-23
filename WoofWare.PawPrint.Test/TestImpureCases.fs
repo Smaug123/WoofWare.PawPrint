@@ -2715,7 +2715,7 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        Environment = Map.ofList [ "DOTNET_PROCESSOR_COUNT", "4" ]
+                        Environment = [ "DOTNET_PROCESSOR_COUNT=4" ]
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never

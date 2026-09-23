@@ -1,6 +1,8 @@
 namespace WoofWare.PosixKernel.Test
 
 open System.Collections.Immutable
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PosixKernel
@@ -33,7 +35,7 @@ module TestUnixProcessState =
         {
             FileDescriptors = FileDescriptorRegistry.initial
             OutputLog = ImmutableArray<OutputLogEntry>.Empty
-            Environment = Map.empty
+            Environment = []
             CurrentDirectoryInode = rootInode
             ProcessPath = None
             DirectoryStreams = Map.empty
@@ -62,31 +64,66 @@ module TestUnixProcessState =
         SignalState.isBlocked 7 Signal.SIGTERM proc.Signals |> shouldEqual true
         SignalState.isBlocked 8 Signal.SIGTERM proc.Signals |> shouldEqual false
 
-    [<Test>]
-    let ``an overlay wins over what the process already holds`` () : unit =
-        let proc =
-            empty
-            |> UnixProcessState.withEnvironment context (Map.ofList [ "KEEP", "1" ; "REPLACE", "old" ])
-            |> UnixProcessState.withEnvironment context (Map.ofList [ "REPLACE", "new" ; "ADD", "2" ])
+    /// An environment entry: arbitrary non-NUL bytes, drawn from a small pool
+    /// often enough that duplicates turn up, and including the shapes a
+    /// `NAME=VALUE` reading would treat specially (no `=`, a leading `=`, empty).
+    let private genEntry : Gen<UnixByteString> =
+        let ofBytes (bytes : byte array) : UnixByteString =
+            match UnixByteString.ofBytes (ImmutableArray.Create<byte> bytes) with
+            | Ok s -> s
+            | Error defect -> failwith $"generator produced a NUL: %s{UnixByteString.describe defect}"
 
-        proc.Environment
-        |> shouldEqual (Map.ofList [ "KEEP", "1" ; "REPLACE", "new" ; "ADD", "2" ])
+        Gen.frequency
+            [
+                2,
+                Gen.elements [ "A=1" ; "A=2" ; "A" ; "=A" ; "" ; "B==" ]
+                |> Gen.map (fun s -> ofBytes (System.Text.Encoding.ASCII.GetBytes s))
+                3,
+                ArbMap.defaults
+                |> ArbMap.generate<byte>
+                |> Gen.filter (fun b -> b <> 0uy)
+                |> Gen.listOf
+                |> Gen.map (List.toArray >> ofBytes)
+            ]
 
     [<Test>]
-    let ``an entry no environ could hold is refused, under the caller's name for it`` () : unit =
+    let ``the environment is exactly the entries it was set to, in order`` () : unit =
+        // Replacement, not an overlay: whatever the process held before is gone,
+        // and nothing is merged, sorted or de-duplicated.
+        let mutable withDuplicates = 0
+
+        let property (before : UnixByteString list, after : UnixByteString list) : unit =
+            let proc =
+                empty
+                |> UnixProcessState.withEnvironment context before
+                |> UnixProcessState.withEnvironment context after
+
+            proc.Environment |> shouldEqual after
+
+            if List.length (List.distinct after) < List.length after then
+                withDuplicates <- withDuplicates + 1
+
+        let gen = Gen.zip (Gen.listOf genEntry) (Gen.listOf genEntry)
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 500, Prop.forAll (Arb.fromGen gen) property)
+
+        // Duplicates are the case a map would silently collapse.
+        withDuplicates > 20 |> shouldEqual true
+
+    [<Test>]
+    let ``a forged entry is refused under the caller's name for it`` () : unit =
         // The context string is the client's, not this library's: a host that has
         // to fix one of these knows the table by whatever its own configuration
-        // calls it. Asserting the *caller's* string comes back is what stops the
-        // parameter being quietly ignored in favour of a hard-coded prefix.
-        for name, value in [ "", "v" ; "A=B", "v" ; "A\000B", "v" ; "A", "v\000w" ] do
-            let exn =
-                Assert.Throws<exn> (fun () ->
-                    UnixProcessState.withEnvironment "whatever the client calls it" (Map.ofList [ name, value ]) empty
-                    |> ignore<UnixProcessState<int, string>>
-                )
+        // calls it.
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                UnixProcessState.withEnvironment
+                    "whatever the client calls it"
+                    [ UnixByteString.empty ; Unchecked.defaultof<UnixByteString> ]
+                    empty
+                |> ignore<UnixProcessState<int, string>>
+            )
 
-            exn.Message |> shouldContainText "whatever the client calls it"
-            exn.Message |> shouldContainText "refusing to install"
+        exn.Message |> shouldContainText "whatever the client calls it"
 
     [<Test>]
     let ``a forged path is refused under the caller's name`` () : unit =

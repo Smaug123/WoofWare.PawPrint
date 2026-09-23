@@ -1051,10 +1051,11 @@ module Program =
     /// is applied here rather than by the caller afterwards, because this function pumps the entry
     /// type's `.cctor` and CoreLib latches some of these values during static initialisation
     /// (notably `Environment.ProcessorCount`). `KernelConfig.Default` is the no-preference
-    /// choice. Its `Environment` is overlaid on top of `EmulatedKernel.defaultEnvironment`, so
-    /// callers that supply no overlay still get the seeded
-    /// `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default, and keys the caller does set win over
-    /// it — that's how the CLI lets the host process override the seed if it really needs to.
+    /// choice. Its `Environment` follows whichever `EmulatedKernel.defaultEnvironment` entries it
+    /// does not name (see `EmulatedKernel.withEnvironment`), so callers that supply no environment
+    /// still get the seeded `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default, and a caller that
+    /// names that variable replaces it — that's how the CLI lets the host process override the
+    /// seed if it really needs to.
     ///
     /// `hostConfig.PctSeed = Some s` selects the PCT scheduling policy seeded with `s`; `None` keeps the
     /// default round-robin policy. Applied before any cctor frame is pushed so the very first

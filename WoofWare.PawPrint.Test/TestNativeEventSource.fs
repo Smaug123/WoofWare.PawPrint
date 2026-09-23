@@ -145,7 +145,10 @@ public static class Entry
         }
 
     let private withEnvironment (env : (string * string) list) (state : IlMachineState) : IlMachineState =
-        state.MapKernel (EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "test" (Map.ofList env)))
+        let entries =
+            env |> List.map (fun (name, value) -> EnvironmentPal.nameValueEntry name value)
+
+        state.MapKernel (EmulatedKernel.withEnvironment "test" entries)
 
     // ---------- Pure helper tests ----------
 
@@ -254,17 +257,26 @@ public static class Entry
         // the prefix.
         NativeEventSource.tryParseClrConfigDword "  1  " |> shouldEqual (Some 1u)
 
+    /// An environment holding `NAME=VALUE` for each pair, in order.
+    let private environmentOf (pairs : (string * string) list) : UnixByteString list =
+        pairs
+        |> List.map (fun (name, value) ->
+            match UnixByteString.ofString (EnvironmentPal.nameValueEntry name value) with
+            | Ok entry -> entry
+            | Error defect -> failwith $"test environment entry %s{name}: %s{UnixPathText.describe defect}"
+        )
+
     [<Test>]
     let ``lookupClrConfigString: DOTNET_ wins over COMPlus_ when both set`` () : unit =
         let env =
-            Map.ofList [ "DOTNET_TestKnob", "dotnet-value" ; "COMPlus_TestKnob", "complus-value" ]
+            environmentOf [ "DOTNET_TestKnob", "dotnet-value" ; "COMPlus_TestKnob", "complus-value" ]
 
         NativeEventSource.lookupClrConfigString env "TestKnob"
         |> shouldEqual (Some "dotnet-value")
 
     [<Test>]
     let ``lookupClrConfigString: COMPlus_ is used when DOTNET_ is unset`` () : unit =
-        let env = Map.ofList [ "COMPlus_TestKnob", "complus-value" ]
+        let env = environmentOf [ "COMPlus_TestKnob", "complus-value" ]
 
         NativeEventSource.lookupClrConfigString env "TestKnob"
         |> shouldEqual (Some "complus-value")
@@ -275,20 +287,19 @@ public static class Entry
         : unit
         =
         // DOTNET_ is present but empty: skip past it.
-        let env = Map.ofList [ "DOTNET_TestKnob", "" ; "COMPlus_TestKnob", "fallback" ]
+        let env = environmentOf [ "DOTNET_TestKnob", "" ; "COMPlus_TestKnob", "fallback" ]
 
         NativeEventSource.lookupClrConfigString env "TestKnob"
         |> shouldEqual (Some "fallback")
 
         // Both empty: None
-        let env = Map.ofList [ "DOTNET_TestKnob", "" ; "COMPlus_TestKnob", "" ]
+        let env = environmentOf [ "DOTNET_TestKnob", "" ; "COMPlus_TestKnob", "" ]
 
         NativeEventSource.lookupClrConfigString env "TestKnob" |> shouldEqual None
 
     [<Test>]
     let ``lookupClrConfigString: nothing set returns None`` () : unit =
-        NativeEventSource.lookupClrConfigString Map.empty "EnableEventLog"
-        |> shouldEqual None
+        NativeEventSource.lookupClrConfigString [] "EnableEventLog" |> shouldEqual None
 
     // ---------- Dispatcher tests ----------
 
