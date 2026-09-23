@@ -1515,10 +1515,12 @@ module internal UnaryMetadataCallOps =
     /// `calli` through `FunctionPointerTarget.RuntimeAllocator`: the JIT's `newobj`
     /// allocation helper. Managed signature `MethodTable* -> object`.
     ///
-    /// Two QCalls hand it out, and both are invoked the same way — by a `calli` in a managed
+    /// Three QCalls hand it out, and all are invoked the same way — by a `calli` in a managed
     /// cache object: `RuntimeTypeHandle_GetActivationInfo` for
-    /// `RuntimeType.ActivatorCache.CreateUninitializedObject`, and
-    /// `ReflectionInvocation_GetBoxInfo` for `RuntimeType.BoxCache.Box`.
+    /// `RuntimeType.ActivatorCache.CreateUninitializedObject`,
+    /// `ReflectionInvocation_GetBoxInfo` for `RuntimeType.BoxCache.Box`, and
+    /// `ReflectionSerialization_GetCreateUninitializedObjectInfo` for
+    /// `RuntimeType.CreateUninitializedCache.CreateUninitializedObject`.
     ///
     /// This is a synchronous runtime primitive, not a managed call: no frame is pushed, so it
     /// never suspends, and the peek-don't-pop retry dance the managed path needs does not
@@ -1573,17 +1575,18 @@ module internal UnaryMetadataCallOps =
 
         let typeHandle = EvalStackValue.requireMethodTable operation methodTableArg
 
-        // Neither producer of this pointer can legitimately pair it with a Nullable MethodTable,
-        // by two different routes: `GetActivationInfo` hands back a *null* allocator for
+        // No producer of this pointer can legitimately pair it with a Nullable MethodTable, by
+        // two different routes: `GetActivationInfo` hands back a *null* allocator for
         // `Nullable<T>` and `ActivatorCache` substitutes its own `ReturnNull` stub, while
-        // `GetBoxInfo` substitutes the underlying `T`'s MethodTable before returning. That
+        // `GetBoxInfo` and `GetCreateUninitializedObjectInfo` substitute the underlying `T`'s
+        // MethodTable before returning. That
         // matters beyond tidiness: `Box` never boxes `Nullable<T>` as itself, and the unbox
         // reader relies on it, so allocating one here would put a heap object on the heap that no
         // reader is prepared for.
         match AllConcreteTypes.lookup typeHandle state.ConcreteTypes with
         | Some ct when InternalTypeKind.kind ctx.BaseClassTypes ct = InternalTypeKind.Nullable ->
             failwith
-                $"%s{operation}: invoked with a Nullable<T> MethodTable (%O{typeHandle}); neither RuntimeTypeHandle_GetActivationInfo (which returns a null allocator, so ActivatorCache substitutes its own null-returning stub) nor ReflectionInvocation_GetBoxInfo (which substitutes the underlying T's MethodTable) can produce this pairing, so this pointer should never have been called"
+                $"%s{operation}: invoked with a Nullable<T> MethodTable (%O{typeHandle}); neither RuntimeTypeHandle_GetActivationInfo (which returns a null allocator, so ActivatorCache substitutes its own null-returning stub) nor ReflectionInvocation_GetBoxInfo and ReflectionSerialization_GetCreateUninitializedObjectInfo (which substitute the underlying T's MethodTable) can produce this pairing, so this pointer should never have been called"
         | _ -> ()
 
         let addr, state =

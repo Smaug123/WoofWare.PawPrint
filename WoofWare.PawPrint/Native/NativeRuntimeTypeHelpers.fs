@@ -2798,3 +2798,229 @@ module BoxInfo =
                 ValueOffset = valueOffset
                 ValueSize = valueSize
             }
+
+/// Why `ReflectionSerialization_GetCreateUninitializedObjectInfo` refused to describe a type: one
+/// case per check in CoreCLR's `ValidateTypeAbleToBeInstantiated` (reflectioninvocation.cpp:1487)
+/// that `RuntimeHelpers.GetUninitializedObject` can reach, in the order CoreCLR makes them. That
+/// order is guest-visible where a type trips more than one check, because the checks throw
+/// different exceptions: `typeof(Func<>)` is both a delegate and open, and is an
+/// `ArgumentException`, not a `MemberAccessException`.
+///
+/// Unlike its `ActivationRejection` and `BoxRejection` siblings, every check here is reachable:
+/// `RuntimeHelpers.GetUninitializedObject` hands any `RuntimeType` straight to the QCall. Only
+/// the exception *type* is guest-observable through PawPrint, whose runtime-exception path
+/// constructs through a parameterless ctor; see `exceptionType` for which.
+[<RequireQualifiedAccess>]
+type UninitializedObjectRejection =
+    /// `GetSignatureCorElementType() == ELEMENT_TYPE_VOID`.
+    | Void
+    /// `IsTypeDesc() || IsArray()`: an array, byref, pointer or function pointer, and — because
+    /// CoreCLR represents a type variable as a `TypeVarTypeDesc` — a bare generic parameter, as
+    /// well as any shape built over one.
+    | UnsupportedShape
+    /// `pMT->IsDelegate()`: the type's *immediate* base is `System.MulticastDelegate`, so
+    /// `System.Delegate` and `MulticastDelegate` themselves reach the abstract check instead.
+    | Delegate
+    /// `pMT->HasComponentSize()`. Arrays were rejected already, so this is `System.String`.
+    | VariableLength
+    /// `pMT->IsAbstract()`, which includes interfaces and static classes.
+    | Abstract
+    /// `ContainsGenericVariables()` on a type that has a MethodTable: an open generic type
+    /// definition, or an open construction such as `IComparable<T>`. Also reported for an open
+    /// type that is abstract, which CoreCLR rejects one check earlier with the same exception.
+    | ContainsGenericVariables
+    /// `pMT->IsByRefLike()`, since this QCall passes `allowByRefLike: false`.
+    | ByRefLike
+
+[<RequireQualifiedAccess>]
+module UninitializedObjectRejection =
+    /// The exception CoreCLR throws for this rejection when, as here,
+    /// `ValidateTypeAbleToBeInstantiated` runs with `fGetUninitializedObject: true`. That flag is
+    /// what makes these differ from `RuntimeTypeHandle_GetActivationInfo`'s answers for the same
+    /// checks, which pass `false`.
+    let exceptionType
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (rejection : UninitializedObjectRejection)
+        : TypeInfo<GenericParamFromMetadata, TypeDefn>
+        =
+        match rejection with
+        | UninitializedObjectRejection.Void
+        | UninitializedObjectRejection.UnsupportedShape
+        | UninitializedObjectRejection.Delegate
+        | UninitializedObjectRejection.VariableLength -> baseClassTypes.ArgumentException
+        | UninitializedObjectRejection.Abstract
+        | UninitializedObjectRejection.ContainsGenericVariables -> baseClassTypes.MemberAccessException
+        | UninitializedObjectRejection.ByRefLike -> baseClassTypes.NotSupportedException
+
+/// What `ReflectionSerialization_GetCreateUninitializedObjectInfo` should do for a type it accepts.
+type UninitializedObjectDescription =
+    {
+        /// CoreCLR's `pvAllocatorFirstArg`: the MethodTable the allocator is to instantiate. For a
+        /// `Nullable<T>` this is *`T`'s*, because an uninitialised `Nullable<T>` is observed only
+        /// boxed, and a boxed `Nullable<T>` is a boxed `T`.
+        MethodTable : ConcreteTypeHandle
+        /// The class initialisers the QCall runs before returning, in the order it runs them:
+        /// `MethodTable` first, then each ancestor in turn, omitting every type marked
+        /// `beforefieldinit`.
+        ClassInitialisers : ConcreteTypeHandle list
+    }
+
+[<RequireQualifiedAccess>]
+type UninitializedObjectInfo =
+    | Rejected of UninitializedObjectRejection
+    | Describes of UninitializedObjectDescription
+
+[<RequireQualifiedAccess>]
+module UninitializedObjectInfo =
+    /// CoreCLR's `MethodTable::IsDelegate`, which is a fact about the definition: the immediate
+    /// base names `System.MulticastDelegate`. An instantiation cannot change that, so the same
+    /// question serves closed and open types alike.
+    let private definitionIsDelegate
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (typeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * bool
+        =
+        match typeInfo.BaseType with
+        | None -> state, false
+        | Some baseTypeInfo ->
+            let definingAssembly =
+                state._LoadedAssemblies.ByDefinitionName typeInfo.AssemblyFullName
+
+            let state, _, baseDefn =
+                IlMachineState.resolveBaseTypeInfo loggerFactory baseClassTypes state definingAssembly baseTypeInfo
+
+            match baseDefn with
+            | TypeDefn.FromDefinition (identity, _) -> state, identity = baseClassTypes.MulticastDelegateType.Identity
+            // A TypeSpec base is a generic instantiation, and `MulticastDelegate` is not generic.
+            | _ -> state, false
+
+    /// The type and its ancestors, most-derived first, ending at the parentless root.
+    let rec private ancestry
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (handle : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState * ConcreteTypeHandle list
+        =
+        let state, parent =
+            IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
+
+        match parent with
+        | None -> state, [ handle ]
+        | Some parent ->
+            let state, rest = ancestry loggerFactory baseClassTypes parent state
+            state, handle :: rest
+
+    /// Reproduce CoreCLR's `ReflectionSerialization_GetCreateUninitializedObjectInfo`
+    /// (reflectioninvocation.cpp:1737): its `ValidateTypeAbleToBeInstantiated(type,
+    /// allowRefLike: false, fGetUninitializedObject: true)` prologue, the `Nullable<T>`
+    /// substitution, and the class initialisers its `CheckRunClassInitAsIfConstructingThrowing`
+    /// tail runs.
+    ///
+    /// `IsSharedByGenericInstantiations`, the one check with no analogue, is absent: PawPrint has
+    /// no `__Canon`. So is the COM-object check, which CoreCLR compiles only under
+    /// `FEATURE_COMINTEROP`, i.e. on Windows.
+    let classify
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (operation : string)
+        (target : RuntimeTypeHandleTarget)
+        (state : IlMachineState)
+        : IlMachineState * UninitializedObjectInfo
+        =
+        let typeInfoOfIdentity (identity : ResolvedTypeIdentity) : TypeInfo<GenericParamFromMetadata, TypeDefn> =
+            state._LoadedAssemblies.ByDefinitionName(identity.AssemblyFullName).TypeDefs.[identity.TypeDefinition.Get]
+
+        match target with
+        | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
+            RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
+        | RuntimeTypeHandleTarget.GenericParameter _
+        | RuntimeTypeHandleTarget.MethodGenericParameter _
+        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.FunctionPointer _ ->
+            state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.UnsupportedShape
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
+            // Neither `void` nor `String` is generic, and a type with a MethodTable is not a
+            // TypeDesc, so the delegate check is the only one that can pre-empt the
+            // generic-variables one with a different exception. The abstract check between them
+            // can pre-empt it too, but throws the same `MemberAccessException`, differing only in
+            // a message PawPrint does not carry.
+            let state, isDelegate =
+                definitionIsDelegate loggerFactory baseClassTypes (typeInfoOfIdentity identity) state
+
+            if isDelegate then
+                state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Delegate
+            else
+                state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.ContainsGenericVariables
+        | RuntimeTypeHandleTarget.Closed handle ->
+
+        match handle with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.UnsupportedShape
+        | ConcreteTypeHandle.Concrete _ ->
+
+        let ct, typeInfo =
+            AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+            |> Option.defaultWith (fun () ->
+                failwith $"%s{operation}: ConcreteTypeHandle %O{handle} not found in AllConcreteTypes"
+            )
+
+        if TypeInfo.NominallyEqual typeInfo baseClassTypes.Void then
+            state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Void
+        else
+
+        let state, isDelegate =
+            definitionIsDelegate loggerFactory baseClassTypes typeInfo state
+
+        if isDelegate then
+            state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Delegate
+        elif TypeInfo.NominallyEqual typeInfo baseClassTypes.String then
+            state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.VariableLength
+        elif typeInfo.TypeAttributes.HasFlag TypeAttributes.Abstract then
+            state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.Abstract
+        elif DumpedAssembly.isByRefLike baseClassTypes state._LoadedAssemblies typeInfo then
+            state, UninitializedObjectInfo.Rejected UninitializedObjectRejection.ByRefLike
+        else
+
+        let methodTable =
+            match InternalTypeKind.kind baseClassTypes ct with
+            | InternalTypeKind.Ordinary
+            | InternalTypeKind.NativeInt
+            | InternalTypeKind.NativeUInt -> handle
+            | InternalTypeKind.Nullable ->
+                if ct.Generics.Length <> 1 then
+                    failwith
+                        $"%s{operation}: System.Nullable`1 instantiation %O{handle} has %d{ct.Generics.Length} generic arguments"
+
+                ct.Generics.[0]
+
+        // CoreCLR runs the initialiser of every type in the chain that is not `beforefieldinit`,
+        // most-derived first (methodtable.cpp:4034-4052), gated on `HasPreciseInitCctors`. That
+        // flag holds exactly when some type in the chain *other than the parentless root* is not
+        // `beforefieldinit` (methodtablebuilder.cpp:10996-11002), so the gate can only suppress
+        // the root's own initialiser; the root is `System.Object`, which has none, so the gate
+        // is not reproduced.
+        let state, chain = ancestry loggerFactory baseClassTypes methodTable state
+
+        let isPrecise (handle : ConcreteTypeHandle) : bool =
+            let _, typeInfo =
+                AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes handle
+                |> Option.defaultWith (fun () ->
+                    failwith $"%s{operation}: ancestor %O{handle} of %O{methodTable} not found in AllConcreteTypes"
+                )
+
+            not (typeInfo.TypeAttributes.HasFlag TypeAttributes.BeforeFieldInit)
+
+        state,
+        UninitializedObjectInfo.Describes
+            {
+                MethodTable = methodTable
+                ClassInitialisers = List.filter isPrecise chain
+            }

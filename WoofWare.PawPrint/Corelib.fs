@@ -129,6 +129,8 @@ module Corelib =
 
         let fieldAccessException = findCorelibType corelib "System" "FieldAccessException"
 
+        let memberAccessException = findCorelibType corelib "System" "MemberAccessException"
+
         let missingMethodException =
             findCorelibType corelib "System" "MissingMethodException"
 
@@ -238,6 +240,7 @@ module Corelib =
             ArgumentOutOfRangeException = argumentOutOfRangeException
             MissingFieldException = missingFieldException
             FieldAccessException = fieldAccessException
+            MemberAccessException = memberAccessException
             MissingMethodException = missingMethodException
             NotSupportedException = notSupportedException
             InvalidOperationException = invalidOperationException

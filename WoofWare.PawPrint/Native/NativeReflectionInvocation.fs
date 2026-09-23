@@ -6,8 +6,10 @@ open Microsoft.Extensions.Logging
 
 /// CoreCLR's `reflectioninvocation.cpp` QCalls, other than the `RuntimeTypeHandle_*` family that
 /// `NativeRuntimeTypeQCall` serves. Today that is `RuntimeMethodHandle_InvokeMethod`, the primitive
-/// underneath every `MethodBase.Invoke`, and `ReflectionInvocation_GetBoxInfo`, which describes to
-/// managed code how to box a value of a given type.
+/// underneath every `MethodBase.Invoke`; `ReflectionInvocation_GetBoxInfo`, which describes to
+/// managed code how to box a value of a given type; and
+/// `ReflectionSerialization_GetCreateUninitializedObjectInfo`, which describes how to allocate one
+/// without running its constructor.
 [<RequireQualifiedAccess>]
 module internal NativeReflectionInvocation =
 
@@ -1019,4 +1021,99 @@ module internal NativeReflectionInvocation =
                 |> write outValueSize (CliType.Numeric (CliNumericType.Int32 (int32 description.ValueSize)))
                 |> NativeHandlerResult.completed
                 |> Some
+        | "ReflectionSerialization_GetCreateUninitializedObjectInfo",
+          "System.Private.CoreLib",
+          "",
+          "CreateUninitializedCache",
+          "GetCreateUninitializedInfo",
+          [ CorelibType state.ConcreteTypes ("System.Runtime.CompilerServices", "QCallTypeHandle", typeHandleGenerics)
+            ConcretePointer (ConcreteFunctionPointer _)
+            ConcretePointer (ConcretePointer (ConcreteVoid state.ConcreteTypes)) ],
+          MethodReturnType.Void when typeHandleGenerics.IsEmpty ->
+            // CoreCLR: `ReflectionSerialization_GetCreateUninitializedObjectInfo`,
+            // reflectioninvocation.cpp:1737, the primitive under `RuntimeHelpers.GetUninitializedObject`.
+            // Describes how `RuntimeType.CreateUninitializedCache` should allocate an instance by
+            // `calli` without running any instance constructor. Unlike its `GetActivationInfo` and
+            // `GetBoxInfo` siblings it *does* run class initialisers, exactly as allocating the
+            // instance with `newobj` would.
+            //
+            // Argument 0 is a `QCallTypeHandle` by value; the other two are raw out-pointers to
+            // locals in the managed shim (RuntimeType.CreateUninitializedCache.CoreCLR.cs:63-73).
+            let operation = "ReflectionSerialization.GetCreateUninitializedObjectInfo"
+
+            if instruction.Arguments.Length <> 3 then
+                failwith $"%s{operation}: expected three native arguments, got %d{instruction.Arguments.Length}"
+
+            let target =
+                NativeCall.qCallTypeHandleToRuntimeTypeHandleTarget
+                    operation
+                    state
+                    (EvalStackValue.ofCliType instruction.Arguments.[0])
+
+            let outAllocator =
+                NativeCall.managedPointerOfPointerArgument operation "ppfnAllocator" instruction.Arguments.[1]
+
+            let outAllocatorFirstArg =
+                NativeCall.managedPointerOfPointerArgument operation "pvAllocatorFirstArg" instruction.Arguments.[2]
+
+            let state, info =
+                UninitializedObjectInfo.classify ctx.LoggerFactory ctx.BaseClassTypes operation target state
+
+            match info with
+            | UninitializedObjectInfo.Rejected rejection ->
+                // Nothing is written on the throwing path, matching CoreCLR: `BEGIN_QCALL`
+                // unwinds past every assignment, so the shim's locals keep their `default`.
+                NativeHandlerResult.raiseException
+                    (UninitializedObjectRejection.exceptionType ctx.BaseClassTypes rejection)
+                    state
+                |> Some
+            | UninitializedObjectInfo.Describes description ->
+
+            // An initialiser that has to run is pushed as a frame above this one, and when it
+            // returns this handler is re-entered from the top. Everything above is a function of
+            // the arguments, so the re-entry recomputes the same description, and the
+            // initialisers that have already run answer `Executed` and are passed over. The out-
+            // pointers are written only once every initialiser has run, so a throwing initialiser
+            // leaves them untouched.
+            let rec runClassInitialisers (remaining : ConcreteTypeHandle list) (state : IlMachineState) =
+                match remaining with
+                | [] -> Choice1Of2 state
+                | handle :: remaining ->
+                    let initialised =
+                        IlMachineStateExecution.ensureTypeInitialised
+                            ctx.LoggerFactory
+                            ctx.BaseClassTypes
+                            ctx.Thread
+                            handle
+                            state
+
+                    match NativeHandlerResult.tryEarlyReturn ctx.Thread initialised with
+                    | Some earlyReturn -> Choice2Of2 earlyReturn
+                    | None -> runClassInitialisers remaining (fst initialised)
+
+            match runClassInitialisers description.ClassInitialisers state with
+            | Choice2Of2 earlyReturn -> Some earlyReturn
+            | Choice1Of2 state ->
+
+            let write ptr value state =
+                IlMachineState.writeManagedByrefWithBase ctx.BaseClassTypes state ptr value
+
+            state
+            // The same helper `RuntimeTypeHandle_GetActivationInfo` and `GetBoxInfo` hand back;
+            // `NativeIntSource.FunctionPointer` is what `executeAllocatorCalli` recognises when
+            // the guest calls through the slot.
+            |> write
+                outAllocator
+                (CliType.Numeric (
+                    CliNumericType.NativeInt (NativeIntSource.FunctionPointer FunctionPointerTarget.RuntimeAllocator)
+                ))
+            // A `void*` slot, which the guest copies into the cache's own `void*` field; see
+            // `GetBoxInfo` above for why that makes this a `RuntimePointer`.
+            |> write
+                outAllocatorFirstArg
+                (CliType.RuntimePointer (
+                    CliRuntimePointer.MethodTablePtr (RuntimeTypeHandleTarget.Closed description.MethodTable)
+                ))
+            |> NativeHandlerResult.completed
+            |> Some
         | _ -> None
