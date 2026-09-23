@@ -174,6 +174,15 @@ type IlMachineState =
         ///
         /// Add through `WithZeroValue`, never by assignment.
         _ZeroValues : Map<ConcreteTypeHandle, CliType>
+        /// Memo of `IlBodyFingerprint.ofMethod`, keyed on the defining assembly's identity and the
+        /// method's MethodDef row. The `[Intrinsic]` gate fingerprints a listed intrinsic's body
+        /// on every call, and `String.get_Length` alone is called constantly.
+        ///
+        /// Sound because the fingerprint is a function of the loaded image's metadata, which
+        /// nothing changes once loaded: no unloading, no EnC.
+        ///
+        /// Add through `WithIlBodyFingerprint`, never by assignment.
+        _IlBodyFingerprints : Map<string * ComparableMethodDefinitionHandle, IlBodyFingerprint>
         /// The definition identity of the assembly whose entry point this run was started from:
         /// CoreCLR's "root assembly" for the AppDomain, which is what `Assembly.GetEntryAssembly`
         /// reports. Recorded at `IlMachineState.initial` rather than derived, because neither
@@ -358,6 +367,15 @@ type IlMachineState =
     member this.WithZeroValue (handle : ConcreteTypeHandle) (zero : CliType) =
         { this with
             _ZeroValues = this._ZeroValues |> Map.add handle zero
+        }
+
+    member this.WithIlBodyFingerprint
+        (key : string * ComparableMethodDefinitionHandle)
+        (fingerprint : IlBodyFingerprint)
+        : IlMachineState
+        =
+        { this with
+            _IlBodyFingerprints = this._IlBodyFingerprints |> Map.add key fingerprint
         }
 
     member this.WithLoadedAssembly (value : DumpedAssembly) =
@@ -589,7 +607,7 @@ type ExecutionResult =
 type IntrinsicResult =
     /// There is no hand-written implementation for this intrinsic key. The caller reports
     /// this as an unimplemented intrinsic; it is NOT an instruction to interpret the
-    /// method's own IL (that decision is `Intrinsics.isSafeIntrinsic`, taken earlier).
+    /// method's own IL (that decision is `IntrinsicMethodKeys.safeIntrinsicVerdict`, taken earlier).
     | Unrecognised
     /// The intrinsic ran to completion, and has already advanced the caller's program
     /// counter itself.

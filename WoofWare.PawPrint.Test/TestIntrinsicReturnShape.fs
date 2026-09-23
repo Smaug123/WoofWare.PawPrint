@@ -38,7 +38,7 @@ module TestIntrinsicReturnShape =
     [<Test>]
     let ``the reviewed Int128 narrowing to Int64 is allowlisted`` () =
         int128Explicit (MethodReturnType.Returns "System.Int64")
-        |> Intrinsics.isSafeIntrinsic
+        |> Intrinsics.isListed
         |> shouldEqual true
 
     /// The five `op_Explicit` overloads whose bodies are not a field read. Each is identical to the
@@ -51,7 +51,7 @@ module TestIntrinsicReturnShape =
     [<TestCase "System.UInt128">]
     let ``an unreviewed Int128 conversion is not allowlisted by the Int64 entry`` (returns : string) =
         int128Explicit (MethodReturnType.Returns returns)
-        |> Intrinsics.isSafeIntrinsic
+        |> Intrinsics.isListed
         |> shouldEqual false
 
     /// The other ten truncating overloads are not allowlisted either. They have the same body shape
@@ -63,14 +63,12 @@ module TestIntrinsicReturnShape =
     [<TestCase "System.IntPtr">]
     let ``a truncating Int128 conversion that was not reviewed is not allowlisted`` (returns : string) =
         int128Explicit (MethodReturnType.Returns returns)
-        |> Intrinsics.isSafeIntrinsic
+        |> Intrinsics.isListed
         |> shouldEqual false
 
     [<Test>]
     let ``a void return does not satisfy a pattern demanding Int64`` () =
-        int128Explicit MethodReturnType.Void
-        |> Intrinsics.isSafeIntrinsic
-        |> shouldEqual false
+        int128Explicit MethodReturnType.Void |> Intrinsics.isListed |> shouldEqual false
 
     /// Almost every entry in the allowlist constrains nothing about the return shape, because an
     /// overload set that already differs in its parameters is fully identified without it. Those
@@ -81,13 +79,13 @@ module TestIntrinsicReturnShape =
     [<TestCase "&">]
     let ``an entry with no return pattern matches regardless of the return shape`` (returns : string) =
         key "System.Int128" "op_Equality" [ "System.Int128" ; "System.Int128" ] (MethodReturnType.Returns returns)
-        |> Intrinsics.isSafeIntrinsic
+        |> Intrinsics.isListed
         |> shouldEqual true
 
     [<Test>]
     let ``an entry with no return pattern matches a void return too`` () =
         key "System.Int128" ".ctor" [ "System.UInt64" ; "System.UInt64" ] MethodReturnType.Void
-        |> Intrinsics.isSafeIntrinsic
+        |> Intrinsics.isListed
         |> shouldEqual true
 
     /// The return shape does not rescue a key that fails on any other component, so the new
@@ -95,13 +93,13 @@ module TestIntrinsicReturnShape =
     [<Test>]
     let ``the right return shape does not admit a wrong parameter list`` () =
         key "System.Int128" "op_Explicit" [ "System.UInt128" ] (MethodReturnType.Returns "System.Int64")
-        |> Intrinsics.isSafeIntrinsic
+        |> Intrinsics.isListed
         |> shouldEqual false
 
     [<Test>]
     let ``the right return shape does not admit a wrong declaring type`` () =
         key "System.UInt128" "op_Explicit" [ "System.Int128" ] (MethodReturnType.Returns "System.Int64")
-        |> Intrinsics.isSafeIntrinsic
+        |> Intrinsics.isListed
         |> shouldEqual false
 
     [<Test>]
