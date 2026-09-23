@@ -918,16 +918,16 @@ module NativeSystemNative =
         |> NativeHandlerResult.completed
         |> Some
 
-    /// PawPrint's half of a refused `fstat`: which entry point asked, which
-    /// descriptor it named, and what PawPrint would have to decide to lift the
-    /// refusal. The library's half says what it measured and what its model has
-    /// not got.
     /// The PawPrint half of the message when a directory on an NFS mount is
     /// statted: the kernel has no size to give, and `ConvertFileStatus` has no
     /// way to leave `Size` unset.
     let private nfsDirectoryReachability : string =
         "The PAL's FileStatus has no way to say a field is unknown, so PawPrint cannot report this directory at all. Configure a mount type other than Nfs for a guest that stats directories."
 
+    /// PawPrint's half of a refused `fstat`: which entry point asked, which
+    /// descriptor it named, and what PawPrint would have to decide to lift the
+    /// refusal. The library's half says what it measured and what its model has
+    /// not got.
     let private fstatRefusalMessage (operation : string) (fd : int) (refusal : FStatRefusal) : string =
         let reachability =
             match refusal with
