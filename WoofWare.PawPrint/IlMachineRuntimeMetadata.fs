@@ -1871,11 +1871,13 @@ module IlMachineRuntimeMetadata =
                 candidate.Generics.[0] = boxed
             | _ -> false
 
-    /// Check whether the concrete type `objType` is assignable to `targetType`.
-    /// Walks the base type chain and checks implemented interfaces at each level.
-    /// Returns true if objType = targetType, or targetType is a base class of objType,
-    /// or targetType is an interface implemented by objType or any of its base classes.
-    let rec isConcreteTypeAssignableTo
+    /// `isConcreteTypeAssignableTo`, as asked from inside a variance comparison that is already
+    /// comparing the pairs in `visited` further up the same path: CoreCLR's `TypeHandlePairList`.
+    /// A variance comparison that comes back to one of those pairs answers false, exactly as
+    /// `CanCastByVarianceToInterfaceOrDelegate` does, which is what makes an expansive hierarchy
+    /// such as `class C : IIn<IIn<C>>` terminate.
+    let rec isConcreteTypeAssignableToVisiting
+        (visited : Set<ConcreteTypeHandle * ConcreteTypeHandle>)
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -1991,11 +1993,18 @@ module IlMachineRuntimeMetadata =
                         targetTypeInfo.Generics
                         |> Seq.exists (fun (_, metadata) -> metadata.Variance.IsSome)
 
-                    if hasVariantGenericParams then
-                        checkVariantGenericArgs state currentCt targetCt targetTypeInfo
-                    else
+                    if not hasVariantGenericParams then
                         // All generic parameters are invariant; same definition + different generics = not assignable.
                         state, false
+                    elif Set.contains (current, targetType) visited then
+                        state, false
+                    else
+                        checkVariantGenericArgs
+                            (Set.add (current, targetType) visited)
+                            state
+                            currentCt
+                            targetCt
+                            targetTypeInfo
                 | None ->
                     let state, interfaceMatch = checkInterfaces state current
 
@@ -2022,6 +2031,7 @@ module IlMachineRuntimeMetadata =
         // is necessary because variance composes (e.g. `Func<Func<Derived>>` ⊑
         // `Func<Func<Base>>` for the nested covariant `out` parameter).
         and checkVariantGenericArgs
+            (visited : Set<ConcreteTypeHandle * ConcreteTypeHandle>)
             (state : IlMachineState)
             (currentCt : ConcreteType<ConcreteTypeHandle>)
             (targetCt : ConcreteType<ConcreteTypeHandle>)
@@ -2049,12 +2059,24 @@ module IlMachineRuntimeMetadata =
                                 if not (isReferenceTypeHandle state fromArg) then
                                     state, false
                                 else
-                                    isConcreteTypeAssignableTo loggerFactory baseClassTypes state fromArg toArg
+                                    isConcreteTypeAssignableToVisiting
+                                        visited
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        fromArg
+                                        toArg
                             | Some GenericVariance.Contravariant ->
                                 if not (isReferenceTypeHandle state toArg) then
                                     state, false
                                 else
-                                    isConcreteTypeAssignableTo loggerFactory baseClassTypes state toArg fromArg
+                                    isConcreteTypeAssignableToVisiting
+                                        visited
+                                        loggerFactory
+                                        baseClassTypes
+                                        state
+                                        toArg
+                                        fromArg
 
                         if argOk then loop state (i + 1) else state, false
 
@@ -2130,7 +2152,13 @@ module IlMachineRuntimeMetadata =
                 let targetIsRef = isReferenceTypeHandle state targetElement
 
                 if objIsRef && targetIsRef then
-                    isConcreteTypeAssignableTo loggerFactory baseClassTypes state objElement targetElement
+                    isConcreteTypeAssignableToVisiting
+                        visited
+                        loggerFactory
+                        baseClassTypes
+                        state
+                        objElement
+                        targetElement
                 elif objIsRef <> targetIsRef then
                     state, false
                 else
@@ -2230,6 +2258,20 @@ module IlMachineRuntimeMetadata =
         | ConcreteTypeHandle.Byref _
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> walk state objType
+
+    /// Check whether the concrete type `objType` is assignable to `targetType`.
+    /// Walks the base type chain and checks implemented interfaces at each level.
+    /// Returns true if objType = targetType, or targetType is a base class of objType,
+    /// or targetType is an interface implemented by objType or any of its base classes.
+    let isConcreteTypeAssignableTo
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (objType : ConcreteTypeHandle)
+        (targetType : ConcreteTypeHandle)
+        : IlMachineState * bool
+        =
+        isConcreteTypeAssignableToVisiting Set.empty loggerFactory baseClassTypes state objType targetType
 
     /// The definition a MethodTable-backed nominal target instantiates, and its instantiation as
     /// targets: a closed type's own arguments, a definition's own variables (the typical
@@ -2471,6 +2513,30 @@ module IlMachineRuntimeMetadata =
             else
                 constrainedAsObjRefByConstraints state variable
 
+        // `where T : U, U : T` makes the constraint walk below loop, and CoreCLR refuses such a
+        // declaration when it loads the type (`TypeVarTypeDesc::LoadConstraints` rejects circular
+        // constraints), so no well-formed program reaches it.
+        let requireAcyclicVariableConstraints
+            (state : IlMachineState)
+            (variable : RuntimeTypeHandleTarget)
+            : IlMachineState
+            =
+            let rec walk
+                (state : IlMachineState)
+                (path : RuntimeTypeHandleTarget list)
+                (current : RuntimeTypeHandleTarget)
+                =
+                if List.contains current path then
+                    failwith
+                        $"isRuntimeTypeHandleTargetAssignableTo: the type-variable constraints of %O{variable} form a cycle through %O{current}, which CoreCLR refuses at type load"
+
+                let state, _, constraints = typeVariableFacts state current
+
+                (state, constraints |> List.filter isTypeVariable)
+                ||> List.fold (fun state next -> walk state (current :: path) next)
+
+            walk state [] variable
+
         // `visited` is CoreCLR's `TypeHandlePairList`: the (source, target) pairs already being
         // compared further up this path. Revisiting one through variance answers false, exactly
         // as `CanCastByVarianceToInterfaceOrDelegate` does, which is what makes an expansive
@@ -2493,7 +2559,17 @@ module IlMachineRuntimeMetadata =
             | RuntimeTypeHandleTarget.DynamicMethodsClass _, _
             | _, RuntimeTypeHandleTarget.DynamicMethodsClass _ -> state, false
             | RuntimeTypeHandleTarget.Closed s, RuntimeTypeHandleTarget.Closed t ->
-                isConcreteTypeAssignableTo loggerFactory baseClassTypes state s t
+                let closedVisited =
+                    visited
+                    |> Set.toSeq
+                    |> Seq.choose (fun pair ->
+                        match pair with
+                        | RuntimeTypeHandleTarget.Closed a, RuntimeTypeHandleTarget.Closed b -> Some (a, b)
+                        | _ -> None
+                    )
+                    |> Set.ofSeq
+
+                isConcreteTypeAssignableToVisiting closedVisited loggerFactory baseClassTypes state s t
             | (RuntimeTypeHandleTarget.GenericParameter _ | RuntimeTypeHandleTarget.MethodGenericParameter _), _ ->
                 // `TypeDesc::CanCastTo` (typedesc.cpp:322). The ValueType arm reads only the
                 // `struct` flag, not the declared constraints, so `where T : Enum` does not make
@@ -2504,13 +2580,12 @@ module IlMachineRuntimeMetadata =
                     let state, metadata, _ = typeVariableFacts state source
                     state, metadata.Constraint = Some GenericConstraint.NonNullableValue
                 else
-                    // A constraint graph with a cycle is malformed metadata that CoreCLR refuses at
-                    // type load; without this, the walk below would never return.
-                    if Set.contains (source, target) visited then
-                        failwith
-                            $"isRuntimeTypeHandleTargetAssignableTo: the constraints of %O{source} lead back to asking whether it casts to %O{target}; the constraint graph has a cycle"
-
-                    let visited = Set.add (source, target) visited
+                    // Revisiting a (variable, target) pair is legal here: `G<T> where T : IIn<IIn<T>>`
+                    // against `class C : IIn<IIn<C>>` comes back to it through variance, and that
+                    // recursion ends at `canCastByVariance`'s pair check, as CoreCLR's does. What
+                    // would not end is a cycle of variables constraining each other directly,
+                    // which CoreCLR refuses at type load, so that is refused here instead.
+                    let state = requireAcyclicVariableConstraints state source
                     let state, _, constraints = typeVariableFacts state source
 
                     ((state, false), constraints)
@@ -2702,8 +2777,41 @@ module IlMachineRuntimeMetadata =
                         state, acc @ declared
                     )
 
+                let state, sourceMatches = matches state source
+
+                if sourceMatches then
+                    state, true
+                else
+
+                let targetIsSpecialMarker =
+                    match target with
+                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _ -> targetIsVariant
+                    | _ -> false
+
+                if
+                    targetIsSpecialMarker
+                    && (isInterfaceTarget state source
+                        || not (isObjRefTarget baseClassTypes state source))
+                then
+                    // `CanCastToInterface` (methodtable.cpp:1228): a variant interface's typical
+                    // instantiation is also the "special marker" CoreCLR compresses a value type's
+                    // or interface's interface map with, so it refuses to scan such a map for one
+                    // unless `MayHaveOpenInterfacesInInterfaceMap` is set. Measured:
+                    // `typeof(IIn<>).IsAssignableFrom` is true of a class implementing `IIn<object>`
+                    // and false of a struct or interface doing the same.
+                    match source with
+                    | RuntimeTypeHandleTarget.Closed _ ->
+                        // The flag is set on a value type or interface only when it is shared by
+                        // generic instantiations, which PawPrint's are not, or when a closed entry
+                        // of its map would itself be a marker, which no closed instantiation is.
+                        state, false
+                    | _ ->
+                        failwith
+                            $"TODO: isRuntimeTypeHandleTargetAssignableTo: whether the open value type or interface %O{source} casts to the variant interface definition %O{target} depends on CoreCLR's MayHaveOpenInterfacesInInterfaceMap flag, which PawPrint does not model for open types"
+                else
+
                 let state, interfaceMap = closeOver state Set.empty fromChain
-                anyMatch state (source :: Set.toList interfaceMap)
+                anyMatch state (Set.toList interfaceMap)
             else
                 anyMatch state chain
 

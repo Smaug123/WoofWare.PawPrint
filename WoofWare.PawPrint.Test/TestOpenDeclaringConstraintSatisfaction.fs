@@ -61,6 +61,9 @@ module TestOpenDeclaringConstraintSatisfaction =
             "public class D_ViaBaseVar<T, S> where T : S where S : Base", "D_ViaBaseVar`2", Set.empty
             "public class D_ViaClassVar<T, S> where T : S where S : class", "D_ViaClassVar`2", Set.empty
             "public class D_InOfSelf<T> where T : class, IIn<T>", "D_InOfSelf`1", Set.empty
+            // Revisits (T, IIn<RecIn>) through variance, which must end rather than be mistaken
+            // for a constraint cycle.
+            "public class D_InInOfSelf<T> where T : class, IIn<IIn<T>>", "D_InInOfSelf`1", Set.empty
         ]
 
     let private corpusSource : string =
@@ -102,6 +105,7 @@ public class OutOfDerived : IOut<Derived> { }
 public class InOfObjectMarker : IIn<object>, IMarker { }
 public class ListOfObject : List<object> { }
 public class SelfIn : IIn<SelfIn> { }
+public class RecIn : IIn<IIn<RecIn>> { }
 
 // A constraint naming its own declaring definition over that definition's own formal is the
 // typical instantiation, which is the definition itself. C# refuses a variant interface's own
@@ -251,6 +255,10 @@ public class D_Self<T> where T : class { public void M_Self<U>() where U : D_Sel
             ofGuest "InOfObjectMarker"
             ofGuest "ListOfObject"
             ofGuest "SelfIn"
+            ofGuest "RecIn"
+            generic "IIn`1" [ generic "IIn`1" [ ofGuest "RecIn" ] ]
+            // Through `M_InPairT`, this asks (T, IIn<RecIn>) a second time under D_InInOfSelf.
+            generic "IInPair`2" [ generic "IIn`1" [ ofGuest "RecIn" ] ; int' ]
             generic "IIn`1" [ object' ]
             generic "IIn`1" [ string' ]
             generic "IIn`1" [ base' ]
