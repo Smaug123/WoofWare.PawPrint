@@ -76,7 +76,8 @@ type StackShapeError =
     /// `ldloc` or `stloc` of an index the locals signature does not have.
     | LocalOutOfRange of offset : int * index : int
     /// A join at which a float32 meets a double, downstream of the conditional branch or
-    /// `switch` at `branch`, whose operands its block computes from literals alone. Not a claim
+    /// `switch` at `branch`, whose operands its block computes from values the importer may hold
+    /// as constants: literals, static fields, and calls on such values or on none. Not a claim
     /// about the IL: the JIT folds such a branch at every tier but not in debuggable code,
     /// importing only the arm taken, so whether CoreCLR widens the join depends on how it
     /// compiled the body, which the analysis does not decide. What follows only from the join is
@@ -117,6 +118,11 @@ type StackShape =
         /// every incoming path is `Double`. This is the cast CoreCLR's importer inserts on the
         /// float32 predecessors of a spill clique it has typed as double.
         Promotions : Map<int, int list>
+        /// The offsets at which CoreCLR's importer starts a basic block: the entry, every branch
+        /// target, every handler entry, and the instruction after a conditional branch or
+        /// `switch`. A value on the stack on entry to one arrives through a spill temp, whose
+        /// width the importer decides over every path into the temp's clique.
+        BlockStarts : Set<int>
     }
 
 [<RequireQualifiedAccess>]
@@ -165,7 +171,7 @@ module StackShape =
         | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Jmp, _) -> Successors.None
         // A `br` to the very next instruction is a `nop` to the JIT, which merges the two blocks
         // before importing (`DoEarlyBlockMerging`, Tier-0 included): no block boundary, so a
-        // literal of the block survives it.
+        // constant of the block survives it.
         | IlOp.UnaryConst (UnaryConstIlOp.Br 0)
         | IlOp.UnaryConst (UnaryConstIlOp.Br_s 0y) -> Successors.FallThrough
         | IlOp.UnaryConst (UnaryConstIlOp.Br delta) -> Successors.Targets [ target delta ]
@@ -753,7 +759,7 @@ module StackShape =
 
     /// The offsets at which the importer starts a basic block: the entry, every branch target,
     /// every handler entry, and the instruction after a conditional branch or `switch`. A value
-    /// arriving at one of these is a spill temp to the importer, not a literal.
+    /// arriving at one of these is a spill temp to the importer, not a constant.
     let private leadersOf (body : MethodInstructions<'methodVars>) : Set<int> =
         let fromInstructions =
             body.Instructions
@@ -824,16 +830,18 @@ module StackShape =
         | _ -> false
 
     /// The conditional branches and `switch`es whose every operand their basic block computes
-    /// from literals alone: a literal, or the result of an operation without a token on such
-    /// values. The JIT may fold such a branch (`gtFoldExpr`), importing only the arm taken, and
-    /// does so at every tier but not in debuggable code. A value
-    /// arriving at a block's first instruction is a spill temp to the importer, and no literal;
-    /// a `br` to the very next instruction starts no block.
-    let private literalBranchesOf (inputs : StackShapeInputs) (body : MethodInstructions<'methodVars>) : Set<int> =
+    /// from values the importer may hold as constants: a literal, a static field (the importer
+    /// reads an initialised `static readonly` one), the result of a call on such values or on
+    /// none (an intrinsic such as `IsSupported`, `Type.op_Equality` on two `typeof`s), or the
+    /// result of an operation without a token on such values. The JIT may fold such a branch
+    /// (`gtFoldExpr`), importing only the arm taken, and does so at every tier but not in
+    /// debuggable code. A value arriving at a block's first instruction is a spill temp to the
+    /// importer, and no constant; a `br` to the very next instruction starts no block.
+    let private foldableBranchesOf (inputs : StackShapeInputs) (body : MethodInstructions<'methodVars>) : Set<int> =
         let leaders = leadersOf body
         let locations = body.Locations
 
-        // Whether each slot the block itself pushed, top first, is computed from literals alone;
+        // Whether each slot the block itself pushed, top first, may be a constant to the importer;
         // the block's entry stack lies below these and is none.
         let _, _, found =
             ((([] : bool list), false, Set.empty), body.Instructions)
@@ -844,11 +852,13 @@ module StackShape =
                     else
                         []
 
-                let literalOperands (count : int) : bool =
-                    count > 0 && stack.Length >= count && stack |> List.take count |> List.forall id
+                let constantOperands (count : int) : bool =
+                    stack.Length >= count && stack |> List.take count |> List.forall id
 
                 let found =
-                    if literalOperands (conditionOperands instruction) then
+                    let operands = conditionOperands instruction
+
+                    if operands > 0 && constantOperands operands then
                         Set.add offset found
                     else
                         found
@@ -859,11 +869,15 @@ module StackShape =
                     | Ok effect ->
                         let pushed = (effect.Pushes (List.replicate effect.Pops SlotShape.Other)).Length
 
-                        let literal =
+                        let constant =
                             pushesLiteral instruction
                             || (
                                 match instruction with
-                                | IlOp.Nullary _ -> literalOperands effect.Pops
+                                | IlOp.Nullary _ -> effect.Pops > 0 && constantOperands effect.Pops
+                                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, _)
+                                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, _) ->
+                                    constantOperands effect.Pops
+                                | IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, _) -> true
                                 | _ -> false
                             )
 
@@ -873,7 +887,7 @@ module StackShape =
                             else
                                 []
 
-                        List.replicate pushed literal @ rest
+                        List.replicate pushed constant @ rest
 
                 let fallsOut =
                     match successorsOf offset instruction with
@@ -1004,8 +1018,9 @@ module StackShape =
     /// reach with stacks that cannot meet is recorded as a conflict and delivers an unknown
     /// stack, which propagates: what follows only from the join is left untyped, a join it feeds
     /// is untyped too rather than classified from its other arms, and so is every offset sharing
-    /// one of its spill temps. A join that would be a promotion, but which a branch on literals
-    /// reaches, is recorded as `WidthDependsOnFoldedBranch` and propagates as a conflict does.
+    /// one of its spill temps. A join that would be a promotion, but which a branch the importer
+    /// may fold reaches, is recorded as `WidthDependsOnFoldedBranch` and propagates as a conflict
+    /// does.
     let analyse (inputs : StackShapeInputs) (body : MethodInstructions<'methodVars>) : StackShape =
         let locations = body.Locations
         let graph = flowGraphOf body
@@ -1237,15 +1252,15 @@ module StackShape =
         drain ()
 
         // The analysis types the flow graph with every arm imported, as debuggable code imports
-        // it. Folding a branch on literals only removes edges and the deliveries of code reached
-        // only through them, so a join keeps its width in every compilation unless a float32
-        // meets a double there: then the double may arrive only through a folded-away arm. Such a
-        // join, where a branch on literals can change what reaches its spill temps, is refused,
-        // and what follows only from it is unknown.
+        // it. Folding a branch only removes edges and the deliveries of code reached only through
+        // them, so a join keeps its width in every compilation unless a float32 meets a double
+        // there: then the double may arrive only through a folded-away arm. Such a join, where a
+        // branch the importer may fold can change what reaches its spill temps, is refused, and
+        // what follows only from it is unknown.
         let reachableOffsets = reachable body
 
         let dependent : Map<int, int> =
-            literalBranchesOf inputs body
+            foldableBranchesOf inputs body
             |> Set.intersect reachableOffsets
             |> Seq.fold
                 (fun (acc : Map<int, int>) (branch : int) ->
@@ -1283,4 +1298,5 @@ module StackShape =
             Invalid = invalid |> Seq.map (fun kv -> kv.Key, kv.Value) |> Map.ofSeq
             Reachable = reachableOffsets
             Promotions = promotionsOf typed
+            BlockStarts = leadersOf body
         }

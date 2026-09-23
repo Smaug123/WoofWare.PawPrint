@@ -95,9 +95,9 @@ Decisions for this stage, agreed before it was built:
   or loaded before the body runs: eager resolution is an effect the interpreter
   never had, and it makes "which offsets are reachable" decide whether a method
   can execute at all, which is the wrong altitude for a width analysis.
-* Branches on literals are *not* folded; a join whose width they can decide is
-  refused. The importer folds a branch whose operands its block computes from
-  literals alone (`gtFoldExpr`, at every tier but not in debuggable code),
+* Branches the importer may fold are *not* folded; a join whose width they can
+  decide is refused. The importer folds a branch whose operands its block
+  computes to a constant (`gtFoldExpr`, at every tier but not in debuggable code),
   importing only the arm taken, so whether such a join is widened depends on how
   the body was compiled. Rather than model that (which tier, which assembly
   stamp, which constants fold under which widening and overflow rules, and a
@@ -105,31 +105,39 @@ Decisions for this stage, agreed before it was built:
   the flow graph with every arm imported, as debuggable code does. Folding only
   removes edges and the deliveries of code reached only through them, so that
   answer is every compilation's answer except where a float32 meets a double: a
-  promotion. A promotion that a branch on literals can reach, through succession
+  promotion. A promotion that such a branch can reach, through succession
   or through sharing a spill temp with something it reaches, is recorded as
   `WidthDependsOnFoldedBranch`, and the interpreter refuses to execute it rather
-  than guess a width. What follows only from it is unknown. A literal is an
-  integer, float, `null`, token or `sizeof` literal, or the result of a
-  token-less operation on literals; a value arriving at a block's first
-  instruction is a spill temp to the importer, and no literal, and a `br` to the
-  very next instruction starts no block, since the JIT merges the blocks before
-  importing. Measured on the 10.0.7 shared framework: 259 of 129,000 methods
-  branch directly on a same-block `ldc`/`ldnull`, and 2 of those use any `.r4`
-  opcode, so refusal should be rare. Other folds are *not* modelled: intrinsics,
-  `typeof` comparisons, `box` patterns, inlined constants, algebraic identities
-  with one runtime operand (`gtFoldExprSpecial`) and comparisons of a local with
-  itself. The analysis treats such a branch as importing both arms, so a join
-  under it where a float32 on the live arm meets a double on the arm CoreCLR
-  folds away is promoted, and widened once stage 3 applies promotions, where
-  CoreCLR keeps it single. Compilers rarely leave a value on the stack across
-  such a branch, and that bound is stated rather than chased.
+  than guess a width. What follows only from it is unknown. A value the
+  importer may hold as a constant is an integer, float, `null`, token or
+  `sizeof` literal, a static field (an initialised `static readonly` one is read
+  at import), the result of a `call` or `callvirt` on such values or on none
+  (intrinsics such as `IsSupported`, `typeof(A) == typeof(B)`,
+  `typeof(A).IsValueType`), or the result of a token-less operation on such
+  values; a value arriving at a block's first instruction is a spill temp to
+  the importer, and no constant, and a `br` to the very next instruction starts
+  no block, since the JIT merges the blocks before importing. Other folds are
+  *not* modelled: `box` patterns, constant arguments substituted into an
+  inlinee, algebraic identities with one runtime operand (`gtFoldExprSpecial`)
+  and comparisons of a local with itself. The analysis treats such a branch as
+  importing both arms, so a join under it where a float32 on the live arm meets
+  a double on the arm CoreCLR folds away is promoted, and widened, where CoreCLR
+  keeps it single. Measured on 2026-09-22: no compiler-generated body promotes
+  at all (0 of 129,000 shared-framework bodies, 0 of 142,625 in the test
+  project's output including F#, and 0 of the 7,692 bodies the Guest suite
+  executes, the one exception being an emitted-IL guest written to promote),
+  because C# and F# convert a float32 to double themselves before such a join;
+  so every refusal here costs nothing measured.
 * Slots are joined over CoreCLR's spill cliques rather than per target. The
   clique is a property of the importer's flow graph: it spans blocks the
   importer never imports, so the two successors of a dead conditional share a
   temp, transitively. A
   conflict (a depth mismatch, a float meeting a non-float) makes the join
   unknown, as in stage 1, together with every offset sharing one of its spill
-  temps: they share the temp whose type is undecidable.
+  temps: they share the temp whose type is undecidable. The interpreter refuses
+  to enter an untyped block with a float32 on the stack, since whether the
+  importer widened that temp is undecided; the same measurement found no
+  conflict anywhere, so this too costs nothing measured.
 * Shapes are per instantiation (an argument of type `T` is a float32 in
   `M<float>`), so the cache key grows the generic arguments.
 

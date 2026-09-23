@@ -1396,6 +1396,69 @@ module TestStackShape =
         shape.Entry.[at.[condition.Length + 1]] |> shouldEqual []
         shape.Entry.[at.[condition.Length + 3]] |> shouldEqual []
 
+    [<TestCase(0, true)>]
+    [<TestCase(1, true)>]
+    [<TestCase(2, true)>]
+    [<TestCase(3, true)>]
+    [<TestCase(4, true)>]
+    [<TestCase(5, false)>]
+    [<TestCase(6, false)>]
+    let ``a float32 meeting a double downstream of a branch the importer may fold is refused, and one on a runtime value is promoted``
+        (conditionIndex : int, foldable : bool)
+        : unit
+        =
+        let call = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, callToken)
+        let callvirt = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Callvirt, callToken)
+        let ldsfld = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldsfld, callToken)
+        let ldtoken = IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Ldtoken, callToken)
+
+        let returning (arguments : int) : TokenShape option =
+            Some (TokenShape.Callee (arguments, Some other))
+
+        let condition : (IlOp * TokenShape option) list =
+            [
+                // An intrinsic such as `Vector128.IsHardwareAccelerated`.
+                [ call, returning 0 ]
+                // A static readonly field, which the importer reads once its class is initialised.
+                [ ldsfld, Some (TokenShape.Field other) ]
+                // `typeof(A) == typeof(B)`.
+                [
+                    ldtoken, None
+                    call, returning 1
+                    ldtoken, None
+                    call, returning 1
+                    call, returning 2
+                ]
+                // `typeof(A).IsValueType`.
+                [ ldtoken, None ; call, returning 1 ; callvirt, returning 1 ]
+                // An intrinsic's result combined with a literal.
+                [ call, returning 0 ; ldc, None ; add, None ]
+                // A call on a runtime value.
+                [ ldarg0, None ; call, returning 1 ]
+                // A static field combined with a runtime value.
+                [ ldsfld, Some (TokenShape.Field other) ; ldarg0, None ; add, None ]
+            ].[conditionIndex]
+
+        let body, at, branch, join = literalJoin (List.map fst condition)
+
+        let inputs =
+            { inputs [ other ] [] false with
+                Tokens =
+                    condition
+                    |> List.indexed
+                    |> List.choose (fun (i, (_, token)) -> token |> Option.map (fun t -> at.[i], t))
+                    |> Map.ofList
+            }
+
+        let shape = StackShape.analyse inputs body
+
+        if foldable then
+            refusalsOf shape |> shouldEqual (Map.ofList [ join, branch ])
+            shape.Promotions |> shouldEqual Map.empty
+        else
+            shape.Invalid.IsEmpty |> shouldEqual true
+            shape.Promotions |> shouldEqual (Map.ofList [ join, [ 0 ] ])
+
     [<Test>]
     let ``a join of one width downstream of a branch on literals is typed`` () : unit =
         // `ldc.i4.1; brtrue A; ldc.r4; br J; A: ldc.r4; J: pop; ret`: whichever arm the JIT
@@ -1848,6 +1911,9 @@ module TestStackShape =
         | ToDouble
         /// `ldc.i4.0; brtrue` or `ldc.i4.1; brtrue`, which the JIT may fold.
         | LiteralBranch of taken : bool * target : int
+        /// `call; brtrue` on a callee with no arguments, such as an `IsSupported` intrinsic, which
+        /// the JIT may fold; `taken` is the constant it folds to.
+        | CallBranch of taken : bool * target : int
         /// `ldarg.0; brtrue`, which no JIT folds.
         | RuntimeBranch of target : int
         | Jump of target : int
@@ -1871,6 +1937,11 @@ module TestStackShape =
                             (fun taken target -> Statement.LiteralBranch (taken, target))
                             (Gen.elements [ true ; false ])
                             (genTarget index)
+                        2,
+                        Gen.map2
+                            (fun taken target -> Statement.CallBranch (taken, target))
+                            (Gen.elements [ true ; false ])
+                            (genTarget index)
                         3, Gen.map Statement.RuntimeBranch (genTarget index)
                         2, Gen.map Statement.Jump (genTarget index)
                         1, Gen.constant Statement.Return
@@ -1880,13 +1951,14 @@ module TestStackShape =
             return Statement.ToSingle :: statements @ [ Statement.Return ]
         }
 
-    /// Lay out the statements, rewriting to `nop; br` (the target, or the next instruction) each
-    /// literal branch in `folded`: the program the JIT imports once it has folded them. Every
-    /// statement occupies the same bytes either way.
+    /// Lay out the statements, rewriting to `nop`s and a `br` (the target, or the next
+    /// instruction) each foldable branch in `folded`: the program the JIT imports once it has
+    /// folded them. Every statement occupies the same bytes either way. Also returns each
+    /// statement's first offset, and the token shapes of the calls laid out.
     let private layOutStatements
         (folded : Set<int>)
         (statements : Statement list)
-        : MethodInstructions<TypeDefn> * Map<int, int>
+        : MethodInstructions<TypeDefn> * Map<int, int> * Map<int, TokenShape>
         =
         let opsOf (index : int) (statement : Statement) : IlOp list =
             match statement with
@@ -1899,6 +1971,8 @@ module TestStackShape =
                 [ nop ; br 0 ]
             | Statement.LiteralBranch (taken, _) ->
                 [ (if taken then ldc else IlOp.Nullary NullaryIlOp.LdcI4_0) ; brtrue 0 ]
+            | Statement.CallBranch _ when folded.Contains index -> List.replicate 5 nop @ [ br 0 ]
+            | Statement.CallBranch _ -> [ IlOp.UnaryMetadataToken (UnaryMetadataTokenIlOp.Call, callToken) ; brtrue 0 ]
             | Statement.RuntimeBranch _ -> [ ldarg0 ; brtrue 0 ]
             | Statement.Jump _ -> [ br 0 ]
             | Statement.Return -> [ ret ]
@@ -1907,25 +1981,42 @@ module TestStackShape =
         let firstOp = perStatement |> List.scan (fun acc ops -> acc + List.length ops) 0
         let ops = List.concat perStatement
 
+        // Every branching statement ends in its branch.
+        let branchOp (i : int) : int = firstOp.[i + 1] - 1
+
         let branches =
             statements
             |> List.indexed
             |> List.choose (fun (i, statement) ->
                 match statement with
-                | Statement.LiteralBranch (taken, target) when folded.Contains i ->
-                    Some (firstOp.[i] + 1, (if taken then firstOp.[target] else firstOp.[i + 1]))
+                | Statement.LiteralBranch (taken, target)
+                | Statement.CallBranch (taken, target) when folded.Contains i ->
+                    Some (branchOp i, (if taken then firstOp.[target] else firstOp.[i + 1]))
                 | Statement.LiteralBranch (_, target)
-                | Statement.RuntimeBranch target -> Some (firstOp.[i] + 1, firstOp.[target])
-                | Statement.Jump target -> Some (firstOp.[i], firstOp.[target])
+                | Statement.CallBranch (_, target)
+                | Statement.RuntimeBranch target
+                | Statement.Jump target -> Some (branchOp i, firstOp.[target])
                 | _ -> None
             )
 
         let body, at = layOutWithBranches [] ops branches
-        body, (statements |> List.mapi (fun i _ -> i, at.[firstOp.[i]]) |> Map.ofList)
 
-    /// The literal branches the JIT imports: those reached from the entry when every literal
-    /// branch it imports goes only the way its literal says.
-    let private importedLiteralBranches (statements : Statement list) : Set<int> =
+        let tokens =
+            statements
+            |> List.indexed
+            |> List.choose (fun (i, statement) ->
+                match statement with
+                | Statement.CallBranch _ when not (folded.Contains i) ->
+                    Some (at.[firstOp.[i]], TokenShape.Callee (0, Some other))
+                | _ -> None
+            )
+            |> Map.ofList
+
+        body, (statements |> List.mapi (fun i _ -> i, at.[firstOp.[i]]) |> Map.ofList), tokens
+
+    /// The foldable branches the JIT imports: those reached from the entry when every foldable
+    /// branch it imports goes only the way its constant says.
+    let private importedFoldableBranches (statements : Statement list) : Set<int> =
         let statements = Array.ofList statements
 
         let rec walk (seen : Set<int>) (pending : int list) : Set<int> =
@@ -1935,8 +2026,10 @@ module TestStackShape =
             | i :: rest ->
                 let next =
                     match statements.[i] with
-                    | Statement.LiteralBranch (true, target) -> [ target ]
-                    | Statement.LiteralBranch (false, _) -> [ i + 1 ]
+                    | Statement.LiteralBranch (true, target)
+                    | Statement.CallBranch (true, target) -> [ target ]
+                    | Statement.LiteralBranch (false, _)
+                    | Statement.CallBranch (false, _) -> [ i + 1 ]
                     | Statement.RuntimeBranch target -> [ target ; i + 1 ]
                     | Statement.Jump target -> [ target ]
                     | Statement.Return -> []
@@ -1948,24 +2041,38 @@ module TestStackShape =
         walk Set.empty [ 0 ]
         |> Set.filter (fun i ->
             match statements.[i] with
-            | Statement.LiteralBranch _ -> true
+            | Statement.LiteralBranch _
+            | Statement.CallBranch _ -> true
             | _ -> false
         )
 
     [<Test>]
     let ``every join the analysis types has the shape and promotion the folded program gets`` () : unit =
         let mutable refusals = 0
+        let mutable callRefusals = 0
         let mutable comparedPromotions = 0
 
         let property (statements : Statement list) : unit =
-            // Offsets are compared at statement starts only: within a rewritten literal branch the
-            // folded program has not pushed the literal.
-            let body, starts = layOutStatements Set.empty statements
-            let shape = StackShape.analyse (inputs [ other ] [] false) body
+            // Offsets are compared at statement starts only: within a rewritten foldable branch the
+            // folded program has not pushed the condition.
+            let body, starts, tokens = layOutStatements Set.empty statements
 
-            let foldedBody, _ = layOutStatements (importedLiteralBranches statements) statements
+            let shape =
+                StackShape.analyse
+                    { inputs [ other ] [] false with
+                        Tokens = tokens
+                    }
+                    body
 
-            let folded = StackShape.analyse (inputs [ other ] [] false) foldedBody
+            let foldedBody, _, foldedTokens =
+                layOutStatements (importedFoldableBranches statements) statements
+
+            let folded =
+                StackShape.analyse
+                    { inputs [ other ] [] false with
+                        Tokens = foldedTokens
+                    }
+                    foldedBody
 
             // Debuggable code imports every arm, which is the analysis's own graph: the refusals
             // aside, it answers as it would with no literal anywhere.
@@ -1978,6 +2085,23 @@ module TestStackShape =
                 )
 
             refusals <- refusals + refused.Count
+
+            // A call branch's `brtrue` follows its 5-byte `call`.
+            let callBranches =
+                statements
+                |> List.indexed
+                |> List.choose (fun (i, statement) ->
+                    match statement with
+                    | Statement.CallBranch _ -> Some (starts.[i] + 5)
+                    | _ -> None
+                )
+                |> Set.ofList
+
+            for KeyValue (_, error) in refused do
+                match error with
+                | StackShapeError.WidthDependsOnFoldedBranch (_, branch) when callBranches.Contains branch ->
+                    callRefusals <- callRefusals + 1
+                | _ -> ()
 
             for offset in starts.Values do
                 match Map.tryFind offset shape.Entry, Map.tryFind offset folded.Entry with
@@ -1997,4 +2121,45 @@ module TestStackShape =
 
         // The generator reaches both kinds of join the property is about.
         refusals |> shouldBeGreaterThan 0
+        callRefusals |> shouldBeGreaterThan 0
         comparedPromotions |> shouldBeGreaterThan 0
+
+    // ---------- The interpreter's refusal of a float32 entering an untyped block ----------
+
+    [<Test>]
+    let ``a float32 entering a block the analysis could not type is refused, and nothing else is`` () : unit =
+        // `ldarg0; brtrue A; ldc.i4.1; br J; A: ldc.r4; J: pop; ret`: J joins an int32 with a
+        // float32, a conflict, so J and what follows it are untyped. J starts a block, so a value
+        // on the stack there arrives in a spill temp whose width CoreCLR decides over paths the
+        // analysis could not type; `ret` starts none.
+        let ops = [ ldarg0 ; brtrue 0 ; ldc ; br 0 ; ldcR4 ; pop ; ret ]
+        let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 5 ]
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        shape.Invalid.[at.[5]].IsConflict |> shouldEqual true
+
+        let singleValue = EvalStackValue.Float (EvalStackFloat.Single 1.0f)
+        let doubleValue = EvalStackValue.Float (EvalStackFloat.Double 1.0)
+        let intValue = EvalStackValue.Int32 (Int32Source.Verbatim 1)
+
+        let refusedSlot (offset : int) (stack : EvalStackValue list) : int option =
+            StackShapeOfMethod.untypedSpilledSingle shape offset stack
+
+        refusedSlot at.[5] [ singleValue ] |> shouldEqual (Some 0)
+        refusedSlot at.[5] [ intValue ; singleValue ] |> shouldEqual (Some 1)
+        refusedSlot at.[5] [ doubleValue ] |> shouldEqual None
+        refusedSlot at.[5] [ intValue ] |> shouldEqual None
+        // Untyped, but no block starts there: nothing is spilled.
+        shape.Entry.ContainsKey at.[6] |> shouldEqual false
+        refusedSlot at.[6] [ singleValue ] |> shouldEqual None
+        // Typed block starts are the analysis's to decide.
+        refusedSlot at.[4] [ singleValue ] |> shouldEqual None
+
+    [<Test>]
+    let ``the block starts are the entry, every branch target, and every conditional's fall-through`` () : unit =
+        let ops = [ ldarg0 ; brtrue 0 ; ldc ; br 0 ; ldcR4 ; pop ; ret ]
+        let body, at = layOutWithBranches [] ops [ 1, 4 ; 3, 5 ]
+        let shape = StackShape.analyse (inputs [ other ] [] false) body
+
+        shape.BlockStarts
+        |> shouldEqual (Set.ofList [ at.[0] ; at.[2] ; at.[4] ; at.[5] ])
