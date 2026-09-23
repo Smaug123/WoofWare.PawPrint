@@ -162,6 +162,19 @@ class Program
 }
 """
 
+    let private objectAndArrayLocalsSource =
+        """
+class Program
+{
+    static int Main(string[] args)
+    {
+        object value = new object();
+        int[] numbers = new int[3];
+        return value == null || numbers == null ? 1 : 0;
+    }
+}
+"""
+
     /// Three writes, alternating streams. Each `Write` on the console's autoflushing writers is
     /// one `write(2)`, so each is exactly one `OutputLog` entry.
     let private interleavedOutputSource =
@@ -964,4 +977,71 @@ class Program
 
             let! after = readOutput ()
             after |> shouldEqual expectedInterleavedOutput
+        }
+
+    [<Test>]
+    let ``Debugger HTTP names the types of heap objects and of locals`` () : Task =
+        task {
+            use server = startServer objectAndArrayLocalsSource
+            use client = client server (Some token)
+
+            let mutable addresses = None
+            let mutable lastLocals = ""
+
+            for _ = 1 to 20 do
+                if addresses.IsNone then
+                    let! step = client.PostAsync ("step?count=1", emptyContent ())
+                    step.StatusCode |> shouldEqual HttpStatusCode.OK
+
+                    let! thread = client.GetAsync "thread/0"
+                    use! threadJson = jsonDocument thread
+
+                    let frame = activeFrame threadJson.RootElement
+                    lastLocals <- frame.GetProperty("locals").ToString ()
+
+                    match
+                        frame.GetProperty("locals").EnumerateArray ()
+                        |> Seq.map tryObjectAddress
+                        |> Seq.toList
+                    with
+                    // A Debug build adds a third local, the temporary holding the return value.
+                    | [ Some value ; Some numbers ; None ] -> addresses <- Some (value, numbers)
+                    | _ -> ()
+
+            let value, numbers =
+                match addresses with
+                | Some addresses -> addresses
+                | None ->
+                    failwith $"Did not observe both locals holding objects within 20 steps; last saw %s{lastLocals}"
+
+            // `#<handle>` numbers depend on the order types were first concretised, which is not
+            // this test's business, so they are masked out.
+            let unnumbered (description : string) : string =
+                Text.RegularExpressions.Regex.Replace (description, "#[0-9]+", "#_")
+
+            let heapTypeDescription (address : int) : Task<string> =
+                task {
+                    let! heap = client.GetAsync $"heap/%d{address}"
+                    heap.StatusCode |> shouldEqual HttpStatusCode.OK
+                    use! heapJson = jsonDocument heap
+                    return heapJson.RootElement.GetProperty("typeDescription").GetString () |> unnumbered
+                }
+
+            let! valueType = heapTypeDescription value
+            valueType |> shouldEqual "System.Object#_ [System.Private.CoreLib]"
+            let! numbersType = heapTypeDescription numbers
+            numbersType |> shouldEqual "System.Int32#_ [System.Private.CoreLib][]"
+
+            let! il = client.GetAsync "thread/0/active-method/il"
+            use! ilJson = jsonDocument il
+
+            ilJson.RootElement.GetProperty("locals").EnumerateArray ()
+            |> Seq.map (fun local -> local.GetProperty("typeDescription").GetString () |> unnumbered)
+            |> Seq.toList
+            |> shouldEqual
+                [
+                    "System.Object#_ [System.Private.CoreLib]"
+                    "System.Int32#_ [System.Private.CoreLib][]"
+                    "System.Int32#_ [System.Private.CoreLib]"
+                ]
         }

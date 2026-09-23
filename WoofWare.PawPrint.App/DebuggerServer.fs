@@ -833,10 +833,22 @@ module DebuggerServer =
 
             writer.WriteEndObject ()
 
-    let private writeLocalType (writer : Utf8JsonWriter) (index : int, localType : ConcreteTypeHandle) : unit =
+    /// `AllConcreteTypes.describe`'s rendering, e.g. `System.Object#3 [System.Private.CoreLib]`:
+    /// the handle and assembly tell apart two types of the same name. It never throws, so a handle
+    /// the registry cannot name still renders, as a placeholder that says so.
+    let private typeDescription (state : IlMachineState) (handle : ConcreteTypeHandle) : string =
+        AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes handle
+
+    let private writeLocalType
+        (writer : Utf8JsonWriter)
+        (state : IlMachineState)
+        (index : int, localType : ConcreteTypeHandle)
+        : unit
+        =
         writer.WriteStartObject ()
         writer.WriteNumber ("index", index)
         writer.WriteString ("type", string localType)
+        writer.WriteString ("typeDescription", typeDescription state localType)
         writer.WriteEndObject ()
 
     let private writeInstructionLine
@@ -931,7 +943,7 @@ module DebuggerServer =
             | None ->
                 writer.WriteBoolean ("hasBody", false)
                 writer.WriteNull "localsInit"
-                writeValueArray writer "locals" [] writeLocalType
+                writeValueArray writer "locals" [] (fun writer local -> writeLocalType writer state local)
 
                 writeValueArray
                     writer
@@ -950,7 +962,7 @@ module DebuggerServer =
                     | None -> Array.empty
                     | Some locals -> locals |> Seq.mapi (fun i localType -> i, localType) |> Seq.toArray
 
-                writeValueArray writer "locals" locals writeLocalType
+                writeValueArray writer "locals" locals (fun writer local -> writeLocalType writer state local)
 
                 let instructionArray = instructions.Instructions |> List.toArray
 
@@ -986,6 +998,7 @@ module DebuggerServer =
         | Some object ->
             writer.WriteString ("kind", "object")
             writer.WriteString ("concreteType", string object.ConcreteType)
+            writer.WriteString ("typeDescription", typeDescription state object.ConcreteType)
             writer.WriteString ("contents", string object.Contents)
             writeOptionalString writer "string" (HeapObserver.getStringContents address state.ManagedHeap)
             writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))
@@ -994,6 +1007,7 @@ module DebuggerServer =
             | Some array ->
                 writer.WriteString ("kind", "array")
                 writer.WriteString ("concreteType", string array.Shape.ConcreteType)
+                writer.WriteString ("typeDescription", typeDescription state array.Shape.ConcreteType)
                 writer.WriteNumber ("length", array.Shape.Length)
                 writeValueArray writer "elements" array.Elements writeCliType
                 // Arrays carry an object header exactly like any other heap object, so a
