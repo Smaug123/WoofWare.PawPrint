@@ -35,7 +35,7 @@ module TestFieldIdAgreement =
 
     let private loggerFactory = snd (LoggerFactory.makeTest ())
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
 
     /// The FSharp.Core this test project already runs against. Chosen over a nuget-cache lookup

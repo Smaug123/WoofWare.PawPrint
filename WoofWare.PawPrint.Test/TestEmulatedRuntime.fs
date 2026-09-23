@@ -83,12 +83,15 @@ public static class Program
             failwith
                 $"expected exactly one AssemblyInformationalVersionAttribute on %s{corelib.DefinitionFullName}, found %d{other.Length}"
 
-    /// The drift check proper: `corelib` is a supported runtime, and exactly the build pinned for it.
+    /// The drift check proper: `corelib` serves the runtime under test, and is exactly the build
+    /// pinned for that runtime.
     let private assertMatchesPin (corelib : DumpedAssembly) : unit =
-        let runtime =
-            match EmulatedRuntime.classify corelib with
-            | Ok runtime -> runtime
-            | Error unsupported -> failwith $"the suite's own CoreLib is unsupported: %O{unsupported}"
+        let runtime = FrameworkUnderTest.runtime ()
+
+        // A leg checks only its own runtime's images against that runtime's pin.
+        FrameworkUnderTest.checkServes runtime corelib
+        |> Result.mapError FrameworkUnderTest.describe
+        |> shouldEqual (Ok ())
 
         let found = RuntimeBuild.OfInformationalVersion (informationalVersion corelib)
         let pinned = (EmulatedRuntime.pin runtime).Build
@@ -98,11 +101,11 @@ public static class Program
                 $"The loaded CoreLib (%s{corelib.DefinitionFullName}, from %A{corelib.OriginalPath}) is build %s{found.Text}, but EmulatedRuntime.pin %O{runtime} says %s{pinned.Text}. Set that runtime's Build in WoofWare.PawPrint/EmulatedRuntime.fs to \"%s{found.Text}\" (and re-sync flake.nix and the dotnet-runtime-src pin; see the sync-dotnet-runtime skill)."
 
     [<Test>]
-    let ``The CoreLib the suite resolves is the build EmulatedRuntime pins for its major`` () =
+    let ``The CoreLib the suite resolves is the build EmulatedRuntime pins for the runtime under test`` () =
         assertMatchesPin (resolvedCoreLib (FrameworkUnderTest.runtimeDirs ()))
 
     [<Test>]
-    let ``The pinned linux-x64 CoreLib is the build EmulatedRuntime pins for its major`` () =
+    let ``The pinned linux-x64 CoreLib is the build EmulatedRuntime pins for the runtime under test`` () =
         let frameworkDir = LinuxCoreLibFlavour.requireLinuxFramework ()
 
         let corelib =

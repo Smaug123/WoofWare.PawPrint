@@ -18,7 +18,7 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestEmptyArrayByrefWalks =
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

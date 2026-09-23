@@ -48,7 +48,10 @@ module TestNativeMethod =
         case.Name
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``recognises exactly the Math and MathF FCalls that take and return only floats`` (which : string) : unit =
+    let ``recognises exactly the Math and MathF FCalls that take and return only floats``
+        (which : AuditedCoreLib)
+        : unit
+        =
         let corelib = TestIntrinsicBody.coreLib which
 
         let recognised =
@@ -139,7 +142,7 @@ module TestNativeMethod =
         | _ -> None
 
     [<TestCaseSource(nameof coreLibs)>]
-    let ``recognises every P/Invoke into the framework's shims, and no other`` (which : string) : unit =
+    let ``recognises every P/Invoke into the framework's shims, and no other`` (which : AuditedCoreLib) : unit =
         let corelib = TestIntrinsicBody.coreLib which
         let mutable shimCalls = 0
 
@@ -646,7 +649,11 @@ module TestNativeMethod =
 
     [<Test>]
     let ``every native method raises only what its contract says, on this runtime`` () : unit =
-        let corelib = TestIntrinsicBody.coreLib "host"
+        // The host's own image, since the oracle is host reflection over the same methods.
+        let corelib =
+            let _, loggerFactory = LoggerFactory.makeTest ()
+            Assembly.readFile loggerFactory HostImage.coreLibPath
+
         let mutable calls = 0
 
         for KeyValue (handle, method) in corelib.Methods do

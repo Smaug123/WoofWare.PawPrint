@@ -590,6 +590,177 @@ module TestNativeRuntimeMethodHandle =
 
         Check.One (propertyConfig, Prop.forAll (Arb.fromGen consistentInstantiation) property)
 
+    /// The full name of every class and struct in the CoreLib at `coreLibPath` that implements
+    /// `System.IRuntimeMethodInfo`, directly, through an interface, or through a base type, in
+    /// ordinal order. A nested type's name joins its enclosing type's with `+`, as reflection's
+    /// `Type.FullName` does. It reads the image with System.Reflection.Metadata rather than with
+    /// PawPrint's reader, so that it answers independently of both the handler and the reader.
+    let private iRuntimeMethodInfoImplementers (coreLibPath : string) : string list =
+        use peReader =
+            new System.Reflection.PortableExecutable.PEReader (System.IO.File.OpenRead coreLibPath)
+
+        let metadata =
+            System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader peReader
+
+        let rec fullName (handle : System.Reflection.Metadata.TypeDefinitionHandle) : string =
+            let definition = metadata.GetTypeDefinition handle
+            let name = metadata.GetString definition.Name
+            let enclosing = definition.GetDeclaringType ()
+
+            if not enclosing.IsNil then
+                fullName enclosing + "+" + name
+            else
+                match metadata.GetString definition.Namespace with
+                | "" -> name
+                | ns -> ns + "." + name
+
+        let target =
+            metadata.TypeDefinitions
+            |> Seq.filter (fun handle -> fullName handle = "System.IRuntimeMethodInfo")
+            |> Seq.exactlyOne
+
+        // A supertype named by a base-type or interface-implementation row, as the definition it
+        // instantiates. Every supertype of a CoreLib type is defined in CoreLib.
+        let definitionOf
+            (named : System.Reflection.Metadata.TypeDefinitionHandle)
+            (handle : System.Reflection.Metadata.EntityHandle)
+            : System.Reflection.Metadata.TypeDefinitionHandle
+            =
+            let unexpected () =
+                failwith
+                    $"%s{fullName named} names a supertype of kind %O{handle.Kind}, which is not a CoreLib definition"
+
+            match handle.Kind with
+            | System.Reflection.Metadata.HandleKind.TypeDefinition ->
+                System.Reflection.Metadata.TypeDefinitionHandle.op_Explicit handle
+            | System.Reflection.Metadata.HandleKind.TypeSpecification ->
+                let spec =
+                    metadata.GetTypeSpecification (
+                        System.Reflection.Metadata.TypeSpecificationHandle.op_Explicit handle
+                    )
+
+                let mutable reader = metadata.GetBlobReader spec.Signature
+
+                // ECMA-335 II.23.2.14: GENERICINST (CLASS | VALUETYPE) TypeDefOrRefOrSpecEncoded ...
+                if
+                    reader.ReadSignatureTypeCode ()
+                    <> System.Reflection.Metadata.SignatureTypeCode.GenericTypeInstance
+                then
+                    unexpected ()
+
+                if
+                    reader.ReadSignatureTypeCode ()
+                    <> System.Reflection.Metadata.SignatureTypeCode.TypeHandle
+                then
+                    unexpected ()
+
+                let generic = reader.ReadTypeHandle ()
+
+                if generic.Kind <> System.Reflection.Metadata.HandleKind.TypeDefinition then
+                    unexpected ()
+
+                System.Reflection.Metadata.TypeDefinitionHandle.op_Explicit generic
+            | _ -> unexpected ()
+
+        let rec implements (handle : System.Reflection.Metadata.TypeDefinitionHandle) : bool =
+            let definition = metadata.GetTypeDefinition handle
+
+            let interfaces =
+                definition.GetInterfaceImplementations ()
+                |> Seq.map (fun impl -> (metadata.GetInterfaceImplementation impl).Interface)
+
+            let supertypes =
+                if definition.BaseType.IsNil then
+                    interfaces
+                else
+                    Seq.append [ definition.BaseType ] interfaces
+
+            supertypes
+            |> Seq.map (definitionOf handle)
+            |> Seq.exists (fun supertype -> supertype = target || implements supertype)
+
+        metadata.TypeDefinitions
+        |> Seq.filter (fun handle ->
+            let definition = metadata.GetTypeDefinition handle
+
+            (definition.Attributes &&& TypeAttributes.Interface) <> TypeAttributes.Interface
+            && implements handle
+        )
+        |> Seq.map fullName
+        |> Seq.sortWith (fun a b -> System.String.CompareOrdinal (a, b))
+        |> List.ofSeq
+
+    /// The names of the instance fields that `typeName` itself declares in the CoreLib at
+    /// `coreLibPath`, in declaration order, read with System.Reflection.Metadata.
+    let private declaredInstanceFieldNames (coreLibPath : string) (typeName : string) : string list =
+        use peReader =
+            new System.Reflection.PortableExecutable.PEReader (System.IO.File.OpenRead coreLibPath)
+
+        let metadata =
+            System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader peReader
+
+        let definition =
+            metadata.TypeDefinitions
+            |> Seq.map metadata.GetTypeDefinition
+            |> Seq.filter (fun definition ->
+                definition.GetDeclaringType().IsNil
+                && metadata.GetString definition.Namespace
+                   + "."
+                   + metadata.GetString definition.Name = typeName
+            )
+            |> Seq.exactlyOne
+
+        definition.GetFields ()
+        |> Seq.map metadata.GetFieldDefinition
+        |> Seq.filter (fun field -> (field.Attributes &&& FieldAttributes.Static) <> FieldAttributes.Static)
+        |> Seq.map (fun field -> metadata.GetString field.Name)
+        |> List.ofSeq
+
+    /// The three `IRuntimeMethodInfo` implementers, and the field each keeps its
+    /// `RuntimeMethodHandleInternal` in, as the handler names them.
+    let private handlerImplementers : (string * string) list =
+        [
+            "System.Reflection.RuntimeConstructorInfo", "m_handle"
+            "System.Reflection.RuntimeMethodInfo", "m_handle"
+            "System.RuntimeMethodInfoStub", "m_value"
+        ]
+
+    /// The two metadata reads above are checked against the host's reflection over the image the
+    /// host has loaded, which is the one image both can see.
+    [<Test>]
+    let ``the metadata reads agree with reflection on the host's CoreLib`` () : unit =
+        let corelib = typeof<obj>.Assembly
+
+        let iRuntimeMethodInfo =
+            corelib.GetType ("System.IRuntimeMethodInfo", throwOnError = true)
+
+        let byReflection =
+            corelib.GetTypes ()
+            |> Array.filter (fun candidate ->
+                not candidate.IsInterface && iRuntimeMethodInfo.IsAssignableFrom candidate
+            )
+            |> Array.map _.FullName
+            |> Array.sortWith (fun a b -> System.String.CompareOrdinal (a, b))
+            |> List.ofArray
+
+        iRuntimeMethodInfoImplementers HostImage.coreLibPath |> shouldEqual byReflection
+
+        for typeName, _ in handlerImplementers do
+            let byReflection =
+                (corelib.GetType (typeName, throwOnError = true))
+                    .GetFields (
+                        BindingFlags.Instance
+                        ||| BindingFlags.Public
+                        ||| BindingFlags.NonPublic
+                        ||| BindingFlags.DeclaredOnly
+                    )
+                |> Array.map _.Name
+                |> List.ofArray
+
+            declaredInstanceFieldNames HostImage.coreLibPath typeName
+            |> List.sort
+            |> shouldEqual (List.sort byReflection)
+
     /// `RuntimeMethodHandle.GetImplAttributes` is one of the few natives declared over
     /// `IRuntimeMethodInfo` rather than over a `RuntimeMethodHandleInternal`, so its handler has to
     /// get the handle out of the argument *object*. CoreCLR reads a fixed offset
@@ -599,54 +770,23 @@ module TestNativeRuntimeMethodHandle =
     /// reads fields by name instead, so its handler names the three types one at a time, and a
     /// fourth implementer would reach it as a refusal.
     ///
-    /// This asks the host CLR's own CoreLib whether three is still the whole set. It is an outside
-    /// oracle rather than a restatement of the handler: it goes red when a future .NET adds an
+    /// This asks the framework under test's CoreLib whether three is still the whole set. It is an
+    /// outside oracle rather than a restatement of the handler: it goes red when a runtime adds an
     /// implementer, which is the moment the handler needs a new arm, instead of leaving that to be
     /// discovered by a guest.
     [<Test>]
     let ``CoreLib has exactly the three IRuntimeMethodInfo implementers the handler names`` () : unit =
-        let corelib = typeof<obj>.Assembly
-
-        let iRuntimeMethodInfo =
-            corelib.GetType ("System.IRuntimeMethodInfo", throwOnError = true)
-
-        let implementers =
-            corelib.GetTypes ()
-            |> Array.filter (fun candidate ->
-                not candidate.IsInterface && iRuntimeMethodInfo.IsAssignableFrom candidate
-            )
-            |> Array.map _.FullName
-            |> Array.sort
-            |> List.ofArray
-
-        implementers
-        |> shouldEqual
-            [
-                "System.Reflection.RuntimeConstructorInfo"
-                "System.Reflection.RuntimeMethodInfo"
-                "System.RuntimeMethodInfoStub"
-            ]
+        iRuntimeMethodInfoImplementers (FrameworkUnderTest.coreLibPath ())
+        |> shouldEqual (handlerImplementers |> List.map fst)
 
     /// The field each of those three keeps its `RuntimeMethodHandleInternal` in, which is the other
     /// half of what the handler hardcodes: CoreCLR's offset read does not care what the slot is
-    /// called, and a name-based read does.
+    /// called, and a name-based read of the type's own field does.
     [<Test>]
-    let ``the IRuntimeMethodInfo implementers spell their handle field as the handler expects`` () : unit =
-        let corelib = typeof<obj>.Assembly
-
-        let fieldNames (typeName : string) : string list =
-            let ty = corelib.GetType (typeName, throwOnError = true)
-
-            ty.GetFields (BindingFlags.Instance ||| BindingFlags.Public ||| BindingFlags.NonPublic)
-            |> Array.map _.Name
-            |> List.ofArray
-
-        fieldNames "System.Reflection.RuntimeMethodInfo" |> shouldContain "m_handle"
-
-        fieldNames "System.Reflection.RuntimeConstructorInfo"
-        |> shouldContain "m_handle"
-
-        fieldNames "System.RuntimeMethodInfoStub" |> shouldContain "m_value"
+    let ``the IRuntimeMethodInfo implementers declare their handle field as the handler expects`` () : unit =
+        for typeName, handleField in handlerImplementers do
+            declaredInstanceFieldNames (FrameworkUnderTest.coreLibPath ()) typeName
+            |> shouldContain handleField
 
     // ---------------------------------------------------------------------------------------
     // `isTypicalMethodDefinition`: CoreCLR's `MethodDesc::IsTypicalMethodDefinition`

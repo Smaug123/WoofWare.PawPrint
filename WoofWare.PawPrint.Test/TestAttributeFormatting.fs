@@ -13,7 +13,7 @@ module TestAttributeFormatting =
     // over its sinks, and disposing while the assembly is still live would silently drop
     // events.
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

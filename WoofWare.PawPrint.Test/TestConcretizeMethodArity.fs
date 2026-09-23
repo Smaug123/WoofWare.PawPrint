@@ -16,7 +16,7 @@ open WoofWare.PawPrint
 [<Parallelizable(ParallelScope.All)>]
 module TestConcretizeMethodArity =
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
 
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
 

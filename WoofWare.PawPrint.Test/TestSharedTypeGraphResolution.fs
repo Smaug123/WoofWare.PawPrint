@@ -38,7 +38,7 @@ open WoofWare.PosixKernel.Test
 [<Parallelizable(ParallelScope.All)>]
 module TestSharedTypeGraphResolution =
 
-    let private corelibPath : string = typeof<obj>.Assembly.Location
+    let private corelibPath : string = HostImage.coreLibPath
     let private runtimeDir : string = Path.GetDirectoryName corelibPath
 
     let private cyclicMarker = "generic environment is cyclic"

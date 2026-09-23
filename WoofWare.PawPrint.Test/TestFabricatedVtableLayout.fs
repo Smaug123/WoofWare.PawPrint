@@ -616,7 +616,7 @@ module TestFabricatedVtableLayout =
     // its sinks, and disposing while the assembly is live would drop events.
     let private corelib : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()
-        Assembly.readFile loggerFactory (typeof<obj>.Assembly.Location)
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private fabricated : DumpedAssembly =
         let _, loggerFactory = LoggerFactory.makeTest ()

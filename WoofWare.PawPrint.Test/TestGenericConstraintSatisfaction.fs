@@ -156,7 +156,7 @@ public class H2_BaseThenMarker<A, B> where A : BaseType where B : IMarker { }
         loggerFactory
 
     let private corelib : DumpedAssembly =
-        Assembly.readFile loggerFactory typeof<obj>.Assembly.Location
+        Assembly.readFile loggerFactory HostImage.coreLibPath
 
     let private guest : DumpedAssembly =
         use stream = new MemoryStream (image)

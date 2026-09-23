@@ -21,7 +21,7 @@ module TestMethodHandleRegistry =
 
         let _, loggerFactory = LoggerFactory.makeTest ()
 
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
 
         let corelib =
             global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory corelibPath
@@ -1294,7 +1294,7 @@ public static class InstantiationHolder
         (namespaceName : string, typeName : string)
         : unit
         =
-        // PawPrint reads the host's own corelib (`typeof<obj>.Assembly.Location`), so the host CLR
+        // PawPrint reads the host's own corelib (`HostImage.coreLibPath`), so the host CLR
         // is an independent implementation reading the *same* metadata -- an outside oracle rather
         // than a second derivation of the thing under test.
         //
@@ -1648,7 +1648,7 @@ public class HasNestedGeneric<TKey, TValue>
         // Read the list through the dispatcher the enumerator actually calls, not off `TypeInfo`
         // directly: a dispatcher that re-ordered or filtered what it was given would otherwise pass.
         let corelib =
-            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory typeof<obj>.Assembly.Location
+            global.WoofWare.PawPrint.AssemblyApi.readFile loggerFactory HostImage.coreLibPath
 
         let baseClassTypes = BaseClassTypes.ofCorelib corelib
 

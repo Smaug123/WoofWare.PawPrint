@@ -251,7 +251,7 @@ module TestStorageLocationResolve =
     /// Parsed once for all tests; DumpedAssembly is immutable, so sharing it
     /// under ParallelScope.All is safe.
     let private corelib : DumpedAssembly =
-        let corelibPath = typeof<obj>.Assembly.Location
+        let corelibPath = HostImage.coreLibPath
         let _, loggerFactory = LoggerFactory.makeTest ()
         Assembly.readFile loggerFactory corelibPath
 

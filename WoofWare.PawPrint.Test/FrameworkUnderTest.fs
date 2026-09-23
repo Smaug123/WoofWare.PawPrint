@@ -237,6 +237,10 @@ module FrameworkUnderTest =
 
             dir
 
+    /// The selected runtime's CoreLib, which a guest binds along `runtimeDirs ()`. A fixture that
+    /// asserts a shape of the runtime's CoreLib reads this image, not `HostImage`'s.
+    let coreLibPath () : string = (selected ()).CoreLibPath
+
     /// The `System.Private.CoreLib` that `state`'s run has loaded. Fails unless there is exactly
     /// one.
     let loadedCoreLib (state : IlMachineState) : DumpedAssembly =
