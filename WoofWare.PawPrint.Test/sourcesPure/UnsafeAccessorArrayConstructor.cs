@@ -5,8 +5,8 @@ using System.Runtime.CompilerServices;
 // TypeDescs, so `ValidateTargetType` lets them through, and the constructor binds -- for a
 // multi-dimensional array and for a single-dimensional one alike.
 //
-// Only the constructor binds: an array's other runtime-provided members are not candidates, so an
-// accessor naming `Get` reports it missing. Measured on real .NET 10, which is also where the
+// Only the constructor binds: an array's other runtime-provided members spell the element type as
+// `!0`, which no accessor's signature can match, so an accessor naming `Get` reports it missing. Measured on real .NET 10, which is also where the
 // target type's rendered name comes from.
 public class TestUnsafeAccessorArrayConstructor
 {
