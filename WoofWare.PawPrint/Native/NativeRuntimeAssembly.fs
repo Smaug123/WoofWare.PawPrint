@@ -66,6 +66,62 @@ module NativeRuntimeAssembly =
         hash.[hash.Length - 8 ..] |> Array.rev
 
     /// <summary>
+    /// <c>StrongNameIsValidPublicKey</c> (md/runtime/strongnameinternal.cpp): does this blob
+    /// look like a public key, in the sense the strong-name code checks before hashing one?
+    /// </summary>
+    /// <remarks>
+    /// The blob is a <c>PublicKeyBlob</c>: a signature algorithm, a hash algorithm and a key
+    /// length as little-endian 32-bit words, then the CryptoAPI key bytes. It must be at least
+    /// the unpacked struct's sixteen bytes, its key length must account for everything after the
+    /// twelve-byte header, an algorithm that is given must be of the right class (and the hash
+    /// no weaker than SHA-1), and the key must announce itself as a <c>PUBLICKEYBLOB</c>. The
+    /// sixteen-byte ECMA key passes without those checks, since it is not a real key.
+    /// </remarks>
+    let isValidPublicKey (blob : byte[]) : bool =
+        let ecmaKey =
+            [|
+                0uy
+                0uy
+                0uy
+                0uy
+                0uy
+                0uy
+                0uy
+                0uy
+                4uy
+                0uy
+                0uy
+                0uy
+                0uy
+                0uy
+                0uy
+                0uy
+            |]
+
+        if blob = ecmaKey then
+            true
+        elif blob.Length < 16 then
+            false
+        else
+
+        let word (offset : int) : uint32 =
+            System.BitConverter.ToUInt32 (blob, offset)
+
+        let sigAlgId = word 0
+        let hashAlgId = word 4
+        let keyLength = word 8
+
+        // GET_ALG_CLASS keeps bits 13-15; GET_ALG_SID keeps the low nine. ALG_CLASS_HASH is
+        // 4 << 13, ALG_CLASS_SIGNATURE is 1 << 13, ALG_SID_SHA1 is 4 and PUBLICKEYBLOB is 6.
+        let algClass (id : uint32) = id &&& (7u <<< 13)
+        let algSid (id : uint32) = id &&& 511u
+
+        keyLength = uint32 (blob.Length - 12)
+        && (hashAlgId = 0u || (algClass hashAlgId = (4u <<< 13) && algSid hashAlgId >= 4u))
+        && (sigAlgId = 0u || algClass sigAlgId = (1u <<< 13))
+        && blob.[12] = 6uy
+
+    /// <summary>
     /// Escapes one segment of a display name, as
     /// <c>TextualIdentityParser::EscapeString</c> does.
     /// </summary>
@@ -168,9 +224,10 @@ module NativeRuntimeAssembly =
                 $"processorArchitectureSegment: assembly flags 0x%08X{flags} set a processor-architecture bit that no CoreCLR arm claims, which should be impossible for a three-bit field"
 
     /// <summary>
-    /// The display name CoreCLR reports for an assembly, i.e.
-    /// <c>TextualIdentityParser::ToString</c> over the <c>ASM_DISPLAYF_FULL</c> projection of
-    /// the manifest's single <c>Assembly</c> row.
+    /// The display name CoreCLR reports for an assembly identity, i.e.
+    /// <c>TextualIdentityParser::ToString</c> over the <c>ASM_DISPLAYF_FULL</c> projection --
+    /// of the manifest's single <c>Assembly</c> row (see <c>displayName</c>), or of the spec a
+    /// load request was made with, whose blob is already a token.
     /// </summary>
     /// <remarks>
     /// Built from the raw columns rather than from <c>DumpedAssembly.DefinitionFullName</c>, which
@@ -180,11 +237,11 @@ module NativeRuntimeAssembly =
     /// the culture (<c>EN-gb</c> becomes <c>en-GB</c>), it omits
     /// <c>processorArchitecture</c> entirely, and it escapes embedded quotes differently.
     /// </remarks>
-    let displayName
+    let displayNameWithToken
         (simpleName : string)
         (version : System.Version)
         (culture : string)
-        (publicKey : byte[])
+        (publicKeyToken : byte[] option)
         (flags : int)
         : string
         =
@@ -225,16 +282,12 @@ module NativeRuntimeAssembly =
             built.Append (escapeDisplayNameSegment culture)
             |> ignore<System.Text.StringBuilder>
 
-        // `BaseAssemblySpec::Init` ORs `afPublicKey` in whenever the blob is non-empty, so
-        // `IsAfPublicKeyToken` — which is the *absence* of that bit — is never true for a
-        // manifest row. The blob is therefore always a key to be hashed, never a token to be
-        // copied, and the branch that copies one is unreachable from here.
-        if publicKey.Length = 0 then
-            built.Append ", PublicKeyToken=null" |> ignore<System.Text.StringBuilder>
-        else
+        match publicKeyToken with
+        | None -> built.Append ", PublicKeyToken=null" |> ignore<System.Text.StringBuilder>
+        | Some token ->
             built.Append ", PublicKeyToken=" |> ignore<System.Text.StringBuilder>
 
-            for b in publicKeyToken publicKey do
+            for b in token do
                 built.Append (b.ToString "x2") |> ignore<System.Text.StringBuilder>
 
         // Lowercase initial, alone among the segments, and that is upstream's spelling.
@@ -257,6 +310,31 @@ module NativeRuntimeAssembly =
             built.Append ", ContentType=WindowsRuntime" |> ignore<System.Text.StringBuilder>
 
         built.ToString ()
+
+    /// <summary>
+    /// <c>displayNameWithToken</c> for a manifest row, whose blob is the full public key.
+    /// </summary>
+    /// <remarks>
+    /// <c>BaseAssemblySpec::Init</c> ORs <c>afPublicKey</c> in whenever the blob is non-empty, so
+    /// <c>IsAfPublicKeyToken</c> -- which is the <em>absence</em> of that bit -- is never true for
+    /// a manifest row. The blob is therefore always a key to be hashed, never a token to be
+    /// copied.
+    /// </remarks>
+    let displayName
+        (simpleName : string)
+        (version : System.Version)
+        (culture : string)
+        (publicKey : byte[])
+        (flags : int)
+        : string
+        =
+        let token =
+            if publicKey.Length = 0 then
+                None
+            else
+                Some (publicKeyToken publicKey)
+
+        displayNameWithToken simpleName version culture token flags
 
     let private writeLength
         (ctx : NativeCallContext)
@@ -839,8 +917,9 @@ module NativeRuntimeAssembly =
                 // leaving retType untouched preserves that.
                 NativeHandlerResult.completed state |> Some
             | ForwarderMiss.AssemblyUnavailable reference ->
-                // `FileName` stays null where the real runtime names the assembly: this channel
-                // runs the parameterless constructor and can then set only `_message`.
+                // `FileName` stays null where the real runtime names the assembly: the display
+                // name the binder reports for a forwarder's target has not been measured, and
+                // `reference.Name.FullName` is the BCL's formatting rather than the binder's.
                 //
                 // Elsewhere PawPrint declines to write a message it cannot pair with the field
                 // that agrees with it (`_paramName`, `_className`), because a half-populated
@@ -901,6 +980,54 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some runtimeTypeAddr))
 
             NativeHandlerResult.completed state |> Some
+
+    /// <summary>
+    /// Whether the guest has subscribed to the static event <paramref name="eventName"/> of
+    /// <c>System.Runtime.Loader.AssemblyLoadContext</c>: <c>AssemblyLoad</c>, <c>AssemblyResolve</c>
+    /// and their kin, which <c>AppDomain</c>'s events of the same names add to and remove from.
+    /// </summary>
+    let private hasAssemblyLoadContextStaticEventSubscriber
+        (ctx : NativeCallContext)
+        (state : IlMachineState)
+        (eventName : string)
+        : bool
+        =
+        let alc =
+            ctx.BaseClassTypes.Corelib.TryGetTopLevelTypeDef "System.Runtime.Loader" "AssemblyLoadContext"
+            |> Option.defaultWith (fun () ->
+                failwith
+                    "hasAssemblyLoadContextStaticEventSubscriber: CoreLib defines no System.Runtime.Loader.AssemblyLoadContext"
+            )
+
+        // A field-like event's backing field bears the event's name.
+        let field =
+            match
+                alc.Fields
+                |> List.filter (fun f ->
+                    f.Name = eventName
+                    && f.Attributes.HasFlag System.Reflection.FieldAttributes.Static
+                )
+            with
+            | [ field ] -> field
+            | fields ->
+                failwith
+                    $"hasAssemblyLoadContextStaticEventSubscriber: expected one static field AssemblyLoadContext.%s{eventName}, found %d{List.length fields}"
+
+        match AllConcreteTypes.findExistingNonGenericConcreteType state.TypeSystem.ConcreteTypes alc.Identity with
+        | None ->
+            // Never concretised, so no `stsfld` has written any static of it.
+            false
+        | Some handle ->
+
+        match
+            IlMachineState.getStatic StaticOwner.Shared handle (ComparableFieldDefinitionHandle.Make field.Handle) state
+        with
+        | None
+        | Some (CliType.ObjectRef None) -> false
+        | Some (CliType.ObjectRef (Some _)) -> true
+        | Some other ->
+            failwith
+                $"hasAssemblyLoadContextStaticEventSubscriber: AssemblyLoadContext.%s{eventName} holds %O{other}, not an object reference"
 
     let tryExecuteQCall (entryPoint : string) (ctx : NativeCallContext) : NativeHandlerResult option =
         let state = ctx.State
@@ -1921,6 +2048,287 @@ module NativeRuntimeAssembly =
                     (CliType.ObjectRef (Some arrayAddr))
 
             NativeHandlerResult.completed state |> Some
+        | "AssemblyNative_InternalLoad",
+          "System.Private.CoreLib",
+          "System.Reflection",
+          "RuntimeAssembly",
+          [ ConcretePointer (CorelibType state.TypeSystem.ConcreteTypes ("System.Reflection",
+                                                                         "NativeAssemblyNameParts",
+                                                                         partsGenerics))
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        requestingGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "StackCrawlMarkHandle",
+                                                        stackMarkGenerics)
+            ConcretePrimitive state.TypeSystem.ConcreteTypes PrimitiveType.Int32
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        contextGenerics)
+            CorelibType state.TypeSystem.ConcreteTypes ("System.Runtime.CompilerServices",
+                                                        "ObjectHandleOnStack",
+                                                        retGenerics) ],
+          MethodReturnType.Void when
+            partsGenerics.IsEmpty
+            && requestingGenerics.IsEmpty
+            && stackMarkGenerics.IsEmpty
+            && contextGenerics.IsEmpty
+            && retGenerics.IsEmpty
+            ->
+            let operation = "AssemblyNative_InternalLoad"
+
+            if instruction.Arguments.Length <> 6 then
+                failwith $"%s{operation}: expected six native arguments, got %d{instruction.Arguments.Length}"
+
+            // `RuntimeAssembly.InternalLoad` fills a `NativeAssemblyNameParts` local from the
+            // `AssemblyName` and passes its address, so the struct is read back whole and then
+            // taken apart field by field.
+            let parts =
+                let partsPtr =
+                    NativeCall.managedPointerOfPointerArgument operation "pAssemblyNameParts" instruction.Arguments.[0]
+
+                match
+                    IlMachineState.readManagedByref
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed partsPtr)
+                with
+                | CliType.ValueType parts -> parts
+                | other ->
+                    failwith $"%s{operation}: expected NativeAssemblyNameParts behind pAssemblyNameParts, got %O{other}"
+
+            let field (name : string) : CliType =
+                let fieldId = IlMachineState.requiredOwnInstanceFieldId state parts.Declared name
+                CliValueType.DereferenceFieldById fieldId parts
+
+            // `Assembly.Load(new AssemblyName())`, whose `Name` was never set: the managed side
+            // pins a null string, and CoreCLR refuses the null pointer with `ArgumentException`
+            // (`Format_StringZeroLength`) before binding anything. A `Name` set to `""` is a
+            // different case, handled with the other misses below.
+            match NativeCall.managedPointerOfPointerArgument operation "_pName" (field "_pName") with
+            | ManagedPointerSource.Null ->
+                NativeHandlerResult.raiseExceptionWithMessage
+                    ctx.BaseClassTypes.ArgumentException
+                    (Some "String cannot have zero length.")
+                    state
+                |> Some
+            | namePtr ->
+
+            let simpleName =
+                NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
+
+            // CoreCLR converts the name to UTF-8, replacing an unpaired surrogate with U+FFFD, and
+            // folds case by its own rules rather than ordinally, so `\u0131` (dotless i) answers
+            // to `i`. Neither is modelled, and every framework assembly's name is ASCII, so a name
+            // that is not is refused before anything, the CoreLib check included, looks at it.
+            if not (AssemblyBinding.isAscii simpleName) then
+                failwith
+                    $"TODO: %s{operation} of a simple name with a character outside ASCII (%A{simpleName}); CoreCLR's UTF-8 conversion and case folding of such a name are not modelled"
+
+            let version : RequestedAssemblyVersion =
+                {
+                    Major = NativeCall.uint16Argument operation (field "_major")
+                    Minor = NativeCall.uint16Argument operation (field "_minor")
+                    Build = NativeCall.uint16Argument operation (field "_build")
+                    Revision = NativeCall.uint16Argument operation (field "_revision")
+                }
+
+            // The managed side pins `AssemblyName.CultureName`, so a null pointer is a name that
+            // never had a culture set and an empty string is the neutral culture spelled out.
+            let culture =
+                match NativeCall.managedPointerOfPointerArgument operation "_pCultureName" (field "_pCultureName") with
+                | ManagedPointerSource.Null -> None
+                | culturePtr -> Some (NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state culturePtr)
+
+            let flags = NativeCall.int32Argument operation (field "_flags")
+
+            let throwOnFileNotFound =
+                NativeCall.int32Argument operation instruction.Arguments.[3] <> 0
+
+            // The requesting assembly and the stack mark (arguments 1 and 2) exist to pick a
+            // *parent* whose fallback binder a custom load context would consult. PawPrint has one
+            // load context, so neither is read.
+            let contextPtr =
+                NativeCall.objectHandleOnStackTarget operation state "assemblyLoadContext" instruction.Arguments.[4]
+
+            match
+                IlMachineState.readManagedByref
+                    ctx.BaseClassTypes
+                    state
+                    (ManagedPointerSource.requireAddressed contextPtr)
+            with
+            | CliType.ObjectRef None -> ()
+            | CliType.ObjectRef (Some _) ->
+                failwith
+                    $"TODO: %s{operation} of '%s{simpleName}' into a load context other than the default one; PawPrint has a single load context and no binder to hand a custom AssemblyLoadContext"
+            | other -> failwith $"%s{operation}: expected an object reference behind assemblyLoadContext, got %O{other}"
+
+            let retAssembly =
+                NativeCall.objectHandleOnStackTarget operation state "retAssembly" instruction.Arguments.[5]
+
+            let answer (definitionName : string) (state : IlMachineState) : NativeHandlerResult option =
+                let runtimeAssemblyAddr, state =
+                    NativeRuntimeType.getOrAllocateRuntimeAssembly
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        definitionName
+                        state
+
+                let state =
+                    IlMachineState.writeManagedByrefWithBase
+                        ctx.BaseClassTypes
+                        state
+                        (ManagedPointerSource.requireAddressed retAssembly)
+                        (CliType.ObjectRef (Some runtimeAssemblyAddr))
+
+                NativeHandlerResult.completed state |> Some
+
+            // "Check to see if this fits our rather loose idea of a reference to CoreLib. If so,
+            // don't use fusion to bind it - do it ourselves": `AppDomain::IsCached` and
+            // `FindCachedFile` answer a CoreLib spec with the system assembly before any other
+            // rule runs, so its version, culture, key, architecture and content type are all
+            // ignored -- measured on .NET 10, including an architecture an ordinary request misses
+            // on, and a public key blob that is SecurityException under any other name. The
+            // answer is the CoreLib this machine booted with, `SystemDomain::SystemPEAssembly`,
+            // not whatever assembly happens to answer to the name.
+            if AssemblyBinding.isCoreLibName simpleName then
+                answer ctx.BaseClassTypes.Corelib.DefinitionFullName state
+            else
+
+            match AssemblyBinding.unsupportedFlags flags with
+            | Some reason ->
+                failwith
+                    $"TODO: %s{operation} of '%s{simpleName}': %s{reason}. A processor architecture (MSIL included) or a WindowsRuntime content type can miss where the plain name binds, and that miss poisons CoreCLR's failure cache for the plain name, which PawPrint does not model; what the binder makes of any other flag is unmeasured"
+            | None -> ()
+
+            // A named culture asks for a satellite assembly, which CoreCLR looks for in the culture
+            // subdirectories of its platform resource roots and then through
+            // `AssemblyLoadContext.ResolveSatelliteAssembly`, neither of which is modelled. Under
+            // the invariant globalization PawPrint runs, building an `AssemblyName` with a named
+            // culture throws `CultureNotFoundException` before any bind, so a guest reaches this
+            // only with `PredefinedCulturesOnly` turned off.
+            match culture with
+            | Some named when not (AssemblyBinding.isNeutralCulture culture) ->
+                failwith
+                    $"TODO: %s{operation} of '%s{simpleName}' names the culture '%s{named}'; satellite binding is not modelled"
+            | _ -> ()
+
+            let blob =
+                match NativeCall.int32Argument operation (field "_cbPublicKeyOrToken") with
+                | 0 -> None
+                | blobLength ->
+                    let blobPtr =
+                        NativeCall.managedPointerOfPointerArgument
+                            operation
+                            "_pPublicKeyOrToken"
+                            (field "_pPublicKeyOrToken")
+
+                    NativeCall.readCountedBytes operation ctx.BaseClassTypes state blobPtr blobLength
+                    |> Some
+
+            // afPublicKey: the managed side sets it when the `AssemblyName` carries a full key and
+            // no token.
+            let hasFullKey = flags &&& 0x0001 <> 0
+
+            if AssemblyBinding.isCoreLibSatellite simpleName blob (ctx.BaseClassTypes.Corelib.Name.GetPublicKey ()) then
+                failwith
+                    $"TODO: %s{operation} of '%s{simpleName}' asks for CoreLib's own satellite, which CoreCLR binds by a path of its own (BaseAssemblySpec::IsCoreLibSatellite) that answers null for a missing satellite whether or not the caller asked to be thrown at; that path is not modelled"
+
+            // `AssemblySpec::Init` derives the token from a full key -- once
+            // `StrongNameIsValidPublicKey` has accepted it. Measured on .NET 10: a name with
+            // Microsoft's full key binds and is reported under `PublicKeyToken=b03f5f7f11d50a3a`,
+            // while a two-byte "key" raises `SecurityException` "Invalid assembly public key.",
+            // which this handler does not raise.
+            let publicKeyToken =
+                match blob with
+                | None -> None
+                | Some blob when not hasFullKey -> Some blob
+                | Some key when isValidPublicKey key -> Some (publicKeyToken key)
+                | Some key ->
+                    failwith
+                        $"TODO: %s{operation} of '%s{simpleName}' names a %d{key.Length}-byte public key that StrongNameIsValidPublicKey rejects, which CoreCLR reports as SecurityException (Invalid assembly public key.); this handler raises only FileNotFoundException"
+
+            let request : AssemblyLoadRequest =
+                {
+                    SimpleName = simpleName
+                    Version = version
+                }
+
+            // CoreCLR calls back into managed code from the binder: `AppDomain.AssemblyLoad` for
+            // an assembly it has just loaded, and `AppDomain.AssemblyResolve` for a request it
+            // could not bind (`AssemblyLoadContext.OnAssemblyLoad`, `OnAssemblyResolve`). This
+            // handler makes neither call, which is unobservable exactly while nobody listens. The
+            // default context's own `Resolving` event is out of reach, because constructing
+            // `AssemblyLoadContext.Default` needs `AssemblyNative_InitializeAssemblyLoadContext`,
+            // which is unimplemented.
+            let refuseIfSubscribed (eventName : string) (situation : string) : unit =
+                if hasAssemblyLoadContextStaticEventSubscriber ctx state eventName then
+                    failwith
+                        $"TODO: %s{operation} of '%s{simpleName}' %s{situation}, and the guest subscribed to AssemblyLoadContext.%s{eventName}, which CoreCLR raises from the binder at this point; this handler does not call back into managed code"
+
+            match
+                AssemblyBinding.tryBind
+                    ctx.LoggerFactory
+                    state.DotnetRuntimeDirs
+                    request
+                    state.TypeSystem._LoadedAssemblies
+            with
+            | AssemblyBindResult.Bound (assemblies, bound) ->
+                if not (state.TypeSystem._LoadedAssemblies.ContainsDefinition bound.Name) then
+                    refuseIfSubscribed "AssemblyLoad" $"loaded %s{bound.DefinitionFullName}"
+
+                answer
+                    bound.DefinitionFullName
+                    { state with
+                        TypeSystem =
+                            { state.TypeSystem with
+                                _LoadedAssemblies = assemblies
+                            }
+                    }
+            | AssemblyBindResult.NotFound ->
+                refuseIfSubscribed "AssemblyResolve" "found nothing"
+
+                if not throwOnFileNotFound then
+                    // The caller's local was preinitialised to null (`RuntimeAssembly? retAssembly
+                    // = null`); leaving `retAssembly` untouched preserves that.
+                    NativeHandlerResult.completed state |> Some
+                else
+
+                // The spec's own display name, not the bound assembly's (there is none): the
+                // version prints only when its major was given, and an unspecified lesser
+                // component prints as `65535`. Measured on .NET 10 for a missing name, a known
+                // name at too high a version, and a known name in a culture with no satellite.
+                let requested =
+                    // A `Name` set to `""` has no display name at all, and CoreCLR reports the
+                    // failure under `<Unknown>` instead -- measured on .NET 10, in both the
+                    // message and `FileName`, whatever else the request specified.
+                    if simpleName = "" then
+                        "<Unknown>"
+                    else
+                        // `unsupportedFlags` has refused every flag with a segment of its own, so
+                        // none is printed.
+                        displayNameWithToken
+                            simpleName
+                            (RequestedAssemblyVersion.toVersion version)
+                            (culture |> Option.defaultValue "")
+                            publicKeyToken
+                            0
+
+                // CoreCLR constructs the exception from the file name and `COR_E_FILENOTFOUND`
+                // alone, and `FileNotFoundException.SetMessageField` then renders the message
+                // from those two through `FileLoadException.FormatFileLoadExceptionMessage`.
+                // The trailing newline is the PAL's text for `ERROR_FILE_NOT_FOUND`
+                // (pal/src/misc/errorstrings.cpp), pasted in verbatim.
+                NativeHandlerResult.raiseExceptionWithFields
+                    ctx.BaseClassTypes.FileNotFoundException
+                    [
+                        RuntimeExceptionField.Message
+                            $"Could not load file or assembly '%s{requested}'. The system cannot find the file specified.\n"
+                        RuntimeExceptionField.FileNotFoundFileName requested
+                        RuntimeExceptionField.HResult 0x80070002
+                    ]
+                    state
+                |> Some
         | "AssemblyNative_GetTypeCore",
           "System.Private.CoreLib",
           "System.Reflection",
