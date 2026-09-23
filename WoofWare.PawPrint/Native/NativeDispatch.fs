@@ -5,10 +5,8 @@ open System.Reflection
 [<RequireQualifiedAccess>]
 module NativeDispatch =
     // The native/extern boundary is the only runtime-specific surface PawPrint supplies (the managed
-    // BCL is loaded from the guest's own assemblies), so this handler list IS "the native code for a
-    // runtime". It is the net10 set: PawPrint currently emulates only `EmulatedRuntime.net10`. When a
-    // second runtime is added, give it its own list and have `tryExecute` select between them on the
-    // active `EmulatedRuntime` (threaded through the machine config).
+    // BCL is loaded from the guest's own assemblies), so a handler list IS "the native code for a
+    // runtime". This is the `EmulatedRuntime.Net10` set.
     let private net10NativeHandlers : (NativeCallContext -> NativeHandlerResult option) list =
         [
             NativeGc.tryExecute
@@ -41,8 +39,16 @@ module NativeDispatch =
             NativeDelegate.tryExecute
         ]
 
+    /// The native handlers implementing `runtime`'s host contract, tried in order.
+    let private handlersFor (runtime : EmulatedRuntime) : (NativeCallContext -> NativeHandlerResult option) list =
+        match runtime with
+        | EmulatedRuntime.Net10 -> net10NativeHandlers
+
+    /// Run the native method `ctx` is executing, using the handlers of the runtime whose CoreLib
+    /// the run loaded (`ctx.BaseClassTypes.Corelib`). `None` if no handler implements it.
     let tryExecute (ctx : NativeCallContext) : NativeHandlerResult option =
-        net10NativeHandlers |> List.tryPick (fun handler -> handler ctx)
+        handlersFor (EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib)
+        |> List.tryPick (fun handler -> handler ctx)
 
     let failUnimplemented (ctx : NativeCallContext) : NativeHandlerResult = NativeCall.failUnimplemented ctx
 

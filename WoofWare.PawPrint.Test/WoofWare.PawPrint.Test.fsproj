@@ -220,7 +220,6 @@
     <Compile Include="TestPrologueExceptionScope.fs" />
     <Compile Include="TestJsonLinesLogging.fs" />
     <Compile Include="TestHardwareIntrinsicsProfile.fs" />
-    <Compile Include="TestEmulatedRuntime.fs" />
     <Compile Include="TestDebuggerState.fs" />
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
@@ -278,6 +277,7 @@
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="LinuxCoreLibFlavour.fs" />
+    <Compile Include="TestEmulatedRuntime.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestEvpDigestNatives.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />

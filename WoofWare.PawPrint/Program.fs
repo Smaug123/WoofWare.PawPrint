@@ -1062,6 +1062,11 @@ module Program =
     /// default round-robin policy. Applied before any cctor frame is pushed so the very first
     /// `chooseNext` decision is policy-correct — `IlMachineState.initial` defaults the field
     /// to `RoundRobin`, and `withPctSeed` simply overwrites it.
+    ///
+    /// Raises `UnsupportedRuntimeException`, before any guest code runs, if the CoreLib the guest
+    /// resolves along `hostConfig.Guest.DotnetRuntimeDirs` has an `AssemblyVersion` major that is
+    /// not in `EmulatedRuntime.supported`. The run then serves the runtime `EmulatedRuntime.ofCoreLib`
+    /// reads from that CoreLib.
     let beginStartup
         (loggerFactory : ILoggerFactory)
         (originalPath : string option)
@@ -1180,6 +1185,14 @@ module Program =
                 continueWithGeneric state baseType currentAssembly
             | BaseTypeInfo.TypeSpec _ -> failwith "Type specs not yet supported in base type traversal"
 
+        // Admission precedes `getBaseTypes`: a CoreLib from an unsupported major may lack a type
+        // that `getBaseTypes` demands, and that failure would hide the reason the CoreLib is
+        // unusable.
+        let coreLibBaseTypes (corelib : DumpedAssembly) : BaseClassTypes<DumpedAssembly> =
+            match EmulatedRuntime.classify corelib with
+            | Error unsupported -> raise (UnsupportedRuntimeException (unsupported, dotnetRuntimeDirs))
+            | Ok _ -> Corelib.getBaseTypes corelib
+
         let rec findCoreLibraryAssemblyFromGeneric
             (state : IlMachineState)
             (currentType : TypeInfo<GenericParamFromMetadata, TypeDefn>)
@@ -1188,8 +1201,7 @@ module Program =
             match currentType.BaseType with
             | None ->
                 // We've reached the root (System.Object), so this assembly contains the core library
-                let baseTypes = Corelib.getBaseTypes currentAssembly
-                state, Some baseTypes
+                state, Some (coreLibBaseTypes currentAssembly)
             | Some baseTypeInfo ->
                 handleBaseTypeInfo
                     state
@@ -1206,8 +1218,7 @@ module Program =
             match currentType.BaseType with
             | None ->
                 // We've reached the root (System.Object), so this assembly contains the core library
-                let baseTypes = Corelib.getBaseTypes currentAssembly
-                state, Some baseTypes
+                state, Some (coreLibBaseTypes currentAssembly)
             | Some baseTypeInfo ->
                 handleBaseTypeInfo
                     state
