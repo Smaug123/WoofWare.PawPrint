@@ -13,15 +13,9 @@ using System.Runtime.InteropServices;
 // pass. `ByValArray` would be the richer shape, but C# rejects it on a parameter (CS7055: it is
 // valid only for fields), and the fixture in `TestNativeMetadataImport.fs` covers it on one.
 //
-// `MarshalType`/`MarshalCookie` are deliberately absent from this file even though
-// `UnmanagedType.CustomMarshaler` is the most interesting shape. CoreCLR's `GetMarshalAs` FCall
-// returns raw pointers into the blob (managedmdimport.cpp:62-64) and the managed wrapper reads them
-// with `CreateReadOnlySpanFromNullTerminated` (MdImport.cs:265-270) — but MarshalSpec strings are
-// length-prefixed rather than NUL-terminated, so the real runtime over-reads into whatever `#Blob`
-// bytes happen to follow (measured: a `MarshalType` of "Some.Marshaller" reported as
-// "Some.MarshallerckM"). A differential test over those two properties would therefore be asserting
-// heap adjacency, and that is the central design question for whoever implements `GetMarshalAs`,
-// not something to bake into a guest.
+// `MarshalType`/`MarshalCookie` are absent here: they are the strings only
+// `UnmanagedType.CustomMarshaler` carries, and `ReflectionParameterMarshalAsCustomMarshaler.cs` is
+// the file about them.
 
 public class Subject
 {

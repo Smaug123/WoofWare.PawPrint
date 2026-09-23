@@ -928,6 +928,16 @@ module IlMachineManagedByref =
 
                 blobReader.Offset <- byteOffset
                 blobReader.ReadBytes targetSize
+            | PeByteRangePointerSource.BlobHeap ->
+                let mdReader = assembly.PeReader.GetMetadataReader ()
+
+                let heapStart =
+                    Ecma335.MetadataReaderExtensions.GetHeapMetadataOffset (mdReader, Ecma335.HeapIndex.Blob)
+
+                let content =
+                    assembly.PeReader.GetMetadata().GetContent (heapStart + byteOffset, targetSize)
+
+                content.AsSpan().ToArray ()
 
         CliType.ofBytesLike targetTemplate bytes
 

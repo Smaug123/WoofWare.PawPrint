@@ -80,7 +80,8 @@ module NativeSignature =
             assembly, propertyDef.Signature
         | PeByteRangePointerSource.FieldRva _
         | PeByteRangePointerSource.ManagedResource _
-        | PeByteRangePointerSource.ConstantBlob _ ->
+        | PeByteRangePointerSource.ConstantBlob _
+        | PeByteRangePointerSource.BlobHeap ->
             failwith $"%s{operation}: signature `_sig` byref points at non-signature PE byte range %O{peByteRange}"
 
     /// Resolve a Signature `_sig` argument to the COR signature blob bytes it

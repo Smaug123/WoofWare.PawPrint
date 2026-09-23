@@ -74,6 +74,10 @@ module IlMachineState =
 
     let peByteRangeCharPointer = IlMachineTypeResolution.peByteRangeCharPointer
 
+    let peByteRangeForBlobHeap = IlMachineTypeResolution.peByteRangeForBlobHeap
+
+    let blobHeapContentPointer = IlMachineTypeResolution.blobHeapContentPointer
+
     let getFrame = IlMachineThreadState.getFrame
 
     let setFrame = IlMachineThreadState.setFrame

@@ -39,6 +39,16 @@ type PeByteRangePointerSource =
     /// the blob needs. One row per parent, so this is no coarser than keying on the
     /// parent would be.
     | ConstantBlob of constant : ComparableConstantHandle
+    /// The whole of the metadata's `#Blob` heap (ECMA II.24.2.4), rather than one blob in it.
+    /// `PeByteRangePointer.Size` is the heap's length and the RVA is fixed at 0, as for the other
+    /// `#Blob` variants. A pointer at one blob's contents carries that blob's heap offset as a byte
+    /// cursor, so a read that runs off the end of the blob carries on into whatever the heap holds
+    /// next — as it does over CoreCLR's mapped metadata — and only the end of the heap bounds it.
+    ///
+    /// That is the point of the variant: it is for blobs whose consumer is handed a pointer into
+    /// the blob and reads it for longer than the blob is, which CoreCLR's MarshalSpec consumers do
+    /// (`MetadataImport.GetMarshalAs` hands back its strings as unterminated `LPUTF8`s).
+    | BlobHeap
 
 type PeByteRangePointer =
     {
@@ -57,6 +67,7 @@ type PeByteRangePointer =
             | PeByteRangePointerSource.MethodSignatureBlob method -> $"method signature blob for %O{method.Get}"
             | PeByteRangePointerSource.PropertySignatureBlob property -> $"property signature blob for %O{property.Get}"
             | PeByteRangePointerSource.ConstantBlob constant -> $"constant blob for %O{constant}"
+            | PeByteRangePointerSource.BlobHeap -> "#Blob heap"
 
         $"<PE data %s{this.AssemblyFullName} %s{source} at %d{this.RelativeVirtualAddress} size %d{this.Size}>"
 
@@ -1034,9 +1045,9 @@ module ManagedPointerSource =
             |> Some
         // A PE image is mapped at a page-aligned base and its sections at their
         // RVAs, so the low bits of an RVA are the low bits of the mapped address —
-        // but only for the variants whose RVA means that. `FieldSignatureBlob` lives
-        // in the metadata `#Blob` heap at an offset PawPrint does not track, and
-        // fixes `RelativeVirtualAddress` at 0 as a placeholder, so its "low bits"
+        // but only for the variants whose RVA means that. The `#Blob` variants live
+        // in the metadata `#Blob` heap at an address PawPrint does not track, and
+        // fix `RelativeVirtualAddress` at 0 as a placeholder, so their "low bits"
         // are the byte cursor alone and belong to no address at all.
         | ManagedPointerSource.Byref (ByrefRoot.PeByteRange peByteRange, _) ->
             match peByteRange.Source with
@@ -1050,7 +1061,8 @@ module ManagedPointerSource =
             | PeByteRangePointerSource.FieldSignatureBlob _
             | PeByteRangePointerSource.MethodSignatureBlob _
             | PeByteRangePointerSource.PropertySignatureBlob _
-            | PeByteRangePointerSource.ConstantBlob _ -> None
+            | PeByteRangePointerSource.ConstantBlob _
+            | PeByteRangePointerSource.BlobHeap -> None
         // Object fields, static fields, stack slots and the synthetic roots have no
         // stable in-container offset either (see `tryStableAddressBits` and
         // `NullaryIlOp.tryManagedPointerAddressBits`), so there is nothing to pair

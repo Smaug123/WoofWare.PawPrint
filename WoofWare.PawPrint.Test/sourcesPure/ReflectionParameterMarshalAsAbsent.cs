@@ -7,10 +7,9 @@ using System.Runtime.InteropServices;
 // `PseudoCustomAttribute.GetCustomAttributes`, which asks `MetadataImport.GetFieldMarshal` for the
 // row's NativeType blob and reports the attribute only when that blob is non-empty.
 //
-// Every check here is on the *absent* side, because that is the whole of what is reachable: a
-// present `[MarshalAs]` makes the managed side go on to `MetadataImport.GetMarshalAs` to parse the
-// blob, which is a separate unimplemented primitive. `ReflectionParameterMarshalAsPresent.cs` is
-// parked on exactly that.
+// Every check here is on the *absent* side. A present `[MarshalAs]` makes the managed side go on to
+// `MetadataImport.GetMarshalAs` to parse the blob; `ReflectionParameterMarshalAsPresent.cs` and
+// `ReflectionParameterMarshalAsCustomMarshaler.cs` cover that half.
 //
 // The return parameter of `Nothing` is the interesting one and the reason this file exists: a
 // method whose return value carries no attributes gets no Param row at all, so

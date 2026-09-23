@@ -139,6 +139,7 @@
     <Compile Include="Native\NativeGcFrameRegistration.fs" />
     <Compile Include="Native\NativeEnvironment.fs" />
     <Compile Include="Native\NativeMonitor.fs" />
+    <Compile Include="Native\NativeTypeParamInfo.fs" />
     <Compile Include="Native\NativeMetadataImport.fs" />
     <Compile Include="Native\NativeRuntimeFieldHandle.fs" />
     <Compile Include="Native\NativeRuntimeHelpers.fs" />
