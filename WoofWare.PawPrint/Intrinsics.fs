@@ -534,6 +534,43 @@ module Intrinsics =
             |> IlMachineState.pushToEvalStack (CliType.ofBool isNullRef) currentThread
             |> advanceCaller
             |> IntrinsicResult.Completed
+        | CorelibAssembly, "Unsafe", "Unbox" ->
+            // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/Unsafe.cs#L955-L970
+            // CoreLib's body is `throw new PlatformNotSupportedException()`: the runtime swaps in
+            // `ldarg.0; unbox !!T; ret` (`getILIntrinsicImplementationForUnsafe`,
+            // jitinterface.cpp:7135), and the JIT does not expand it any further
+            // (`NI_SRCS_UNSAFE_Unbox` returns `nullptr`, importercalls.cpp:5617). So this is the
+            // `unbox` instruction with the method's type argument as its token, and it shares that
+            // instruction's implementation rather than interpreting the shipped body.
+            let t =
+                let generics = Seq.toList methodToCall.Generics
+
+                match generics with
+                | [ t ] -> t
+                | _ -> failwith $"bad generics Unsafe.Unbox: expected exactly one generic argument, got %A{generics}"
+
+            match methodToCall.Signature.ParameterTypes, methodToCall.Signature.ReturnType with
+            | [ ConcretePrimitive state.ConcreteTypes PrimitiveType.Object ],
+              MethodReturnType.Returns (ConcreteByref ret) when ret = t -> ()
+            | _ ->
+                failwith
+                    $"bad signature Unsafe.Unbox: expected one object parameter and byref return matching %O{t}, got %A{methodToCall.Signature}"
+
+            let box, state = IlMachineState.popEvalStack currentThread state
+
+            let state, result =
+                BoxedValue.unboxAddress loggerFactory baseClassTypes "Unsafe.Unbox" t box state
+
+            match result with
+            | UnboxAddress.Faulted fault ->
+                // The argument is popped, so the eval stack is clean for dispatch, and the PC has
+                // deliberately not been advanced.
+                IntrinsicResult.RaiseException (state, OpcodeFault.resolve baseClassTypes fault, None)
+            | UnboxAddress.Address ptr ->
+                state
+                |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+                |> advanceCaller
+                |> IntrinsicResult.Completed
         | CorelibAssembly, "Interlocked", ("Add" | "ExchangeAdd") ->
             // `Add` returns the newly-stored sum; the private `ExchangeAdd`
             // primitive returns the original value. The read-modify-write
