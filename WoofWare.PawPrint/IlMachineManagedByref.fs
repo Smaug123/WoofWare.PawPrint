@@ -318,37 +318,56 @@ module IlMachineManagedByref =
         | CliType.ObjectRef a, CliType.ObjectRef b -> a = b
         | _ -> false
 
-    /// `true` iff a cell holding `cell` can take a write of `target`'s bytes over its whole extent.
+    /// `true` iff a cell holding `cell` can be accessed as a `target` over its whole extent, where
+    /// storage with no byte image has to name the cell to reach it at all.
     ///
-    /// A cell with a byte image takes any value that has one, because the write splices the
-    /// value's bytes into the cell rather than installing the value: the cell keeps its own type
-    /// and holds the payload's bit pattern read back as that type, which is what the real runtime
-    /// stores. `stind.i1` hands over a signed byte whatever the cell's type is, so without this a
-    /// `ref byte` over a `System.Byte` field of reference-holding storage could never be written
-    /// through. A cell with no byte
-    /// image has nothing to splice into, and takes only what `isCellIdentityCompatible` would
-    /// install verbatim.
-    let private isCellByteWritable (cell : CliType) (target : CliType) : bool =
-        match CliType.ByteAddressability cell, CliType.ByteAddressability target with
-        | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable -> true
-        | _ -> isCellIdentityCompatible cell target
+    /// A cell with a byte image serves any target that has one, because the access goes through
+    /// the bytes rather than through the value: a write splices the target's bytes into the cell,
+    /// which keeps its own type, and a read decodes the cell's bytes as the target. Either way the
+    /// answer is the bit pattern reinterpreted, which is what the real runtime does. `stind.i1`
+    /// hands over a signed byte whatever the cell's type is, and `Unsafe.As<float, int>` reads a
+    /// `System.Single` field as an `int32`; without this, neither could reach a cell of
+    /// reference-holding storage. A cell with no byte image has nothing to reinterpret, and serves
+    /// only what `isCellIdentityCompatible` accepts, verbatim.
+    let private isCellByteAccessible (cell : CliType) (target : CliType) : bool =
+        // The identity test goes first because it is cheap, whereas `ByteAddressability` walks a
+        // composite cell.
+        isCellIdentityCompatible cell target
+        || (
+            match CliType.ByteAddressability cell, CliType.ByteAddressability target with
+            | CliByteAddressability.ByteAddressable, CliByteAddressability.ByteAddressable -> true
+            | _ -> false
+        )
 
-    /// The cell a byte-renderable write names by its extent, when the storage it lands in has no
-    /// byte image. See `isCellByteWritable` for which cells qualify, and
-    /// `writeIntoCellNamedForByteWrite` for how the write must then be installed.
-    let private tryNameCellForByteWrite
+    /// The cell a byte-renderable access names by its extent, when the storage it lands in has no
+    /// byte image. See `isCellByteAccessible` for which cells qualify, and
+    /// `readCellNamedForByteAccess` and `writeIntoCellNamedForByteAccess` for how the access must
+    /// then be performed.
+    let private tryNameCellForByteAccess
         (byteOffset : int)
         (storage : CliType)
-        (newValue : CliType)
+        (target : CliType)
         : FieldId list option
         =
-        tryNameCellWith isCellByteWritable byteOffset storage newValue
+        tryNameCellWith isCellByteAccessible byteOffset storage target
+
+    /// Read the cell at `path` of `storage` as a `template`, the path having come from
+    /// `tryNameCellForByteAccess`. A cell `isCellIdentityCompatible` accepts is returned as it is,
+    /// so a provenance-bearing cell keeps its provenance; any other cell's bytes are decoded as
+    /// the template.
+    let private readCellNamedForByteAccess (path : FieldId list) (storage : CliType) (template : CliType) : CliType =
+        let cell = CliType.getCellAtPath path storage
+
+        if isCellIdentityCompatible cell template then
+            cell
+        else
+            CliType.ofBytesLike template (CliType.ToBytes cell)
 
     /// Write `newValue` into the cell at `path` of `storage`, the path having come from
-    /// `tryNameCellForByteWrite`. A cell with a byte image keeps its own type and takes the value's
+    /// `tryNameCellForByteAccess`. A cell with a byte image keeps its own type and takes the value's
     /// bytes; any other cell is replaced by the value. `None` means the write is provably
     /// unobservable.
-    let private writeIntoCellNamedForByteWrite
+    let private writeIntoCellNamedForByteAccess
         (path : FieldId list)
         (storage : CliType)
         (newValue : CliType)
@@ -872,8 +891,8 @@ module IlMachineManagedByref =
                 match CliType.ByteAddressability cellValue with
                 // A cell whose bytes only *name* a native int belongs here for exactly the reason
                 // in (a): the byte-scatter path cannot serve it without losing the identity those
-                // names carry. This arm is wider than `tryNameCellForByrefAccess` below, which
-                // gates on `isCellIdentityCompatible` and so refuses the wrapper layer
+                // names carry. This arm is wider than `tryNameCellForByteAccess` below, which
+                // gates a cell with no byte image on `isCellIdentityCompatible` and so refuses the wrapper layer
                 // `haveSameCliShape` bridges -- reading an `IntPtr[]` cell holding a type handle
                 // through an `IntPtr` template is that pair, and it is served here or nowhere.
                 | CliByteAddressability.SymbolicallyAddressable _
@@ -891,7 +910,7 @@ module IlMachineManagedByref =
         // The short-circuit above only recognises a *whole* element. An element that is a value
         // type containing object references has no byte image at all, so a read that lands inside
         // one cannot be served by the byte-scatter loop below either — the only thing to return is
-        // the cell the byte range names. `tryNameCellForByrefAccess` yields `None` for
+        // the cell the byte range names, read as the target. `tryNameCellForByteAccess` yields `None` for
         // byte-addressable elements, so nothing that reaches the byte walk today is diverted.
         // A range spilling past the element yields `None` too, and falls through to the walk,
         // which reports the unrenderable cell.
@@ -908,8 +927,8 @@ module IlMachineManagedByref =
 
             let cellValue = ManagedHeap.getArrayValue arr targetCell state.ManagedHeap
 
-            tryNameCellForByrefAccess inCellStart cellValue targetTemplate
-            |> Option.map (fun path -> CliType.getCellAtPath path cellValue)
+            tryNameCellForByteAccess inCellStart cellValue targetTemplate
+            |> Option.map (fun path -> readCellNamedForByteAccess path cellValue targetTemplate)
             |> ValueOption.ofOption
 
         match shortCircuitCell, namedInnerCell with
@@ -1134,8 +1153,8 @@ module IlMachineManagedByref =
         let namedCell =
             let boxed = CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
 
-            tryNameCellForByrefAccess byteOffset boxed targetTemplate
-            |> Option.map (fun path -> CliType.getCellAtPath path boxed)
+            tryNameCellForByteAccess byteOffset boxed targetTemplate
+            |> Option.map (fun path -> readCellNamedForByteAccess path boxed targetTemplate)
 
         match namedCell with
         | Some cell -> cell
@@ -1714,14 +1733,14 @@ module IlMachineManagedByref =
 
                     // Storage with no byte image — a value type holding object references — cannot
                     // be indexed by `resolveCell`, which lifts scope outward until a *byte* read
-                    // fits. Descend instead: if the range is exactly some cell's extent, that cell
-                    // is the read. `resolveCell` widens, this narrows; between them the walk is
+                    // fits. Descend instead: if the range is exactly some cell's extent, that cell,
+                    // read as the target, is the read. `resolveCell` widens, this narrows; between them the walk is
                     // total for the shapes the byte path cannot represent.
                     let named =
                         let cellHere = readProjectedValue rootValue prefixProjs
 
-                        tryNameCellForByrefAccess byteOffset cellHere targetTemplate
-                        |> Option.map (fun path -> CliType.getCellAtPath path cellHere)
+                        tryNameCellForByteAccess byteOffset cellHere targetTemplate
+                        |> Option.map (fun path -> readCellNamedForByteAccess path cellHere targetTemplate)
 
                     match named with
                     | Some cell -> cell
@@ -2843,7 +2862,7 @@ module IlMachineManagedByref =
                 // Probed only for roots whose typed read is total. `readRootValue` throws for
                 // `PeByteRange`, and for the raw byte pools when no typed cell starts at the
                 // offset; those roots are byte storage by construction and can never hold a
-                // reference anyway. `tryNameCellForByteWrite` yields `None` for byte-addressable
+                // reference anyway. `tryNameCellForByteAccess` yields `None` for byte-addressable
                 // storage, so nothing that reaches the writers below today is diverted.
                 //
                 // This reads the root value for `ArrayElement` and `HeapValue`. Both reads are
@@ -2860,10 +2879,10 @@ module IlMachineManagedByref =
                     let rootValue = readRootValue state outerRoot
                     let cellHere = readProjectedValue rootValue prefixProjs
 
-                    match tryNameCellForByteWrite byteOffset cellHere newValue with
+                    match tryNameCellForByteAccess byteOffset cellHere newValue with
                     | None -> ValueNone
                     | Some path ->
-                        match writeIntoCellNamedForByteWrite path cellHere newValue with
+                        match writeIntoCellNamedForByteAccess path cellHere newValue with
                         | None -> ValueSome state
                         | Some updatedCell ->
 
@@ -2909,15 +2928,15 @@ module IlMachineManagedByref =
                     // route for `buffer[k].Tag = v` over an `[InlineArray]` whose element holds a
                     // reference: the value written is byte-renderable, so the write arrives here
                     // rather than at the structural writer, but the *storage* is not.
-                    // `tryNameCellForByteWrite` yields `None` for byte-addressable storage, so
+                    // `tryNameCellForByteAccess` yields `None` for byte-addressable storage, so
                     // nothing that reaches `resolveCell` today is diverted.
                     let namedWrite =
                         let cellHere = readProjectedValue rootValue prefixProjs
 
-                        match tryNameCellForByteWrite byteOffset cellHere newValue with
+                        match tryNameCellForByteAccess byteOffset cellHere newValue with
                         | None -> ValueNone
                         | Some path ->
-                            match writeIntoCellNamedForByteWrite path cellHere newValue with
+                            match writeIntoCellNamedForByteAccess path cellHere newValue with
                             | None -> ValueSome state
                             | Some updatedCell ->
                                 match applyProjectionsForWriteIfChanged rootValue prefixProjs updatedCell with
