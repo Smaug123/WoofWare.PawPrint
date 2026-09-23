@@ -173,16 +173,25 @@ public unsafe class Program
 
             // The returned `Pointer` carries the pointer *type*, not the pointee type:
             // `CheckValue` reads it back, accepts it where an `int*` is expected...
-            object again = Get ("DerefReturned").Invoke (null, new object[] { roundTripped });
+            object again;
+
+            try
+            {
+                again = Get ("DerefReturned").Invoke (null, new object[] { roundTripped });
+            }
+            catch (ArgumentException)
+            {
+                return 11;
+            }
 
             if (!(again is int againValue) || againValue != 23)
-                return 11;
+                return 12;
 
             // ... and refuses it where a `long*` is.
             try
             {
                 Get ("DerefLong").Invoke (null, new object[] { roundTripped });
-                return 12;
+                return 13;
             }
             catch (ArgumentException)
             {
@@ -193,25 +202,25 @@ public unsafe class Program
         object produced = Get ("AddressOfCell").Invoke (null, null);
 
         if (!(produced is Pointer))
-            return 13;
+            return 14;
 
         if (*(int*)Pointer.Unbox (produced) != 23)
-            return 14;
+            return 15;
 
         // A function-pointer return is boxed as an `IntPtr`, and remains callable.
         object fnptr = Get ("GetTwice").Invoke (null, null);
 
         if (!(fnptr is IntPtr fnptrValue))
-            return 15;
+            return 16;
 
         if (((delegate*<int, int>)fnptrValue) (21) != 42)
-            return 16;
+            return 17;
 
         // A function-pointer argument arrives as an `IntPtr`.
         object called = Get ("CallThrough").Invoke (null, new object[] { fnptrValue, 5 });
 
         if (!(called is int calledValue) || calledValue != 10)
-            return 17;
+            return 18;
 
         return 0;
     }
