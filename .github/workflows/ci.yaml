@@ -42,10 +42,19 @@ jobs:
     # run is deliberate rather than reaching for a filter that matches everything: "run the
     # default set, then run the set we excluded from it" cannot silently stop covering
     # something the way a clever filter expression could.
+    # The TRX files carry each test's duration. They're uploaded so that the tests can be
+    # divided between runners by measured cost on CI's 4-vCPU hardware, which isn't
+    # proportional to what a developer machine measures.
     - name: Test
-      run: nix develop --command dotnet test --no-build --configuration Release
+      run: nix develop --command dotnet test --no-build --configuration Release --logger "trx;LogFilePrefix=default" --results-directory TestResults
     - name: Test (guest-running fixtures)
-      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=Guest"
+      run: nix develop --command dotnet test --no-build --configuration Release --filter "TestCategory=Guest" --logger "trx;LogFilePrefix=guest" --results-directory TestResults
+    - name: Upload test results
+      if: ${{ always() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: test-results
+        path: TestResults/*.trx
 
   build-nix:
     runs-on: ubuntu-latest
