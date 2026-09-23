@@ -886,6 +886,54 @@ module TestImpureCases =
             // is caught here.
             processIdCase (Some 4194304)
             {
+                // The replay contract for the two random streams: under the
+                // default configuration these bytes are what every run hands
+                // the guest. The guest's header says what each row reads. A
+                // change here changes every `Guid.NewGuid` and `new Random()`
+                // a recorded trace observed, so it is never a test to update
+                // in passing.
+                FileName = "EntropyStreamsDefault.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        let hex =
+                            OutputLogEntry.bytesFor FileDescriptorRole.StandardOutput state.Kernel.OutputLog
+                            |> Seq.map (fun (b : byte) -> b.ToString "x2")
+                            |> String.concat ""
+
+                        // One row per thing the guest emits, in its order.
+                        let rows =
+                            [ 16 ; 8 ; 24 ; 24 ; 16 ]
+                            |> List.mapFold
+                                (fun (offset : int) (bytes : int) ->
+                                    hex.Substring (offset, 2 * bytes), offset + 2 * bytes
+                                )
+                                0
+                            |> fst
+
+                        hex.Length |> shouldEqual (2 * 88)
+
+                        rows
+                        |> shouldEqual
+                            [
+                                // `Guid.NewGuid()`
+                                "21a2be4a9ff6b04c8989142347031794"
+                                // `new Random()`, then `Next()` twice
+                                "a053172130583170"
+                                // `SystemNative_GetCryptographicallySecureRandomBytes`
+                                "03fe9d60505955dd0028b1de50b1afdbb62c446c2e9b787e"
+                                // `SystemNative_GetNonCryptographicallySecureRandomBytes`
+                                "eaa27e740c9fcb53e132451fbe9a822c3cab16c93a1384c5"
+                                // `Guid.NewGuid()`
+                                "c4f8e4c736561e44a4a7fbf850d15909"
+                            ]
+                    )
+            }
+            {
                 // Reads every field `SystemNative_Stat`/`LStat` write, through a
                 // hand-rolled P/Invoke. Impure because most of those fields
                 // *cannot* agree with a real filesystem: a real file's owner is
