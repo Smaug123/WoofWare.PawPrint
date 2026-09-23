@@ -197,6 +197,75 @@ module internal UnaryMetadataFieldOps =
             failwith
                 $"%s{opName} cannot %s{verb} %s{adjective} field %O{AssemblyDefinitionName.simpleName field.DeclaringType.AssemblyFullName}.%s{field.DeclaringType.Namespace}.%s{field.DeclaringType.Name}::%s{field.Name}; use %s{alternativeOp}. %s{reason}"
 
+    /// Where an instance field's storage sits relative to the storage a managed pointer addresses.
+    [<RequireQualifiedAccess>]
+    type private FieldThroughByref =
+        /// The field is a cell inside the addressed storage, reached by a field projection.
+        | Projected
+        /// The field is the whole of the addressed storage, so its address is the pointer itself.
+        /// `fieldZero` is the zero value of the field's type.
+        | IsContainer of fieldZero : CliType
+
+    /// Which of the two `FieldThroughByref` relationships `fieldId` has to the storage `src`
+    /// addresses.
+    ///
+    /// Each of CoreLib's primitives other than `IntPtr`/`UIntPtr` (`System.Int32`,
+    /// `System.Boolean`, `System.Double`, ...) declares one instance field, holding the value itself
+    /// (`System.Int32::m_value`) at offset 0 and as wide as the type, so on real .NET that field's
+    /// address is its container's. PawPrint stores such a value as a bare cell with no field map
+    /// (`CliType.zeroOf`) everywhere except inside a box, where `box` wraps it in a single-field
+    /// struct holding that very field. The storage `src` addresses therefore decides: a bare cell
+    /// *is* the field, and a wrapper contains it.
+    let private classifyFieldThroughByref
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (fieldId : FieldId)
+        (src : ManagedPointerSource)
+        (state : IlMachineState)
+        : FieldThroughByref * IlMachineState
+        =
+        match fieldId with
+        | FieldId.Named _
+        | FieldId.InlineArrayElement _ -> FieldThroughByref.Projected, state
+        | FieldId.Metadata (declaringType, _, _) ->
+
+        let isCorelibNonGeneric =
+            match declaringType with
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.lookup declaringType state.ConcreteTypes with
+                | Some ct ->
+                    ct.AssemblyFullName = baseClassTypes.Corelib.DefinitionFullName
+                    && ct.Generics.IsEmpty
+                | None -> failwith $"BUG: field %O{fieldId} names a declaring type that is not concretized"
+            | ConcreteTypeHandle.Byref _
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _
+            | ConcreteTypeHandle.OneDimArrayZero _
+            | ConcreteTypeHandle.Array _ -> false
+
+        // `zeroOf` stores only CoreLib's non-generic primitives as bare cells, so this guard is
+        // exact rather than heuristic; it spares every other field the zero-value lookup.
+        if not isCorelibNonGeneric then
+            FieldThroughByref.Projected, state
+        else
+
+        let declaringZero, state =
+            IlMachineState.cliTypeZeroOfHandle state baseClassTypes declaringType
+
+        match declaringZero with
+        | CliType.ValueType _
+        | CliType.ObjectRef _
+        | CliType.RuntimePointer _ -> FieldThroughByref.Projected, state
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _ ->
+            match IlMachineState.readManagedByref baseClassTypes state src with
+            | CliType.ValueType _ -> FieldThroughByref.Projected, state
+            | CliType.Numeric _
+            | CliType.Bool _
+            | CliType.Char _
+            | CliType.ObjectRef _
+            | CliType.RuntimePointer _ -> FieldThroughByref.IsContainer declaringZero, state
+
     let executeStfld (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -264,11 +333,15 @@ module internal UnaryMetadataFieldOps =
                         ManagedHeap = ManagedHeap.setFieldById addr fieldId valueToStore state.ManagedHeap
                     }
             | EvalStackValue.ManagedPointer src ->
-                IlMachineState.writeManagedByrefWithBase
-                    baseClassTypes
-                    state
-                    (ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src)
-                    valueToStore
+                let relationship, state = classifyFieldThroughByref baseClassTypes fieldId src state
+
+                let dest =
+                    match relationship with
+                    | FieldThroughByref.Projected ->
+                        ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
+                    | FieldThroughByref.IsContainer _ -> src
+
+                IlMachineState.writeManagedByrefWithBase baseClassTypes state dest valueToStore
             | EvalStackValue.UserDefinedValueType _ -> failwith "todo"
 
         state
@@ -424,8 +497,14 @@ module internal UnaryMetadataFieldOps =
                         thread
                         state
             | EvalStackValue.ManagedPointer src ->
+                let relationship, state = classifyFieldThroughByref baseClassTypes fieldId src state
+
                 let currentValue =
-                    IlMachineState.readManagedByrefField baseClassTypes state src fieldId
+                    match relationship with
+                    | FieldThroughByref.Projected ->
+                        IlMachineState.readManagedByrefField baseClassTypes state src fieldId
+                    | FieldThroughByref.IsContainer fieldZero ->
+                        IlMachineState.readManagedByrefAs baseClassTypes state fieldZero src
 
                 IlMachineState.pushToEvalStack currentValue thread state
             | EvalStackValue.UserDefinedValueType vt ->
@@ -443,6 +522,9 @@ module internal UnaryMetadataFieldOps =
     /// addressing, so that a body the runtime synthesises as `ldflda` (CoreCLR's
     /// `[UnsafeAccessor]` stubs, `vm/unsafeaccessors.cpp`) addresses a field exactly as the opcode
     /// does.
+    ///
+    /// A primitive's own backing field (`System.Int32::m_value`) through a pointer to the primitive
+    /// is the primitive itself, so the result is then `receiver`'s pointer unchanged.
     ///
     /// `opName` names the operation in diagnostics. A null receiver is the caller's to reject with
     /// `NullReferenceException` before calling this; reaching here with one is a bug rather than a
@@ -487,7 +569,11 @@ module internal UnaryMetadataFieldOps =
         | NativeInt nativeIntSource ->
             failwith
                 $"TODO: %s{opName} {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name} through native pointer %O{nativeIntSource}"
-        | ManagedPointer src -> state, ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
+        | ManagedPointer src ->
+            match classifyFieldThroughByref baseClassTypes fieldId src state with
+            | FieldThroughByref.Projected, state ->
+                state, ManagedPointerSource.appendProjection (ByrefProjection.Field fieldId) src
+            | FieldThroughByref.IsContainer _, state -> state, src
         | NullObjectRef ->
             failwith
                 $"BUG: %s{opName} reached instanceFieldAddress with a null receiver for {field.DeclaringType.Namespace}.{field.DeclaringType.Name}::{field.Name}; the caller must raise NullReferenceException itself"
