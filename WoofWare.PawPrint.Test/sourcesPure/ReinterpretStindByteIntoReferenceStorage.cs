@@ -4,12 +4,11 @@ using System.Runtime.CompilerServices;
 // `stind.i1` through a `ref byte` that points into an `[InlineArray]` slot whose element holds a
 // reference: `ref byte q = ref buffer[k].Tag; q = 9;`.
 //
-// `buffer[k].Tag = 9` is the same address written by `stfld`, and works: `stfld` hands the byref
-// layer a value already of the field's type, `System.Byte`. `stind.i1` does not know the type it
-// stores into and hands over a signed `int8`. Storage holding a reference has no byte image, so the
-// only route to its `Tag` byte is to name that cell, and naming requires the value and the cell to
-// be the same kind — which an `Int8` payload and a `UInt8` cell are not, though they are the same
-// byte. The deeper `ref byte q = ref buffer[k].M.I.Q` fails identically.
+// `buffer[k].Tag = 9` is the same address written by `stfld`, which hands the byref layer a value
+// already of the field's type, `System.Byte`. `stind.i1` does not know the type it stores into and
+// hands over a signed `int8`. Storage holding a reference has no byte image, so the only route to its
+// `Tag` byte is to name that cell, and the store must then leave the cell a `System.Byte` holding the
+// payload's bits: the reads after it go through `ldfld Tag`, which names the cell by its own type.
 public class TestReinterpretStindByteIntoReferenceStorage
 {
     private sealed class Box { public int V; }

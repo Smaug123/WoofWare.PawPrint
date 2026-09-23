@@ -93,6 +93,7 @@
     <Compile Include="TestBinaryArithmetic.fs" />
     <Compile Include="TestNarrowByrefAccess.fs" />
     <Compile Include="TestByteViewChainAccess.fs" />
+    <Compile Include="TestSameWidthStoreIntoNamedCell.fs" />
     <Compile Include="TestNamedByteView.fs" />
     <Compile Include="TestByrefComparison.fs" />
     <Compile Include="TestByrefOrdering.fs" />
