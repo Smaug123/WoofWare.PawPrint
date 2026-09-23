@@ -388,11 +388,14 @@ module InterfaceDispatch =
                                     DeclaringTypeGenerics = openContext
                                 }
 
-                        state, (if equivalent then candidate :: acc else acc)
+                        state, (if equivalent then acc @ [ candidate ] else acc)
                     )
 
+                // The first in declaration order (`FindDeclMethodOnInterfaceEntry`). Two can match
+                // legitimately: overloads spelled against two assemblies become one signature once
+                // one assembly forwards the type to the other.
                 match matches with
-                | [ interfaceMethod ] ->
+                | interfaceMethod :: _ ->
                     let substitution =
                         spelledInterfaceSubstitution
                             operation
@@ -410,9 +413,6 @@ module InterfaceDispatch =
                 | [] ->
                     failwith
                         $"%s{operation}: a MethodImpl on %s{ownerDescription} declares an implementation of %s{memberRef.PrettyName} on %s{interfaceTypeInfo.Namespace}.%s{interfaceTypeInfo.Name}, which declares no instance method of that name and signature; CoreCLR rejects this type at load time"
-                | _ ->
-                    failwith
-                        $"%s{operation}: a MethodImpl on %s{ownerDescription} declares an implementation of %s{memberRef.PrettyName} on %s{interfaceTypeInfo.Namespace}.%s{interfaceTypeInfo.Name}, which declares that name and signature more than once; ECMA-335 II.22.26 forbids a type repeating a method signature"
             | _ ->
                 // A ModuleRef or MethodDef parent (the vararg case) cannot name an interface method.
                 state, None
@@ -665,8 +665,7 @@ module InterfaceDispatch =
             )
 
         // `PlaceMethodImpls` runs after `PlaceInterfaceMethods`, so a MethodImpl replaces whatever
-        // placement mapped (`AddMethodImplDispatchMapping`). It maps every interface-map entry at the
-        // named instantiation.
+        // placement mapped (`AddMethodImplDispatchMapping`).
         let methodImpls =
             typeInfo.MethodImpls
             |> Seq.sortBy (fun (KeyValue (handle, _)) ->
