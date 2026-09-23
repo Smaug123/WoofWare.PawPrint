@@ -7,6 +7,17 @@ open WoofWare.PosixKernel
 /// which is not the same as looking the variable up: see `tryGetValue`.
 [<RequireQualifiedAccess>]
 module ClrConfigEnvironment =
+    /// Whether `strtoul` skips `c` as leading whitespace: `isspace` in the C
+    /// locale, which is exactly these six characters.
+    ///
+    /// Not `Char.IsWhiteSpace`, which also accepts U+00A0 and friends: on Unix a
+    /// knob's value reaches `strtoul` as UTF-8 bytes, so a no-break space is the
+    /// two bytes 0xC2 0xA0 and stops the parse rather than being skipped.
+    /// Measured on both kernels with U+00A0 and U+2003 ahead of a
+    /// `DisableConfigCache` value.
+    let isCLocaleSpace (c : char) : bool =
+        c = ' ' || c = '\t' || c = '\n' || c = '\011' || c = '\012' || c = '\r'
+
     /// Parse a CLRConfig DWORD env-var value the way CoreCLR does for
     /// `EnableEventLog` — `u16_strtoul(val, &endPtr, 16)` with the
     /// success condition `errno != ERANGE && endPtr != val` (see
@@ -44,7 +55,13 @@ module ClrConfigEnvironment =
             (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 
         // Skip leading whitespace, as `wcstoul` does.
-        let trimmed = raw.TrimStart ()
+        let trimmed =
+            let mutable start = 0
+
+            while start < raw.Length && isCLocaleSpace raw.[start] do
+                start <- start + 1
+
+            raw.Substring start
 
         if System.String.IsNullOrEmpty trimmed then
             None

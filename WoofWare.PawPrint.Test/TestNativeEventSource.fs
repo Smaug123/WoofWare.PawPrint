@@ -255,6 +255,17 @@ public static class Entry
         // the prefix.
         ClrConfigEnvironment.tryParseDword "  1  " |> shouldEqual (Some 1u)
 
+    [<Test>]
+    let ``tryParseDword: only the C locale's whitespace is skipped`` () : unit =
+        // `strtoul` runs on the UTF-8 bytes and skips what `isspace` accepts in
+        // the C locale; a no-break space is two bytes it does not, so the parse
+        // consumes nothing. Measured through `DisableConfigCache` on both kernels.
+        for space in [ "\u000B" ; "\u000C" ; "\n" ; "\r" ] do
+            ClrConfigEnvironment.tryParseDword (space + "1") |> shouldEqual (Some 1u)
+
+        for space in [ "\u00A0" ; "\u2003" ; "\u0085" ] do
+            ClrConfigEnvironment.tryParseDword (space + "1") |> shouldEqual None
+
     /// An environment holding `NAME=VALUE` for each pair, in order.
     let private environmentOf (pairs : (string * string) list) : UnixByteString list =
         pairs

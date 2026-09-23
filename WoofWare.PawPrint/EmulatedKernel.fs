@@ -1292,19 +1292,9 @@ module EmulatedKernel =
     /// "-4294901761"). Reproducing that would mean modelling the platform's
     /// `unsigned long` width, and no real configuration depends on it.
     let private tryParseConfigBase10 (s : string) : int option =
-        // strtoul skips leading whitespace as determined by `isspace` in the C
-        // locale, which is exactly this six-character set. Deliberately NOT
-        // `Char.IsWhiteSpace`, which also accepts U+00A0 and friends: on Unix
-        // the value reaches `strtoul` as UTF-8 bytes, so a non-breaking space
-        // is the two bytes 0xC2 0xA0 and stops the parse dead rather than being
-        // skipped. Using the .NET predicate would make PawPrint accept
-        // configuration the real runtime rejects.
-        let isCLocaleSpace (c : char) : bool =
-            c = ' ' || c = '\t' || c = '\n' || c = '\011' || c = '\012' || c = '\r'
-
         let mutable i = 0
 
-        while i < s.Length && isCLocaleSpace s.[i] do
+        while i < s.Length && ClrConfigEnvironment.isCLocaleSpace s.[i] do
             i <- i + 1
 
         if i < s.Length && s.[i] = '+' then

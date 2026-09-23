@@ -56,6 +56,27 @@ module TestClrConfigEnvironment =
             // `=` and value included, and `=W` hashes to `PROCESSOR_COUNT`'s bit.
             "an empty knob name hashes its value", [ "DOTNET_=W" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ], Some "5"
             "an empty knob name, no collision", [ "DOTNET_=V" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ], None
+            // `DisableConfigCache` is parsed by `strtoul`, which skips only the
+            // C locale's whitespace: a no-break space or an em space stops the
+            // parse, so the cache stays on.
+            "cache disabled after a no-break space",
+            [ "DOTNET_DisableConfigCache=\u00A01" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ],
+            None
+            "cache disabled after an em space",
+            [ "DOTNET_DisableConfigCache=\u20031" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ],
+            None
+            "cache disabled after a vertical tab",
+            [ "DOTNET_DisableConfigCache=\u000B1" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ],
+            Some "5"
+            "cache disabled after a form feed",
+            [ "DOTNET_DisableConfigCache=\u000C1" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ],
+            Some "5"
+            "cache disabled after a tab",
+            [ "DOTNET_DisableConfigCache=\t1" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ],
+            Some "5"
+            "cache disabled after a carriage return",
+            [ "DOTNET_DisableConfigCache=\r1" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ],
+            Some "5"
         ]
 
     [<Test>]
