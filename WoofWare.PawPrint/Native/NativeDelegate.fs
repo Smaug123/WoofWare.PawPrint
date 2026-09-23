@@ -129,9 +129,13 @@ type private BindTarget =
     | Metadata of
         method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         declaringType : ConcreteTypeHandle
-    /// A method of an open generic type definition, which has no code to point at: a compatible
-    /// binding over it raises <c>InvalidOperationException</c> instead of binding.
-    | OnGenericDefinition of isStatic : bool * definition : ResolvedTypeIdentity
+    /// A method of an open generic type definition, as its MethodDef row describes it, together
+    /// with that definition. It has no code to point at, so a compatible binding over it raises
+    /// <c>InvalidOperationException</c> rather than binding, except where CoreCLR binds a virtual
+    /// call stub instead.
+    | OnGenericDefinition of
+        method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn> *
+        definition : ResolvedTypeIdentity
 
 [<RequireQualifiedAccess>]
 module private BindTarget =
@@ -145,8 +149,8 @@ module private BindTarget =
                 TargetFirstArgument.FirstFixedParameter
             else
                 TargetFirstArgument.DeclaringType (TargetSideType.Closed declaringType)
-        | BindTarget.OnGenericDefinition (isStatic, definition) ->
-            if isStatic then
+        | BindTarget.OnGenericDefinition (method, definition) ->
+            if method.IsStatic then
                 TargetFirstArgument.FirstFixedParameter
             else
                 TargetFirstArgument.DeclaringType (TargetSideType.TypicalInstantiation definition)
@@ -895,7 +899,7 @@ module NativeDelegate =
                                 RequiredParameterCount = methodInfo.Signature.RequiredParameterCount
                             }
 
-                        state, targetSignature, BindTarget.OnGenericDefinition (methodInfo.IsStatic, definition)
+                        state, targetSignature, BindTarget.OnGenericDefinition (methodInfo, definition)
                     | _ ->
 
                     // `methodType` is the declaring type the managed caller read off the same
@@ -1062,14 +1066,29 @@ module NativeDelegate =
                             | state, OpenDelegateAux.Aux aux -> state, Ok (DelegateBinding.Open aux)
                             | state, OpenDelegateAux.GenericVirtualUnsupported ->
                                 state, Error (ctx.BaseClassTypes.NotSupportedException, None)
+                        | BindTarget.OnGenericDefinition (method, definition), _ when
+                            method.IsStatic && method.IsVirtual
+                            ->
+                            // A static virtual interface method. Open, CoreCLR binds it to a
+                            // virtual call stub over the typical instantiation
+                            // (comdelegate.cpp:1237-1244), never asking for a code address, and the
+                            // delegate raises `EntryPointNotFoundException` only when invoked;
+                            // closed over an object it virtualises instead, with the same result.
+                            // Both measured on real .NET. A stub needs a closed declaring type here.
+                            // Closed over null it does ask for a code address and raises as below,
+                            // but this arm refuses that shape too rather than splitting on the
+                            // bound argument.
+                            failwith
+                                $"TODO: %s{operation} was asked to bind %s{method.Name}, a static virtual method of the open generic definition %O{definition}; CoreCLR binds a virtual call stub over the definition's typical instantiation, which a FunctionPointerTarget cannot name"
                         | BindTarget.OnGenericDefinition _, _ ->
-                            // Every path `BindToMethod` can take here asks the target for a code
-                            // address with `GetMultiCallableAddrOfCode`, whose
+                            // Every other path `BindToMethod` can take here asks the target for a
+                            // code address with `GetMultiCallableAddrOfCode`, whose
                             // `ContainsGenericVariables` check throws
-                            // (`IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`, method.cpp:2091-2093). The
-                            // one path that asks differently, the closed virtual binding over a
-                            // non-null receiver, needs the receiver to have been compared against
-                            // the typical instantiation, which `isCompatible` refuses to do.
+                            // (`IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`, method.cpp:2091-2093). An
+                            // open instance binding, and a closed one over a non-null receiver, would
+                            // go through a virtual call stub or virtualise instead, but both need the
+                            // receiver to have been compared against the typical instantiation,
+                            // which `isCompatible` refuses to do.
                             state,
                             Error (
                                 ctx.BaseClassTypes.InvalidOperationException,
