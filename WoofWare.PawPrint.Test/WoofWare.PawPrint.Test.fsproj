@@ -57,6 +57,7 @@
     <Compile Include="PointerHashTestHelpers.fs" />
     <Compile Include="AssemblyShape.fs" />
     <Compile Include="AssemblyGraphShape.fs" />
+    <Compile Include="TestAssemblyProbe.fs" />
     <Compile Include="TestTypeResolution.fs" />
     <Compile Include="TestTypeRefHandle.fs" />
     <Compile Include="TestTypeIdentityProperties.fs" />
