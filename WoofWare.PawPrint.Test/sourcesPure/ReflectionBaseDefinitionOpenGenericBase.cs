@@ -15,14 +15,9 @@ public static class Program
 {
     // `GetBaseDefinition` on a method of an open definition whose base definition is declared by a
     // *generic* base: `OpenDerived<T>.Echo` overrides `GenericBase<T>.Echo`, and the answer's
-    // declaring type is the open construction `GenericBase<T of OpenDerived>`.
-    //
-    // Measured: `GetBaseDefinition` first asks the definition for its `BaseType`, which PawPrint
-    // answers, and then asks that open construction for its virtual slot count, which it does
-    // not: `VirtualSlotLayout.numVirtuals` refuses an open constructed target. `GetMethodAt`
-    // refuses the same shape one step later, since `MethodHandleRegistry` cannot mint a handle
-    // whose declaring type is an open construction; see docs/plans/2026-09-08-get-method-at.md,
-    // decision 2.
+    // declaring type is the open construction `GenericBase<T of OpenDerived>`. Reaching it asks
+    // that open construction for its virtual slot count and for the method at a slot, and mints a
+    // method handle whose declaring type is the open construction.
     //
     // Exit code is the index of the first failing check, so a failure names itself.
     public static int Main()

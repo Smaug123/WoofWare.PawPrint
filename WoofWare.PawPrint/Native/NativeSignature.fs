@@ -461,16 +461,18 @@ module NativeSignature =
     /// instantiation is the declaring definition's own type variables rather than an instantiation
     /// of them.
     ///
-    /// Two cases and not a vector of either kind, because a mixture cannot arise:
-    /// `MethodHandleRegistry` mints a declaring type only as a closed handle or as an open generic
-    /// definition, and under a definition the `i`th argument is always that definition's `i`th
-    /// variable, so it is derivable rather than carried.
+    /// Under a definition the `i`th argument is always that definition's `i`th variable, so it is
+    /// derivable rather than carried; an open construction carries its arguments, which may mix
+    /// closed types and variables.
     [<RequireQualifiedAccess>]
     type private DeclaringTypeContext =
         /// The declaring type is an instantiation, so each `!i` denotes a runtime type.
         | Instantiation of typeGenerics : ImmutableArray<ConcreteTypeHandle>
         /// The declaring type is the generic definition itself.
         | Definition of definition : ResolvedTypeIdentity
+        /// The declaring type is an open construction of `definition`, such as `Base&lt;T&gt;` over a
+        /// deriving definition's `T`: each `!i` denotes the construction's `i`th argument.
+        | OpenConstruction of definition : ResolvedTypeIdentity * arguments : ImmutableArray<RuntimeTypeHandleTarget>
 
     /// What ECMA-335 `!!i` denotes in a method-backed `Signature`'s blob, which is the same
     /// question as `DeclaringTypeContext` asks of `!i` and is answered independently of it: a
@@ -521,21 +523,32 @@ module NativeSignature =
             state.LoadedAssembly assemblyFullName
             |> Option.defaultWith (fun () -> failwith $"%s{operation}: assembly %s{assemblyFullName} is not loaded")
 
+        // The arguments a definition-level context supplies are what the signature's `!i` will be
+        // read as, so the definition they instantiate has to be the one that declares this
+        // MethodDef row.
+        let requireDeclaredBy (definition : ResolvedTypeIdentity) : unit =
+            match methodInfo.TryDeclaringType with
+            | Some declaringType when declaringType.Identity = definition -> ()
+            | Some declaringType ->
+                failwith
+                    $"%s{operation}: method %s{methodInfo.Name} is declared on %O{declaringType.Identity}, but its handle names %O{definition} as the declaring definition"
+            | None ->
+                failwith
+                    $"%s{operation}: method %s{methodInfo.Name} has no declaring type, so it cannot be declared by the definition %O{definition} its handle names"
+
         let declaringTypeContext =
             match identity.GetDeclaringType () with
             | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
-                // The definition's own variables are what the signature's `!i` will be read as, so
-                // the identity naming them has to be the one that declares this MethodDef row.
-                match methodInfo.TryDeclaringType with
-                | Some declaringType when declaringType.Identity = definition -> ()
-                | Some declaringType ->
-                    failwith
-                        $"%s{operation}: method %s{methodInfo.Name} is declared on %O{declaringType.Identity}, but its handle names %O{definition} as the declaring definition"
-                | None ->
-                    failwith
-                        $"%s{operation}: method %s{methodInfo.Name} has no declaring type, so it cannot be declared by the definition %O{definition} its handle names"
-
+                requireDeclaredBy definition
                 DeclaringTypeContext.Definition definition
+            | RuntimeTypeHandleTarget.OpenConstructed (definition, arguments) ->
+                requireDeclaredBy definition
+
+                if List.length arguments <> methodInfo.DeclaringTypeGenerics.Length then
+                    failwith
+                        $"%s{operation}: method %s{methodInfo.Name}'s declaring type has %d{methodInfo.DeclaringTypeGenerics.Length} generic parameters, but its handle names the open construction %O{identity.GetDeclaringType ()} with %d{List.length arguments} arguments"
+
+                DeclaringTypeContext.OpenConstruction (definition, ImmutableArray.CreateRange arguments)
             | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as declaringTypeHandle) ->
                 match AllConcreteTypes.lookup declaringTypeHandle state.ConcreteTypes with
                 | Some declaringType -> DeclaringTypeContext.Instantiation declaringType.Generics
@@ -551,8 +564,9 @@ module NativeSignature =
                 failwith
                     $"TODO: %s{operation} on a method whose declaring type is the structural type %O{declaringTypeHandle}; CoreCLR resolves such a signature against GetClassOrArrayInstantiation, which PawPrint does not model"
             | other ->
-                // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition` when
-                // minting, so any other shape here means a handle was built outside that chokepoint.
+                // `MethodHandleRegistry` admits only `Closed`, `OpenGenericTypeDefinition` and
+                // `OpenConstructed` when minting, so any other shape here means a handle was built
+                // outside that chokepoint.
                 failwith
                     $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
 
@@ -614,6 +628,10 @@ module NativeSignature =
                     (fun index -> RuntimeTypeHandleTarget.GenericParameter (definition, index))
                 |> ImmutableArray.CreateRange
                 |> ReflectedTypeTarget.ReflectionVariableBinding.Open
+            | DeclaringTypeContext.OpenConstruction (_, arguments) ->
+                // Each `!i` denotes the construction's own `i`th argument, the target
+                // `RuntimeTypeHandle.GetInstantiation` hands the guest for its `GetGenericArguments()`.
+                ReflectedTypeTarget.ReflectionVariableBinding.Open arguments
 
         let methodVariables =
             match methodGenericContext with
@@ -1252,6 +1270,13 @@ module NativeSignature =
                         // whole walk `Signature_Init` now takes for its parameter types.
                         failwith
                             $"TODO: %s{operation} on method %s{methodInfo.Name}, whose declaring type is the open generic definition %O{definition}: a custom modifier is resolved and concretised against the declaring type's generic arguments, and a definition supplies its own type variables instead, which ConcreteTypeHandle cannot name"
+                    | DeclaringTypeContext.OpenConstruction (definition, arguments) ->
+                        // The same limit as a definition's: at least one argument is open, and
+                        // ConcreteTypeHandle cannot name it.
+                        let described = arguments |> Seq.map string |> String.concat ", "
+
+                        failwith
+                            $"TODO: %s{operation} on method %s{methodInfo.Name}, whose declaring type is an open construction of %O{definition} over [%s{described}]: a custom modifier is resolved and concretised against the declaring type's generic arguments, and an open argument is not a runtime type, which ConcreteTypeHandle cannot name"
                 | None -> declaringTypeGenericsOfSignature operation state signatureObj, ImmutableArray.Empty
 
             let assembly, blobHandle = resolveSignatureBlobHandle operation state sigCliValue
