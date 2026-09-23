@@ -48,7 +48,7 @@ To change what PawPrint answers, change the test first.
 | the readiness delivery — per-phase epoll levels (idle stream OUT\|HUP, datagram OUT with no HUP, listener IN iff queue nonempty, established OUT, pending refusal 0x201d, pipe ends), reporting as level ∩ (interest ∪ {ERR, HUP}), the ready list's order (edge arrival; re-signal immobility; ADD/MOD-of-ready at ADD/MOD time; same-socket dup ties LIFO by registration, MOD not moving them), which operations signal (queue push, connect resolution, refusal reset — not bind, not the SUCCESS report, not UDP re-target), truncation, and the PAL's EPOLLHUP→IN\|OUT fold at delivery | probes in `docs/plans/2026-08-21-socket-readiness-wake/`; `sourcesPure/SocketEventDelivery.cs` (portable rows plus the wake, differential), `sourcesImpure/SocketEventDeliveryLinux.cs` (exact masks and order; Linux-flavour only, since Darwin's registration arm refuses), `TestSocketEventDelivery` (the ready list itself, one test per measured row) |
 | **signal numbering**: which signo each named signal has (six differ — `SIGUSR1` 10/30, `SIGUSR2` 12/31, `SIGCHLD` 17/20, `SIGCONT` 18/19, `SIGTSTP` 20/18, `SIGURG` 23/16), the kernel's highest signo (64, glibc's `SIGRTMAX`; 31, one below Darwin's `NSIG`), which numbers `sigaction(2)` refuses (SIGKILL and SIGSTOP on both — 9/19 and 9/17 — plus glibc's reserved 32 and 33), and the default disposition of the unnamed ones (Linux's 29 is `SIGIO` and terminates; Darwin's 23 is `SIGIO` and 29 is `SIGINFO`, both discarded). Two PAL facts sit beside these: `GetSignalMax()` is `SIGRTMAX` or else `NSIG`, so on Darwin the shim admits a 32 the kernel refuses; and `HandleNonCanceledPosixSignal` has explicit no-op arms for seven signals only, so Darwin's discarded `SIGIO`/`SIGINFO` take its `default:` arm and lose their native handler | `TestSignal` carries both columns as literals; `TestSignalAgainstHost` checks the host's column against its own `kill -l`; `TestPosixSignalPal` checks `platformSignalNumber` against the host's `SystemNative_GetPlatformSignalNumber` over every input in `[-100, 100]`. Wiring: `sourcesImpure/SystemNativeGetPlatformSignalNumber{Linux,Darwin}.cs`, `sourcesImpure/SystemNativePosixSignalHandling{Linux,Darwin}.cs`, and `TestSignalTermination` for the identity a terminating signo carries |
 | **`clock_gettime` clock ids**: the numbering is each flavour's own (`CLOCK_MONOTONIC` is 1 on Linux, 6 on Darwin); Linux answers 0..9 and 11 plus some negative (CPU-time) ids and is EINVAL for 10, 12..15 and 24 up; its auxiliary clocks 16..23 depend on the kernel's build (EINVAL without `CONFIG_POSIX_AUX_CLOCKS` in the `container` VM, ENODEV on GitHub's ubuntu-24.04 runner until enabled), so the model refuses them. Darwin answers 0, 4, 5, 6, 8, 9, 12, 16 and is EINVAL for everything else, negatives included; no other id fails with any other errno. **Granularity**: Darwin's `CLOCK_REALTIME` and `CLOCK_MONOTONIC` report whole microseconds while its APFS inode stamps carry nanoseconds; every Linux clock, `_COARSE` included, carries nanosecond digits | `TestClock`: `each clock id reads the clock the measured table says, on each flavour`, `every answered clock reads exactly what its flavour reports`; `TestClockAgainstHost` sweeps [-4096, 4096] against the live host for the EINVAL split and the microsecond split. Probes (2026-09-23) swept the whole int range on a stride; see the comment above `UnixClock.decode` |
-| environment entries a real `environ` can hold | `TestEnvironmentEntryInvariant`: `the entry rule accepts what a real environ can hold`, `the entry rule names what is wrong` |
+| environment entries a real `envp` can hold, and the PAL's view of them | `TestEnvironmentEntryInvariant`: `the entry rule accepts what a real envp can hold`, `the entry rule names what is wrong`; `TestEnvironmentPal`: `a lookup finds what the PAL finds`; `sourcesPure/EnvironmentVariableUnpairedSurrogateName.cs` (differential) |
 
 ## The envelope those measurements were taken in
 
@@ -92,6 +92,16 @@ privilege the suite happens to run at, which is why the truncation table is
   `Environment.GetEnvironmentVariables` discards any entry whose first `=` is not
   after the first character. Measured on real .NET via `execve` with a hand-built
   envp: `A=B=C` gives `"A"` = `"B=C"` and `"A=B"` = null; `=C` is invisible to
-  both APIs; `DUP=1` with `DUP=2` gives `DUP` = `"1"`. PawPrint stores the *map*,
-  so its lossiness runs the other way — it could hold names the view could never
-  yield — which is what `environmentEntryProblem` exists to reject.
+  both APIs; `DUP=1` with `DUP=2` gives `DUP` = `"1"`. The library stores the
+  list as the kernel does (`UnixProcessState.Environment`, NUL-free byte strings
+  in `envp` order), and PawPrint's `EnvironmentPal` is the view: first match
+  wins, an entry with no `=` is a variable with an empty value, and a lookup name
+  is converted to UTF-8 with U+FFFD for each unpaired surrogate before the
+  byte-wise comparison (measured on real .NET: `"\uD800"` finds an entry named
+  U+FFFD). An empty entry is representable and is a lone NUL in the
+  `GetEnvironmentStringsW` block, so every reader that walks the block stops
+  there: CoreLib's `GetEnvironmentVariables`, and `CLRConfig::Initialize`, whose
+  256-bit Bloom filter of `DOTNET_`/`COMPlus_` knob names then makes a knob set
+  only after the empty entry read as unset (unless `DisableConfigCache` is
+  non-zero, or a recorded name collides with it). `ClrConfigEnvironment` models
+  that exactly; its measured rows are in `TestClrConfigEnvironment`.

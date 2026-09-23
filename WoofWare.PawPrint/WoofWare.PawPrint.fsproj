@@ -72,6 +72,8 @@
     <Compile Include="DebuggerState.fs" />
     <Compile Include="SignalHandler.fs" />
     <Compile Include="Native\ClockPal.fs" />
+    <Compile Include="Native\EnvironmentPal.fs" />
+    <Compile Include="Native\ClrConfigEnvironment.fs" />
     <Compile Include="EmulatedKernel.fs" />
     <Compile Include="RuntimeConfig.fs" />
     <Compile Include="HostConfig.fs" />

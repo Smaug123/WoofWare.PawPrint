@@ -384,20 +384,26 @@ module TestPureCases =
 
     let seededCaseNames : string list = seededCases |> Map.toList |> List.map fst
 
-    /// Guests that need a particular environment variable, with the overlay each
-    /// one wants.
+    /// Guests that need a particular environment variable, with the environment
+    /// entries each one wants.
     ///
-    /// As with `seededCases`, one description drives both sides: PawPrint
-    /// overlays it on the kernel's default table, and `RealRuntime.executeWithSeed`
-    /// overlays it on the environment the oracle process inherits from the test
-    /// host. A guest here may assert only about the variables its overlay names;
-    /// the rest of the two tables have nothing to do with each other.
-    let environmentCases : Map<string, Map<string, string>> =
+    /// As with `seededCases`, one description drives both sides: PawPrint's
+    /// kernel holds the entries after its defaults, and `RealRuntime.executeWithSeed`
+    /// overlays the variables they set on the environment the oracle process
+    /// inherits from the test host. A guest here may assert only about the
+    /// variables its entries name; the rest of the two environments have nothing
+    /// to do with each other.
+    let environmentCases : Map<string, string list> =
         [
             // 100 two-byte characters: 100 UTF-16 code units, 200 UTF-8 bytes,
             // which is the gap between the two units the guest exists to see.
             "EnvironmentVariableUtf8RequiredSize.cs",
-            Map.ofList [ "PAWPRINT_WIDE_VALUE", System.String ('\u00e9', 100) ]
+            [
+                EnvironmentPal.nameValueEntry "PAWPRINT_WIDE_VALUE" (System.String ('\u00e9', 100))
+            ]
+            // A name that is U+FFFD, which a lookup name holding an unpaired
+            // surrogate finds.
+            "EnvironmentVariableUnpairedSurrogateName.cs", [ "\uFFFD=found" ]
         ]
         |> Map.ofList
 
@@ -813,7 +819,7 @@ class Program
             "EmulatedEnvironmentConfiguredVariables.cs"
             source
             { KernelConfig.Default with
-                Environment = [ "PAWPRINT_TEST_VARIABLE", "configured" ] |> Map.ofList
+                Environment = [ "PAWPRINT_TEST_VARIABLE=configured" ]
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
@@ -868,7 +874,7 @@ class Program
             "EmulatedEnvironmentCaseSensitiveLookup.cs"
             source
             { KernelConfig.Default with
-                Environment = [ "PaWpRiNt_MiXeD_CaSe_KeY", "found" ] |> Map.ofList
+                Environment = [ "PaWpRiNt_MiXeD_CaSe_KeY=found" ]
             }
             (fun _image pawPrintResult ->
                 match pawPrintResult with
@@ -1093,31 +1099,43 @@ class Program
     /// containing `=` (which must not be split), non-ASCII including an astral
     /// character (two UTF-16 code units, so a byte/code-unit confusion shows), and
     /// two names where one is a prefix of the other.
-    let private environmentVariablesSeed : Map<string, string> =
-        Map.ofList
-            [
-                "PAWPRINT_EMPTY", ""
-                "PAWPRINT_EQUALS", "a=b=c"
-                "PAWPRINT_UNICODE", "\u00e9\u4e2d\U0001F436"
-                "PAWPRINT_P", "1"
-                "PAWPRINT_PP", "2"
-            ]
+    let private environmentVariablesSeed : (string * string) list =
+        [
+            "PAWPRINT_EMPTY", ""
+            "PAWPRINT_EQUALS", "a=b=c"
+            "PAWPRINT_UNICODE", "\u00e9\u4e2d\U0001F436"
+            "PAWPRINT_P", "1"
+            "PAWPRINT_PP", "2"
+        ]
 
     /// `environmentVariablesSeed` plus the count the guest should see, derived
-    /// from the overlay rule rather than written down: the kernel's table is
-    /// `EmulatedKernel.defaultEnvironment` with the seed laid over it, and this
-    /// entry is itself one more variable.
+    /// from the kernel that configuration builds rather than written down: the
+    /// kernel's environment is whichever `EmulatedKernel.defaultEnvironment`
+    /// entries the seed does not name, then the seed, then the count entry,
+    /// which is itself one more variable.
     ///
     /// Derived rather than hardcoded because the count is the assertion that
     /// catches a dropped or duplicated entry, and a hand-maintained number would
     /// silently stop matching if the seed or the defaults changed.
-    let private environmentVariablesConfig : Map<string, string> =
-        let overlaid =
-            (EmulatedKernel.defaultEnvironment, environmentVariablesSeed)
-            ||> Map.fold (fun acc key value -> Map.add key value acc)
+    let private environmentVariablesConfig : string list =
+        let withCount (count : int) : string list =
+            (environmentVariablesSeed
+             |> List.map (fun (name, value) -> EnvironmentPal.nameValueEntry name value))
+            @ [ EnvironmentPal.nameValueEntry "PAWPRINT_EXPECTED_COUNT" (string<int> count) ]
 
-        environmentVariablesSeed
-        |> Map.add "PAWPRINT_EXPECTED_COUNT" (string (Map.count overlaid + 1))
+        // The count entry's value does not change how many variables there are,
+        // so a kernel built with any count reports the real one.
+        let kernel =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    Environment = withCount 0
+                }
+
+        kernel.Environment
+        |> List.map EnvironmentPal.entryName
+        |> List.distinct
+        |> List.length
+        |> withCount
 
     [<Test>]
     let ``GetEnvironmentVariables reports exactly the emulated environment`` () =
@@ -1250,7 +1268,7 @@ class Program
                 "EmulatedEnvironmentBlockLifetime.cs"
                 source
                 { KernelConfig.Default with
-                    Environment = Map.ofList [ "PAWPRINT_CALL_COUNT", string calls ]
+                    Environment = [ $"PAWPRINT_CALL_COUNT=%d{calls}" ]
                 }
                 (fun _image pawPrintResult ->
                     let terminalState = expectExitCode 0 pawPrintResult

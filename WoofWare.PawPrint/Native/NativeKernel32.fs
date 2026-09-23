@@ -13,20 +13,29 @@ module NativeKernel32 =
             ValueToWrite : string option
         }
 
-    /// What `GetEnvironmentVariableW` answers for `value`, the variable's value
-    /// if it exists, given a buffer of `bufferSize` UTF-16 code units.
+    /// What `GetEnvironmentVariableW` answers for `value`, the bytes of the
+    /// variable's value if the lookup found one (see
+    /// `EnvironmentPal.tryFindValue`), given a buffer of `bufferSize` UTF-16 code
+    /// units.
     ///
-    /// The Unix PAL (`pal/src/misc/environ.cpp`) holds the environment as UTF-8
-    /// and answers the W entry point through `GetEnvironmentVariableA`, passing
-    /// `nSize` through unchanged. So the value fits when its UTF-8 *byte* length
-    /// is strictly below `bufferSize`, and then the return is its length in
-    /// UTF-16 code units and the value is written with its terminator;
-    /// otherwise nothing is written and the return is that byte length plus
-    /// one. A value of N non-ASCII characters therefore does not fit a buffer
-    /// of N+1 code units, even though the code units would. Measured on the
-    /// real runtime: 100 `é`s against a 128-unit buffer answer 201, and against
-    /// a 201-unit buffer answer 100.
-    let internal planGetEnvironmentVariableW (bufferSize : int) (value : string option) : GetEnvironmentVariableWPlan =
+    /// The Unix PAL (`pal/src/misc/environ.cpp`) holds the environment as the
+    /// process's bytes and answers the W entry point through
+    /// `GetEnvironmentVariableA`, passing `nSize` through unchanged. So the value
+    /// fits when its *byte* length is strictly below `bufferSize`, and then the
+    /// return is its length in UTF-16 code units and the value is written with
+    /// its terminator; otherwise nothing is written and the return is that byte
+    /// length plus one. A value of N non-ASCII characters therefore does not fit
+    /// a buffer of N+1 code units, even though the code units would. Measured on
+    /// the real runtime: 100 `é`s against a 128-unit buffer answer 201, and
+    /// against a 201-unit buffer answer 100.
+    ///
+    /// Only a value that fits is decoded, as in the PAL, so only such a value can
+    /// fail `EnvironmentPal.decodeOrFail`.
+    let internal planGetEnvironmentVariableW
+        (bufferSize : int)
+        (value : UnixByteString option)
+        : GetEnvironmentVariableWPlan
+        =
         match value with
         | None ->
             {
@@ -35,19 +44,15 @@ module NativeKernel32 =
                 ValueToWrite = None
             }
         | Some value ->
-            // `Encoding.UTF8` counts an unpaired surrogate as the three bytes of
-            // the U+FFFD it would substitute, which is also what the code unit's
-            // generalised-UTF-8 form occupies; so a table holding one (which
-            // `UnixProcessState.withEnvironment` permits, and which
-            // `writeNullTerminatedUtf16` hands to the guest verbatim) is sized
-            // the same under either reading.
-            let byteLength = System.Text.Encoding.UTF8.GetByteCount value
+            let byteLength = UnixByteString.length value
 
             if byteLength < bufferSize then
+                let decoded = EnvironmentPal.decodeOrFail "GetEnvironmentVariableW" value
+
                 {
-                    ReturnLength = uint32 value.Length
+                    ReturnLength = uint32 decoded.Length
                     LastError = 0
-                    ValueToWrite = Some value
+                    ValueToWrite = Some decoded
                 }
             else
                 {
@@ -56,75 +61,44 @@ module NativeKernel32 =
                     ValueToWrite = None
                 }
 
-    /// Re-assert `UnixProcessState.environmentEntryProblem` at the point the map is
-    /// flattened back into an environment list.
+    /// The bytes `GetEnvironmentStringsW` hands back: every entry of
+    /// `environment`, in order, decoded to UTF-16 and followed by a NUL code
+    /// unit, then one further NUL code unit closing the block, as little-endian
+    /// code units because the entry point returns a `char*`. An empty
+    /// environment is therefore a lone NUL rather than a null pointer, matching
+    /// the PAL, whose only null return is on `malloc` failure.
     ///
-    /// `UnixProcessState.withEnvironment` already rejects such an entry when the
-    /// table is built, so this is unreachable through `KernelConfig`. It is here
-    /// because a kernel assembled by record-copy — as tests do — never passed
-    /// through that writer, and emitting the block anyway would hand a guest
-    /// variables that differ from the ones `GetEnvironmentVariableW` reports for
-    /// the same table. Same reasoning as `systemTimeAsTicks` re-asserting its
-    /// epoch bound.
-    let private requireBlockRepresentable (name : string) (value : string) : unit =
-        match UnixProcessState.environmentEntryProblem name value with
-        | None -> ()
-        | Some problem ->
-            failwith
-                $"GetEnvironmentStringsW: the emulated environment holds %s{problem}. A kernel built through KernelConfig cannot reach this, so the table was assembled by record-copy."
+    /// This is the PAL's block exactly: it walks its snapshot of `environ` and
+    /// converts every entry, so duplicates, entries with no `=`, and entries
+    /// beginning with `=` all appear, in the order the process was started with.
+    /// Sorting them out is CoreLib's business (`GetEnvironmentVariables` skips
+    /// an entry whose first `=` is not after its first character, and keeps the
+    /// first of two entries naming the same variable). An empty entry appears
+    /// too, as a lone NUL, which ends the block early for any reader.
+    ///
+    /// Fails, through `EnvironmentPal.decodeOrFail`, on an entry that is not
+    /// valid UTF-8.
+    let internal environmentBlockBytes (environment : UnixByteString list) : byte array =
+        let entries =
+            environment |> List.map (EnvironmentPal.decodeOrFail "GetEnvironmentStringsW")
 
-    /// The bytes `GetEnvironmentStringsW` hands back: every variable as
-    /// `name=value` followed by a NUL code unit, then one further NUL code unit
-    /// closing the block, as UTF-16 little-endian code units because the entry
-    /// point returns a `char*`. An empty environment is therefore a lone NUL
-    /// rather than a null pointer, matching the PAL, whose only null return is
-    /// on `malloc` failure.
-    ///
-    /// Entries appear in ordinal order of their names, which is what iterating
-    /// a `Map` gives. The real block's order is that of the process's `environ`
-    /// at PAL init, further permuted by `EnvironUnsetenv` filling a hole with
-    /// the last entry, so PawPrint's order differs — a guest enumerating the
-    /// resulting `Hashtable` could in principle tell, since bucket occupancy
-    /// depends on insertion order. Ordering by name is what makes the block a
-    /// function of the environment alone, which is what a replay needs; no
-    /// fixed order can also match the host's.
-    ///
-    /// Fails rather than emitting a list that would parse back to a different
-    /// table; see `requireBlockRepresentable`.
-    let internal environmentBlockBytes (environment : Map<string, string>) : byte array =
-        for KeyValue (name, value) in environment do
-            requireBlockRepresentable name value
-
-        // Per entry: the name, the `=`, the value, and the entry's terminator;
-        // then one more code unit closing the block. Two bytes each.
-        let codeUnits =
-            1
-            + (environment
-               |> Seq.sumBy (fun (KeyValue (name, value)) -> name.Length + value.Length + 2))
+        // Per entry: its code units and its terminator; then one more code unit
+        // closing the block. Two bytes each.
+        let codeUnits = 1 + (entries |> List.sumBy (fun entry -> entry.Length + 1))
 
         let size = codeUnits * 2
         let bytes = Array.zeroCreate<byte> size
         let mutable at = 0
 
-        // Written code unit by code unit rather than through an `Encoding`: the
-        // guest never *decodes* this block, it reinterprets the bytes as
-        // `char`s, and `Encoding.Unicode` is not faithful at that level — it
-        // replaces an unpaired surrogate with U+FFFD, which would make
-        // `GetEnvironmentVariables` disagree with `GetEnvironmentVariableW`
-        // (which writes value code units verbatim) for the same table.
         let appendCodeUnit (c : char) : unit =
             bytes.[at] <- byte (uint16 c &&& 0xFFus)
             bytes.[at + 1] <- byte (uint16 c >>> 8)
             at <- at + 2
 
-        let appendCodeUnits (s : string) : unit =
-            for c in s do
+        for entry in entries do
+            for c in entry do
                 appendCodeUnit c
 
-        for KeyValue (name, value) in environment do
-            appendCodeUnits name
-            appendCodeUnit '='
-            appendCodeUnits value
             appendCodeUnit (char 0)
 
         appendCodeUnit (char 0)
@@ -241,15 +215,13 @@ module NativeKernel32 =
                 NativeCall.readNullTerminatedUtf16 operation ctx.BaseClassTypes state namePtr
 
             // The "kernel32!GetEnvironmentVariableW" QCall is a CoreCLR PAL entry on
-            // Unix hosts, where the PAL implementation matches env-var names exactly
-            // (see CoreCLR pal/src/misc/environ.cpp `FindEnvVarValue`). On Windows
-            // the real kernel32 entry would be case-insensitive, but PawPrint is
-            // baselined against the host runtime — which is the Unix PAL on the
-            // macOS/Linux hosts this project actually runs on — so an exact
-            // `Map.tryFind` is the semantics that keeps PawPrint in step with the
-            // real runtime.
+            // Unix hosts, where the PAL matches names byte for byte (see CoreCLR
+            // pal/src/misc/environ.cpp `FindEnvVarValue`). On Windows the real
+            // kernel32 entry would be case-insensitive, but PawPrint is baselined
+            // against the host runtime — which is the Unix PAL on the macOS/Linux
+            // hosts this project actually runs on.
             let plan =
-                planGetEnvironmentVariableW bufferSize (Map.tryFind name state.Kernel.Environment)
+                planGetEnvironmentVariableW bufferSize (EnvironmentPal.tryFindValue name state.Kernel.Environment)
 
             let state =
                 match plan.ValueToWrite with

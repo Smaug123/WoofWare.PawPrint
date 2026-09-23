@@ -2715,7 +2715,55 @@ module TestImpureCases =
                 ExpectedReturnCode = 0
                 KernelConfig =
                     { KernelConfig.Default with
-                        Environment = Map.ofList [ "DOTNET_PROCESSOR_COUNT", "4" ]
+                        Environment = [ "DOTNET_PROCESSOR_COUNT=4" ]
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // A knob set after an empty environment entry: CLRConfig's
+                // startup walk of the environment block stopped at the empty
+                // entry, so the knob reads as unset and the configured count of
+                // 3 stands, though the PAL lookup still sees the variable.
+                FileName = "ClrConfigCacheStopsAtEmptyEntry.cs"
+                ExpectedReturnCode = 3
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 3
+                        Environment = [ "" ; "DOTNET_PROCESSOR_COUNT=5" ]
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // `DOTNET_DisableConfigCache` switches that walk off, so every
+                // knob is looked up in full and the variable is seen.
+                FileName = "ClrConfigCacheStopsAtEmptyEntry.cs"
+                ExpectedReturnCode = 5
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 3
+                        Environment = [ "DOTNET_DisableConfigCache=1" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ]
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
+                // The walk's record of knob names is a 256-bit Bloom filter,
+                // and `XR` shares `PROCESSOR_COUNT`'s bit, so recording `XR`
+                // makes CLRConfig look `PROCESSOR_COUNT` up in full too.
+                FileName = "ClrConfigCacheStopsAtEmptyEntry.cs"
+                ExpectedReturnCode = 5
+                KernelConfig =
+                    { KernelConfig.Default with
+                        ProcessorCount = 3
+                        Environment = [ "DOTNET_XR=1" ; "" ; "DOTNET_PROCESSOR_COUNT=5" ]
                     }
                 AppContext = AppContextProperties.empty
                 Oracle = OraclePolicy.Never

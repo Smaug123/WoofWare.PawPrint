@@ -113,11 +113,7 @@ module TestCpuPlacement =
             let kernel =
                 EmulatedKernel.initial
                 |> EmulatedKernel.mapMachine (UnixMachineState.withProcessorCount 1)
-                |> EmulatedKernel.mapProcess (
-                    UnixProcessState.withEnvironment
-                        "test"
-                        (Map.ofList [ "DOTNET_PROCESSOR_COUNT", string<int> configured ])
-                )
+                |> EmulatedKernel.withEnvironment "test" [ $"DOTNET_PROCESSOR_COUNT=%d{configured}" ]
 
             let cpu =
                 cpuIndex (EmulatedKernel.cpuForRotation (rotationFrom rotationSeed) kernel)

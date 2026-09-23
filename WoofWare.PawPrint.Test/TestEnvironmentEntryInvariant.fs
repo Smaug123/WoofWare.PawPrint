@@ -1,135 +1,88 @@
 namespace WoofWare.PawPrint.Test
 
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
 open WoofWare.PosixKernel
 
-/// A real process's environment is a list of `name=value` strings, not a map; the
-/// map every environment API presents is a *view* of that list, split at each
-/// entry's first `=`. CoreCLR makes the view total by refusing to look up a name
-/// that is empty or contains `=` (`GetEnvironmentVariableA` in
-/// `pal/src/misc/environ.cpp`) and by discarding, in
-/// `Environment.GetEnvironmentVariables`, any entry whose first `=` is not after
-/// the first character. So the names the view can yield are exactly the
-/// non-empty, `=`-free ones.
+/// A real process's environment is a list of byte strings, the `envp` it was
+/// started with, and not a map: the map every environment API presents is a
+/// *view* of that list, split at each entry's first `=`. So `KernelConfig`
+/// describes the list, and these tests pin which lists a host may configure and
+/// how they compose with PawPrint's defaults.
 ///
 /// Measured against real .NET with a hand-built `envp`, which is the only way to
-/// get such an entry into a process (`Environment.SetEnvironmentVariable` refuses
-/// to create one):
+/// get such entries into a process (`Environment.SetEnvironmentVariable` refuses
+/// to create them):
 ///
 ///   entry `A=B=C`     -> `GetEnvironmentVariable "A"` = "B=C", `"A=B"` = null,
 ///                        and enumeration yields the key `A` and no key `A=B`
 ///   entry `=C`        -> invisible to both APIs
 ///   `DUP=1`, `DUP=2`  -> both APIs report `DUP` = "1"
 ///
-/// PawPrint stores the map rather than the list, so it *can* hold a name that
-/// view could never yield — and such a name has no consistent behaviour to
-/// model, since the table would have to answer one lookup two ways at once.
-/// These tests pin the boundary that keeps those tables out.
+/// A host may configure any of those. What it may not configure is an entry no
+/// `envp` could hold at all, or one whose bytes the PAL could never decode into
+/// the string the host wrote.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestEnvironmentEntryInvariant =
     /// A NUL code unit as a string, so no source file has to contain one.
     let private nul : string = string (char 0)
 
-    /// One entry per rejected shape, each provoking that shape alone: the empty
-    /// name has no `=` and no NUL, the `=` name has no NUL, the NUL-name row has
-    /// no `=`, and the null rows are null in exactly one position. So removing any
-    /// single check leaves exactly one row passing where it should fail.
-    ///
-    /// The null rows matter because `Map<string, string>` really does admit them —
-    /// F#'s comparer sorts a null key first, and a C# consumer of this package has
-    /// nothing stopping it — so without them the rule would dereference null and
-    /// abort a run with a bare NullReferenceException instead of naming the knob.
-    /// `Map admits the null entries these tests rely on` below checks that premise
-    /// rather than assuming it.
-    let private rejected : (string * string * string) list =
+    /// One entry per rejected shape, each provoking that shape alone.
+    let private rejected : (string * string) list =
         [
-            "null name", null, "value"
-            "null value", "A", null
-            "empty name", "", "value"
-            "'=' in name", "A=B", "value"
-            "NUL in name", "A" + nul + "B", "value"
-            "NUL in value", "A", "va" + nul + "ue"
+            "null entry", null
+            "NUL in the name", "A" + nul + "B=value"
+            "NUL in the value", "A=va" + nul + "ue"
+            "unpaired high surrogate", "A=" + string (char 0xD800)
+            "unpaired low surrogate", string (char 0xDFFF) + "=value"
         ]
 
-    [<Test>]
-    let ``Map admits the null entries these tests rely on`` () : unit =
-        // If a future FSharp.Core refused a null key, the null rows above would be
-        // testing an unconstructible input and would silently stop covering
-        // anything. This is the premise, asserted.
-        let withNullName = Map.ofList [ null, "value" ]
-        withNullName |> Map.count |> shouldEqual 1
-        withNullName |> Map.containsKey null |> shouldEqual true
-
-        let withNullValue : Map<string, string> = Map.ofList [ "A", null ]
-        withNullValue |> Map.count |> shouldEqual 1
-        withNullValue |> Map.tryFind "A" |> shouldEqual (Some (null : string))
-
-    /// Shapes a real `environ` really can hold, so the rule cannot be satisfied
-    /// by refusing everything. A value may contain `=` (that is what an entry
-    /// `A=B=C` *is*), a value may be empty (`FOO=`), and either half may hold
-    /// non-ASCII.
-    let private accepted : (string * string) list =
+    /// Entries a real `envp` really can hold, so the rule cannot be satisfied by
+    /// refusing everything. Deliberately including every shape a map could not
+    /// express: an entry with no `=`, one beginning with `=`, an empty entry, and
+    /// a duplicated name.
+    let private accepted : string list =
         [
-            "PLAIN", "1"
-            "EMPTY_VALUE", ""
-            "EQUALS_IN_VALUE", "a=b=c"
-            "lower.case-name_1", "v"
-            "é中", "\U0001F436"
+            "PLAIN=1"
+            "EMPTY_VALUE="
+            "EQUALS_IN_VALUE=a=b=c"
+            "lower.case-name_1=v"
+            "é中=\U0001F436"
+            "NO_EQUALS"
+            "=LEADING_EQUALS"
+            ""
+            "DUP=1"
+            "DUP=2"
         ]
 
     [<Test>]
     let ``the entry rule names what is wrong`` () : unit =
-        for description, name, value in rejected do
-            match UnixProcessState.environmentEntryProblem name value with
-            | None -> failwith $"expected %s{description} to be rejected, but the rule accepted it"
-            | Some problem -> problem |> shouldNotEqual ""
+        for description, entry in rejected do
+            match EnvironmentPal.tryEncodeEntry entry with
+            | Ok _ -> failwith $"expected %s{description} to be rejected, but the rule accepted it"
+            | Error problem -> problem |> shouldNotEqual ""
 
     [<Test>]
-    let ``the entry rule accepts what a real environ can hold`` () : unit =
-        for name, value in accepted do
-            match UnixProcessState.environmentEntryProblem name value with
-            | None -> ()
-            | Some problem -> failwith $"expected (%A{name}, %A{value}) to be accepted, but the rule said: %s{problem}"
+    let ``the entry rule accepts what a real envp can hold`` () : unit =
+        for entry in accepted do
+            match EnvironmentPal.tryEncodeEntry entry with
+            | Ok bytes -> UnixByteString.tryToString bytes |> shouldEqual (Some entry)
+            | Error problem -> failwith $"expected %A{entry} to be accepted, but the rule said: %s{problem}"
 
     [<Test>]
-    let ``the kernel accepts an overlay a real environ can hold`` () : unit =
-        let kernel =
-            EmulatedKernel.initial
-            |> EmulatedKernel.mapProcess (UnixProcessState.withEnvironment "test" (Map.ofList accepted))
-
-        for name, value in accepted do
-            kernel.Environment |> Map.tryFind name |> shouldEqual (Some value)
-
-        // The seeded default survives an unrelated overlay.
-        kernel.Environment
-        |> Map.tryFind "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"
-        |> shouldEqual (Some "1")
-
-    [<Test>]
-    let ``applying a KernelConfig rejects an unrepresentable entry`` () : unit =
-        // The boundary that matters. Without it the two environment APIs disagree
-        // for the same table, and — worse — they disagree *asymmetrically*:
-        // `GetEnvironmentVariable "A=B"` would quietly answer with the value,
-        // where real .NET answers null, while `GetEnvironmentVariables` would
-        // abort in the block writer. One silently wrong path, one loud one.
-        //
+    let ``applying a KernelConfig rejects an entry no process could hold`` () : unit =
         // `KernelConfig.toKernel` is the path every host takes, so this is where
-        // the rejection has to fire. A future `toKernel` that assigned
-        // `Environment` by record-copy instead of through
-        // `UnixProcessState.withEnvironment` would bypass the rule, and nothing
-        // in this repository would notice: the rule itself belongs to the
-        // library, whose own tests cannot see how PawPrint reaches it.
-        //
-        // The message names the knob because this call site passes that name;
-        // asserting it here is what stops the name drifting to one no host has
-        // heard of.
-        for description, name, value in rejected do
+        // the rejection has to fire. The message names the knob because this
+        // call site passes that name; asserting it here is what stops the name
+        // drifting to one no host has heard of.
+        for description, entry in rejected do
             let config =
                 { KernelConfig.Default with
-                    Environment = Map.ofList [ name, value ]
+                    Environment = [ "FINE=1" ; entry ]
                 }
 
             let exn =
@@ -139,15 +92,99 @@ module TestEnvironmentEntryInvariant =
             description |> shouldNotEqual ""
 
     [<Test>]
-    let ``the default KernelConfig applies cleanly`` () : unit =
-        // The control for the config-path test above: `KernelConfig.Default` and
-        // `defaultEnvironment` must themselves satisfy the rule, or every run
-        // would fail.
+    let ``applying a KernelConfig keeps every entry, in order, after the defaults`` () : unit =
+        let kernel =
+            KernelConfig.toKernel
+                { KernelConfig.Default with
+                    Environment = accepted
+                }
+
+        kernel.Environment
+        |> List.map UnixByteString.tryToString
+        |> shouldEqual (List.map Some (EmulatedKernel.defaultEnvironment @ accepted))
+
+    /// The default's name, spelled out rather than read from
+    /// `EmulatedKernel.defaultEnvironment`, so that the composition property
+    /// below states the rule rather than reusing the implementation's parse.
+    let private defaultName : string = "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT"
+
+    [<Test>]
+    let ``the defaults come first, unless an entry names them`` () : unit =
+        EmulatedKernel.defaultEnvironment |> shouldEqual [ defaultName + "=1" ]
+
+        let mutable displaced = 0
+        let mutable kept = 0
+
+        let genEntry : Gen<string> =
+            Gen.elements
+                [
+                    defaultName + "=0"
+                    defaultName + "="
+                    defaultName
+                    // Not the default's name: a prefix of it, an extension of it,
+                    // and another case of it.
+                    "DOTNET_SYSTEM_GLOBALIZATION=1"
+                    defaultName + "_X=1"
+                    defaultName.ToLowerInvariant () + "=1"
+                    "OTHER=1"
+                    "OTHER=1"
+                    "=" + defaultName
+                    ""
+                ]
+
+        let property (entries : string list) : unit =
+            let names =
+                entries
+                |> List.exists (fun entry -> entry = defaultName || entry.StartsWith (defaultName + "="))
+
+            let expected = (if names then [] else [ defaultName + "=1" ]) @ entries
+
+            if names then
+                displaced <- displaced + 1
+            else
+                kept <- kept + 1
+
+            let kernel =
+                KernelConfig.toKernel
+                    { KernelConfig.Default with
+                        Environment = entries
+                    }
+
+            kernel.Environment
+            |> List.map UnixByteString.tryToString
+            |> shouldEqual (List.map Some expected)
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 300, Prop.forAll (Arb.fromGen (Gen.listOf genEntry)) property)
+
+        displaced > 20 |> shouldEqual true
+        kept > 20 |> shouldEqual true
+
+    [<Test>]
+    let ``the default KernelConfig holds exactly the defaults`` () : unit =
+        // The control for the config-path tests above: `defaultEnvironment` must
+        // itself satisfy the rule, or every run would fail.
         let kernel = KernelConfig.toKernel KernelConfig.Default
 
-        for KeyValue (name, value) in kernel.Environment do
-            match UnixProcessState.environmentEntryProblem name value with
-            | None -> ()
-            | Some problem -> failwith $"the default kernel environment holds an unrepresentable entry: %s{problem}"
+        kernel.Environment
+        |> List.map UnixByteString.tryToString
+        |> shouldEqual (List.map Some EmulatedKernel.defaultEnvironment)
 
-        kernel.Environment |> Map.isEmpty |> shouldEqual false
+    [<Test>]
+    let ``nameValueEntry refuses a pair no entry reads back as`` () : unit =
+        let refused =
+            [
+                "null name", null, "value"
+                "null value", "A", null
+                "empty name", "", "value"
+                "'=' in the name", "A=B", "value"
+            ]
+
+        for description, name, value in refused do
+            let exn =
+                Assert.Throws<System.Exception> (fun () -> EnvironmentPal.nameValueEntry name value |> ignore<string>)
+
+            exn.Message |> shouldContainText "nameValueEntry"
+            description |> shouldNotEqual ""
+
+        EnvironmentPal.nameValueEntry "A" "" |> shouldEqual "A="
+        EnvironmentPal.nameValueEntry "A" "b=c" |> shouldEqual "A=b=c"

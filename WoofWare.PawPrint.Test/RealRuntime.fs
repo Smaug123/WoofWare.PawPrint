@@ -183,6 +183,31 @@ module RealRuntime =
         let metadata = peReader.GetMetadataReader ()
         metadata.GetString (metadata.GetAssemblyDefinition().Name)
 
+    /// The variables `entries` sets, as the name-to-value overlay a child
+    /// process's `ProcessStartInfo.Environment` takes.
+    ///
+    /// That overlay can express only distinct `NAME=VALUE` pairs, so this fails
+    /// on an entry with no `=`, an entry beginning with `=`, and a second entry
+    /// naming a variable: the oracle would otherwise run with a different
+    /// environment from the one PawPrint's kernel holds for the same
+    /// description.
+    let private oracleEnvironment (entries : string list) : Map<string, string> =
+        (Map.empty, entries)
+        ||> List.fold (fun acc entry ->
+            match entry.IndexOf '=' with
+            | index when index > 0 ->
+                let name = entry.Substring (0, index)
+
+                if Map.containsKey name acc then
+                    failwith
+                        $"RealRuntime: the environment names %s{name} twice, which the oracle process's environment overlay cannot express"
+
+                Map.add name (entry.Substring (index + 1)) acc
+            | _ ->
+                failwith
+                    $"RealRuntime: the environment entry %A{entry} has no name before an '=', which the oracle process's environment overlay cannot express"
+        )
+
     /// Run `exePath` to completion and classify how it terminated.
     ///
     /// We do it in a separate process so that e.g. calling `Environment.Exit` does not terminate the host.
@@ -640,17 +665,19 @@ module RealRuntime =
     /// for a reason that has nothing to do with the code under test; probe named
     /// paths only. A seed that collides with either name is refused outright.
     ///
-    /// `environment` is overlaid on the host's environment in the guest process,
-    /// the way `KernelConfig.Environment` is overlaid on the emulated kernel's
-    /// default table: it is the same description on both sides of a
-    /// comparison, so a guest may name a variable from it. The two tables still
-    /// differ outside the overlay -- PawPrint's holds only its seeded defaults,
-    /// the oracle's holds whatever the test host was started with -- so a
-    /// guest may not assert anything about a variable the overlay does not name.
+    /// `environment` holds `KernelConfig.Environment`-style entries, and the
+    /// variables they set are overlaid on the host's environment in the guest
+    /// process: it is the same description PawPrint's kernel is given, so a guest
+    /// may name a variable from it. The two environments still differ outside
+    /// those variables -- PawPrint's holds only its seeded defaults, the
+    /// oracle's holds whatever the test host was started with -- so a guest may
+    /// not assert anything about a variable the entries do not name, nor about
+    /// the order of the environment. Entries the overlay cannot express are
+    /// refused; see `oracleEnvironment`.
     let executeWithTimeoutAndSeed
         (timeout : TimeSpan)
         (seed : Map<DirectoryEntryName, SeedEntry>)
-        (environment : Map<string, string>)
+        (environment : string list)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult
@@ -686,7 +713,13 @@ module RealRuntime =
 
             materialiseSeed tempDir seed
 
-            runToCompletion timeout muxerPath (dllPath :: List.ofArray args) tempDir environment assemblyName
+            runToCompletion
+                timeout
+                muxerPath
+                (dllPath :: List.ofArray args)
+                tempDir
+                (oracleEnvironment environment)
+                assemblyName
         finally
             try
                 // A seed may deliberately have left a directory unreadable or
@@ -701,14 +734,14 @@ module RealRuntime =
             | :? UnauthorizedAccessException -> ()
 
     /// As `executeWithTimeoutAndSeed`, with an empty filesystem seed and no
-    /// environment overlay.
+    /// environment entries.
     let executeWithTimeout (timeout : TimeSpan) (args : string[]) (assemblyBytes : byte array) : RealRuntimeResult =
-        executeWithTimeoutAndSeed timeout FileSystemSeed.empty Map.empty args assemblyBytes
+        executeWithTimeoutAndSeed timeout FileSystemSeed.empty [] args assemblyBytes
 
     /// As `executeWithTimeoutAndSeed`, with the standard guest time limit.
     let executeWithSeed
         (seed : Map<DirectoryEntryName, SeedEntry>)
-        (environment : Map<string, string>)
+        (environment : string list)
         (args : string[])
         (assemblyBytes : byte array)
         : RealRuntimeResult

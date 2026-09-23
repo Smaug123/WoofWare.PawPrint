@@ -56,10 +56,10 @@ type EndToEndTestCase =
     {
         FileName : string
         ExpectedReturnCode : int
-        /// Kernel configuration passed to `Program.run`: guest environment
-        /// overlay (layered on top of `EmulatedKernel.defaultEnvironment`, so
-        /// the invariant-globalization default is always present even when the
-        /// overlay is empty) plus the reported processor count.
+        /// Kernel configuration passed to `Program.run`: the guest's environment
+        /// entries (after whichever `EmulatedKernel.defaultEnvironment` entries
+        /// they do not name, so the invariant-globalization default is present
+        /// even when they are empty) plus the reported processor count.
         KernelConfig : KernelConfig
         /// AppContext properties to seed before the guest starts, as a real host
         /// does from `runtimeconfig.json`. Must be empty for any case run through

@@ -120,11 +120,16 @@ module AppProgram =
 
         let logger = loggerFactory.CreateLogger "WoofWare.PawPrint.App"
 
-        // Snapshot the host process's environment once at startup. Layered on top
-        // of `EmulatedKernel.defaultEnvironment`, so any host-set value wins over
-        // the seeded `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1` default, while
-        // unset keys still get the default. This is the production analogue of
-        // tests passing an explicit env map to `Program.run`.
+        // Snapshot the host process's environment once at startup. It follows
+        // whichever `EmulatedKernel.defaultEnvironment` entries it does not name,
+        // so a host-set `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT` replaces the
+        // seeded default, while an unset one still gets it.
+        //
+        // .NET gives no access to the order of this process's own `environ`, so
+        // the entries are laid out in ordinal order of their names. That order is
+        // what the guest's environment block carries, and it is a function of the
+        // host's variables alone, so a run recorded here replays identically on a
+        // machine whose `environ` held the same variables in another order.
         //
         // Environment variables are the *only* thing the CLI takes from the host:
         // the rest of `KernelConfig` keeps its defaults. In particular the guest's
@@ -135,16 +140,17 @@ module AppProgram =
         // Env vars don't break replay: unlike the core count, they are visible in,
         // and reproducible from, the recorded kernel state.
         let kernelConfig : KernelConfig =
-            let dict = System.Environment.GetEnvironmentVariables ()
-
-            let mutable acc = Map.empty
-
-            for entry in dict do
-                let entry = entry :?> System.Collections.DictionaryEntry
-                acc <- Map.add (entry.Key :?> string) (entry.Value :?> string) acc
+            let entries =
+                [
+                    for entry in System.Environment.GetEnvironmentVariables () do
+                        let entry = entry :?> System.Collections.DictionaryEntry
+                        entry.Key :?> string, entry.Value :?> string
+                ]
+                |> List.sortWith (fun (left, _) (right, _) -> System.String.CompareOrdinal (left, right))
+                |> List.map (fun (name, value) -> EnvironmentPal.nameValueEntry name value)
 
             { KernelConfig.Default with
-                Environment = acc
+                Environment = entries
             }
 
         let runNormal (dllPath : string) (pctSeed : uint64 option) (args : string list) : int =
