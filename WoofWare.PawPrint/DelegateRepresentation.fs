@@ -159,7 +159,12 @@ module DelegateRepresentation =
                 state,
                 CliType.Numeric (CliNumericType.NativeInt invocationCount)
 
-        let set (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) (value : CliType) (heap : ManagedHeap) =
+        let set
+            (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
+            (value : CliType)
+            (heap : ManagedHeap)
+            : ManagedHeap
+            =
             ManagedHeap.setFieldById delegateAddr (DelegateLayout.fieldId state.ConcreteTypes field) value heap
 
         let heap =

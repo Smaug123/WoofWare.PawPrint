@@ -367,6 +367,41 @@ module TestDelegateLayout =
 
         registryId |> shouldEqual expected
 
+    let private stubThread : ThreadId = ThreadId.ThreadId 0
+
+    /// A frame of `fixture.Delegate`'s type's multicast invoke stub, whose receiver is the
+    /// delegate as `NewMulticastDelegate`'s `_target` makes it, installed as the active frame of
+    /// `stubThread`.
+    let private multicastStubFrame (fixture : DelegateFixture) (state : IlMachineState) : IlMachineState * MethodState =
+        let delegateType =
+            ManagedHeap.getObjectConcreteType fixture.Delegate state.ManagedHeap
+
+        let state, stub =
+            MulticastDelegateStub.synthesise fixture.LoggerFactory fixture.BaseClassTypes "test" delegateType state
+
+        let frame =
+            match
+                MethodState.Empty
+                    state.ConcreteTypes
+                    fixture.BaseClassTypes
+                    state._LoadedAssemblies
+                    fixture.Guest
+                    stub
+                    ImmutableArray.Empty
+                    (ImmutableArray.Create (
+                        CliType.ObjectRef (Some fixture.Delegate),
+                        CliType.Numeric (CliNumericType.Int32 0)
+                    ))
+                    None
+            with
+            | Ok frame -> frame
+            | Error missing -> failwith $"unexpected missing assembly references: %O{missing}"
+
+        { state with
+            ThreadState = Map.empty |> Map.add stubThread (ThreadState.New frame)
+        },
+        frame
+
     [<Test>]
     let ``a CoreLib whose delegates have another layout is refused by every writer and reader`` () : unit =
         let fixture = makeDelegateFixture ()
@@ -401,35 +436,11 @@ module TestDelegateLayout =
 
         methodDesc.Message |> shouldContainText swappedRefusal
 
-        // The multicast invoke stub reads the invocation list and count, so it is handed a frame
-        // whose receiver is the delegate, as `NewMulticastDelegate`'s `_target` makes it.
-        let delegateType =
-            ManagedHeap.getObjectConcreteType fixture.Delegate state.ManagedHeap
-
-        let state, stub =
-            MulticastDelegateStub.synthesise fixture.LoggerFactory fixture.BaseClassTypes "test" delegateType state
-
-        let frame =
-            match
-                MethodState.Empty
-                    state.ConcreteTypes
-                    fixture.BaseClassTypes
-                    state._LoadedAssemblies
-                    fixture.Guest
-                    stub
-                    ImmutableArray.Empty
-                    (ImmutableArray.Create (
-                        CliType.ObjectRef (Some fixture.Delegate),
-                        CliType.Numeric (CliNumericType.Int32 0)
-                    ))
-                    None
-            with
-            | Ok frame -> frame
-            | Error missing -> failwith $"unexpected missing assembly references: %O{missing}"
+        let state, frame = multicastStubFrame fixture state
 
         let stubRead =
             Assert.Throws<System.Exception> (fun () ->
-                MulticastDelegateStub.execute fixture.LoggerFactory other (ThreadId.ThreadId 0) frame state
+                MulticastDelegateStub.execute fixture.LoggerFactory other stubThread frame state
                 |> ignore<ExecutionResult>
             )
 
@@ -471,3 +482,48 @@ module TestDelegateLayout =
 
         e.Message
         |> shouldContainText "test: expected _invocationCount to be a native int, got"
+
+    [<Test>]
+    let ``the multicast invoke stub reads its elements through the layout`` () : unit =
+        let fixture = makeDelegateFixture ()
+
+        let invocations =
+            match DelegateLayout.require fixture.BaseClassTypes with
+            | DelegateLayout.InvocationListAndCount (_, invocations) -> invocations
+
+        let objectType =
+            AllConcreteTypes.getRequiredNonGenericHandle fixture.State.ConcreteTypes fixture.BaseClassTypes.Object
+
+        // Two elements, neither of them a delegate: the stub must reach element 0 through the
+        // layout's count and list, and refuse it as the layout's list cannot hold it.
+        let list, state =
+            IlMachineState.allocateArray
+                (ConcreteTypeHandle.OneDimArrayZero objectType)
+                (fun () -> CliType.ObjectRef None)
+                2
+                fixture.State
+
+        let set (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) (value : CliType) (heap : ManagedHeap) =
+            ManagedHeap.setFieldById fixture.Delegate (DelegateLayout.fieldId state.ConcreteTypes field) value heap
+
+        let state =
+            { state with
+                ManagedHeap =
+                    state.ManagedHeap
+                    |> set invocations.InvocationList (CliType.ObjectRef (Some list))
+                    |> set
+                        invocations.InvocationCount
+                        (CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 2L)))
+            }
+
+        let state, frame = multicastStubFrame fixture state
+
+        let e =
+            Assert.Throws<System.Exception> (fun () ->
+                MulticastDelegateStub.execute fixture.LoggerFactory fixture.BaseClassTypes stubThread frame state
+                |> ignore<ExecutionResult>
+            )
+
+        e.Message
+        |> shouldEqual
+            "multicast delegate invoke stub: expected element 0 of _invocationList to reference a delegate, got ObjectRef None"
