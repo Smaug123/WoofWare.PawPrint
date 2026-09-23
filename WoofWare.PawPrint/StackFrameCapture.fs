@@ -17,8 +17,9 @@ namespace WoofWare.PawPrint
 module StackFrameCapture =
 
     /// <summary>
-    /// Whether <paramref name="frame" /> is a delegate's <c>Invoke</c>, which a captured trace
-    /// must not report.
+    /// Whether <paramref name="frame" /> is a delegate's <c>Invoke</c>, or the multicast invoke
+    /// stub a multicast delegate's <c>Invoke</c> calls, neither of which a captured trace may
+    /// report.
     /// </summary>
     /// <remarks>
     /// A delegate's `Invoke` is a stub, not a managed method: real .NET has no frame for it, and
@@ -31,12 +32,18 @@ module StackFrameCapture =
     /// that no real trace contains. A live-stack capture taken from inside such a call sees the
     /// same still-active frame, and must suppress it for the same reason.
     ///
-    /// Only `DelegateInvoke` is suppressed, not runtime-provided frames at large: an InternalCall
-    /// or QCall *is* a managed method by name and real traces do show it.
+    /// The multicast invoke stub is CoreCLR's IL stub, which its stack walk hides as it hides
+    /// every IL stub, so real .NET reports an element's caller as whoever called the multicast
+    /// delegate's `Invoke`. PawPrint's stub frame, unlike `Invoke`'s, is live for the whole of
+    /// every element's execution, so this is what keeps it out of every trace taken inside one.
+    ///
+    /// Only these two are suppressed, not runtime-provided frames at large: an InternalCall or
+    /// QCall *is* a managed method by name and real traces do show it.
     /// </remarks>
     let isDelegateInvokeStub (frame : MethodState) : bool =
         match frame.ExecutingMethod.Body with
-        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke -> true
+        | MethodBody.RuntimeProvided RuntimeBehaviour.DelegateInvoke
+        | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke -> true
         | _ -> false
 
     /// <summary>

@@ -507,9 +507,10 @@ module ExceptionDispatching =
     /// Append the caller's frame to a raise's trace as the first pass crosses into it, consuming
     /// any pending foreign-raise flag in the process.
     ///
-    /// A suppressed delegate-`Invoke` stub appends nothing, so it consumes nothing either: real
-    /// .NET has no `StackTraceElement` for that stub and hence no `AppendElement` call to read
-    /// the flag, which stays pending for the next genuine frame the raise reaches.
+    /// A suppressed delegate stub (`Invoke`, or the multicast invoke stub) appends nothing, so it
+    /// consumes nothing either: real .NET has no `StackTraceElement` for that stub and hence no
+    /// `AppendElement` call to read the flag, which stays pending for the next genuine frame the
+    /// raise reaches.
     let private appendCallerFrame
         (currentThread : ThreadId)
         (caller : MethodState)

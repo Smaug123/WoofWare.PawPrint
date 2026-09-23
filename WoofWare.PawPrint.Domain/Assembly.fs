@@ -1898,6 +1898,8 @@ module Assembly =
                     Console.WriteLine "<runtime-provided: delegate Invoke>"
                 | MethodBody.RuntimeProvided RuntimeBehaviour.StructMarshalStub ->
                     Console.WriteLine "<runtime-provided: struct-marshal stub>"
+                | MethodBody.RuntimeProvided RuntimeBehaviour.MulticastDelegateInvoke ->
+                    Console.WriteLine "<runtime-provided: multicast delegate invoke stub>"
                 | MethodBody.RuntimeProvided (RuntimeBehaviour.UnsafeAccessor (kind, targetName, hasTypeNameOverrides)) ->
                     let nameStr =
                         match targetName with

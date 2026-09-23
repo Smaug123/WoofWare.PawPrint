@@ -215,12 +215,11 @@ module StackCrawlMark =
             | Some caller ->
 
             // The delegate-stub check mirrors `StackFrameCapture.ofThread`, for the same reason:
-            // real .NET has no frame for a delegate's `Invoke`, so counting one would count a frame
-            // that does not exist. Unlike there, no guest reaches it here — PawPrint keeps that
-            // synthetic frame alive only across a class initialiser it triggered, and a `.cctor`
-            // reached through a delegate is run by the target's own prologue, after the stub frame
-            // has been popped. It is kept because the alternative when a guest does reach it is a
-            // silently wrong assembly rather than a loud failure.
+            // real .NET has no frame for a delegate's `Invoke` or for the multicast invoke stub,
+            // so counting one would count a frame that does not exist. A single-cast `Invoke`
+            // frame is popped before its target runs, but the multicast stub's frame is live under
+            // every element, so a caller-sensitive method reached through a multicast delegate
+            // walks past it here.
             if isReflectionInvocation caller || StackFrameCapture.isDelegateInvokeStub caller then
                 walk (remaining - 1) found passed caller
             elif passed + 1 >= wanted then

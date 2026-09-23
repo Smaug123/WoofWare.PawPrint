@@ -16,16 +16,15 @@ open WoofWare.PawPrint
 /// properly. PawPrint has no allocation contexts, so the fast path always declines and the
 /// QCall is where every such allocation lands.
 ///
-/// There is no end-to-end guest coverage, and cannot be until multicast delegates work: the
-/// only three managed callers in CoreLib are `MulticastDelegate.NewMulticastDelegate`, which
-/// hits the next unimplemented native (`Delegate::GetMulticastInvoke`) one statement later;
-/// `CastHelpers.Box`, reached only from the *internal* `RuntimeHelpers.Box(MethodTable*, ref
-/// byte)` overload (the public `Box(ref byte, RuntimeTypeHandle)` that `RuntimeHelpersBox.cs`
-/// covers goes through `RuntimeType.BoxCache` and `ReflectionInvocation_GetBoxInfo` to a
+/// Its end-to-end guest coverage is `sourcesPure/DelegateCombine.cs`, through
+/// `MulticastDelegate.NewMulticastDelegate`, which cannot observe most of what is pinned here: it
+/// allocates only delegate types, and overwrites every field it cares about. The other two
+/// managed callers in CoreLib are `CastHelpers.Box`, reached only from the *internal*
+/// `RuntimeHelpers.Box(MethodTable*, ref byte)` overload (the public
+/// `Box(ref byte, RuntimeTypeHandle)` that `RuntimeHelpersBox.cs` covers goes through `RuntimeType.BoxCache` and `ReflectionInvocation_GetBoxInfo` to a
 /// `calli` on the *other* allocator instead); and `AsyncHelpers.AllocContinuation`, which is
 /// runtime-async. So this drives the two handlers directly, in the shape
-/// `TestAssemblyNativeQCalls` established for the same reason. `sourcesPure/DelegateCombine.cs`
-/// stays parked meanwhile, and its `unimplemented` comment records what remains.
+/// `TestAssemblyNativeQCalls` established for the same reason.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestInternalAllocNoChecks =
