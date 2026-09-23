@@ -327,6 +327,7 @@ module internal UnaryMetadataObjectOps =
                 false
                 false
                 advanceProgramCounterOfCaller
+                IlMachineStateExecution.CallRoute.NamedByInstruction
                 concretizedCtorImplementation.Generics
                 concretizedCtorImplementation
                 thread
@@ -373,6 +374,7 @@ module internal UnaryMetadataObjectOps =
             false
             false
             advanceProgramCounterOfCaller
+            IlMachineStateExecution.CallRoute.NamedByInstruction
             concretizedCtor.Generics
             concretizedCtor
             thread

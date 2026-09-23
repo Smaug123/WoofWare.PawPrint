@@ -994,6 +994,7 @@ module internal DynamicScopeOperand =
             false // no interface resolution: GetMethodDescriptor is a non-virtual instance method
             false // not a class constructor
             false // do NOT advance the caller's PC: the naming instruction has to run again
+            IlMachineStateExecution.CallRoute.NamedByInstruction // `DynamicResolver.ResolveToken` calls it by name (DynamicILGenerator.cs:800)
             concretized.Generics
             concretized
             thread

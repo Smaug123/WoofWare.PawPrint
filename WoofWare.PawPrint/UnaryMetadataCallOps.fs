@@ -681,6 +681,7 @@ module internal UnaryMetadataCallOps =
                 false
                 true
                 IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                IlMachineStateExecution.CallRoute.NamedByInstruction
                 concretizedMethod.Generics
                 concretizedMethod
                 ctx.Thread
@@ -1321,6 +1322,7 @@ module internal UnaryMetadataCallOps =
                 false
                 true
                 IlMachineStateExecution.CallSiteTransition.StaysCooperative
+                IlMachineStateExecution.CallRoute.NamedByInstruction
                 concretizedMethod.Generics
                 concretizedMethod
                 thread
@@ -1844,6 +1846,7 @@ module internal UnaryMetadataCallOps =
                 false
                 true
                 callSiteTransition
+                IlMachineStateExecution.CallRoute.ThroughEntryPoint
                 methodToCall.Generics
                 methodToCall
                 thread
