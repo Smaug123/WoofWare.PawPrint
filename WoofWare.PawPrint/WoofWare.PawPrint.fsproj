@@ -42,6 +42,7 @@
     <Compile Include="CliType.fs" />
     <Compile Include="FieldIdentity.fs" />
     <Compile Include="RuntimeFieldInfoStubLayout.fs" />
+    <Compile Include="DelegateLayout.fs" />
     <Compile Include="GcHandleRegistry.fs" />
     <Compile Include="Sha256.fs" />
     <Compile Include="EvpDigestRegistry.fs" />

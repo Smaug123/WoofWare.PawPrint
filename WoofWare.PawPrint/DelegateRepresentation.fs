@@ -58,32 +58,6 @@ type DelegateInvocation =
 [<RequireQualifiedAccess>]
 module DelegateRepresentation =
 
-    let private delegateFieldId
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (fieldName : string)
-        : FieldId
-        =
-        let delegateTypeHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.DelegateType
-
-        FieldIdentity.requiredOwnInstanceField baseClassTypes.DelegateType fieldName
-        |> FieldIdentity.fieldId delegateTypeHandle
-
-    // `_invocationCount` and `_invocationList` are declared on `MulticastDelegate`, which every
-    // delegate type derives from directly.
-    let private multicastDelegateFieldId
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (state : IlMachineState)
-        (fieldName : string)
-        : FieldId
-        =
-        let multicastTypeHandle =
-            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.MulticastDelegateType
-
-        FieldIdentity.requiredOwnInstanceField baseClassTypes.MulticastDelegateType fieldName
-        |> FieldIdentity.fieldId multicastTypeHandle
-
     let private functionPointer (target : FunctionPointerTarget) : CliType =
         CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.FunctionPointer target))
 
@@ -153,6 +127,7 @@ module DelegateRepresentation =
         (state : IlMachineState)
         : IlMachineState
         =
+        let layout = DelegateLayout.require baseClassTypes
         let zero = CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
 
         let target, methodPtr, aux, state, invocationCount =
@@ -184,21 +159,17 @@ module DelegateRepresentation =
                 state,
                 CliType.Numeric (CliNumericType.NativeInt invocationCount)
 
+        let set (field : FieldInfo<GenericParamFromMetadata, TypeDefn>) (value : CliType) (heap : ManagedHeap) =
+            ManagedHeap.setFieldById delegateAddr (DelegateLayout.fieldId state.ConcreteTypes field) value heap
+
         let heap =
-            state.ManagedHeap
-            |> ManagedHeap.setFieldById
-                delegateAddr
-                (delegateFieldId baseClassTypes state "_target")
-                (CliType.ObjectRef target)
-            |> ManagedHeap.setFieldById
-                delegateAddr
-                (delegateFieldId baseClassTypes state "_methodPtr")
-                (functionPointer methodPtr)
-            |> ManagedHeap.setFieldById delegateAddr (delegateFieldId baseClassTypes state "_methodPtrAux") aux
-            |> ManagedHeap.setFieldById
-                delegateAddr
-                (multicastDelegateFieldId baseClassTypes state "_invocationCount")
-                invocationCount
+            match layout with
+            | DelegateLayout.InvocationListAndCount (fields, invocations) ->
+                state.ManagedHeap
+                |> set fields.Target (CliType.ObjectRef target)
+                |> set fields.MethodPtr (functionPointer methodPtr)
+                |> set fields.MethodPtrAux aux
+                |> set invocations.InvocationCount invocationCount
 
         { state with
             ManagedHeap = heap
@@ -206,46 +177,46 @@ module DelegateRepresentation =
 
     let private nativeIntField
         (operation : string)
-        (fieldName : string)
-        (fieldId : FieldId)
+        (allConcreteTypes : AllConcreteTypes)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
         (delegateObject : AllocatedNonArrayObject)
         : NativeIntSource
         =
         // These fields are typed `IntPtr`/`nint` (primitive-like); unwrap to the inner NativeInt.
         match
-            AllocatedNonArrayObject.DereferenceFieldById fieldId delegateObject
+            AllocatedNonArrayObject.DereferenceFieldById (DelegateLayout.fieldId allConcreteTypes field) delegateObject
             |> CliType.unwrapPrimitiveLikeDeep
         with
         | CliType.Numeric (CliNumericType.NativeInt src) -> src
         // `NewMulticastDelegate` stores `GetInvokeMethod()`'s answer, a method-registry pointer,
         // straight into `_methodPtrAux`.
         | CliType.RuntimePointer (CliRuntimePointer.MethodRegistryHandle id) -> NativeIntSource.MethodHandlePtr id
-        | other -> failwith $"%s{operation}: expected %s{fieldName} to be a native int, got %O{other}"
+        | other -> failwith $"%s{operation}: expected %s{field.Name} to be a native int, got %O{other}"
 
     let private objectRefField
         (operation : string)
-        (fieldName : string)
-        (fieldId : FieldId)
+        (allConcreteTypes : AllConcreteTypes)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
         (delegateObject : AllocatedNonArrayObject)
         : ManagedHeapAddress option
         =
         match
-            AllocatedNonArrayObject.DereferenceFieldById fieldId delegateObject
+            AllocatedNonArrayObject.DereferenceFieldById (DelegateLayout.fieldId allConcreteTypes field) delegateObject
             |> CliType.unwrapPrimitiveLikeDeep
         with
         | CliType.ObjectRef target -> target
-        | other -> failwith $"%s{operation}: expected %s{fieldName} to be an object reference, got %O{other}"
+        | other -> failwith $"%s{operation}: expected %s{field.Name} to be an object reference, got %O{other}"
 
     let private functionPointerField
         (operation : string)
-        (fieldName : string)
-        (fieldId : FieldId)
+        (allConcreteTypes : AllConcreteTypes)
+        (field : FieldInfo<GenericParamFromMetadata, TypeDefn>)
         (delegateObject : AllocatedNonArrayObject)
         : FunctionPointerTarget
         =
-        match nativeIntField operation fieldName fieldId delegateObject with
+        match nativeIntField operation allConcreteTypes field delegateObject with
         | NativeIntSource.FunctionPointer target -> target
-        | other -> failwith $"%s{operation}: expected %s{fieldName} to hold a function pointer, got %O{other}"
+        | other -> failwith $"%s{operation}: expected %s{field.Name} to hold a function pointer, got %O{other}"
 
     /// What invoking the delegate at `delegateAddr` calls: CoreCLR's `Invoke` stub, which calls
     /// `_methodPtr` with `_target` as its first argument, with the shuffle thunk's own behaviour
@@ -257,23 +228,12 @@ module DelegateRepresentation =
         (state : IlMachineState)
         : DelegateInvocation
         =
+        let fields = DelegateLayout.require baseClassTypes |> DelegateLayout.binding
         let delegateObject = ManagedHeap.get delegateAddr state.ManagedHeap
 
-        match
-            functionPointerField
-                operation
-                "_methodPtr"
-                (delegateFieldId baseClassTypes state "_methodPtr")
-                delegateObject
-        with
+        match functionPointerField operation state.ConcreteTypes fields.MethodPtr delegateObject with
         | FunctionPointerTarget.OpenDelegateShuffleThunk ->
-            match
-                functionPointerField
-                    operation
-                    "_methodPtrAux"
-                    (delegateFieldId baseClassTypes state "_methodPtrAux")
-                    delegateObject
-            with
+            match functionPointerField operation state.ConcreteTypes fields.MethodPtrAux delegateObject with
             | FunctionPointerTarget.OpenDelegateShuffleThunk
             | FunctionPointerTarget.RuntimeAllocator as aux ->
                 failwith $"%s{operation}: an open delegate's _methodPtrAux names %O{aux}, which is not a call target"
@@ -285,7 +245,7 @@ module DelegateRepresentation =
             | aux -> DelegateInvocation.ThroughShuffleThunk aux
         | methodPtr ->
             let target =
-                objectRefField operation "_target" (delegateFieldId baseClassTypes state "_target") delegateObject
+                objectRefField operation state.ConcreteTypes fields.Target delegateObject
 
             DelegateInvocation.ThroughMethodPtr (target, methodPtr)
 
@@ -308,6 +268,8 @@ module DelegateRepresentation =
         (state : IlMachineState)
         : IlMachineState * int64
         =
+        let layout = DelegateLayout.require baseClassTypes
+        let fields = DelegateLayout.binding layout
         let delegateObject = ManagedHeap.get delegateAddr state.ManagedHeap
 
         let idOfTarget (state : IlMachineState) (fieldName : string) (target : FunctionPointerTarget) =
@@ -331,81 +293,80 @@ module DelegateRepresentation =
                 failwith
                     $"%s{operation}: the delegate's %s{fieldName} names %O{target}, which no PawPrint delegate binding produces"
 
-        let invocationCount =
-            nativeIntField
-                operation
-                "_invocationCount"
-                (multicastDelegateFieldId baseClassTypes state "_invocationCount")
-                delegateObject
-
         let methodPtrAux =
-            nativeIntField
-                operation
-                "_methodPtrAux"
-                (delegateFieldId baseClassTypes state "_methodPtrAux")
-                delegateObject
+            nativeIntField operation state.ConcreteTypes fields.MethodPtrAux delegateObject
 
-        if not (NativeIntSource.isZero invocationCount) then
-            let invocationList =
-                objectRefField
-                    operation
-                    "_invocationList"
-                    (multicastDelegateFieldId baseClassTypes state "_invocationList")
-                    delegateObject
+        // The rows of CoreCLR's table that the invocation fields decide, or `None` for a delegate
+        // whose binding fields alone say what it is bound to.
+        let fromInvocationFields : (IlMachineState * int64) option =
+            match layout with
+            | DelegateLayout.InvocationListAndCount (_, invocations) ->
+                let invocationCount =
+                    nativeIntField operation state.ConcreteTypes invocations.InvocationCount delegateObject
 
-            match invocationList, invocationCount with
-            | Some list, _ when ManagedHeap.isArray list state.ManagedHeap ->
-                // A multicast delegate: `FindDelegateInvokeMethod`.
-                let state, invoke =
-                    MulticastDelegateStub.invokeMethodOf
-                        loggerFactory
-                        baseClassTypes
-                        operation
-                        (ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap)
-                        state
+                if NativeIntSource.isZero invocationCount then
+                    None
+                else
 
-                let registryId, registry =
-                    MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes invoke state.MethodHandles
+                let invocationList =
+                    objectRefField operation state.ConcreteTypes invocations.InvocationList delegateObject
 
-                { state with
-                    MethodHandles = registry
-                },
-                registryId
-            | None, NativeIntSource.MethodHandlePtr registryId ->
-                // An open virtual delegate: `GetMethodDescForOpenVirtualDelegate` reads the
-                // `MethodDesc*` out of `_invocationCount`. `_methodPtrAux` holds the stub over
-                // that same method, and the two are written together by `write`.
-                match methodPtrAux with
-                | NativeIntSource.FunctionPointer (FunctionPointerTarget.VirtualCallStub (_, method)) ->
-                    let state, stubId =
-                        idOfTarget state "_methodPtrAux" (FunctionPointerTarget.Managed method)
+                match invocationList, invocationCount with
+                | Some list, _ when ManagedHeap.isArray list state.ManagedHeap ->
+                    // A multicast delegate: `FindDelegateInvokeMethod`.
+                    let state, invoke =
+                        MulticastDelegateStub.invokeMethodOf
+                            loggerFactory
+                            baseClassTypes
+                            operation
+                            (ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap)
+                            state
 
-                    if stubId <> registryId then
+                    let registryId, registry =
+                        MethodHandleRegistry.getOrAllocateConcreteId state.ConcreteTypes invoke state.MethodHandles
+
+                    Some (
+                        { state with
+                            MethodHandles = registry
+                        },
+                        registryId
+                    )
+                | None, NativeIntSource.MethodHandlePtr registryId ->
+                    // An open virtual delegate: `GetMethodDescForOpenVirtualDelegate` reads the
+                    // `MethodDesc*` out of `_invocationCount`. `_methodPtrAux` holds the stub over
+                    // that same method, and the two are written together by `write`.
+                    match methodPtrAux with
+                    | NativeIntSource.FunctionPointer (FunctionPointerTarget.VirtualCallStub (_, method)) ->
+                        let state, stubId =
+                            idOfTarget state fields.MethodPtrAux.Name (FunctionPointerTarget.Managed method)
+
+                        if stubId <> registryId then
+                            failwith
+                                $"%s{operation}: an open virtual delegate's _invocationCount names method %d{registryId} but its virtual call stub dispatches method %d{stubId}"
+
+                        Some (state, registryId)
+                    | other ->
                         failwith
-                            $"%s{operation}: an open virtual delegate's _invocationCount names method %d{registryId} but its virtual call stub dispatches method %d{stubId}"
-
-                    state, registryId
-                | other ->
+                            $"%s{operation}: _invocationCount names method %d{registryId}, but _methodPtrAux is %O{other} rather than a virtual call stub"
+                | _ ->
+                    // The remaining shapes of CoreCLR's table with a count: a wrapper delegate
+                    // (`_invocationList` is the inner delegate), an unmanaged function pointer
+                    // delegate (`_invocationCount == -1`), and an inner open virtual delegate of a
+                    // wrapper. PawPrint builds none of them.
                     failwith
-                        $"%s{operation}: _invocationCount names method %d{registryId}, but _methodPtrAux is %O{other} rather than a virtual call stub"
-            | _ ->
-                // The remaining shapes of CoreCLR's table with a count: a wrapper delegate
-                // (`_invocationList` is the inner delegate), an unmanaged function pointer delegate
-                // (`_invocationCount == -1`), and an inner open virtual delegate of a wrapper.
-                // PawPrint builds none of them.
-                failwith
-                    $"TODO: %s{operation} was handed a delegate with _invocationCount %O{invocationCount} and _invocationList %O{invocationList}, which is a wrapper or unmanaged-function-pointer delegate; PawPrint builds neither"
-        elif not (NativeIntSource.isZero methodPtrAux) then
+                        $"TODO: %s{operation} was handed a delegate with _invocationCount %O{invocationCount} and _invocationList %O{invocationList}, which is a wrapper or unmanaged-function-pointer delegate; PawPrint builds neither"
+
+        match fromInvocationFields with
+        | Some answer -> answer
+        | None ->
+
+        if not (NativeIntSource.isZero methodPtrAux) then
             match methodPtrAux with
-            | NativeIntSource.FunctionPointer target -> idOfTarget state "_methodPtrAux" target
+            | NativeIntSource.FunctionPointer target -> idOfTarget state fields.MethodPtrAux.Name target
             | other -> failwith $"%s{operation}: expected _methodPtrAux to hold a function pointer, got %O{other}"
         else
-            functionPointerField
-                operation
-                "_methodPtr"
-                (delegateFieldId baseClassTypes state "_methodPtr")
-                delegateObject
-            |> idOfTarget state "_methodPtr"
+            functionPointerField operation state.ConcreteTypes fields.MethodPtr delegateObject
+            |> idOfTarget state fields.MethodPtr.Name
 
     /// <summary>
     /// The delegate constructor every delegate type's <c>.ctor(object, IntPtr)</c> runs:
