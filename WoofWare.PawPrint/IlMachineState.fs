@@ -19,6 +19,9 @@ module IlMachineState =
     let concretizeMethodSignature = IlMachineTypeResolution.concretizeMethodSignature
     let concretizeReturnColumn = IlMachineTypeResolution.concretizeReturnColumn
 
+    let containsUnboundGenericParameter =
+        IlMachineTypeResolution.containsUnboundGenericParameter
+
     let signaturesEquivalent = IlMachineTypeResolution.signaturesEquivalent
 
     let signaturesEquivalentWithoutSubstitution =

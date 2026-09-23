@@ -74,6 +74,22 @@ type DelegateBindingShape =
     | Closed
 
 /// <summary>
+/// A type on the target's side of <c>COMDelegate::IsMethodDescCompatible</c>, which reads the
+/// target's signature against <c>pMethMT</c> (comdelegate.cpp:2576). For a method of an open
+/// generic type definition that is the definition's typical instantiation, so the signature may
+/// name the definition's own type variables.
+/// </summary>
+[<RequireQualifiedAccess>]
+type private TargetSideType =
+    | Closed of ConcreteTypeHandle
+    /// A parameter or return type the target's signature spells in terms of its declaring
+    /// definition's type variables.
+    | OverDefinitionVariables of TypeDefn
+    /// The declaring definition's typical instantiation, <c>G&lt;T&gt;</c> over its own variables:
+    /// the receiver type of an instance method of that definition.
+    | TypicalInstantiation of ResolvedTypeIdentity
+
+/// <summary>
 /// Where <c>COMDelegate::IsMethodDescCompatible</c> takes the target's first argument from
 /// (comdelegate.cpp:2681-2707). This is the whole of what that routine consults about the target
 /// beyond its signature, and the static/instance distinction is what decides it.
@@ -94,7 +110,7 @@ type private TargetFirstArgument =
     /// An instance target: its first argument is the declaring type — CoreCLR's <c>pMethMT</c>,
     /// which is the QCall's <c>methodType</c> argument — and its total argument count adds one for
     /// the implicit <c>this</c>.
-    | DeclaringType of ConcreteTypeHandle
+    | DeclaringType of TargetSideType
 
 /// <summary>
 /// What <c>COMDelegate::BindToMethod</c> (comdelegate.cpp:1184) will point the delegate's
@@ -113,6 +129,9 @@ type private BindTarget =
     | Metadata of
         method : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         declaringType : ConcreteTypeHandle
+    /// A method of an open generic type definition, which has no code to point at: a compatible
+    /// binding over it raises <c>InvalidOperationException</c> instead of binding.
+    | OnGenericDefinition of isStatic : bool * definition : ResolvedTypeIdentity
 
 [<RequireQualifiedAccess>]
 module private BindTarget =
@@ -125,7 +144,12 @@ module private BindTarget =
             if method.IsStatic then
                 TargetFirstArgument.FirstFixedParameter
             else
-                TargetFirstArgument.DeclaringType declaringType
+                TargetFirstArgument.DeclaringType (TargetSideType.Closed declaringType)
+        | BindTarget.OnGenericDefinition (isStatic, definition) ->
+            if isStatic then
+                TargetFirstArgument.FirstFixedParameter
+            else
+                TargetFirstArgument.DeclaringType (TargetSideType.TypicalInstantiation definition)
 
 /// <summary>
 /// The QCalls behind <c>Delegate.CreateDelegate</c>, <c>Delegate.Method</c> and
@@ -148,14 +172,16 @@ module NativeDelegate =
     /// </param>
     /// <remarks>
     /// <para>
-    /// Two branches of CoreCLR's version are absent because they cannot be reached with the
-    /// arguments this QCall gets. Both sides here are <c>ConcreteTypeHandle</c>s, which are closed
-    /// by construction, so the whole generic-variable half of the function (comdelegate.cpp:
-    /// 2399-2489, the <c>ConstrainedAsObjRef</c>/<c>ConstrainedAsValueType</c> table) is dead: a
+    /// Two branches of CoreCLR's version are absent. Both sides here are
+    /// <c>ConcreteTypeHandle</c>s, which are closed by construction, so the whole generic-variable
+    /// half of the function (comdelegate.cpp:2399-2489, the
+    /// <c>ConstrainedAsObjRef</c>/<c>ConstrainedAsValueType</c> table) cannot be asked for: a
     /// delegate type reaching <c>CreateDelegate</c> is a runtime type with its instantiation
     /// already substituted; a dynamic method's signature cannot spell a variable at all; and a
-    /// metadata method's is read against the exact instantiation its declaring handle names, an
-    /// open generic definition being refused before it gets here.
+    /// metadata method's is read against the exact instantiation its declaring handle names. The
+    /// exception is a method of an open generic definition, whose signature can name the
+    /// definition's variables; <c>isCompatible</c> refuses to compare such a type rather than
+    /// passing it here.
     /// </para>
     /// <para>
     /// The enum arm at the end is <em>not</em> dead, and it is the reason this function exists
@@ -286,14 +312,19 @@ module NativeDelegate =
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Two of CoreCLR's cases are absent. It is never asked about a generic method definition,
-    /// which <c>Delegate_BindToMethodInfo</c> rejects with
-    /// <c>ArgumentException(Arg_DlgtTargMeth)</c> before reaching here (comdelegate.cpp:1137-1139);
-    /// and the generic-variable branch of the closed-static objref constraint
-    /// (<c>ConstrainedAsObjRef</c>, comdelegate.cpp:2673-2679) is dead because every type here is a
-    /// <c>ConcreteTypeHandle</c> — a dynamic method's signature blob cannot spell a variable, and a
-    /// metadata target's is read against the exact instantiation its declaring handle names, an
-    /// open generic definition being refused by the caller.
+    /// It is never asked about a generic method definition, which <c>Delegate_BindToMethodInfo</c>
+    /// rejects with <c>ArgumentException(Arg_DlgtTargMeth)</c> before reaching here
+    /// (comdelegate.cpp:1137-1139).
+    /// </para>
+    /// <para>
+    /// A method of an open generic type definition is read against the definition's typical
+    /// instantiation, as CoreCLR reads it, so a target-side type may name the definition's type
+    /// variables (<c>TargetSideType</c>). CoreCLR compares those as <c>TypeVarTypeDesc</c>s under
+    /// their constraints, which PawPrint cannot: every comparison that would need to read such a
+    /// type fails with a TODO at the point CoreCLR would make it. Everything decided before that
+    /// point — the arity, the flag filters, the target/open mismatch, and every comparison between
+    /// closed types — is decided exactly as CoreCLR decides it, because none of those reads the
+    /// instantiation.
     /// </para>
     /// <para>
     /// Of the five flag filters, this takes the two a caller can reach it with and nothing else,
@@ -316,10 +347,20 @@ module NativeDelegate =
         /// The runtime type of the object supplied as the bound first argument, if one was.
         (firstArgType : ConcreteTypeHandle option)
         (invokeSignature : TypeMethodSignature<ConcreteTypeHandle>)
-        (targetSignature : TypeMethodSignature<ConcreteTypeHandle>)
+        (targetSignature : TypeMethodSignature<TargetSideType>)
         (state : IlMachineState)
         : IlMachineState * DelegateBindingShape option
         =
+        let requireClosed (role : string) (targetType : TargetSideType) : ConcreteTypeHandle =
+            match targetType with
+            | TargetSideType.Closed handle -> handle
+            | TargetSideType.OverDefinitionVariables spelled ->
+                failwith
+                    $"TODO: %s{operation} must compare the target's %s{role}, %O{spelled}, which names a type variable of the open generic definition declaring the target; CoreCLR compares it as a TypeVarTypeDesc under its constraints (comdelegate.cpp:2367-2489), which ConcreteTypeHandle cannot express"
+            | TargetSideType.TypicalInstantiation definition ->
+                failwith
+                    $"TODO: %s{operation} must compare the target's %s{role}, the typical instantiation of the open generic definition %O{definition}; CoreCLR decides that cast over the definition's own type variables and their constraints (comdelegate.cpp:2367-2489), which ConcreteTypeHandle cannot express"
+
         // "Check that there is no vararg mismatch." A vararg *dynamic* method is not constructible
         // (`DynamicMethod`'s constructors pass `CallingConventions.Standard`), and no language
         // PawPrint's tests compile produces a vararg delegate type — but a metadata target can be
@@ -405,13 +446,18 @@ module NativeDelegate =
                     //
                     // A closed binding needs no promotion, because there the invoke-side type came
                     // from the bound object and has had the ref stripped implicitly.
-                    if
+                    //
+                    // A typical instantiation is left unpromoted: every comparison that reads it
+                    // refuses, so the byref it would become is never looked at.
+                    match declaringType with
+                    | TargetSideType.Closed handle when
                         isOpen
-                        && not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state declaringType)
-                    then
-                        ConcreteTypeHandle.Byref declaringType
-                    else
-                        declaringType
+                        && not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state handle)
+                        ->
+                        TargetSideType.Closed (ConcreteTypeHandle.Byref handle)
+                    | TargetSideType.Closed _
+                    | TargetSideType.OverDefinitionVariables _
+                    | TargetSideType.TypicalInstantiation _ -> declaringType
 
             // "We always relax signature matching for the first argument of an instance method,
             // since it's always allowable to call the method on a more derived type"
@@ -430,7 +476,7 @@ module NativeDelegate =
                         baseClassTypes
                         operation
                         firstInvokeArg
-                        firstTargetArg
+                        (requireClosed "first argument" firstTargetArg)
                         firstArgRelaxed
                         false
                         state
@@ -444,7 +490,13 @@ module NativeDelegate =
                     // on real .NET.
                     if
                         targetIsStatic
-                        && not (IlMachineState.isReferenceTypeHandle baseClassTypes operation state firstTargetArg)
+                        && not (
+                            IlMachineState.isReferenceTypeHandle
+                                baseClassTypes
+                                operation
+                                state
+                                (requireClosed "first parameter" firstTargetArg)
+                        )
                     then
                         state, false
                     else
@@ -463,7 +515,7 @@ module NativeDelegate =
                             baseClassTypes
                             operation
                             firstArgType
-                            firstTargetArg
+                            (requireClosed "first argument" firstTargetArg)
                             firstArgRelaxed
                             true
                             state
@@ -499,7 +551,15 @@ module NativeDelegate =
                 if not soFar then
                     state, false
                 else
-                    isLocationAssignable loggerFactory baseClassTypes operation invokeArg targetArg relaxed false state
+                    isLocationAssignable
+                        loggerFactory
+                        baseClassTypes
+                        operation
+                        invokeArg
+                        (requireClosed "parameter" targetArg)
+                        relaxed
+                        false
+                        state
             )
 
         if not argumentsMatch then
@@ -519,7 +579,7 @@ module NativeDelegate =
                     loggerFactory
                     baseClassTypes
                     operation
-                    targetReturn
+                    (requireClosed "return type" targetReturn)
                     invokeReturn
                     relaxed
                     false
@@ -765,6 +825,79 @@ module NativeDelegate =
                     let methodInfo =
                         NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity operation state identity
 
+                    match identity.GetDeclaringType () with
+                    | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
+                        // `typeof(G<>).GetMethod("M")`. CoreCLR's `pMethMT` is then the typical
+                        // instantiation, and the target's signature is read against it
+                        // (comdelegate.cpp:2576), so each of its types either is closed already or
+                        // names the definition's own variables. `isCompatible` decides with the
+                        // former and refuses to compare the latter.
+                        match declaringTypeTarget with
+                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition argumentDefinition when
+                            argumentDefinition = definition
+                            ->
+                            ()
+                        | other ->
+                            failwith
+                                $"%s{operation}: the method handle is declared by the open generic definition %O{definition}, but the methodType argument names %O{other}; these come from the same handle and must agree"
+
+                        let assemblyFullName = identity.GetAssemblyFullName ()
+
+                        let methodGenerics = identity.GetMethodGenerics () |> ImmutableArray.CreateRange
+
+                        let mentionsDefinitionVariables (ty : TypeDefn) : bool =
+                            IlMachineState.containsUnboundGenericParameter ImmutableArray.Empty methodGenerics ty
+
+                        let state, returnType =
+                            match methodInfo.Signature.ReturnType with
+                            | MethodReturnType.Returns ty when mentionsDefinitionVariables ty ->
+                                state, MethodReturnType.Returns (TargetSideType.OverDefinitionVariables ty)
+                            | returnType ->
+                                let state, returnType =
+                                    IlMachineState.concretizeReturnColumn
+                                        ctx.LoggerFactory
+                                        ctx.BaseClassTypes
+                                        state
+                                        assemblyFullName
+                                        ImmutableArray.Empty
+                                        methodGenerics
+                                        returnType
+
+                                state,
+                                MethodReturnType.map () (fun () ty -> (), TargetSideType.Closed ty) returnType
+                                |> snd
+
+                        let state, parameterTypes =
+                            ((state, []), methodInfo.Signature.ParameterTypes)
+                            ||> List.fold (fun (state, acc) ty ->
+                                if mentionsDefinitionVariables ty then
+                                    state, TargetSideType.OverDefinitionVariables ty :: acc
+                                else
+                                    let state, handle =
+                                        IlMachineState.concretizeType
+                                            ctx.LoggerFactory
+                                            ctx.BaseClassTypes
+                                            state
+                                            assemblyFullName
+                                            ImmutableArray.Empty
+                                            methodGenerics
+                                            ty
+
+                                    state, TargetSideType.Closed handle :: acc
+                            )
+
+                        let targetSignature : TypeMethodSignature<TargetSideType> =
+                            {
+                                Header = methodInfo.Signature.Header
+                                ReturnType = returnType
+                                ParameterTypes = List.rev parameterTypes
+                                GenericParameterCount = methodInfo.Signature.GenericParameterCount
+                                RequiredParameterCount = methodInfo.Signature.RequiredParameterCount
+                            }
+
+                        state, targetSignature, BindTarget.OnGenericDefinition (methodInfo.IsStatic, definition)
+                    | _ ->
+
                     // `methodType` is the declaring type the managed caller read off the same
                     // handle (`RuntimeMethodHandle.GetDeclaringType`, Delegate.CoreCLR.cs:389), and
                     // CoreCLR uses it as `pMethMT`: the exact instantiation the target's signature
@@ -796,7 +929,10 @@ module NativeDelegate =
                             (identity.GetMethodGenerics () |> ImmutableArray.CreateRange)
                             state
 
-                    state, concretised.Signature, BindTarget.Metadata (concretised, declaringType)
+                    let _, targetSignature =
+                        TypeMethodSignature.map () (fun () ty -> (), TargetSideType.Closed ty) concretised.Signature
+
+                    state, targetSignature, BindTarget.Metadata (concretised, declaringType)
 
                 | MethodHandle.FromDynamic dynamicHandle ->
 
@@ -846,6 +982,9 @@ module NativeDelegate =
                         ImmutableArray.Empty
                         ImmutableArray.Empty
 
+                let _, targetSignature =
+                    TypeMethodSignature.map () (fun () ty -> (), TargetSideType.Closed ty) targetSignature
+
                 state, targetSignature, BindTarget.Dynamic dynamicHandle
 
             let delegateType = ManagedHeap.getObjectConcreteType delegateAddr state.ManagedHeap
@@ -873,8 +1012,9 @@ module NativeDelegate =
                     state
 
             // `Ok` with the delegate bound, or with it untouched if the shapes are incompatible; or
-            // `Error` naming the exception `BindToMethod` raises instead.
-            let bound : Result<IlMachineState, TypeInfo<GenericParamFromMetadata, TypeDefn>> =
+            // `Error` naming the exception `BindToMethod` raises instead, and its message if CoreCLR
+            // attaches one.
+            let bound : Result<IlMachineState, TypeInfo<GenericParamFromMetadata, TypeDefn> * string option> =
                 match shape with
                 | None -> Ok state
                 | Some shape ->
@@ -921,7 +1061,21 @@ module NativeDelegate =
                             with
                             | state, OpenDelegateAux.Aux aux -> state, Ok (DelegateBinding.Open aux)
                             | state, OpenDelegateAux.GenericVirtualUnsupported ->
-                                state, Error ctx.BaseClassTypes.NotSupportedException
+                                state, Error (ctx.BaseClassTypes.NotSupportedException, None)
+                        | BindTarget.OnGenericDefinition _, _ ->
+                            // Every path `BindToMethod` can take here asks the target for a code
+                            // address with `GetMultiCallableAddrOfCode`, whose
+                            // `ContainsGenericVariables` check throws
+                            // (`IDS_EE_CODEEXECUTION_CONTAINSGENERICVAR`, method.cpp:2091-2093). The
+                            // one path that asks differently, the closed virtual binding over a
+                            // non-null receiver, needs the receiver to have been compared against
+                            // the typical instantiation, which `isCompatible` refuses to do.
+                            state,
+                            Error (
+                                ctx.BaseClassTypes.InvalidOperationException,
+                                Some
+                                    "Could not execute the method because either the method itself or the containing type is not fully instantiated."
+                            )
                         | BindTarget.Metadata (method, _), DelegateBindingShape.Closed when
                             method.IsStatic && method.IsVirtual
                             ->
@@ -985,9 +1139,10 @@ module NativeDelegate =
                     )
 
             match bound with
-            | Error exceptionType ->
+            | Error (exceptionType, message) ->
                 // Raised by the QCall, so whatever `throwOnBindFailure` said, the guest sees it.
-                NativeHandlerResult.raiseException exceptionType state |> Some
+                NativeHandlerResult.raiseExceptionWithMessage exceptionType message state
+                |> Some
             | Ok state ->
 
             // The QCall's managed declaration is `[return: MarshalAs(UnmanagedType.Bool)] bool`,
