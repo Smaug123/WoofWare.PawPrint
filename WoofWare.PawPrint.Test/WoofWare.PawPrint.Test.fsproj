@@ -89,6 +89,7 @@
     <Compile Include="TestBaseChainLayout.fs" />
     <Compile Include="TestMarshalLayout.fs" />
     <Compile Include="TestMarshalEnumFieldLayout.fs" />
+    <Compile Include="TestMarshalOffsetOf.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
     <Compile Include="TestByrefContainer.fs" />

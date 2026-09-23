@@ -308,6 +308,76 @@ type CliType =
             |> Result.Error
         | CliType.ValueType vt -> CliValueType.TryComputeMarshalSize concreteTypes assemblies corelib vt
 
+    /// The offset `Marshal.OffsetOf` reports for the instance field `field` of `declaringType`:
+    /// where that field lands in `declaringType`'s unmanaged image. `zero` must be
+    /// `declaringType`'s zero value, and `field` one of the instance fields `declaringType` itself
+    /// declares.
+    ///
+    /// The errors classify as `TryComputeMarshalSize`'s do: `NotMarshalable` is CoreCLR's
+    /// `ArgumentException` (`IDS_CANNOT_MARSHAL`), and `NotImplemented` a shape CoreCLR would
+    /// answer but PawPrint cannot yet. A value type's offsets are its placements from
+    /// `CliValueType.TryComputeMarshalLayout`, so they agree with `Marshal.SizeOf` by construction.
+    static member TryComputeMarshalFieldOffset
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (declaringType : ConcreteTypeHandle)
+        (zero : CliType)
+        (field : ComparableFieldDefinitionHandle)
+        : Result<int, MarshalSizeError>
+        =
+        // `MarshalNative_OffsetOf` (marshalnative.cpp:180) answers a blittable type from the
+        // managed layout and anything else from the native one. The two coincide for a blittable
+        // type -- CoreCLR asserts as much when it builds the native layout
+        // (classlayoutinfo.cpp:1050) -- so the native layout answers both.
+        //
+        // A type with no layout at all fails `IsStructMarshalable` whatever its fields, and that
+        // covers classes as well as value types: an ordinary class, an enum, `System.DateTime`.
+        if CliValueType.IsAutoLayoutHandle concreteTypes assemblies declaringType then
+            MarshalSizeError.NotMarshalable "type has LayoutKind.Auto, so has no native layout"
+            |> Result.Error
+        else
+
+        match zero with
+        // A primitive's zero is a single scalar cell, and its one instance field (`m_value`,
+        // `_value`) is at offset 0 in every layout. That includes `bool` and `char`, whose
+        // native *width* differs from the managed one but whose field still starts the image.
+        | CliType.Numeric _
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.RuntimePointer _ -> Result.Ok 0
+        | CliType.ObjectRef _ ->
+            MarshalSizeError.NotImplemented
+                $"%s{AllConcreteTypes.describe assemblies concreteTypes declaringType} is a class with [StructLayout], and PawPrint does not compute a class's native layout"
+            |> Result.Error
+        | CliType.ValueType vt ->
+            CliValueType.TryComputeMarshalLayout concreteTypes assemblies corelib vt
+            |> Result.map (fun (_, placements) ->
+                let matching =
+                    placements
+                    |> List.filter (fun placement ->
+                        match placement.Field.Id with
+                        | FieldId.Metadata (placedDeclaringType, placedField, _) ->
+                            placedDeclaringType = declaringType && placedField = field
+                        // An inline array's later slots are storage, not fields: its one
+                        // declared field is slot 0, which is `FieldId.Metadata`.
+                        | FieldId.InlineArrayElement _
+                        | FieldId.Named _ -> false
+                    )
+
+                match matching with
+                | [ placement ] -> placement.NativeOffset
+                | [] ->
+                    // CoreCLR's managed wrapper has already found the field by reflection, so
+                    // its native layout always holds it (the `CONSISTENCY_CHECK` in
+                    // `MarshalNative_OffsetOf`).
+                    failwith
+                        $"CliType.TryComputeMarshalFieldOffset: %s{AllConcreteTypes.describe assemblies concreteTypes declaringType}'s native layout places no field %O{field}"
+                | _ ->
+                    failwith
+                        $"CliType.TryComputeMarshalFieldOffset: %s{AllConcreteTypes.describe assemblies concreteTypes declaringType}'s native layout places field %O{field} %d{matching.Length} times"
+            )
+
     static member ToBytes (t : CliType) : byte[] =
         match t with
         | CliType.Numeric n -> CliNumericType.ToBytes n
