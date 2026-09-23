@@ -3850,10 +3850,11 @@ module IlMachineManagedByref =
                                 // non-array path checks width only and restamps the cell with
                                 // the payload's shape.)
                                 // An array element cell really can be a
-                                // `CliType.RuntimePointer` — C# has no `int*[]` syntax, but
-                                // `Array.CreateInstance(typeof(int*), n)` succeeds and
-                                // `MemoryMarshal.GetArrayDataReference(Array)` hands out a
-                                // byte-view byref over one.
+                                // `CliType.RuntimePointer`: every cell of a `new int*[n]` is
+                                // one, and `MemoryMarshal.GetArrayDataReference(Array)` hands
+                                // out a byte-view byref over them
+                                // (`sourcesPure/PointerArrayCellThroughByteView.cs` reads
+                                // through exactly that).
                                 //
                                 // This does not make that case *work*: measured, a pointer
                                 // cell that gets past the payload gate reaches

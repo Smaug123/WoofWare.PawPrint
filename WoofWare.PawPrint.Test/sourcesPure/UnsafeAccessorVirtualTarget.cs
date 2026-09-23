@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 
 // CoreCLR's synthesised body for `UnsafeAccessorKind.Method` is a `callvirt`, not a `call`
-// (vm/unsafeaccessors.cpp:968). Two things follow, and both are checked here: a virtual target
+// (vm/unsafeaccessors.cpp:970). Two things follow, and both are checked here: a virtual target
 // named through the type that declares it dispatches to the runtime type's override, and a null
 // receiver faults at the accessor rather than inside the target.
 //
