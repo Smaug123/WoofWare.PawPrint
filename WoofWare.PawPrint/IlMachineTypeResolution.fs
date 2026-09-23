@@ -224,6 +224,40 @@ module IlMachineTypeResolution =
 
         state, equivalent
 
+    /// `TypeConcretization.signaturesEquivalentWithoutSubstitution`: the comparison `[UnsafeAccessor]`
+    /// matching makes, in which a type variable on either side is compared by its index alone.
+    let signaturesEquivalentWithoutSubstitution
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (skipReturnType : bool)
+        (caller : TypeConcretization.UnsubstitutedComparand)
+        (callee : TypeConcretization.UnsubstitutedComparand)
+        : IlMachineState * bool
+        =
+        let ctx =
+            {
+                TypeConcretization.ConcretizationContext.ConcreteTypes = state.ConcreteTypes
+                TypeConcretization.ConcretizationContext.LoadedAssemblies = state._LoadedAssemblies
+                TypeConcretization.ConcretizationContext.BaseTypes = baseClassTypes
+            }
+
+        let equivalent, ctx =
+            TypeConcretization.signaturesEquivalentWithoutSubstitution
+                ctx
+                (loader loggerFactory state)
+                skipReturnType
+                caller
+                callee
+
+        let state =
+            { state with
+                _LoadedAssemblies = ctx.LoadedAssemblies
+                ConcreteTypes = ctx.ConcreteTypes
+            }
+
+        state, equivalent
+
     let internal resolveTopLevelTypeFromName
         (loggerFactory : ILoggerFactory)
         (ns : string option)
