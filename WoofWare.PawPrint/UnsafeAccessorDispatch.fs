@@ -413,13 +413,22 @@ module internal UnsafeAccessorDispatch =
             // modifier retry cannot either -- the lookup is simply ambiguous. Measured on real .NET
             // 10: an accessor over `ref S` naming either an `override ToString` or an implicitly
             // implemented interface method raises `AmbiguousMatchException`, while a non-virtual
-            // instance method and a static one bind. Only the instance-method kind reaches this:
-            // a non-virtual method has no stub, and no `.ctor` is virtual.
-            let isVirtualOnValueType =
+            // instance method and a static one bind.
+            //
+            // This is `MethodTableBuilder::NeedsTightlyBoundUnboxingStub`, which also exempts a
+            // generic method (`mcInstantiated`) and an `RTSpecialName` one: measured, a struct's
+            // generic interface implementation binds rather than being ambiguous.
+            let hasUnboxingStub =
                 DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
+                && not single.IsStatic
                 && single.IsVirtual
+                && single.Generics.IsEmpty
+                && not (
+                    single.TryMetadata
+                    |> Option.exists (fun facts -> facts.MethodAttributes.HasFlag MethodAttributes.RTSpecialName)
+                )
 
-            if isVirtualOnValueType then
+            if hasUnboxingStub then
                 state, Error UnsafeAccessorRefusal.AmbiguousMatch
             else
                 state, Ok single
@@ -793,6 +802,30 @@ module internal UnsafeAccessorDispatch =
             | Ok () ->
 
             refuseByrefReferenceReceiver ()
+
+            // A value type's generic virtual method has no unboxing stub, so it binds (see
+            // `findTargetMethod`), and the stub's `callvirt` then runs it for a value-type
+            // instantiation. For an instantiation shared over `System.__Canon` -- any reference-type
+            // argument -- measured on real .NET 10 the process dies with SIGSEGV on the call, which
+            // is not an answer PawPrint can give.
+            match kind with
+            | UnsafeAccessorKind.Method when
+                targetIsValueType
+                && target.IsVirtual
+                && not target.Generics.IsEmpty
+                && accessor.Generics
+                   |> Seq.exists (fun argument ->
+                       match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
+                       | Some (_, typeInfo) ->
+                           not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                       // Structural: an array, which is a reference type, or a shape that is not a
+                       // valid type argument at all.
+                       | None -> true
+                   )
+                ->
+                failwith
+                    $"TODO: %s{describe} names the generic virtual method %s{name} of a value type and instantiates it with a reference type; real .NET 10 crashes the process with SIGSEGV calling such an accessor, which PawPrint cannot reproduce"
+            | _ -> ()
 
             // Two shapes the *body* CoreCLR emits refuses, both of them after the lookup has
             // succeeded -- measured on real .NET 10, an abstract class with no matching
