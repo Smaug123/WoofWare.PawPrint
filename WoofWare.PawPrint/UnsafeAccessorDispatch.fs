@@ -66,8 +66,9 @@ type internal UnsafeAccessorRefusal =
 
     /// `InvalidProgramException` (`Argument_GenTypeConstraintsNotEqual`), which
     /// `VerifyDeclarationSatisfiesTargetConstraints` raises once the lookup has found a method of a
-    /// generic type: an accessor on a non-generic type supplies no class instantiation to check the
-    /// target type's parameters against.
+    /// generic type, unless the accessor's own declaring type has exactly as many type parameters:
+    /// those are what the target type's parameters are checked against, so an accessor on a
+    /// non-generic type has nothing to supply.
     | GenericTypeConstraintsNotEqual
 
     /// `VerificationException` (`IDS_EE_METHOD_CONSTRAINTS_VIOLATION`), which CoreCLR raises while
@@ -293,33 +294,41 @@ module internal UnsafeAccessorDispatch =
         else
             $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
-    /// The indices of the method type parameters this signature element mentions, at any depth.
-    let rec private mentionedMethodParameters (ty : TypeDefn) : Set<int> =
+    /// One type variable a signature element mentions.
+    [<RequireQualifiedAccess>]
+    type private MentionedParameter =
+        /// `!index`, a variable of the type that declares the signature.
+        | OfType of index : int
+        /// `!!index`, a variable of the method whose signature it is.
+        | OfMethod of index : int
+
+    /// The type variables this signature element mentions, at any depth.
+    let rec private mentionedParameters (ty : TypeDefn) : Set<MentionedParameter> =
         match ty with
-        | TypeDefn.GenericMethodParameter index -> Set.singleton index
-        | TypeDefn.Modified m -> mentionedMethodParameters m.Unmodified
+        | TypeDefn.GenericTypeParameter index -> Set.singleton (MentionedParameter.OfType index)
+        | TypeDefn.GenericMethodParameter index -> Set.singleton (MentionedParameter.OfMethod index)
+        | TypeDefn.Modified m -> mentionedParameters m.Unmodified
         | TypeDefn.Array (element, _)
         | TypeDefn.Pinned element
         | TypeDefn.Pointer element
         | TypeDefn.Byref element
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionedMethodParameters element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionedParameters element
         | TypeDefn.GenericInstantiation (generic, args) ->
             args
-            |> Seq.map mentionedMethodParameters
+            |> Seq.map mentionedParameters
             |> Set.unionMany
-            |> Set.union (mentionedMethodParameters generic)
+            |> Set.union (mentionedParameters generic)
         | TypeDefn.FunctionPointer signature ->
             let returned =
                 match signature.ReturnType with
                 | MethodReturnType.Void -> Set.empty
-                | MethodReturnType.Returns ret -> mentionedMethodParameters ret
+                | MethodReturnType.Returns ret -> mentionedParameters ret
 
             signature.ParameterTypes
-            |> Seq.map mentionedMethodParameters
+            |> Seq.map mentionedParameters
             |> Set.unionMany
             |> Set.union returned
         | TypeDefn.PrimitiveType _
-        | TypeDefn.GenericTypeParameter _
         | TypeDefn.FromDefinition _
         | TypeDefn.FromReference _
         | TypeDefn.Void -> Set.empty
@@ -417,7 +426,14 @@ module internal UnsafeAccessorDispatch =
 
                 let header = comparisonHeader declarationSignature.Header candidateSignature.Header
 
-                let declarationComparand : TypeConcretization.SignatureComparand =
+                // Both sides' type variables are left standing rather than substituted: CoreCLR
+                // compares these blobs with no substitution on either side (`pSubst1 = pSubst2 =
+                // NULL`, unsafeaccessors.cpp:401/408), so a target spelling `!0` matches only a
+                // declaration spelling `!0` -- never one spelling the type that instantiates it,
+                // and never the accessor's own `!!0`. Measured against real .NET 10: a non-generic
+                // accessor over `C<int>` does *not* find `C<T>::M(T)`, and one declared on `A<T>`
+                // taking `T` does.
+                let declarationComparand : TypeConcretization.UnsubstitutedComparand =
                     {
                         Signature =
                             comparandSignature
@@ -426,29 +442,16 @@ module internal UnsafeAccessorDispatch =
                                 (stripReturnModifiersDeep declarationSignature.ReturnType)
                                 (declarationParameters |> List.map stripModifiersDeep)
                         AssemblyFullName = accessorAssemblyFullName
-                        // The accessor's declaring type is non-generic (`resolve` refuses
-                        // otherwise), so no `!i` can appear on this side at all.
-                        DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
                     }
 
-                let candidateComparand : TypeConcretization.SignatureComparand =
+                let candidateComparand : TypeConcretization.UnsubstitutedComparand =
                     {
                         Signature = candidateSignature
                         AssemblyFullName = targetTypeInfo.AssemblyFullName
-                        // The target's own type variables, left standing rather than substituted:
-                        // CoreCLR compares these blobs with no substitution on either side
-                        // (`pSubst1 = pSubst2 = NULL`, unsafeaccessors.cpp:399/409), so a target
-                        // spelling `!0` matches only a declaration spelling `!0` -- never one
-                        // spelling the type that instantiates it. Measured against real .NET 10: a
-                        // non-generic accessor over `C<int>` does *not* find `C<T>::M(T)`.
-                        DeclaringTypeGenerics =
-                            TypeConcretization.SubstitutionContext.forDefinition
-                                targetTypeInfo.Identity
-                                targetTypeInfo.Generics.Length
                     }
 
                 let state, matches =
-                    IlMachineTypeResolution.signaturesEquivalent
+                    IlMachineTypeResolution.signaturesEquivalentWithoutSubstitution
                         loggerFactory
                         baseClassTypes
                         state
@@ -534,7 +537,9 @@ module internal UnsafeAccessorDispatch =
         let state, matching =
             ((state, []), candidates)
             ||> List.fold (fun (state, acc) candidate ->
-                let declarationComparand : TypeConcretization.SignatureComparand =
+                // With no substitution on either side, as for a method (unsafeaccessors.cpp:660
+                // and :667).
+                let declarationComparand : TypeConcretization.UnsubstitutedComparand =
                     {
                         Signature =
                             comparandSignature
@@ -543,10 +548,9 @@ module internal UnsafeAccessorDispatch =
                                 MethodReturnType.Void
                                 [ stripModifiersDeep returnedType ]
                         AssemblyFullName = accessorAssemblyFullName
-                        DeclaringTypeGenerics = TypeConcretization.SubstitutionContext.ofClosed ImmutableArray.Empty
                     }
 
-                let candidateComparand : TypeConcretization.SignatureComparand =
+                let candidateComparand : TypeConcretization.UnsubstitutedComparand =
                     {
                         Signature =
                             comparandSignature
@@ -555,14 +559,10 @@ module internal UnsafeAccessorDispatch =
                                 MethodReturnType.Void
                                 [ stripModifiersDeep candidate.Signature ]
                         AssemblyFullName = targetTypeInfo.AssemblyFullName
-                        DeclaringTypeGenerics =
-                            TypeConcretization.SubstitutionContext.forDefinition
-                                targetTypeInfo.Identity
-                                targetTypeInfo.Generics.Length
                     }
 
                 let state, matches =
-                    IlMachineTypeResolution.signaturesEquivalent
+                    IlMachineTypeResolution.signaturesEquivalentWithoutSubstitution
                         loggerFactory
                         baseClassTypes
                         state
@@ -625,25 +625,49 @@ module internal UnsafeAccessorDispatch =
     /// (genmeth.cpp:1594), which checks the accessor's actual type arguments as the stub
     /// instantiates the target.
     ///
-    /// A target method *of a generic type* fails the first check outright. A type parameter that
-    /// names a constraint is refused, because deciding either check for it needs
-    /// `TypeVarTypeDesc::SatisfiesConstraints`'s assignability walk, which PawPrint does not have.
-    /// What is left is the one constraint every type parameter carries: the *absence* of
-    /// `allows ref struct` refuses a byref-like argument (typedesc.cpp:1606) -- a refusal only the
-    /// second check can make, since the declaration's own type variables are not byref-like.
+    /// A target method of a generic type fails the first check outright unless the accessor's
+    /// declaring type has exactly as many type parameters as the target type: that check sets each
+    /// of the accessor type's own variables against the target type's parameter at the same index,
+    /// whatever types the accessor's signature instantiates the target type with. A type parameter
+    /// of either the target type or the target method that names a constraint is refused, because
+    /// deciding either check for it needs `TypeVarTypeDesc::SatisfiesConstraints`'s assignability
+    /// walk, which PawPrint does not have. What is left is the one constraint every type parameter
+    /// carries: the *absence* of `allows ref struct` refuses a byref-like argument
+    /// (typedesc.cpp:1606) -- a refusal only the second check can make, since the declaration's own
+    /// type variables are not byref-like.
     let private checkTargetConstraints
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
         (describe : string)
+        (accessorTypeParameterCount : int)
         (targetTypeHandle : ConcreteTypeHandle)
-        (targetType : ConcreteType<ConcreteTypeHandle>)
+        (targetTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (accessorMethodGenerics : ImmutableArray<ConcreteTypeHandle>)
         (target : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
         : Result<unit, UnsafeAccessorRefusal>
         =
-        if not targetType.Generics.IsEmpty then
+        let constrained (metadata : GenericParamMetadata) : bool =
+            metadata.Constraint.IsSome
+            || metadata.RequiresParameterlessConstructor
+            || not metadata.Constraints.IsEmpty
+
+        // A non-generic target type has no parameters to check, whatever the accessor's type has
+        // (unsafeaccessors.cpp:537, where only a generic target type supplies instantiations).
+        if
+            not targetTypeInfo.Generics.IsEmpty
+            && targetTypeInfo.Generics.Length <> accessorTypeParameterCount
+        then
             Error UnsafeAccessorRefusal.GenericTypeConstraintsNotEqual
         else
+
+        // The argument each of these is checked against is the accessor type's own variable, and a
+        // variable satisfies an unconstrained parameter without being examined at all
+        // (typedesc.cpp:1530-1562): not even `allows ref struct` is asked of it, that being asked only
+        // of a type that is not a variable (:1612).
+        for parameter, metadata in targetTypeInfo.Generics do
+            if constrained metadata then
+                failwith
+                    $"TODO: %s{describe} names %s{target.Name} of a generic type whose type parameter %s{parameter.Name} carries a constraint; deciding whether the accessor type's own type parameter satisfies it needs the walk of CoreCLR's TypeVarTypeDesc::SatisfiesConstraints, which PawPrint does not have"
 
         if target.Generics.Length <> accessorMethodGenerics.Length then
             // Unreachable after a successful signature match, which compares the generic-parameter
@@ -654,11 +678,7 @@ module internal UnsafeAccessorDispatch =
         // Every parameter is screened before any argument is checked, because the lookup's check
         // over all of them precedes the instantiation's check over any one of them.
         for parameter, metadata in target.Generics do
-            if
-                metadata.Constraint.IsSome
-                || metadata.RequiresParameterlessConstructor
-                || not metadata.Constraints.IsEmpty
-            then
+            if constrained metadata then
                 failwith
                     $"TODO: %s{describe} names the generic method %s{target.Name}, whose type parameter %s{parameter.Name} carries a constraint; deciding whether the accessor's own type argument satisfies it needs the assignability walk of CoreCLR's TypeVarTypeDesc::SatisfiesConstraints, which PawPrint does not have"
 
@@ -725,10 +745,6 @@ module internal UnsafeAccessorDispatch =
         if hasTypeNameOverrides then
             failwith
                 $"TODO: %s{describe} names at least one of its types with [UnsafeAccessorType], which gives the type as an assembly-qualified string rather than in the signature. PawPrint resolves the target from the signature, so it would look the member up on the wrong type (usually System.Object) and silently miss it"
-
-        if not accessor.DeclaringTypeGenerics.IsEmpty then
-            failwith
-                $"TODO: %s{describe} is declared on a generic type. CoreCLR compares the declaration's signature blob against the target's with no substitution on either side, so the two types' variables are identified positionally by index alone (unsafeaccessors.cpp:399/409); PawPrint's signature comparison identifies a variable by its owning definition as well, and refuses to compare variables of two different owners"
 
         let rawSignature = MethodInfo.requireRawSignature $"%s{describe} dispatch" accessor
 
@@ -870,11 +886,10 @@ module internal UnsafeAccessorDispatch =
             match refusal with
             | Some refusal -> state, Error refusal
             | None ->
-                // `__Canon` declares no fields and one method, its non-generic instance
-                // constructor; an accessor naming its target through `ref T` declares `T`, so it
-                // is generic, and a generic declaration matches no non-generic method.
-                failwith
-                    $"BUG: %s{describe} bound a member of System.__Canon, which declares nothing a generic accessor can match"
+                // CoreLib's `__Canon` declares no members at all. Measured on real .NET 10, even a
+                // `.ctor` accessor of the instance-method kind, reaching `__Canon` through the
+                // `ref T` of a generic declaring type, reports `'System.__Canon..ctor'` missing.
+                failwith $"BUG: %s{describe} bound a member of System.__Canon, which declares none"
         else
 
         match strippedTarget with
@@ -885,7 +900,7 @@ module internal UnsafeAccessorDispatch =
             // `Get`/`Set`/`Address` accessors (`ArrayClass::GenerateArrayAccessorCallSig`,
             // array.cpp:68), which spell the element type as the class type variable `!0`: a
             // declaration on a non-generic type cannot spell `!0`, and the comparison substitutes
-            // nothing, so none of the three can ever match. What is left is the instance `.ctor`,
+            // nothing, so none of the three can match it. What is left is the instance `.ctor`,
             // which only the constructor kind and the instance-method kind can reach. Measured on
             // real .NET 10, every other lookup is reported missing, for all four non-constructor
             // kinds.
@@ -904,6 +919,16 @@ module internal UnsafeAccessorDispatch =
                 // constructor signatures, which PawPrint does not model.
                 failwith
                     $"TODO: %s{describe} names an array's .ctor through the instance-method kind; CoreCLR binds it if the signature matches one of the array's constructors, which PawPrint does not model, and the JIT then refuses the stub"
+            | UnsafeAccessorKind.Method when
+                not accessor.DeclaringTypeGenerics.IsEmpty
+                && (name = "Get" || name = "Set" || name = "Address")
+                ->
+                // A declaration on a generic type *can* spell `!0`, and the comparison takes it to be
+                // the array's element variable by position alone. Measured on real .NET 10:
+                // `A<T>.Get(T[] a, int i)` returning `T` binds `int[]::Get` for `A<int>`, and
+                // `Set` binds on `int[,]` likewise.
+                failwith
+                    $"TODO: %s{describe} is declared on a generic type and names an array's %s{name}; CoreCLR binds it if the signature matches the array's accessor, which PawPrint does not model"
             | UnsafeAccessorKind.Method
             | UnsafeAccessorKind.StaticMethod
             | UnsafeAccessorKind.Field
@@ -913,20 +938,26 @@ module internal UnsafeAccessorDispatch =
             // argument anywhere inside it changes the name reported: measured on real .NET 10,
             // `T[]` over `string` is `System.__Canon[]`, and `List<T>[]` over `string` is
             // `System.__Canon[]` too, because loading an array over a shared instantiation
-            // canonicalises the element again (clsload.cpp:3435). When every type parameter the
-            // target mentions is instantiated with its own canonical form, the canonical array is
-            // the exact one.
+            // canonicalises the element again (clsload.cpp:3435). The same is true of the accessor
+            // type's own type parameters: measured, `A<T>`'s `T[]` over `string` is
+            // `System.__Canon[]` as well. When every type parameter the target mentions is
+            // instantiated with its own canonical form, the canonical array is the exact one.
             let shared =
-                mentionedMethodParameters rawTarget
-                |> Seq.filter (fun index ->
-                    isSharedTypeArgument baseClassTypes state describe accessor.Generics.[index]
+                mentionedParameters rawTarget
+                |> Seq.map (fun parameter ->
+                    match parameter with
+                    | MentionedParameter.OfType index ->
+                        $"type parameter %d{index}", accessor.DeclaringTypeGenerics.[index]
+                    | MentionedParameter.OfMethod index ->
+                        $"method type parameter %d{index}", accessor.Generics.[index]
                 )
+                |> Seq.filter (fun (_, argument) -> isSharedTypeArgument baseClassTypes state describe argument)
                 |> Seq.tryHead
 
             match shared with
-            | Some index ->
+            | Some (parameter, argument) ->
                 failwith
-                    $"TODO: %s{describe} names an array whose type mentions method type parameter %d{index}, instantiated with %O{accessor.Generics.[index]}; CoreCLR searches the canonical array instantiated over System.__Canon, whose name it reports, and PawPrint does not model canonical forms"
+                    $"TODO: %s{describe} names an array whose type mentions %s{parameter}, instantiated with %O{argument}; CoreCLR searches the canonical array instantiated over System.__Canon, whose name it reports, and PawPrint does not model canonical forms"
             | None ->
 
             // `MemberLoader`'s messages name the target as `MethodTable::_GetFullyQualifiedNameForClass`
@@ -995,6 +1026,46 @@ module internal UnsafeAccessorDispatch =
                 failwith
                     $"TODO: %s{describe} reaches a reference type's member through a `ref` to the reference. CoreCLR accepts that and dereferences the byref as though it addressed the object, so what it produces is derived from an address and differs from run to run; PawPrint models a reference as an opaque handle and has no address to produce one from"
 
+        // The lookup took the accessor type's `!i` to be the target type's `!i` by index alone, so
+        // the target it bound has the declared signature only if the two denote the same type. They
+        // do in the documented shape, where the accessor's signature spells the target type as
+        // `Target<!0, !1, ...>`; otherwise CoreCLR binds all the same, and its unverified stub then
+        // hands the target a value of the accessor's type where the target's belongs. Measured on
+        // real .NET 10, `A<T, U>` binds `Boxed<U>`'s `T _typed` through a `ref T` return.
+        //
+        // Only the positions the lookup compared matter: those are where a `!i` can have been
+        // matched against the target's. The accessor's own `!!i` need no such check, because the
+        // stub instantiates the target method with the accessor's method type arguments.
+        let refuseMisalignedTypeVariables () : unit =
+            let compared =
+                match kind with
+                | UnsafeAccessorKind.Constructor -> rawSignature.ParameterTypes
+                | UnsafeAccessorKind.Method
+                | UnsafeAccessorKind.StaticMethod ->
+                    let returned =
+                        match rawSignature.ReturnType with
+                        | MethodReturnType.Void -> []
+                        | MethodReturnType.Returns ty -> [ ty ]
+
+                    returned @ List.tail rawSignature.ParameterTypes
+                | UnsafeAccessorKind.Field
+                | UnsafeAccessorKind.StaticField -> [ fieldReturnedType () ]
+
+            for parameter in compared |> Seq.map mentionedParameters |> Set.unionMany do
+                match parameter with
+                | MentionedParameter.OfMethod _ -> ()
+                | MentionedParameter.OfType index ->
+                    if index >= targetType.Generics.Length then
+                        failwith
+                            $"BUG: %s{describe} bound a member of %s{describeTargetType targetTypeInfo} by matching the accessor type's type parameter %d{index}, which that type does not have"
+
+                    let accessorArgument = accessor.DeclaringTypeGenerics.[index]
+                    let targetArgument = targetType.Generics.[index]
+
+                    if accessorArgument <> targetArgument then
+                        failwith
+                            $"TODO: %s{describe} binds a member of %s{describeTargetType targetTypeInfo} by taking the accessor type's type parameter %d{index} to be the target type's, but the accessor instantiates it with %O{accessorArgument} and the target type is instantiated with %O{targetArgument}. CoreCLR binds by position alone and its unverified stub passes one where the other belongs, which PawPrint does not reproduce"
+
         match kind with
         | UnsafeAccessorKind.Constructor
         | UnsafeAccessorKind.Method
@@ -1016,7 +1087,15 @@ module internal UnsafeAccessorDispatch =
             | Ok target ->
 
             match
-                checkTargetConstraints baseClassTypes state describe strippedTarget targetType accessor.Generics target
+                checkTargetConstraints
+                    baseClassTypes
+                    state
+                    describe
+                    accessor.DeclaringTypeGenerics.Length
+                    strippedTarget
+                    targetTypeInfo
+                    accessor.Generics
+                    target
             with
             | Error refusal -> state, Error refusal
             | Ok () ->
@@ -1055,6 +1134,8 @@ module internal UnsafeAccessorDispatch =
                 state, Error UnsafeAccessorRefusal.CantInstantiateAbstractClass
             | _ ->
 
+            refuseMisalignedTypeVariables ()
+
             let state, concretizedTarget, _declaringTypeHandle =
                 ExecutionConcretization.concretizeMethodWithAllGenerics
                     loggerFactory
@@ -1092,6 +1173,7 @@ module internal UnsafeAccessorDispatch =
         | Ok field ->
 
         refuseByrefReferenceReceiver ()
+        refuseMisalignedTypeVariables ()
 
         let plan =
             match kind with
