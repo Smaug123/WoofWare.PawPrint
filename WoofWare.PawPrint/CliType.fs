@@ -3386,7 +3386,7 @@ and CliValueType =
     /// True iff `handle` names a CLR enum: CoreCLR's `MethodTable::IsEnum`, decided nominally
     /// from the base type rather than from the `value__` field shape. Returns `false` for
     /// synthetic handles (arrays, byrefs, pointers, function pointers), none of which is an enum.
-    static member IsEnumHandle
+    static member private IsEnumHandle
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
         (corelib : BaseClassTypes<DumpedAssembly>)
