@@ -830,8 +830,10 @@ module SimulatedUnixPlatform =
     ///   set the flag may hold the wildcard and a specific address on one port,
     ///   listening or not; the exact duplicate is `EADDRINUSE` either way.
     ///
-    /// With the flag absent on either side — every UDP bind through the shim, and
-    /// every `ProtocolType.Unspecified` one — the two agree and refuse.
+    /// With the flag absent from the candidate, the two agree and refuse.
+    ///
+    /// Each socket's flag is read as it stands when the question is asked, not
+    /// as it stood when that socket was bound.
     ///
     /// The same relation answers `listen(2)`, which is measured rather than
     /// assumed: on Linux two reuse-carrying sockets may share an endpoint until
@@ -1018,6 +1020,21 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> 10
         | SimulatedUnixFlavour.Darwin -> 30
+
+    /// `SOL_SOCKET`, the `level` at which `setsockopt(2)` and `getsockopt(2)`
+    /// name the options every socket has whatever its protocol, in the
+    /// platform's own numbering: 1 on Linux, `0xffff` on Darwin. Measured.
+    let socketOptionLevel (platform : SimulatedUnixPlatform) : int =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 1
+        | SimulatedUnixFlavour.Darwin -> 0xffff
+
+    /// `SO_REUSEADDR`, at `socketOptionLevel`, in the platform's own numbering:
+    /// 2 on Linux, 4 on Darwin. Measured.
+    let reuseAddressOption (platform : SimulatedUnixPlatform) : int =
+        match flavour platform with
+        | SimulatedUnixFlavour.Linux -> 2
+        | SimulatedUnixFlavour.Darwin -> 4
 
     /// `struct sockaddr_in` for `endpoint`, as this platform's kernel copies one
     /// out: the family, the port and the address, and on the flavours that have

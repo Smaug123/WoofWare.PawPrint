@@ -219,20 +219,15 @@ type SocketDescription =
         /// Where this socket is bound, if anywhere. `None` until `bind(2)` or a
         /// `listen(2)` that binds implicitly.
         Binding : SocketBinding option
-        /// Whether `SO_REUSEADDR` is set on this socket.
+        /// Whether `SO_REUSEADDR` is set on this socket. `setsockopt(2)` sets
+        /// and clears it at any point in the socket's life, `getsockopt(2)`
+        /// reads it back, and `accept(2)` gives the socket it returns the
+        /// listener's value.
         ///
-        /// Socket state rather than binding state, and that is measured rather
-        /// than assumed: `SystemNative_Bind` issues the `setsockopt` *before*
-        /// `bind(2)` and only when its own `protocolType` argument is `PT_TCP`
-        /// (`pal_networking.c:1770`), so a bind that then fails still leaves the
-        /// option on — confirmed by reading it back after a bind that answered
-        /// EADDRNOTAVAIL. A later successful bind with `PT_UNSPECIFIED` does not
-        /// clear it, so deriving the flag from the successful call alone would
-        /// lose it and change which later binds are refused.
-        ///
-        /// Not readable back by a guest: the PAL maps managed `ReuseAddress` to
-        /// `SO_REUSEPORT` where that exists (`pal_networking.c:2274`). Its whole
-        /// observable effect is which later binds and listens are refused.
+        /// Its effect is on which bindings conflict, which `bind(2)` and Linux's
+        /// `listen(2)` decide from the value each socket holds at the time of
+        /// the call rather than when it was bound. See
+        /// `SimulatedUnixPlatform.bindConflict`.
         ReuseAddress : bool
         /// Where this socket is in its connection lifecycle: idle, listening
         /// (with the accept queue), connected, or latched by a refusal.
