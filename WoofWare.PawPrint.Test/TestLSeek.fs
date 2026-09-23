@@ -10,8 +10,8 @@ open WoofWare.PosixKernel
 /// The parts of `SystemNative_LSeek`'s contract that `sourcesPure/ReadSeekSeeded.cs` and
 /// `sourcesImpure/LSeekRawSeeded.cs` cannot reach, for three different reasons.
 ///
-///  * **The refusals.** `SEEK_DATA`/`SEEK_HOLE` and `SEEK_END` on a directory abort the interpreter
-///    rather than returning to the guest, so no exit code can assert them.
+///  * **The refusals.** `SEEK_DATA`/`SEEK_HOLE`, and `SEEK_END` on a directory on an NFS mount, abort
+///    the interpreter rather than returning to the guest, so no exit code can assert them.
 ///  * **The Darwin arms.** PawPrint defaults to a Linux-flavoured kernel, so the guests above only
 ///    ever exercise Linux's answers. The overflow errno in particular is *indistinguishable* from
 ///    the negative-result errno under Linux — both EINVAL — so a model that failed to tell the two
@@ -182,11 +182,43 @@ class Program
 
         run "LSeekWhenceOrder.cs" source |> exitCodeOf |> shouldEqual 0
 
-    /// A directory has no size PawPrint will state: measured, `lseek(dir, 0, SEEK_END)` is EINVAL on
-    /// Linux/tmpfs, 4096 on Linux/ext4 and 64 on macOS/APFS. `FStat` reports 4096 because `stat`
-    /// must fill the field in; nothing forces this one, so it is refused.
+    /// On the default mount, tmpfs, a directory takes no `SEEK_END` at all: measured, EINVAL for every
+    /// offset, and the position stays where it was.
     [<Test>]
-    let ``SEEK_END on a directory is refused`` () : unit =
+    let ``SEEK_END on a tmpfs directory is EINVAL`` () : unit =
+        let source =
+            guest
+                """
+        IntPtr d = OpenPath("d");
+        if (d == new IntPtr(-1)) return 1;
+        if (LSeek(d, 7, SEEK_SET) != 7) return 2;
+        if (!Rejected(d, 0, SEEK_END, 22)) return 3;
+        if (!Rejected(d, -1, SEEK_END, 22)) return 4;
+        if (LSeek(d, 0, SEEK_CUR) != 7) return 5;
+        return 0;
+"""
+
+        run "LSeekDirEndTmpfs.cs" source |> exitCodeOf |> shouldEqual 0
+
+    /// On APFS it counts from the size `stat` reports, which is 64 bytes for an empty directory.
+    [<Test>]
+    let ``SEEK_END on an APFS directory counts from its size`` () : unit =
+        let source =
+            guest
+                """
+        IntPtr d = OpenPath("d");
+        if (d == new IntPtr(-1)) return 1;
+        if (LSeek(d, 0, SEEK_END) != 64) return 2;
+        if (LSeek(d, -64, SEEK_END) != 0) return 3;
+        if (!Rejected(d, -65, SEEK_END, 22)) return 4;
+        return 0;
+"""
+
+        runOn darwin "LSeekDirEndApfs.cs" source |> exitCodeOf |> shouldEqual 0
+
+    /// On NFS the size is the server's, which nothing in the machine determines, so it is refused.
+    [<Test>]
+    let ``SEEK_END on an NFS directory is refused`` () : unit =
         let source =
             guest
                 """
@@ -196,10 +228,16 @@ class Program
         return 0;
 """
 
-        let exn = Assert.Catch (fun () -> run "LSeekDirEnd.cs" source |> ignore<RunOutcome>)
+        let nfs =
+            { seed with
+                FileSystemType = Some EmulatedFileSystemType.Nfs
+            }
+
+        let exn =
+            Assert.Catch (fun () -> runOn nfs "LSeekDirEndNfs.cs" source |> ignore<RunOutcome>)
 
         exn.Message |> shouldContainText "SystemNative_LSeek"
-        exn.Message |> shouldContainText "directory"
+        exn.Message |> shouldContainText "NFS"
         exn.Message |> shouldContainText "SEEK_END"
 
     /// ...and only `SEEK_END`. `SEEK_SET` and `SEEK_CUR` on a directory are portable — identical on

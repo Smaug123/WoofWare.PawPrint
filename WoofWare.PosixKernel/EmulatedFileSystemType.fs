@@ -10,8 +10,8 @@ namespace WoofWare.PosixKernel
 /// does not determine a mount's type. It does *constrain* it, which is what
 /// `EmulatedFileSystemType.isReportableUnder` carries.
 ///
-/// This changes what `SystemNative_GetFileSystemType` answers and nothing else.
-/// Path resolution keeps its flavour's limits either way — `pathLimits`
+/// This changes what `fstatfs(2)` reports for a file, a directory's `st_size`,
+/// and where `lseek(2)` with `SEEK_END` lands on a directory. Path resolution keeps its flavour's limits either way — `pathLimits`
 /// carries `NameLengthLimit` as an ext4-versus-APFS fact — so a kernel
 /// configured `Nfs` reports NFS while still resolving names as its flavour
 /// does.
@@ -65,6 +65,39 @@ module EmulatedFileSystemType =
         | EmulatedFileSystemType.Tmpfs -> 0x01021994u
         | EmulatedFileSystemType.Apfs -> 0x1Au
         | EmulatedFileSystemType.Nfs -> 0x6969u
+
+    /// A directory's `st_size` on a mount of this type, given how many names it
+    /// holds besides `.` and `..`, or `None` where the mount's type does not
+    /// determine it.
+    ///
+    /// NFS is the `None`: an NFS client reports whatever the server's own
+    /// filesystem says, and nothing about this machine says what that is.
+    let directorySize (fsType : EmulatedFileSystemType) (entries : int) : int64 option =
+        System.Diagnostics.Debug.Assert (entries >= 0, "directorySize: a directory cannot hold fewer than no names")
+
+        // Measured 2026-09-23 by a history probe run from an empty directory:
+        // 300 regular files created one at a time with names of 1 to 255
+        // bytes, 150 of them removed at random, then 600 random steps of
+        // creat, mkdir, symlink, link, mkfifo, unlink, rmdir, and rename
+        // within, into, out of and over the directory, then drained; twelve
+        // seeds per filesystem, about 14,500 observations each, `stat` and
+        // `fstat` agreeing on every one. Separately, 5000 files created and
+        // removed one at a time, and a subdirectory holding 50 files. The
+        // size is affine in the number of names alone: no step's name length,
+        // entry kind, or history moved it, and neither did the contents of a
+        // subdirectory.
+        match fsType with
+        // Linux 6.18.5 on `/dev/shm`: two 20-byte "entries" for `.` and `..`,
+        // and 20 more per name.
+        | EmulatedFileSystemType.Tmpfs -> Some (40L + 20L * int64 entries)
+        // macOS 26.6 (Darwin 25.6.0) on the APFS volume holding `/tmp`: 32
+        // bytes per name, `.` and `..` included.
+        | EmulatedFileSystemType.Apfs -> Some (64L + 32L * int64 entries)
+        // Not measured: no NFS server or mount was available. The answer
+        // comes from the server's GETATTR, so it is the size the *server's*
+        // filesystem gives the directory: a small one is 4096 bytes on a local
+        // ext4, and would be the rule above on an exported tmpfs.
+        | EmulatedFileSystemType.Nfs -> None
 
     /// The type a mount reports when a host expresses no preference.
     ///

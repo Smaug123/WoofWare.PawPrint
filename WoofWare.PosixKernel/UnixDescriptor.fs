@@ -8,6 +8,15 @@ type SeekExtension =
     | SeekData
     | SeekHole
 
+/// What `lseek`'s `SEEK_END` counts from on one descriptor.
+[<RequireQualifiedAccess>]
+type private SeekEndBasis =
+    /// The seek is `SEEK_SET` or `SEEK_CUR`, which never ask.
+    | NotConsulted
+    | Size of size : int64
+    /// The file takes no `SEEK_END` at all, whatever the offset.
+    | Fails of error : UnixError
+
 /// Why this kernel will not answer an `lseek`.
 ///
 /// Distinct from an errno: an errno is an answer, and these are the inputs for
@@ -17,7 +26,8 @@ type SeekExtension =
 type LSeekRefusal =
     /// `SEEK_DATA` or `SEEK_HOLE` on a seekable file.
     | Sparseness of whence : int * meaning : SeekExtension
-    /// `SEEK_END` on a directory.
+    /// `SEEK_END` on a directory whose size this kernel cannot state: one on an
+    /// NFS mount.
     | DirectoryEnd of inode : InodeNumber
 
 [<RequireQualifiedAccess>]
@@ -36,7 +46,7 @@ module LSeekRefusal =
 
             $"whence %d{whence} is %s{named} on the simulated platform. This kernel models file contents as a byte array with no notion of sparseness, so it cannot say where the data and holes are; and the two platforms transpose the numbers (3 is SEEK_DATA on Linux and SEEK_HOLE on Darwin), so the raw value does not name one operation."
         | LSeekRefusal.DirectoryEnd inode ->
-            $"inode %O{inode} is a directory, and was asked to seek relative to its end. A directory's size is a filesystem artefact rather than a fact about its contents, and there is no portable answer: measured, lseek(dir, 0, SEEK_END) is EINVAL on Linux/tmpfs, 4096 on Linux/ext4 and 64 on macOS/APFS. SEEK_SET and SEEK_CUR on a directory are portable and are supported."
+            $"inode %O{inode} is a directory on an NFS mount, and was asked to seek relative to its end. An NFS directory's size is whatever the server's own filesystem reports, which nothing in this machine determines, so this kernel cannot say where the end is. SEEK_SET and SEEK_CUR on a directory are portable and are supported, as is SEEK_END on a tmpfs or APFS directory."
 
 /// Why this kernel will not answer an `flock`.
 ///
@@ -493,33 +503,58 @@ module UnixDescriptor =
                     $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which the filesystem does not contain. A descriptor outliving its inode means an unlink or rmdir removed a still-open file or directory; the open file description must keep it alive (this is a bug in this library)."
 
         // The content is inspected only where a size is wanted, which is
-        // `SEEK_END` alone. A directory has none this kernel will state, and a
-        // symlink should not be here at all — but `SEEK_SET` and `SEEK_CUR` ask
-        // neither question, so neither may fire on those paths.
-        let sized : Result<int64 option, LSeekRefusal> =
+        // `SEEK_END` alone. Some directories have none this kernel will state,
+        // and a symlink should not be here at all — but `SEEK_SET` and
+        // `SEEK_CUR` ask neither question, so neither may fire on those paths.
+        let basis : Result<SeekEndBasis, LSeekRefusal> =
             match seekWhence with
             | SeekWhence.Set
-            | SeekWhence.Current -> Ok None
+            | SeekWhence.Current -> Ok SeekEndBasis.NotConsulted
             | SeekWhence.End ->
                 match entry.Content with
-                | InodeContent.RegularFile (contents, _) -> Ok (Some (int64 contents.Length))
+                | InodeContent.RegularFile (contents, _) -> Ok (SeekEndBasis.Size (int64 contents.Length))
                 | InodeContent.Symlink _ ->
                     // Not reachable: `open` resolves symlinks, so no descriptor
                     // names one. Stated rather than folded in so that an
                     // `O_PATH`-style descriptor finds a decision here.
                     failwith
                         $"UnixDescriptor.lseek: fd %d{fd} names inode %O{inode}, which is a symbolic link. `open` resolves symlinks, so no descriptor should name one; if this is reachable, decide what seeking a link through a descriptor means (this is a bug in this library)."
-                | InodeContent.Directory _ -> Error (LSeekRefusal.DirectoryEnd inode)
+                | InodeContent.Directory directory ->
+                    // Measured 2026-09-23 on every step of the histories
+                    // `EmulatedFileSystemType.directorySize` records, and at 0,
+                    // 1, 5 and 37 entries for offsets INT64_MIN, -10000,
+                    // -size-1, -size, -size+1, -1, 0, 1, 7, 2^40 and
+                    // INT64_MAX-size-1 .. INT64_MAX.
+                    match system.Machine.FileSystemType with
+                    // Linux 6.18.5: EINVAL for every offset, leaving the
+                    // position where it was. A tmpfs directory's `llseek`
+                    // takes `SEEK_SET` and `SEEK_CUR` only.
+                    | EmulatedFileSystemType.Tmpfs -> Ok (SeekEndBasis.Fails UnixError.EINVAL)
+                    // macOS 26.6: exactly a regular file's arithmetic over the
+                    // size `stat` reports — EINVAL below zero, EOVERFLOW past
+                    // INT64_MAX.
+                    | EmulatedFileSystemType.Apfs ->
+                        match
+                            EmulatedFileSystemType.directorySize EmulatedFileSystemType.Apfs directory.Entries.Count
+                        with
+                        | Some size -> Ok (SeekEndBasis.Size size)
+                        | None ->
+                            failwith
+                                "UnixDescriptor.lseek: EmulatedFileSystemType.directorySize states no size for an APFS directory, which is what SEEK_END on one is measured from (this is a bug in this library)"
+                    // The size is the server's, as for `stat`.
+                    | EmulatedFileSystemType.Nfs -> Error (LSeekRefusal.DirectoryEnd inode)
 
-        match sized with
+        match basis with
         | Error refusal -> Error refusal
-        | Ok forced ->
+        | Ok (SeekEndBasis.Fails error) -> Ok (SyscallAnswer.Failed error, system)
+        | Ok basis ->
 
         let sizeOf =
             lazy
-                match forced with
-                | Some size -> size
-                | None ->
+                match basis with
+                | SeekEndBasis.Size size -> size
+                | SeekEndBasis.NotConsulted
+                | SeekEndBasis.Fails _ ->
                     failwith
                         "UnixDescriptor.lseek: the file size was consulted on a path that does not consult it (this is a bug in this library)"
 

@@ -295,6 +295,9 @@ module UnixPathResolution =
     /// The whole of what a `stat`-family syscall reports; the syscalls differ
     /// only in how they reach the inode. `fstat` is this plus a descriptor
     /// lookup, and `stat`/`lstat` are this plus a path resolution.
+    ///
+    /// Throws for a directory on an NFS mount, whose size this kernel cannot
+    /// state (see `EmulatedFileSystemType.directorySize`).
     let statOf<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (inode : InodeNumber)
         (system : UnixSystem<'Task, 'Handler>)
@@ -316,11 +319,12 @@ module UnixPathResolution =
             // `readlink` reports the target's byte length as the link's size,
             // and a guest can see it through a file-length API.
             | InodeContent.Symlink target -> int64 (UnixByteString.length (SymlinkTarget.toByteString target))
-            // Invented, and the only field here that is: this kernel has no
-            // block allocator, so a directory has no natural size. 4096 is what
-            // ext4 reports for a small directory, i.e. the least surprising
-            // answer a guest could read.
-            | InodeContent.Directory _ -> 4096L
+            | InodeContent.Directory directory ->
+                match EmulatedFileSystemType.directorySize system.Machine.FileSystemType directory.Entries.Count with
+                | Some size -> size
+                | None ->
+                    failwith
+                        $"UnixPathResolution.statOf: inode %O{inode} is a directory on a %O{system.Machine.FileSystemType} mount. A directory's st_size there is whatever the server's filesystem reports, which nothing in this machine determines, so this kernel will not state one."
 
         let birthTime =
             // Withheld rather than reported when the platform has no
@@ -357,7 +361,7 @@ module UnixPathResolution =
     /// Cannot be refused, unlike `fstat`. Every inode a path resolves to is one
     /// this filesystem holds — a name for an inode-free object cannot be created
     /// in it — so the three descriptors `fstat` refuses for are unreachable from
-    /// here.
+    /// here. It does throw for a directory on an NFS mount, as `statOf` does.
     let stat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (policy : SymlinkPolicy)
         (path : UnixPath)
@@ -382,7 +386,8 @@ module UnixPathResolution =
     ///
     /// Refuses for a descriptor this kernel holds no inode for — the standard
     /// streams, a socket event port, a socket. That is a limit of the model
-    /// rather than an absent kernel answer; see `FStatRefusal`.
+    /// rather than an absent kernel answer; see `FStatRefusal`. Throws for a
+    /// directory on an NFS mount, as `statOf` does.
     let fstat<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (fd : int)
         (system : UnixSystem<'Task, 'Handler>)

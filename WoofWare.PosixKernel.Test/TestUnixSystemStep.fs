@@ -1478,15 +1478,14 @@ module TestUnixSystemStep =
         status.StatusChangeTime |> shouldEqual epoch
 
     [<Test>]
-    let ``a directory reports its type bits and the one invented field`` () : unit =
+    let ``a directory reports its type bits and its mount's size for it`` () : unit =
         let fd, system = withOpenDirectory linux
         let status = UnixPathResolution.fstat fd system |> reported
 
         status.Mode |> shouldEqual 0o40755
-        // The only invented field in the whole record: this kernel has no block
-        // allocator, so a directory has no natural size, and 4096 is what ext4
-        // reports for a small one.
-        status.Size |> shouldEqual 4096L
+        // Linux's default mount is tmpfs, where an empty directory is 40 bytes.
+        // `TestDirectorySize` covers the rule over whole histories.
+        status.Size |> shouldEqual 40L
 
     [<Test>]
     let ``a symlink reports its target's byte length and the platform's own bits`` () : unit =
