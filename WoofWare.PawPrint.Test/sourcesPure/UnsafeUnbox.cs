@@ -40,6 +40,11 @@ public enum OtherIntEnum
     P = 3,
 }
 
+public enum LongEnum : long
+{
+    X = 3,
+}
+
 public enum ByteEnum : byte
 {
     Q = 5,
@@ -168,6 +173,25 @@ public class TestUnsafeUnbox
         if (Unsafe.Unbox<int>(boxedEnum).CompareTo(3) != 0) return 37;
         if (Unsafe.Unbox<double>(boxedDouble).CompareTo(6.0) != 0) return 38;
         if (Unsafe.Unbox<Point>(boxedPoint).GetHashCode() != ((Point) boxedPoint).GetHashCode()) return 39;
+
+        // The two byrefs a relaxed pair of unboxes hands out address the same storage, and the
+        // underlying-integer view supports the byte-level and atomic operations an `int` does.
+        object boxedEnumForViews = IntEnum.B;
+        if (!Unsafe.AreSame(ref Unsafe.Unbox<int>(boxedEnumForViews), ref Unsafe.As<IntEnum, int>(ref Unsafe.Unbox<IntEnum>(boxedEnumForViews)))) return 50;
+        object boxedIntForViews = 5;
+        if (!Unsafe.AreSame(ref Unsafe.Unbox<IntEnum>(boxedIntForViews), ref Unsafe.As<int, IntEnum>(ref Unsafe.Unbox<int>(boxedIntForViews)))) return 51;
+        ref int viewed = ref Unsafe.Unbox<int>(boxedEnumForViews);
+        Unsafe.As<int, uint>(ref viewed) = 7u;
+        if ((int) (IntEnum) boxedEnumForViews != 7) return 52;
+        if (Unsafe.ReadUnaligned<int>(ref Unsafe.As<int, byte>(ref viewed)) != 7) return 53;
+        Unsafe.WriteUnaligned<int>(ref Unsafe.As<int, byte>(ref viewed), 9);
+        if ((int) (IntEnum) boxedEnumForViews != 9) return 54;
+        if (Interlocked.Increment(ref viewed) != 10) return 55;
+        if (Interlocked.CompareExchange(ref viewed, 20, 10) != 10) return 56;
+        if ((int) (IntEnum) boxedEnumForViews != 20) return 57;
+        object boxedLongEnum = LongEnum.X;
+        if (Interlocked.Add(ref Unsafe.Unbox<long>(boxedLongEnum), 5) != 8) return 58;
+        if ((long) (LongEnum) boxedLongEnum != 8) return 59;
 
         // Null raises NullReferenceException.
         try

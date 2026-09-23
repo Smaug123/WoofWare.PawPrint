@@ -217,8 +217,8 @@ module BoxedValue =
                 // admits only primitives and enums reporting the same primitive element type. In
                 // both cases the box's storage is one field holding the value itself — the
                 // primitive's own backing field (`System.Int32::m_value`) or an enum's `value__` —
-                // and that cell is what the two types' storage agree on. The whole value would be
-                // wrong: its wrapper, or the other type's fields, is not a `T`.
+                // and that cell holds a value of `T`'s primitive element type, which is what the two
+                // types agree on.
                 match CliValueType.TryAllFields boxed.Contents with
                 | [ field ] ->
                     let field = CliConcreteField.ToCliField field
