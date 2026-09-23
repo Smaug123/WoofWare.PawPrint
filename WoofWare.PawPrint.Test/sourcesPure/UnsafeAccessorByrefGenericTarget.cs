@@ -9,8 +9,8 @@ using System.Runtime.CompilerServices;
 // `void Call<T>(T t, int x)` over a bare `T` raises `BadImageFormatException`
 // (`sourcesPure/UnsafeAccessorFailures.cs` pins that half).
 //
-// An array target is the other shape this position can take, and is parked --
-// `sourcesPure/UnsafeAccessorArrayConstructor.cs`.
+// An array target is the other shape this position can take --
+// `sourcesPure/UnsafeAccessorArrayMemberLookup.cs`.
 public class TestUnsafeAccessorByrefGenericTarget
 {
     private struct Boxy

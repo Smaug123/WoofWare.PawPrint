@@ -293,6 +293,61 @@ module internal UnsafeAccessorDispatch =
         else
             $"%s{typeInfo.Namespace}.%s{typeInfo.Name}"
 
+    /// The indices of the method type parameters this signature element mentions, at any depth.
+    let rec private mentionedMethodParameters (ty : TypeDefn) : Set<int> =
+        match ty with
+        | TypeDefn.GenericMethodParameter index -> Set.singleton index
+        | TypeDefn.Modified m -> mentionedMethodParameters m.Unmodified
+        | TypeDefn.Array (element, _)
+        | TypeDefn.Pinned element
+        | TypeDefn.Pointer element
+        | TypeDefn.Byref element
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionedMethodParameters element
+        | TypeDefn.GenericInstantiation (generic, args) ->
+            args
+            |> Seq.map mentionedMethodParameters
+            |> Set.unionMany
+            |> Set.union (mentionedMethodParameters generic)
+        | TypeDefn.FunctionPointer signature ->
+            let returned =
+                match signature.ReturnType with
+                | MethodReturnType.Void -> Set.empty
+                | MethodReturnType.Returns ret -> mentionedMethodParameters ret
+
+            signature.ParameterTypes
+            |> Seq.map mentionedMethodParameters
+            |> Set.unionMany
+            |> Set.union returned
+        | TypeDefn.PrimitiveType _
+        | TypeDefn.GenericTypeParameter _
+        | TypeDefn.FromDefinition _
+        | TypeDefn.FromReference _
+        | TypeDefn.Void -> Set.empty
+
+    /// Does `ClassLoader::CanonicalizeGenericArg` (generics.cpp:27) replace this type argument with
+    /// `System.__Canon`? It does for every reference type -- a class, an interface, `string`, an
+    /// array -- and for no value type, not even a generic struct instantiated over a reference
+    /// type, which keeps its own definition.
+    let private isReplacedByCanon
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (describe : string)
+        (argument : ConcreteTypeHandle)
+        : bool
+        =
+        match argument with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> true
+        | ConcreteTypeHandle.Concrete _ ->
+            match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
+            | Some (_, typeInfo) -> not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+            | None -> failwith $"BUG: %s{describe}: concrete type argument %O{argument} has no TypeDef row"
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"TODO: %s{describe} is instantiated with %O{argument}, which is not a valid type argument; CoreCLR refuses the instantiation when it loads it, before any accessor runs"
+
     /// Find the one declared method on the target type that the declaration names, in the sense of
     /// `TrySetTargetMethod` (unsafeaccessors.cpp:584): the type's *own* methods only -- no
     /// base-class walk -- filtered by name and static-ness, then matched signature against
@@ -305,7 +360,6 @@ module internal UnsafeAccessorDispatch =
         (name : string)
         (accessorAssemblyFullName : string)
         (declarationSignature : TypeMethodSignature<TypeDefn>)
-        (targetType : ConcreteType<ConcreteTypeHandle>)
         (targetTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (state : IlMachineState)
         : IlMachineState *
@@ -380,7 +434,7 @@ module internal UnsafeAccessorDispatch =
                 let candidateComparand : TypeConcretization.SignatureComparand =
                     {
                         Signature = candidateSignature
-                        AssemblyFullName = targetType.AssemblyFullName
+                        AssemblyFullName = targetTypeInfo.AssemblyFullName
                         // The target's own type variables, left standing rather than substituted:
                         // CoreCLR compares these blobs with no substitution on either side
                         // (`pSubst1 = pSubst2 = NULL`, unsafeaccessors.cpp:399/409), so a target
@@ -389,8 +443,8 @@ module internal UnsafeAccessorDispatch =
                         // non-generic accessor over `C<int>` does *not* find `C<T>::M(T)`.
                         DeclaringTypeGenerics =
                             TypeConcretization.SubstitutionContext.forDefinition
-                                targetType.Identity
-                                targetType.Generics.Length
+                                targetTypeInfo.Identity
+                                targetTypeInfo.Generics.Length
                     }
 
                 let state, matches =
@@ -456,7 +510,6 @@ module internal UnsafeAccessorDispatch =
         (name : string)
         (accessorAssemblyFullName : string)
         (returnedType : TypeDefn)
-        (targetType : ConcreteType<ConcreteTypeHandle>)
         (targetTypeInfo : TypeInfo<GenericParamFromMetadata, TypeDefn>)
         (state : IlMachineState)
         : IlMachineState *
@@ -501,11 +554,11 @@ module internal UnsafeAccessorDispatch =
                                 0
                                 MethodReturnType.Void
                                 [ stripModifiersDeep candidate.Signature ]
-                        AssemblyFullName = targetType.AssemblyFullName
+                        AssemblyFullName = targetTypeInfo.AssemblyFullName
                         DeclaringTypeGenerics =
                             TypeConcretization.SubstitutionContext.forDefinition
-                                targetType.Identity
-                                targetType.Generics.Length
+                                targetTypeInfo.Identity
+                                targetTypeInfo.Generics.Length
                     }
 
                 let state, matches =
@@ -740,17 +793,160 @@ module internal UnsafeAccessorDispatch =
             | ConcreteTypeHandle.Byref inner -> inner
             | other -> other
 
+        // The type a field accessor's `ref` return addresses, which is what a candidate field's own
+        // type is compared against.
+        let fieldReturnedType () : TypeDefn =
+            match rawSignature.ReturnType with
+            | MethodReturnType.Returns ret ->
+                match byrefElement ret with
+                | Some element -> element
+                | None ->
+                    failwith
+                        "BUG: a field accessor whose return is not a byref reached member lookup; it is refused as BadImageFormat above"
+            | MethodReturnType.Void ->
+                failwith
+                    "BUG: a field accessor with a void return reached member lookup; it is refused as BadImageFormat above"
+
+        // A generic method over a reference type is compiled once, for its canonical instantiation,
+        // and the stub is generated from that: so a `ref T` target position whose `T` is a
+        // reference type is `System.__Canon` to the lookup, not the exact class. Measured on real
+        // .NET 10: `ref int X<T>(ref T t)` reaches a struct `T`'s field and reports
+        // `'System.__Canon.x'` missing for a class `T`, however real the member is on the class.
+        //
+        // Only the whole target position canonicalises to `__Canon`. A reference type *inside* it
+        // leaves the outer definition in place -- `Box<T>` over a class is `Box<__Canon>`, which is
+        // still `Box`1` with `Box`1`'s members and name -- so for a nominal target the exact
+        // instantiation searches the same members and reports the same name. An array is the
+        // exception, and is dealt with below.
+        if
+            namesByrefToGenericParameter rawTarget
+            && isReplacedByCanon baseClassTypes state describe strippedTarget
+        then
+            let canon =
+                baseClassTypes.Corelib.TryGetTopLevelTypeDef "System" "__Canon"
+                |> Option.defaultWith (fun () -> failwith "BUG: CoreLib defines no System.__Canon")
+
+            let state, refusal =
+                match kind with
+                | UnsafeAccessorKind.Method
+                | UnsafeAccessorKind.StaticMethod ->
+                    let state, found =
+                        findTargetMethod
+                            loggerFactory
+                            baseClassTypes
+                            describe
+                            kind
+                            name
+                            accessor.DeclaringAssemblyFullName
+                            rawSignature
+                            canon
+                            state
+
+                    state,
+                    (match found with
+                     | Ok _ -> None
+                     | Error refusal -> Some refusal)
+                | UnsafeAccessorKind.Field
+                | UnsafeAccessorKind.StaticField ->
+                    let state, found =
+                        findTargetField
+                            loggerFactory
+                            baseClassTypes
+                            kind
+                            name
+                            accessor.DeclaringAssemblyFullName
+                            (fieldReturnedType ())
+                            canon
+                            state
+
+                    state,
+                    (match found with
+                     | Ok _ -> None
+                     | Error refusal -> Some refusal)
+                | UnsafeAccessorKind.Constructor ->
+                    failwith
+                        "BUG: a constructor accessor's target is its return type, which is refused above if it is a byref"
+
+            match refusal with
+            | Some refusal -> state, Error refusal
+            | None ->
+                // `__Canon` declares no fields and one method, its non-generic instance
+                // constructor; an accessor naming its target through `ref T` declares `T`, so it
+                // is generic, and a generic declaration matches no non-generic method.
+                failwith
+                    $"BUG: %s{describe} bound a member of System.__Canon, which declares nothing a generic accessor can match"
+        else
+
         match strippedTarget with
         | ConcreteTypeHandle.OneDimArrayZero _
         | ConcreteTypeHandle.Array _ ->
             // An array is *not* a TypeDesc in modern CoreCLR -- arrays have MethodTables -- so it
-            // is a legal target there: measured on real .NET 10, a `Constructor` accessor returning
-            // `int[,]` or `int[]` binds the array's constructor, and any other member is reported
-            // missing under the array's reflection name (`'System.Int32[,].Get'`). PawPrint's
-            // `newobj` reaches an array constructor only through the metadata token an ordinary
-            // call site carries, so there is nothing for the accessor to dispatch to.
-            failwith
-                $"TODO: %s{describe} names an array type as its target; CoreCLR binds the array's constructor and reports any other member missing, and PawPrint's `newobj` cannot construct an array from a resolved element type and rank"
+            // is a legal target there. Its only members are its constructors and its
+            // `Get`/`Set`/`Address` accessors (`ArrayClass::GenerateArrayAccessorCallSig`,
+            // array.cpp:68), which spell the element type as the class type variable `!0`: a
+            // declaration on a non-generic type cannot spell `!0`, and the comparison substitutes
+            // nothing, so none of the three can ever match. What is left is the instance `.ctor`,
+            // which only the constructor kind and the instance-method kind can reach. Measured on
+            // real .NET 10, every other lookup is reported missing, for all four non-constructor
+            // kinds.
+            match kind with
+            | UnsafeAccessorKind.Constructor ->
+                // PawPrint's `newobj` reaches an array constructor only through the metadata
+                // token an ordinary call site carries, so there is nothing for the accessor to
+                // dispatch to.
+                failwith
+                    $"TODO: %s{describe} names an array type as a constructor's target; CoreCLR binds the array's constructor, and PawPrint's `newobj` cannot construct an array from a resolved element type and rank"
+            | UnsafeAccessorKind.Method when name = ".ctor" ->
+                // Measured on real .NET 10: an instance-method accessor over `int[,]` whose
+                // signature matches a constructor binds it, and the stub then fails to compile with
+                // an `InvalidProgramException` whose message is the JIT's; one whose signature
+                // matches none reports `.ctor` missing. Telling those apart needs the array's
+                // constructor signatures, which PawPrint does not model.
+                failwith
+                    $"TODO: %s{describe} names an array's .ctor through the instance-method kind; CoreCLR binds it if the signature matches one of the array's constructors, which PawPrint does not model, and the JIT then refuses the stub"
+            | UnsafeAccessorKind.Method
+            | UnsafeAccessorKind.StaticMethod
+            | UnsafeAccessorKind.Field
+            | UnsafeAccessorKind.StaticField ->
+
+            // The array searched is the one the *canonical* instantiation names, so a shared type
+            // argument anywhere inside it changes the name reported: measured on real .NET 10,
+            // `T[]` over `string` is `System.__Canon[]`, and `List<T>[]` over `string` is
+            // `System.__Canon[]` too, because loading an array over a shared instantiation
+            // canonicalises the element again (clsload.cpp:3435). When every type parameter the
+            // target mentions is instantiated with its own canonical form, the canonical array is
+            // the exact one.
+            let shared =
+                mentionedMethodParameters rawTarget
+                |> Seq.filter (fun index ->
+                    isSharedTypeArgument baseClassTypes state describe accessor.Generics.[index]
+                )
+                |> Seq.tryHead
+
+            match shared with
+            | Some index ->
+                failwith
+                    $"TODO: %s{describe} names an array whose type mentions method type parameter %d{index}, instantiated with %O{accessor.Generics.[index]}; CoreCLR searches the canonical array instantiated over System.__Canon, whose name it reports, and PawPrint does not model canonical forms"
+            | None ->
+
+            // `MemberLoader`'s messages name the target as `MethodTable::_GetFullyQualifiedNameForClass`
+            // does, which for an array is `TypeDesc::ConstructName` over the element's
+            // `TypeHandle::GetName`.
+            let arrayName =
+                NativeRuntimeTypeHelpers.typeHandleGetName
+                    describe
+                    state
+                    (RuntimeTypeHandleTarget.Closed strippedTarget)
+
+            let refusal =
+                match kind with
+                | UnsafeAccessorKind.Field
+                | UnsafeAccessorKind.StaticField -> UnsafeAccessorRefusal.MissingField (arrayName, name)
+                | UnsafeAccessorKind.Constructor
+                | UnsafeAccessorKind.Method
+                | UnsafeAccessorKind.StaticMethod -> UnsafeAccessorRefusal.MissingMethod (arrayName, name)
+
+            state, Error refusal
         | _ ->
 
         match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes strippedTarget with
@@ -759,16 +955,6 @@ module internal UnsafeAccessorDispatch =
 
         let targetIsValueType =
             DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetTypeInfo
-
-        // A generic method over a reference type is compiled once, for `System.__Canon`, so a
-        // `ref T` target position with a reference-type `T` resolves against that shared
-        // instantiation rather than the exact class -- and `__Canon` declares nothing. Measured on
-        // real .NET 10: `ref int X<T>(ref T t)` reaches a struct `T`'s field and reports
-        // `'System.__Canon.x'` missing for a class `T`, however real the member is. Resolving the
-        // exact class here would bind a member the real runtime never finds.
-        if namesByrefToGenericParameter rawTarget && not targetIsValueType then
-            failwith
-                $"TODO: %s{describe} reaches a reference type through `ref T`, which CoreCLR resolves against the shared instantiation System.__Canon and so reports %s{name} missing; PawPrint would find the member on the exact type"
 
         // An instance member of a value type must be reached through a byref, or the accessor
         // would be handed a copy (unsafeaccessors.cpp:1111 and :1134).
@@ -822,7 +1008,6 @@ module internal UnsafeAccessorDispatch =
                     name
                     accessor.DeclaringAssemblyFullName
                     rawSignature
-                    targetType
                     targetTypeInfo
                     state
 
@@ -891,18 +1076,6 @@ module internal UnsafeAccessorDispatch =
         | UnsafeAccessorKind.Field
         | UnsafeAccessorKind.StaticField ->
 
-        let returnedType =
-            match rawSignature.ReturnType with
-            | MethodReturnType.Returns ret ->
-                match byrefElement ret with
-                | Some element -> element
-                | None ->
-                    failwith
-                        "BUG: a field accessor whose return is not a byref reached member lookup; it is refused as BadImageFormat above"
-            | MethodReturnType.Void ->
-                failwith
-                    "BUG: a field accessor with a void return reached member lookup; it is refused as BadImageFormat above"
-
         let state, found =
             findTargetField
                 loggerFactory
@@ -910,8 +1083,7 @@ module internal UnsafeAccessorDispatch =
                 kind
                 name
                 accessor.DeclaringAssemblyFullName
-                returnedType
-                targetType
+                (fieldReturnedType ())
                 targetTypeInfo
                 state
 
