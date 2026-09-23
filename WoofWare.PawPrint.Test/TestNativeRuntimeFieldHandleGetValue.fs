@@ -166,6 +166,46 @@ module TestNativeRuntimeFieldHandleGetValue =
         readInt32Cell outArr state |> shouldEqual 0
         readObjectCell resultArr state |> shouldEqual None
 
+        // The handler is not re-entered if the initialiser throws, so the wrap CoreCLR's
+        // `GetFieldValue` applies has to be on the initialiser's own frame.
+        assertActiveFrameIsWrappingInitialiser (ThreadId 0) lazyHolderHandle state
+
+    [<Test>]
+    let ``wraps an already-failed initialiser's cached exception in a fresh TargetInvocationException`` () =
+        let fixture = makeFixture ()
+
+        let state = fixture.State
+        let lazyHolderType = requiredTopLevelType fixture.GuestAssembly "" "LazyHolder"
+
+        let state, lazyHolderHandle =
+            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state lazyHolderType
+
+        let tieAddr, state = failInitialiser fixture (ThreadId 0) lazyHolderHandle state
+
+        let field = lazyHolderType.Fields |> List.find (fun f -> f.Name = "Total")
+
+        let outArr, resultArr, args, state =
+            getArgs fixture lazyHolderHandle field fixture.Int32Handle None 0 state
+
+        let _, result = invoke fixture args state
+
+        let state, wrapperAddr, wrapperType, inner = escapedException fixture result
+
+        let targetInvocationHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.ConcreteTypes
+                fixture.BaseClassTypes.TargetInvocationException
+
+        wrapperType |> shouldEqual targetInvocationHandle
+        // CoreCLR rethrows the *cached* instance, so a guest can compare it by reference with
+        // the one an ordinary static access saw; the wrapper around it is new.
+        inner |> shouldEqual (Some tieAddr)
+        wrapperAddr |> shouldNotEqual tieAddr
+
+        // The throw happens before the read and before the out-cell's write.
+        readInt32Cell outArr state |> shouldEqual 0
+        readObjectCell resultArr state |> shouldEqual None
+
     [<Test>]
     let ``answers the field type's zero for static storage nothing has written`` () =
         let fixture = makeFixture ()

@@ -753,10 +753,11 @@ module ExceptionDispatching =
     /// `Activator.CreateInstance<T>()` ctor is then additionally wrapped in
     /// `TargetInvocationException`.
     ///
-    /// The two normally land on *different* boundaries — the `.cctor` frame and the constructor
-    /// frame beneath it — because a type is initialised from its callee's prologue. One frame
-    /// carrying both is nevertheless handled here rather than ruled out, since which flags a
-    /// return state carries is not this function's to decide.
+    /// For `Activator.CreateInstance<T>()` the two land on *different* boundaries — the `.cctor`
+    /// frame and the constructor frame beneath it — because a type is initialised from its
+    /// callee's prologue. The reflective field accessors put both on the `.cctor` frame itself,
+    /// which they push directly from a native frame (see
+    /// `IlMachineState.markInitialiserFrameWrapInTargetInvocation`).
     ///
     /// Each wrapper is seeded with the frame that raises it, exactly as `throwExceptionObject`
     /// seeds an ordinary `throw`, because in CoreCLR that is literally what it is: the wrap is

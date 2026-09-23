@@ -84,8 +84,8 @@ module IlMachineState =
 
     let mapFrame = IlMachineThreadState.mapFrame
 
-    let markActiveFrameWrapInTargetInvocation =
-        IlMachineThreadState.markActiveFrameWrapInTargetInvocation
+    let markInitialiserFrameWrapInTargetInvocation =
+        IlMachineThreadState.markInitialiserFrameWrapInTargetInvocation
 
     let pushToEvalStack' = IlMachineThreadState.pushToEvalStack'
 

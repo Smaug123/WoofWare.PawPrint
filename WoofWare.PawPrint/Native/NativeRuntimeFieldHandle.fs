@@ -344,12 +344,19 @@ module NativeRuntimeFieldHandle =
     /// Run the declaring type's class initialiser if the caller has not vouched that it has run.
     /// `Choice2Of2` is the handler's early return: the initialiser has been pushed as a frame (or
     /// is blocked on another thread's run of it), and the handler will be re-entered from the top
-    /// once it completes.
+    /// once it completes; or the initialiser has failed, and a `TargetInvocationException` has
+    /// already been dispatched past the handler's frame.
     ///
     /// As an *input* the flag means "the caller has already established the class is
     /// initialised, so skip the check"; `FieldAccessor`'s permanent `SlowPath` state passes
     /// `true` (FieldAccessor.cs:193, :329) and its first-call state passes `false` (:177, :301).
     /// CoreCLR guards the cctor run on exactly this (invokeutil.cpp:785, :1010).
+    ///
+    /// A failure is reported as CoreCLR's `InvokeUtil::SetValidField` and `GetFieldValue` report
+    /// it: they run the initialiser inside an `EX_TRY` and throw a *fresh*
+    /// `TargetInvocationException` wrapping whatever it threw (`CreateTargetExcept`,
+    /// invokeutil.cpp:803, :1028) — unlike `ReflectionInvocation_RunClassConstructor`, which lets
+    /// the `TypeInitializationException` through unwrapped.
     let private ensureDeclaringClassInitialised
         (ctx : NativeCallContext)
         (operation : string)
@@ -362,19 +369,34 @@ module NativeRuntimeFieldHandle =
             Choice1Of2 state
         else
             match TypeInitTable.tryGet declaringTypeHandle state.TypeInitTable with
-            | Some (TypeInitState.Failed _) ->
-                // Refusing here rather than delegating is deliberate. CoreCLR catches a
-                // failing initialiser and throws a *fresh* `TargetInvocationException`
-                // wrapping the `TypeInitializationException` (`CreateTargetExcept`,
-                // invokeutil.cpp:803, :1028) — unlike `ReflectionInvocation_RunClassConstructor`,
-                // which lets it through unwrapped. `ensureTypeInitialised` dispatches the
-                // cached exception itself, so once it has returned there is nothing left
-                // to wrap; catching the already-failed state is the only interception
-                // point we have. See docs/divergences.md for the sibling case — an
-                // initialiser that fails *during* this call — which is not interceptable
-                // at all today.
-                failwith
-                    $"TODO: %s{operation} on a field of %O{declaringTypeHandle}, whose class initialiser has already failed; CoreCLR wraps the cached TypeInitializationException in a TargetInvocationException, which PawPrint cannot yet construct from here"
+            | Some (TypeInitState.Failed (tieAddr, _)) ->
+                // `ensureTypeInitialised` would dispatch the cached exception itself, leaving
+                // nothing to wrap, so the already-failed case is answered here. CoreCLR's
+                // `CheckRunClassInitThrowing` rethrows the same cached instance, and each call
+                // wraps it in a new `TargetInvocationException`.
+                let wrapperAddr, wrapperType, state =
+                    IlMachineState.synthesizeTargetInvocationException
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        tieAddr
+                        state
+
+                match
+                    ExceptionDispatching.throwExceptionObject
+                        ctx.LoggerFactory
+                        ctx.BaseClassTypes
+                        state
+                        ctx.Thread
+                        wrapperAddr
+                        wrapperType
+                with
+                | ExceptionDispatchResult.Dispatched state ->
+                    // The same outcome `ensureTypeInitialised` reports for the cached exception
+                    // it dispatches: raised because an initialiser previously failed, and already
+                    // unwound past this frame.
+                    NativeHandlerResult.throwingTypeInitializationException state |> Choice2Of2
+                | ExceptionDispatchResult.ExceptionUnhandled (state, exn) ->
+                    NativeHandlerResult.unhandledException ctx.Thread exn state |> Choice2Of2
             | _ ->
 
             // If the initialiser has to run, it is pushed as a frame and this native
@@ -387,6 +409,20 @@ module NativeRuntimeFieldHandle =
                     ctx.Thread
                     declaringTypeHandle
                     state
+
+            match whatWeDid with
+            | WhatWeDid.SuspendedForClassInit ->
+                // The handler is not re-entered if the initialiser throws: the exception unwinds
+                // through this frame. So the wrap is installed on the initialiser's own frame
+                // boundary, where exception dispatch applies it after the
+                // `TypeInitializationException` wrap that every failing initialiser gets.
+                IlMachineState.markInitialiserFrameWrapInTargetInvocation ctx.Thread declaringTypeHandle state
+                |> NativeHandlerResult.suspendedForClassInit
+                |> Choice2Of2
+            | WhatWeDid.ThrowingTypeInitializationException ->
+                failwith
+                    $"Logic error: %s{operation}: ensureTypeInitialised dispatched a cached TypeInitializationException for %O{declaringTypeHandle} unwrapped, but a type whose initialiser had already failed should have been caught before it was called"
+            | _ ->
 
             match NativeHandlerResult.tryEarlyReturn ctx.Thread (state, whatWeDid) with
             | Some earlyReturn -> Choice2Of2 earlyReturn
