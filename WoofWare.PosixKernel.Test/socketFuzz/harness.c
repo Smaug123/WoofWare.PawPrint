@@ -149,8 +149,8 @@ static void mask_string(uint32_t events, char *buf, size_t cap)
     }
 }
 
-/* poll(2)'s revents, in the same alphabet SocketFuzz.fs prints. Deliberately
- * refuses a bit outside the six: POLLRDNORM and friends exist on Linux, and
+/* poll(2)'s revents, in the same alphabet SocketFuzz.fs prints: every bit
+ * Linux's <poll.h> names. Deliberately refuses a bit with no name, because
  * silently dropping one would make a divergence look like agreement. */
 static void poll_mask_string(short revents, char *out, size_t cap)
 {
@@ -159,6 +159,9 @@ static void poll_mask_string(short revents, char *out, size_t cap)
     struct { short bit; const char *name; } rows[] = {
         { POLLIN, "IN" }, { POLLPRI, "PRI" }, { POLLOUT, "OUT" },
         { POLLERR, "ERR" }, { POLLHUP, "HUP" }, { POLLNVAL, "NVAL" },
+        { POLLRDNORM, "RDNORM" }, { POLLRDBAND, "RDBAND" },
+        { POLLWRNORM, "WRNORM" }, { POLLWRBAND, "WRBAND" },
+        { POLLMSG, "MSG" }, { POLLRDHUP, "RDHUP" },
     };
     for (size_t i = 0; i < sizeof rows / sizeof *rows; i++)
     {
@@ -171,7 +174,7 @@ static void poll_mask_string(short revents, char *out, size_t cap)
     }
     if (revents & ~known)
     {
-        fprintf(stderr, "poll reported revents 0x%x outside IN|PRI|OUT|ERR|HUP|NVAL\n", (unsigned short)revents);
+        fprintf(stderr, "poll reported revents 0x%x outside Linux's named bits\n", (unsigned short)revents);
         _exit(1);
     }
 }
@@ -352,14 +355,11 @@ static void run_op(const char *op)
     }
     else if (sscanf(op, "poll:%d:%d", &a, &b) == 2)
     {
-        /* The PAL's PollEvents bits are numerically the platform's for the six
-         * it knows (IN 0x1, PRI 0x2, OUT 0x4, ERR 0x8, HUP 0x10, NVAL 0x20), so
-         * the mask goes through unchanged -- but only those six: the PAL's
-         * conversion has exactly six rows, and the generator emits nothing
-         * else. */
-        if ((b & ~0x3F) != 0)
+        /* The mask is Linux's own numbering on both sides, so it goes through
+         * unchanged; anything outside 16 bits is a generator bug. */
+        if (b < 0 || b > 0xFFFF)
         {
-            fprintf(stderr, "poll events 0x%x outside IN|PRI|OUT|ERR|HUP|NVAL\n", b);
+            fprintf(stderr, "poll events %d is not a 16-bit mask\n", b);
             _exit(1);
         }
         struct pollfd p;

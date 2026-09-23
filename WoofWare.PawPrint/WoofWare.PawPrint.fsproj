@@ -142,6 +142,7 @@
     <Compile Include="HostStartupCall.fs" />
     <Compile Include="Native\UnixErrorPal.fs" />
     <Compile Include="Native\SocketEventsPal.fs" />
+    <Compile Include="Native\PollEventsPal.fs" />
     <Compile Include="Native\SocketArgumentsPal.fs" />
     <Compile Include="Native\PosixSignalPal.fs" />
     <Compile Include="Native\KillSignalPal.fs" />

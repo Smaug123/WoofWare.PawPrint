@@ -5401,8 +5401,9 @@ module NativeSystemNative =
             else
 
             // Decode every entry before answering, exactly as the C fills its
-            // whole `struct pollfd` array before calling `poll(2)`.
-            let entries : PollEntry list =
+            // whole `struct pollfd` array before calling `poll(2)`. Each is the
+            // descriptor and the PAL `Events`; `PollEventsPal.poll` converts.
+            let entries : (int * int16) list =
                 match entriesStorage with
                 | None -> []
                 | Some entriesStorage ->
@@ -5428,14 +5429,11 @@ module NativeSystemNative =
                                 2
                                 state
 
-                        {
-                            Fd = BinaryPrimitives.ReadInt32LittleEndian (fdBytes.AsSpan ())
-                            Requested =
-                                PollEvents.ofBits (BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ()))
-                        }
+                        BinaryPrimitives.ReadInt32LittleEndian (fdBytes.AsSpan ()),
+                        BinaryPrimitives.ReadInt16LittleEndian (eventsBytes.AsSpan ())
                     )
 
-            match UnixPoll.poll entries milliseconds (EmulatedKernel.unix state.Kernel) with
+            match PollEventsPal.poll entries milliseconds (EmulatedKernel.unix state.Kernel) with
             | Error refusal ->
                 // The library says why no kernel answer exists; PawPrint says
                 // which guest call asked, and what a guest could do instead.
@@ -5447,8 +5445,8 @@ module NativeSystemNative =
                         // answer is measured identical on both flavours. That row
                         // would be a branch with no consumer, since no
                         // Darwin-flavoured guest reaches this entry point today.
-                        " The measured Darwin rows are in docs/plans/2026-08-23-socket-poll."
-                    | PollRefusal.UnmeasuredTarget _ ->
+                        " The measured Darwin rows are in docs/plans/2026-08-23-socket-poll and docs/plans/2026-08-23-posix-kernel-extraction/poll-alphabet.c."
+                    | PollRefusal.UnmodelledTarget _ ->
                         " No managed caller reaches it: CoreLib polls only sockets (System.Net.Sockets), a standard stream (ConsolePal.Write) and an inotify descriptor (FileSystemWatcher, a kind PawPrint does not model), so this is a hand-rolled P/Invoke."
                     | PollRefusal.WouldPark _ ->
                         " There is no thread status carrying this call's captured entry set and its deadline, and no wake for it beside the readiness sweep that serves SystemNative_WaitForSocketEvents."
@@ -5470,7 +5468,7 @@ module NativeSystemNative =
                     (fun state (i, reported) ->
                         let bytes = Array.zeroCreate<byte> 2
 
-                        BinaryPrimitives.WriteInt16LittleEndian (Span<byte> bytes, PollEvents.toBits reported)
+                        BinaryPrimitives.WriteInt16LittleEndian (Span<byte> bytes, reported)
 
                         writeBytesThrough
                             ctx
