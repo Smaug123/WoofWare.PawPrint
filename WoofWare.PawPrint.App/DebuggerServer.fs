@@ -426,6 +426,7 @@ module DebuggerServer =
             Thread : int option
             Detail : string
             BlockedOnClassInitThread : int option
+            Effect : StepEffect
         }
 
     let private sessionState (session : SessionState) : IlMachineState =
@@ -470,7 +471,7 @@ module DebuggerServer =
 
     let private eventOfStepOutcome (stepNumber : int64) (outcome : Program.ProgramStepOutcome) : DebugEvent =
         match outcome with
-        | Program.ProgramStepOutcome.InstructionStepped (_, thread, whatWeDid, _effect) ->
+        | Program.ProgramStepOutcome.InstructionStepped (_, thread, whatWeDid, effect) ->
             let blockedOnClassInitThread =
                 match whatWeDid with
                 | WhatWeDid.BlockedOnClassInit blocker -> Some (threadIdValue blocker)
@@ -488,6 +489,7 @@ module DebuggerServer =
                 Thread = Some (threadIdValue thread)
                 Detail = string whatWeDid
                 BlockedOnClassInitThread = blockedOnClassInitThread
+                Effect = effect
             }
         | Program.ProgramStepOutcome.WorkerTerminated (_, thread) ->
             {
@@ -496,6 +498,7 @@ module DebuggerServer =
                 Thread = Some (threadIdValue thread)
                 Detail = "thread terminated"
                 BlockedOnClassInitThread = None
+                Effect = StepEffect.NoEffect
             }
         | Program.ProgramStepOutcome.Completed outcome ->
             let detail =
@@ -512,6 +515,7 @@ module DebuggerServer =
                 Thread = None
                 Detail = detail
                 BlockedOnClassInitThread = None
+                Effect = StepEffect.NoEffect
             }
         | Program.ProgramStepOutcome.Deadlocked (_, stuck) ->
             {
@@ -520,6 +524,7 @@ module DebuggerServer =
                 Thread = None
                 Detail = stuck
                 BlockedOnClassInitThread = None
+                Effect = StepEffect.NoEffect
             }
 
     let private stepSession
@@ -550,6 +555,7 @@ module DebuggerServer =
                 Thread = None
                 Detail = "program has already finished"
                 BlockedOnClassInitThread = None
+                Effect = StepEffect.NoEffect
             },
             false
         | SessionState.Deadlocked (_, stuck, steps) ->
@@ -560,8 +566,29 @@ module DebuggerServer =
                 Thread = None
                 Detail = stuck
                 BlockedOnClassInitThread = None
+                Effect = StepEffect.NoEffect
             },
             false
+
+    let private streamName (role : FileDescriptorRole) : string =
+        match role with
+        | FileDescriptorRole.StandardOutput -> "stdout"
+        | FileDescriptorRole.StandardError -> "stderr"
+        // `SystemNative_Write` refuses stdin before logging anything, so this names a state the
+        // interpreter should never reach; it is reported rather than raised, as elsewhere here.
+        | FileDescriptorRole.StandardInput -> "stdin"
+
+    /// The bytes are base64 because they are whatever the guest wrote, which need not be UTF-8.
+    let private writeOutputEntry
+        (writer : Utf8JsonWriter)
+        (role : FileDescriptorRole)
+        (bytes : ImmutableArray<byte>)
+        : unit
+        =
+        writer.WriteStartObject ()
+        writer.WriteString ("stream", streamName role)
+        writer.WriteBase64String ("bytesBase64", bytes.AsSpan ())
+        writer.WriteEndObject ()
 
     let private writeEvent (writer : Utf8JsonWriter) (event : DebugEvent) : unit =
         writer.WriteStartObject ()
@@ -573,6 +600,12 @@ module DebuggerServer =
         match event.BlockedOnClassInitThread with
         | Some blocker -> writer.WriteNumber ("blockedOnClassInitThread", blocker)
         | None -> ()
+
+        writer.WritePropertyName "output"
+
+        match event.Effect with
+        | StepEffect.NoEffect -> writer.WriteNullValue ()
+        | StepEffect.WroteToFd (role, bytes) -> writeOutputEntry writer role bytes
 
         writer.WriteEndObject ()
 
@@ -623,6 +656,19 @@ module DebuggerServer =
     let private writeStateResponse (writer : Utf8JsonWriter) (session : SessionState) : unit =
         writer.WriteStartObject ()
         writeSessionSummary writer session
+        writer.WriteEndObject ()
+
+    /// Everything the guest has written so far, in write order across both streams.
+    let private writeOutputResponse (writer : Utf8JsonWriter) (session : SessionState) : unit =
+        let state = sessionState session
+        writer.WriteStartObject ()
+
+        writeValueArray
+            writer
+            "entries"
+            state.Kernel.OutputLog
+            (fun writer entry -> writeOutputEntry writer entry.Role entry.Bytes)
+
         writer.WriteEndObject ()
 
     let private writeThreadResponse (writer : Utf8JsonWriter) (session : SessionState) (threadId : ThreadId) : unit =
@@ -1136,6 +1182,7 @@ module DebuggerServer =
                 "GET  /thread/{id}/stack-summary"
                 "GET  /thread/{id}/active-method/il"
                 "GET  /heap/{address}"
+                "GET  /output"
                 "POST /reset"
                 "POST /stop"
             ]
@@ -1268,6 +1315,10 @@ module DebuggerServer =
                                     | "GET", [ "state" ] ->
                                         responseOnly (
                                             jsonResponse 200 (fun writer -> writeStateResponse writer session)
+                                        )
+                                    | "GET", [ "output" ] ->
+                                        responseOnly (
+                                            jsonResponse 200 (fun writer -> writeOutputResponse writer session)
                                         )
                                     | "POST", [ "step" ] ->
                                         let count = parsePositiveInt "count" 1 1000 context.Request.Query
