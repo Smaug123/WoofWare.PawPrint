@@ -34,9 +34,16 @@ module TestLinuxCoreLibFlavour =
         |> Set.ofSeq
 
     /// Guards against `$DOTNET_LINUX_FRAMEWORK_DIR` pointing at the wrong pack — including at a
-    /// macOS one, which would make every other test here quietly assert nothing. The two entry
-    /// points are the opposite arms of the same `#if` in `Lock.NonNativeAot.cs`, so exactly one
-    /// of them is present in any given CoreLib.
+    /// macOS one, which would make every other test here quietly assert nothing.
+    ///
+    /// The two entry points are the opposite arms of `Environment.GetOSVersion`, which CoreLib
+    /// splits by file on `IsApplePlatform`: `Environment.OSVersion.Unix.cs` parses the kernel
+    /// release from `SystemNative_GetUnixRelease`, while `Environment.OSVersion.OSX.cs` asks the
+    /// Objective-C runtime through `Interop.libobjc`, which is compiled only for Apple targets.
+    /// The split is unchanged between the .NET 10 and .NET 11 CoreLibs, so this check holds on
+    /// both.
+    /// Asserting the absence of the Apple arm as well as the presence of the Linux one means
+    /// neither flavour can pass as the other.
     [<Test>]
     let ``the pinned framework really is the Linux CoreLib flavour`` () : unit =
         let frameworkDir = requireLinuxFramework ()
@@ -47,11 +54,8 @@ module TestLinuxCoreLibFlavour =
             Assembly.readFile loggerFactory (corelibPath frameworkDir)
             |> nativeEntryPointNames
 
-        imports
-        |> Set.contains "SystemNative_TryGetUInt32OSThreadId"
-        |> shouldEqual true
-
-        imports |> Set.contains "SystemNative_GetUInt64OSThreadId" |> shouldEqual false
+        imports |> Set.contains "SystemNative_GetUnixRelease" |> shouldEqual true
+        imports |> Set.contains "objc_msgSend" |> shouldEqual false
 
     /// Not just that we passed a directory: the interpreter
     /// really bound CoreLib out of it and ran a guest to completion against that image.
