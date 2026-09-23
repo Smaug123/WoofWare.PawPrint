@@ -105,6 +105,27 @@ module TestAssemblyProbe =
             |> shouldEqual (Some testAssemblySimpleName)
         )
 
+    /// A directory entry that lists under the name but cannot be opened, such as a dangling
+    /// symlink, holds nothing, and the probe goes on to the next directory.
+    [<Test>]
+    let ``a dangling symlink is skipped in favour of a later directory`` () =
+        withTempRoot (fun root ->
+            let first = Path.Combine (root, "first")
+            let second = Path.Combine (root, "second")
+            Directory.CreateDirectory first |> ignore<DirectoryInfo>
+
+            File.CreateSymbolicLink (
+                Path.Combine (first, testAssemblySimpleName + ".dll"),
+                Path.Combine (root, "nowhere.dll")
+            )
+            |> ignore<FileSystemInfo>
+
+            copyTestAssembly second (testAssemblySimpleName + ".dll")
+
+            probedName [ first ; second ] testAssemblySimpleName
+            |> shouldEqual (Some testAssemblySimpleName)
+        )
+
     /// Two files differing only by case are a collision however the request spells the name, so
     /// the answer cannot depend on the request's casing. Only a case-sensitive filesystem can
     /// hold the pair.

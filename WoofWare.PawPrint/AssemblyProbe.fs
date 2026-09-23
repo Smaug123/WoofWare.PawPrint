@@ -11,7 +11,8 @@ module AssemblyProbe =
     /// <summary>
     /// Read <c>&lt;simpleName&gt;.dll</c> from the first of <paramref name="dotnetRuntimeDirs"/>
     /// that holds it, matching the file name ignoring case. A directory that does not exist
-    /// holds nothing.
+    /// holds nothing, and neither does an entry that cannot be opened, such as a dangling
+    /// symlink.
     /// </summary>
     /// <remarks>
     /// CoreCLR's table of trusted platform assemblies compares simple names ignoring case
@@ -56,7 +57,13 @@ module AssemblyProbe =
             | [] -> None
             | [ single ] ->
                 logger.LogInformation ("Loading assembly from file {AssemblyFileLoadPath}", single)
-                Assembly.readFile loggerFactory single |> Some
+
+                // Listed is not the same as openable: a dangling symlink lists under its name and
+                // then cannot be read, and holds nothing, so the probe goes on to the next dir.
+                try
+                    Assembly.readFile loggerFactory single |> Some
+                with :? FileNotFoundException ->
+                    None
             | several ->
                 failwith
                     $"TODO: %s{dir} holds %d{List.length several} files named %s{fileName} differing only by case (%A{several}); CoreCLR binds whichever the host listed first among its trusted platform assemblies, an order PawPrint does not reproduce"
