@@ -57,6 +57,9 @@ module TestEntropyAgainstHost =
 
     let private everywhere : Where list = [ Where.Storage ; Where.Null ; Where.Wild ]
 
+    [<Literal>]
+    let private EINTR : int = 4
+
     /// The return value, or the errno a -1 left behind.
     let private hostAnswer (returned : int64) : Result<int64, int> =
         if returned >= 0L then
@@ -103,20 +106,42 @@ module TestEntropyAgainstHost =
         | Some SimulatedUnixFlavour.Linux -> ()
         | _ -> Assert.Ignore "getrandom(2) is a Linux system call"
 
+        // The limit is a whole number of pages, and the model states it for the
+        // x86-64 page size. A host with larger pages has a different limit and
+        // says nothing about this one.
+        if Environment.SystemPageSize <> 4096 then
+            Assert.Ignore
+                $"this host's pages are %d{Environment.SystemPageSize} bytes; the modelled limit is for 4096-byte pages"
+
         // A page beyond the largest transfer, so that a kernel that moved more
         // would still be writing into storage rather than faulting.
         let size = UnixEntropy.getRandomMaxTransfer + 4096UL
         let storage = Marshal.AllocHGlobal (nativeint size)
 
         try
-            let returned =
-                hostAnswer (int64 (getrandom (storage, unativeint UInt64.MaxValue, 0u)))
+            // A signal arriving mid-copy ends the call early with however much
+            // had moved (or EINTR), and the runtime hosting this test signals
+            // its own threads. So a short answer is retried, a bounded number of
+            // times, and the claim is only that some attempt moves exactly the
+            // limit and none moves more.
+            let attempts = 5
 
-            match returned with
-            | Ok moved when uint64 moved = UnixEntropy.getRandomMaxTransfer -> ()
-            | other ->
-                failwith
-                    $"getrandom of UInt64.MaxValue bytes: this kernel answered %O{other} (a count, or an errno); the model says it moves %d{UnixEntropy.getRandomMaxTransfer}."
+            let rec measure (remaining : int) (seen : Result<int64, int> list) : unit =
+                if remaining = 0 then
+                    failwith
+                        $"getrandom of UInt64.MaxValue bytes never moved the modelled %d{UnixEntropy.getRandomMaxTransfer} bytes in %d{attempts} attempts; this kernel answered %A{List.rev seen} (counts, or errnos). A short count is what an interrupted call returns, so persistent short counts suggest a different limit."
+                else
+
+                match hostAnswer (int64 (getrandom (storage, unativeint UInt64.MaxValue, 0u))) with
+                | Ok moved when uint64 moved = UnixEntropy.getRandomMaxTransfer -> ()
+                | Ok moved when uint64 moved > UnixEntropy.getRandomMaxTransfer ->
+                    failwith
+                        $"getrandom of UInt64.MaxValue bytes moved %d{moved}, more than the modelled %d{UnixEntropy.getRandomMaxTransfer}."
+                | Error errno when errno <> EINTR ->
+                    failwith $"getrandom of UInt64.MaxValue bytes failed with errno %d{errno}."
+                | interrupted -> measure (remaining - 1) (interrupted :: seen)
+
+            measure attempts []
         finally
             Marshal.FreeHGlobal storage
 
