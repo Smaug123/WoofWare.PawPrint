@@ -2496,6 +2496,26 @@ module TestImpureCases =
                 AssertTerminalState = None
             }
             {
+                // `ldflda`/`ldfld`/`stfld` of a primitive's own backing field (`System.Int32::m_value`)
+                // through a reference to the primitive, which C# never emits: the field is its
+                // container, so each acts on the primitive itself. Registered with the dynamic-code
+                // switch overridden, like its siblings. Every expectation was measured against the
+                // host's real .NET, which returns 0 for this program.
+                FileName = "DynamicMethodPrimitiveBackingField.cs"
+                ExpectedReturnCode = 0
+                KernelConfig = KernelConfig.Default
+                AppContext =
+                    AppContextProperties.ofMap (
+                        Map.ofList
+                            [
+                                "System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported", "true"
+                            ]
+                    )
+                Oracle = OraclePolicy.Never
+                ExpectsUnhandledException = false
+                AssertTerminalState = None
+            }
+            {
                 // Method-shaped operands resolved against a `DynamicScope` rather than against
                 // metadata: `call` naming a scope entry that is itself a `DynamicMethod`, including
                 // a method naming *itself*. Registered with the dynamic-code switch overridden, like
