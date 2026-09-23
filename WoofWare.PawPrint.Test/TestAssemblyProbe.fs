@@ -80,6 +80,26 @@ module TestAssemblyProbe =
             probedName [ root ] (testAssemblySimpleName + "X") |> shouldEqual None
         )
 
+    /// The empty runtime-dir entry, which is how `Path.GetDirectoryName` spells a bare file name's
+    /// directory, is the current directory. Tested as a pure mapping because the current
+    /// directory is process-wide and this fixture runs in parallel.
+    [<TestCase("", ".")>]
+    [<TestCase(".", ".")>]
+    [<TestCase("sub", "sub")>]
+    [<TestCase("/abs/dir", "/abs/dir")>]
+    let ``the empty runtime dir is the current directory`` (dir : string) (expected : string) =
+        AssemblyProbe.runtimeDirPath dir |> shouldEqual expected
+
+    /// End to end through the probe: the test host's current directory is its output directory,
+    /// which holds the test assembly. Nothing in the suite changes the current directory.
+    [<Test>]
+    let ``the empty runtime dir finds an assembly in the current directory`` () =
+        if not (File.Exists (testAssemblySimpleName + ".dll")) then
+            Assert.Ignore "the test host's current directory does not hold the test assembly"
+
+        probedName [ "" ] testAssemblySimpleName
+        |> shouldEqual (Some testAssemblySimpleName)
+
     [<Test>]
     let ``a directory that does not exist is skipped`` () =
         withTempRoot (fun root ->

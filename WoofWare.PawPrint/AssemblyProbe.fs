@@ -9,6 +9,17 @@ open Microsoft.Extensions.Logging
 module AssemblyProbe =
 
     /// <summary>
+    /// The directory a runtime-dir entry names, as a path the filesystem can list: the empty
+    /// entry is the current directory.
+    /// </summary>
+    /// <remarks>
+    /// <c>Path.GetDirectoryName "Guest.dll"</c> is <c>""</c>, so a bare file name's own
+    /// directory arrives spelled that way. <c>Directory.Exists ""</c> is false, where
+    /// <c>Path.Combine ("", name)</c> is <c>name</c> relative to the current directory.
+    /// </remarks>
+    let runtimeDirPath (dir : string) : string = if dir = "" then "." else dir
+
+    /// <summary>
     /// Read <c>&lt;simpleName&gt;.dll</c> from the first of <paramref name="dotnetRuntimeDirs"/>
     /// that holds it, matching the file name ignoring case. A directory that does not exist
     /// holds nothing, and neither does an entry that cannot be opened, such as a dangling
@@ -36,6 +47,8 @@ module AssemblyProbe =
         // directory we were never going to bind against fail the load.
         dotnetRuntimeDirs
         |> Seq.tryPick (fun dir ->
+            let dir = runtimeDirPath dir
+
             if not (Directory.Exists dir) then
                 None
             else
