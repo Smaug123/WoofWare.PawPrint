@@ -203,7 +203,7 @@ module UnhandledExceptionReport =
     /// Names the thrown object's runtime type and its <c>_message</c>, then each
     /// <c>_innerException</c> in turn, then the frames the exception unwound through. A thrown
     /// object that is not a <c>System.Exception</c>, which IL can throw though C# cannot, is
-    /// described by its type alone.
+    /// described by its type and those frames alone.
     /// </remarks>
     let describe
         (state : IlMachineState)
