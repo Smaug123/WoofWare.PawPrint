@@ -468,6 +468,18 @@ fields and their initialisation, and not at all in the platform-profile block
 that stage 3 moves. The commissioned spike therefore leaves it exactly where it
 is.
 
+**Superseded by the entropy refactor, which chose (b).** Moving the streams
+changed what the question was. The kernel owns one entropy pool, with its own
+splitmix64 step in `EntropyPool.fs`; the non-crypto stream turned out to be the
+C library's state rather than the kernel's (`arc4random_buf`, or `/dev/urandom`
+XORed with `lrand48`), and moved to PawPrint's `EmulatedKernel`, where it and the
+scheduler both use `Domain`'s copy. So no stream is shared across the boundary
+any more: what is left is one ten-line mixer in two projects that cannot see
+each other, and (c) would cost a third published package — its own `PackageId`,
+`version.json` and three CI jobs — to deduplicate ten lines. The "two copies that
+must agree" risk is held by `TestNonCryptoRandom`, which asserts the two emit the
+same stream for every seed.
+
 ## Target shape
 
 ```fsharp

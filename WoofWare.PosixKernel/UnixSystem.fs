@@ -765,22 +765,13 @@ module UnixSystem =
         // caller reading the wrong one fails a test that uses the defaults.
         ProcessId.parseOrFail "UnixSystem.defaultProcessId" 4242
 
-    /// Seed for `UnixMachineState.NonCryptoRandomState`: `floor(2^64 / phi)`,
-    /// the constant the reference splitmix64 uses as its weyl increment.
-    /// Anything non-zero would do — splitmix64 has no weak seeds — and a
-    /// nothing-up-my-sleeve constant is the least arbitrary choice available.
+    /// Seed for the entropy pool a freshly-minted machine boots with: the
+    /// first 64 bits of the fractional part of pi. Any value would do; a
+    /// constant nobody chose for its bits is the least arbitrary one.
     ///
-    /// A client whose recorded traces must replay bit-for-bit states its own
-    /// seed rather than inheriting this one, because changing it here would
-    /// change every draw such a trace observes.
-    let defaultNonCryptoRandomState : uint64 = 0x9E3779B97F4A7C15UL
-
-    /// Seed for `UnixMachineState.CryptoRandomState`: the first 64 bits of the
-    /// fractional part of pi. Chosen purely so that the crypto-entropy stream
-    /// starts somewhere other than `defaultNonCryptoRandomState`, which is what
-    /// stops the two streams emitting the same sequence. Same replay caveat as
-    /// that one.
-    let defaultCryptoRandomState : uint64 = 0x243F6A8885A308D3UL
+    /// A client whose recorded runs must replay bit-for-bit depends on this
+    /// value, because every byte the pool hands out follows from it.
+    let defaultEntropySeed : uint64 = 0x243F6A8885A308D3UL
 
     /// A simulated process on a machine of the given platform, before anything
     /// has happened to it: no sockets, no connections, an empty filesystem, and
@@ -832,8 +823,7 @@ module UnixSystem =
                     LocalRoutes = defaultLocalRoutes
                     NanosecondsSinceBoot = 0L
                     BootTime = UnixTimestamp.epoch
-                    NonCryptoRandomState = defaultNonCryptoRandomState
-                    CryptoRandomState = defaultCryptoRandomState
+                    EntropyPool = EntropyPool.ofSeed defaultEntropySeed
                     ProcessorCount = defaultProcessorCount
                     UserAddressLimit = defaultUserAddressLimit
                     UnixPlatform = platform
