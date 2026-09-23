@@ -165,6 +165,76 @@ module TestNativeRuntimeFieldHandleSetValue =
             state
         |> shouldEqual None
 
+        // The handler is not re-entered if the initialiser throws, so the wrap CoreCLR's
+        // `SetValidField` applies has to be on the initialiser's own frame.
+        assertActiveFrameIsWrappingInitialiser (ThreadId 0) lazyHolderHandle state
+
+    [<Test>]
+    let ``wraps an already-failed initialiser's cached exception in a fresh TargetInvocationException`` () =
+        let fixture = makeFixture ()
+
+        let state = fixture.State
+        let lazyHolderType = requiredTopLevelType fixture.GuestAssembly "" "LazyHolder"
+
+        let state, lazyHolderHandle =
+            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state lazyHolderType
+
+        let tieAddr, state = failInitialiser fixture (ThreadId 0) lazyHolderHandle state
+
+        let field = lazyHolderType.Fields |> List.find (fun f -> f.Name = "Total")
+
+        let fieldDesc, state = fieldDescArgumentFor fixture lazyHolderHandle field state
+
+        let _, instanceHandle, state =
+            objectHandleOnStack fixture (CliType.ObjectRef None) state
+
+        let boxed, state = boxedInt32 fixture 42 state
+        let _, valueHandle, state = objectHandleOnStack fixture boxed state
+
+        let fieldType, state =
+            qCallTypeHandleValue fixture (RuntimeTypeHandleTarget.Closed fixture.Int32Handle) state
+
+        let declaringType, state =
+            qCallTypeHandleValue fixture (RuntimeTypeHandleTarget.Closed lazyHolderHandle) state
+
+        let outArr, outPtr, state = int32OutCell fixture 0 state
+
+        let _, result =
+            invoke
+                fixture
+                [
+                    fieldDesc
+                    instanceHandle
+                    valueHandle
+                    fieldType
+                    declaringType
+                    outPtr
+                ]
+                state
+
+        let state, wrapperAddr, wrapperType, inner = escapedException fixture result
+
+        let targetInvocationHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle
+                state.ConcreteTypes
+                fixture.BaseClassTypes.TargetInvocationException
+
+        wrapperType |> shouldEqual targetInvocationHandle
+        // CoreCLR rethrows the *cached* instance, so a guest can compare it by reference with
+        // the one an ordinary static access saw; the wrapper around it is new.
+        inner |> shouldEqual (Some tieAddr)
+        wrapperAddr |> shouldNotEqual tieAddr
+
+        // The throw happens before the store and before the out-cell's write.
+        readInt32Cell outArr state |> shouldEqual 0
+
+        IlMachineState.getStatic
+            (StaticOwner.forField (ThreadId 0) field)
+            lazyHolderHandle
+            (ComparableFieldDefinitionHandle.Make field.Handle)
+            state
+        |> shouldEqual None
+
     [<Test>]
     let ``refuses an RVA-backed static field`` () =
         let fixture = makeFixture ()

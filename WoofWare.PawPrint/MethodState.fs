@@ -132,8 +132,11 @@ type MethodReturnState =
         /// original exception object. Used by the `Activator.CreateInstance<T>()` intrinsic to
         /// reproduce CoreCLR's `RuntimeType.CreateInstanceOfT` `try { ctor } catch (Exception e)
         /// { throw new TargetInvocationException(e); }` wrap without synthesising a trampoline
-        /// frame. The wrap fires only on unwind across this frame's boundary, so a `try`/`catch`
-        /// *inside* the ctor that handles the exception is unaffected.
+        /// frame, and by the `RuntimeFieldHandle_GetValue`/`_SetValue` QCalls on the `.cctor`
+        /// frame they push, for CoreCLR's `EX_TRY` around the initialiser in
+        /// `InvokeUtil::GetFieldValue`/`SetValidField`. The wrap fires only on unwind across this
+        /// frame's boundary, so a `try`/`catch` *inside* the frame that handles the exception is
+        /// unaffected.
         WrapExceptionInTargetInvocation : bool
     }
 

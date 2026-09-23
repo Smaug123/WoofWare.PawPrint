@@ -462,3 +462,76 @@ public sealed class GenericHolder<T>
             concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state rvaDeclaringType
 
         state, rvaTypeHandle, rvaField
+
+    /// Fail on unless the active frame on `thread` is the initialiser of `initialising`, marked so
+    /// that an exception escaping it reaches the frame beneath as a `TargetInvocationException`
+    /// around the `TypeInitializationException`.
+    let assertActiveFrameIsWrappingInitialiser
+        (thread : ThreadId)
+        (initialising : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : unit
+        =
+        match state.ThreadState.[thread].MethodState.ReturnState with
+        | None -> failwith "expected the active frame to be a pushed initialiser, but it has no ReturnState"
+        | Some returnState ->
+            if returnState.WasInitialisingType <> Some initialising then
+                failwith
+                    $"expected the active frame to be initialising %O{initialising}, but it is initialising %O{returnState.WasInitialisingType}"
+
+            if not returnState.WrapExceptionInTargetInvocation then
+                failwith "expected the initialiser frame to wrap an escaping exception in TargetInvocationException"
+
+    /// Record `ty`'s initialiser as having already failed on `thread`, caching a freshly
+    /// synthesised `TypeInitializationException`, whose address is returned.
+    let failInitialiser
+        (fixture : Fixture)
+        (thread : ThreadId)
+        (ty : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : ManagedHeapAddress * IlMachineState
+        =
+        let state, exceptionHandle =
+            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state fixture.BaseClassTypes.Exception
+
+        let state, contents =
+            IlMachineState.buildInstanceStorage fixture.LoggerFactory fixture.BaseClassTypes state exceptionHandle
+
+        let innerAddr, state =
+            IlMachineState.allocateManagedObject exceptionHandle contents state
+
+        let tieAddr, tieType, state =
+            IlMachineState.synthesizeTypeInitializationException
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                "LazyHolder"
+                innerAddr
+                state
+
+        tieAddr, (state.WithTypeBeginInit thread ty).WithTypeFailedInit thread ty tieAddr tieType
+
+    /// The exception a handler let escape the only frame on its thread, as its concrete type and
+    /// its `Exception._innerException`. Fails on unless the outcome is that escape.
+    let escapedException
+        (fixture : Fixture)
+        (result : NativeHandlerResult)
+        : IlMachineState * ManagedHeapAddress * ConcreteTypeHandle * ManagedHeapAddress option
+        =
+        match result with
+        | NativeHandlerResult.Terminating (ExecutionResult.UnhandledException (state, _, exn)) ->
+            let obj = ManagedHeap.get exn.ExceptionObject state.ManagedHeap
+
+            let exceptionHandle =
+                AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes fixture.BaseClassTypes.Exception
+
+            let innerField =
+                FieldIdentity.requiredOwnInstanceField fixture.BaseClassTypes.Exception "_innerException"
+                |> FieldIdentity.fieldId exceptionHandle
+
+            let inner =
+                match obj |> AllocatedNonArrayObject.DereferenceFieldById innerField with
+                | CliType.ObjectRef inner -> inner
+                | other -> failwith $"expected _innerException to hold an object reference, got %O{other}"
+
+            state, exn.ExceptionObject, obj.ConcreteType, inner
+        | other -> failwith $"expected an exception to escape the handler's frame, got %A{other}"

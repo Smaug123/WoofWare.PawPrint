@@ -39,23 +39,27 @@ module IlMachineThreadState =
             ThreadState = state.ThreadState |> Map.add thread threadState
         }
 
-    /// Set `WrapExceptionInTargetInvocation = true` on the active frame's `ReturnState`.
-    /// Used by `Activator.CreateInstance<T>()` after `ensureTypeInitialised` has just
-    /// pushed `T`'s `.cctor` frame: marking it ensures that if the .cctor throws (producing
-    /// a `TypeInitializationException` via the existing `WasInitialisingType` wrap), the
-    /// dispatcher *also* wraps the resulting TIE in a fresh `TargetInvocationException`
-    /// when the cctor frame unwinds, matching CoreCLR's `CreateInstanceOfT` semantics for
-    /// the cctor-failure path. Fails loudly if invoked on a frame with no `ReturnState`.
-    let markActiveFrameWrapInTargetInvocation (thread : ThreadId) (state : IlMachineState) : IlMachineState =
+    /// Set `WrapExceptionInTargetInvocation = true` on the active frame's `ReturnState`, which
+    /// must be the initialiser of `initialising` that `ensureTypeInitialised` has just pushed.
+    /// An exception escaping that initialiser then surfaces to the frame beneath as a
+    /// `TypeInitializationException` wrapped in a fresh `TargetInvocationException`, which is
+    /// how CoreCLR's reflective field accessors report a failing initialiser
+    /// (`InvokeUtil::SetValidField` and `GetFieldValue`, via `CreateTargetExcept`). That catch is
+    /// native and sits where the initialiser was run, so the `TypeInitializationException` it
+    /// intercepts is left with no stack-trace frames. Fails loudly if the active frame is
+    /// anything else.
+    let markInitialiserFrameWrapInTargetInvocation
+        (thread : ThreadId)
+        (initialising : ConcreteTypeHandle)
+        (state : IlMachineState)
+        : IlMachineState
+        =
         let threadState = state.ThreadState.[thread]
         let activeFrameId = threadState.ActiveMethodState
 
         let updateFrame (frame : MethodState) : MethodState =
             match frame.ReturnState with
-            | None ->
-                failwith
-                    $"markActiveFrameWrapInTargetInvocation: active frame %s{frame.ExecutingMethod.Name} has no ReturnState; cannot install wrap marker"
-            | Some returnState ->
+            | Some returnState when returnState.WasInitialisingType = Some initialising ->
                 { frame with
                     ReturnState =
                         Some
@@ -63,6 +67,12 @@ module IlMachineThreadState =
                                 WrapExceptionInTargetInvocation = true
                             }
                 }
+            | Some returnState ->
+                failwith
+                    $"markInitialiserFrameWrapInTargetInvocation: active frame %s{frame.ExecutingMethod.Name} is initialising %O{returnState.WasInitialisingType}, not %O{initialising}; refusing to install the wrap marker on it"
+            | None ->
+                failwith
+                    $"markInitialiserFrameWrapInTargetInvocation: active frame %s{frame.ExecutingMethod.Name} has no ReturnState, so it is not the initialiser of %O{initialising}"
 
         let threadState = ThreadState.mapFrame activeFrameId updateFrame threadState
 
