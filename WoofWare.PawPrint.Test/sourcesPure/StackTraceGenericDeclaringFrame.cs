@@ -14,9 +14,6 @@ using System.Reflection;
 // `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall, which loads `Holder<>.Capture` and
 // allocates a fresh stub for it. Real .NET therefore reports the frame's declaring type as the
 // generic type *definition*, which is what the checks below pin.
-//
-// PARKED on that QCall. Measured, not predicted; see the parking note in `TestPureCases.fs` for
-// what PawPrint currently stops at.
 class StackTraceGenericDeclaringFrame
 {
     class Holder<T>
@@ -25,6 +22,14 @@ class StackTraceGenericDeclaringFrame
         // instantiation behind. A generic *method* would be stripped and so would not exercise
         // the class-side half.
         internal static StackTrace Capture()
+        {
+            return new StackTrace();
+        }
+
+        // Generic method, generic declaring type: the frame fill strips the method instantiation
+        // and the QCall must strip the class instantiation, so the frame reports
+        // `Holder<T>.CaptureGeneric<U>`, typical in both halves.
+        internal static StackTrace CaptureGeneric<U>()
         {
             return new StackTrace();
         }
@@ -75,6 +80,55 @@ class StackTraceGenericDeclaringFrame
         if (second == null || !SameString(second.Name, "Main"))
         {
             return 7;
+        }
+
+        // The definition is the one `typeof(Holder<>)` names, not merely some generic definition.
+        if (declaring != typeof(Holder<>))
+        {
+            return 8;
+        }
+
+        // And the method is the one reflection over that definition hands out: the frame's stub
+        // and `GetMethod`'s lookup name one method, so both come out of one member cache.
+        MethodInfo viaReflection =
+            typeof(Holder<>).GetMethod("Capture", BindingFlags.Static | BindingFlags.NonPublic);
+
+        if (!ReferenceEquals(first, viaReflection))
+        {
+            return 9;
+        }
+
+        // A reference-type instantiation reports the same typical method as a value-type one.
+        MethodBase fromString = Holder<string>.Capture().GetFrame(0).GetMethod();
+
+        if (!ReferenceEquals(fromString, first))
+        {
+            return 10;
+        }
+
+        MethodBase generic = Holder<int>.CaptureGeneric<string>().GetFrame(0).GetMethod();
+
+        if (generic == null || !SameString(generic.Name, "CaptureGeneric"))
+        {
+            return 11;
+        }
+
+        if (!generic.IsGenericMethodDefinition)
+        {
+            return 12;
+        }
+
+        if (generic.DeclaringType != typeof(Holder<>))
+        {
+            return 13;
+        }
+
+        MethodInfo genericViaReflection =
+            typeof(Holder<>).GetMethod("CaptureGeneric", BindingFlags.Static | BindingFlags.NonPublic);
+
+        if (!ReferenceEquals(generic, genericViaReflection))
+        {
+            return 14;
         }
 
         return 0;

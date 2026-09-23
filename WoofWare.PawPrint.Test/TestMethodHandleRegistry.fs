@@ -1874,9 +1874,9 @@ public sealed class Plain
     // flags, and that a dynamic handle is answered before any metadata lookup is attempted.
     //
     // Guest-level coverage is `sourcesPure/StackTraceCurrentThreadFrames.cs` (frames on non-generic
-    // types, all typical) and the parked `sourcesPure/StackTraceGenericDeclaringFrame.cs` (a frame
-    // on a generic type, which is not) -- but neither can reach the arms below where the *handle*
-    // is what varies rather than the guest's own call chain.
+    // types, all typical) and `sourcesPure/StackTraceGenericDeclaringFrame.cs` (a frame on a generic
+    // type, which is not) -- but neither can reach the arms below where the *handle* is what varies
+    // rather than the guest's own call chain.
     // ---------------------------------------------------------------------------------------
 
     let private typicalFixtureSource : string =
@@ -1899,6 +1899,11 @@ public static class TypicalHolder<T>
     public static int NonGeneric()
     {
         return 2;
+    }
+
+    public static U GenericMethod<U>(U u)
+    {
+        return u;
     }
 }
 """
@@ -1930,9 +1935,7 @@ public static class TypicalHolder<T>
     /// `IRuntimeMethodInfo` rather than a bare `RuntimeMethodHandleInternal`, so its input is a heap
     /// object. The object here is produced by the registry's own `allocateFreshStub` and then
     /// re-pointed: its shape comes from production code, and only the handle it names is the test's
-    /// choice. Minting a stub for the handle directly is not on offer, because `allocateFreshStub`
-    /// derives the handle from a concretized method, and two of the shapes below -- a generic
-    /// method *definition*, and an open generic declaring type -- cannot be reached that way.
+    /// choice.
     let private allocateStubCarrying
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (seed : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
@@ -2246,3 +2249,218 @@ public static class TypicalHolder<T>
 
         exn.Message
         |> shouldContainText "is not one of CoreLib's three IRuntimeMethodInfo implementers"
+
+    // ---------------------------------------------------------------------------------------
+    // `MethodHandleRegistry.typicalMethodDefinition`, CoreCLR's `LoadTypicalMethodDefinition`, which
+    // the `RuntimeMethodHandle_GetTypicalMethodDefinition` QCall rebinds a handle through.
+    //
+    // Checked over every identity the registry can mint for the fixture's four methods, with each
+    // bound generic argument drawn from a small pool. The pool is exhaustive rather than sampled
+    // because the domain is finite and small: 22 identities.
+    // ---------------------------------------------------------------------------------------
+
+    /// Every registry id the registry can mint for the typical fixture's methods, with each generic
+    /// argument (the declaring type's and the method's own) drawn from `int`, `string` and `object`.
+    /// Each comes with a description for failure messages.
+    let private allTypicalFixtureIdentities
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (assembly : DumpedAssembly)
+        (state : IlMachineState)
+        : (string * int64) list * IlMachineState
+        =
+        let state, pool =
+            [ PrimitiveType.Int32 ; PrimitiveType.String ; PrimitiveType.Object ]
+            |> List.fold
+                (fun (state, acc) primitive ->
+                    let state, handle =
+                        IlMachineState.concretizeType
+                            loggerFactory
+                            baseClassTypes
+                            state
+                            baseClassTypes.Corelib.DefinitionFullName
+                            ImmutableArray.Empty
+                            ImmutableArray.Empty
+                            (TypeDefn.PrimitiveType primitive)
+
+                    state, acc @ [ $"%O{primitive}", handle ]
+                )
+                (state, [])
+
+        let plainNonGeneric = assembly |> findMethod "TypicalPlain" "NonGeneric"
+        let plainGeneric = assembly |> findMethod "TypicalPlain" "GenericMethod"
+        let holderNonGeneric = assembly |> findMethod "TypicalHolder`1" "NonGeneric"
+        let holderGeneric = assembly |> findMethod "TypicalHolder`1" "GenericMethod"
+
+        let mutable state = state
+        let ids = ResizeArray<string * int64> ()
+
+        // A method bound at the given instantiations, as a concretised method is minted.
+        let bound
+            (description : string)
+            (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            (typeGenerics : ConcreteTypeHandle list)
+            (methodGenerics : ConcreteTypeHandle list)
+            =
+            let state', concretized, declaring =
+                ExecutionConcretization.concretizeMethodWithAllGenerics
+                    loggerFactory
+                    baseClassTypes
+                    (ImmutableArray.CreateRange typeGenerics)
+                    method
+                    (ImmutableArray.CreateRange methodGenerics)
+                    state
+
+            let id, registry =
+                MethodHandleRegistry.getOrAllocateConcreteId state'.ConcreteTypes concretized state'.MethodHandles
+
+            state <-
+                { state' with
+                    MethodHandles = registry
+                }
+
+            ids.Add (description, id)
+            declaring
+
+        // A method *definition* (no method generics bound) on the given declaring target, as
+        // reflection's introduced-method walk mints one.
+        let definition
+            (description : string)
+            (method : WoofWare.PawPrint.MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
+            (declaring : RuntimeTypeHandleTarget)
+            =
+            let id, registry =
+                MethodHandleRegistry.getOrAllocateInternalId
+                    assembly.DefinitionFullName
+                    declaring
+                    method
+                    state.MethodHandles
+
+            state <-
+                { state with
+                    MethodHandles = registry
+                }
+
+            ids.Add (description, id)
+
+        let plainDeclaring = bound "TypicalPlain.NonGeneric" plainNonGeneric [] []
+
+        definition "TypicalPlain.GenericMethod<T>" plainGeneric (RuntimeTypeHandleTarget.Closed plainDeclaring)
+
+        for name, arg in pool do
+            bound $"TypicalPlain.GenericMethod<%s{name}>" plainGeneric [] [ arg ] |> ignore
+
+        let holderDefinition =
+            RuntimeTypeHandleTarget.OpenGenericTypeDefinition holderNonGeneric.RequiredDeclaringType.Identity
+
+        definition "TypicalHolder<T>.NonGeneric" holderNonGeneric holderDefinition
+        definition "TypicalHolder<T>.GenericMethod<U>" holderGeneric holderDefinition
+
+        for typeName, typeArg in pool do
+            let holderDeclaring =
+                bound $"TypicalHolder<%s{typeName}>.NonGeneric" holderNonGeneric [ typeArg ] []
+
+            definition
+                $"TypicalHolder<%s{typeName}>.GenericMethod<U>"
+                holderGeneric
+                (RuntimeTypeHandleTarget.Closed holderDeclaring)
+
+            for methodName, methodArg in pool do
+                bound
+                    $"TypicalHolder<%s{typeName}>.GenericMethod<%s{methodName}>"
+                    holderGeneric
+                    [ typeArg ]
+                    [ methodArg ]
+                |> ignore
+
+        List.ofSeq ids, state
+
+    [<Test>]
+    let ``typicalMethodDefinition is typical, idempotent, and agrees with IsTypicalMethodDefinition`` () : unit =
+        let loggerFactory, baseClassTypes, assembly, _seed, state =
+            typicalFixture "TypicalDefinitionPropertyAssembly"
+
+        let ids, state =
+            allTypicalFixtureIdentities loggerFactory baseClassTypes assembly state
+
+        List.length ids |> shouldEqual 22
+
+        let holderIdentity =
+            (assembly |> findMethod "TypicalHolder`1" "NonGeneric").RequiredDeclaringType.Identity
+
+        let isTypical (identity : MetadataMethodIdentity) : bool =
+            let methodInfo =
+                NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity "test" state identity
+
+            match
+                NativeRuntimeMethodHandle.stubDeclaringTypeOfTarget
+                    "test"
+                    baseClassTypes
+                    state
+                    (identity.GetDeclaringType ())
+            with
+            | StubDeclaringType.MethodTable facts ->
+                NativeRuntimeMethodHandle.isTypicalMethodDefinition
+                    methodInfo.Generics.Length
+                    (identity.GetMethodGenerics ()).Length
+                    facts
+            | StubDeclaringType.TypeDesc -> failwith $"%O{identity} is declared by a TypeDesc"
+
+        let mutable registry = state.MethodHandles
+
+        for description, id in ids do
+            let identity =
+                match MethodHandleRegistry.resolveMethodFromId id registry with
+                | Some (MethodHandle.FromMetadata identity) -> identity
+                | other -> failwith $"%s{description}: registry id %d{id} resolved to %O{other}"
+
+            let typical =
+                MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes identity
+
+            // Same MethodDef row, same assembly: only the instantiations change.
+            typical.GetMethodDefinitionHandle ()
+            |> shouldEqual (identity.GetMethodDefinitionHandle ())
+
+            typical.GetAssemblyFullName () |> shouldEqual (identity.GetAssemblyFullName ())
+
+            // Both instantiations are stripped.
+            typical.GetMethodGenerics () |> shouldEqual []
+
+            match identity.GetDeclaringType () with
+            | RuntimeTypeHandleTarget.Closed _ when description.StartsWith "TypicalPlain" ->
+                typical.GetDeclaringType () |> shouldEqual (identity.GetDeclaringType ())
+            | _ ->
+                typical.GetDeclaringType ()
+                |> shouldEqual (RuntimeTypeHandleTarget.OpenGenericTypeDefinition holderIdentity)
+
+            // CoreCLR's postcondition, and idempotence.
+            if not (isTypical typical) then
+                failwith $"%s{description}: the typical definition %O{typical} is not typical"
+
+            MethodHandleRegistry.typicalMethodDefinition state.ConcreteTypes typical
+            |> shouldEqual typical
+
+            // The FCall and the QCall agree about which handles need rebinding: a handle is left
+            // alone exactly when `IsTypicalMethodDefinition` says it is already typical, so the QCall
+            // never mints a second stub for a handle the FCall would have let through.
+            if (typical = identity) <> isTypical identity then
+                failwith
+                    $"%s{description}: IsTypicalMethodDefinition answered %b{isTypical identity} but the typical definition is %O{typical}"
+
+            // The typical definition is the very handle reflection over the definition mints, so a
+            // stack frame's method and `typeof(G<>).GetMethod(...)` resolve to one registry id.
+            let methodInfo =
+                NativeRuntimeMethodHandle.methodInfoOfMetadataIdentity "test" state identity
+
+            let typicalId, registry' =
+                MethodHandleRegistry.getOrAllocateInternalId
+                    (identity.GetAssemblyFullName ())
+                    (typical.GetDeclaringType ())
+                    methodInfo
+                    registry
+
+            registry <- registry'
+
+            match MethodHandleRegistry.resolveMethodFromId typicalId registry with
+            | Some (MethodHandle.FromMetadata viaReflection) -> viaReflection |> shouldEqual typical
+            | other -> failwith $"%s{description}: registry id %d{typicalId} resolved to %O{other}"
