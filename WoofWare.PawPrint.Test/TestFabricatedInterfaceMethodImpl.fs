@@ -17,6 +17,7 @@ open NUnit.Framework
 /// only when the bodies differ (`AddMethodImplDispatchMapping`). A body named by a MemberRef rather
 /// than a MethodDef is normalised to the type's own method (`EnumerateMethodImpls`).
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestFabricatedInterfaceMethodImpl =
 
     [<RequireQualifiedAccess>]

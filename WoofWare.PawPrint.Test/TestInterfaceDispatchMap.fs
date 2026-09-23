@@ -23,6 +23,7 @@ open WoofWare.PawPrint
 /// is the targeted one: CoreLib has few `new` shadows or re-declared interfaces, and those are
 /// where slot ownership is decided.
 [<TestFixture>]
+[<Parallelizable(ParallelScope.All)>]
 module TestInterfaceDispatchMap =
 
     let private loggerFactory = snd (LoggerFactory.makeTest ())
