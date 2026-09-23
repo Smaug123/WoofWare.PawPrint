@@ -16,8 +16,9 @@ using System.Threading;
 // clock onto a pending deadline. Here the timeout firing is not enough: the
 // guest handles that case correctly, in the sense that it never reads unwritten
 // data. What has to go wrong is that *more time passed than was asked for*, so
-// it takes a non-zero `maxOvershootTicks`. Measured: 0 of 64 seeds at a zero
-// bound, 32 of 64 once the bound exceeds the gap between the wait and the lease.
+// it takes a non-zero `maxOvershootTicks`. Measured over seeds 0..63 at
+// probability 1.0: at a zero bound every seed makes the same run, which exits 0;
+// at a 100ms bound, twice the wait, 34 of the 64 reach the bug.
 public static class Entry
 {
     private const int Sentinel = 42;

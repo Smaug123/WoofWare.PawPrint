@@ -210,14 +210,17 @@ module TestClockJitterFindsBugs =
         // than many. The realistic use is a low probability swept over seeds,
         // so assert that shape works too — otherwise the feature would be
         // pinned only at a setting nobody would run.
-        let findings =
+        //
+        // The claim is that *some* seed finds it, so the sweep stops at the first
+        // that does rather than running the rest for nothing.
+        let finding =
             [ 0UL .. 31UL ]
-            |> List.map (fun seed ->
-                seed, runFromScratch joinGuest (ClockJitterStrategy.EagerDeadlines (seed, 0.01, 0L)) None
+            |> List.tryFind (fun seed ->
+                runFromScratch joinGuest (ClockJitterStrategy.EagerDeadlines (seed, 0.01, 0L)) None = Ending.ExitCode
+                    sentinel
             )
-            |> List.filter (fun (_, ending) -> ending = Ending.ExitCode sentinel)
 
-        if List.isEmpty findings then
+        if Option.isNone finding then
             failwith
                 $"%s{joinGuest.SourceName}: no jitter seed in 0..31 at probability 0.01 reached the bug. The strategy is meant to be usable at a low probability, not only at 1.0."
 
@@ -232,12 +235,22 @@ module TestClockJitterFindsBugs =
 
     let private jitterSeeds : uint64 list = [ 0UL .. 63UL ]
 
-    let private leaseFindings (maxOvershootTicks : int64) : uint64 list =
-        jitterSeeds
-        |> List.filter (fun seed ->
-            runFromScratch leaseGuest (ClockJitterStrategy.EagerDeadlines (seed, 1.0, maxOvershootTicks)) None = Ending.ExitCode
-                sentinel
-        )
+    let private leaseEnding (seed : uint64) (maxOvershootTicks : int64) : Ending =
+        runFromScratch leaseGuest (ClockJitterStrategy.EagerDeadlines (seed, 1.0, maxOvershootTicks)) None
+
+    /// The first seed in `jitterSeeds` that reaches the lease bug at `leaseOvershootTicks`.
+    /// Shared by the two tests below, which is why it is lazy: whichever runs first pays for
+    /// the search, and the other reuses its answer.
+    let private firstLeaseFinding : Lazy<uint64 option> =
+        lazy
+            (jitterSeeds
+             |> List.tryFind (fun seed -> leaseEnding seed leaseOvershootTicks = Ending.ExitCode sentinel))
+
+    [<Test>]
+    let ``a non-zero overshoot bound reaches the lease bug`` () : unit =
+        if Option.isNone firstLeaseFinding.Value then
+            failwith
+                $"%s{leaseGuest.SourceName}: no jitter seed in 0..63 reached the lease bug at an overshoot bound of %d{leaseOvershootTicks} ticks. That bound is twice the 50 ms wait, so a uniform draw should exceed the 50 ms of slack in the lease about half the time; if this fails, the overshoot is not reaching the guest."
 
     [<Test>]
     let ``a zero overshoot bound cannot reach the lease bug`` () : unit =
@@ -246,18 +259,19 @@ module TestClockJitterFindsBugs =
         // lease is still live and the guest's reasoning — wrong in general —
         // happens to hold. Timeouts fire; the bug does not appear.
         //
-        // Stated as a *negative* over the same seeds the positive test sweeps,
-        // so the pair is a controlled comparison: same guest, same seeds, same
-        // probability, one parameter changed.
-        leaseFindings 0L |> shouldEqual []
-
-    [<Test>]
-    let ``a non-zero overshoot bound reaches the lease bug`` () : unit =
-        let findings = leaseFindings leaseOvershootTicks
-
-        if List.isEmpty findings then
+        // Stated as a controlled comparison: the very seed that reaches the bug
+        // with an overshoot is run again with the bound set to zero, and nothing
+        // else changed. One seed is the whole of the zero-bound behaviour, not a
+        // sample of it. At probability 1.0 every tick with a deadline outstanding
+        // jumps, this guest never has more than one deadline outstanding for the
+        // draw to choose between, and a zero bound draws a zero overshoot, so the
+        // seed has nothing left to decide. Measurement agrees: every seed in 0..63
+        // makes the same run, step for step.
+        match firstLeaseFinding.Value with
+        | None ->
             failwith
-                $"%s{leaseGuest.SourceName}: no jitter seed in 0..63 reached the lease bug at an overshoot bound of %d{leaseOvershootTicks} ticks. That bound is twice the 50 ms wait, so a uniform draw should exceed the 50 ms of slack in the lease about half the time; if this fails, the overshoot is not reaching the guest."
+                $"%s{leaseGuest.SourceName}: there is no seed to compare, because none in 0..63 reached the lease bug with an overshoot. See the non-zero overshoot test, which fails for the same reason."
+        | Some seed -> leaseEnding seed 0L |> shouldEqual (Ending.ExitCode 0)
 
     [<Test>]
     let ``an explicit script reaches the buffer bug without any seed`` () : unit =
