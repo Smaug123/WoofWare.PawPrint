@@ -9,10 +9,11 @@ open System.Text
 /// `IlBodyFingerprint.canonicalText`.
 ///
 /// A body with different instructions, operands, locals, exception regions or signature has a
-/// different fingerprint (up to the hash's collisions): the rendering it hashes loses nothing.
-/// Metadata tokens are rendered by what they name — type and member names, full signatures,
-/// the assembly a type reference resolves to — rather than by their row numbers, so a rebuild of
-/// the same source that renumbers the image's tables keeps the fingerprint.
+/// different fingerprint (up to the hash's collisions): what is hashed is an unambiguous
+/// serialisation that loses nothing. Metadata tokens are serialised by what they name — type and
+/// member names, full signatures, type kinds, the assembly a type reference resolves to — rather
+/// than by their row numbers, so a rebuild of the same source that renumbers the image's tables
+/// keeps the fingerprint.
 type IlBodyFingerprint =
     private
     | IlBodyFingerprint of string
@@ -37,131 +38,188 @@ type IlBodyFingerprint =
 [<RequireQualifiedAccess>]
 module IlBodyFingerprint =
 
-    // Everything below renders exactly: names where metadata gives them, row numbers where it
-    // does not, never a display abbreviation. Two operands that differ must render differently,
-    // or the gate would admit a body its row never reviewed.
+    // The canonical text is an S-expression, so that it parses one way only: every composite is a
+    // parenthesised list headed by a fixed tag, every name is `x` followed by its UTF-16 code
+    // units in hex, and every number is `n` followed by its decimal digits. No name or number can
+    // then contain a delimiter, and two operands that differ serialise differently; otherwise the
+    // gate could admit a body its row never reviewed. Metadata that names nothing (a row the
+    // image does not resolve) serialises by its row number.
 
-    let private invariant (i : int) : string = i.ToString CultureInfo.InvariantCulture
+    let private node (tag : string) (children : string list) : string =
+        "(" + String.concat " " (tag :: children) + ")"
 
-    /// Every UTF-16 code unit as four hex digits, so that an unpaired surrogate survives the UTF-8
-    /// encoding the hash is taken over.
-    let private codeUnits (s : string) : string =
-        s
-        |> Seq.map (fun c -> (int c).ToString ("x4", CultureInfo.InvariantCulture))
-        |> String.concat ""
+    let private number (i : int64) : string =
+        "n" + i.ToString CultureInfo.InvariantCulture
+
+    let private int32Atom (i : int) : string = number (int64 i)
+
+    /// Hex rather than the characters themselves, so that an unpaired surrogate survives the UTF-8
+    /// encoding the hash is taken over and no character can be read as a delimiter.
+    let private name (s : string) : string =
+        "x"
+        + (s
+           |> Seq.map (fun c -> (int c).ToString ("x4", CultureInfo.InvariantCulture))
+           |> String.concat "")
 
     let private row (handle : System.Reflection.Metadata.EntityHandle) : string =
-        $"0x%08X{System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken handle}"
+        node
+            "row"
+            [
+                int32Atom (System.Reflection.Metadata.Ecma335.MetadataTokens.GetToken handle)
+            ]
 
-    let private typeDefText (assembly : DumpedAssembly) (handle : System.Reflection.Metadata.TypeDefinitionHandle) =
+    let rec private typeDefText
+        (assembly : DumpedAssembly)
+        (handle : System.Reflection.Metadata.TypeDefinitionHandle)
+        : string
+        =
         match assembly.TypeDefs.TryGetValue handle with
-        | true, typeInfo -> IlFormatting.qualifyTypeName assembly.TypeDefs typeInfo
-        | false, _ -> $"TypeDef %s{row (System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit handle)}"
+        | true, typeInfo ->
+            let enclosing =
+                if typeInfo.DeclaringType.IsNil then
+                    node "toplevel" []
+                else
+                    typeDefText assembly typeInfo.DeclaringType
+
+            node "typedef" [ enclosing ; name typeInfo.Namespace ; name typeInfo.Name ]
+        | false, _ -> node "typedef" [ row (System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit handle) ]
 
     let rec private typeRefText (assembly : DumpedAssembly) (typeRef : TypeRef) : string =
-        let name =
-            if String.IsNullOrEmpty typeRef.Namespace then
-                typeRef.Name
-            else
-                $"%s{typeRef.Namespace}.%s{typeRef.Name}"
+        let scope =
+            match typeRef.ResolutionScope with
+            | TypeRefResolutionScope.Assembly handle ->
+                match assembly.AssemblyReferences.TryGetValue handle with
+                | true, reference -> node "assembly" [ name reference.Name.Name ]
+                | false, _ ->
+                    node "assembly" [ row (System.Reflection.Metadata.AssemblyReferenceHandle.op_Implicit handle) ]
+            | TypeRefResolutionScope.TypeRef parent ->
+                match assembly.TypeRefs.TryGetValue parent with
+                | true, parent -> node "nested" [ typeRefText assembly parent ]
+                | false, _ -> node "nested" [ row (System.Reflection.Metadata.TypeReferenceHandle.op_Implicit parent) ]
+            | TypeRefResolutionScope.ModuleDef _ -> node "thismodule" []
+            | TypeRefResolutionScope.ModuleRef handle ->
+                node "moduleref" [ row (System.Reflection.Metadata.ModuleReferenceHandle.op_Implicit handle) ]
 
-        match typeRef.ResolutionScope with
-        | TypeRefResolutionScope.Assembly handle ->
-            match assembly.AssemblyReferences.TryGetValue handle with
-            | true, reference -> $"[%s{reference.Name.Name}]%s{name}"
-            | false, _ ->
-                $"[AssemblyRef %s{row (System.Reflection.Metadata.AssemblyReferenceHandle.op_Implicit handle)}]%s{name}"
-        | TypeRefResolutionScope.TypeRef parent ->
-            match assembly.TypeRefs.TryGetValue parent with
-            | true, parent -> $"%s{typeRefText assembly parent}/%s{name}"
-            | false, _ ->
-                $"[TypeRef %s{row (System.Reflection.Metadata.TypeReferenceHandle.op_Implicit parent)}]/%s{name}"
-        | TypeRefResolutionScope.ModuleDef _ -> $"[this module]%s{name}"
-        | TypeRefResolutionScope.ModuleRef handle ->
-            $"[ModuleRef %s{row (System.Reflection.Metadata.ModuleReferenceHandle.op_Implicit handle)}]%s{name}"
+        node "typeref" [ scope ; name typeRef.Namespace ; name typeRef.Name ]
 
-    /// Generic parameters render by position, which is what a signature records.
+    /// Generic parameters serialise by position, which is what a signature records.
     let rec private typeText (assembly : DumpedAssembly) (typeDefn : TypeDefn) : string =
         let recurse = typeText assembly
 
         match typeDefn with
-        | TypeDefn.PrimitiveType primitive -> $"%O{primitive}"
-        | TypeDefn.Array (element, rank) -> $"%s{recurse element}[rank %s{invariant rank}]"
-        | TypeDefn.Pinned inner -> $"pinned(%s{recurse inner})"
-        | TypeDefn.Pointer inner -> $"%s{recurse inner}*"
-        | TypeDefn.Byref inner -> $"%s{recurse inner}&"
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> $"%s{recurse element}[]"
+        | TypeDefn.PrimitiveType primitive -> node "primitive" [ $"%O{primitive}" ]
+        | TypeDefn.Array (element, rank) -> node "array" [ recurse element ; int32Atom rank ]
+        | TypeDefn.Pinned inner -> node "pinned" [ recurse inner ]
+        | TypeDefn.Pointer inner -> node "pointer" [ recurse inner ]
+        | TypeDefn.Byref inner -> node "byref" [ recurse inner ]
+        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> node "szarray" [ recurse element ]
         | TypeDefn.Modified modified ->
             let kind = if modified.IsRequired then "modreq" else "modopt"
-            $"%s{recurse modified.Unmodified} %s{kind}(%s{recurse modified.Modifier})"
-        | TypeDefn.FromReference (typeRef, kind) -> $"%O{kind} %s{typeRefText assembly typeRef}"
+            node kind [ recurse modified.Unmodified ; recurse modified.Modifier ]
+        | TypeDefn.FromReference (typeRef, kind) -> node "named" [ $"%O{kind}" ; typeRefText assembly typeRef ]
         | TypeDefn.FromDefinition (identity, kind) ->
-            if identity.AssemblyFullName = assembly.DefinitionFullName then
-                $"%O{kind} %s{typeDefText assembly identity.TypeDefinition.Get}"
-            else
-                let handle : System.Reflection.Metadata.EntityHandle =
-                    System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit identity.TypeDefinition.Get
+            let definition =
+                if identity.AssemblyFullName = assembly.DefinitionFullName then
+                    typeDefText assembly identity.TypeDefinition.Get
+                else
+                    node
+                        "foreigndef"
+                        [
+                            name identity.AssemblyFullName
+                            row (
+                                System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit identity.TypeDefinition.Get
+                            )
+                        ]
 
-                $"%O{kind} [%s{identity.AssemblyFullName}]TypeDef %s{row handle}"
+            node "named" [ $"%O{kind}" ; definition ]
         | TypeDefn.GenericInstantiation (generic, args) ->
-            let args = args |> Seq.map recurse |> String.concat ", "
-            $"%s{recurse generic}<%s{args}>"
-        | TypeDefn.FunctionPointer signature -> $"fnptr %s{signatureText assembly signature}"
-        | TypeDefn.GenericTypeParameter index -> $"!%s{invariant index}"
-        | TypeDefn.GenericMethodParameter index -> $"!!%s{invariant index}"
-        | TypeDefn.Void -> "void"
+            node "instantiate" (recurse generic :: (args |> Seq.map recurse |> List.ofSeq))
+        | TypeDefn.FunctionPointer signature -> node "fnptr" [ signatureText assembly signature ]
+        | TypeDefn.GenericTypeParameter index -> node "typevar" [ int32Atom index ]
+        | TypeDefn.GenericMethodParameter index -> node "methodvar" [ int32Atom index ]
+        | TypeDefn.Void -> node "void" []
 
     and private signatureText (assembly : DumpedAssembly) (signature : TypeMethodSignature<TypeDefn>) : string =
-        let parameters =
-            signature.ParameterTypes |> List.map (typeText assembly) |> String.concat ", "
-
         let returns =
             match signature.ReturnType with
-            | MethodReturnType.Void -> "void"
+            | MethodReturnType.Void -> node "void" []
             | MethodReturnType.Returns returns -> typeText assembly returns
 
-        $"header 0x%02X{signature.Header.Get.RawValue} generics %s{invariant signature.GenericParameterCount} required %s{invariant signature.RequiredParameterCount} (%s{parameters}) : %s{returns}"
+        node
+            "signature"
+            [
+                int32Atom (int signature.Header.Get.RawValue)
+                int32Atom signature.GenericParameterCount
+                int32Atom signature.RequiredParameterCount
+                node "parameters" (signature.ParameterTypes |> List.map (typeText assembly))
+                node "returns" [ returns ]
+            ]
 
     let rec private tokenText (assembly : DumpedAssembly) (token : MetadataToken) : string =
         match token with
-        | MetadataToken.TypeDefinition handle -> $"type %s{typeDefText assembly handle}"
+        | MetadataToken.TypeDefinition handle -> typeDefText assembly handle
         | MetadataToken.TypeReference handle ->
             match assembly.TypeRefs.TryGetValue handle with
-            | true, typeRef -> $"type %s{typeRefText assembly typeRef}"
-            | false, _ -> $"TypeRef %s{row (System.Reflection.Metadata.TypeReferenceHandle.op_Implicit handle)}"
+            | true, typeRef -> typeRefText assembly typeRef
+            | false, _ -> node "typeref" [ row (System.Reflection.Metadata.TypeReferenceHandle.op_Implicit handle) ]
         | MetadataToken.TypeSpecification handle ->
             match assembly.TypeSpecs.TryGetValue handle with
-            | true, spec -> $"type %s{typeText assembly spec.Signature}"
-            | false, _ -> $"TypeSpec %s{row (System.Reflection.Metadata.TypeSpecificationHandle.op_Implicit handle)}"
+            | true, spec -> node "typespec" [ typeText assembly spec.Signature ]
+            | false, _ ->
+                node "typespec" [ row (System.Reflection.Metadata.TypeSpecificationHandle.op_Implicit handle) ]
         | MetadataToken.FieldDefinition handle ->
             match assembly.Fields.TryGetValue handle with
             | true, field ->
-                $"field %s{typeDefText assembly field.DeclaringType.Identity.TypeDefinition.Get}::%s{field.Name} : %s{typeText assembly field.Signature}"
-            | false, _ -> $"FieldDef %s{row (System.Reflection.Metadata.FieldDefinitionHandle.op_Implicit handle)}"
+                node
+                    "field"
+                    [
+                        typeDefText assembly field.DeclaringType.Identity.TypeDefinition.Get
+                        name field.Name
+                        typeText assembly field.Signature
+                    ]
+            | false, _ -> node "field" [ row (System.Reflection.Metadata.FieldDefinitionHandle.op_Implicit handle) ]
         | MetadataToken.MethodDef handle ->
             match assembly.Methods.TryGetValue handle with
             | true, callee ->
-                $"method %s{typeDefText assembly callee.RequiredDeclaringType.Definition.Get}::%s{callee.Name} %s{signatureText assembly callee.Signature}"
-            | false, _ -> $"MethodDef %s{row (System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle)}"
+                node
+                    "method"
+                    [
+                        typeDefText assembly callee.RequiredDeclaringType.Definition.Get
+                        name callee.Name
+                        signatureText assembly callee.Signature
+                    ]
+            | false, _ -> node "method" [ row (System.Reflection.Metadata.MethodDefinitionHandle.op_Implicit handle) ]
         | MetadataToken.MemberReference handle ->
             match assembly.Members.TryGetValue handle with
             | true, reference ->
                 let signature =
                     match reference.Signature with
-                    | MemberSignature.Method signature -> $"method %s{signatureText assembly signature}"
-                    | MemberSignature.Field fieldType -> $"field %s{typeText assembly fieldType}"
+                    | MemberSignature.Method signature -> signatureText assembly signature
+                    | MemberSignature.Field fieldType -> node "fieldtype" [ typeText assembly fieldType ]
 
-                $"memberref (%s{tokenText assembly reference.Parent})::%s{assembly.Strings reference.Name} %s{signature}"
-            | false, _ -> $"MemberRef %s{row (System.Reflection.Metadata.MemberReferenceHandle.op_Implicit handle)}"
+                node
+                    "memberref"
+                    [
+                        tokenText assembly reference.Parent
+                        name (assembly.Strings reference.Name)
+                        signature
+                    ]
+            | false, _ -> node "memberref" [ row (System.Reflection.Metadata.MemberReferenceHandle.op_Implicit handle) ]
         | MetadataToken.MethodSpecification handle ->
             match assembly.MethodSpecs.TryGetValue handle with
             | true, spec ->
-                let args = spec.Signature |> Seq.map (typeText assembly) |> String.concat ", "
-                $"(%s{tokenText assembly spec.Method})<%s{args}>"
+                node
+                    "methodspec"
+                    (tokenText assembly spec.Method
+                     :: (spec.Signature |> Seq.map (typeText assembly) |> List.ofSeq))
             | false, _ ->
-                $"MethodSpec %s{row (System.Reflection.Metadata.MethodSpecificationHandle.op_Implicit handle)}"
+                node
+                    "methodspec"
+                    [
+                        row (System.Reflection.Metadata.MethodSpecificationHandle.op_Implicit handle)
+                    ]
         | MetadataToken.StandaloneSignature handle ->
-            // Decoded as `calli` decodes it, so each type it names renders by name.
+            // Decoded as `calli` decodes it, so each type it names serialises by name.
             let metadata : System.Reflection.Metadata.MetadataReader =
                 System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader assembly.PeReader
 
@@ -169,45 +227,56 @@ module IlBodyFingerprint =
                 (metadata.GetStandaloneSignature handle).DecodeMethodSignature (TypeDefn.typeProvider assembly.Name, ())
                 |> TypeMethodSignature.make
 
-            $"standalone method sig %s{signatureText assembly signature}"
-        | other -> $"token %O{other}"
+            node "standalone" [ signatureText assembly signature ]
+        | other -> node "token" [ node "row" [ int32Atom (MetadataToken.toInt other) ] ]
 
     let private renderOp (assembly : DumpedAssembly) (op : IlOp) : string =
         match op with
-        | IlOp.Nullary op -> op.ToString ()
-        // `UnaryConstIlOp.ToString` prints floating-point operands with `%f`, which keeps six
-        // decimal places; the bit pattern is the operand itself.
-        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R4 f) -> $"Ldc_R4 0x%08X{BitConverter.SingleToInt32Bits f}"
-        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R8 f) -> $"Ldc_R8 0x%016X{BitConverter.DoubleToInt64Bits f}"
-        | IlOp.UnaryConst op -> op.ToString ()
+        | IlOp.Nullary op -> node "nullary" [ op.ToString () ]
+        // `UnaryConstIlOp.ToString` is the case name, a space and the operand, but prints a
+        // floating-point operand with `%f`, which keeps six decimal places; the bit pattern is the
+        // operand itself.
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R4 f) ->
+            node "const" [ "Ldc_R4" ; int32Atom (BitConverter.SingleToInt32Bits f) ]
+        | IlOp.UnaryConst (UnaryConstIlOp.Ldc_R8 f) ->
+            node "const" [ "Ldc_R8" ; number (BitConverter.DoubleToInt64Bits f) ]
+        | IlOp.UnaryConst op ->
+            match (op.ToString ()).Split ' ' with
+            | [| case ; operand |] -> node "const" [ case ; "n" + operand ]
+            | _ -> failwith $"IlBodyFingerprint: %O{op} does not render as a case name and one operand"
         | IlOp.UnaryMetadataToken (op, MetadataOperand.FromMetadata token) ->
-            $"%O{op} %s{tokenText assembly token.Token}"
+            node "token" [ $"%O{op}" ; tokenText assembly token.Token ]
         | IlOp.UnaryMetadataToken (op, MetadataOperand.FromDynamicScope index) ->
-            $"%O{op} DynamicScope[%s{invariant index}]"
+            node "token" [ $"%O{op}" ; node "dynamicscope" [ int32Atom index ] ]
         | IlOp.UnaryStringToken (op, StringOperand.FromMetadata token) ->
-            $"%O{op} utf16 %s{codeUnits (assembly.Strings token.Token)}"
+            node "string" [ $"%O{op}" ; name (assembly.Strings token.Token) ]
         | IlOp.UnaryStringToken (op, StringOperand.FromDynamicScope index) ->
-            $"%O{op} DynamicScope[%s{invariant index}]"
-        | IlOp.Switch targets -> "Switch " + (targets |> Seq.map invariant |> String.concat ",")
+            node "string" [ $"%O{op}" ; node "dynamicscope" [ int32Atom index ] ]
+        | IlOp.Switch targets -> node "switch" (targets |> Seq.map int32Atom |> List.ofSeq)
 
     let private renderRegion (assembly : DumpedAssembly) (region : ExceptionRegion) : string =
-        let offsets (o : ExceptionOffset) : string =
-            $"try %s{invariant o.TryOffset}+%s{invariant o.TryLength} handler %s{invariant o.HandlerOffset}+%s{invariant o.HandlerLength}"
+        let offsets (o : ExceptionOffset) : string list =
+            [
+                int32Atom o.TryOffset
+                int32Atom o.TryLength
+                int32Atom o.HandlerOffset
+                int32Atom o.HandlerLength
+            ]
 
         match region with
         | ExceptionRegion.Catch (ExceptionCatchType.FromMetadata token, o) ->
-            $"catch %s{tokenText assembly token} %s{offsets o}"
+            node "catch" (tokenText assembly token :: offsets o)
         | ExceptionRegion.Catch (ExceptionCatchType.FromDynamicScope index, o) ->
-            $"catch DynamicScope[%s{invariant index}] %s{offsets o}"
-        | ExceptionRegion.Filter (filterOffset, o) -> $"filter %s{invariant filterOffset} %s{offsets o}"
-        | ExceptionRegion.Finally o -> $"finally %s{offsets o}"
-        | ExceptionRegion.Fault o -> $"fault %s{offsets o}"
+            node "catch" (node "dynamicscope" [ int32Atom index ] :: offsets o)
+        | ExceptionRegion.Filter (filterOffset, o) -> node "filter" (int32Atom filterOffset :: offsets o)
+        | ExceptionRegion.Finally o -> node "finally" (offsets o)
+        | ExceptionRegion.Fault o -> node "fault" (offsets o)
 
     /// The text the fingerprint hashes: `method`'s signature, locals, instructions (each at its
-    /// offset) and exception regions, every token rendered by what it names. `None` when the
+    /// offset) and exception regions, every token serialised by what it names. `None` when the
     /// method has no IL body.
     ///
-    /// Exposed so that a mismatch can be diagnosed by comparing two renderings line by line.
+    /// Exposed so that a mismatch can be diagnosed by comparing two renderings.
     let canonicalText
         (assembly : DumpedAssembly)
         (method : MethodInfo<GenericParamFromMetadata, GenericParamFromMetadata, TypeDefn>)
@@ -215,25 +284,25 @@ module IlBodyFingerprint =
         =
         match method.Body with
         | MethodBody.Il body ->
-            let lines =
+            let locals =
+                match body.LocalVars with
+                | None -> node "nolocals" []
+                | Some locals -> node "locals" (locals |> Seq.map (typeText assembly) |> List.ofSeq)
+
+            node
+                "body"
                 [
-                    yield $"signature static=%b{method.IsStatic} %s{signatureText assembly method.Signature}"
-                    yield $"localsinit=%b{body.LocalsInit}"
-
-                    match body.LocalVars with
-                    | None -> ()
-                    | Some locals ->
-                        for local in locals do
-                            yield $"local %s{typeText assembly local}"
-
-                    for op, offset in body.Instructions do
-                        yield $"%s{invariant offset} %s{renderOp assembly op}"
-
-                    for region in body.ExceptionRegions do
-                        yield renderRegion assembly region
+                    node "static" [ $"%b{method.IsStatic}" ]
+                    signatureText assembly method.Signature
+                    node "localsinit" [ $"%b{body.LocalsInit}" ]
+                    locals
+                    node
+                        "instructions"
+                        (body.Instructions
+                         |> List.map (fun (op, offset) -> node "at" [ int32Atom offset ; renderOp assembly op ]))
+                    node "regions" (body.ExceptionRegions |> Seq.map (renderRegion assembly) |> List.ofSeq)
                 ]
-
-            Some (String.concat "\n" lines)
+            |> Some
         | MethodBody.InternalCall
         | MethodBody.PInvoke
         | MethodBody.RuntimeProvided _

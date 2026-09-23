@@ -319,6 +319,74 @@ module TestSafeIntrinsicFingerprints =
         fingerprintOf stringBuilder "CallThrough"
         |> shouldNotEqual (fingerprintOf version "CallThrough")
 
+    [<Test>]
+    let ``bodies whose signatures take a pointer to a function pointer and a function pointer returning a pointer have different fingerprints``
+        ()
+        =
+        let image =
+            readImage (
+                Roslyn.compile
+                    [
+                        """
+public static unsafe class Holder
+{
+    public static void PointerToFunctionPointer(delegate*<int>* p) { }
+    public static void FunctionPointerToPointer(delegate*<int*> p) { }
+    public static void Main() { }
+}
+"""
+                    ]
+            )
+
+        fingerprintOf image "PointerToFunctionPointer"
+        |> shouldNotEqual (fingerprintOf image "FunctionPointerToPointer")
+
+    [<Test>]
+    let ``bodies loading a field of a type named with a slash and of a nested type have different fingerprints`` () =
+        let image =
+            fabricate (fun moduleBuilder ->
+                let staticField =
+                    Reflection.FieldAttributes.Public ||| Reflection.FieldAttributes.Static
+
+                let slashed =
+                    moduleBuilder.DefineType (
+                        "Outer/Inner",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                let slashedField = slashed.DefineField ("f", typeof<int>, staticField)
+                slashed.CreateType () |> ignore<Type>
+
+                let outer =
+                    moduleBuilder.DefineType (
+                        "Outer",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                let inner =
+                    outer.DefineNestedType (
+                        "Inner",
+                        Reflection.TypeAttributes.NestedPublic ||| Reflection.TypeAttributes.Class
+                    )
+
+                let nestedField = inner.DefineField ("f", typeof<int>, staticField)
+                outer.CreateType () |> ignore<Type>
+                inner.CreateType () |> ignore<Type>
+
+                let holder =
+                    moduleBuilder.DefineType (
+                        "Holder",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                defineBody holder "LoadSlashed" (fun il -> il.Emit (Reflection.Emit.OpCodes.Ldsfld, slashedField))
+                defineBody holder "LoadNested" (fun il -> il.Emit (Reflection.Emit.OpCodes.Ldsfld, nestedField))
+                holder.CreateType () |> ignore<Type>
+            )
+
+        fingerprintOf image "LoadSlashed"
+        |> shouldNotEqual (fingerprintOf image "LoadNested")
+
     /// Where `String.get_Length`'s IL begins in the host CoreLib's bytes, and the field token its
     /// `ldfld` names. The body is `ldarg.0; ldfld String::_stringLength; ret` under a tiny header.
     let private getLengthBody (bytes : byte[]) : int * int * int =
