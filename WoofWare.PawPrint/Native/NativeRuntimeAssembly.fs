@@ -5,8 +5,8 @@ module NativeRuntimeAssembly =
     open System.Collections.Immutable
 
     /// <summary>
-    /// How <c>AssemblyNative_GetTypeCore</c> answers when following a forwarder did not produce a
-    /// type.
+    /// How <c>AssemblyNative_GetTypeCore</c> answers when it did not produce a type: following a
+    /// forwarder led nowhere, or the type it found depends on one that cannot be loaded.
     /// </summary>
     /// <remarks>
     /// Three cases because .NET 10 does three different things, measured at both
@@ -758,10 +758,48 @@ module NativeRuntimeAssembly =
                         | None -> None
                         | Some child -> walk child rest
 
-                walk top nestedNames
+                walk top nestedNames |> Option.map (fun typeInfo -> definingAssembly, typeInfo)
 
-        match resolved with
-        | None ->
+        // Arriving at the type is not enough to hand it over: allocating its `RuntimeType`
+        // walks its base chain, and that walk cannot load. The forwarder path primed the
+        // *forwarded* type, but a `TypeDef` hit in the asking assembly and a nested type
+        // reached by the walk have not been primed by anything, and nothing guarantees that
+        // any other route touched them first. Priming can itself need an assembly nobody
+        // supplies, which is reported the way the forwarder path reports it, because it is
+        // the same fact.
+        let outcome, state =
+            match resolved with
+            | None -> Choice1Of2 miss, state
+            | Some (definingAssembly, typeInfo) ->
+                match
+                    TypeResolution.tryPrimeBaseChain
+                        ctx.LoggerFactory
+                        state.DotnetRuntimeDirs
+                        state._LoadedAssemblies
+                        definingAssembly
+                        typeInfo
+                with
+                | assemblies, None ->
+                    Choice2Of2 typeInfo,
+                    { state with
+                        _LoadedAssemblies = assemblies
+                    }
+                | assemblies, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.NoSuchAssembly reference)) ->
+                    Choice1Of2 (ForwarderMiss.AssemblyUnavailable reference),
+                    { state with
+                        _LoadedAssemblies = assemblies
+                    }
+                | assemblies, Some (BaseChainFailure.BaseTypeAbsent typeMiss) ->
+                    Choice1Of2 (ForwarderMiss.BaseTypeAbsent typeMiss),
+                    { state with
+                        _LoadedAssemblies = assemblies
+                    }
+                | _, Some (BaseChainFailure.LoadFailed (AssemblyLoadFailure.LoadingNotPermitted _) as failure) ->
+                    // Unreachable: the loader used here reads files.
+                    failwith $"%s{operation}: %s{string<BaseChainFailure> failure}"
+
+        match outcome with
+        | Choice1Of2 miss ->
             match miss with
             | ForwarderMiss.AnswerNull ->
                 // Caller's local was preinitialized to null (Type? type = null);
@@ -803,7 +841,7 @@ module NativeRuntimeAssembly =
 
                 NativeHandlerResult.raiseExceptionWithMessage ctx.BaseClassTypes.TypeLoadException (Some message) state
                 |> Some
-        | Some typeInfo ->
+        | Choice2Of2 typeInfo ->
             let runtimeTypeAddr, state =
                 if typeInfo.Generics.IsEmpty then
                     NativeRuntimeType.getOrAllocateNonGenericRuntimeType
