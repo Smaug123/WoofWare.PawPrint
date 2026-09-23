@@ -19,8 +19,10 @@ type ClockGettimeRefusal =
     | Coarse of clockId : int
     /// A clock whose reading depends on something this kernel's machine does not
     /// describe: Linux's `CLOCK_REALTIME_ALARM` and `CLOCK_BOOTTIME_ALARM`, which
-    /// exist only on a machine with a real-time-clock device, and `CLOCK_TAI`,
-    /// whose offset from the realtime clock is whatever a time daemon set.
+    /// exist only on a machine with a real-time-clock device; `CLOCK_TAI`, whose
+    /// offset from the realtime clock is whatever a time daemon set; and Linux's
+    /// auxiliary clocks, ids 16 to 23, which exist only when the kernel was built
+    /// with them and answer only once an administrator has enabled them.
     | MachineDependent of clockId : int
 
 [<RequireQualifiedAccess>]
@@ -36,7 +38,7 @@ module ClockGettimeRefusal =
         | ClockGettimeRefusal.Coarse clockId ->
             $"clock id %d{clockId} is a coarse approximation of another clock on the simulated platform, which this kernel does not model."
         | ClockGettimeRefusal.MachineDependent clockId ->
-            $"clock id %d{clockId} reads a clock whose value depends on the machine (a real-time-clock device, or the TAI offset a time daemon sets), which this kernel's machine does not describe."
+            $"clock id %d{clockId} reads a clock whose value depends on the machine (a real-time-clock device, the TAI offset a time daemon sets, or whether an auxiliary clock was built and enabled), which this kernel's machine does not describe."
 
 /// Which of the machine's two clocks a clock id reads, and to what granularity
 /// its flavour reports it.
@@ -64,10 +66,15 @@ module UnixClock =
     //     other id is EINVAL, including 10 (the retired CLOCK_SGI_CYCLE) and
     //     16..20, for which `clock_getres` nevertheless answers: those are the
     //     auxiliary clocks Linux 6.17 added, which read EINVAL until configured.
+    //   Linux on GitHub's ubuntu-24.04 runner (x86-64, 2026-09-23): 16..23 fail
+    //     with ENODEV instead. An auxiliary clock is EINVAL on a kernel built
+    //     without CONFIG_POSIX_AUX_CLOCKS and ENODEV on one built with it until
+    //     that clock is enabled, so the answer is the machine's, and they are
+    //     refused.
     //   macOS 26 arm64: 0, 4, 5, 6, 8, 9, 12 and 16 answer; every other id,
     //     negative ones included, is EINVAL.
     //
-    // No id failed with any errno but EINVAL on either.
+    // Apart from the auxiliary clocks, no id failed with any errno but EINVAL.
     //
     // Measured granularity, from 20,000 readings of each and `clock_getres`:
     // Darwin's CLOCK_REALTIME and CLOCK_MONOTONIC report whole microseconds (its
@@ -105,6 +112,9 @@ module UnixClock =
             | 8
             | 9
             | 11 -> ClockDecoding.Refused (ClockGettimeRefusal.MachineDependent clockId)
+            // CLOCK_AUX .. CLOCK_AUX_LAST.
+            | _ when clockId >= 16 && clockId <= 23 ->
+                ClockDecoding.Refused (ClockGettimeRefusal.MachineDependent clockId)
             | _ when clockId < 0 -> ClockDecoding.Refused (ClockGettimeRefusal.EncodedClock clockId)
             | _ -> ClockDecoding.Invalid
         | SimulatedUnixFlavour.Darwin ->

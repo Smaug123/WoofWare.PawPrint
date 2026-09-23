@@ -282,6 +282,10 @@ module TestClock =
     /// swept (-4096..4096, then a stride of 65521 across the whole int range, and
     /// the four extremes). macOS 26 (arm64) answers {0, 4, 5, 6, 8, 9, 12, 16}
     /// and is EINVAL for every other id in the same sweep.
+    ///
+    /// Linux's auxiliary clocks, 16..23, are refused: they answer EINVAL on a kernel
+    /// built without them (the container above) and ENODEV on one built with them
+    /// but not enabled (GitHub's ubuntu-24.04 runner, 2026-09-23).
     /// `TestClockAgainstHost` re-measures the split on whichever host runs it.
     let private expected (flavour : SimulatedUnixFlavour) (clockId : int) : Outcome =
         match flavour with
@@ -299,6 +303,7 @@ module TestClock =
             | 9
             | 11 -> Outcome.Refused
             | id when id < 0 -> Outcome.Refused
+            | id when id >= 16 && id <= 23 -> Outcome.Refused
             | _ -> Outcome.Invalid
         | SimulatedUnixFlavour.Darwin ->
             match clockId with
