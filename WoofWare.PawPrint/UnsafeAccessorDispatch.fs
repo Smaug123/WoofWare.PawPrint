@@ -19,6 +19,11 @@ type internal UnsafeAccessorPlan =
         ctor : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle> *
         targetType : ConcreteTypeHandle
 
+    /// `newobj` of one of an array type's constructors, over every declared argument. An array's
+    /// constructors have no body, so this allocates rather than calling anything. The constructor's
+    /// array type is the one the stub constructs, which need not be the accessor's return type.
+    | ConstructArray of ctor : ArrayConstructor
+
     /// `callvirt`, over every declared argument including the first (which is the receiver).
     | CallInstance of target : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
 
@@ -357,6 +362,91 @@ module internal UnsafeAccessorDispatch =
             failwith
                 $"TODO: %s{describe} is instantiated with %O{argument}, which is not a valid type argument; CoreCLR refuses the instantiation when it loads it, before any accessor runs"
 
+    /// Does the declaration name a method of this signature, in the sense of
+    /// `DoesMethodMatchUnsafeAccessorDeclaration` (unsafeaccessors.cpp:388) with every custom
+    /// modifier ignored? `candidateAssemblyFullName` is the assembly the candidate's signature is
+    /// read in.
+    let private declarationMatches
+        (loggerFactory : ILoggerFactory)
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (kind : UnsafeAccessorKind)
+        (accessorAssemblyFullName : string)
+        (declarationSignature : TypeMethodSignature<TypeDefn>)
+        (candidateAssemblyFullName : string)
+        (candidateSignature : TypeMethodSignature<TypeDefn>)
+        (state : IlMachineState)
+        : IlMachineState * bool
+        =
+        let isConstructor =
+            match kind with
+            | UnsafeAccessorKind.Constructor -> true
+            | _ -> false
+
+        // The declaration carries one extra argument that the target does not: the one naming the
+        // target type, which for an instance member is also the receiver. A constructor
+        // declaration has no such argument -- it names its type through the return -- so its
+        // argument list is compared whole.
+        let declarationParameters =
+            if isConstructor then
+                declarationSignature.ParameterTypes
+            else
+                match declarationSignature.ParameterTypes with
+                | [] ->
+                    failwith
+                        "BUG: an [UnsafeAccessor] lookup reached a non-constructor accessor with no parameters; `resolve` refuses that as BadImageFormat"
+                | _ :: rest -> rest
+
+        let candidateSignature = stripSignatureModifiersDeep candidateSignature
+
+        // A constructor candidate must return void; CoreCLR checks that in place of comparing the
+        // return column (unsafeaccessors.cpp:481), which is skipped for this kind. No C# compiler
+        // emits a non-void `.ctor` and no guest here reaches this arm, but the check is what makes
+        // skipping the return column safe on an image that does.
+        let returnAcceptable =
+            if not isConstructor then
+                true
+            else
+                match candidateSignature.ReturnType with
+                | MethodReturnType.Void -> true
+                | MethodReturnType.Returns _ -> false
+
+        if not returnAcceptable then
+            state, false
+        else
+
+        let header = comparisonHeader declarationSignature.Header candidateSignature.Header
+
+        // Both sides' type variables are left standing rather than substituted: CoreCLR compares
+        // these blobs with no substitution on either side (`pSubst1 = pSubst2 = NULL`,
+        // unsafeaccessors.cpp:401/408), so a target spelling `!0` matches only a declaration
+        // spelling `!0` -- never one spelling the type that instantiates it, and never the
+        // accessor's own `!!0`. Measured against real .NET 10: a non-generic accessor over `C<int>`
+        // does *not* find `C<T>::M(T)`, and one declared on `A<T>` taking `T` does.
+        let declarationComparand : TypeConcretization.UnsubstitutedComparand =
+            {
+                Signature =
+                    comparandSignature
+                        header
+                        declarationSignature.GenericParameterCount
+                        (stripReturnModifiersDeep declarationSignature.ReturnType)
+                        (declarationParameters |> List.map stripModifiersDeep)
+                AssemblyFullName = accessorAssemblyFullName
+            }
+
+        let candidateComparand : TypeConcretization.UnsubstitutedComparand =
+            {
+                Signature = candidateSignature
+                AssemblyFullName = candidateAssemblyFullName
+            }
+
+        IlMachineTypeResolution.signaturesEquivalentWithoutSubstitution
+            loggerFactory
+            baseClassTypes
+            state
+            isConstructor // the return column is compared for every other kind
+            declarationComparand
+            candidateComparand
+
     /// Find the one declared method on the target type that the declaration names, in the sense of
     /// `TrySetTargetMethod` (unsafeaccessors.cpp:584): the type's *own* methods only -- no
     /// base-class walk -- filtered by name and static-ness, then matched signature against
@@ -377,25 +467,6 @@ module internal UnsafeAccessorDispatch =
               UnsafeAccessorRefusal
            >
         =
-        let isConstructor =
-            match kind with
-            | UnsafeAccessorKind.Constructor -> true
-            | _ -> false
-
-        // The declaration carries one extra argument that the target does not: the one naming the
-        // target type, which for an instance member is also the receiver. A constructor
-        // declaration has no such argument -- it names its type through the return -- so its
-        // argument list is compared whole.
-        let declarationParameters =
-            if isConstructor then
-                declarationSignature.ParameterTypes
-            else
-                match declarationSignature.ParameterTypes with
-                | [] ->
-                    failwith
-                        "BUG: findTargetMethod reached a non-constructor accessor with no parameters; `resolve` refuses that as BadImageFormat"
-                | _ :: rest -> rest
-
         let candidates =
             targetTypeInfo.Methods
             |> List.filter (fun candidate -> candidate.Name = name && candidate.IsStatic = isTargetStatic kind)
@@ -403,61 +474,16 @@ module internal UnsafeAccessorDispatch =
         let state, matching =
             ((state, []), candidates)
             ||> List.fold (fun (state, acc) candidate ->
-                let candidateSignature =
-                    MethodInfo.requireRawSignature "[UnsafeAccessor] target lookup" candidate
-                    |> stripSignatureModifiersDeep
-
-                // A constructor candidate must return void; CoreCLR checks that in place of
-                // comparing the return column (unsafeaccessors.cpp:481), which is skipped for this
-                // kind. No C# compiler emits a non-void `.ctor` and no guest here reaches this
-                // arm, but the check is what makes skipping the return column safe on an image
-                // that does.
-                let returnAcceptable =
-                    if not isConstructor then
-                        true
-                    else
-                        match candidateSignature.ReturnType with
-                        | MethodReturnType.Void -> true
-                        | MethodReturnType.Returns _ -> false
-
-                if not returnAcceptable then
-                    state, acc
-                else
-
-                let header = comparisonHeader declarationSignature.Header candidateSignature.Header
-
-                // Both sides' type variables are left standing rather than substituted: CoreCLR
-                // compares these blobs with no substitution on either side (`pSubst1 = pSubst2 =
-                // NULL`, unsafeaccessors.cpp:401/408), so a target spelling `!0` matches only a
-                // declaration spelling `!0` -- never one spelling the type that instantiates it,
-                // and never the accessor's own `!!0`. Measured against real .NET 10: a non-generic
-                // accessor over `C<int>` does *not* find `C<T>::M(T)`, and one declared on `A<T>`
-                // taking `T` does.
-                let declarationComparand : TypeConcretization.UnsubstitutedComparand =
-                    {
-                        Signature =
-                            comparandSignature
-                                header
-                                declarationSignature.GenericParameterCount
-                                (stripReturnModifiersDeep declarationSignature.ReturnType)
-                                (declarationParameters |> List.map stripModifiersDeep)
-                        AssemblyFullName = accessorAssemblyFullName
-                    }
-
-                let candidateComparand : TypeConcretization.UnsubstitutedComparand =
-                    {
-                        Signature = candidateSignature
-                        AssemblyFullName = targetTypeInfo.AssemblyFullName
-                    }
-
                 let state, matches =
-                    IlMachineTypeResolution.signaturesEquivalentWithoutSubstitution
+                    declarationMatches
                         loggerFactory
                         baseClassTypes
+                        kind
+                        accessorAssemblyFullName
+                        declarationSignature
+                        targetTypeInfo.AssemblyFullName
+                        (MethodInfo.requireRawSignature "[UnsafeAccessor] target lookup" candidate)
                         state
-                        isConstructor // the return column is compared for every other kind
-                        declarationComparand
-                        candidateComparand
 
                 if matches then state, candidate :: acc else state, acc
             )
@@ -714,6 +740,52 @@ module internal UnsafeAccessorDispatch =
             )
             |> Error
 
+    /// The constructor a stub's `newobj` runs when an accessor binds `ctor`, which is not always one
+    /// of `ctor`'s own array type.
+    ///
+    /// `Module::CreateArrayMethodTable` (array.cpp:229) gives an array whose element is a reference
+    /// type other than a szarray no methods of its own: it shares those of `object`'s array of the
+    /// same kind and rank. The stub names its target by MethodDesc, so what it constructs is that
+    /// `object` array. Measured on real .NET 10: an accessor returning `string[]` builds an
+    /// `object[]`, as do ones over an interface, a delegate, a generic class or a `string[,]`
+    /// element, while `string[][]` and `int[,]` are built exactly. A `newobj` token names the exact
+    /// array type instead, and the JIT allocates that.
+    let private constructedByStub
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (describe : string)
+        (ctor : ArrayConstructor)
+        : ArrayConstructor
+        =
+        let element =
+            match ctor with
+            | ArrayConstructor.SzArray (element, _)
+            | ArrayConstructor.MultiDim (element, _, _) -> element
+
+        let sharesObjectArrayMethods =
+            match element with
+            | ConcreteTypeHandle.OneDimArrayZero _ -> false
+            | ConcreteTypeHandle.Array _ -> true
+            | ConcreteTypeHandle.Pointer _
+            | ConcreteTypeHandle.FunctionPointer _ -> false
+            | ConcreteTypeHandle.Byref _ -> failwith $"BUG: %s{describe} bound a constructor of an array of byrefs"
+            | ConcreteTypeHandle.Concrete _ ->
+                match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes element with
+                | Some (_, typeInfo) -> not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo)
+                | None -> failwith $"BUG: %s{describe}: array element type %O{element} has no TypeDef row"
+
+        if not sharesObjectArrayMethods then
+            ctor
+        else
+
+        let objectHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
+
+        match ctor with
+        | ArrayConstructor.SzArray (_, depth) -> ArrayConstructor.SzArray (objectHandle, depth)
+        | ArrayConstructor.MultiDim (_, rank, lowerBounds) ->
+            ArrayConstructor.MultiDim (objectHandle, rank, lowerBounds)
+
     /// Read an `[UnsafeAccessor]` declaration and resolve the member it names, reproducing
     /// `MethodDesc::TryGenerateUnsafeAccessor` (unsafeaccessors.cpp:1027) down to the point where
     /// CoreCLR would emit IL.
@@ -900,39 +972,10 @@ module internal UnsafeAccessorDispatch =
             // `Get`/`Set`/`Address` accessors (`ArrayClass::GenerateArrayAccessorCallSig`,
             // array.cpp:68), which spell the element type as the class type variable `!0`: a
             // declaration on a non-generic type cannot spell `!0`, and the comparison substitutes
-            // nothing, so none of the three can match it. What is left is the instance `.ctor`,
+            // nothing, so none of the three can match it. What is left is the instance `.ctor`s,
             // which only the constructor kind and the instance-method kind can reach. Measured on
             // real .NET 10, every other lookup is reported missing, for all four non-constructor
             // kinds.
-            match kind with
-            | UnsafeAccessorKind.Constructor ->
-                // PawPrint's `newobj` reaches an array constructor only through the metadata
-                // token an ordinary call site carries, so there is nothing for the accessor to
-                // dispatch to.
-                failwith
-                    $"TODO: %s{describe} names an array type as a constructor's target; CoreCLR binds the array's constructor, and PawPrint's `newobj` cannot construct an array from a resolved element type and rank"
-            | UnsafeAccessorKind.Method when name = ".ctor" ->
-                // Measured on real .NET 10: an instance-method accessor over `int[,]` whose
-                // signature matches a constructor binds it, and the stub then fails to compile with
-                // an `InvalidProgramException` whose message is the JIT's; one whose signature
-                // matches none reports `.ctor` missing. Telling those apart needs the array's
-                // constructor signatures, which PawPrint does not model.
-                failwith
-                    $"TODO: %s{describe} names an array's .ctor through the instance-method kind; CoreCLR binds it if the signature matches one of the array's constructors, which PawPrint does not model, and the JIT then refuses the stub"
-            | UnsafeAccessorKind.Method when
-                not accessor.DeclaringTypeGenerics.IsEmpty
-                && (name = "Get" || name = "Set" || name = "Address")
-                ->
-                // A declaration on a generic type *can* spell `!0`, and the comparison takes it to be
-                // the array's element variable by position alone. Measured on real .NET 10:
-                // `A<T>.Get(T[] a, int i)` returning `T` binds `int[]::Get` for `A<int>`, and
-                // `Set` binds on `int[,]` likewise.
-                failwith
-                    $"TODO: %s{describe} is declared on a generic type and names an array's %s{name}; CoreCLR binds it if the signature matches the array's accessor, which PawPrint does not model"
-            | UnsafeAccessorKind.Method
-            | UnsafeAccessorKind.StaticMethod
-            | UnsafeAccessorKind.Field
-            | UnsafeAccessorKind.StaticField ->
 
             // The array searched is the one the *canonical* instantiation names, so a shared type
             // argument anywhere inside it changes the name reported: measured on real .NET 10,
@@ -940,8 +983,12 @@ module internal UnsafeAccessorDispatch =
             // `System.__Canon[]` too, because loading an array over a shared instantiation
             // canonicalises the element again (clsload.cpp:3435). The same is true of the accessor
             // type's own type parameters: measured, `A<T>`'s `T[]` over `string` is
-            // `System.__Canon[]` as well. When every type parameter the target mentions is
-            // instantiated with its own canonical form, the canonical array is the exact one.
+            // `System.__Canon[]` as well. It changes what a constructor builds as well as what a
+            // lookup reports: measured, `A<T>`'s constructor accessor returning `T[]` builds an
+            // `object[]` over `string`, and over `int[]` it reports `System.__Canon[]..ctor`
+            // missing for the jagged constructor `int[][]` declares. When every type parameter
+            // the target mentions is instantiated with its own canonical form, the canonical
+            // array is the exact one.
             let shared =
                 mentionedParameters rawTarget
                 |> Seq.map (fun parameter ->
@@ -954,30 +1001,72 @@ module internal UnsafeAccessorDispatch =
                 |> Seq.filter (fun (_, argument) -> isSharedTypeArgument baseClassTypes state describe argument)
                 |> Seq.tryHead
 
-            match shared with
-            | Some (parameter, argument) ->
-                failwith
-                    $"TODO: %s{describe} names an array whose type mentions %s{parameter}, instantiated with %O{argument}; CoreCLR searches the canonical array instantiated over System.__Canon, whose name it reports, and PawPrint does not model canonical forms"
-            | None ->
-
             // `MemberLoader`'s messages name the target as `MethodTable::_GetFullyQualifiedNameForClass`
             // does, which for an array is `TypeDesc::ConstructName` over the element's
             // `TypeHandle::GetName`.
-            let arrayName =
+            let arrayName () : string =
                 NativeRuntimeTypeHelpers.typeHandleGetName
                     describe
                     state
                     (RuntimeTypeHandleTarget.Closed strippedTarget)
 
-            let refusal =
-                match kind with
-                | UnsafeAccessorKind.Field
-                | UnsafeAccessorKind.StaticField -> UnsafeAccessorRefusal.MissingField (arrayName, name)
-                | UnsafeAccessorKind.Constructor
-                | UnsafeAccessorKind.Method
-                | UnsafeAccessorKind.StaticMethod -> UnsafeAccessorRefusal.MissingMethod (arrayName, name)
+            match kind with
+            | UnsafeAccessorKind.Method when name = ".ctor" ->
+                // Measured on real .NET 10: an instance-method accessor over `int[,]` whose
+                // signature matches a constructor binds it, and the stub then fails to compile with
+                // an `InvalidProgramException` whose message is the JIT's; one whose signature
+                // matches none reports `.ctor` missing. PawPrint does not reproduce the JIT's
+                // refusal.
+                failwith
+                    $"TODO: %s{describe} names an array's .ctor through the instance-method kind; CoreCLR binds it if the signature matches one of the array's constructors, and the JIT then refuses the stub with a message PawPrint does not reproduce"
+            | UnsafeAccessorKind.Method when
+                not accessor.DeclaringTypeGenerics.IsEmpty
+                && (name = "Get" || name = "Set" || name = "Address")
+                ->
+                // A declaration on a generic type *can* spell `!0`, and the comparison takes it to be
+                // the array's element variable by position alone. Measured on real .NET 10:
+                // `A<T>.Get(T[] a, int i)` returning `T` binds `int[]::Get` for `A<int>`, and
+                // `Set` binds on `int[,]` likewise.
+                failwith
+                    $"TODO: %s{describe} is declared on a generic type and names an array's %s{name}; CoreCLR binds it if the signature matches the array's accessor, which PawPrint does not model"
+            | _ ->
 
-            state, Error refusal
+            match shared with
+            | Some (parameter, argument) ->
+                failwith
+                    $"TODO: %s{describe} names an array whose type mentions %s{parameter}, instantiated with %O{argument}; CoreCLR searches, and constructs, the canonical array instantiated over System.__Canon, and PawPrint does not model canonical forms"
+            | None ->
+
+            match kind with
+            | UnsafeAccessorKind.Constructor ->
+                let state, matching =
+                    ((state, []), ArrayConstructor.declaredOn strippedTarget)
+                    ||> List.fold (fun (state, acc) ctor ->
+                        let state, matches =
+                            declarationMatches
+                                loggerFactory
+                                baseClassTypes
+                                kind
+                                accessor.DeclaringAssemblyFullName
+                                rawSignature
+                                baseClassTypes.Corelib.Name.FullName
+                                (ArrayConstructor.signature ctor)
+                                state
+
+                        if matches then state, ctor :: acc else state, acc
+                    )
+
+                match matching with
+                | [ ctor ] ->
+                    state, Ok (UnsafeAccessorPlan.ConstructArray (constructedByStub baseClassTypes state describe ctor))
+                | [] -> state, Error (UnsafeAccessorRefusal.MissingMethod (arrayName (), name))
+                | _ :: _ :: _ ->
+                    failwith
+                        $"BUG: %s{describe} matched %d{List.length matching} constructors of %O{strippedTarget}, which differ in their parameter counts"
+            | UnsafeAccessorKind.Method
+            | UnsafeAccessorKind.StaticMethod -> state, Error (UnsafeAccessorRefusal.MissingMethod (arrayName (), name))
+            | UnsafeAccessorKind.Field
+            | UnsafeAccessorKind.StaticField -> state, Error (UnsafeAccessorRefusal.MissingField (arrayName (), name))
         | _ ->
 
         match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes strippedTarget with
@@ -1442,6 +1531,34 @@ module internal UnsafeAccessorDispatch =
 
         match plan with
         | UnsafeAccessorPlan.CallStatic target -> callTarget target 1 false state
+        | UnsafeAccessorPlan.ConstructArray ctor ->
+            let arguments =
+                instruction.Arguments
+                |> Seq.map (fun argument ->
+                    match argument with
+                    | CliType.Numeric (CliNumericType.Int32 value) -> value
+                    | other ->
+                        failwith
+                            $"BUG: %s{describe} bound an array constructor, whose parameters are all int32, but was handed %O{other}"
+                )
+                |> ImmutableArray.CreateRange
+
+            match ArrayConstructor.plan ctor arguments with
+            | Error error ->
+                // The stub's `newobj` raises this from inside the accessor's body, so after the
+                // prologue above has initialised the accessor's declaring type.
+                let exceptionType, message = ArrayConstructor.exceptionFor baseClassTypes error
+                raiseFromAccessor exceptionType message state
+            | Ok allocation ->
+
+            let array, state = ArrayConstruction.allocate baseClassTypes allocation state
+
+            let state =
+                IlMachineState.pushToEvalStack (CliType.ObjectRef (Some array)) thread state
+
+            match IlMachineState.returnStackFrame loggerFactory baseClassTypes thread state with
+            | ReturnFrameResult.NormalReturn state -> ExecutionResult.stepped (state, WhatWeDid.Executed)
+            | result -> failwith $"unexpected ReturnFrameResult from %s{describe}: %A{result}"
         | UnsafeAccessorPlan.Construct (ctor, targetType) ->
             let state = state |> pushArguments 0 |> markDispatched
 

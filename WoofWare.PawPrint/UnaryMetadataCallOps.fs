@@ -87,9 +87,9 @@ module internal UnaryMetadataCallOps =
         let currentMethod = ctx.CurrentMethod
         let thread = ctx.Thread
 
-        // Rank-1 ELEMENT_TYPE_ARRAY morphs to SZARRAY at runtime per ECMA-335 II.14.2;
-        // the symmetric morphing in `executeMultiDimArrayNewobj` isn't implemented either,
-        // and C# never emits this form.
+        // Rank-1 ELEMENT_TYPE_ARRAY: constructing one with a zero lower bound allocates an
+        // SZARRAY instead (`ArrayConstructor.plan`), and `Set` over either is not implemented.
+        // C# never emits this form.
         if rank < 2 then
             failwith
                 $"TODO: multi-dim array Set on rank-%d{rank} ELEMENT_TYPE_ARRAY; rank-1 should morph to SZARRAY per CoreCLR semantics"
