@@ -1834,9 +1834,6 @@ module VirtualSlotLayout =
         match typeHandleTarget with
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
-            failwith
-                $"TODO: open constructed types are not handled at VirtualSlotLayout.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.GenericParameter (declaringType, position) ->
             // CoreCLR's GetNumVirtuals asserts !typeHandle.IsGenericVariable(); the BCL's
             // RuntimeType.GetMethodCandidates strips generic variables before calling.
@@ -1861,15 +1858,17 @@ module VirtualSlotLayout =
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
         | RuntimeTypeHandleTarget.FunctionPointer _ ->
             RuntimeTypeHandleTarget.refuseComposite operation typeHandleTarget
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             // Slot layout is a property of the generic definition: `MethodTableBuilder` places
             // virtuals from the definition's own metadata, so every instantiation ends up with the
             // same numbering -- and for a reference type CoreCLR does not even recompute it, taking
             // `SetNumVirtuals` from the canonical instantiation and sharing its vtable chunks
             // (`Generics::CreateTypeHandleForNonCanonicalGenericInstantiation`, generics.cpp:205 and
             // :327-334). So this is the same number `numVirtualsOfClosed` answers for any `G<...>`,
-            // and asking the definition is the only way to get it when the guest named no
-            // instantiation.
+            // and asking the definition is the only way to get it when the guest named no closed
+            // instantiation: neither the typical instantiation nor an open construction such as
+            // `Base<T>` over a deriving definition's `T` has arguments to concretise.
             numVirtualsOfDefinition loggerFactory baseClassTypes operation state identity
         | RuntimeTypeHandleTarget.Closed handle ->
             numVirtualsOfClosed loggerFactory baseClassTypes operation state handle
@@ -1893,7 +1892,8 @@ module VirtualSlotLayout =
     /// way). Everything else past the end is `OutOfRange`.
     ///
     /// <paramref name="target"/> must carry a method table: a closed type, an array (whose slots
-    /// are `System.Array`'s) or a generic definition. The managed wrapper throws
+    /// are `System.Array`'s), a generic definition or an open construction (whose slots are its
+    /// definition's). The managed wrapper throws
     /// `ArgumentException` for a TypeDesc before the QCall, so one reaching here is a contract
     /// violation and this fails rather than answering.
     let rec methodAt
@@ -1957,7 +1957,10 @@ module VirtualSlotLayout =
                 | _ -> state, []
 
             state, answer vtable staticVirtuals
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
+            // An open construction's slots are its definition's, as `numVirtuals` says; only the
+            // declaring type `declaringTypeAt` names for an occupant depends on the arguments.
             let state, vtable =
                 contentVtableOfDefinition loggerFactory baseClassTypes operation state identity
 
@@ -1975,9 +1978,6 @@ module VirtualSlotLayout =
             state, answer vtable staticVirtuals
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
-            failwith
-                $"TODO: open constructed types are not handled at VirtualSlotLayout.fs:%s{__LINE__}; got %O{openConstructed}"
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
@@ -1996,50 +1996,17 @@ module VirtualSlotLayout =
             | other ->
                 failwith $"%s{operation}: expected the closed System.Array as the base of %O{target}, got %O{other}"
 
-    /// The indices of the type-generic parameters (`!i`) a spelling mentions.
-    let rec private mentionedTypeParameters (ty : TypeDefn) : Set<int> =
-        match ty with
-        | TypeDefn.GenericTypeParameter index -> Set.singleton index
-        | TypeDefn.GenericMethodParameter _
-        | TypeDefn.PrimitiveType _
-        | TypeDefn.FromReference _
-        | TypeDefn.FromDefinition _
-        | TypeDefn.Void -> Set.empty
-        | TypeDefn.Array (element, _)
-        | TypeDefn.Pinned element
-        | TypeDefn.Pointer element
-        | TypeDefn.Byref element
-        | TypeDefn.OneDimensionalArrayLowerBoundZero element -> mentionedTypeParameters element
-        | TypeDefn.Modified m -> Set.union (mentionedTypeParameters m.Unmodified) (mentionedTypeParameters m.Modifier)
-        | TypeDefn.GenericInstantiation (generic, args) ->
-            args
-            |> Seq.map mentionedTypeParameters
-            |> Set.unionMany
-            |> Set.union (mentionedTypeParameters generic)
-        | TypeDefn.FunctionPointer signature ->
-            let ret =
-                match signature.ReturnType with
-                | MethodReturnType.Void -> Set.empty
-                | MethodReturnType.Returns ret -> mentionedTypeParameters ret
-
-            signature.ParameterTypes
-            |> List.map mentionedTypeParameters
-            |> Set.unionMany
-            |> Set.union ret
-
     /// The declaring type of <paramref name="occupant"/>, found at slot <paramref name="slot"/> of
     /// <paramref name="receiver"/>'s method table by `methodAt`, as the receiver's chain
     /// instantiates it -- the type `GetBaseDefinition` and the accessor association report as the
     /// method's `DeclaringType`, and the declaring type of the handle `GetMethodAt` mints.
     ///
-    /// A closed receiver's chain is walked as `callvirt` walks it, and an array's chain starts at
-    /// `System.Array`. For a definition, an inherited occupant's declarer is named by the content
-    /// table in the *ancestor's* own vocabulary; the identity table re-reads every ancestor's slot
-    /// in the definition's (`placedSlotsOfDefinition` rebases each one), so the ancestor's arguments
-    /// are taken from a slot it owns there, and each is closed -- a runtime type, or a spelling
-    /// under a further context, of which only the entries the spelling mentions are consulted. An
-    /// argument that is one of the definition's own formals makes the declaring type an open
-    /// construction, which a method handle cannot yet carry, and that one shape is refused by name.
+    /// That is the first type on the receiver's class chain whose definition declares the occupant,
+    /// with the chain walked exactly as `Type.BaseType` reports it
+    /// (`resolveBaseRuntimeTypeHandleTarget`), so the two cannot disagree. An array's chain starts
+    /// at `System.Array`. On the chain of a definition or of an open construction an ancestor can
+    /// itself be an open construction, `Base<T>` over the definition's own `T`, and is answered as
+    /// one; an ancestor all of whose arguments come out closed is the closed type.
     let declaringTypeAt
         (loggerFactory : ILoggerFactory)
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
@@ -2052,124 +2019,52 @@ module VirtualSlotLayout =
         =
         let declaringIdentity = occupant.DeclaredBy.Identity
 
-        let rec walk (state : IlMachineState) (handle : ConcreteTypeHandle) : IlMachineState * RuntimeTypeHandleTarget =
-            match IlMachineState.tryGetConcreteTypeInfo state handle with
-            | Some (concreteType, _) when concreteType.Identity = declaringIdentity ->
-                state, RuntimeTypeHandleTarget.Closed handle
-            | _ ->
-                let state, baseHandle =
-                    IlMachineState.resolveBaseConcreteType loggerFactory baseClassTypes state handle
+        let rec walk
+            (state : IlMachineState)
+            (target : RuntimeTypeHandleTarget)
+            : IlMachineState * RuntimeTypeHandleTarget
+            =
+            let identity =
+                match target with
+                | RuntimeTypeHandleTarget.Closed handle ->
+                    // `None` for a closed array, whose chain continues at `System.Array`.
+                    IlMachineState.tryGetConcreteTypeInfo state handle
+                    |> Option.map (fun (concreteType, _) -> concreteType.Identity)
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+                | RuntimeTypeHandleTarget.OpenConstructed (identity, _) -> Some identity
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
+                    None
+                | RuntimeTypeHandleTarget.DynamicMethodsClass _
+                | RuntimeTypeHandleTarget.GenericParameter _
+                | RuntimeTypeHandleTarget.MethodGenericParameter _
+                | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
+                | RuntimeTypeHandleTarget.FunctionPointer _ ->
+                    failwith
+                        $"%s{operation}: %O{target} appeared on the class chain of %O{receiver}, but only a type with a method table can be anything's base"
 
-                match baseHandle with
-                | Some baseHandle -> walk state baseHandle
+            if identity = Some declaringIdentity then
+                state, target
+            else
+                let state, parent =
+                    IlMachineState.resolveBaseRuntimeTypeHandleTarget loggerFactory baseClassTypes state target
+
+                match parent with
+                | Some parent -> walk state parent
                 | None ->
                     failwith
                         $"%s{operation}: slot %d{slot} of %O{receiver} is held by %s{occupant.Method.Name}, declared by %s{occupant.DeclaredBy.Description}, which is not on the receiver's class chain"
 
         match receiver with
-        | RuntimeTypeHandleTarget.Closed handle -> walk state handle
+        | RuntimeTypeHandleTarget.Closed _
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition _
+        | RuntimeTypeHandleTarget.OpenConstructed _
         | RuntimeTypeHandleTarget.Composite ((CompositeShape.OneDimArrayZero | CompositeShape.Array _), _) ->
-            let state, arrayType =
-                IlMachineState.resolveBaseRuntimeTypeHandleTarget loggerFactory baseClassTypes state receiver
-
-            match arrayType with
-            | Some (RuntimeTypeHandleTarget.Closed arrayHandle) -> walk state arrayHandle
-            | other ->
-                failwith $"%s{operation}: expected the closed System.Array as the base of %O{receiver}, got %O{other}"
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition when declaringIdentity = definition ->
-            state, receiver
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
-            let state, placed =
-                placedSlotsOfDefinition loggerFactory baseClassTypes operation state definition
-
-            let substitution =
-                placed
-                |> List.tryPick (fun (candidate, _) ->
-                    if candidate.DeclaredBy.Identity = declaringIdentity then
-                        Some candidate.DeclaredBy.Substitution
-                    else
-                        None
-                )
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: slot %d{slot} of the definition %O{receiver} is held by %s{occupant.Method.Name}, declared by %s{occupant.DeclaredBy.Description}, but no slot of the definition's own table is owned by that type"
-                )
-
-            let assembly =
-                state.LoadedAssembly declaringIdentity.AssemblyFullName
-                |> Option.defaultWith (fun () ->
-                    failwith
-                        $"%s{operation}: assembly %s{declaringIdentity.AssemblyFullName} of the declaring type of slot %d{slot}'s occupant is not loaded"
-                )
-
-            let declaringTypeInfo = assembly.TypeDefs.[declaringIdentity.TypeDefinition.Get]
-
-            let refuseOpen () =
-                failwith
-                    $"TODO: %s{operation}: slot %d{slot} of the definition %O{receiver} is held by %s{occupant.Method.Name}, declared by %s{occupant.DeclaredBy.Description}; its declaring type on the definition's chain is an open construction, which a method handle cannot yet carry as its declaring type"
-
-            // Only the context entries a spelling mentions are closed: `Mid<int, T>`'s first
-            // argument is spelled `int32` and its second is the definition's formal, and an ancestor
-            // reached through the first alone (`Base<A>` under `Mid<A, B>`) is closed regardless of
-            // the second. `concretizeType` indexes the context by position, so the entries it will
-            // never read hold a filler that is never read either.
-            let rec closeArgument
-                (state : IlMachineState)
-                (argument : TypeConcretization.SubstitutionArgument)
-                : IlMachineState * ConcreteTypeHandle
-                =
-                match argument with
-                | TypeConcretization.SubstitutionArgument.Closed handle -> state, handle
-                | TypeConcretization.SubstitutionArgument.Formal _ -> refuseOpen ()
-                | TypeConcretization.SubstitutionArgument.Spelled (spellingAssembly, spelling, context) ->
-                    let mentioned = mentionedTypeParameters spelling
-
-                    let filler =
-                        AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes baseClassTypes.Object
-
-                    let state, closedContext =
-                        ((state, []), List.indexed (List.ofSeq context))
-                        ||> List.fold (fun (state, acc) (index, argument) ->
-                            if Set.contains index mentioned then
-                                let state, handle = closeArgument state argument
-                                state, handle :: acc
-                            else
-                                state, filler :: acc
-                        )
-
-                    IlMachineState.concretizeType
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        spellingAssembly
-                        (ImmutableArray.CreateRange (List.rev closedContext))
-                        ImmutableArray.Empty
-                        spelling
-
-            let state, arguments =
-                ((state, []), substitution.Arguments)
-                ||> Seq.fold (fun (state, acc) argument ->
-                    let state, handle = closeArgument state argument
-                    state, handle :: acc
-                )
-
-            let state, handle =
-                DumpedAssembly.typeInfoToTypeDefn' baseClassTypes state._LoadedAssemblies declaringTypeInfo
-                |> IlMachineState.concretizeType
-                    loggerFactory
-                    baseClassTypes
-                    state
-                    assembly.DefinitionFullName
-                    (ImmutableArray.CreateRange (List.rev arguments))
-                    ImmutableArray.Empty
-
-            state, RuntimeTypeHandleTarget.Closed handle
+            walk state receiver
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-        | RuntimeTypeHandleTarget.OpenConstructed _
         | RuntimeTypeHandleTarget.GenericParameter _
         | RuntimeTypeHandleTarget.MethodGenericParameter _
-        | RuntimeTypeHandleTarget.Composite _
+        | RuntimeTypeHandleTarget.Composite ((CompositeShape.Byref | CompositeShape.Pointer), _)
         | RuntimeTypeHandleTarget.FunctionPointer _ ->
             // `methodAt` answers for none of these, so no occupant of theirs exists to ask about.
             failwith
@@ -2211,12 +2106,15 @@ module VirtualSlotLayout =
                 |> List.map fst
 
             Some (concreteType.AssemblyFullName, target, declared)
-        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity ->
+        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition identity
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
             // CoreCLR's typical instantiation of `G<>` is a MethodTable carrying the definition's
-            // own TypeDef token, and its MethodDescChunks hold the definition's MethodDefs. So the
-            // answer is the metadata method list read straight off the typedef: no instantiation is
-            // needed, which is what makes this answerable where `numVirtuals` is not — that needs
-            // to *match* signatures across the base chain, and this only needs to list them.
+            // own TypeDef token, and its MethodDescChunks hold the definition's MethodDefs; so does
+            // an open construction such as `Base<T>` over a deriving definition's `T`, whose
+            // MethodDescs are its own (measured: `typeof(Derived<>).BaseType.GetMethod("M")`'s
+            // `MethodHandle` differs from `typeof(Base<>).GetMethod("M")`'s). So the answer is the
+            // metadata method list read straight off the typedef, with the target itself as the
+            // declaring type: no instantiation is needed, because this only lists the methods.
             let _, typeInfo = definitionMetadata operation state identity
 
             let declared =
@@ -2249,6 +2147,3 @@ module VirtualSlotLayout =
                 $"TODO: %s{operation} for synthesised array handle %O{target}; need to surface the array's intrinsic Get/Set/Address methods"
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
-            failwith
-                $"TODO: open constructed types are not handled at VirtualSlotLayout.fs:%s{__LINE__}; got %O{openConstructed}"

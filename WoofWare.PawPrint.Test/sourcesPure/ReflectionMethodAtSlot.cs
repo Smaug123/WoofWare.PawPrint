@@ -51,9 +51,9 @@ public class NonGenericBase
     public virtual string Named() => "base";
 }
 
-// Derives from a non-generic base on purpose: `GetBaseDefinition` walks `BaseType`, and the base
-// type of a definition whose base is an open construction (`OpenDerived<T> : GenericBase<T>`) is
-// not answered yet -- see sourcesPure/ReflectionBaseDefinitionOpenGenericBase.cs, parked on it.
+// Derives from a non-generic base on purpose, so that every declaring type `GetBaseDefinition`
+// reports here is the definition or a closed type; a definition whose base is an open construction
+// (`OpenDerived<T> : GenericBase<T>`) is sourcesPure/ReflectionBaseDefinitionOpenGenericBase.cs.
 public class OpenDerived<T> : NonGenericBase
 {
     public override int R => 2;

@@ -445,9 +445,11 @@ module NativeRuntimeMethodHandle =
         match target with
         | RuntimeTypeHandleTarget.DynamicMethodsClass scopeAssembly ->
             RuntimeTypeHandleTarget.refuseMetadataQuery operation scopeAssembly
-        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
-            failwith
-                $"TODO: open constructed types are not handled at Native/NativeRuntimeMethodHandle.fs:%s{__LINE__}; got %O{openConstructed}"
+        | RuntimeTypeHandleTarget.OpenConstructed (identity, _) ->
+            // An open construction such as `Base<T>` over a deriving definition's `T` is an
+            // instantiated MethodTable in CoreCLR, and not the typical one: reflection reports it
+            // with `IsGenericTypeDefinition` false.
+            factsOfTypeInfo (typeInfoOf identity) true false
         | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
             let concreteType =
                 AllConcreteTypes.lookup handle state.ConcreteTypes
@@ -509,9 +511,9 @@ module NativeRuntimeMethodHandle =
     /// The declaring type of a metadata method handle, narrowed to a closed instantiation.
     ///
     /// For consumers that can only work under a concrete instantiation. An open generic type
-    /// definition is refused rather than approximated: binding an invocation under `G&lt;&gt;`
-    /// needs a formal type context — the definition's own type variables — and
-    /// `ConcreteTypeHandle` cannot express one. Consumers that need only the *layout* of a
+    /// definition, or an open construction over one's variables, is refused rather than
+    /// approximated: binding an invocation under `G&lt;&gt;` needs a formal type context — the
+    /// definition's own type variables — and `ConcreteTypeHandle` cannot express one. Consumers that need only the *layout* of a
     /// definition should ask `VirtualSlotLayout.slotTableOfDefinition`, and those that need the
     /// types a definition's signature *reflects as* should ask
     /// `ReflectedTypeTarget.reflectedTypeTarget`; both carry a formal context of their own.
@@ -521,9 +523,13 @@ module NativeRuntimeMethodHandle =
         | RuntimeTypeHandleTarget.OpenGenericTypeDefinition declaringIdentity ->
             failwith
                 $"TODO: %s{operation} on a method declared by open generic type definition %O{declaringIdentity}; this needs the definition's own type variables as a substitution context, which ConcreteTypeHandle cannot express -- reflection over such a definition names them with RuntimeTypeHandleTarget.GenericParameter instead, which no runtime type can stand in for here"
+        | RuntimeTypeHandleTarget.OpenConstructed _ as openConstructed ->
+            failwith
+                $"TODO: %s{operation} on a method declared by %O{openConstructed}; at least one of its arguments is a type variable, which ConcreteTypeHandle cannot express as a substitution context"
         | other ->
-            // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition` when
-            // minting, so any other shape here means a handle was built outside that chokepoint.
+            // `MethodHandleRegistry` admits only `Closed`, `OpenGenericTypeDefinition` and
+            // `OpenConstructed` when minting, so any other shape here means a handle was built
+            // outside that chokepoint.
             failwith
                 $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
 
@@ -1239,7 +1245,8 @@ module NativeRuntimeMethodHandle =
                 )
 
             match declaringTarget, methodInstantiation with
-            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition, [] ->
+            | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition, []
+            | RuntimeTypeHandleTarget.OpenConstructed (definition, _), [] ->
                 // CoreCLR's `instType` is the definition's *typical* instantiation, and the stub it
                 // asks `FindOrCreateAssociatedMethodDesc` for has that typical MethodTable as its
                 // exact one (genmeth.cpp:1288-1297): an instantiating stub, plus an unboxing stub
@@ -1259,6 +1266,11 @@ module NativeRuntimeMethodHandle =
                 // against that rather than issuing a second id. The closed path below concretizes
                 // only to derive the equivalent tuple, and with no method generic arguments to bind
                 // there is nothing for a substitution context to substitute.
+                //
+                // An open construction such as `Base<T>` over a deriving definition's `T` is the
+                // same case with a different exact MethodTable: `stubOutcome` asks for a stub on a
+                // static method of it, which PawPrint collapses onto the (open construction,
+                // MethodDef) identity `GetFirstIntroducedMethod` mints for it, for the same reason.
                 if not methodInfo.Generics.IsEmpty then
                     // `stubOutcome` answers `Rebind` on an empty instantiation only through
                     // `needsStub`, whose first conjunct is `methodGenericParamCount = 0`. That is
@@ -1310,10 +1322,10 @@ module NativeRuntimeMethodHandle =
                 | other ->
                     // `stubOutcome` only says `Rebind` for a MethodTable-backed declaring type, and
                     // the arm above has served the definition-level rebind that binds no method
-                    // generic arguments, so what is left here is an array declaring type and an open
-                    // generic definition that *is* binding some.
+                    // generic arguments, so what is left here is an array declaring type, and an open
+                    // generic definition or open construction that *is* binding some.
                     //
-                    // The latter is `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))`, an
+                    // The definition case is `typeof(G<>).GetMethod("M").MakeGenericMethod(typeof(int))`, an
                     // ordinary reflection idiom (genmeth.cpp:1256-1270) whose *identity* PawPrint
                     // could already name. What it cannot do is check the constraints, and CoreCLR
                     // checks them against the definition's own formals: for `M<U>(U) where U : T` on
@@ -1323,7 +1335,8 @@ module NativeRuntimeMethodHandle =
                     // assignability check against a formal, with the formal's own constraints in
                     // play, and `validateConstraintsOn` wants each of those formals as a
                     // `ConcreteTypeHandle`, which is closed by construction. Serving the shape
-                    // without the check would hand back a usable handle where real .NET throws.
+                    // without the check would hand back a usable handle where real .NET throws. An
+                    // open construction's arguments may be variables too, and meet the same limit.
                     //
                     // A guest reaches it by the plain idiom, now that `RuntimeTypeHandle.GetNumVirtuals`
                     // answers for an open definition and so `typeof(G<>).GetMethod` succeeds;
@@ -1546,15 +1559,16 @@ module NativeRuntimeMethodHandle =
 
             let declaringType = identity.GetDeclaringType ()
 
-            // Both spellings of a metadata declaring type carry a method table, and they carry the
-            // *same* one: CoreCLR places virtuals once, on the definition, and every instantiation
-            // inherits that layout. Which one the guest named is therefore a question about the
-            // handle it holds, not about the answer.
+            // Every spelling of a metadata declaring type carries a method table, and they carry the
+            // *same* layout: CoreCLR places virtuals once, on the definition, and every
+            // instantiation, open or closed, inherits it. Which one the guest named is therefore a
+            // question about the handle it holds, not about the answer.
             let state, slotTable =
                 match declaringType with
                 | RuntimeTypeHandleTarget.Closed handle ->
                     VirtualSlotLayout.slotTableOfClosed ctx.LoggerFactory ctx.BaseClassTypes operation state handle
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
+                | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
                     VirtualSlotLayout.slotTableOfDefinition
                         ctx.LoggerFactory
                         ctx.BaseClassTypes
@@ -1562,9 +1576,9 @@ module NativeRuntimeMethodHandle =
                         state
                         definition
                 | other ->
-                    // `MethodHandleRegistry` admits only `Closed` and `OpenGenericTypeDefinition`
-                    // when minting, so any other shape here means a handle was built outside that
-                    // chokepoint.
+                    // `MethodHandleRegistry` admits only `Closed`, `OpenGenericTypeDefinition` and
+                    // `OpenConstructed` when minting, so any other shape here means a handle was
+                    // built outside that chokepoint.
                     failwith
                         $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"
 
@@ -1580,7 +1594,8 @@ module NativeRuntimeMethodHandle =
                     // type; the definition walk can name one, so ask it.
                     let declaringDescription =
                         match declaringType with
-                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition ->
+                        | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
+                        | RuntimeTypeHandleTarget.OpenConstructed (definition, _) ->
                             (VirtualSlotLayout.ownerOfDefinition operation state definition).Description
                         | other -> string other
 
@@ -1671,21 +1686,9 @@ module NativeRuntimeMethodHandle =
             let target =
                 NativeCall.runtimeTypeHandleTargetOfRuntimeTypeRef operation state runtimeTypeRef
 
-            // The generic definition the named type is an instantiation of. Only the two
+            // The generic definition the named type is an instantiation of. Only the three
             // method-table-backed spellings can be one; the rest cannot declare a metadata method
             // at all, and `MethodHandleRegistry.getOrAllocateInternalHandle` refuses them below.
-            //
-            // One of those refusals is a real gap rather than a contract violation: an *open
-            // construction* such as `Pair<T, int>` is a declaring type CoreCLR serves here, and
-            // the registry's mint-time chokepoint has a named TODO for it, because
-            // `MetadataMethodIdentity` cannot yet carry one. No guest reaches it today -- measured,
-            // both ways in: naming such a type through `Type.MakeGenericType` with a type-variable
-            // argument stops in `RuntimeTypeHandle.Instantiate`, and reaching one as the base of an
-            // open definition stops in `resolveBaseRuntimeTypeHandleTarget`, which
-            // `sourcesPure/ReflectionOpenGenericDefinitionSharedParent.cs` parks. Whichever of
-            // those opens first will arrive here and get the registry's TODO, which is the right
-            // place for it: widening the identity is a change to every consumer of a declaring
-            // type, not to this native.
             let namedDefinition : ResolvedTypeIdentity option =
                 match target with
                 | RuntimeTypeHandleTarget.Closed (ConcreteTypeHandle.Concrete _ as handle) ->
@@ -1694,7 +1697,8 @@ module NativeRuntimeMethodHandle =
                         failwith $"%s{operation}: declaring type handle %O{handle} is not registered in ConcreteTypes"
                     )
                     |> fun concreteType -> Some concreteType.Identity
-                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition -> Some definition
+                | RuntimeTypeHandleTarget.OpenGenericTypeDefinition definition
+                | RuntimeTypeHandleTarget.OpenConstructed (definition, _) -> Some definition
                 | _ -> None
 
             match namedDefinition with
@@ -1866,8 +1870,11 @@ module NativeRuntimeMethodHandle =
                         | Ok target -> target
                         | Error reason -> failwith $"%s{operation}: %s{reason}"
                     // Already the answer: CoreCLR's typical instantiation of `G<>` is a
-                    // MethodTable, and it is the one a method of the definition belongs to.
+                    // MethodTable, and it is the one a method of the definition belongs to. An
+                    // open construction is its own MethodTable too, whose MethodDescs are its own
+                    // rather than the definition's (see `MethodHandleRegistry`).
                     | (RuntimeTypeHandleTarget.OpenGenericTypeDefinition _) as target -> target
+                    | (RuntimeTypeHandleTarget.OpenConstructed _) as target -> target
                     | other ->
                         failwith
                             $"%s{operation}: declaring type %O{other} cannot declare a metadata-backed method; MethodHandleRegistry refuses to mint such a handle, so this identity did not come from it"

@@ -1612,6 +1612,34 @@ public class HasNestedGeneric<TKey, TValue>
                 failwith $"open generic definition %s{typeName} reported no introduced methods"
             )
 
+        // An open construction of the same definition introduces the same rows, and names itself
+        // rather than the definition as their declaring type, since its methods are its own.
+        let construction =
+            RuntimeTypeHandleTarget.openConstructed
+                typeInfo.Identity
+                (List.init
+                    typeInfo.Generics.Length
+                    (fun index ->
+                        RuntimeTypeHandleTarget.composite
+                            CompositeShape.OneDimArrayZero
+                            (RuntimeTypeHandleTarget.GenericParameter (typeInfo.Identity, index))
+                    ))
+
+        let _, constructionDeclaring, constructionWalked =
+            VirtualSlotLayout.introducedMethodsOf "test" state construction
+            |> Option.defaultWith (fun () ->
+                failwith $"open construction of %s{typeName} reported no introduced methods"
+            )
+
+        constructionDeclaring |> shouldEqual construction
+
+        constructionWalked
+        |> List.map (fun method -> method.TryMetadata |> Option.map (fun facts -> facts.Handle))
+        |> shouldEqual (
+            walked
+            |> List.map (fun method -> method.TryMetadata |> Option.map (fun facts -> facts.Handle))
+        )
+
         let pawPrintTokens =
             walked
             |> List.map (fun method ->
@@ -1668,7 +1696,126 @@ public class HasNestedGeneric<TKey, TValue>
             )
 
         exn.Message
-        |> shouldContainText "declaring type must be Closed or OpenGenericTypeDefinition"
+        |> shouldContainText "declaring type must be Closed, OpenGenericTypeDefinition or OpenConstructed"
+
+    /// `Box<T[]>` over Box's own `T`: an open construction of `Box<>` that is neither its typical
+    /// instantiation nor closed.
+    let private boxOverArrayOfOwnFormal (declaringIdentity : ResolvedTypeIdentity) : RuntimeTypeHandleTarget =
+        RuntimeTypeHandleTarget.openConstructed
+            declaringIdentity
+            [
+                RuntimeTypeHandleTarget.composite
+                    CompositeShape.OneDimArrayZero
+                    (RuntimeTypeHandleTarget.GenericParameter (declaringIdentity, 0))
+            ]
+
+    [<Test>]
+    let ``an open construction mints a handle distinct from its definition's and an instantiation's`` () : unit =
+        // CoreCLR gives an open construction MethodDescs of its own: measured on the host,
+        // `typeof(Derived<>).BaseType.GetMethod("M").MethodHandle` differs from
+        // `typeof(Base<>).GetMethod("M").MethodHandle`. So the construction is a third identity
+        // over the shared MethodDef row, and each id resolves back to the target it was minted
+        // with.
+        let _loggerFactory, baseClassTypes, assembly, ctors, openTarget, closedTarget, state =
+            boxTargets ()
+
+        let ctor = ctors.Head
+        let construction = boxOverArrayOfOwnFormal ctor.RequiredDeclaringType.Identity
+
+        match construction with
+        | RuntimeTypeHandleTarget.OpenConstructed _ -> ()
+        | other -> failwith $"expected an open construction, got %O{other}"
+
+        let ids, reg =
+            (([], state.MethodHandles), [ openTarget ; closedTarget ; construction ])
+            ||> List.fold (fun (ids, reg) target ->
+                let handle, reg =
+                    MethodHandleRegistry.getOrAllocateInternalHandle
+                        baseClassTypes
+                        state.ConcreteTypes
+                        assembly.Name.FullName
+                        target
+                        ctor
+                        reg
+
+                registryIdOf handle :: ids, reg
+            )
+
+        let ids = List.rev ids
+        ids |> List.distinct |> List.length |> shouldEqual 3
+
+        match MethodHandleRegistry.resolveMethodFromId ids.[2] reg with
+        | Some (MethodHandle.FromMetadata identity) -> identity.GetDeclaringType () |> shouldEqual construction
+        | other -> failwithf "expected a metadata handle, got %A" other
+
+        // And asking again dedups onto the same id.
+        let again, _ =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                construction
+                ctor
+                reg
+
+        registryIdOf again |> shouldEqual ids.[2]
+
+    [<Test>]
+    let ``minting refuses an open construction spelled in a non-canonical form`` () : unit =
+        // `Box<T>` over Box's own `T` is the typical instantiation, which is the definition itself;
+        // spelled directly as an open construction it would mint a second id for the definition's
+        // method.
+        let _loggerFactory, baseClassTypes, assembly, ctors, _openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let declaringIdentity = ctors.Head.RequiredDeclaringType.Identity
+
+        let typicalSpelledOpen =
+            RuntimeTypeHandleTarget.OpenConstructed (
+                declaringIdentity,
+                [ RuntimeTypeHandleTarget.GenericParameter (declaringIdentity, 0) ]
+            )
+
+        let exn =
+            Assert.Throws<exn> (fun () ->
+                MethodHandleRegistry.getOrAllocateInternalHandle
+                    baseClassTypes
+                    state.ConcreteTypes
+                    assembly.Name.FullName
+                    typicalSpelledOpen
+                    ctors.Head
+                    state.MethodHandles
+                |> ignore
+            )
+
+        exn.Message |> shouldContainText "is not canonical"
+
+    [<Test>]
+    let ``GetMethodTable of a method on an open construction is that construction`` () : unit =
+        // The construction's MethodDescs are its own (see the distinct-handle test above), so the
+        // MethodTable they live in is the construction's, not the definition's.
+        let loggerFactory, baseClassTypes, assembly, ctors, _openTarget, _closedTarget, state =
+            boxTargets ()
+
+        let ctor = ctors.Head
+        let construction = boxOverArrayOfOwnFormal ctor.RequiredDeclaringType.Identity
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.Name.FullName
+                construction
+                ctor
+                state.MethodHandles
+
+        let state =
+            { state with
+                MethodHandles = registry
+            }
+
+        invokeGetMethodTable loggerFactory baseClassTypes (CliType.ValueType internalHandle) state
+        |> shouldEqual (EvalStackValue.NativeInt (NativeIntSource.MethodTablePtr construction))
 
     // ---------------------------------------------------------------------------------------
     // `NativeRuntimeTypeHelpers.typicalDeclaringTypeTarget`: the declaring type
@@ -2154,6 +2301,48 @@ public static class TypicalHolder<T>
 
         invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
         |> shouldEqual (boolResult true)
+
+    [<Test>]
+    let ``IsTypicalMethodDefinition: a non-generic method on an open construction is not typical`` () : unit =
+        // An open construction such as `TypicalHolder<T[]>` over the holder's own `T` has an
+        // instantiation and is not the definition (the host reports `IsGenericTypeDefinition`
+        // false for `typeof(D<>).BaseType` of `class D<T> : B<T>`), so, like a closed instantiation,
+        // its method is not typical.
+        let loggerFactory, baseClassTypes, assembly, seed, state =
+            typicalFixture "TypicalOpenConstructedDeclaringAssembly"
+
+        let targetMethod = assembly |> findMethod "TypicalHolder`1" "NonGeneric"
+        let definition = targetMethod.RequiredDeclaringType.Identity
+
+        let construction =
+            RuntimeTypeHandleTarget.openConstructed
+                definition
+                [
+                    RuntimeTypeHandleTarget.composite
+                        CompositeShape.OneDimArrayZero
+                        (RuntimeTypeHandleTarget.GenericParameter (definition, 0))
+                ]
+
+        let internalHandle, registry =
+            MethodHandleRegistry.getOrAllocateInternalHandle
+                baseClassTypes
+                state.ConcreteTypes
+                assembly.DefinitionFullName
+                construction
+                targetMethod
+                state.MethodHandles
+
+        let stubAddr, state =
+            allocateStubCarrying
+                baseClassTypes
+                seed
+                internalHandle
+                { state with
+                    MethodHandles = registry
+                }
+
+        invokeIsTypicalMethodDefinition loggerFactory baseClassTypes (CliType.ObjectRef (Some stubAddr)) state
+        |> shouldEqual (boolResult false)
 
     [<Test>]
     let ``IsTypicalMethodDefinition: a dynamic method is typical`` () : unit =
