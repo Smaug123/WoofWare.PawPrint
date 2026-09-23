@@ -328,9 +328,16 @@ module DebuggerServer =
 
         writer.WriteEndArray ()
 
-    let private writeEvalStackValue (writer : Utf8JsonWriter) (value : EvalStackValue) : unit =
+    let private writeEvalStackValue
+        (writer : Utf8JsonWriter)
+        (context : DebuggerValueContext)
+        (value : EvalStackValue)
+        : unit
+        =
         writer.WriteStartObject ()
         writer.WriteString ("value", string value)
+        writer.WritePropertyName "structured"
+        DebuggerValueJson.writeEvalStackValue writer context value
 
         match value with
         | EvalStackValue.ObjectRef address -> writer.WriteNumber ("objectAddress", heapAddressValue address)
@@ -344,9 +351,11 @@ module DebuggerServer =
 
         writer.WriteEndObject ()
 
-    let private writeCliType (writer : Utf8JsonWriter) (value : CliType) : unit =
+    let private writeCliType (writer : Utf8JsonWriter) (context : DebuggerValueContext) (value : CliType) : unit =
         writer.WriteStartObject ()
         writer.WriteString ("value", string value)
+        writer.WritePropertyName "structured"
+        DebuggerValueJson.writeCliType writer context value
 
         match value with
         | CliType.ObjectRef address -> writeOptionalHeapAddress writer "objectAddress" address
@@ -367,11 +376,18 @@ module DebuggerServer =
         (frame : MethodState)
         : unit
         =
+        let context = DebuggerValueJson.ofState state
         writer.WriteStartObject ()
         writeFrameProperties writer state sourceIlOffset true activeFrame frameId frame
-        writeValueArray writer "evalStack" frame.EvaluationStack.Values writeEvalStackValue
-        writeValueArray writer "arguments" frame.Arguments writeCliType
-        writeValueArray writer "locals" frame.LocalVariables writeCliType
+
+        writeValueArray
+            writer
+            "evalStack"
+            frame.EvaluationStack.Values
+            (fun writer value -> writeEvalStackValue writer context value)
+
+        writeValueArray writer "arguments" frame.Arguments (fun writer value -> writeCliType writer context value)
+        writeValueArray writer "locals" frame.LocalVariables (fun writer value -> writeCliType writer context value)
         writer.WriteEndObject ()
 
     let private writeRunOutcome (writer : Utf8JsonWriter) (outcome : RunOutcome) : unit =
@@ -1009,7 +1025,9 @@ module DebuggerServer =
                 writer.WriteString ("concreteType", string array.Shape.ConcreteType)
                 writer.WriteString ("typeDescription", typeDescription state array.Shape.ConcreteType)
                 writer.WriteNumber ("length", array.Shape.Length)
-                writeValueArray writer "elements" array.Elements writeCliType
+
+                let context = DebuggerValueJson.ofState state
+                writeValueArray writer "elements" array.Elements (fun writer value -> writeCliType writer context value)
                 // Arrays carry an object header exactly like any other heap object, so a
                 // `lock (array)` is visible here too.
                 writer.WriteString ("syncBlock", string (HeapObserver.getSyncBlock address state.ManagedHeap))

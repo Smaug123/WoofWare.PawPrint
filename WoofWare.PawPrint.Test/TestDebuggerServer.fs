@@ -307,6 +307,11 @@ class Program
         else
             None
 
+    /// `#<handle>` numbers depend on the order types were first concretised, which is not these
+    /// tests' business, so they are masked out.
+    let private unnumbered (description : string) : string =
+        Text.RegularExpressions.Regex.Replace (description, "#[0-9]+", "#_")
+
     let private instructionTexts (body : JsonElement) : string list =
         body.GetProperty("instructions").EnumerateArray ()
         |> Seq.map (fun instruction -> instruction.GetProperty("text").GetString ())
@@ -1014,11 +1019,6 @@ class Program
                 | None ->
                     failwith $"Did not observe both locals holding objects within 20 steps; last saw %s{lastLocals}"
 
-            // `#<handle>` numbers depend on the order types were first concretised, which is not
-            // this test's business, so they are masked out.
-            let unnumbered (description : string) : string =
-                Text.RegularExpressions.Regex.Replace (description, "#[0-9]+", "#_")
-
             let heapTypeDescription (address : int) : Task<string> =
                 task {
                     let! heap = client.GetAsync $"heap/%d{address}"
@@ -1044,4 +1044,479 @@ class Program
                     "System.Int32#_ [System.Private.CoreLib][]"
                     "System.Int32#_ [System.Private.CoreLib]"
                 ]
+        }
+
+    /// One local of every shape the structured encoding distinguishes, all assigned before `Main`
+    /// parks in `Spin`, so that `Main`'s frame can be read at leisure. Declaration order is the
+    /// local-slot order in a Debug build, which is what the test relies on.
+    let private structuredLocalsSource =
+        """
+struct Pair
+{
+    public int X;
+    public object O;
+}
+
+class Program
+{
+    static void Spin()
+    {
+        while (true) { }
+    }
+
+    static int Main(string[] args)
+    {
+        long big = 9007199254740993L;
+        byte b = 200;
+        sbyte sb = -5;
+        short s = -300;
+        ushort us = 60000;
+        char c = 'e';
+        bool flag = true;
+        double d = 1.5;
+        float f = 2.5f;
+        uint u = 4000000000;
+        string text = "hello";
+        object nothing = null;
+        Pair pair = new Pair { X = 7, O = text };
+        int x = 41;
+        ref int r = ref x;
+        Spin();
+        return r + (int)big + b + sb + s + us + c + (flag ? 1 : 0) + (int)d + (int)f + (int)u + text.Length + (nothing == null ? 0 : 1) + pair.X;
+    }
+}
+"""
+
+    /// Run until `thread/0` has a frame for a method whose name ends with `methodSuffix`, and
+    /// return that thread's JSON (cloned out of its document).
+    let private runUntilFrame (client : HttpClient) (methodSuffix : string) : Task<JsonElement> =
+        task {
+            let mutable found : JsonElement option = None
+            let mutable remaining = 50
+
+            while found.IsNone && remaining > 0 do
+                remaining <- remaining - 1
+                let! run = client.PostAsync ("run?maxSteps=2000", emptyContent ())
+                run.StatusCode |> shouldEqual HttpStatusCode.OK
+
+                let! thread = client.GetAsync "thread/0"
+                thread.StatusCode |> shouldEqual HttpStatusCode.OK
+                use! threadJson = jsonDocument thread
+
+                let hasFrame =
+                    threadJson.RootElement.GetProperty("frames").EnumerateArray ()
+                    |> Seq.exists (fun frame -> frame.GetProperty("method").GetString().EndsWith methodSuffix)
+
+                if hasFrame then
+                    found <- Some (threadJson.RootElement.Clone ())
+
+            match found with
+            | Some thread -> return thread
+            | None -> return failwith $"thread 0 never had a frame for a method ending %s{methodSuffix}"
+        }
+
+    let private frameFor (methodSuffix : string) (thread : JsonElement) : JsonElement =
+        thread.GetProperty("frames").EnumerateArray ()
+        |> Seq.filter (fun frame -> frame.GetProperty("method").GetString().EndsWith methodSuffix)
+        |> Seq.exactlyOne
+
+    /// The structured encoding is a closed set of tagged objects. This walks one, failing on any
+    /// `kind` it does not know or any property a kind promises that is missing or mistyped, and
+    /// returns every `kind` it met (including nested ones) so a caller can assert coverage.
+    let rec private checkStructured (path : string) (value : JsonElement) : string list =
+        let fail (reason : string) : 'a =
+            failwith $"structured value at %s{path} %s{reason}: %s{value.GetRawText ()}"
+
+        let prop (name : string) : JsonElement =
+            match value.TryGetProperty name with
+            | true, p -> p
+            | false, _ -> fail $"has no %s{name}"
+
+        let expectKind (name : string) (kind : JsonValueKind) : unit =
+            if (prop name).ValueKind <> kind then
+                fail $"has %s{name} of kind %O{(prop name).ValueKind}, expected %O{kind}"
+
+        let expectInt64String (name : string) : unit =
+            expectKind name JsonValueKind.String
+
+            match Int64.TryParse ((prop name).GetString ()) with
+            | true, _ -> ()
+            | false, _ -> fail $"has %s{name} which is not a decimal int64"
+
+        let expectStringOrNull (name : string) : unit =
+            match (prop name).ValueKind with
+            | JsonValueKind.String
+            | JsonValueKind.Null -> ()
+            | other -> fail $"has %s{name} of kind %O{other}"
+
+        let kind =
+            match value.ValueKind with
+            | JsonValueKind.Object -> (prop "kind").GetString ()
+            | other -> fail $"is a %O{other}, not an object"
+
+        let nested =
+            match kind with
+            | "int" ->
+                let bits = (prop "bits").GetInt32 ()
+
+                match (prop "signedness").GetString () with
+                | "signed"
+                | "unsigned"
+                | "unspecified" -> ()
+                | other -> fail $"has unknown signedness %s{other}"
+
+                match bits with
+                | 8
+                | 16
+                | 32 -> expectKind "value" JsonValueKind.Number
+                | 64 -> expectInt64String "value"
+                | other -> fail $"has unknown bit width %d{other}"
+
+                []
+            | "float" ->
+                match (prop "bits").GetInt32 () with
+                | 32
+                | 64 -> ()
+                | other -> fail $"has unknown bit width %d{other}"
+
+                (prop "native").GetBoolean () |> ignore<bool>
+
+                match (prop "value").ValueKind with
+                | JsonValueKind.Number -> ()
+                | JsonValueKind.String ->
+                    match (prop "value").GetString () with
+                    | "NaN"
+                    | "Infinity"
+                    | "-Infinity" -> ()
+                    | other -> fail $"has non-numeric float value %s{other}"
+                | other -> fail $"has float value of kind %O{other}"
+
+                expectKind "rawBits" JsonValueKind.String
+                []
+            | "bool" ->
+                (prop "value").GetBoolean () |> ignore<bool>
+                expectKind "raw" JsonValueKind.Number
+                []
+            | "char" ->
+                let unit = (prop "codeUnit").GetInt32 ()
+
+                if unit < 0 || unit > 0xFFFF then
+                    fail "has an out-of-range code unit"
+
+                []
+            | "null" -> []
+            | "objectRef" ->
+                expectKind "address" JsonValueKind.Number
+                expectStringOrNull "type"
+                []
+            | "managedPointer"
+            | "truncatedPointer" -> checkPointer $"%s{path}.pointer" (prop "pointer")
+            | "nativeInt"
+            | "runtimePointer" -> checkNativeSource $"%s{path}.source" (prop "source")
+            | "nativeIntByte" ->
+                expectKind "index" JsonValueKind.Number
+                expectKind "bits" JsonValueKind.Number
+                checkNativeSource $"%s{path}.source" (prop "source")
+            | "widenedNativeInt" ->
+                (prop "signedConversion").GetBoolean () |> ignore<bool>
+                checkNativeSource $"%s{path}.source" (prop "source")
+            | "opaqueHashBits" ->
+                expectKind "value" JsonValueKind.String
+                []
+            | "crossStorageOffset" ->
+                expectKind "target" JsonValueKind.Object
+                expectKind "source" JsonValueKind.Object
+                []
+            | "valueType" ->
+                expectStringOrNull "type"
+
+                (prop "fields").EnumerateArray ()
+                |> Seq.toList
+                |> List.collect (fun field ->
+                    let name = field.GetProperty("name").GetString ()
+                    field.GetProperty("offset").GetInt32 () |> ignore<int>
+                    field.GetProperty("size").GetInt32 () |> ignore<int>
+                    checkStructured $"%s{path}.%s{name}" (field.GetProperty "value")
+                )
+            | "opaque" ->
+                expectKind "text" JsonValueKind.String
+                []
+            | other -> fail $"has unknown kind %s{other}"
+
+        kind :: nested
+
+    and private checkPointer (path : string) (pointer : JsonElement) : string list =
+        match pointer.GetProperty("kind").GetString () with
+        | "null" -> [ "pointer:null" ]
+        | "placeholder" -> [ "pointer:placeholder" ]
+        | "byref" ->
+            let root = pointer.GetProperty "root"
+            let rootKind = root.GetProperty("kind").GetString ()
+
+            match rootKind with
+            | "local"
+            | "argument"
+            | "stackMemory"
+            | "nativeMemory"
+            | "heapValue"
+            | "heapObjectField"
+            | "arrayElement"
+            | "peByteRange"
+            | "staticField"
+            | "stringChar"
+            | "exposedClassObject" -> ()
+            | other -> failwith $"pointer at %s{path} has unknown root kind %s{other}"
+
+            for projection in pointer.GetProperty("projections").EnumerateArray () do
+                match projection.GetProperty("kind").GetString () with
+                | "field"
+                | "reinterpretAs"
+                | "byteOffset" -> ()
+                | other -> failwith $"pointer at %s{path} has unknown projection kind %s{other}"
+
+            [ $"pointer:byref:%s{rootKind}" ]
+        | other -> failwith $"pointer at %s{path} has unknown kind %s{other}"
+
+    and private checkNativeSource (path : string) (source : JsonElement) : string list =
+        match source.GetProperty("kind").GetString () with
+        | "managedPointer" -> checkPointer $"%s{path}.pointer" (source.GetProperty "pointer")
+        | "number" ->
+            match Int64.TryParse (source.GetProperty("value").GetString ()) with
+            | true, _ -> [ "native:number" ]
+            | false, _ -> failwith $"native source at %s{path} is not a decimal int64"
+        | "functionPointer"
+        | "typeHandle"
+        | "typeDesc"
+        | "methodTable"
+        | "methodTableAuxiliaryData"
+        | "perInstInfo"
+        | "perInstDict"
+        | "methodHandle"
+        | "fieldHandle"
+        | "assembly"
+        | "module"
+        | "metadataImport"
+        | "gcHandle"
+        | "eventPipeProvider"
+        | "eventPipeEvent"
+        | "lowLevelMonitor"
+        | "waitHandle"
+        | "evpMd"
+        | "evpMdCtx"
+        | "crossStorageOffset"
+        | "opaqueHashBits" as kind -> [ $"native:%s{kind}" ]
+        | other -> failwith $"native source at %s{path} has unknown kind %s{other}"
+
+    /// Every value `GET /thread/{id}` renders, in every frame.
+    let private frameValues (thread : JsonElement) : (string * JsonElement) list =
+        [
+            for frame in thread.GetProperty("frames").EnumerateArray () do
+                let frameId = frame.GetProperty("id").GetInt32 ()
+
+                for section in [ "evalStack" ; "arguments" ; "locals" ] do
+                    for i, value in frame.GetProperty(section).EnumerateArray () |> Seq.indexed do
+                        yield $"frame %d{frameId} %s{section}[%d{i}]", value
+        ]
+
+    [<Test>]
+    let ``Debugger HTTP renders locals as structured values`` () : Task =
+        task {
+            use server = startServer structuredLocalsSource
+            use client = client server (Some token)
+
+            let! thread = runUntilFrame client ".Spin"
+            let main = frameFor ".Main" thread
+            let mainId = main.GetProperty("id").GetInt32 ()
+
+            let locals =
+                main.GetProperty("locals").EnumerateArray ()
+                |> Seq.map (fun local -> local.GetProperty "structured")
+                |> Seq.toArray
+
+            let intLocal (index : int) : int * string * JsonElement =
+                let local = locals.[index]
+                local.GetProperty("kind").GetString () |> shouldEqual "int"
+
+                local.GetProperty("bits").GetInt32 (),
+                local.GetProperty("signedness").GetString (),
+                local.GetProperty "value"
+
+            // long big: beyond 2^53, so it must survive as a string.
+            let bits, signedness, value = intLocal 0
+            (bits, signedness) |> shouldEqual (64, "unspecified")
+            value.GetString () |> shouldEqual "9007199254740993"
+
+            let bits, signedness, value = intLocal 1
+            (bits, signedness, value.GetInt32 ()) |> shouldEqual (8, "unsigned", 200)
+            let bits, signedness, value = intLocal 2
+            (bits, signedness, value.GetInt32 ()) |> shouldEqual (8, "signed", -5)
+            let bits, signedness, value = intLocal 3
+            (bits, signedness, value.GetInt32 ()) |> shouldEqual (16, "signed", -300)
+            let bits, signedness, value = intLocal 4
+            (bits, signedness, value.GetInt32 ()) |> shouldEqual (16, "unsigned", 60000)
+
+            locals.[5].GetProperty("kind").GetString () |> shouldEqual "char"
+            locals.[5].GetProperty("codeUnit").GetInt32 () |> shouldEqual (int 'e')
+
+            locals.[6].GetProperty("kind").GetString () |> shouldEqual "bool"
+            locals.[6].GetProperty("value").GetBoolean () |> shouldEqual true
+
+            locals.[7].GetProperty("kind").GetString () |> shouldEqual "float"
+            locals.[7].GetProperty("bits").GetInt32 () |> shouldEqual 64
+            locals.[7].GetProperty("value").GetDouble () |> shouldEqual 1.5
+
+            locals.[8].GetProperty("kind").GetString () |> shouldEqual "float"
+            locals.[8].GetProperty("bits").GetInt32 () |> shouldEqual 32
+            locals.[8].GetProperty("value").GetDouble () |> shouldEqual 2.5
+
+            // A `uint` is an int32 cell: the CLI does not record which interpretation it has.
+            let bits, signedness, value = intLocal 9
+
+            (bits, signedness, value.GetInt32 ())
+            |> shouldEqual (32, "unspecified", int 4000000000u)
+
+            let text = locals.[10]
+            text.GetProperty("kind").GetString () |> shouldEqual "objectRef"
+
+            text.GetProperty("type").GetString ()
+            |> unnumbered
+            |> shouldEqual "System.String#_ [System.Private.CoreLib]"
+
+            let textAddress = text.GetProperty("address").GetInt32 ()
+
+            locals.[11].GetProperty("kind").GetString () |> shouldEqual "null"
+
+            let pair = locals.[12]
+            pair.GetProperty("kind").GetString () |> shouldEqual "valueType"
+
+            pair.GetProperty("type").GetString ()
+            |> unnumbered
+            |> shouldEqual "Pair#_ [PawPrintTestAssembly]"
+
+            let fields =
+                pair.GetProperty("fields").EnumerateArray ()
+                |> Seq.map (fun field -> field.GetProperty("name").GetString (), field.GetProperty "value")
+                |> Map.ofSeq
+
+            fields |> Map.keys |> Seq.toList |> shouldEqual [ "O" ; "X" ]
+            fields.["X"].GetProperty("value").GetInt32 () |> shouldEqual 7
+            fields.["O"].GetProperty("address").GetInt32 () |> shouldEqual textAddress
+
+            // A pointer-typed *cell* holds a runtime pointer, whose source here is the byref.
+            let pointer = locals.[14]
+            pointer.GetProperty("kind").GetString () |> shouldEqual "runtimePointer"
+            let source = pointer.GetProperty "source"
+            source.GetProperty("kind").GetString () |> shouldEqual "managedPointer"
+            let target = source.GetProperty "pointer"
+            target.GetProperty("kind").GetString () |> shouldEqual "byref"
+            target.GetProperty("projections").GetArrayLength () |> shouldEqual 0
+            let root = target.GetProperty "root"
+            root.GetProperty("kind").GetString () |> shouldEqual "local"
+            root.GetProperty("thread").GetInt32 () |> shouldEqual 0
+            root.GetProperty("frame").GetInt32 () |> shouldEqual mainId
+            root.GetProperty("index").GetInt32 () |> shouldEqual 13
+
+            // The string rendering stays, for clients that already read it.
+            for local in main.GetProperty("locals").EnumerateArray () do
+                local.GetProperty("value").ValueKind |> shouldEqual JsonValueKind.String
+        }
+
+    /// Totality on real machine states rather than on hand-built values: every value in every frame
+    /// of a run's first few hundred steps, which go through the BCL's startup, has a structured
+    /// encoding the schema check accepts.
+    [<Test>]
+    let ``Debugger HTTP gives every frame value a well-formed structured encoding`` () : Task =
+        task {
+            use server = startServer objectAndArrayLocalsSource
+            use client = client server (Some token)
+
+            let kinds = Collections.Generic.HashSet<string> ()
+            let mutable finished = false
+            let mutable steps = 0
+
+            while not finished && steps < 400 do
+                steps <- steps + 1
+                let! step = client.PostAsync ("step?count=1", emptyContent ())
+                step.StatusCode |> shouldEqual HttpStatusCode.OK
+                use! stepJson = jsonDocument step
+
+                finished <-
+                    stepJson.RootElement.GetProperty("session").GetProperty("status").GetString ()
+                    <> "running"
+
+                let! thread = client.GetAsync "thread/0"
+                thread.StatusCode |> shouldEqual HttpStatusCode.OK
+                use! threadJson = jsonDocument thread
+
+                for path, value in frameValues threadJson.RootElement do
+                    for kind in checkStructured path (value.GetProperty "structured") do
+                        kinds.Add kind |> ignore<bool>
+
+            // Guard against the walk passing vacuously because nothing was rendered at all.
+            kinds.Contains "objectRef" |> shouldEqual true
+            kinds.Contains "int" |> shouldEqual true
+        }
+
+    /// Two fields sharing four bytes. Writing `I` leaves `F`'s own cell holding the zero it was
+    /// initialised with; only the shared bytes say what `F` now reads as.
+    let private overlappingFieldsSource =
+        """
+using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Explicit)]
+struct Overlap
+{
+    [FieldOffset(0)] public int I;
+    [FieldOffset(0)] public float F;
+}
+
+class Program
+{
+    static void Spin()
+    {
+        while (true) { }
+    }
+
+    static int Main(string[] args)
+    {
+        Overlap o = default;
+        o.I = 0x3F800000;
+        Spin();
+        return o.I;
+    }
+}
+"""
+
+    [<Test>]
+    let ``Debugger HTTP renders an overlapping field as its current bytes read`` () : Task =
+        task {
+            use server = startServer overlappingFieldsSource
+            use client = client server (Some token)
+
+            let! thread = runUntilFrame client ".Spin"
+            let main = frameFor ".Main" thread
+
+            let overlap =
+                (main.GetProperty("locals").EnumerateArray () |> Seq.head).GetProperty "structured"
+
+            overlap.GetProperty("kind").GetString () |> shouldEqual "valueType"
+
+            let fields =
+                overlap.GetProperty("fields").EnumerateArray ()
+                |> Seq.map (fun field ->
+                    field.GetProperty("name").GetString (),
+                    (field.GetProperty("offset").GetInt32 (),
+                     field.GetProperty("size").GetInt32 (),
+                     field.GetProperty "value")
+                )
+                |> Map.ofSeq
+
+            let iOffset, iSize, i = fields.["I"]
+            (iOffset, iSize) |> shouldEqual (0, 4)
+            i.GetProperty("value").GetInt32 () |> shouldEqual 0x3F800000
+
+            let fOffset, fSize, f = fields.["F"]
+            (fOffset, fSize) |> shouldEqual (0, 4)
+            f.GetProperty("kind").GetString () |> shouldEqual "float"
+            f.GetProperty("value").GetDouble () |> shouldEqual 1.0
         }

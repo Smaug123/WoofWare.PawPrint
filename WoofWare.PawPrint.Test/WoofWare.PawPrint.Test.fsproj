@@ -251,6 +251,7 @@
     <Compile Include="TestDebuggerState.fs" />
     <Compile Include="TestProgramDebugger.fs" />
     <Compile Include="TestDebuggerServer.fs" />
+    <Compile Include="TestDebuggerValueJson.fs" />
     <Compile Include="TestBclIntrinsicStaticFields.fs" />
     <Compile Include="TestThreadStatics.fs" />
     <Compile Include="TestLowLevelMonitor.fs" />
