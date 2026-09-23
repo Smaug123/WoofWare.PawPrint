@@ -89,6 +89,22 @@ type UnsignedNativeIntSource =
     /// `docs/plans/2026-05-13-castcache-synthetic-hash-bits.md`.
     | FromOpaqueHashBits of int64
 
+/// <summary>
+/// What CoreCLR keys a virtual call stub on: <c>VirtualCallStubManager::GetTokenFromOwnerAndSlot</c>
+/// (virtualcallstub.cpp:1069). Two stubs are the same address exactly when their tokens are equal.
+/// </summary>
+/// <remarks>
+/// A class method's token is its vtable slot and nothing else, so an override and the method it
+/// overrides share one, and so do the methods of unrelated classes that happen to sit at the same
+/// slot. An interface method's token also names the exact interface type.
+/// </remarks>
+[<RequireQualifiedAccess>]
+type VirtualDispatchToken =
+    /// A method declared on a class or value type, by its vtable slot.
+    | ClassSlot of slot : int
+    /// A method declared on an interface, by that exact interface type and its slot there.
+    | InterfaceSlot of interfaceType : ConcreteTypeHandle * slot : int
+
 /// What a `NativeIntSource.FunctionPointer` points at. Almost always a managed method,
 /// but the CLR also hands managed code the addresses of *runtime* helpers which have no
 /// managed `MethodInfo` at all: `RuntimeTypeHandle.GetActivationInfo` returns the JIT's
@@ -152,12 +168,42 @@ type FunctionPointerTarget =
     /// compares `_methodPtr`.
     | Dynamic of DynamicMethodHandle
 
+    /// The shuffle thunk an *open* delegate's `_methodPtr` names: CoreCLR's `SetupShuffleThunk`
+    /// (comdelegate.cpp:892). An open delegate's `Invoke` supplies every argument its target
+    /// takes, so the thunk is entered with the delegate itself as `this` (in `_target`), drops
+    /// it, and calls whatever the delegate's `_methodPtrAux` names with the remaining arguments.
+    ///
+    /// Nullary: every open delegate shares one thunk. CoreCLR caches a thunk per delegate class
+    /// but then canonicalises it by the *shuffle it performs*, which depends on the calling
+    /// convention's register assignment, so delegate types of the same shape share one address
+    /// (measured: `Func&lt;int, int&gt;` and `Func&lt;Base, string&gt;` do, on arm64). PawPrint
+    /// has no calling convention to compute that partition from, so every shape shares.
+    | OpenDelegateShuffleThunk
+
+    /// A virtual-stub-dispatch stub for <c>method</c>: CoreCLR's `GetVirtualCallStub`, which
+    /// `COMDelegate::BindToMethod` stores in an open delegate's `_methodPtrAux` when the target is
+    /// virtual and declared on a reference type (comdelegate.cpp:1236-1245). Calling it dispatches
+    /// <c>method</c> on the runtime type of the first argument, as `callvirt` would; the receiver
+    /// is therefore resolved per call rather than at binding. Calling one over a *static* virtual
+    /// method raises `EntryPointNotFoundException`, since there is no receiver to resolve on.
+    ///
+    /// Identity is the `token` alone, as CoreCLR's is: measured, open delegates over `Base.M` and
+    /// over its override `Derived.M` hold equal `_methodPtrAux`, and so are `Equals`. `method` is
+    /// the method the stub was requested for, and dispatching it gives the same answer as
+    /// dispatching any other method sharing its token.
+    | VirtualCallStub of
+        token : VirtualDispatchToken *
+        method : MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>
+
     override this.ToString () : string =
         match this with
         | FunctionPointerTarget.Managed methodDefinition ->
             $"{methodDefinition.Name} in {AssemblyDefinitionName.simpleName methodDefinition.DeclaringAssemblyFullName}"
         | FunctionPointerTarget.RuntimeAllocator -> "the runtime's newobj allocation helper"
         | FunctionPointerTarget.Dynamic handle -> string<DynamicMethodHandle> handle
+        | FunctionPointerTarget.OpenDelegateShuffleThunk -> "the runtime's open-delegate shuffle thunk"
+        | FunctionPointerTarget.VirtualCallStub (_, method) ->
+            $"the virtual call stub for {method.Name} in {AssemblyDefinitionName.simpleName method.DeclaringAssemblyFullName}"
 
     override this.Equals (other : obj) : bool =
         match other with
@@ -167,9 +213,14 @@ type FunctionPointerTarget =
                 MethodInfo.NominallyEqual left right
             | FunctionPointerTarget.RuntimeAllocator, FunctionPointerTarget.RuntimeAllocator -> true
             | FunctionPointerTarget.Dynamic left, FunctionPointerTarget.Dynamic right -> left = right
+            | FunctionPointerTarget.OpenDelegateShuffleThunk, FunctionPointerTarget.OpenDelegateShuffleThunk -> true
+            | FunctionPointerTarget.VirtualCallStub (left, _), FunctionPointerTarget.VirtualCallStub (right, _) ->
+                left = right
             | FunctionPointerTarget.Managed _, _
             | FunctionPointerTarget.RuntimeAllocator, _
-            | FunctionPointerTarget.Dynamic _, _ -> false
+            | FunctionPointerTarget.Dynamic _, _
+            | FunctionPointerTarget.OpenDelegateShuffleThunk, _
+            | FunctionPointerTarget.VirtualCallStub _, _ -> false
         | _ -> false
 
     override this.GetHashCode () : int =
@@ -188,6 +239,8 @@ type FunctionPointerTarget =
             hash (0, methodDefinition.Owner, methodDefinition.IdentityKey, methodDefinition.Generics)
         | FunctionPointerTarget.RuntimeAllocator -> HashCode.Combine 1
         | FunctionPointerTarget.Dynamic handle -> HashCode.Combine (2, handle.GetRegistryId ())
+        | FunctionPointerTarget.OpenDelegateShuffleThunk -> HashCode.Combine 3
+        | FunctionPointerTarget.VirtualCallStub (token, _) -> hash (4, token)
 
 [<RequireQualifiedAccess>]
 module FunctionPointerTarget =
@@ -214,6 +267,12 @@ module FunctionPointerTarget =
             // succeeds (as it must, for `Target`/`Method` to be observable) while calling it fails.
             failwith
                 $"%s{operation}: expected a pointer to a managed method, got a pointer to %O{handle}; PawPrint can mint and bind a Reflection.Emit method but cannot yet execute one"
+        | FunctionPointerTarget.OpenDelegateShuffleThunk
+        | FunctionPointerTarget.VirtualCallStub _ ->
+            // Both are reached only through a delegate's own fields, and delegate invocation
+            // interprets them there; nothing else calls through one.
+            failwith
+                $"%s{operation}: expected a pointer to a managed method, got a pointer to %O{target}, a delegate-invocation stub that only a delegate's Invoke calls through"
 
 [<RequireQualifiedAccess>]
 [<CustomEquality>]

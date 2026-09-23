@@ -7,12 +7,8 @@ using System.Reflection;
 //
 // Measured on real .NET: the binding *succeeds*, taking `BindToMethod`'s virtual-call-stub branch
 // (comdelegate.cpp:1237) because the declaring type is not a value type, and the resulting delegate
-// raises `EntryPointNotFoundException` when invoked — a stub over a method with no body.
-// PawPrint refuses the binding instead: it writes no `_methodPtrAux`, and an abstract target has no
-// body for `_methodPtr` to name, so there is nothing honest to store.
-//
-// Un-park when a delegate can hold a target that has no body — at which point the answer is to
-// bind, and to raise `EntryPointNotFoundException` from the invocation rather than from here.
+// raises `EntryPointNotFoundException` when invoked — a stub over a method with no body. Checks 3
+// and 5 are what stop a refusal at binding, or a raise from binding, passing for the real thing.
 //
 // Returns 0 on success, or the number of the first check that failed.
 

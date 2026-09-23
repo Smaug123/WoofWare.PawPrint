@@ -69,6 +69,7 @@ module NativeQCall =
             "RuntimeModule_GetScopeName", NativeRuntimeModule.tryExecuteQCall "RuntimeModule_GetScopeName"
             "Delegate_BindToMethodInfo", NativeDelegate.tryExecuteQCall "Delegate_BindToMethodInfo"
             "Delegate_FindMethodHandle", NativeDelegate.tryExecuteQCall "Delegate_FindMethodHandle"
+            "Delegate_InternalEqualMethodHandles", NativeDelegate.tryExecuteQCall "Delegate_InternalEqualMethodHandles"
             "RuntimeTypeHandle_GetMethodAt", NativeRuntimeType.tryExecuteQCall "RuntimeTypeHandle_GetMethodAt"
             "ModuleHandle_ResolveType", NativeRuntimeType.tryExecuteQCall "ModuleHandle_ResolveType"
             "ModuleHandle_ResolveMethod", NativeRuntimeType.tryExecuteQCall "ModuleHandle_ResolveMethod"

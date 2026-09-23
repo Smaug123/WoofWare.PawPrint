@@ -6,15 +6,11 @@ using System.Reflection;
 // `_methodPtrAux` with `_invocationCount` holding the `MethodDesc`
 // (`COMDelegate::BindToMethod`, comdelegate.cpp:1236-1245).
 //
-// PawPrint writes neither field, and `AbstractMachine.dispatchDelegateInvoke` calls whatever
-// `_methodPtr` names without virtualising, so binding the declared method would silently ignore an
-// override. `Delegate_BindToMethodInfo` therefore refuses the shape.
-//
 // C# cannot spell this with method-group syntax — there is no receiver to write — so
-// `Delegate.CreateDelegate` is the only route to it, and this file is what pins that PawPrint
-// refuses rather than answers wrongly. Checks 4 and 5 are what stop the refusal being satisfiable
-// by binding the declared method: they invoke through a derived receiver, where a
-// declared-method binding returns the base's answer.
+// `Delegate.CreateDelegate` is the only route to it. Checks 4 and 5 are what stop the shape being
+// satisfiable by binding the declared method: they invoke through a derived receiver, where a
+// declared-method binding returns the base's answer. `DelegateOpenInstanceRepresentation.cs` covers
+// the rest of what such a delegate answers.
 //
 // Returns 0 on success, or the number of the first check that failed.
 

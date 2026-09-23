@@ -177,6 +177,7 @@ module internal ExceptionHResults =
             "System.NotSupportedException", int 0x80131515u // COR_E_NOTSUPPORTED
             "System.InvalidOperationException", int 0x80131509u // COR_E_INVALIDOPERATION
             "System.DuplicateWaitObjectException", int 0x80131529u // COR_E_DUPLICATEWAITOBJECT
+            "System.EntryPointNotFoundException", int 0x80131523u // COR_E_ENTRYPOINTNOTFOUND
             "System.InvalidProgramException", int 0x8013153Au // COR_E_INVALIDPROGRAM
             "System.BadImageFormatException", int 0x8007000Bu // COR_E_BADIMAGEFORMAT
             "System.ArgumentOutOfRangeException", int 0x80131502u // COR_E_ARGUMENTOUTOFRANGE
