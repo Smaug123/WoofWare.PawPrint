@@ -34,7 +34,7 @@ Interpolate the appropriate platform/config strings as necessary.
 
 ```bash
 nix develop -c dotnet publish --self-contained --configuration Release --runtime osx-arm64 CSharpExample/
-nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CSharpExample/bin/Release/net9.0/osx-arm64/publish/CSharpExample.dll
+nix develop -c dotnet run --project WoofWare.PawPrint.App/WoofWare.PawPrint.App.fsproj -- CSharpExample/bin/Release/net10.0/osx-arm64/publish/CSharpExample.dll
 ```
 
 ## Architecture
