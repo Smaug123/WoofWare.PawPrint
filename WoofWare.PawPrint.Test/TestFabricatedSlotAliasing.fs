@@ -163,7 +163,8 @@ public static class Driver
                     with
                     | RunOutcome.NormalExit (state, _)
                     | RunOutcome.ProcessExit (state, _) -> state.LatchedExitCode
-                    | RunOutcome.GuestUnhandledException (_, _, exn) -> failwith $"guest threw: %O{exn.ExceptionObject}"
+                    | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                        failwith $"guest threw:\n%s{UnhandledExceptionReport.describe finalState exn}"
                     | RunOutcome.Aborted (_, _, fatal) ->
                         let message = fatal.Message |> Option.defaultValue "<none>"
                         failwith $"guest aborted (%O{fatal.Code}): %s{message}"

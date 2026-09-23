@@ -272,15 +272,13 @@ module AppProgram =
                 | RunOutcome.GuestUnhandledException (state, _thread, exn) ->
                     drainRemaining state
 
-                    let exceptionTypeName =
-                        match HeapObserver.tryGetNonArrayObject exn.ExceptionObject state.ManagedHeap with
-                        | Some obj ->
-                            match AllConcreteTypes.lookup obj.ConcreteType state.ConcreteTypes with
-                            | Some ti -> $"{ti.Namespace}.{ti.Name}"
-                            | None -> $"<unknown type %O{obj.ConcreteType}>"
-                        | None -> $"<heap address %O{exn.ExceptionObject}>"
-
-                    logger.LogCritical ("Unhandled exception in guest program: {ExceptionTypeName}", exceptionTypeName)
+                    // A PawPrint diagnostic, not CoreCLR's "Unhandled exception." banner: that is
+                    // `Exception.ToString()`, which only guest code can compute, so it is not
+                    // written to the guest's stderr as though the guest had printed it.
+                    logger.LogCritical (
+                        "Unhandled exception in guest program: {ExceptionDescription}",
+                        UnhandledExceptionReport.describe state exn
+                    )
 
                     // On Windows the .NET runtime exits with 0xE0434352 (SEH);
                     // on Unix it aborts with SIGABRT (exit code 128 + 6 = 134).

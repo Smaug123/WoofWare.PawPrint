@@ -126,8 +126,9 @@ module TestUnmanagedCallersOnlyEntry =
 
             failwith
                 $"%s{sourceName}: PawPrint ran the UnmanagedCallersOnly method and returned %s{returned}; the real runtime refuses this entry uncatchably"
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            failwith $"%s{sourceName}: PawPrint let the refusal become a catchable exception: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            failwith
+                $"%s{sourceName}: PawPrint let the refusal become a catchable exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"%s{sourceName}: PawPrint terminated the guest by POSIX signal %O{signal}"
 
