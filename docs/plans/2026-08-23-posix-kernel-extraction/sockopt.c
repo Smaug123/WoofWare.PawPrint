@@ -156,6 +156,15 @@ static void refusedAndEdgeRows(void) {
 #endif
 }
 
+// Set the flag to `before` through real storage, then attempt the row's set,
+// then read back -- as three separate statements, so the order is fixed.
+static void setThenRead(const char *label, int fd, int before, const void *val, socklen_t len) {
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &before, sizeof before);
+    int e = sso(fd, SOL_SOCKET, SO_REUSEADDR, val, len);
+    int r = readback(fd);
+    printf("%s (from %d) -> %s readback=%d\n", label, before, en(e), r);
+}
+
 int main(void) {
     int one = 1;
     char big[16];
@@ -222,28 +231,32 @@ int main(void) {
         int e = sso(s, SOL_SOCKET, SO_REUSEADDR, &v, 4);
         printf("set %-12d -> %-6s readback=%d\n", v, en(e), readback(s));
     }
-    // len 8 with trailing non-zero bytes but a zero int
+    // Each row below first sets the opposite value through real storage, so
+    // that a readback which merely repeats the previous state cannot pass.
     memset(big, 0, sizeof big);
     big[5] = 1;
-    printf("set len8 int=0 tail!=0 -> %s readback=%d\n", en(sso(s, SOL_SOCKET, SO_REUSEADDR, big, 8)), readback(s));
+    setThenRead("set len8 int=0 tail!=0", s, 1, big, 8);
     memset(big, 0, sizeof big);
     *(int *)big = 1;
-    printf("set len16 int=1 -> %s readback=%d\n", en(sso(s, SOL_SOCKET, SO_REUSEADDR, big, 16)), readback(s));
-    // len 8 where the tail is unmapped: place the int at the end of a page followed by an unmapped page
+    setThenRead("set len16 int=1", s, 0, big, 16);
+    // A declared length reaching past the int into a protected page: put the
+    // int at the very end of a page whose successor is PROT_NONE.
     {
-        char *two = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-        mprotect(two + 4096, 4096, PROT_NONE);
-        int *at = (int *)(two + 4096 - 4);
+        long page = sysconf(_SC_PAGESIZE);
+        char *two = mmap(NULL, 2 * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (two == MAP_FAILED || mprotect(two + page, page, PROT_NONE) != 0) {
+            printf("guard page setup failed: %d\n", errno);
+            return 1;
+        }
+        int *at = (int *)(two + page - 4);
         *at = 0;
-        printf("set len8 last-4-bytes-mapped int=0 -> %s readback=%d\n",
-               en(sso(s, SOL_SOCKET, SO_REUSEADDR, at, 8)), readback(s));
+        setThenRead("set len8 last-4-bytes-mapped int=0", s, 1, at, 8);
         *at = 1;
-        printf("set len8 last-4-bytes-mapped int=1 -> %s readback=%d\n",
-               en(sso(s, SOL_SOCKET, SO_REUSEADDR, at, 8)), readback(s));
-        // int straddling into the unmapped page
-        char *straddle = two + 4096 - 2;
-        printf("set len4 straddling -> %s readback=%d\n", en(sso(s, SOL_SOCKET, SO_REUSEADDR, straddle, 4)),
-               readback(s));
+        setThenRead("set len8 last-4-bytes-mapped int=1", s, 0, at, 8);
+        // The control: the int itself straddles into the protected page, so
+        // this row must fault, or the guard page is not guarding.
+        char *straddle = two + page - 2;
+        setThenRead("set len4 straddling (control, must fault)", s, 0, straddle, 4);
     }
 
     printf("\n== getsockopt ==\n");
