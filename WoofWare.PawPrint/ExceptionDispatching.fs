@@ -849,20 +849,10 @@ module ExceptionDispatching =
         else
 
         // When both wraps fire on one boundary, `cliException` here is the
-        // `TypeInitializationException` synthesised a few lines up. Its dispatch ends at this very
-        // frame — it is caught and never propagates further — so freeze its trace now, for the
-        // reason `concludeFirstPass` freezes a search that reached a handler. Doing it here rather
-        // than at birth matches an ordinary raise, which is seeded by `throwExceptionObject` and
-        // projected only once its search concludes.
-        //
-        // Only a wrapper *we* synthesised is projected. An original exception arriving here was
-        // already frozen by `concludeFirstPass`, and re-projecting it could clobber a newer token
-        // written by guest cleanup, as the comment on the first wrap explains.
-        let state =
-            match returnState.WasInitialisingType with
-            | None -> state
-            | Some _ -> projectStackTrace loggerFactory corelib cliException state
-
+        // `TypeInitializationException` synthesised a few lines up. Its trace is deliberately not
+        // frozen onto it: the catch is native and sits where the initialiser was run (see
+        // `IlMachineState.markInitialiserFrameWrapInTargetInvocation`), so in CoreCLR it reaches
+        // no managed frame and reports no trace at all.
         let tieAddr, tieType, state =
             IlMachineState.synthesizeTargetInvocationException loggerFactory corelib cliException.ExceptionObject state
 
@@ -1210,6 +1200,31 @@ module ExceptionDispatching =
             { unwind with
                 PC = threadState.MethodState.IlOpIndex
             }
+
+    /// CoreCLR's `ExceptionObject::ClearStackTraceForThrow` (object.h): null the three fields a
+    /// previous raise left a trace in. The runtime applies it to a cached
+    /// `TypeInitializationException` before throwing it again (`MethodTable::DoRunClassInitThrowing`),
+    /// which matters to a caller that catches that throw in native code: there no frame is
+    /// appended afterwards, so the exception is left reporting no trace at all.
+    let clearStackTraceForThrow
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (exceptionAddr : ManagedHeapAddress)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let exceptionHandle =
+            AllConcreteTypes.getRequiredNonGenericHandle state.ConcreteTypes corelib.Exception
+
+        [ "_remoteStackTraceString" ; "_stackTrace" ; "_stackTraceString" ]
+        |> List.fold
+            (fun state fieldName ->
+                let field =
+                    FieldIdentity.requiredOwnInstanceField corelib.Exception fieldName
+                    |> FieldIdentity.fieldId exceptionHandle
+
+                IlMachineState.setInstanceFieldById exceptionAddr field (CliType.ObjectRef None) state
+            )
+            state
 
     /// Initiate exception dispatch for an exception object already on the heap.
     /// Builds the initial stack trace frame and dispatches.

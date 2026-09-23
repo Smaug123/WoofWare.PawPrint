@@ -372,8 +372,12 @@ module NativeRuntimeFieldHandle =
             | Some (TypeInitState.Failed (tieAddr, _)) ->
                 // `ensureTypeInitialised` would dispatch the cached exception itself, leaving
                 // nothing to wrap, so the already-failed case is answered here. CoreCLR's
-                // `CheckRunClassInitThrowing` rethrows the same cached instance, and each call
-                // wraps it in a new `TargetInvocationException`.
+                // `CheckRunClassInitThrowing` clears the cached instance's trace and rethrows it,
+                // straight into the native catch, which wraps it in a new
+                // `TargetInvocationException`; no frame is appended to it in between.
+                let state =
+                    ExceptionDispatching.clearStackTraceForThrow ctx.BaseClassTypes tieAddr state
+
                 let wrapperAddr, wrapperType, state =
                     IlMachineState.synthesizeTargetInvocationException
                         ctx.LoggerFactory

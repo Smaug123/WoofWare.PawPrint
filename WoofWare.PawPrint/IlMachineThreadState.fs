@@ -44,8 +44,10 @@ module IlMachineThreadState =
     /// An exception escaping that initialiser then surfaces to the frame beneath as a
     /// `TypeInitializationException` wrapped in a fresh `TargetInvocationException`, which is
     /// how CoreCLR's reflective field accessors report a failing initialiser
-    /// (`InvokeUtil::SetValidField` and `GetFieldValue`, via `CreateTargetExcept`). Fails loudly
-    /// if the active frame is anything else.
+    /// (`InvokeUtil::SetValidField` and `GetFieldValue`, via `CreateTargetExcept`). That catch is
+    /// native and sits where the initialiser was run, so the `TypeInitializationException` it
+    /// intercepts is left with no stack-trace frames. Fails loudly if the active frame is
+    /// anything else.
     let markInitialiserFrameWrapInTargetInvocation
         (thread : ThreadId)
         (initialising : ConcreteTypeHandle)

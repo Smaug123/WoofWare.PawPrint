@@ -60,12 +60,17 @@ class Program
         }
 
         Check(direct != null);
+        Check(direct != null && direct.StackTrace != null);
 
         FieldInfo field = typeof(Boom).GetField("Value");
 
         TargetInvocationException first = Write(field);
         Check(first != null);
         Check(first != null && ReferenceEquals(first.InnerException, direct));
+        // The runtime clears the cached exception's trace before rethrowing it, and the native
+        // catch intercepts it before any frame is appended, so the instance the direct access
+        // caught now reports no trace at all.
+        Check(direct != null && direct.StackTrace == null);
 
         TargetInvocationException second = Write(field);
         Check(second != null);
