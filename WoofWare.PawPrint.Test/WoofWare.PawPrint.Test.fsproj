@@ -283,6 +283,7 @@
     <Compile Include="TestCrossAssemblySlotContent.fs" />
     <Compile Include="LinuxCoreLibFlavour.fs" />
     <Compile Include="TestEmulatedRuntime.fs" />
+    <Compile Include="TestSafeIntrinsicFingerprints.fs" />
     <Compile Include="TestLinuxCoreLibFlavour.fs" />
     <Compile Include="TestEvpDigestNatives.fs" />
     <Compile Include="TestInlineArrayLayout.fs" />

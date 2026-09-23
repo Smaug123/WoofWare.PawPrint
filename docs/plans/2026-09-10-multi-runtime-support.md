@@ -174,25 +174,59 @@ Classification, not open-ended derivation: "write whatever fields exist" would s
 to a future relayout nobody has validated. The DU's arms are the validated set; growth of the
 set is a deliberate commit against a pinned image.
 
-**Behaviour facts: per-version rows in tables that are already data.** Where the divergence is
-in what a primitive *does* or which route a method takes, the fact cannot be read off the
-image and lives in versioned data instead:
+**Behaviour facts: rows in tables that are already data.** Where the divergence is in what a
+primitive *does* or which route a method takes, the fact cannot be classified from the image's
+shape, and lives in a table instead — keyed on a runtime only where nothing finer will do:
 
-* `IntrinsicMethodKeys`' pattern entries gain an optional applicability range (introduced-in /
-  removed-in major, both defaulting to "always"). The net11 `EqualityComparer<T>.Create`
-  allowlisting becomes a row introduced at 11. The table stays inspectable data, and the
-  per-version delta is a reviewable diff of rows, in the same spirit as
-  `WoofWare.PawPrint.Semantics` keeping execution-model rules as data.
-* `NativeDispatch` composes its handler list per runtime, as its own comment plans: a shared
-  core list plus per-version additions (e.g. net11's `AppContext_TryGetHostPropertyValue`
-  QCall, `SystemNative_FileSystemSupportsLocking`) and removals (e.g. net10-only handlers for
-  entry points net11 deleted, such as `Monitor.TryEnter_FastPath`'s InternalCall). Selection
-  is on `EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib`.
-* The PAL conversions beside `WoofWare.PawPrint/Native/` gain versioned rows where measured —
-  the spike found `PosixSignal`'s managed enum membership and
-  `SystemNative_GetPlatformSignalNumber`'s answers both changed. `WoofWare.PosixKernel`
-  itself is not touched: it speaks POSIX, and POSIX did not change; only the PAL encodings on
-  the PawPrint side did.
+* `IntrinsicMethodKeys`' `safeIntrinsics` rows name no version at all. Each row carries the
+  fingerprints of the IL bodies its review covered (`IlBodyFingerprint`: a hash of the body's
+  signature, locals, instructions and exception regions, every token rendered by what it
+  names), and the `[Intrinsic]` gate interprets a listed method only when its body is one of
+  them; any other body is refused, naming the fingerprint found. What a row's verdict depends
+  on is the body, so that is what it keys on. A row for a method that is not `[Intrinsic]` on
+  some runtime is never consulted there, so a net11-only row is simply added; a body that
+  changed between majors is refused on the new one until someone re-reviews it and appends
+  its fingerprint. `TestSafeIntrinsicFingerprints` audits the table against the CoreLib the
+  suite runs on and the pinned linux-x64 CoreLib, printing any unreviewed body a row names.
+* `NativeDispatch` keeps the single handler list that `handlersFor` selects; adding
+  `Net11` makes that `match` incomplete, which is where the per-runtime composition gets
+  decided, against a real image. Nothing composes it earlier, because the measured deltas are
+  not at the list's granularity (below). Selection is on
+  `EmulatedRuntime.ofCoreLib ctx.BaseClassTypes.Corelib`.
+* The PAL conversions beside `WoofWare.PawPrint/Native/` take the runtime and `match` on it
+  for the facts that a native library's contract changed under an unchanged call-site shape:
+  `PosixSignal` gained `SIGKILL = -11` (so `GetPlatformSignalNumber(-11)` is 9 on net11 and 0
+  on net10), and `SystemNative_Kill` passes a raw signo on net11 where net10's shim screens
+  the `Interop.Sys.Signals` enum. These arrive with `Net11`; before it every such `match` would
+  have one arm. `WoofWare.PosixKernel` itself is not touched: it speaks POSIX, and POSIX did
+  not change; only the PAL encodings on the PawPrint side did.
+
+**What the net10 → net11 delta measures as.** Read from the 10.0.7 and 11.0.0-preview.7 images
+(osx-arm64 and linux-x64), with 10.0.9 as a servicing control that differs from 10.0.7 in none
+of what follows:
+
+* `safeIntrinsics`: of 163 rows, 160 name bodies identical across the two majors. Three name
+  bodies that changed, and each needs re-review, not a version switch:
+  `Span<T>.ToArray` and `ReadOnlySpan<T>.ToArray` (now via `CopyTo`), and
+  `Vector<T>.get_IsSupported` (now `call Scalar<T>.get_IsSupported`). Three rows' bodies differ
+  between osx-arm64 and linux-x64, on both majors (`BitOperations.PopCount` ×2,
+  `TrailingZeroCount(ulong)`), which is why a row can list more than one fingerprint.
+* Native entry points: of the 296 identities PawPrint's handlers name, 32 are absent on net11
+  and 2 changed signature. 29 of the absent ones are QCalls or InternalCalls, which only
+  CoreLib can declare, so a handler for one the loaded CoreLib does not declare is never
+  reached. They are arms inside `NativeQCall` and `NativeSystemNative`, not entries of the
+  handler list; `NativeMonitor` is the only module whose every name is gone. The other 3 are
+  `libSystem.Native` exports (`SystemNative_Dup`, `SystemNative_GetFileSystemType`, the
+  flavour's OS-thread-id export), which a guest's own `DllImport` can reach: on real net11
+  those raise `EntryPointNotFoundException`, and so does each of net11's 15 new exports on real
+  net10, whereas PawPrint answers them. That gap is the same class as today's unknown entry
+  point, which reaches `failUnimplemented` rather than a guest-catchable exception. Of the two
+  signature changes, `RuntimeModule_GetTypes` gains an argument and its handler's arity check
+  fails loudly; `SystemNative_Kill` is the PAL fact above.
+* PAL encodings: `GetPlatformSignalNumber`, called on both real runtimes over -20..70, differs
+  only at -11. `pal_signal.c`'s handled-signal arms and `GetSignalMax` are unchanged, as is every
+  other `Interop+*` enum PawPrint transcribes (errno, `SocketEvents`, the socket argument enums,
+  `FileAdvice`).
 
 **A placement rule, so the two mechanisms do not leak.** Version conditionals live only in the
 contract layer: the shape DUs, the versioned tables, and the dispatch composition. An
@@ -210,14 +244,19 @@ codebase's review standard.
 | `AppContext.Setup` arity | `SetupShape` classification; four-arg arm reads the out-slot back |
 | `Setup` skips the four host properties; new `AppContext_TryGetHostPropertyValue` QCall | net11 row in the QCall handler set; `appcontext` skill updated alongside |
 | `RuntimeFieldInfoStub` relayout | stub-layout classification, writer and readers together |
-| `EqualityComparer<T>.Create` intrinsic | table row introduced at 11 |
+| `EqualityComparer<T>.Create` intrinsic | an ordinary `safeIntrinsics` row with its body's fingerprint; the method does not exist on net10, so the row is never consulted there |
 | `FastAllocateString` gained `[Intrinsic]` | **version-agnostic bug, fix now on net10**: a method PawPrint implements natively must reach that implementation regardless of an `[Intrinsic]` marker; the gate at the `isSafeIntrinsic` check in `IlMachineStateExecution` currently runs ahead of native dispatch |
 | `Monitor.Enter` runs `ObjectHeader.AcquireThinLock`, reading twelve bytes before `RawData.Data` | real interpreter work (object-header addressing); net11-only code path, exercised by the net11 CI leg |
 | `Environment.CurrentManagedThreadId` reads a thread-static CoreCLR fills natively | net11 row: seed `ManagedThreadId.t_currentManagedThreadId` at thread creation |
 | `SystemNative_FileSystemSupportsLocking` unimplemented | net11 handler row |
 | vtable slot placement off by a consistent offset for `Stream`/`MemoryStream`/`Task<T>` | missing base slots; investigate against the net11 image — possibly version-agnostic builder work |
 | `TestLinuxCoreLibFlavour` sentinel import absent from net11 CoreLib | replace the sentinel with a distinction that exists in both supported majors |
-| `PosixSignal` membership / `GetPlatformSignalNumber` answers changed | versioned PAL rows |
+| `PosixSignal` membership / `GetPlatformSignalNumber` answers changed | PAL functions `match` on the runtime, arriving with `Net11` |
+| `SystemNative_Kill` takes a raw signo on net11; net10's shim screens `Interop.Sys.Signals` {0, 9, 19} | same; `KillSignalPal`'s screen is net10 behaviour, and on net11 would refuse a raw SIGTERM or Darwin's SIGSTOP (17) with EINVAL |
+| `System.Half` and `SZArrayHelper` carry a *type-level* `[Intrinsic]` on net11 (net10: neither type; `SZArrayHelper.GetEnumerator` alone at method level), so all 265 `Half` members and every `IList<T>`/`ICollection<T>` operation on an array reach the gate | review and fingerprint those bodies as rows, or implement them in `Intrinsics.call`; until then the gate refuses them on net11 |
+| other IL-bodied methods newly `[Intrinsic]` on net11: `Task.FromResult`, `Task.CompletedTask`, seven `ValueTask`/`ValueTask<T>` members, `Comparer<T>.Create`, `Enum.Equals`, `RuntimeHelpers.SetNextCallAsyncContinuation`/`SetNextCallGenericContext`/`WriteBarrier`, three `AsyncHelpers` and three `StructureMarshaler<T>` members, `Interlocked.And<T>`/`Or<T>`/`CompareExchange(int*, int, int)`, and several hundred SIMD and `System.Numerics` members | the same: a row or an `Intrinsics.call` arm each, as the net11 leg reaches them |
+| `Span<T>.ToArray`, `ReadOnlySpan<T>.ToArray` and `Vector<T>.get_IsSupported` bodies changed | the gate refuses them on net11 by fingerprint; re-review, then append the net11 fingerprints (`Scalar<T>.get_IsSupported`, which the last now calls, may need its own row) |
+| `TestKillSignalPal` reads a type net11 removed | skip the host read on a net11 host (above) |
 
 ## Nix, tests, and CI
 
@@ -287,7 +326,14 @@ classifies it:
 
 Whichever is chosen, the model side of the comparison must use the versioned rows for the
 version the oracle actually answers for — pairing net10 table rows with a net11 host answer
-is precisely the mismatch the spike measured for `GetPlatformSignalNumber`.
+is precisely the mismatch the spike measured for `GetPlatformSignalNumber`. For the two PAL
+fixtures the pairing is the one they already use for flavour: `TestPosixSignalPal` evaluates
+its model at `hostNumbering ()`, and gains `hostRuntime ()` beside it, which classifies the test
+host's own CoreLib through `EmulatedRuntime`. Host-oracle assertions evaluate the model at the
+host's runtime and `Assert.Ignore` when that major is unsupported; model-only assertions
+iterate `EmulatedRuntime.supported`, as they iterate every numbering today.
+`TestKillSignalPal` reads `Interop+Sys+Signals` from the host's `System.Diagnostics.Process`,
+a type net11 no longer has, so on a net11 host it must skip that read rather than throw.
 
 The selection mechanism follows the existing flavour precedent: an environment variable naming
 the framework directory, defaulting to the host's own when unset so a non-Nix checkout still
@@ -362,10 +408,11 @@ mutation-testing skill applies to each table/classifier they introduce.
    (current layout live), each with its readers. The fabricated-image machinery
    (`FabricatedGuest`, and the fabricated-image-load-oracle practice) can exercise the
    refusal arms without a net11 CoreLib.
-5. **Versioned tables.** Applicability ranges on `IntrinsicMethodKeys` patterns; per-runtime
-   composition in `NativeDispatch` (net10 list identical to today's — a
-   `check-move-is-rename-only`-style diff discipline applies); versioned PAL rows where the
-   spike measured changes. All rows still net10-only in effect.
+5. **Fingerprinted intrinsic rows.** Each `safeIntrinsics` row lists the fingerprints of the IL
+   bodies it was reviewed against, and the gate refuses any other body. This needs no version
+   key, so it is the whole of this stage: `NativeDispatch` composition and the versioned PAL
+   rows are decided when `Net11` makes their `match`es incomplete (stage 6), against a real
+   image.
 6. **The flake and CI grow the net11 pin set** (preview or RC, whichever nixpkgs then
    carries), the combined devshell, the framework-under-test selection (including the
    per-version `TestFSharpPureCases` publish), and version-aware parking in both suite
@@ -379,7 +426,9 @@ mutation-testing skill applies to each table/classifier they introduce.
    executable projects move to the newest supported framework; the published libraries stay
    `net8.0`.
 7. **Walk the net11 blockers one at a time** — thin-lock addressing, the thread-static seed,
-   the new QCalls, the vtable slots, the flavour sentinel — each PR un-parking its cases
+   the new QCalls, the vtable slots, the flavour sentinel, the `Half` and `SZArrayHelper`
+   type-level `[Intrinsic]`s and the other newly-`[Intrinsic]` bodies, the three
+   re-reviews of changed `safeIntrinsics` bodies, the two PAL facts — each PR un-parking its cases
    (guest or non-guest) on the net11 leg, exactly the incremental discipline `AGENTS.md`
    already prescribes for frontier work.
 8. **When the window moves** (net12 preview lands in nixpkgs): add its pin set and rows;

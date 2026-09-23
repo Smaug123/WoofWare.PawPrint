@@ -2232,10 +2232,20 @@ module IlMachineStateExecution =
             else
                 None
 
+        // `None` for a method the gate does not apply to. The body is fingerprinted only when a
+        // `safeIntrinsics` row names the method.
+        let state, gateVerdict =
+            match intrinsicKey with
+            | Some key when isIntrinsic ->
+                let state, verdict = IntrinsicMethodKeys.safeIntrinsicVerdict state methodToCall key
+                state, Some verdict
+            | _ -> state, None
+
         match
-            // `isIntrinsic` is false whenever the key is absent, so the `Option.get` shape here is
-            // discharged by the conjunction rather than assumed.
-            if isIntrinsic && not (Intrinsics.isSafeIntrinsic (Option.get intrinsicKey)) then
+            match gateVerdict with
+            | None
+            | Some IntrinsicMethodKeys.SafeIntrinsicVerdict.Reviewed -> None
+            | Some verdict ->
                 match tryHandleActivatorCreateInstance () with
                 | Some result -> Some result
                 | None ->
@@ -2276,16 +2286,30 @@ module IlMachineStateExecution =
                     // (importercalls.cpp:3104), which a method with no IL cannot make.
                     match methodToCall.Body with
                     | MethodBody.Il _ ->
-                        failwith
-                            $"TODO: implement JIT intrinsic %s{Intrinsics.formatMethodKey (Option.get intrinsicKey)}, or add it to safeIntrinsics after reviewing its IL"
+                        // A verdict exists only when `isIntrinsic` held, which needs the key.
+                        let key = Intrinsics.formatMethodKey (Option.get intrinsicKey)
+
+                        match verdict with
+                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.NotListed ->
+                            failwith
+                                $"TODO: implement JIT intrinsic %s{key}, or add it to safeIntrinsics after reviewing its IL"
+                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.UnreviewedBody (found, reviewed) ->
+                            let reviewed = reviewed |> List.map _.Hex |> String.concat ", "
+
+                            failwith
+                                $"TODO: JIT intrinsic %s{key} is listed in safeIntrinsics, but its IL body has fingerprint %s{found.Hex}, which is not one its row reviewed (%s{reviewed}). Review this body's IL and add its fingerprint to the row, or implement it in Intrinsics.call"
+                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.ListedWithoutIlBody ->
+                            failwith
+                                $"logic error: %s{key} has an IL body, but the safeIntrinsics verdict found none to fingerprint"
+                        | IntrinsicMethodKeys.SafeIntrinsicVerdict.Reviewed ->
+                            failwith
+                                $"logic error: %s{key} was reviewed as safe to interpret, so it cannot reach the refusal of an unreviewed intrinsic"
                     | MethodBody.InternalCall
                     | MethodBody.PInvoke
                     | MethodBody.RuntimeProvided _ -> None
                     | MethodBody.Abstract ->
                         failwith
                             $"logic error: %s{Intrinsics.formatMethodKey (Option.get intrinsicKey)} was classified as an intrinsic, but its body is abstract, which `isIntrinsic` excludes"
-            else
-                None
         with
         | Some result -> result
         | None ->

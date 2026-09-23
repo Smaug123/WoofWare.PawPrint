@@ -17,7 +17,7 @@ module Intrinsics =
 
     let formatMethodKey (key : IntrinsicMethodKey) : string = IntrinsicMethodKeys.formatMethodKey key
 
-    let isSafeIntrinsic (key : IntrinsicMethodKey) : bool = IntrinsicMethodKeys.isSafeIntrinsic key
+    let isListed (key : IntrinsicMethodKey) : bool = IntrinsicMethodKeys.isListed key
 
     /// The int32 value argument of an intrinsic whose signature match already established
     /// that the parameter's declared type is int32.
