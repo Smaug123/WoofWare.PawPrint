@@ -232,6 +232,93 @@ module TestSafeIntrinsicFingerprints =
         fingerprintOf (calling Type.EmptyTypes) "CallThrough"
         |> shouldNotEqual (fingerprintOf (calling [| typeof<int> |]) "CallThrough")
 
+    [<Test>]
+    let ``bodies whose signature names a type that is a class in one image and a struct in the other have different fingerprints``
+        ()
+        =
+        let withPayload (payloadBase : Type) : DumpedAssembly =
+            fabricate (fun moduleBuilder ->
+                let payload =
+                    moduleBuilder.DefineType (
+                        "Payload",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Sealed,
+                        payloadBase
+                    )
+
+                payload.CreateType () |> ignore<Type>
+
+                let holder =
+                    moduleBuilder.DefineType (
+                        "Holder",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                let echo =
+                    holder.DefineMethod (
+                        "Echo",
+                        Reflection.MethodAttributes.Public ||| Reflection.MethodAttributes.Static,
+                        payload,
+                        [| payload :> Type |]
+                    )
+
+                let il = echo.GetILGenerator ()
+                il.Emit Reflection.Emit.OpCodes.Ldarg_0
+                il.Emit Reflection.Emit.OpCodes.Ret
+                holder.CreateType () |> ignore<Type>
+            )
+
+        fingerprintOf (withPayload typeof<obj>) "Echo"
+        |> shouldNotEqual (fingerprintOf (withPayload typeof<ValueType>) "Echo")
+
+    [<Test>]
+    let ``bodies whose calli signatures name different types in the same row have different fingerprints`` () =
+        // Each image references exactly one type beyond the ones every image names, and only in
+        // the calli signature, so it takes the same TypeRef row in both.
+        let callingWith (parameterType : Type) : DumpedAssembly =
+            fabricate (fun moduleBuilder ->
+                let holder =
+                    moduleBuilder.DefineType (
+                        "Holder",
+                        Reflection.TypeAttributes.Public ||| Reflection.TypeAttributes.Class
+                    )
+
+                defineBody
+                    holder
+                    "CallThrough"
+                    (fun il ->
+                        il.Emit Reflection.Emit.OpCodes.Ldnull
+                        il.Emit Reflection.Emit.OpCodes.Ldc_I4_0
+                        il.Emit Reflection.Emit.OpCodes.Conv_I
+
+                        il.EmitCalli (
+                            Reflection.Emit.OpCodes.Calli,
+                            Reflection.CallingConventions.Standard,
+                            typeof<int>,
+                            [| parameterType |],
+                            null
+                        )
+                    )
+
+                holder.CreateType () |> ignore<Type>
+            )
+
+        let stringBuilder = callingWith typeof<Text.StringBuilder>
+        let version = callingWith typeof<Version>
+
+        let typeRefRow (image : DumpedAssembly) (name : string) : int =
+            image.TypeRefs
+            |> Seq.filter (fun (KeyValue (_, typeRef)) -> typeRef.Name = name)
+            |> Seq.exactlyOne
+            |> fun (KeyValue (handle, _)) ->
+                MetadataTokens.GetRowNumber (TypeReferenceHandle.op_Implicit handle : EntityHandle)
+
+        // Otherwise the two blobs differ in their bytes, and the case is not the one it names.
+        typeRefRow stringBuilder "StringBuilder"
+        |> shouldEqual (typeRefRow version "Version")
+
+        fingerprintOf stringBuilder "CallThrough"
+        |> shouldNotEqual (fingerprintOf version "CallThrough")
+
     /// Where `String.get_Length`'s IL begins in the host CoreLib's bytes, and the field token its
     /// `ldfld` names. The body is `ldarg.0; ldfld String::_stringLength; ret` under a tiny header.
     let private getLengthBody (bytes : byte[]) : int * int * int =

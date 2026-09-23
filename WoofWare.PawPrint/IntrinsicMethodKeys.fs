@@ -236,10 +236,10 @@ module IntrinsicMethodKeys =
                 "System.String"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.String" ]
-            |> reviewed [ "cc78e793427d1b03" ]
+            |> reviewed [ "bee1a083f49efece" ]
             // String overloads bottom out in String.GetRawStringData plus ReadOnlySpan construction.
             anyParams "System.Private.CoreLib" "System.MemoryExtensions" "AsSpan"
-            |> reviewed [ "cc78e793427d1b03" ]
+            |> reviewed [ "bee1a083f49efece" ]
             // Managed wrapper over RuntimeHelpers.IsBitwiseEquatable<T> and SpanHelpers.SequenceEqual.
             pattern
                 "System.Private.CoreLib"
@@ -249,7 +249,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            |> reviewed [ "980f18cf9dbb7b92" ]
+            |> reviewed [ "5f3060105d5b29bd" ]
             // Same shape as SequenceEqual above, with `value.Length <= span.Length` in place of
             // the equal-lengths check: the IL is `get_Length`, RuntimeHelpers.IsBitwiseEquatable<T>,
             // MemoryMarshal.GetReference, Unsafe.As<T, byte>, `sizeof T`, then
@@ -267,7 +267,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            |> reviewed [ "94794e1bf40f8283" ]
+            |> reviewed [ "a08f29df67ec4f46" ]
             // The mirror image of StartsWith above: the same length guard and the same
             // SpanHelpers.SequenceEqual(ref byte, ref byte, nuint) call, but comparing at
             // `span.Length - value.Length` rather than at 0. That offset is applied by
@@ -285,7 +285,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            |> reviewed [ "638144c31e9b1fe3" ]
+            |> reviewed [ "7b84c45911de5533" ]
             // The Span<T>-receiver siblings of the two overloads above. Each IL body is
             // `ldarg.0; call Span<T>::op_Implicit; ldarg.1; call <the ReadOnlySpan<T> overload>; ret`
             // — both callees are themselves allowlisted, so there is nothing further to review.
@@ -307,7 +307,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Span`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            |> reviewed [ "f6c6026637db939d" ]
+            |> reviewed [ "2cc2b5dbd81c58f3" ]
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/MemoryExtensions.cs#L3593-L3594
             pattern
                 "System.Private.CoreLib"
@@ -317,10 +317,10 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Span`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            |> reviewed [ "483ea877fe7ac408" ]
+            |> reviewed [ "8e1d9da1a0be6d9f" ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/ArgumentNullException.cs#L54
             anyParams "System.Private.CoreLib" "System.ArgumentNullException" "ThrowIfNull"
-            |> reviewed [ "44470ee49f19f992" ; "41d26e4382e0626a" ]
+            |> reviewed [ "44470ee49f19f992" ; "f0653be9d999b198" ]
             // The instance `String.Equals(string)` overload — the one that implements
             // `IEquatable<string>`, so interface dispatch through `IEquatable<string>::Equals`
             // resolves to it. Its `[Intrinsic]` is a pure codegen hint ("Unrolled and vectorized
@@ -388,7 +388,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.String"
                     IntrinsicParameterPattern.Exact "System.StringComparison"
                 ]
-            |> reviewed [ "4f82549534c799da" ]
+            |> reviewed [ "8828ec92d24ed72b" ]
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L517-L557
             pattern
                 "System.Private.CoreLib"
@@ -398,7 +398,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.String"
                     IntrinsicParameterPattern.Exact "System.StringComparison"
                 ]
-            |> reviewed [ "b5648fc2a8c14732" ]
+            |> reviewed [ "b7bc9ec03ab544fb" ]
             // `String.Equals(string, StringComparison)` and the static
             // `String.Equals(string, string, StringComparison)`. The same shape as the two
             // entries above and for the same reason: the `[Intrinsic]` is the codegen hint
@@ -443,7 +443,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.String"
                     IntrinsicParameterPattern.Exact "System.StringComparison"
                 ]
-            |> reviewed [ "beb179d4b01f4089" ]
+            |> reviewed [ "9bdde7fa8d0a2f99" ]
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/String.Comparison.cs#L684-L725
             pattern
                 "System.Private.CoreLib"
@@ -454,7 +454,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.String"
                     IntrinsicParameterPattern.Exact "System.StringComparison"
                 ]
-            |> reviewed [ "e316a0ffc737b30a" ]
+            |> reviewed [ "fb25db27d8ca4f2b" ]
             // `SZArrayHelper.GetEnumerator<T>` is where an SZ-array's implicit
             // `IEnumerable<T>::GetEnumerator` lands, so classifying against the resolved method
             // reaches it. It is the only `[Intrinsic]` member of `SZArrayHelper`, and the
@@ -470,14 +470,14 @@ module IntrinsicMethodKeys =
             // convention, which PawPrint's SZ-array interface dispatch already establishes.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Array.CoreCLR.cs#L398-L407
             pattern "System.Private.CoreLib" "System.SZArrayHelper" "GetEnumerator" []
-            |> reviewed [ "3c04fe7f05d19e77" ]
+            |> reviewed [ "e12bee258bf174ba" ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/coreclr/System.Private.CoreLib/src/System/Type.CoreCLR.cs#L82
             pattern
                 "System.Private.CoreLib"
                 "System.Type"
                 "GetTypeFromHandle"
                 [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
-            |> reviewed [ "c83eebea9cc3cde4" ]
+            |> reviewed [ "8d35749525955904" ]
             // `RuntimeType.TypeHandle`'s getter overrides the [Intrinsic] `Type.TypeHandle`
             // getter and carries its own [Intrinsic] solely "to avoid round-trip
             // handle -> RuntimeType -> handle in JIT" (its own source comment), so the managed
@@ -492,7 +492,7 @@ module IntrinsicMethodKeys =
             // `newobj` does.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/RuntimeType.cs#L27-L31
             pattern "System.Private.CoreLib" "System.RuntimeType" "get_TypeHandle" []
-            |> reviewed [ "f6a4132bcee21972" ]
+            |> reviewed [ "e55fa69b07ad55ba" ]
             // The base `Type.TypeHandle` getter is `[Intrinsic]` with an IL body of
             // `throw new NotSupportedException()`, and that throw is the behaviour we want.
             // Under `callvirt` on any PawPrint-created receiver, virtual resolution selects the
@@ -501,7 +501,7 @@ module IntrinsicMethodKeys =
             // `call`, where ECMA-335 dispatches statically to this body and .NET throws too.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Type.cs#L467-L471
             pattern "System.Private.CoreLib" "System.Type" "get_TypeHandle" []
-            |> reviewed [ "63bade288c1be159" ]
+            |> reviewed [ "f71fcaa21189fd8c" ]
             // `Type.IsPrimitive`'s getter is `[Intrinsic]` only so the JIT can constant-fold
             // `typeof(X).IsPrimitive` when the receiver is a literal `ldtoken`
             // (`NI_System_Type_get_IsPrimitive`, importercalls.cpp:4046, alongside `IsEnum` /
@@ -618,7 +618,7 @@ module IntrinsicMethodKeys =
             // rather than intercept is the single-classifier one above.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/RuntimeType.CoreCLR.cs#L3474-L3486
             pattern "System.Private.CoreLib" "System.RuntimeType" "get_IsActualEnum" []
-            |> reviewed [ "6198a01ae1c4b912" ]
+            |> reviewed [ "b659e1dac527cb4e" ]
             // .NET 10 added [Intrinsic] to RuntimeTypeHandle.ToIntPtr; the IL body delegates
             // to the Value getter which reads RuntimeType.m_handle, a field PawPrint already
             // populates with NativeIntSource.TypeHandlePtr. Executing the IL is safe and
@@ -630,7 +630,7 @@ module IntrinsicMethodKeys =
                 "System.RuntimeTypeHandle"
                 "ToIntPtr"
                 [ IntrinsicParameterPattern.Exact "System.RuntimeTypeHandle" ]
-            |> reviewed [ "436771664414b582" ]
+            |> reviewed [ "002a3013b9d4ad08" ]
             // https://github.com/dotnet/runtime/blob/ec11903827fc28847d775ba17e0cd1ff56cfbc2e/src/libraries/System.Private.CoreLib/src/System/Type.cs#L703
             // Managed IL bodies with RuntimeType fast paths before Equals; op_Inequality delegates to op_Equality.
             pattern
@@ -641,7 +641,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Type"
                     IntrinsicParameterPattern.Exact "System.Type"
                 ]
-            |> reviewed [ "5f3433ad829bb8b0" ]
+            |> reviewed [ "4835ccf731b7fe12" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Type"
@@ -650,7 +650,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Type"
                     IntrinsicParameterPattern.Exact "System.Type"
                 ]
-            |> reviewed [ "81311fd8e9ab472a" ]
+            |> reviewed [ "48a86daf5f0fdf68" ]
             // IL body is `targetType?.IsAssignableFrom(this) ?? false`; safe to execute since
             // the virtual IsAssignableFrom dispatches to RuntimeType.IsAssignableFrom which
             // bottoms out in the RuntimeTypeHandle.CanCastTo InternalCall (modelled in
@@ -661,7 +661,7 @@ module IntrinsicMethodKeys =
                 "System.Type"
                 "IsAssignableTo"
                 [ IntrinsicParameterPattern.Exact "System.Type" ]
-            |> reviewed [ "d4987564400ba699" ]
+            |> reviewed [ "0c77c32e3fd5ae99" ]
             // Virtual IsAssignableFrom; the override on RuntimeType is what carries the cast logic,
             // but the base IL body itself is safe (it handles null, identity, and a few fallbacks
             // that delegate back through normal virtual dispatch).
@@ -671,21 +671,21 @@ module IntrinsicMethodKeys =
                 "System.Type"
                 "IsAssignableFrom"
                 [ IntrinsicParameterPattern.Exact "System.Type" ]
-            |> reviewed [ "7e4d774c8f01ee29" ]
+            |> reviewed [ "7778c6cb88c7cf2c" ]
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L161
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Length" []
-            |> reviewed [ "70b23d41d3ec9ef5" ]
+            |> reviewed [ "15d6b5958f957dae" ]
             // IL body is `ldarg.0; ldfld _length; ldc.i4.0; ceq; ret`.
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_IsEmpty" []
-            |> reviewed [ "e471585d70471cc4" ]
+            |> reviewed [ "24fe3aa069451107" ]
             // Reviewed constructors initialise `_reference` / `_length` through already-modelled
             // array and byref boundaries. The `(void*, int)` constructor is an explicit
             // intrinsic implementation below because it crosses the unmanaged-pointer boundary.
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
-            |> reviewed [ "495ea959baacc309" ]
+            |> reviewed [ "22d28eac7f58f533" ]
             // IL body delegates to the array-backed constructor above.
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "op_Implicit" [ IntrinsicParameterPattern.SzArray ]
-            |> reviewed [ "ba58f3d2b20ec8ac" ]
+            |> reviewed [ "e84bc450f73748c4" ]
             pattern
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
@@ -695,9 +695,9 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
-            |> reviewed [ "d17140fab46aba12" ]
+            |> reviewed [ "4b99228380ab2ef2" ]
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
-            |> reviewed [ "783b9b53e265a9b6" ]
+            |> reviewed [ "a27e6d9f46e1eea8" ]
             pattern
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
@@ -706,7 +706,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Byref
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
-            |> reviewed [ "ce03cc8a043be01f" ]
+            |> reviewed [ "a50d95ac73e4dad8" ]
             // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
             // and Buffer.Memmove.
             pattern
@@ -714,13 +714,13 @@ module IntrinsicMethodKeys =
                 "System.ReadOnlySpan`1"
                 "CopyTo"
                 [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            |> reviewed [ "8a4db12f4d117e39" ]
+            |> reviewed [ "942d11d3cb4e81b9" ]
             pattern
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
                 "TryCopyTo"
                 [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            |> reviewed [ "2c83fccfcb9e35ac" ]
+            |> reviewed [ "f79215942a886d4e" ]
             // Reviewed IL: bounds checks, Unsafe.Add over the span byref, then byref+length
             // ReadOnlySpan<T> construction. Unsafe.Add and the constructor are implemented
             // boundaries below.
@@ -729,7 +729,7 @@ module IntrinsicMethodKeys =
                 "System.ReadOnlySpan`1"
                 "Slice"
                 [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            |> reviewed [ "a55b9ffe27f80c50" ]
+            |> reviewed [ "728ad5d03c2782ca" ]
             pattern
                 "System.Private.CoreLib"
                 "System.ReadOnlySpan`1"
@@ -738,15 +738,15 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
-            |> reviewed [ "56da543f36edabeb" ]
+            |> reviewed [ "6941a7dbc8479a50" ]
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "ToArray" []
-            |> reviewed [ "dfcf5e6aeaa657fa" ]
+            |> reviewed [ "9d482ee41f7b781b" ]
             // IL body is `Unsafe.NullRef<T>(); if (_length != 0) ret = ref _reference; return ret`.
             // Unsafe.NullRef is implemented as an intrinsic in Intrinsics.fs; the field reads
             // and managed-byref assignment are already-modelled span primitives.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L289
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "GetPinnableReference" []
-            |> reviewed [ "70cd65bca1ce0f64" ]
+            |> reviewed [ "6af394479d82d3f8" ]
             // Reviewed IL: `ldfld _length` on each argument, `bne.un.s` to a `ldc.i4.0; ret`,
             // then `ldarga.s; ldfld _reference` on each and `Unsafe.AreSame<T>(ref T, ref T)`.
             // Every step is an already-modelled boundary: the `_length` and `_reference` field
@@ -779,7 +779,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            |> reviewed [ "c9484e5da631714b" ]
+            |> reviewed [ "eda5cd2cad4c672b" ]
             // `ldarg.0; ldarg.1; call op_Equality; ldc.i4.0; ceq; ret` — nothing but the
             // operator above, which is itself allowlisted, and a negation. The C# `!=`
             // operator on two spans emits a call to this, so it is inseparable from `==`.
@@ -792,24 +792,24 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                     IntrinsicParameterPattern.Exact "System.ReadOnlySpan`1"
                 ]
-            |> reviewed [ "fb0b3736726a4a78" ]
+            |> reviewed [ "5084867d33a7f076" ]
             // IL body for both Span<T>.Empty and ReadOnlySpan<T>.Empty is
             // `.locals init (valuetype S V_0) ldloca.s V_0; initobj S; ldloc.0; ret` —
             // i.e. just returning `default(...)`. The `[Intrinsic]` attribute is for
             // JIT inlining; the IL is safe to execute directly.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/ReadOnlySpan.cs#L214
             pattern "System.Private.CoreLib" "System.ReadOnlySpan`1" "get_Empty" []
-            |> reviewed [ "4e9defc5eb879051" ]
+            |> reviewed [ "15d76781d54bed34" ]
             // IL body is `ldarg.0; ldfld _length; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_Length" []
-            |> reviewed [ "67e7ff6b20779c07" ]
+            |> reviewed [ "ea013f93d5fc97c9" ]
             // IL body is `ldarg.0; ldfld _length; ldc.i4.0; ceq; ret`.
             pattern "System.Private.CoreLib" "System.Span`1" "get_IsEmpty" []
-            |> reviewed [ "cdcf6ffc1767ea6e" ]
+            |> reviewed [ "181fa97488e2e538" ]
             // See ReadOnlySpan<T>.get_Empty above; the IL body is the same `default(Span<T>)` shape.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L219
             pattern "System.Private.CoreLib" "System.Span`1" "get_Empty" []
-            |> reviewed [ "b96b1b3991746264" ]
+            |> reviewed [ "50aba32b3d546a25" ]
             // The `Span<T>` siblings of the ReadOnlySpan<T> operators above. Both IL bodies are
             // the same instruction for instruction, over `Span<T>`'s own `_length` and
             // `_reference` fields, so the review above applies unchanged — including the caveat
@@ -824,7 +824,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Span`1"
                     IntrinsicParameterPattern.Exact "System.Span`1"
                 ]
-            |> reviewed [ "d049274361ba677c" ]
+            |> reviewed [ "cd031528095dd57f" ]
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Span.cs#L183
             pattern
                 "System.Private.CoreLib"
@@ -834,11 +834,11 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Span`1"
                     IntrinsicParameterPattern.Exact "System.Span`1"
                 ]
-            |> reviewed [ "4287bc8d1bd9c0e8" ]
+            |> reviewed [ "0ab4beee79659389" ]
             // Same constructor shape as ReadOnlySpan<T>; the `(void*, int)` constructor is
             // handled explicitly below.
             pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.SzArray ]
-            |> reviewed [ "c7f472b279fa115d" ]
+            |> reviewed [ "cd487f3c94052afc" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Span`1"
@@ -848,9 +848,9 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
-            |> reviewed [ "96095d36436195c4" ]
+            |> reviewed [ "52a4965e732f163b" ]
             pattern "System.Private.CoreLib" "System.Span`1" ".ctor" [ IntrinsicParameterPattern.Byref ]
-            |> reviewed [ "8d4f66e1d7f710e1" ]
+            |> reviewed [ "40bed4d169ce9696" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Span`1"
@@ -859,17 +859,17 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Byref
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
-            |> reviewed [ "fa9ac51e5c833d78" ]
+            |> reviewed [ "e91445b3df56ee93" ]
             // IL body delegates to the array-backed constructor above.
             pattern "System.Private.CoreLib" "System.Span`1" "op_Implicit" [ IntrinsicParameterPattern.SzArray ]
-            |> reviewed [ "da7317e263e3f35d" ]
+            |> reviewed [ "512f7ca88469124c" ]
             // IL body constructs ReadOnlySpan<T> over this span's `_reference` and `_length`.
             pattern
                 "System.Private.CoreLib"
                 "System.Span`1"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            |> reviewed [ "9271488ab739f83c" ]
+            |> reviewed [ "b67aaf27a837d367" ]
             // Managed wrappers over already-modelled span fields, bounds checks, array allocation,
             // and Buffer.Memmove.
             pattern
@@ -877,18 +877,18 @@ module IntrinsicMethodKeys =
                 "System.Span`1"
                 "CopyTo"
                 [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            |> reviewed [ "6efcec693319fe95" ]
+            |> reviewed [ "61deffc1e2a12687" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Span`1"
                 "TryCopyTo"
                 [ IntrinsicParameterPattern.Exact "System.Span`1" ]
-            |> reviewed [ "5f832053978a1c3d" ]
+            |> reviewed [ "0ba317dd3f2636d6" ]
             // Reviewed IL: bounds checks, Unsafe.Add over the span byref, then byref+length
             // Span<T> construction. Unsafe.Add and the constructor are implemented
             // boundaries below.
             pattern "System.Private.CoreLib" "System.Span`1" "Slice" [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            |> reviewed [ "3094c0e037e3f118" ]
+            |> reviewed [ "c4e5452099e94073" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Span`1"
@@ -897,14 +897,14 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int32"
                     IntrinsicParameterPattern.Exact "System.Int32"
                 ]
-            |> reviewed [ "cb5088f25cc79b09" ]
+            |> reviewed [ "7c435a2fc71b8220" ]
             pattern "System.Private.CoreLib" "System.Span`1" "ToArray" []
-            |> reviewed [ "629f4086ec0bd0ee" ]
+            |> reviewed [ "192194b00fde4ed0" ]
             // IL body is `ldarg.0; ldfld _reference; ldarg.0; ldfld _length; conv.u; ldarg.1;
             // call SpanHelpers::Fill<T>` — pure field reads plus the helper allowlisted below.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Span.cs#L310-L313
             pattern "System.Private.CoreLib" "System.Span`1" "Fill" [ IntrinsicParameterPattern.Any ]
-            |> reviewed [ "a43a4da01653e905" ]
+            |> reviewed [ "5f10a3bf0f0700ab" ]
             // `SpanHelpers.Fill<T>(ref T, nuint, T)` opens with a vectorised fast path, but
             // PawPrint emulates a deterministic scalar CPU: `Vector.IsHardwareAccelerated` folds
             // to false (see `vectorAccelerationAvailable`), which is the second of the four
@@ -935,14 +935,14 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.UIntPtr"
                     IntrinsicParameterPattern.Any
                 ]
-            |> reviewed [ "6cce258e251a0c23" ]
+            |> reviewed [ "595d78a78e48c6a9" ]
             // Same IL body as ReadOnlySpan<T>.GetPinnableReference above.
             // https://github.com/dotnet/runtime/blob/108fa7856efcfd39bc991c2d849eabbf7ba5989c/src/libraries/System.Private.CoreLib/src/System/Span.cs#L282
             pattern "System.Private.CoreLib" "System.Span`1" "GetPinnableReference" []
-            |> reviewed [ "7f4516b0a3c3aa34" ]
+            |> reviewed [ "778f8e72c038aac4" ]
             // https://github.com/dotnet/runtime/blob/9e5e6aa7bc36aeb2a154709a9d1192030c30a2ef/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/RuntimeHelpers.cs#L153
             anyParams "System.Private.CoreLib" "System.Runtime.CompilerServices.RuntimeHelpers" "CreateSpan"
-            |> reviewed [ "17c412f88433b138" ]
+            |> reviewed [ "4dfba8a1067d2b65" ]
             // Unusual among these entries: CoreCLR does not merely *recognise* this method, it
             // swaps a different IL body in at JIT time (`getILIntrinsicImplementationForRuntimeHelpers`,
             // jitinterface.cpp:7383). Two consequences. First, the swap is conditional on the
@@ -1061,7 +1061,7 @@ module IntrinsicMethodKeys =
             // `Unsafe.ReadUnaligned<Block16>` walk would lose non-`Verbatim` cell provenance.
             // https://github.com/dotnet/runtime/blob/1c3221b63340d7f81dfd829f3bcd822e582324f6/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs#L799
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_CurrentThread" []
-            |> reviewed [ "5d59979b4d060f21" ]
+            |> reviewed [ "732b73d11652fbfd" ]
             // IL body is `ldarg.0; ldfld _managedThreadId; ret` — pure field access.
             pattern "System.Private.CoreLib" "System.Threading.Thread" "get_ManagedThreadId" []
             |> reviewed [ "c11b0f7a76bc414c" ]
@@ -1106,7 +1106,7 @@ module IntrinsicMethodKeys =
                 "System.Threading.Tasks.ValueTask`1"
                 "ConfigureAwait"
                 [ IntrinsicParameterPattern.Exact "System.Boolean" ]
-            |> reviewed [ "70e8bcd95b4e1386" ]
+            |> reviewed [ "5e2c808c73bf2fd6" ]
             // The non-generic sibling of the entry above. Every word of that review applies here
             // unchanged — same `[Intrinsic]`-is-only-a-peephole-marker reasoning, same shape of body
             // — with one field fewer, since a `ValueTask` carries no `_result`:
@@ -1127,7 +1127,7 @@ module IntrinsicMethodKeys =
                 "System.Threading.Tasks.ValueTask"
                 "ConfigureAwait"
                 [ IntrinsicParameterPattern.Exact "System.Boolean" ]
-            |> reviewed [ "df52f21986c1dc9b" ]
+            |> reviewed [ "a30a4044f92e90ce" ]
             // The `Task`/`Task<TResult>` members of the same `ConfigureAwait` family. The
             // `[Intrinsic]` reasoning above carries over verbatim — these are in fact the overloads
             // the JIT's class-name test was *written* for — but the body is a different shape, so it
@@ -1155,14 +1155,14 @@ module IntrinsicMethodKeys =
                 "System.Threading.Tasks.Task"
                 "ConfigureAwait"
                 [ IntrinsicParameterPattern.Exact "System.Boolean" ]
-            |> reviewed [ "ae93eabc1c4bd42b" ]
+            |> reviewed [ "1abd5f84a1d51288" ]
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/CompilerServices/TaskAwaiter.cs#L447-L450
             pattern
                 "System.Private.CoreLib"
                 "System.Threading.Tasks.Task`1"
                 "ConfigureAwait"
                 [ IntrinsicParameterPattern.Exact "System.Boolean" ]
-            |> reviewed [ "3bf0b1cc2b6521ca" ]
+            |> reviewed [ "0e322ffcc5b0b89d" ]
             // The `ConfigureAwaitOptions`-taking siblings of the two entries above. The
             // `[Intrinsic]` reasoning is again unchanged, but these are the only members of the
             // family whose body does more than shuffle values into an awaitable: each validates its
@@ -1196,7 +1196,7 @@ module IntrinsicMethodKeys =
                 [
                     IntrinsicParameterPattern.Exact "System.Threading.Tasks.ConfigureAwaitOptions"
                 ]
-            |> reviewed [ "48ba35c11eead492" ]
+            |> reviewed [ "88b782c0cef3b733" ]
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Threading/Tasks/Future.cs#L522-L536
             pattern
                 "System.Private.CoreLib"
@@ -1205,10 +1205,10 @@ module IntrinsicMethodKeys =
                 [
                     IntrinsicParameterPattern.Exact "System.Threading.Tasks.ConfigureAwaitOptions"
                 ]
-            |> reviewed [ "d63ef54dc9a22fc2" ]
+            |> reviewed [ "82ae502751710f3b" ]
             // IL body is `ldsfld <Default>k__BackingField; ret`; the .cctor constructs the comparer.
             pattern "System.Private.CoreLib" "System.Collections.Generic.EqualityComparer`1" "get_Default" []
-            |> reviewed [ "d473b94bfd17bf92" ]
+            |> reviewed [ "557df9bb6a2553b3" ]
             // Same shape as its EqualityComparer sibling above: the IL body is
             // `ldsfld <Default>k__BackingField; ret`, and the .cctor picks the comparer via
             // `ComparerHelpers.CreateDefaultComparer(typeof(T))`. The [Intrinsic] marker exists so
@@ -1216,7 +1216,7 @@ module IntrinsicMethodKeys =
             // running the IL yields the same object the JIT would have specialised against.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/coreclr/System.Private.CoreLib/src/System/Collections/Generic/Comparer.CoreCLR.cs#L12
             pattern "System.Private.CoreLib" "System.Collections.Generic.Comparer`1" "get_Default" []
-            |> reviewed [ "e6df96fb05bc581a" ]
+            |> reviewed [ "ac6b85880ff04a9c" ]
             // The IBinaryNumber<TSelf>.Log2 wrappers on the unsigned primitive types each have
             // an IL body of the form `ldarg.0; call int32 BitOperations::Log2(<T>); ret`
             // (with a `(T)` cast for UInt32/UInt64/UIntPtr's typed return). They are marked
@@ -1402,13 +1402,13 @@ module IntrinsicMethodKeys =
                 "System.Numerics.BitOperations"
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.UInt32" ]
-            |> reviewed [ "12b76e425268cf6f" ; "ab5f6fb06e73729e" ]
+            |> reviewed [ "98901095dbbbdfb5" ; "ab5f6fb06e73729e" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Numerics.BitOperations"
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.UInt64" ]
-            |> reviewed [ "903faa5c2357dafb" ; "d4044bed748cec8e" ]
+            |> reviewed [ "7d865354181f50e2" ; "d4044bed748cec8e" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Numerics.BitOperations"
@@ -1472,13 +1472,13 @@ module IntrinsicMethodKeys =
                 "System.UInt128"
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.UInt128" ]
-            |> reviewed [ "e9f56ba358a72efc" ]
+            |> reviewed [ "79ac34263b45dcec" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "PopCount"
                 [ IntrinsicParameterPattern.Exact "System.Int128" ]
-            |> reviewed [ "d36edd11a5b8ad3b" ]
+            |> reviewed [ "dbc41180b21c8d32" ]
             // BitOperations.RotateLeft is marked [Intrinsic] only so the JIT can lower it to a
             // single ROL instruction; the IL bodies are pure shift+OR over the existing primitive
             // numeric ops PawPrint already supports:
@@ -1613,7 +1613,7 @@ module IntrinsicMethodKeys =
                 [ IntrinsicParameterPattern.Any ]
             |> reviewed
                 [
-                    "da37f8727abc030c"
+                    "bc31b1dffc7a8be1"
                     "4e116e223e13e3e2"
                     "ab1b688621d87123"
                     "29967aa3d40687e0"
@@ -1624,20 +1624,20 @@ module IntrinsicMethodKeys =
             pattern "System.Private.CoreLib" "System.Threading.Volatile" "Read" [ IntrinsicParameterPattern.Byref ]
             |> reviewed
                 [
-                    "b0493def561f7f49"
-                    "ce402a88e19e6f8a"
+                    "80edddb425fee093"
+                    "8b39318d03dfd6d3"
                     "f3fd5caef16c6ab0"
-                    "9afd4788053aafe6"
-                    "60695768c1d0bffa"
-                    "dd9edf0c515098d7"
-                    "97cd9735f44be55e"
-                    "319f79678515eefe"
-                    "6bf47f362026414d"
-                    "5c76b377b5a7f3f7"
-                    "d80b6b95befcbfa8"
+                    "f777b925d8ee93a0"
+                    "eb53b3a29b7cb1f0"
+                    "68edcb2a0a44d7f6"
+                    "6cdf3192f836645b"
+                    "43ad1d82a75e5671"
+                    "ba4c73808fe3925a"
+                    "5902f8c0a09db997"
+                    "949166c1089e884b"
                     "df6f935333fac579"
-                    "e726d78af0eb7b28"
-                    "7b58eba9a9f360a1"
+                    "0989d2760153fcc3"
+                    "3169bf1791836545"
                 ]
             pattern
                 "System.Private.CoreLib"
@@ -1646,20 +1646,20 @@ module IntrinsicMethodKeys =
                 [ IntrinsicParameterPattern.Byref ; IntrinsicParameterPattern.Any ]
             |> reviewed
                 [
-                    "6f6190e32bf1b3f4"
-                    "d98339e314b96870"
+                    "887c998984df0cb8"
+                    "70d4a58bbd13484a"
                     "95e224d36212393e"
-                    "6bc34c56e7ae64bc"
-                    "b4d13dcddcc04372"
-                    "00a9fe09bcab9a3f"
-                    "c33229a69130b673"
-                    "050ad72013fe8f22"
-                    "7903fea95c43eba6"
-                    "653f695893ee0b26"
-                    "9a431a449679a683"
+                    "c5ec7866650b9d28"
+                    "4aa4973ae40cbf1a"
+                    "e215892aea2c87e1"
+                    "1fff2ee36fa97343"
+                    "f3e8af7791fee3a6"
+                    "c891dc7468ae0898"
+                    "6858eeeb027b1294"
+                    "1e707a75ba7e7cfc"
                     "1c12e517989f182a"
-                    "0324acc431a04a7d"
-                    "4f1b55bd07329a02"
+                    "797a6944f72b5117"
+                    "f97ec9eeb2f6a058"
                 ]
             // Unlike its `IsAddressLessThan` / `IsAddressGreaterThan` siblings — whose bodies
             // are a bare `throw new PlatformNotSupportedException()` and so must be intercepted
@@ -1702,15 +1702,15 @@ module IntrinsicMethodKeys =
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Runtime/Intrinsics/Vector256_1.cs#L78-L97
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Numerics/Vector_1.cs#L169-L183
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector64`1" "get_IsSupported" []
-            |> reviewed [ "be4ef8d79dc19059" ]
+            |> reviewed [ "b818f682686492ce" ]
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector128`1" "get_IsSupported" []
-            |> reviewed [ "be4ef8d79dc19059" ]
+            |> reviewed [ "b818f682686492ce" ]
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector256`1" "get_IsSupported" []
-            |> reviewed [ "be4ef8d79dc19059" ]
+            |> reviewed [ "b818f682686492ce" ]
             pattern "System.Private.CoreLib" "System.Runtime.Intrinsics.Vector512`1" "get_IsSupported" []
-            |> reviewed [ "be4ef8d79dc19059" ]
+            |> reviewed [ "b818f682686492ce" ]
             pattern "System.Private.CoreLib" "System.Numerics.Vector`1" "get_IsSupported" []
-            |> reviewed [ "572f4c9fe6d1fcdb" ]
+            |> reviewed [ "4914b11f5ed9017d" ]
             // `System.Int128` and `System.UInt128` each carry a *type-level* [Intrinsic], which
             // is why every one of their members reaches the intrinsic dispatcher. That marker is
             // not about body substitution: CoreCLR consumes it in MethodTableBuilder
@@ -1740,7 +1740,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int128"
                     IntrinsicParameterPattern.Exact "System.Int128"
                 ]
-            |> reviewed [ "1e4875d1e201417f" ]
+            |> reviewed [ "4980b78af80f90ec" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
@@ -1749,7 +1749,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.UInt128"
                     IntrinsicParameterPattern.Exact "System.UInt128"
                 ]
-            |> reviewed [ "c52338a9c44b727d" ]
+            |> reviewed [ "293562e644a15db0" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
@@ -1758,7 +1758,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int128"
                     IntrinsicParameterPattern.Exact "System.Int128"
                 ]
-            |> reviewed [ "6e526458400d5d2b" ]
+            |> reviewed [ "539850b511a3a5f5" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
@@ -1767,7 +1767,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.UInt128"
                     IntrinsicParameterPattern.Exact "System.UInt128"
                 ]
-            |> reviewed [ "5fcbab39d6015ae3" ]
+            |> reviewed [ "d1c3254cc99fa2bd" ]
             // The value-construction members equality is useless without, and which every one of
             // the entries below bottoms out in: `.ctor(ulong upper, ulong lower)` is
             // `ldarg.0; ldarg.2; stfld _lower; ldarg.0; ldarg.1; stfld _upper; ret`.
@@ -1797,13 +1797,13 @@ module IntrinsicMethodKeys =
             // the one place where copying the UInt128 shape would give a wrong answer.
             // https://github.com/dotnet/runtime/blob/7706f546bac1a99b3d891afe3591dc88c67f0cc4/src/libraries/System.Private.CoreLib/src/System/Int128.cs#L1123-L1126
             pattern "System.Private.CoreLib" "System.Int128" "get_MinValue" []
-            |> reviewed [ "c08f943389f42b92" ]
+            |> reviewed [ "343a1a70c3ac9545" ]
             pattern "System.Private.CoreLib" "System.Int128" "get_MaxValue" []
-            |> reviewed [ "7e70cd875e601d49" ]
+            |> reviewed [ "8b85e5fe513caf83" ]
             pattern "System.Private.CoreLib" "System.UInt128" "get_MinValue" []
-            |> reviewed [ "95dc13b8337d485c" ]
+            |> reviewed [ "743ffbf8d808da86" ]
             pattern "System.Private.CoreLib" "System.UInt128" "get_MaxValue" []
-            |> reviewed [ "d1de0cb51799fa92" ]
+            |> reviewed [ "bb8afd13f38ca5de" ]
             // The widening conversions. Both types take the same six from unsigned sources,
             // each `ldc.i4.0; conv.i8; ldarg.0; conv.u8; newobj .ctor; ret` — a zero upper half
             // and a zero-extended lower half, with the `UInt64` overload the one that needs no
@@ -1817,73 +1817,73 @@ module IntrinsicMethodKeys =
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Byte" ]
-            |> reviewed [ "0d3c63d3234ed96f" ]
+            |> reviewed [ "32118c525130ae47" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Char" ]
-            |> reviewed [ "2c3c0aac280acda5" ]
+            |> reviewed [ "bcbf62722924949c" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UInt16" ]
-            |> reviewed [ "a1978cb0ea67ab49" ]
+            |> reviewed [ "5cf55aedcda8db03" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UInt32" ]
-            |> reviewed [ "4fcb8c0130565c75" ]
+            |> reviewed [ "f134bf74f73d9ed4" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UInt64" ]
-            |> reviewed [ "8421562d1b72bc3e" ]
+            |> reviewed [ "2a786a78f874a9a7" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
-            |> reviewed [ "c8ad169d85bd35fa" ]
+            |> reviewed [ "c9051c8f25cb421d" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Byte" ]
-            |> reviewed [ "9415e4485dc1a8b3" ]
+            |> reviewed [ "c1eb63058f365259" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Char" ]
-            |> reviewed [ "13cd507b2a5d003f" ]
+            |> reviewed [ "bc6fbc218459052a" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UInt16" ]
-            |> reviewed [ "9b218e7a5a3adbf3" ]
+            |> reviewed [ "5216420741e63b45" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UInt32" ]
-            |> reviewed [ "ad5f2438efe20c71" ]
+            |> reviewed [ "d08495cc5d22864b" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UInt64" ]
-            |> reviewed [ "3b545e60b4befc93" ]
+            |> reviewed [ "71787329954f86dd" ]
             pattern
                 "System.Private.CoreLib"
                 "System.UInt128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.UIntPtr" ]
-            |> reviewed [ "f430a35ec7f2c30d" ]
+            |> reviewed [ "bbada647f0a9d952" ]
             // `Int128` additionally takes five conversions from signed sources, which `UInt128`
             // cannot: it is those five that make the two clusters different sizes. Their body is
             // `ldarg.0; conv.i8; stloc.0; ldloc.0; ldc.i4.s 63; shr; ldloc.0; newobj .ctor; ret`
@@ -1899,31 +1899,31 @@ module IntrinsicMethodKeys =
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.SByte" ]
-            |> reviewed [ "72631fd38f27775d" ]
+            |> reviewed [ "f57471e7cd0cba89" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Int16" ]
-            |> reviewed [ "d72b8d6e4924a249" ]
+            |> reviewed [ "a248fbfc4055b51e" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Int32" ]
-            |> reviewed [ "094a21749e8d806c" ]
+            |> reviewed [ "01a0955131c9bc5a" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.Int64" ]
-            |> reviewed [ "780da6e7ec821167" ]
+            |> reviewed [ "2679e8eec3cb4714" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
                 "op_Implicit"
                 [ IntrinsicParameterPattern.Exact "System.IntPtr" ]
-            |> reviewed [ "aadb9e4f77df6973" ]
+            |> reviewed [ "590a0d20d04abc88" ]
             // The unchecked 128-bit addition, which `TimeSpan.FromMilliseconds(long, long)`
             // reaches through `Math.BigMul(long, long) + microseconds`. Its body is
             // `ldarg.0; ldfld _lower; ldarg.1; ldfld _lower; add; stloc.0; ldloc.0; ldarg.0;
@@ -1949,7 +1949,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int128"
                     IntrinsicParameterPattern.Exact "System.Int128"
                 ]
-            |> reviewed [ "5888157277dce1db" ]
+            |> reviewed [ "36c9ca96a86e7e42" ]
             // The two strict orderings, which `TimeSpan.FromMicroseconds(Int128)` reaches in its
             // bound check. `op_LessThan` is
             // `ldarg.0; ldfld _upper; ldarg.1; ldfld _upper; blt TRUE; ldarg.0; ldfld _upper;
@@ -1974,7 +1974,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int128"
                     IntrinsicParameterPattern.Exact "System.Int128"
                 ]
-            |> reviewed [ "232eec42e54606ad" ]
+            |> reviewed [ "9f09012f5785ff06" ]
             pattern
                 "System.Private.CoreLib"
                 "System.Int128"
@@ -1983,7 +1983,7 @@ module IntrinsicMethodKeys =
                     IntrinsicParameterPattern.Exact "System.Int128"
                     IntrinsicParameterPattern.Exact "System.Int128"
                 ]
-            |> reviewed [ "76b2af69625fc812" ]
+            |> reviewed [ "4743e86893f8f724" ]
             // The narrowing conversion to `Int64`, which is how `TimeSpan.FromMicroseconds(Int128)`
             // gets back to ticks. Its whole body is `ldarg.0; ldfld _lower; ret` -- the low half
             // reinterpreted as signed, which costs no instruction -- and it discards the high half
@@ -2004,7 +2004,7 @@ module IntrinsicMethodKeys =
                 "op_Explicit"
                 [ IntrinsicParameterPattern.Exact "System.Int128" ]
                 (IntrinsicReturnPattern.Returns (IntrinsicParameterPattern.Exact "System.Int64"))
-            |> reviewed [ "5dec0dae23064693" ]
+            |> reviewed [ "4e2f35014da46956" ]
         ]
 
     /// The fingerprints of the bodies reviewed for the method `key` names, across every row that

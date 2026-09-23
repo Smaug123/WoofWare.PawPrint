@@ -12,10 +12,7 @@ open System.Text
 /// different fingerprint (up to the hash's collisions): the rendering it hashes loses nothing.
 /// Metadata tokens are rendered by what they name — type and member names, full signatures,
 /// the assembly a type reference resolves to — rather than by their row numbers, so a rebuild of
-/// the same source that renumbers the image's tables keeps the fingerprint. The exception is
-/// `calli`'s standalone signature, which renders as its blob's bytes: its type operands are
-/// coded row numbers, so a renumbering can change such a body's fingerprint, and the gate then
-/// refuses it until it is reviewed again.
+/// the same source that renumbers the image's tables keeps the fingerprint.
 type IlBodyFingerprint =
     private
     | IlBodyFingerprint of string
@@ -97,15 +94,15 @@ module IlBodyFingerprint =
         | TypeDefn.Modified modified ->
             let kind = if modified.IsRequired then "modreq" else "modopt"
             $"%s{recurse modified.Unmodified} %s{kind}(%s{recurse modified.Modifier})"
-        | TypeDefn.FromReference (typeRef, _) -> typeRefText assembly typeRef
-        | TypeDefn.FromDefinition (identity, _) ->
+        | TypeDefn.FromReference (typeRef, kind) -> $"%O{kind} %s{typeRefText assembly typeRef}"
+        | TypeDefn.FromDefinition (identity, kind) ->
             if identity.AssemblyFullName = assembly.DefinitionFullName then
-                typeDefText assembly identity.TypeDefinition.Get
+                $"%O{kind} %s{typeDefText assembly identity.TypeDefinition.Get}"
             else
                 let handle : System.Reflection.Metadata.EntityHandle =
                     System.Reflection.Metadata.TypeDefinitionHandle.op_Implicit identity.TypeDefinition.Get
 
-                $"[%s{identity.AssemblyFullName}]TypeDef %s{row handle}"
+                $"%O{kind} [%s{identity.AssemblyFullName}]TypeDef %s{row handle}"
         | TypeDefn.GenericInstantiation (generic, args) ->
             let args = args |> Seq.map recurse |> String.concat ", "
             $"%s{recurse generic}<%s{args}>"
@@ -164,13 +161,15 @@ module IlBodyFingerprint =
             | false, _ ->
                 $"MethodSpec %s{row (System.Reflection.Metadata.MethodSpecificationHandle.op_Implicit handle)}"
         | MetadataToken.StandaloneSignature handle ->
+            // Decoded as `calli` decodes it, so each type it names renders by name.
             let metadata : System.Reflection.Metadata.MetadataReader =
                 System.Reflection.Metadata.PEReaderExtensions.GetMetadataReader assembly.PeReader
 
-            let blob : byte[] =
-                metadata.GetBlobBytes (metadata.GetStandaloneSignature handle).Signature
+            let signature =
+                (metadata.GetStandaloneSignature handle).DecodeMethodSignature (TypeDefn.typeProvider assembly.Name, ())
+                |> TypeMethodSignature.make
 
-            $"standalone sig %s{Convert.ToHexString blob}"
+            $"standalone method sig %s{signatureText assembly signature}"
         | other -> $"token %O{other}"
 
     let private renderOp (assembly : DumpedAssembly) (op : IlOp) : string =
