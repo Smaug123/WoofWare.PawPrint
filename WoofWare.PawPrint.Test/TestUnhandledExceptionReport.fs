@@ -134,6 +134,63 @@ class Program
         indexOfLineContaining "Program.Main at IL offset " lines |> shouldEqual 1
         lines.[1].EndsWith ":13)" |> shouldEqual true
 
+    [<Test>]
+    let ``the report marks where a rethrown trace was captured`` () : unit =
+        let source =
+            """
+using System;
+using System.Runtime.ExceptionServices;
+
+class Program
+{
+    static void Thrower()
+    {
+        throw new InvalidOperationException("captured");
+    }
+
+    static int Main()
+    {
+        ExceptionDispatchInfo captured = null;
+        try
+        {
+            Thrower();
+        }
+        catch (Exception e)
+        {
+            captured = ExceptionDispatchInfo.Capture(e);
+        }
+
+        captured.Throw();
+        return 0;
+    }
+}
+"""
+
+        let lines = runImage "UnhandledRethrown.cs" (Roslyn.compile [ source ])
+
+        let expected : (string -> bool) list =
+            [
+                (=) "System.InvalidOperationException: captured"
+                fun l -> l.StartsWith "   at " && l.Contains "Program.Thrower at IL offset "
+                fun l -> l.StartsWith "   at " && l.Contains "Program.Main at IL offset "
+                (=) "--- End of stack trace from previous location ---"
+            ]
+
+        let report = String.concat Environment.NewLine lines
+
+        // The frames after the boundary are the rethrow's, which pass through CoreLib's
+        // `ExceptionDispatchInfo.Throw` on their way out to `Main`, so only their last is pinned.
+        if lines.Length <= expected.Length then
+            failwith $"expected more than %d{expected.Length} lines, got:\n%s{report}"
+
+        List.zip expected (List.take expected.Length lines)
+        |> List.iteri (fun i (matches, line) ->
+            if not (matches line) then
+                failwith $"line %d{i} is not as expected:\n%s{report}"
+        )
+
+        (List.last lines).Contains "Program.Main at IL offset " |> shouldEqual true
+
     /// `Thrower::Throw()`: `ldstr "not an exception"; throw`. No C# can spell a throw of a
     /// non-exception.
     let private fabricateThrower () : byte[] =
