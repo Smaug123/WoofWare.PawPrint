@@ -46,7 +46,7 @@ open WoofWare.PosixKernel
 /// disposition, 1 = consumed") is dropped on the floor. The
 /// `SignalDelivery.Default*` cases are refused loudly: a default that
 /// terminates or stops is applied when the signal is generated (see
-/// `SystemNative_Kill`), so one reaches this poll only by becoming receivable
+/// `NativeLibc.kill`), so one reaches this poll only by becoming receivable
 /// later, after an unblock, and nothing sets a signal mask yet.
 [<RequireQualifiedAccess>]
 module SignalDispatch =

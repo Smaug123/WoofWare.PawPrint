@@ -3048,6 +3048,27 @@ module TestImpureCases =
                     )
             }
             {
+                // libc's kill(2) to the process itself under the Darwin
+                // flavour, on numbers that would end the run under Linux's
+                // numbering: the handler must read the signal under the
+                // configured platform's.
+                FileName = "LibcKillDarwin.cs"
+                ExpectedReturnCode = 0
+                KernelConfig =
+                    { KernelConfig.Default with
+                        UnixPlatform = SimulatedUnixPlatform.macOsArm64
+                    }
+                AppContext = AppContextProperties.empty
+                Oracle = OraclePolicy.WhenHostMatchesEmulatedFlavour
+                ExpectsUnhandledException = false
+                AssertTerminalState =
+                    Some (fun state ->
+                        // Discarded when they were sent, not left for a
+                        // handler to be registered for.
+                        SignalState.pending state.Kernel.Signals |> shouldEqual []
+                    )
+            }
+            {
                 // Exercises the SystemNative_IsATty PawPrint handler against
                 // standard fds, a freshly-duped fd, and a closed fd. Lives in
                 // sourcesImpure because the real CLR's IsATty answer depends

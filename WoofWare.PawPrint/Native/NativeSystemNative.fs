@@ -2420,41 +2420,13 @@ module NativeSystemNative =
             let palSignal = NativeCall.int32Argument operation instruction.Arguments.[1]
             let numbering = SimulatedUnixPlatform.signalNumbering state.Kernel.UnixPlatform
 
-            let returning (value : int) (state : IlMachineState) : NativeHandlerResult option =
-                state
-                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 value)) ctx.Thread
+            match KillSignalPal.toSigno numbering palSignal with
+            | None ->
+                withErrnoOnly ctx UnixError.EINVAL state
+                |> IlMachineState.pushToEvalStack (CliType.Numeric (CliNumericType.Int32 -1)) ctx.Thread
                 |> NativeHandlerResult.completed
                 |> Some
-
-            match KillSignalPal.toSigno numbering palSignal with
-            | None -> withErrnoOnly ctx UnixError.EINVAL state |> returning -1
-            | Some signo ->
-
-            let liveThreads =
-                state.ThreadState
-                |> Seq.choose (fun (KeyValue (thread, ts)) ->
-                    if ThreadStatus.canReceiveSignal ts.Status then
-                        Some thread
-                    else
-                        None
-                )
-                |> ImmutableArray.CreateRange
-
-            match UnixSignal.kill liveThreads pid signo (EmulatedKernel.unix state.Kernel) with
-            | Error refusal ->
-                failwith
-                    $"%s{operation}: kill(%d{pid}, %d{signo}) from process %O{UnixSystem.processId (EmulatedKernel.unix state.Kernel)} is not modelled (%O{refusal}); only a signal to the calling process itself is."
-            | Ok (Error errno) -> withErrnoOnly ctx errno state |> returning -1
-            | Ok (Ok (SignalGeneration.ProcessContinues, system)) ->
-                state.MapKernel (EmulatedKernel.withUnix system) |> returning 0
-            | Ok (Ok (SignalGeneration.ProcessTerminated signal, system)) ->
-                // The process never returns from this call.
-                ExecutionResult.SignalTerminated (state.MapKernel (EmulatedKernel.withUnix system), signal)
-                |> NativeHandlerResult.ofExecutionResult
-                |> Some
-            | Ok (Ok (SignalGeneration.ProcessStopped signal, _)) ->
-                failwith
-                    $"%s{operation}: %O{signal} would stop the whole process, and PawPrint does not model a stopped process (nothing could continue it)."
+            | Some signo -> NativeLibc.kill operation ctx pid signo |> Some
         | Some "SystemNative_GetEUid",
           [],
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.UInt32) ->

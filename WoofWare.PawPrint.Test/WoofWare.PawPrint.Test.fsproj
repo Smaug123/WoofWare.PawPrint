@@ -215,6 +215,8 @@
     <Compile Include="TestUnixErrorPal.fs" />
     <Compile Include="TestPosixSignalPal.fs" />
     <Compile Include="TestKillSignalPal.fs" />
+    <Compile Include="TestNativeLibc.fs" />
+    <Compile Include="TestStartupSignalDispositions.fs" />
     <Compile Include="TestSocketEventsPal.fs" />
     <Compile Include="TestPollEventsPal.fs" />
     <Compile Include="TestFileAdvicePal.fs" />
@@ -328,6 +330,7 @@
     <Compile Include="TestFSharpPureCases.fs" />
     <Compile Include="TestImpureCases.fs" />
     <Compile Include="TestSignalTerminatedCases.fs" />
+    <Compile Include="TestLibcKillRefusals.fs" />
     <Compile Include="TestOraclePolicy.fs" />
     <Compile Include="TestRaces.fs" />
     <Compile Include="TestCallSiteTransition.fs" />
