@@ -104,8 +104,8 @@ module InternetV6Sockaddr =
             Width = 2
         }
 
-    /// `sin6_flowinfo`. Nothing in the managed surface reads it, but
-    /// `SystemNative_SetIPv6Address` zeroes it, so it is not merely ignored.
+    /// `sin6_flowinfo`, which a caller filling in a `sockaddr_in6` must set,
+    /// to zero if it has no flow label.
     let flowInfo : SockaddrField =
         {
             Offset = 4
@@ -137,12 +137,6 @@ type SockaddrFamilyField =
     | TwoBytesAtOffsetZero
     /// Darwin and the BSDs: `sa_len` occupies byte 0 and the one-byte
     /// `sa_family_t` follows it at offset 1.
-    ///
-    /// Nothing in the shim writes `sa_len` — grep `pal_networking.c` and there is
-    /// no mention of it. The byte a guest sees there is written by managed code:
-    /// `SocketAddress..ctor` stores `(byte) _size` at index 0 before calling
-    /// `SetAddressFamily`, unconditionally on every platform, so BSD gets its
-    /// length byte and Linux has the same store overwritten by the wider family.
     | OneByteAtOffsetOne
 
 [<RequireQualifiedAccess>]
@@ -153,9 +147,7 @@ module SockaddrFamilyField =
         | SockaddrFamilyField.TwoBytesAtOffsetZero -> 0
         | SockaddrFamilyField.OneByteAtOffsetOne -> 1
 
-    /// Width of the family field in bytes. Also what the shim's
-    /// `sizeof_member(sockaddr, sa_family)` bounds check uses, and what a
-    /// conversion failure truncates the unconvertible value to.
+    /// Width of the family field in bytes.
     let width (field : SockaddrFamilyField) : int =
         match field with
         | SockaddrFamilyField.TwoBytesAtOffsetZero -> 2

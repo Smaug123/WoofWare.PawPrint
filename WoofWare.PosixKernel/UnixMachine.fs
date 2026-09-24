@@ -5,11 +5,7 @@ namespace WoofWare.PosixKernel
 /// configuration and socket table, and the two numbers a process reads back
 /// about the machine it is running on.
 ///
-/// Everything here is state a second client of a POSIX simulator would also
-/// have; nothing in it is a CLR concept. Held flat for now — the target shape
-/// groups the clock, entropy, network and socket fields into records of their
-/// own, which is a change internal to this type once `EmulatedKernel`'s
-/// forwarding members exist.
+/// Everything here is state any client of a POSIX simulator would have.
 type UnixMachineState =
     {
         /// Every socket the simulated process owns, by identity.
@@ -42,11 +38,11 @@ type UnixMachineState =
         ///
         /// A counter rather than a draw from the seeded PRNG. Which port an
         /// ephemeral bind picks is unspecified — Linux randomises within its
-        /// range and Darwin ascends — so PawPrint owes a guest only *a* free
+        /// range and Darwin ascends — so this kernel owes a process only *a* free
         /// port, and a trace whose ports read 32768, 32769, 32770 is far easier
-        /// to follow than one whose ports are scattered. Nothing guest-visible
-        /// may depend on the value; `SocketBindListen.cs` asserts only that it is
-        /// non-zero and unprivileged, which is all the two real kernels agree on.
+        /// to follow than one whose ports are scattered. A program may depend on
+        /// nothing about the value but that it is non-zero and unprivileged,
+        /// which is all the two real kernels agree on.
         NextEphemeralPort : uint16
         /// Range `NextEphemeralPort` sweeps, inclusive at both ends. Host
         /// configuration; see `UnixSystem.defaultEphemeralPortRange`.
@@ -64,9 +60,9 @@ type UnixMachineState =
         /// address inside and Darwin ignores. See
         /// `UnixSystem.defaultLocalRoutes`.
         LocalRoutes : Ipv4Prefix list
-        /// The identity the next `SystemNative_Socket` will allocate.
+        /// The identity the next `UnixSocket.createSocket` will allocate.
         ///
-        /// Monotonic, and never reused: nothing guest-visible reports a
+        /// Monotonic, and never reused: no syscall reports a
         /// `SocketId`, but a replay trace does, and reuse would make two
         /// distinct sockets indistinguishable in it. `NextLowLevelMonitorId`
         /// is stored beside its table for the same reason.
@@ -92,25 +88,17 @@ type UnixMachineState =
         /// from: `getrandom(2)` on Linux, `getentropy(2)` on Darwin. Seeded
         /// by `UnixSystem.initial` from `UnixSystem.defaultEntropySeed`.
         EntropyPool : EntropyPool
-        /// Number of logical processors the simulated process observes, as
-        /// reported by `Environment.ProcessorCount`. Deliberately a value in
-        /// kernel state rather than a host read: real CoreCLR answers this
-        /// from `GetSystemInfo` / `sched_getaffinity`, which would make a
-        /// replay depend on the machine that produced it. Guests size thread
-        /// pools, partition `Parallel.For` ranges, and stripe arrays off this
-        /// number, so letting the host leak in here would change guest
-        /// *control flow* between runs — the single worst kind of
-        /// nondeterminism for a runtime whose purpose is bit-for-bit replay.
+        /// Number of logical processors the machine reports to the simulated
+        /// process. Deliberately a value in kernel state rather than a host
+        /// read: a host read would make a replay depend on the machine that
+        /// produced it. Programs size thread pools, partition work, and stripe
+        /// arrays off this number, so letting the host leak in here would change
+        /// their *control flow* between runs — the single worst kind of
+        /// nondeterminism for a simulation whose purpose is bit-for-bit replay.
         ///
-        /// Defaults to 1 (see `EmulatedKernel.initial`); hosts choose a
-        /// different value via `KernelConfig.ProcessorCount`, which
-        /// `Program.prepare` applies before the entry type's `.cctor` is
-        /// pumped — CoreLib latches `Environment.ProcessorCount` into a static
-        /// on first read, so a later change would not be observed.
-        ///
-        /// Must be >= 1: the real property is documented as always positive
-        /// and BCL callers divide by it, so `NativeEnvironment` asserts the
-        /// invariant at the point of use rather than trusting construction.
+        /// Defaults to `UnixSystem.defaultProcessorCount`; a client chooses a
+        /// different value with `UnixMachineState.withProcessorCount`, which
+        /// refuses anything below 1, since programs divide by it.
         ProcessorCount : int
         /// Greatest value `address + length` may take for a user buffer the
         /// kernel will accept — the machine's `TASK_SIZE_MAX`. Consulted only
@@ -127,32 +115,29 @@ type UnixMachineState =
         /// for the values real machines have been seen to have.
         UserAddressLimit : uint64
         /// Unix-shaped platform identity the simulated process reports, as
-        /// observed through `SystemNative_GetUnixRelease` (and hence
-        /// `Environment.OSVersion` on a Unix CoreLib).
+        /// observed through `uname(2)`, and the flavour every other
+        /// platform-dependent answer follows.
         ///
-        /// Unlike `ProcessorCount`, CoreLib does *not* latch this during
-        /// static initialisation — `Environment.OSVersion` is a lazily
-        /// populated static that is only computed on first read — but hosts
-        /// should still set it via `KernelConfig` rather than by record-copy
-        /// after startup, so that the value is fixed for the whole run and a
-        /// guest cannot observe it changing under it.
+        /// Fixed for the whole run: `UnixSystem.initial` takes it and nothing
+        /// changes it afterwards, so a process cannot observe it changing
+        /// under it.
         UnixPlatform : SimulatedUnixPlatform
-        /// The simulated process's filesystem: every inode a guest can reach
-        /// through the `SystemNative_*` path calls.
+        /// The simulated process's filesystem: every inode a process can reach
+        /// through the path syscalls.
         ///
-        /// Seeded from `KernelConfig.FileSystem`, and mutated in place by the
-        /// natives that write, create or truncate. It is emulated kernel state
-        /// rather than anything the interpreter reads from the host, for the
-        /// usual reason:
+        /// Set by `UnixSystem.withFileSystemAndCurrentDirectory`, and changed by
+        /// the syscalls that write, create or truncate. It is emulated kernel
+        /// state rather than anything read from the host, for the usual reason:
         /// a filesystem read from the host would make a replay depend on the
-        /// machine that produced it, and guests branch on what they find.
+        /// machine that produced it, and programs branch on what they find.
         FileSystem : VirtualFileSystem
-        /// The filesystem `FileSystem` claims to be, which is the whole of what
-        /// `SystemNative_GetFileSystemType` reports for a file on it.
+        /// The filesystem `FileSystem` claims to be, which decides what
+        /// `fstatfs(2)` reports for a file on it (see
+        /// `EmulatedFileSystemType.reportedFor`), a directory's `st_size`, and
+        /// where `lseek(2)` with `SEEK_END` lands on a directory.
         ///
-        /// Seeded from `KernelConfig.FileSystemType` and fixed for the run: no
-        /// syscall in CoreLib's interop surface can mount anything, so nothing
-        /// a guest does can change it. Derived from the flavour by
+        /// Fixed for the run: this library models no `mount(2)`, so nothing
+        /// a process does can change it. Derived from the flavour by
         /// `UnixSystem.initial` and set only by `withFileSystemType`, which
         /// refuses a type this machine's flavour cannot report.
         FileSystemType : EmulatedFileSystemType
@@ -191,7 +176,7 @@ module UnixMachineState =
 
     /// Set the logical-processor count the simulated process reports. Rejects
     /// non-positive values at the boundary rather than letting them reach a
-    /// guest that will divide by them.
+    /// program that will divide by them.
     let withProcessorCount (count : int) (machine : UnixMachineState) : UnixMachineState =
         if count < 1 then
             failwith $"ProcessorCount must be at least 1; got %d{count}"
@@ -304,9 +289,9 @@ module UnixMachineState =
 
     /// Set the filesystem type the machine's mount claims to be. `None` takes
     /// the flavour's own default; an explicit type this machine's flavour
-    /// could not mount is refused, because `SystemNative_GetFileSystemType`
-    /// answers a *file* from the type and every other descriptor from the
-    /// flavour, so the pair must describe one machine.
+    /// could not mount is refused, because `fstatfs(2)` answers a *file* from
+    /// the type and every other descriptor from the flavour, so the pair must
+    /// describe one machine.
     let withFileSystemType
         (fileSystemType : EmulatedFileSystemType option)
         (machine : UnixMachineState)
@@ -320,7 +305,7 @@ module UnixMachineState =
             | Some requested ->
                 if not (EmulatedFileSystemType.isReportableUnder flavour requested) then
                     failwith
-                        $"UnixMachineState.FileSystemType: a %O{flavour} kernel cannot report %O{requested}, so a guest asking `fstatfs` would learn a fact no such system could tell it. Leave KernelConfig.FileSystemType as None to take %O{flavour}'s own default, or pick a type that flavour mounts."
+                        $"UnixMachineState.FileSystemType: a %O{flavour} kernel cannot report %O{requested}, so a process asking `fstatfs` would learn a fact no such system could tell it. Pass None to take %O{flavour}'s own default, or pick a type that flavour mounts."
 
                 requested
 
@@ -348,7 +333,7 @@ module UnixMachineState =
         | Some socket -> socket
         | None ->
             failwith
-                $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything a guest did."
+                $"UnixMachineState.socket: %O{socketId} names no socket in this kernel's socket table. Every SocketId reachable by a caller comes from an open file description, and UnixSystemDefect.DanglingSocket exists to make that unreachable, so this is an interpreter bug rather than anything the simulated process did."
 
     /// The connection `connectionId` names.
     ///

@@ -43,9 +43,9 @@ type CreatingOpenRules =
 /// creating flags have been read.
 ///
 /// A verdict rather than an action, so the rule can be decided — and compared
-/// against a real kernel — without a machine to act on it. The handler is then
-/// only the part that cannot be pure: allocating the inode, registering a
-/// descriptor and pushing the result.
+/// against a real kernel — without a machine to act on it. `UnixNamespace.openPath`
+/// is then only the part that acts: allocating the inode and registering a
+/// descriptor.
 [<RequireQualifiedAccess>]
 type CreatingOpenVerdict =
     /// Answer the guest with this errno.

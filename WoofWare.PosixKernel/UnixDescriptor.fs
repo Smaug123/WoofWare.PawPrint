@@ -349,8 +349,7 @@ module UnixDescriptor =
         =
         let flavour = SimulatedUnixPlatform.flavour system.Machine.UnixPlatform
 
-        // `Interop.Sys.SeekWhence` (Interop.LSeek.cs), which is also POSIX's
-        // numbering and both platforms' `<unistd.h>` — for these three. It
+        // POSIX's numbering, and both platforms' `<unistd.h>` — for these three. It
         // stops here; 3 and 4 are handled below and are *not* portable.
         let seekSet = 0
         let seekCur = 1
@@ -457,9 +456,6 @@ module UnixDescriptor =
         // `lseek(pipe, 0, 3)` is ESPIPE on both platforms, so a guest reaching
         // here with whence 3 or 4 really is asking about a seekable file's
         // sparseness.
-        //
-        // No BCL caller can reach it: `Interop.Sys.SeekWhence` declares only 0,
-        // 1 and 2.
         if whence > seekEnd then
             let meaning =
                 match flavour with
@@ -998,8 +994,9 @@ module UnixDescriptor =
         | Ok (registry, destroyed) ->
 
         // Closing a descriptor onto a port with a task parked in a wait on it is
-        // where the flavours part, and each side is measured (PawPrint's
-        // SocketEventWaitSurvivesCloseLinux.cs and its macOS run):
+        // where the flavours part, and each side is measured (by
+        // SocketEventWaitSurvivesCloseLinux.cs in this repository's tests, and
+        // its macOS run):
         //
         //   * Linux's epoll_wait holds the port by file reference — a close that
         //     leaves a dup changes nothing, and even the last close leaves the

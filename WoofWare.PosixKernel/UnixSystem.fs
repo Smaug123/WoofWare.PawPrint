@@ -52,7 +52,7 @@ type UnixSystemDefect<'Task> =
     /// The socket table holds a socket no live description names.
     ///
     /// A leak, and deliberately a defect rather than a tolerated state: every
-    /// way to make a socket — `SystemNative_Socket`, or `SystemNative_Accept`
+    /// way to make a socket — `UnixSocket.createSocket`, or `UnixConnection.accept`
     /// materialising a queued connection — hands back a descriptor at once,
     /// so an unreferenced socket means a close forgot to clean up. A
     /// connection awaiting accept is a `TcpConnection`, not a socket, which
@@ -67,7 +67,7 @@ type UnixSystemDefect<'Task> =
     ///
     /// Deliberately *not* "the inode is reachable from the root": a real process
     /// keeps its current directory alive after the last name for it has gone,
-    /// and PawPrint's held inode is what expresses that.
+    /// and the held inode is what expresses that.
     | CurrentDirectoryIsNotADirectory of inode : InodeNumber
     /// A live open file description names an inode the filesystem does not
     /// hold, so reading or `fstat`ing that descriptor would fail.
@@ -305,8 +305,7 @@ module UnixSystem =
     /// `VirtualFileSystem.checkInvariants (UnixDescriptor.pinnedInodes system) system.Machine.FileSystem`.
     ///
     /// A client that holds its own references into these tables owes its own
-    /// rules about them on top of these: PawPrint's `DIR*` blocks are the worked
-    /// example, and `EmulatedKernel.checkInvariants` is where they live.
+    /// rules about them on top of these.
     let checkInvariants<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (system : UnixSystem<'Task, 'Handler>)
         : UnixSystemDefect<'Task> list
@@ -644,38 +643,34 @@ module UnixSystem =
     /// One, because only single-processor behaviour has been exercised
     /// end-to-end, and because a fixed default is a prerequisite for
     /// replayability.
-    /// Hosts that want to exercise the guest's multi-processor code paths
-    /// raise it via `KernelConfig.ProcessorCount`.
+    /// A client that wants to exercise multi-processor code paths raises it with
+    /// `UnixMachineState.withProcessorCount`.
     [<Literal>]
     let defaultProcessorCount : int = 1
 
     /// The commonest configuration a guest could be running on: x86-64 with
-    /// four-level paging. A host simulating a machine with a different
-    /// address-space width sets `KernelConfig.UserAddressLimit`.
+    /// four-level paging. A client simulating a machine with a different
+    /// address-space width sets it with `UnixMachineState.withUserAddressLimit`.
     let defaultUserAddressLimit : uint64 = ObservedUserAddressLimit.X64FourLevelPaging
 
-    /// Unix platform identity a freshly-minted simulated process reports.
-    /// Linux/x64 because that is the platform whose CoreLib actually routes
-    /// `Environment.OSVersion` through `SystemNative_GetUnixRelease` (the
-    /// macOS CoreLib uses `Interop.libobjc.GetOperatingSystemVersion`
-    /// instead), and because it is what PawPrint's CI runs on. Hosts choose
-    /// a different identity via `KernelConfig.UnixPlatform`.
+    /// Unix platform identity a freshly-minted simulated process reports:
+    /// Linux/x64. A client chooses another by passing it to `initial`.
     let defaultUnixPlatform : SimulatedUnixPlatform = SimulatedUnixPlatform.linuxX64
 
     /// Current working directory a freshly-minted simulated process reports.
     /// The root, because it is the one directory that exists on every Unix and
-    /// needs no name invented for it — and once PawPrint grows a simulated
-    /// filesystem, the one directory the default cwd is guaranteed to still
-    /// name. (`init` itself starts at `/`, so this is not even an unusual cwd
-    /// for a real process.) It is also the honest answer for a runtime that
-    /// deliberately declines to read the host's: PawPrint has not been told
-    /// where it is, so it claims nothing beyond the root. Hosts that want the
-    /// guest to see a particular directory set `KernelConfig.CurrentDirectory`.
+    /// needs no name invented for it, and the one directory every filesystem
+    /// this library can hold is guaranteed to have. (`init` itself starts at
+    /// `/`, so this is not even an unusual cwd for a real process.) It is also
+    /// the honest answer for a simulation that declines to read the host's: a
+    /// process nobody has told where it is claims nothing beyond the root. A
+    /// client that wants a particular directory sets it with
+    /// `withFileSystemAndCurrentDirectory`.
     let defaultCurrentDirectory : AbsoluteUnixPath = AbsoluteUnixPath.root
 
     /// Executable path a freshly-minted simulated process reports: none at all.
     ///
-    /// PawPrint models no `exec(2)`, so there is no file that started this
+    /// This library models no `exec(2)`, so there is no file that started this
     /// process, and the emulated filesystem holds no image of one. `None` is
     /// therefore the only true answer, and it is a *modelled* Unix state rather
     /// than an invention: both flavours report exactly this — NULL from
@@ -686,8 +681,8 @@ module UnixSystem =
     ///
     /// Synthesising a plausible path instead was rejected for the same reason
     /// `Assembly.Location` reports the empty string: nothing would be there, so
-    /// the guest could not act on it. Hosts that want the guest to see a
-    /// particular executable set `KernelConfig.ProcessPath`.
+    /// the process could not act on it. A client that wants a particular
+    /// executable sets it with `UnixProcessState.withProcessPath`.
     let defaultProcessPath : AbsoluteUnixPath option = None
 
     /// The range `bind(2)` draws from when asked for port 0, on a machine of
@@ -705,8 +700,8 @@ module UnixSystem =
         | SimulatedUnixFlavour.Darwin -> 49152us, 65535us
 
     /// The addresses this machine holds, as `bind(2)` decides whether an address
-    /// is assignable. Loopback only: PawPrint models no interface a guest could
-    /// reach, so anything else would be an address no packet could arrive on.
+    /// is assignable. Loopback only: this library models no interface a process
+    /// could reach, so anything else would be an address no packet could arrive on.
     ///
     /// `127.0.0.0/8` rather than `127.0.0.1/32` because that is what Linux
     /// assigns to `lo`, and the flavours read the list differently — see
@@ -720,14 +715,14 @@ module UnixSystem =
 
     /// Effective user ID a freshly-minted simulated process runs as.
     ///
-    /// Not 0: `Environment.IsPrivilegedProcess` is literally
-    /// `GetEUid() == 0`, so a guest that defaulted to root would silently take
-    /// the privileged branch of every check it makes about itself — the
-    /// uninteresting one, and not the one most programs are written for.
+    /// Not 0: a process that defaulted to root would silently take the
+    /// privileged branch of every check the kernel makes and every check it
+    /// makes about itself (`geteuid() == 0`) — the uninteresting one, and not
+    /// the one most programs are written for.
     /// Instead the first interactive user each flavour creates: 1000 on the
     /// Ubuntu-shaped Linux, and 501 on macOS (measured, `id -u` of the first
-    /// account on a macOS 26 machine, 2026-09-08). A host that wants root says
-    /// so in `KernelConfig.UserId`.
+    /// account on a macOS 26 machine, 2026-09-08). A client that wants root says
+    /// so with `UnixProcessState.withUserAndGroupId`.
     let defaultUserId (flavour : SimulatedUnixFlavour) : uint32 =
         match flavour with
         | SimulatedUnixFlavour.Linux -> 1000u
@@ -745,7 +740,8 @@ module UnixSystem =
     /// 0o022 because that is what essentially every Unix login shell and service
     /// manager sets, and because it is the mask the existing seed defaults were
     /// written against (`SeedEntry.defaultPermsForRegularFile` is 0o666 with
-    /// these bits cleared). Hosts choose otherwise via `KernelConfig.Umask`.
+    /// these bits cleared). A client chooses otherwise with
+    /// `UnixProcessState.withUmask`.
     let defaultUmask : PermissionBits =
         PermissionBits.parseOrFail "UnixSystem.defaultUmask" 0o022
 
@@ -756,7 +752,7 @@ module UnixSystem =
     /// not delivered to it from inside its own namespace, so `kill -9` on
     /// itself does nothing — and a default that took that branch would be
     /// modelling a container's entry point rather than an ordinary process.
-    /// Hosts choose otherwise via `KernelConfig.ProcessId`.
+    /// A client chooses otherwise with `UnixProcessState.withProcessId`.
     let defaultProcessId : ProcessId =
         // Measured on Linux 6.18.5 in a container: `sh` running as pid 1
         // survives both `kill -9 $$` and `kill -TERM $$`, where the same

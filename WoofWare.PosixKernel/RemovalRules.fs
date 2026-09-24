@@ -192,7 +192,7 @@ module UnlinkRules =
     ///  * A path that consumed no component at all — "/", or a symlink whose
     ///    target was "/" — is EISDIR.
     ///  * The root reached by "." or ".." is EBUSY, which is XNU's `unlink1`
-    ///    refusing a mount's root vnode (`vp->v_flag & VROOT`). PawPrint mounts
+    ///    refusing a mount's root vnode (`vp->v_flag & VROOT`). This library mounts
     ///    one filesystem, so "the root of a mount" and "the root" are the same
     ///    inode. Measured: `unlink("/.")`, `unlink("/..")` and — through
     ///    `lroot -> "/"` — `unlink("lroot/.")` are EBUSY, where `unlink("d/.")`
@@ -291,10 +291,10 @@ type RmDirRules =
         /// nothing about the Darwin inode changed, so its `ctime` has no reason
         /// to move.
         ///
-        /// Guest-observable, which is why it is modelled rather than approximated:
-        /// `SystemNative_FStat` on a directory descriptor writes
-        /// `InodeTimes.StatusChange` into `FileStatus`. (`st_nlink` itself is not
-        /// a `FileStatus` field, so only its shadow on `ctime` can be read.)
+        /// Observable, which is why it is modelled rather than approximated:
+        /// `fstat` on a directory descriptor reports `InodeTimes.StatusChange`
+        /// as `ctime`. (`st_nlink` itself is not a `FileStatus` field, so only
+        /// its shadow on `ctime` can be read.)
         ///
         /// `unlink` needs no such field: removing a *file*'s last name moves its
         /// `ctime` on both.
@@ -438,7 +438,7 @@ module RmDirRules =
     ///  * A path that consumed no component at all — "/", or a symlink whose
     ///    target was "/" — is EISDIR. Where Linux gives that path EBUSY.
     ///  * The root reached by "." or ".." is EBUSY, which is XNU refusing a
-    ///    mount's root vnode; PawPrint mounts one filesystem, so "the root of a
+    ///    mount's root vnode; this library mounts one filesystem, so "the root of a
     ///    mount" and "the root" are the same inode. Measured: `rmdir("/.")`,
     ///    `rmdir("/..")` and — through `lroot -> "/"` — `rmdir("lroot/.")` are
     ///    EBUSY, where Linux answers those EINVAL and ENOTEMPTY. So Darwin

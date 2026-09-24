@@ -599,7 +599,7 @@ module UnixError =
         | RawErrnoPortability.Portable value -> value
         | RawErrnoPortability.PlatformDependent (linux, darwin) ->
             failwith
-                $"UnixError.toRawErrno: %O{error} has no platform-independent errno number (Linux reports %d{linux}, Darwin reports %d{darwin}), and PawPrint has not chosen which numbering its emulated kernel reports. Reporting either would make a guest that read Marshal.GetLastPInvokeError() observe a number its configured SimulatedUnixPlatform contradicts. Decide the numbering (see issue #956) before routing this error to a guest."
+                $"UnixError.toRawErrno: %O{error} has no platform-independent errno number (Linux reports %d{linux}, Darwin reports %d{darwin}), so no number is right without knowing the platform. Reporting either would hand a process a number its configured SimulatedUnixPlatform contradicts. Use UnixError.toRawErrnoUnder with the platform instead."
 
     /// <summary>
     /// The raw <c>&lt;errno.h&gt;</c> integer for this error on the chosen platform.

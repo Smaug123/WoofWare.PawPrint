@@ -1340,6 +1340,14 @@ module NativeSystemNative =
             // `int32_t SystemNative_SetAddressFamily(uint8_t* socketAddress,
             // int32_t socketAddressLen, int32_t addressFamily)`
             // (pal_networking.c:735).
+            //
+            // Nothing in the shim writes a BSD `sa_len` — grep
+            // `pal_networking.c` and there is no mention of it. The byte a guest
+            // sees there is written by managed code: `SocketAddress..ctor`
+            // stores `(byte) _size` at index 0 before calling
+            // `SetAddressFamily`, unconditionally on every platform, so BSD gets
+            // its length byte and Linux has the same store overwritten by the
+            // wider family.
             let operation = "SystemNative_SetAddressFamily"
             let platform = state.Kernel.UnixPlatform
 

@@ -66,9 +66,9 @@ type ReadLinkAnswer =
     /// **No terminator**, and truncated to the capacity rather than refused:
     /// `readlink` writes exactly the bytes it reports and reports success by a
     /// non-negative count, so a NUL would corrupt the byte after a target that
-    /// exactly fits. Truncation is not an error path — `Interop.Sys.ReadLink`
-    /// starts with a 256-byte `stackalloc` and doubles while the result fills
-    /// the buffer, so a short buffer is how the BCL *sizes* its allocation.
+    /// exactly fits. Truncation is not an error path: `readlink(2)` truncates
+    /// silently, so a result that fills the buffer is how a caller learns to
+    /// retry with a larger one.
     | Reported of bytes : ImmutableArray<byte>
     /// The entry point returns -1 and the caller stores `error` wherever its
     /// libc keeps errno.
@@ -176,12 +176,12 @@ module UnixNamespace =
     ///
     /// Named for the path it takes, `open` being an F# keyword and
     /// `FileDescriptorRegistry.openFile` already meaning "open this inode". It
-    /// opens directories too — for reading, which CoreLib depends on.
+    /// opens directories too, for reading.
     ///
     /// `mode` is raw and **unvalidated**, and must stay that way:
-    /// `SafeFileHandle.OpenReadOnly` passes 0666 even for a read-only open of an
-    /// existing file, so refusing a nonzero mode without `O_CREAT` would refuse
-    /// the BCL's own read path. It is read only when a file is actually created,
+    /// callers commonly pass 0666 even for a read-only open of an existing file,
+    /// and a kernel accepts that, so refusing a nonzero mode without `O_CREAT`
+    /// would refuse an ordinary read. It is read only when a file is actually created,
     /// and then masked rather than rejected: measured, `mode` 0o10777 creates
     /// 0o0755 on both flavours, so a bit above the permission word is dropped
     /// exactly as the platform's own mask drops it.
@@ -197,8 +197,8 @@ module UnixNamespace =
         let rules = SimulatedUnixPlatform.creatingOpenRules system.Machine.UnixPlatform
         let privilege = UnixProcessState.callerPrivilege system.Process
 
-        // `O_EXCL` on its own is neither an error nor a refusal: the shim passes
-        // it through and both kernels ignore it entirely, measured. So it is read
+        // `O_EXCL` on its own is neither an error nor a refusal: both kernels
+        // ignore it entirely, measured. So it is read
         // only where `Create` is set, and that combining is done here rather than
         // by the caller -- it is the kernel's rule, and a caller that pre-ANDed
         // the two would leave it with nothing to be right or wrong about.
@@ -305,11 +305,7 @@ module UnixNamespace =
             // Measured on both flavours, for `O_WRONLY` and `O_RDWR` alike, and
             // at uid 0 as well as uid 1000: a directory cannot be opened for
             // writing, and this beats the EACCES check below (a mode-0000
-            // directory opened `O_WRONLY` is EISDIR, not EACCES). CoreLib
-            // *depends* on it rather than merely tolerating it --
-            // `SafeFileHandle.Init` skips its own directory check entirely when
-            // write access was asked for, on the strength of "open will have
-            // failed with EISDIR".
+            // directory opened `O_WRONLY` is EISDIR, not EACCES).
             //
             // This is also what makes every writable descriptor name a regular
             // file, which `VirtualFileSystem.writeFile` relies on.
@@ -324,11 +320,8 @@ module UnixNamespace =
         | InodeContent.RegularFile _
         | InodeContent.Directory _ ->
 
-        // A directory opens perfectly well for *reading*, and CoreLib *depends*
-        // on that: `SafeFileHandle.Init` opens, then `FStat`s, and raises
-        // `UnauthorizedAccessException` on seeing `S_IFDIR`, so refusing here
-        // would give `File.ReadAllBytes("d")` the wrong exception. The type check
-        // belongs in what `fstat` reports.
+        // A directory opens perfectly well for *reading*, measured on both. A
+        // caller that wants to know what it opened asks `fstat`.
         let permissionBits =
             match Inode.permissions entry with
             | InodePermissions.Stored bits -> bits
@@ -419,8 +412,7 @@ module UnixNamespace =
     /// answered as this system's flavour answers it
     /// (`SimulatedUnixPlatform.readlinkCapacity`): EINVAL before resolution on
     /// Linux and for a negative size on Darwin, and zero bytes from a resolved
-    /// link on Darwin for a size of zero. CoreLib's shim never passes one, but
-    /// a guest with its own `readlink` import can.
+    /// link on Darwin for a size of zero.
     let readlink<'Task, 'Handler when 'Task : comparison and 'Handler : equality>
         (path : UnixPath)
         (destination : UserBuffer)
@@ -505,9 +497,9 @@ module UnixNamespace =
     /// `VirtualFileSystem.checkInvariants` refuses a state in which the two
     /// disagree.
     ///
-    /// Consumes a descriptor, which `dirfd(3)` would hand back. Nothing in the
-    /// PAL calls `dirfd`, so a caller can only see it in the numbering of a
-    /// later `open` -- which is enough to make it observable, and is why the
+    /// Consumes a descriptor, which `dirfd(3)` would hand back. A caller that
+    /// never calls `dirfd` still sees it in the numbering of a later `open` --
+    /// which is enough to make it observable, and is why the
     /// stream takes a real descriptor rather than living beside the table. It is
     /// also what pins the directory's inode while the stream is open.
     ///
@@ -601,7 +593,7 @@ module UnixNamespace =
 
     /// `mkdir(2)`: bind a new directory at `path`.
     ///
-    /// `mode` is raw — the shim passes it straight through — so what the created
+    /// `mode` is raw, exactly as the caller passed it, so what the created
     /// directory's permissions actually are depends on the umask and, on one
     /// flavour, on the parent's set-group-ID bit. `MkDirRules` holds that.
     ///

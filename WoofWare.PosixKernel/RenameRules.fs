@@ -441,7 +441,7 @@ module RenameRules =
             // So EXDEV is the mount boundary talking, and where it stays quiet
             // the root answers exactly what any other directory answers.
             //
-            // PawPrint has one filesystem and no mounts, so nothing here can
+            // This library has one filesystem and no mounts, so nothing here can
             // produce EXDEV and the EINVAL readings are the applicable ones.
             | FinalNavigation.Current
             | FinalNavigation.Parent -> RenameVerdict.Refuse UnixError.EINVAL

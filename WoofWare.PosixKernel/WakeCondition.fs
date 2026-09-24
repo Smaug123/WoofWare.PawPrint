@@ -3,7 +3,7 @@ namespace WoofWare.PosixKernel
 /// What a task parked in a syscall is waiting for.
 ///
 /// Data, and deliberately transparent: a client that cannot make progress needs
-/// to *read* a condition as well as evaluate it — PawPrint's driver advances the
+/// to *read* a condition as well as evaluate it — for example, to advance the
 /// virtual clock to the nearest deadline when nothing is runnable, which a
 /// predicate cannot answer. So no case may carry a function.
 ///
@@ -57,8 +57,8 @@ module WakeCondition =
     /// open file it waits on, so that file cannot be destroyed underneath it;
     /// this library's descriptor table models no such reference, so a client
     /// that parks a task must also stop the description being closed while it
-    /// waits — as `close` already refuses to strand a task parked in
-    /// `SystemNative_WaitForSocketEvents`. Asking about a description that has
+    /// waits — as `close` already refuses to strand a task parked in a wait on
+    /// a socket event port. Asking about a description that has
     /// gone is that obligation being broken, and it fails loudly rather than
     /// answering: the honest answers are "grantable", which wakes the task into
     /// an `EBADF` no kernel produces, and "not yet", which sleeps forever.

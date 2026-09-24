@@ -38,7 +38,7 @@ type MkDirRules =
         /// unconditionally when its parent carries it. The group-membership
         /// proviso beside it in that function applies only to non-directories,
         /// which is source-derived rather than measured, and is unobservable
-        /// here anyway: PawPrint has one process-wide gid, so a new inode's
+        /// here anyway: this library has one process-wide gid, so a new inode's
         /// group always matches its parent's. (`mount -o grpid` varies *gid*
         /// inheritance, not the bit, and one gid cannot see that either.)
         InheritsSetGroupIdFromParent : bool

@@ -15,23 +15,21 @@ type SimulatedUnixReleaseError =
     | NotPrintableAscii of index : int * character : char
 
 /// Identity of the Unix-shaped platform the simulated process believes it is
-/// running on. Consulted by the `SystemNative_*` entry points that report
-/// host identity — today only `SystemNative_GetUnixRelease`, which surfaces
-/// as `Environment.OSVersion` on a Unix CoreLib.
+/// running on: what `uname(2)` reports, and the flavour every other
+/// platform-dependent answer follows.
 ///
 /// This is a value in kernel state rather than a host read, for the same
-/// reason `ProcessorCount` is: real CoreCLR answers it from `uname(2)`, which
-/// would make a replay depend on the machine that produced it — and worse,
-/// guests branch on `Environment.OSVersion` (feature detection, quirk
-/// workarounds), so letting the host leak in here would change guest
-/// *control flow* between runs.
+/// reason `ProcessorCount` is: reading the host's `uname(2)` would make a
+/// replay depend on the machine that produced it — and worse, programs branch
+/// on the platform they find (feature detection, quirk workarounds), so
+/// letting the host leak in here would change their *control flow* between
+/// runs.
 ///
 /// Modelled as a flavour plus a release string, rather than as a bag of loose
 /// `utsname` fields, so that the facts we report stay mutually consistent as
-/// more of `utsname` gets implemented: a future `SystemNative_GetUnixVersion`
-/// or `SystemNative_GetOSArchitecture` is a new total *function* of the
-/// flavour, not a new independently-settable string that could claim a Darwin
-/// release alongside an x86_64 machine.
+/// more of `utsname` gets modelled: its version or machine field would be a new
+/// total *function* of the flavour, not a new independently-settable string
+/// that could claim a Darwin release alongside an x86_64 machine.
 ///
 /// One representation per platform, which is what the flavour buys: every
 /// platform-dependent fact below is a total function of it, with no failure
@@ -98,10 +96,11 @@ type GetCwdOrphanAnswer =
     /// residue is a function of libc's internal progress rather than of
     /// anything a kernel decides. Reproducing it faithfully means reproducing
     /// that algorithm, including which of its paths a given capacity takes;
-    /// reproducing it approximately means inventing bytes a guest can read. No
-    /// caller in the BCL reads the destination after a NULL return, so this
-    /// library reports the errno and leaves the buffer alone — recorded in
-    /// `docs/divergences.md` rather than left to be discovered.
+    /// reproducing it approximately means inventing bytes a process can read.
+    /// So this library reports the errno and leaves the buffer alone, a
+    /// divergence only a caller that reads the destination after a NULL return
+    /// could see — recorded in `docs/divergences.md` rather than left to be
+    /// discovered.
     ///
     /// Linux writes nothing on any failure path at any capacity, which is why
     /// only this case needs the note.
@@ -221,16 +220,14 @@ module SimulatedUnixPlatform =
         | Ok platform -> platform
         | Error error -> failwith $"%s{context}: %s{describe error}"
 
-    /// 64-bit x86 Linux, at the exact kernel PawPrint's CI runs: the release
-    /// this reports and the behaviour derived from it below therefore describe
-    /// one real machine rather than a plausible composite. The default, and the
-    /// flavour whose CoreLib actually routes `Environment.OSVersion` through
-    /// `SystemNative_GetUnixRelease` at all (the macOS CoreLib goes via
-    /// `Interop.libobjc.GetOperatingSystemVersion` instead).
+    /// 64-bit x86 Linux, at a kernel release a real machine was running (a
+    /// GitHub Actions Ubuntu runner's): the release this reports and the
+    /// behaviour derived from it below therefore describe one real machine
+    /// rather than a plausible composite. `UnixSystem.defaultUnixPlatform`.
     ///
     /// Naming a real kernel rather than a plausible one matters because facts
     /// derived from a platform are claims about a machine somebody could be
-    /// running. Note the division of labour: identity that a guest reads back,
+    /// running. Note the division of labour: identity that a process reads back,
     /// like this release, belongs to the platform, because it is the same on
     /// every machine running this kernel image; a fact that varies between two
     /// machines running this very kernel, like the user-address limit, is a
@@ -247,9 +244,9 @@ module SimulatedUnixPlatform =
     let flavour (platform : SimulatedUnixPlatform) : SimulatedUnixFlavour = platform.Flavour
 
     /// The `utsname.release` string this platform reports, i.e. exactly what
-    /// `uname -r` would print. Part of PawPrint's replay contract: changing a
-    /// preset's value changes the `Environment.OSVersion` every recorded trace
-    /// on that platform observes.
+    /// `uname -r` would print. Part of every replay's input: changing a
+    /// preset's value changes what every recorded trace on that platform
+    /// observed from `uname(2)`.
     let unixRelease (platform : SimulatedUnixPlatform) : string = platform.Release
 
     /// Re-check the invariant of a value that may not have come from `create`.
@@ -596,7 +593,7 @@ module SimulatedUnixPlatform =
     /// Which names this platform's filesystem will bind.
     ///
     /// Like `pathLimits`, this is really a property of the mounted filesystem
-    /// rather than of the kernel. It lives here because PawPrint models one
+    /// rather than of the kernel. It lives here because this library models one
     /// filesystem per flavour; a second filesystem on one flavour is what would
     /// make it configuration instead.
     let bindableEntryNames (platform : SimulatedUnixPlatform) : BindableEntryNames =
@@ -693,18 +690,18 @@ module SimulatedUnixPlatform =
     /// Is this the all-ones broadcast address, or a multicast one
     /// (`224.0.0.0/4`)?
     ///
-    /// **PawPrint refuses to bind either**, rather than answering. Measured, the
+    /// **This library refuses to bind either**, rather than answering. Measured, the
     /// rule is not one rule: Linux takes both on a stream socket, Darwin answers
     /// `EAFNOSUPPORT` there, and on Darwin the answer depends on the socket's
     /// *kind* besides — a datagram socket binds a multicast group where a stream
     /// socket does not. Modelling that is modelling multicast, which is group
-    /// membership and an interface to receive on, and PawPrint has neither; a
+    /// membership and an interface to receive on, and this library has neither; a
     /// bind that succeeded here would become a lie the moment `recvfrom` landed.
     ///
     /// So this classifier exists to *refuse* precisely, at the point in
     /// `bindFaultOrder` where the address is judged — a fault the platform ranks
     /// earlier still wins, which is what keeps the refusal from swallowing
-    /// answers PawPrint does know.
+    /// answers this library does know.
     let isBroadcastOrMulticast (address : uint32) : bool =
         address = System.UInt32.MaxValue || (address >>> 28) = 0xEu
 
@@ -718,9 +715,9 @@ module SimulatedUnixPlatform =
     ///
     /// Broadcast and multicast are a further Linux-only allowance
     /// (`255.255.255.255` and `224.0.0.1` bind there and are `EAFNOSUPPORT` on
-    /// Darwin). Neither is modelled: PawPrint has no interface to broadcast on,
-    /// and the entry point refuses such an address rather than answering, so a
-    /// guest that needs one gets a diagnosis instead of a wrong errno.
+    /// Darwin). Neither is modelled: this library has no interface to broadcast
+    /// on, and `UnixSocket.bind` refuses such an address rather than answering,
+    /// so a caller that needs one gets a diagnosis instead of a wrong errno.
     let isBindableAddress
         (platform : SimulatedUnixPlatform)
         (localAddresses : uint32 list)
@@ -748,12 +745,12 @@ module SimulatedUnixPlatform =
     /// this against the other faults in `bindFaultOrder`, at
     /// `BindFault.AddressNotLocal`.
     ///
-    /// That is `EADDRNOTAVAIL` in every case PawPrint answers. A broadcast or
+    /// That is `EADDRNOTAVAIL` in every case this library answers. A broadcast or
     /// multicast address faults here too, and its caller refuses it outright
     /// rather than reporting an errno — which is why this is not simply
     /// `not isBindableAddress`. Such an address is not necessarily *unbindable*:
     /// Linux binds `224.0.0.1` on a stream socket quite happily. It is one
-    /// PawPrint declines to answer for, and a host that listed it in
+    /// this library declines to answer for, and a client that listed it in
     /// `LocalAddresses`, or covered it with a `LocalRoutes` prefix, would
     /// otherwise silence the refusal and record a multicast binding that nothing
     /// downstream can honour.
@@ -881,8 +878,8 @@ module SimulatedUnixPlatform =
     ///
     /// The stored bit changes no modelled wait: both `epoll_wait` and `kevent`
     /// take their blocking behaviour from their own timeout argument rather
-    /// than from the descriptor's status flags, so
-    /// `SystemNative_WaitForSocketEvents` rightly never consults it.
+    /// than from the descriptor's status flags, so a modelled wait rightly never
+    /// consults it.
     let eventPortSetStatusFlagsError (platform : SimulatedUnixPlatform) : UnixError option =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> None
@@ -892,11 +889,9 @@ module SimulatedUnixPlatform =
     /// every Unix — it is one of the handful of `AF_*` values that predate the
     /// BSD/Linux split and never moved.
     ///
-    /// Exposed alongside `internetV6AddressFamily` because the `sockaddr`
-    /// accessors switch on the raw `sa_family` in the blob rather than on a
-    /// converted value: `SystemNative_GetPort` is a `switch (sockAddr->sa_family)`
-    /// over exactly these two, and `SystemNative_GetIPv4Address` is an equality
-    /// against the first.
+    /// Exposed alongside `internetV6AddressFamily` because a caller reading a
+    /// `sockaddr` switches on the raw `sa_family` in the blob, in the platform's
+    /// own numbering.
     let internetAddressFamily : int = 2
 
     /// Ports a process may bind only as root.
@@ -1014,7 +1009,7 @@ module SimulatedUnixPlatform =
     /// (every raw and packet socket: measured, 70 Linux rows change answer
     /// between euid 1000 and euid 0), some sysctl-dependent (Linux's ping
     /// sockets, gated by `net.ipv4.ping_group_range`), and some deterministic
-    /// but simply not modelled. A shape outside this set is a socket PawPrint
+    /// but simply not modelled. A shape outside this set is a socket this library
     /// has not decided how to be, and refusing leaves that decision open where
     /// a guessed errno would not.
     ///

@@ -803,9 +803,9 @@ module UnixSocket =
         | SocketKind.SeqPacket -> Error (ListenRefusal.UnmeasuredKind (socketId, socket.Kind))
         | SocketKind.Stream ->
 
-        // Split out rather than matched in place: the original handler could put
-        // its refusal in a `failwith`, which types as anything; a refusal that is
-        // a value has to be produced before the rest of the function continues.
+        // Split out rather than matched in place: a refusal in a `failwith`
+        // types as anything, but a refusal that is a value has to be produced
+        // before the rest of the function continues.
         let unmeasuredPhase =
             match socket.Phase with
             | SocketPhase.Idle

@@ -14,10 +14,10 @@ module SocketEventPort =
     /// The epoll readiness of the descriptor `targetId` names, for computing
     /// what a registration on it would report.
     ///
-    /// A standard stream's level is a constant of the launch shape PawPrint
+    /// A standard stream's level is a constant of the launch shape this library
     /// models (measured, `pipes.c`): stdin is the read end of a pipe whose
-    /// write end the launcher closed — the same claim `SystemNative_Read`'s
-    /// immediate-EOF makes — which presents `EPOLLHUP`, and the output
+    /// write end the launcher closed — the same claim `UnixReadWrite.read`'s
+    /// immediate end-of-file makes — which presents `EPOLLHUP`, and the output
     /// streams are write ends with space and a live reader, which present
     /// `EPOLLOUT`. No modelled operation changes either, so the streams need
     /// no producer. A file or port target cannot reach here: the registry
