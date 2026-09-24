@@ -32,10 +32,11 @@ open WoofWare.PawPrint
 /// refusals of accesses that miss the pointer (a byte of an `int` field, say) are where naming
 /// stops rather than a claim about the real runtime, which serves them.
 ///
-/// The byrefs are built with `appendProjection`, which does not normalise, so each one is spelt
-/// relative to the struct the view was taken over. How a guest's pointer arithmetic comes to be
-/// spelt that way is `ManagedPointerSource`'s business; this is about what the readers and writers
-/// do with the spelling.
+/// Each byref is built two ways. `Spelling.Unnormalised` spells it relative to the struct the view
+/// was taken over, which is what the readers and writers must answer for whoever builds it.
+/// `Spelling.AsUnsafeAddSpellsIt` builds it as a guest's `Unsafe.Add` does, through the byte-offset
+/// normalisation, which keeps a localloc or native-heap root at its struct while a field chain
+/// follows it, so the rule above applies unchanged.
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestPointerStructByteViewCells =
@@ -329,9 +330,18 @@ module TestPointerStructByteViewCells =
                 outerGen
             ]
 
+    [<RequireQualifiedAccess>]
+    type private Spelling =
+        /// `Field` steps, a `ReinterpretAs` and a `ByteOffset`, appended as they are.
+        | Unnormalised
+        /// What `Unsafe.Add` builds: the byte offset added through `ManagedPointerByteView`, which
+        /// normalises it. An array root is not built this way here, because normalising moves it
+        /// by whole elements and so changes which field chain the fixture's rule looks along.
+        | AsUnsafeAddSpellsIt
+
     /// `forWrite` confines an access through an array to the element the byref is rooted at: a
     /// store that leaves the element is written through `writeArrayBytes`, which names no cell.
-    let private caseGen (forWrite : bool) : Gen<Case> =
+    let private caseGen (spelling : Spelling) (forWrite : bool) : Gen<Case> =
         gen {
             let! rootKind =
                 Gen.elements
@@ -339,7 +349,9 @@ module TestPointerStructByteViewCells =
                         RootKind.Stack
                         RootKind.Native
                         RootKind.Argument
-                        RootKind.ArrayElement
+                        match spelling with
+                        | Spelling.Unnormalised -> RootKind.ArrayElement
+                        | Spelling.AsUnsafeAddSpellsIt -> ()
                         RootKind.Boxed
                     ]
 
@@ -544,16 +556,27 @@ module TestPointerStructByteViewCells =
             let addr, state = IlMachineState.allocateManagedObject outerDeclared contents state
             state, ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, [])
 
-    /// `Unsafe.Add(ref Unsafe.As<_, View>(ref root.Path), steps)`, unnormalised.
-    let private build (case : Case) (atRoot : ManagedPointerSource) : ManagedPointerSource =
-        let viewed =
+    /// `Unsafe.Add(ref Unsafe.As<_, View>(ref root.Path), steps)`, spelt as `spelling` says.
+    let private build
+        (spelling : Spelling)
+        (case : Case)
+        (state : IlMachineState)
+        (atRoot : ManagedPointerSource)
+        : ManagedPointerSource
+        =
+        let atPath =
             (atRoot, case.Path)
             ||> List.fold (fun ptr name ->
                 ManagedPointerSource.appendProjection (ByrefProjection.Field (FieldId.named name)) ptr
             )
-            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (viewType case.View))
 
-        ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset case.Displacement) viewed
+        match spelling with
+        | Spelling.Unnormalised ->
+            atPath
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ReinterpretAs (viewType case.View))
+            |> ManagedPointerSource.appendProjection (ByrefProjection.ByteOffset case.Displacement)
+        | Spelling.AsUnsafeAddSpellsIt ->
+            ManagedPointerByteView.addByteOffset state (viewType case.View) case.Displacement atPath
 
     /// What a cell of the storage holds, as far as the guest can tell: an `Outer`'s `int` fields
     /// and its pointer, rather than the `CliType`, which also records when each field was written.
@@ -672,11 +695,10 @@ module TestPointerStructByteViewCells =
         let ex = Assert.Throws<Exception> (fun () -> action () |> ignore)
         ex.Message |> shouldContainText "refusing byte view"
 
-    [<Test>]
-    let ``a load through a byte view over a pointer-holding struct reads the image or is refused`` () : unit =
+    let private loadProperty (spelling : Spelling) : unit =
         let property (case : Case) : unit =
             let state, atRoot = allocate case
-            let ptr = build case atRoot
+            let ptr = build spelling case state atRoot
             let address = accessAddress case
 
             let read () =
@@ -691,16 +713,12 @@ module TestPointerStructByteViewCells =
             else
                 assertRefused read
 
-        Check.One (config, Prop.forAll (Arb.fromGen (caseGen false)) property)
+        Check.One (config, Prop.forAll (Arb.fromGen (caseGen spelling false)) property)
 
-    [<Test>]
-    let ``a store through a byte view over a pointer-holding struct changes exactly its bytes or is refused``
-        ()
-        : unit
-        =
+    let private storeProperty (spelling : Spelling) : unit =
         let property (case : Case) : unit =
             let state, atRoot = allocate case
-            let ptr = build case atRoot
+            let ptr = build spelling case state atRoot
 
             let write () =
                 IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (viewValue case.View case.Written)
@@ -713,4 +731,26 @@ module TestPointerStructByteViewCells =
             else
                 assertRefused write
 
-        Check.One (config, Prop.forAll (Arb.fromGen (caseGen true)) property)
+        Check.One (config, Prop.forAll (Arb.fromGen (caseGen spelling true)) property)
+
+    [<Test>]
+    let ``a load through a byte view over a pointer-holding struct reads the image or is refused`` () : unit =
+        loadProperty Spelling.Unnormalised
+
+    [<Test>]
+    let ``a store through a byte view over a pointer-holding struct changes exactly its bytes or is refused``
+        ()
+        : unit
+        =
+        storeProperty Spelling.Unnormalised
+
+    [<Test>]
+    let ``a load through a byte view spelt as Unsafe.Add spells it reads the image or is refused`` () : unit =
+        loadProperty Spelling.AsUnsafeAddSpellsIt
+
+    [<Test>]
+    let ``a store through a byte view spelt as Unsafe.Add spells it changes exactly its bytes or is refused``
+        ()
+        : unit
+        =
+        storeProperty Spelling.AsUnsafeAddSpellsIt

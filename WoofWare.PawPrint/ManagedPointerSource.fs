@@ -1146,7 +1146,23 @@ module ManagedPointerSource =
         | ManagedPointerSource.NativeIntPlaceholder _ -> src
         | ManagedPointerSource.Byref _ -> appendProjection (ByrefProjection.ReinterpretAs target) src
 
+    /// What a root's cells hold, which decides whether moving the root by whole cells can carry
+    /// the chain's structural prefix — the `Field` steps before its first `ReinterpretAs` — along
+    /// with it.
+    type private RootCellTyping =
+        /// Every cell holds a value of one type: an array's elements, a string's characters. A
+        /// `Field` step names the same field of whichever cell the root indexes, so advancing the
+        /// root by `k` cells moves the address the prefix reaches by exactly `k` strides.
+        | Uniform
+        /// The root indexes bytes of storage holding values of arbitrary types at arbitrary
+        /// offsets: a localloc block, a native-heap block. A `Field` step is resolved against the
+        /// value stored at the root's own offset, so moving the root would re-anchor the prefix
+        /// on storage that need not hold that value — often the middle of the very struct the
+        /// prefix selected from.
+        | PerByte
+
     let private normaliseTrailingByteOffset
+        (cellTyping : RootCellTyping)
         (tryGetCellSize : ByrefRoot -> int option)
         (advanceRoot : ByrefRoot -> int -> ByrefRoot option)
         (src : ManagedPointerSource)
@@ -1156,8 +1172,22 @@ module ManagedPointerSource =
         | ManagedPointerSource.Null -> src
         | ManagedPointerSource.NativeIntPlaceholder _ -> src
         | ManagedPointerSource.Byref (root, projs) ->
+            // Under `PerByte` the root's offset is where the structural prefix's first `Field` is
+            // resolved, so it must stay put while any `Field` precedes the first `ReinterpretAs`;
+            // the trailing cursor then stays relative to the field, which is what the readers and
+            // writers lift through.
+            let rootMayMove =
+                match cellTyping with
+                | RootCellTyping.Uniform -> true
+                | RootCellTyping.PerByte ->
+                    match projs with
+                    | ByrefProjection.Field _ :: _ -> false
+                    | _ -> true
+
             match List.rev projs, tryGetCellSize root with
-            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest, Some cellSize when cellSize > 0 ->
+            | ByrefProjection.ByteOffset n :: ByrefProjection.ReinterpretAs ty :: rest, Some cellSize when
+                cellSize > 0 && rootMayMove
+                ->
                 // Floor-division so negatives land in `[0, cellSize)`.
                 //
                 // The residual is carried out of the division rather than recovered
@@ -1197,6 +1227,7 @@ module ManagedPointerSource =
         : ManagedPointerSource
         =
         normaliseTrailingByteOffset
+            RootCellTyping.Uniform
             (function
             | ByrefRoot.ArrayElement (arr, _) -> ByteOffsetNormalisationContext.tryGetArrayElementSize context arr
             | _ -> None)
@@ -1213,6 +1244,7 @@ module ManagedPointerSource =
     /// and equivalent byte addresses should have one structural representation.
     let private normaliseStringByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
         normaliseTrailingByteOffset
+            RootCellTyping.Uniform
             (function
             | ByrefRoot.StringCharAt _ -> Some 2
             | _ -> None)
@@ -1227,6 +1259,7 @@ module ManagedPointerSource =
     /// Fold byte offsets of a localloc byte byref into the root byte offset.
     let private normaliseStackMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
         normaliseTrailingByteOffset
+            RootCellTyping.PerByte
             (function
             | ByrefRoot.StackMemoryByte _ -> Some 1
             | _ -> None)
@@ -1241,6 +1274,7 @@ module ManagedPointerSource =
     /// Fold byte offsets of a native-heap byte byref into the root byte offset.
     let private normaliseNativeMemoryByteOffset (src : ManagedPointerSource) : ManagedPointerSource =
         normaliseTrailingByteOffset
+            RootCellTyping.PerByte
             (function
             | ByrefRoot.NativeMemoryByte _ -> Some 1
             | _ -> None)
