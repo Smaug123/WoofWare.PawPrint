@@ -27,10 +27,17 @@ open WoofWare.PawPrint
 ///   `int`: served, with that field's bytes;
 /// * anything else touching a cell that holds a pointer: refused.
 ///
+/// A store has one more way to be served. An all-zero store through an array element, with no
+/// field chain before its view, is written by the array's own byte writer, which clears the bytes
+/// it covers rather than naming a cell; that is how `Array.Clear` empties an array of structs
+/// holding references. Such a store is served, nulling any pointer it covers whole, unless it
+/// covers only part of a pointer, which is refused.
+///
 /// So a served access always returns the image's bytes, a store changes exactly its bytes and
-/// leaves every pointer as it was, and no access reaching a pointer's bytes is ever served. The
-/// refusals of accesses that miss the pointer (a byte of an `int` field, say) are where naming
-/// stops rather than a claim about the real runtime, which serves them.
+/// leaves every pointer it does not clear as it was, and no access reaching a pointer's bytes is
+/// ever served except a store clearing the whole pointer. The refusals of accesses that miss the
+/// pointer (a byte of an `int` field, say, or a clear that has a field chain) are where naming and
+/// clearing stop rather than a claim about the real runtime, which serves them.
 ///
 /// Each byref is built two ways. `Spelling.Unnormalised` spells it relative to the struct the view
 /// was taken over, which is what the readers and writers must answer for whoever builds it.
@@ -136,6 +143,11 @@ module TestPointerStructByteViewCells =
         |> List.pick (fun (p, offset, size, holdsPointer) ->
             if p = path then Some (offset, size, holdsPointer) else None
         )
+
+    /// The offset and size of the pointer `I.P` in `Outer`.
+    let private pointerExtent : int * int =
+        let offset, size, _ = pathExtent [ "I" ; "P" ]
+        offset, size
 
     let private field (name : string) (handle : ConcreteTypeHandle) (contents : CliType) : CliField =
         {
@@ -251,7 +263,7 @@ module TestPointerStructByteViewCells =
                     yield! bytes
         |]
 
-    /// Whether the access has an answer; see the fixture's docstring.
+    /// Whether naming gives the access an answer; see the fixture's docstring.
     let private isServed (case : Case) : bool =
         let address = accessAddress case
         let size = viewSize case.View
@@ -297,6 +309,44 @@ module TestPointerStructByteViewCells =
                 | ModelCell.Outer _ -> false
                 | _ -> true
             )
+
+    /// What an access gets.
+    [<RequireQualifiedAccess>]
+    type private Outcome =
+        | Served
+        /// Refused, with an exception whose message contains `fragment`.
+        | Refused of fragment : string
+
+    /// A byte view is refused for naming no cell, by the reader or writer that found a cell with no
+    /// byte image where it needed bytes.
+    let private refusedByteView : Outcome = Outcome.Refused "refusing byte view"
+
+    let private loadOutcome (case : Case) : Outcome =
+        if isServed case then Outcome.Served else refusedByteView
+
+    /// Whether a store is a clear; see the fixture's docstring. A field chain before the view sends
+    /// the store to the writer that lifts through the chain, which does not clear.
+    let private isClear (case : Case) : bool =
+        case.RootKind = RootKind.ArrayElement
+        && List.isEmpty case.Path
+        && case.Written |> Array.forall (fun b -> b = 0uy)
+
+    let private storeOutcome (case : Case) : Outcome =
+        if isClear case then
+            let address = accessAddress case
+            let pointerOffset, pointerSize = pointerExtent
+            let pointerStart = rootOffset case + pointerOffset
+            let pointerEnd = pointerStart + pointerSize
+            let accessEnd = address + viewSize case.View
+            let overlapsPointer = address < pointerEnd && pointerStart < accessEnd
+            let coversPointer = address <= pointerStart && pointerEnd <= accessEnd
+
+            if overlapsPointer && not coversPointer then
+                Outcome.Refused "refusing to zero the partial range"
+            else
+                Outcome.Served
+        else
+            loadOutcome case
 
     let private pointerGen : Gen<CliRuntimePointer> =
         Gen.oneof
@@ -403,7 +453,15 @@ module TestPointerStructByteViewCells =
                 ]
 
             let! path, steps = Gen.elements accesses
-            let! written = Gen.arrayOfLength size (Gen.choose (0, 255) |> Gen.map byte<int>)
+
+            // All zeros often enough for every clear to be reached: uniform bytes would make a clear
+            // one store in 256 for a byte view, and never for a wider one.
+            let! written =
+                Gen.frequency
+                    [
+                        1, Gen.constant (Array.zeroCreate<byte> size)
+                        3, Gen.arrayOfLength size (Gen.choose (0, 255) |> Gen.map byte<int>)
+                    ]
 
             return
                 {
@@ -657,8 +715,9 @@ module TestPointerStructByteViewCells =
         | ModelCell.Gap bytes -> Observed.Bytes bytes
         | ModelCell.Outer (ints, pointer) -> Observed.Outer (List.ofArray ints, CliType.RuntimePointer pointer)
 
-    /// `cells` with `bytes` stored at `address`. The store must lie in cells with a byte image or
-    /// be exactly an `int` field of an `Outer`, which is what `isServed` admits.
+    /// `cells` with `bytes` stored at `address`. The store must lie in cells with a byte image, be
+    /// exactly an `int` field of an `Outer`, or be a clear covering any pointer it touches whole,
+    /// which is what `storeOutcome` serves.
     let private store (cells : ModelCell list) (address : int) (bytes : byte[]) : ModelCell list =
         // `current`'s bytes, which start at `start`, with the stored bytes laid over them.
         let overlay (start : int) (current : byte[]) : byte[] =
@@ -686,14 +745,32 @@ module TestPointerStructByteViewCells =
                     )
                     |> Array.ofList
 
+                let pointerOffset, pointerSize = pointerExtent
+                let pointerStart = offset + pointerOffset
+                let pointerEnd = pointerStart + pointerSize
+                let storeEnd = address + bytes.Length
+
+                let pointer =
+                    if storeEnd <= pointerStart || pointerEnd <= address then
+                        pointer
+                    elif
+                        address <= pointerStart
+                        && pointerEnd <= storeEnd
+                        && bytes |> Array.forall (fun b -> b = 0uy)
+                    then
+                        CliRuntimePointer.Managed ManagedPointerSource.Null
+                    else
+                        failwith
+                            $"a store of %A{bytes} at %d{address} reaches the pointer at %d{pointerStart} without clearing it whole"
+
                 ModelCell.Outer (ints, pointer)
         )
 
     let private config : Config = Config.QuickThrowOnFailure.WithMaxTest 1000
 
-    let private assertRefused (action : unit -> 'a) : unit =
+    let private assertRefused (fragment : string) (action : unit -> 'a) : unit =
         let ex = Assert.Throws<Exception> (fun () -> action () |> ignore)
-        ex.Message |> shouldContainText "refusing byte view"
+        ex.Message |> shouldContainText fragment
 
     let private loadProperty (spelling : Spelling) : unit =
         let property (case : Case) : unit =
@@ -704,34 +781,34 @@ module TestPointerStructByteViewCells =
             let read () =
                 IlMachineState.readManagedByrefBytesAs bct state ptr (viewTemplate case.View)
 
-            if isServed case then
+            match loadOutcome case with
+            | Outcome.Served ->
                 let bytes =
                     (image case.Cells).[address .. address + viewSize case.View - 1]
                     |> Array.map (Option.defaultWith (fun () -> failwith "a served access reached a pointer byte"))
 
                 read () |> shouldEqual (viewValue case.View bytes)
-            else
-                assertRefused read
+            | Outcome.Refused fragment -> assertRefused fragment read
 
         Check.One (config, Prop.forAll (Arb.fromGen (caseGen spelling false)) property)
 
+    let private checkStore (spelling : Spelling) (case : Case) : unit =
+        let state, atRoot = allocate case
+        let ptr = build spelling case state atRoot
+
+        let write () =
+            IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (viewValue case.View case.Written)
+
+        match storeOutcome case with
+        | Outcome.Served ->
+            let state = write ()
+
+            readBack case atRoot state
+            |> shouldEqual (store case.Cells (accessAddress case) case.Written |> List.map expectedObserved)
+        | Outcome.Refused fragment -> assertRefused fragment write
+
     let private storeProperty (spelling : Spelling) : unit =
-        let property (case : Case) : unit =
-            let state, atRoot = allocate case
-            let ptr = build spelling case state atRoot
-
-            let write () =
-                IlMachineState.writeManagedByrefBytesOrTypedCell bct state ptr (viewValue case.View case.Written)
-
-            if isServed case then
-                let state = write ()
-
-                readBack case atRoot state
-                |> shouldEqual (store case.Cells (accessAddress case) case.Written |> List.map expectedObserved)
-            else
-                assertRefused write
-
-        Check.One (config, Prop.forAll (Arb.fromGen (caseGen spelling true)) property)
+        Check.One (config, Prop.forAll (Arb.fromGen (caseGen spelling true)) (checkStore spelling))
 
     [<Test>]
     let ``a load through a byte view over a pointer-holding struct reads the image or is refused`` () : unit =
@@ -754,3 +831,52 @@ module TestPointerStructByteViewCells =
         : unit
         =
         storeProperty Spelling.AsUnsafeAddSpellsIt
+
+    /// A store of zeros through element 1 of an `Outer[3]`.
+    let private arrayClear (path : string list) (view : View) (displacement : int) : Case =
+        let outerCell (slot : int) =
+            ModelCell.Outer (
+                [| 67673 ; 57698 ; -91588 ; -68716 ; -42320 ; -94121 |],
+                ManagedPointerSource.Byref (
+                    ByrefRoot.LocalVariable (ThreadId.ThreadId 0, FrameId.FrameId 0, uint16<int> slot),
+                    []
+                )
+                |> CliRuntimePointer.Managed
+            )
+
+        {
+            RootKind = RootKind.ArrayElement
+            Cells = [ outerCell 0 ; outerCell 5 ; outerCell 2 ]
+            RootCell = 1
+            Path = path
+            View = view
+            Displacement = displacement
+            Written = Array.zeroCreate (viewSize view)
+        }
+
+    [<Test>]
+    let ``a zero byte stored into an int field through an array element clears it`` () : unit =
+        let case = arrayClear [] View.Byte 4
+        storeOutcome case |> shouldEqual Outcome.Served
+        checkStore Spelling.Unnormalised case
+
+    [<Test>]
+    let ``zeros stored over a whole pointer through an array element null it`` () : unit =
+        let case = arrayClear [] View.Int64 8
+        storeOutcome case |> shouldEqual Outcome.Served
+        checkStore Spelling.Unnormalised case
+
+    [<Test>]
+    let ``a zero byte stored into a pointer through an array element is refused`` () : unit =
+        let case = arrayClear [] View.Byte 8
+
+        storeOutcome case
+        |> shouldEqual (Outcome.Refused "refusing to zero the partial range")
+
+        checkStore Spelling.Unnormalised case
+
+    [<Test>]
+    let ``a zero byte stored through an array element and a field chain is refused`` () : unit =
+        let case = arrayClear [ "Lead" ] View.Byte 4
+        storeOutcome case |> shouldEqual refusedByteView
+        checkStore Spelling.Unnormalised case
