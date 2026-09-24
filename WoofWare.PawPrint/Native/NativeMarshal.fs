@@ -248,16 +248,16 @@ module NativeMarshal =
             //   without `[StructLayout]`, as well as value types explicitly marked
             //   `[StructLayout(LayoutKind.Auto)]`.
             // - Blittable: the strict subset we are confident matches CoreCLR exactly — structs
-            //   whose fields are recursively plain numeric (Int8..Float64), excluding the
-            //   host-known field-only special cases (DateTime, Decimal) that CoreCLR's
-            //   `MarshalInfo` diverts to stub synthesis (`MARSHAL_TYPE_DATE`,
+            //   whose fields are recursively plain numeric (Int8..Float64) or UTF-16 `char`s,
+            //   excluding the host-known field-only special cases (DateTime, Decimal) that
+            //   CoreCLR's `MarshalInfo` diverts to stub synthesis (`MARSHAL_TYPE_DATE`,
             //   `MARSHAL_TYPE_DECIMAL`).
             // - Has-layout-non-blittable: a function pointer to a synthesised method carrying
             //   `RuntimeBehaviour.StructMarshalStub`, which `AbstractMachine` dispatches like any
             //   other runtime-provided method. Today that means a struct whose only non-blittable
-            //   fields are `DateTime` or `Decimal`.
+            //   fields are `DateTime`, `Decimal`, `bool` or ANSI `char`.
             //
-            // Everything else — `[MarshalAs]` descriptors, Bool/Char/ObjectRef fields,
+            // Everything else — `[MarshalAs]` descriptors on other fields, ObjectRef fields,
             // nested composites needing a recursive plan, and reference types (which reach us as
             // `CliType.ObjectRef` and so classify non-blittable, though CoreCLR would memmove a
             // sequential class) — surfaces a host TODO. Each future widening wants its own
@@ -292,24 +292,20 @@ module NativeMarshal =
             // Decimal field outright (fieldmarshaler.cpp:266). Neither host-known type may be
             // memmoved *as a field*, though a standalone Decimal is its own native layout, and a
             // standalone DateTime is filtered earlier by the AutoLayout gate.
-            let isStructStrictlyNumericBlittable (t : CliType) : bool =
-                StructMarshalStub.isStructStrictlyNumericBlittable
-                    state.ConcreteTypes
-                    state._LoadedAssemblies
-                    ctx.BaseClassTypes
-                    t
+            let isBlittableStruct (t : CliType) : bool =
+                StructMarshalStub.isBlittableStruct state.ConcreteTypes state._LoadedAssemblies ctx.BaseClassTypes t
 
-            if isStructStrictlyNumericBlittable zero then
+            if isBlittableStruct zero then
                 // The eventual `*structMarshalStub` we write here is null: the blittable path
                 // tells CoreLib to take the `SpanHelpers.Memmove` fast path
                 // (marshalnative.cpp:99-145).
                 let zeroNativeInt =
                     CliType.Numeric (CliNumericType.NativeInt (NativeIntSource.Verbatim 0L))
 
-                // For the strictly-numeric subset, CoreCLR's marshal size and PawPrint's
-                // managed CLI size coincide: each field's managed width equals its native
-                // width, sequential layout uses natural alignment, and no `[MarshalAs]`
-                // resizing is in play.
+                // For a blittable struct, CoreCLR's marshal size and PawPrint's managed CLI size
+                // coincide: each field's managed width equals its native width (a blittable
+                // `char` is a two-byte UTF-16 code unit either way), and sequential layout uses
+                // natural alignment in both.
                 let size = CliType.SizeOf zero
 
                 let state =
