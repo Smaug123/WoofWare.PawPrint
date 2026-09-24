@@ -33,10 +33,26 @@ module TestMarshalLayout =
 
     let private loaded : LoadedAssemblies = LoadedAssemblies.ofAssemblies [ corelib ]
 
+    /// A corelib enum of each underlying width corelib offers publicly. C# cannot name a narrower
+    /// enum than `byte` or a wider one than `long`, and corelib has no public enum over the
+    /// unsigned widths, so those are left to `TestMarshalEnumFieldLayout`'s corpus.
+    let private enumTypes : TypeInfo<GenericParamFromMetadata, TypeDefn> list =
+        [
+            "System.Security", "SecurityRuleSet"
+            "System.Runtime.InteropServices.ComTypes", "TYPEFLAGS"
+            "System", "AttributeTargets"
+            "System.Diagnostics.Tracing", "EventKeywords"
+        ]
+        |> List.map (fun (ns, name) ->
+            corelib.TypeDefs.Values
+            |> Seq.filter (fun ti -> ti.Namespace = ns && ti.Name = name)
+            |> Seq.exactlyOne
+        )
+
     /// `Corelib.concretizeAll` covers the base types the interpreter needs at startup, which does
-    /// not include `System.DateTime` or `System.Decimal` — so concretize those explicitly rather
-    /// than widening the startup set for a test's benefit.
-    let private allCt, dateTimeHandle, decimalHandle: AllConcreteTypes * ConcreteTypeHandle * ConcreteTypeHandle =
+    /// not include `System.DateTime`, `System.Decimal` or the enums above — so concretize those
+    /// explicitly rather than widening the startup set for a test's benefit.
+    let private concretized : AllConcreteTypes * ConcreteTypeHandle * ConcreteTypeHandle * ConcreteTypeHandle list =
         let ctx =
             {
                 TypeConcretization.ConcretizationContext.ConcreteTypes =
@@ -62,8 +78,11 @@ module TestMarshalLayout =
 
         let dateTime, ctx = concretize ctx bct.DateTime
         let decimalHandle, ctx = concretize ctx bct.Decimal
+        let enumHandles, ctx = List.mapFold concretize ctx enumTypes
 
-        ctx.ConcreteTypes, dateTime, decimalHandle
+        ctx.ConcreteTypes, dateTime, decimalHandle, enumHandles
+
+    let private allCt, dateTimeHandle, decimalHandle, enumHandles = concretized
 
     let private handleOf (t : TypeInfo<GenericParamFromMetadata, TypeDefn>) : ConcreteTypeHandle =
         AllConcreteTypes.getRequiredNonGenericHandle allCt t
@@ -130,12 +149,25 @@ module TestMarshalLayout =
             ]
         |> CliType.ValueType
 
+    /// A value of the corelib enum `enumTypes.[index]` whose underlying `value__` is `underlying`.
+    let private enumValue (index : int) (underlying : CliType) (underlyingType : ConcreteTypeHandle) : CliType =
+        let ti = enumTypes.[index]
+
+        CliValueType.OfFields
+            bct
+            allCt
+            enumHandles.[index]
+            (DeclaredTypeFacts.ofCorelibType bct ti)
+            [ cliField "value__" underlying underlyingType ]
+        |> CliType.ValueType
+
     /// The field kinds the sweep draws from, with the unmanaged size each is expected to
     /// contribute. `DateTime` is one interesting one: CoreCLR marshals a `DateTime` *field* as an
     /// 8-byte OADate double (`MARSHAL_TYPE_DATE`, mlinfo.cpp:1747) rather than as its managed
     /// `_dateData` image, and the sizes coincide only by luck — the alignment claim is what places
     /// it. `Decimal` is the other: its 16 bytes are 8-byte aligned, so it is the one kind whose
-    /// size and alignment differ.
+    /// size and alignment differ. An enum is sized as its underlying integer: CoreCLR normalises an
+    /// enum field's element type to that integer before choosing a marshaller.
     let private fieldKinds : (string * (int -> CliType) * ConcreteTypeHandle * int) list =
         [
             "u8",
@@ -152,6 +184,32 @@ module TestMarshalLayout =
             "f64", (fun i -> CliType.Numeric (CliNumericType.Float64 (float i))), handleOf bct.Double, 8
             "date", (fun _ -> dateTimeValue), dateTimeHandle, 8
             "decimal", (fun i -> decimalValue (i <<< 16) (-i) (int64 i * 0x1_0000_0001L)), decimalHandle, 16
+            "enum8",
+            (fun i ->
+                enumValue
+                    0
+                    (CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (byte i))))
+                    (handleOf bct.Byte)
+            ),
+            enumHandles.[0],
+            1
+            "enum16",
+            (fun i -> enumValue 1 (CliType.Numeric (CliNumericType.Int16 (int16 i))) (handleOf bct.Int16)),
+            enumHandles.[1],
+            2
+            "enum32",
+            (fun i -> enumValue 2 (CliType.Numeric (CliNumericType.Int32 i)) (handleOf bct.Int32)),
+            enumHandles.[2],
+            4
+            "enum64",
+            (fun i ->
+                enumValue
+                    3
+                    (CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim (int64 i))))
+                    (handleOf bct.Int64)
+            ),
+            enumHandles.[3],
+            8
         ]
 
     /// One generated field: what the implementation is given, and the unmanaged width/alignment
@@ -466,7 +524,8 @@ module TestMarshalLayout =
         // draw it must agree with the layout on placement and pick CoreCLR's marshaller: an
         // OADate conversion for `DateTime`, and a verbatim copy of the managed value for
         // everything else — including `Decimal`, whose `ILDecimalMarshaler` is a copy marshaler
-        // with `System.Decimal` itself as its native type.
+        // with `System.Decimal` itself as its native type, and enums, which are copied as their
+        // underlying integer.
         let property (fields : GeneratedField list) (layout : Layout) : unit =
             let vt = ofFields layout (fields |> List.map _.Field)
             let size, placements = layoutOf layout fields
@@ -478,15 +537,14 @@ module TestMarshalLayout =
                 plan.Steps |> List.map _.Placement |> shouldEqual placements
 
                 for generated, step in List.zip fields plan.Steps do
-                    step.Value |> shouldEqual generated.Field.Contents
-
-                    let expectedKind =
+                    let expectedKind, expectedValue =
                         if generated.Field.Type = dateTimeHandle then
-                            StructMarshalFieldKind.OADate
+                            StructMarshalFieldKind.OADate, generated.Field.Contents
                         else
-                            StructMarshalFieldKind.CopyBytes
+                            StructMarshalFieldKind.CopyBytes, CliType.unwrapPrimitiveLikeDeep generated.Field.Contents
 
                     step.Kind |> shouldEqual expectedKind
+                    step.Value |> shouldEqual expectedValue
 
         Prop.forAll
             (Arb.fromGen (Gen.zip (Gen.oneof [ genFields ; genExplicitFields ]) genLayout))
