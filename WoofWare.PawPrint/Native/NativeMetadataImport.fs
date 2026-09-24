@@ -1719,8 +1719,10 @@ module NativeMetadataImport =
           MethodReturnType.Returns (ConcretePrimitive state.ConcreteTypes PrimitiveType.Boolean) ->
             // CoreCLR's FCall (managedmdimport.cpp:15) runs `ParseNativeTypeInfo` over the blob
             // `GetFieldMarshal` handed out, from a zeroed `NativeTypeParamInfo`, and on success
-            // copies its fields out; see `NativeTypeParamInfo.parse` for the parsing and for what a
-            // non-COM build reports. It touches no metadata and no module: the blob is the input.
+            // copies its fields out, so a field the parse left unwritten reads as 0; see
+            // `NativeTypeParamInfo.parse` for the parsing. On a non-COM build it reports
+            // `SafeArraySubType = VT_EMPTY`, a null `SafeArrayUserDefinedSubType` and
+            // `IidParamIndex = 0`. It touches no metadata and no module: the blob is the input.
             let operation = "MetadataImport.GetMarshalAs"
 
             let nativeTypePointer =
@@ -1791,9 +1793,9 @@ module NativeMetadataImport =
                     // none of them changes a value.
                     state
                     |> writeInt32 unmanagedTypeOut (int32 info.NativeType)
-                    |> writeInt32 sizeParamIndexOut (int32 info.CountParamIndex)
-                    |> writeInt32 sizeConstOut (int32 info.Additive)
-                    |> writeInt32 arraySubTypeOut (int32 info.ArrayElementType)
+                    |> writeInt32 sizeParamIndexOut (info.CountParamIndex |> Option.map int32 |> Option.defaultValue 0)
+                    |> writeInt32 sizeConstOut (info.Additive |> Option.map int32 |> Option.defaultValue 0)
+                    |> writeInt32 arraySubTypeOut (info.ArrayElementType |> Option.map int32 |> Option.defaultValue 0)
                     // The `#else` arm of the FCall's FEATURE_COMINTEROP block.
                     |> writeInt32 iidParamIndexOut 0
                     |> writeInt32 safeArraySubTypeOut 0

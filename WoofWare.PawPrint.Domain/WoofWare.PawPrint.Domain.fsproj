@@ -46,6 +46,7 @@
         <Compile Include="CustomAttribute.fs" />
         <Compile Include="GenericParameter.fs" />
         <Compile Include="ConcreteType.fs" />
+        <Compile Include="NativeTypeParamInfo.fs" />
         <Compile Include="FieldInfo.fs" />
         <Compile Include="DynamicMethodHandle.fs" />
         <Compile Include="MethodInfo.fs" />
