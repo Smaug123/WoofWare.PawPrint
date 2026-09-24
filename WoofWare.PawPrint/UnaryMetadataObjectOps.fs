@@ -613,67 +613,6 @@ module internal UnaryMetadataObjectOps =
 
         state, WhatWeDid.Executed
 
-    /// The outcome of the type test that ECMA-335 III.4.32 (`unbox`) and the value-type arm of
-    /// III.4.33 (`unbox.any`) share; CoreCLR routes both through `CastHelpers.Unbox_Helper`.
-    [<RequireQualifiedAccess>]
-    type private UnboxTypeTest =
-        /// The operand is a boxed value whose type the token accepts. Materialise from
-        /// `boxed.ConcreteType` rather than from the token's handle: under the enum/underlying
-        /// relaxation in `unboxPermitted` the two differ, and `Contents` was built with the former.
-        | Accepted of addr : ManagedHeapAddress * boxed : AllocatedNonArrayObject
-        /// The operand is null. `unbox` and the non-Nullable arm of `unbox.any` both raise
-        /// NullReferenceException; only the `Nullable<T>` arm of `unbox.any` accepts null, and it
-        /// never reaches this test.
-        | NullOperand
-        /// InvalidCastException: the operand is not a boxed value type the token accepts.
-        | WrongType
-
-    /// Shared by `unbox` and the value-type arm of `unbox.any`, so the two cannot drift apart on
-    /// which operands they accept. `opName` appears only in diagnostics for shapes we do not model.
-    let private unboxTypeTest
-        (loggerFactory : ILoggerFactory)
-        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
-        (opName : string)
-        (targetConcreteTypeHandle : ConcreteTypeHandle)
-        (actualObj : EvalStackValue)
-        (state : IlMachineState)
-        : IlMachineState * UnboxTypeTest
-        =
-        match actualObj with
-        | EvalStackValue.NullObjectRef -> state, UnboxTypeTest.NullOperand
-        | EvalStackValue.ObjectRef addr ->
-            let boxedOpt =
-                match ManagedHeap.tryGet addr state.ManagedHeap with
-                | Some v -> Some v
-                | None ->
-                    // An array is never a boxed value type, so per the CLR this is an ordinary
-                    // type mismatch rather than an interpreter abort.
-                    if ManagedHeap.isArray addr state.ManagedHeap then
-                        None
-                    else
-                        failwith $"%s{opName}: could not find managed object with address {addr}"
-
-            match boxedOpt with
-            | None -> state, UnboxTypeTest.WrongType
-            | Some boxed ->
-                // Handle identity, or same-primitive-element-type per CoreCLR
-                // `CastHelpers.Unbox_Helper` — the clause that lets a boxed enum unbox to its
-                // underlying integer and back. Not assignability, and narrower than ECMA-335's
-                // verification types: see `unboxPermitted`.
-                let state, permitted =
-                    IlMachineState.unboxPermitted
-                        loggerFactory
-                        baseClassTypes
-                        state
-                        boxed.ConcreteType
-                        targetConcreteTypeHandle
-
-                if permitted then
-                    state, UnboxTypeTest.Accepted (addr, boxed)
-                else
-                    state, UnboxTypeTest.WrongType
-        | other -> failwith $"%s{opName}: unexpected eval stack value {other}"
-
     let executeUnboxAny (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -842,7 +781,7 @@ module internal UnaryMetadataObjectOps =
         else
             // Value-type target, non-Nullable.
             let state, typeTest =
-                unboxTypeTest
+                BoxedValue.unboxTypeTest
                     loggerFactory
                     baseClassTypes
                     "Unbox_Any (value-type target)"
@@ -883,7 +822,7 @@ module internal UnaryMetadataObjectOps =
     /// differs: `unbox` pushes a managed pointer *into* the boxed object rather than a copy of
     /// its contents, so a `stobj`/`stfld` through the result is visible through the box.
     ///
-    /// The `Nullable<T>` target is unimplemented; see the `failwith` below.
+    /// The `Nullable<T>` target is unimplemented; see `BoxedValue.unboxAddress`.
     let executeUnbox (ctx : UnaryMetadataIlOpContext) (state : IlMachineState) : IlMachineState * WhatWeDid =
         let loggerFactory = ctx.LoggerFactory
         let baseClassTypes = ctx.BaseClassTypes
@@ -908,99 +847,14 @@ module internal UnaryMetadataObjectOps =
                     currentMethod.Generics
                     targetType
 
-        // Unlike `unbox.any`, whose token may denote any boxable type, III.4.32 requires a value
-        // type, and no structural handle shape is one: arrays are reference types and byrefs are
-        // not boxable at all. A *pointer* token is unverifiable rather than invalid — real .NET
-        // reaches the instruction for `unbox int*` (measured) — but supporting it needs the boxed
-        // pointer `executeBox` does not implement, so all of these are refused together. Dispatch
-        // on the shape before touching metadata, since these handles have no row in
-        // `AllConcreteTypes`.
-        match targetConcreteTypeHandle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ ->
-            failwith
-                $"TODO: Unbox of %O{targetConcreteTypeHandle} is not implemented. Arrays and byrefs are invalid IL here per ECMA-335 III.4.32; a pointer token is legal on real .NET (measured) and needs the boxed pointer `box` does not implement."
-        | ConcreteTypeHandle.Concrete _ ->
+        let state, result =
+            BoxedValue.unboxAddress loggerFactory baseClassTypes "Unbox" targetConcreteTypeHandle actualObj state
 
-        let targetConcreteType =
-            AllConcreteTypes.lookup targetConcreteTypeHandle state.ConcreteTypes
-            |> Option.get
-
-        let targetDefn =
-            (state._LoadedAssemblies.ByDefinitionName targetConcreteType.AssemblyFullName)
-                .TypeDefs.[targetConcreteType.Definition.Get]
-
-        // `Nullable<T>` is a value type, so test for it before the general value-type check.
-        if InternalTypeKind.kind baseClassTypes targetConcreteType = InternalTypeKind.Nullable then
-            // `box` of a `Nullable<T>` yields null or a boxed `T`, so there is no `Nullable<T>` in
-            // the heap for a pointer to point *into*. CoreCLR resolves that by materialising a
-            // fresh `Nullable<T>` into a JIT temp and pushing the temp's address
-            // (jit/importer.cpp, `CEE_UNBOX` with `CORINFO_HELP_UNBOX_NULLABLE`), which the JIT
-            // itself flags as non-compliant with ECMA-335: the result aliases a copy, so writes
-            // through it are lost. Modelling that needs a storage location for the temp, which
-            // this interpreter has no notion of at this point; rather than guess at one, refuse
-            // loudly. Roslyn never emits this shape — it compiles `(T?) o` to
-            // `unbox.any; stloc; ldloca` — so reaching this is a signal that some other IL
-            // producer needs the temp modelled properly.
-            failwith
-                $"TODO: Unbox with a System.Nullable`1 type token (%O{targetConcreteTypeHandle}) is unimplemented; CoreCLR would push the address of a materialised copy rather than a pointer into the box"
-
-        if not (DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies targetDefn) then
-            failwith
-                $"Unbox: type token denotes reference type %O{targetConcreteTypeHandle}, but ECMA-335 III.4.32 requires a value type; this is invalid IL"
-
-        let state, typeTest =
-            unboxTypeTest loggerFactory baseClassTypes "Unbox" targetConcreteTypeHandle actualObj state
-
-        match typeTest with
-        | UnboxTypeTest.NullOperand ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.NullReference thread state
-        | UnboxTypeTest.WrongType ->
-            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes OpcodeFault.InvalidCast thread state
-        | UnboxTypeTest.Accepted (addr, boxed) ->
-            // `HeapValue` denotes the whole boxed value (see `CellAwareMemOps`), so the aliasing
-            // III.4.32 requires falls out: reads and writes through this pointer go to the box
-            // itself, not to a copy.
-            //
-            // What it does *not* carry is a static type. Every consumer — `ldind`, `ldobj`,
-            // `ldfld`, `ldflda`, `stobj`, `stfld` — resolves the pointee from whatever storage it
-            // finds at the root, which is right exactly when the box holds the target type's own
-            // fields. The two shapes below break that, and no projection list fixes them: a
-            // trailing byte view satisfies `ldind`/`ldobj` (they take the typed byte-view read for
-            // such a pointer) but then hides the storage's real fields from `ldfld`, and omitting
-            // it does the reverse. Serving them properly needs a byref that carries a static type
-            // — a change to the pointer representation itself, not to this instruction — so refuse
-            // loudly here instead of handing back a pointer that is wrong for half its consumers.
-            //
-            // Nothing exercises either today: C# emits `unbox` only for a field read, so only ever
-            // for a genuine value type, and the single bare `unbox` in all of
-            // System.Private.CoreLib (`System.Index.Equals`, covered by UnboxFieldAccess.cs) is
-            // one of those.
-            let barePrimitive, state =
-                BoxedValue.barePrimitiveShape baseClassTypes boxed.ConcreteType boxed.Contents state
-
-            match barePrimitive with
-            | Some _ ->
-                failwith
-                    $"TODO: Unbox of a boxed bare primitive (%O{boxed.ConcreteType}) is unimplemented; `box` stores it inside a synthetic single-field struct, so a byref to the box addresses that wrapper rather than the value, and `HeapValue` cannot express the distinction"
-            | None ->
-
-            if boxed.ConcreteType <> targetConcreteTypeHandle then
-                // `unboxPermitted` also accepts same-primitive-element-type pairs, so the box's
-                // type and the token's can differ: a boxed enum unboxed as its underlying integer,
-                // or as another enum over the same integer.
-                failwith
-                    $"TODO: Unbox under the enum/underlying relaxation (box holds %O{boxed.ConcreteType}, token says %O{targetConcreteTypeHandle}) is unimplemented; the byref would have to present the box's storage as the token's type while leaving the box's own runtime type intact"
-
-            let ptr =
-                CliType.RuntimePointer (
-                    CliRuntimePointer.Managed (ManagedPointerSource.Byref (ByrefRoot.HeapValue addr, []))
-                )
-
+        match result with
+        | UnboxAddress.Faulted fault ->
+            IlMachineStateExecution.raiseOpcodeFault loggerFactory baseClassTypes fault thread state
+        | UnboxAddress.Address ptr ->
             state
-            |> IlMachineState.pushToEvalStack ptr thread
+            |> IlMachineState.pushToEvalStack (CliType.RuntimePointer (CliRuntimePointer.Managed ptr)) thread
             |> IlMachineState.advanceProgramCounter thread
             |> Tuple.withRight WhatWeDid.Executed

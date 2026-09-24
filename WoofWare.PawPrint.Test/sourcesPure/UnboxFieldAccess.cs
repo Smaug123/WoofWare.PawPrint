@@ -5,7 +5,8 @@
 // `unbox Point; ldfld Point::X`, because the field read needs an address. A *method* call on a
 // cast result does not reach it -- Roslyn spills through `unbox.any; stloc; ldloca` so that a
 // mutating method cannot write back into the box -- which is also why nothing here observes the
-// aliasing directly; see UnaryMetadataObjectOps.executeUnbox for why the pointer aliases anyway.
+// aliasing directly. UnsafeUnbox.cs does, since `Unsafe.Unbox<T>` is this same instruction with
+// the byref handed to the guest.
 //
 // The type test is shared with the value-type arm of `unbox.any` (CoreCLR routes both through
 // `CastHelpers.Unbox_Helper`), so the negatives below pin that `unbox` agrees with it.
