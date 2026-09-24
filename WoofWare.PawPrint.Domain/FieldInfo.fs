@@ -174,21 +174,29 @@ module FieldInfo =
         let mutable reader =
             BlobReader (NativePtr.add mr.MetadataPointer offset, rows * rowSize)
 
-        let mutable found = false
-        let mutable remaining = rows
+        let parentOfRow (row : int) : int =
+            reader.Offset <- row * rowSize
 
-        while not found && remaining > 0 do
-            let parent =
-                if parentWidth = 2 then
-                    int (reader.ReadUInt16 ())
-                else
-                    reader.ReadInt32 ()
+            if parentWidth = 2 then
+                int (reader.ReadUInt16 ())
+            else
+                reader.ReadInt32 ()
 
-            reader.Offset <- reader.Offset + blobWidth
-            found <- parent = target
-            remaining <- remaining - 1
+        // II.22.17 requires the table sorted by Parent, which is also what CoreCLR's lookup and
+        // System.Reflection.Metadata's own rely on, so this is a binary search for the least row
+        // whose Parent is not below `target`.
+        let mutable low = 0
+        let mutable high = rows
 
-        found
+        while low < high do
+            let middle = low + (high - low) / 2
+
+            if parentOfRow middle < target then
+                low <- middle + 1
+            else
+                high <- middle
+
+        low < rows && parentOfRow low = target
 
     /// Does this field carry `[System.ThreadStaticAttribute]`?
     ///

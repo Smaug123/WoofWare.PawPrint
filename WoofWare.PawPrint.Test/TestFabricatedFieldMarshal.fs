@@ -7,6 +7,8 @@ open System.Reflection.Metadata
 open System.Reflection.Metadata.Ecma335
 open System.Reflection.PortableExecutable
 open System.Runtime.InteropServices
+open FsCheck
+open FsCheck.FSharp
 open FsUnitTyped
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -319,3 +321,55 @@ public static class Driver
                 None
                 None
             ]
+
+    /// The rows that name the empty blob are found wherever they fall in the table, and no other
+    /// field is taken to have one.
+    [<Test>]
+    let ``FieldInfo finds exactly the fields with a FieldMarshal row naming the empty blob`` () : unit =
+        let property (hasRow : bool list) : unit =
+            let cases =
+                hasRow
+                |> List.mapi (fun index hasRow ->
+                    {
+                        Name = $"S%d{index}"
+                        Shape = FieldShape.Int32
+                        Blob = (if hasRow then Some [||] else None)
+                        Flag = hasRow
+                        Expected = None
+                    }
+                )
+
+            descriptorsOf cases
+            |> shouldEqual (
+                hasRow
+                |> List.map (fun hasRow -> if hasRow then Some FieldMarshalDescriptor.Empty else None)
+            )
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 300,
+            Prop.forAll (Arb.fromGen (Gen.nonEmptyListOf (Gen.elements [ true ; false ]))) property
+        )
+
+    /// With 2^15 or more fields, a FieldMarshal row's Parent column is four bytes wide.
+    [<Test>]
+    let ``FieldInfo finds a FieldMarshal row naming the empty blob in a table with wide Parent indices`` () : unit =
+        let fieldCount = 0x8000 + 5
+        let withRow = Set.ofList [ 0 ; 1 ; 0x4000 ; fieldCount - 2 ]
+
+        let cases =
+            List.init
+                fieldCount
+                (fun index ->
+                    {
+                        Name = $"S%d{index}"
+                        Shape = FieldShape.Int32
+                        Blob = (if withRow.Contains index then Some [||] else None)
+                        Flag = withRow.Contains index
+                        Expected = None
+                    }
+                )
+
+        descriptorsOf cases
+        |> List.indexed
+        |> List.filter (fun (_, descriptor) -> descriptor.IsSome)
+        |> shouldEqual [ for index in Set.toList withRow -> index, Some FieldMarshalDescriptor.Empty ]
