@@ -34,6 +34,9 @@ module TestFabricatedFieldMarshal =
         | Int32
         | Int32Array
         | CharArray
+        | BoolArray
+        /// An array of `ModifiedEnum`, an enum whose `value__` is `int32 modopt(IsVolatile)`.
+        | ModifiedEnumArray
         | String
 
     /// One struct, `Name`, with one field of `Shape`. `Blob` is the field's `FieldMarshal` row, or
@@ -100,6 +103,14 @@ module TestFabricatedFieldMarshal =
                 metadata.GetOrAddString "ValueType"
             )
 
+        // Emitted only when a case uses it, so that the images of every other test keep exactly one
+        // field per case.
+        let needsModifiedEnum =
+            cases |> List.exists (fun case -> case.Shape = FieldShape.ModifiedEnumArray)
+
+        // The row after `<Module>`, if it is there at all.
+        let modifiedEnumHandle = MetadataTokens.TypeDefinitionHandle 2
+
         let fieldSignature (shape : FieldShape) : BlobHandle =
             let blob = BlobBuilder ()
             let encoder = BlobEncoder(blob).Field().Type ()
@@ -108,6 +119,9 @@ module TestFabricatedFieldMarshal =
             | FieldShape.Int32 -> encoder.Int32 ()
             | FieldShape.Int32Array -> encoder.SZArray().Int32 ()
             | FieldShape.CharArray -> encoder.SZArray().Char ()
+            | FieldShape.BoolArray -> encoder.SZArray().Boolean ()
+            | FieldShape.ModifiedEnumArray ->
+                encoder.SZArray().Type ((TypeDefinitionHandle.op_Implicit modifiedEnumHandle : EntityHandle), true)
             | FieldShape.String -> encoder.String ()
 
             metadata.GetOrAddBlob blob
@@ -123,9 +137,60 @@ module TestFabricatedFieldMarshal =
         )
         |> ignore<TypeDefinitionHandle>
 
+        if needsModifiedEnum then
+            let enumRef =
+                metadata.AddTypeReference (
+                    (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                    metadata.GetOrAddString "System",
+                    metadata.GetOrAddString "Enum"
+                )
+
+            let isVolatileRef =
+                metadata.AddTypeReference (
+                    (AssemblyReferenceHandle.op_Implicit corelibRef : EntityHandle),
+                    metadata.GetOrAddString "System.Runtime.CompilerServices",
+                    metadata.GetOrAddString "IsVolatile"
+                )
+
+            let enumType =
+                metadata.AddTypeDefinition (
+                    TypeAttributes.Public ||| TypeAttributes.Sealed,
+                    Unchecked.defaultof<StringHandle>,
+                    metadata.GetOrAddString "ModifiedEnum",
+                    (TypeReferenceHandle.op_Implicit enumRef : EntityHandle),
+                    MetadataTokens.FieldDefinitionHandle 1,
+                    MetadataTokens.MethodDefinitionHandle 1
+                )
+
+            if enumType <> modifiedEnumHandle then
+                failwith $"ModifiedEnum landed at %O{enumType}, not the row its users were encoded against"
+
+            let valueSignature =
+                let blob = BlobBuilder ()
+                let encoder = BlobEncoder(blob).Field ()
+
+                encoder
+                    .CustomModifiers()
+                    .AddModifier ((TypeReferenceHandle.op_Implicit isVolatileRef : EntityHandle), true)
+                |> ignore<CustomModifiersEncoder>
+
+                encoder.Type().Int32 ()
+                metadata.GetOrAddBlob blob
+
+            metadata.AddFieldDefinition (
+                FieldAttributes.Public
+                ||| FieldAttributes.SpecialName
+                ||| FieldAttributes.RTSpecialName,
+                metadata.GetOrAddString "value__",
+                valueSignature
+            )
+            |> ignore<FieldDefinitionHandle>
+
+        let firstCaseField = if needsModifiedEnum then 2 else 1
+
         cases
         |> List.iteri (fun index case ->
-            let fieldRow = index + 1
+            let fieldRow = index + firstCaseField
 
             metadata.AddTypeDefinition (
                 TypeAttributes.Public
@@ -236,6 +301,32 @@ public static class Driver
                     (Some 20)
                 // Bytes after the element type are never read.
                 case "TrailingBytes" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x07uy ; 0xFFuy ; 0xFFuy |] (Some 16)
+            ]
+
+    [<Test>]
+    let ``a FixedArray element type is consulted only by an element type with more than one native form`` () : unit =
+        run
+            [
+                // An `int` element is four bytes whether the blob names NATIVE_TYPE_I1 (0x03), names
+                // nothing, or names a byte that is no native type at all.
+                case "IntElementAsI1" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x03uy |] (Some 16)
+                case "IntElementWithoutType" FieldShape.Int32Array [| 0x1Euy ; 0x04uy |] (Some 16)
+                case "IntElementAsNoNativeType" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x7Fuy |] (Some 16)
+                // A `bool` element is a four-byte BOOL unless the blob names a one-byte type.
+                case "BoolElementWithoutType" FieldShape.BoolArray [| 0x1Euy ; 0x04uy |] (Some 16)
+                case "BoolElementAsU1" FieldShape.BoolArray [| 0x1Euy ; 0x04uy ; 0x04uy |] (Some 4)
+                case "BoolElementAsI2" FieldShape.BoolArray [| 0x1Euy ; 0x04uy ; 0x05uy |] (Some 16)
+                // A `char` element in these ANSI structs is one byte unless the blob names a
+                // two-byte type.
+                case "CharElementWithoutType" FieldShape.CharArray [| 0x1Euy ; 0x04uy |] (Some 4)
+                case "CharElementAsNoNativeType" FieldShape.CharArray [| 0x1Euy ; 0x04uy ; 0x7Fuy |] (Some 4)
+            ]
+
+    [<Test>]
+    let ``a FixedArray of an enum whose value__ carries a custom modifier takes the enum's width`` () : unit =
+        run
+            [
+                case "ModifiedEnumElement" FieldShape.ModifiedEnumArray [| 0x1Euy ; 0x02uy ; 0x03uy |] (Some 8)
             ]
 
     [<Test>]

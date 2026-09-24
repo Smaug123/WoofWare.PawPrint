@@ -92,6 +92,7 @@
     <Compile Include="TestMarshalOffsetOf.fs" />
     <Compile Include="TestMarshalBoolCharFields.fs" />
     <Compile Include="TestMarshalIllegalFieldNesting.fs" />
+    <Compile Include="TestMarshalByValArrayLayout.fs" />
     <Compile Include="TestManagedHeap.fs" />
     <Compile Include="TestStaticStorage.fs" />
     <Compile Include="TestByrefContainer.fs" />
