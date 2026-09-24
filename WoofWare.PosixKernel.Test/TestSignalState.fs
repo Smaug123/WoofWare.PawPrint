@@ -801,6 +801,44 @@ module TestSignalState =
         SignalState.pending s' |> shouldEqual [ entry ]
 
     [<Test>]
+    let ``an ignored signal some thread could receive is discarded at generation`` () : unit =
+        for numbering in everyNumbering do
+            let entry =
+                {
+                    Signal = Signal.SIGCHLD
+                    Target = ValueNone
+                }
+
+            let s = initial numbering
+
+            SignalState.generate (liveThreads [ t0 ]) entry s
+            |> shouldEqual (SignalGeneration.ProcessContinues, s)
+
+            // Nothing is left for a later handler to claim.
+            let claimedLater =
+                SignalState.generate (liveThreads [ t0 ]) entry s
+                |> snd
+                |> SignalState.enable Signal.SIGCHLD
+                |> SignalState.setHandler (TestHandler "h")
+
+            SignalState.nextDelivery (liveThreads [ t0 ]) claimedLater
+            |> fst
+            |> shouldEqual None
+
+    [<Test>]
+    let ``an ignored signal every thread blocks is left pending at generation under Linux numbering`` () : unit =
+        let entry =
+            {
+                Signal = Signal.SIGCHLD
+                Target = ValueNone
+            }
+
+        let blocked = empty |> SignalState.block t0 Signal.SIGCHLD
+        let generation, s' = SignalState.generate (liveThreads [ t0 ]) entry blocked
+        generation |> shouldEqual SignalGeneration.ProcessContinues
+        SignalState.pending s' |> shouldEqual [ entry ]
+
+    [<Test>]
     let ``a default action still requires a receiver`` () : unit =
         // A pending terminate-default signal blocked by every live thread
         // stays pending, exactly as a handler delivery would.
@@ -1186,6 +1224,8 @@ module TestSignalState =
             }
 
     /// What generating `entry` (canonical) does at once, and the state after.
+    /// An unclaimed signal some thread could receive takes its default here:
+    /// terminate, stop, or be discarded if it is ignored.
     let private referenceGenerate
         (numbering : SignalNumbering)
         (live : TestTask list)
@@ -1200,6 +1240,7 @@ module TestSignalState =
         match unclaimedAndReceivable, Signal.defaultDispositionUnder numbering entry.Signal with
         | true, DefaultDisposition.Terminate -> SignalGeneration.ProcessTerminated entry.Signal, r
         | true, DefaultDisposition.Stop -> SignalGeneration.ProcessStopped entry.Signal, r
+        | true, DefaultDisposition.Ignore -> SignalGeneration.ProcessContinues, r
         | _, _ -> SignalGeneration.ProcessContinues, referenceEnqueue numbering entry r
 
     /// Index-based scan over an array with a removal mask: distinct algorithm
@@ -1495,6 +1536,7 @@ module TestSignalState =
         let mutable observedGeneratedTerminations = 0
         let mutable observedGeneratedStops = 0
         let mutable observedGeneratedQueued = 0
+        let mutable observedGeneratedIgnoredDiscards = 0
 
         let property (NonNegativeInt seed : NonNegativeInt) : unit =
             let rng = System.Random seed
@@ -1554,6 +1596,22 @@ module TestSignalState =
                         observedGeneratedTerminations <- observedGeneratedTerminations + 1
                     | SignalGeneration.ProcessStopped _, _ -> observedGeneratedStops <- observedGeneratedStops + 1
                     | SignalGeneration.ProcessContinues, _ -> observedGeneratedQueued <- observedGeneratedQueued + 1
+
+                    let canonicalSignal = Signal.canonicalUnder numbering e.Signal
+
+                    let receivableAndIgnored =
+                        not (Set.contains canonicalSignal r.Enabled)
+                        && Signal.defaultDispositionUnder numbering canonicalSignal = DefaultDisposition.Ignore
+                        && (referenceReceiver
+                                live
+                                r
+                                { e with
+                                    Signal = canonicalSignal
+                                })
+                            .IsSome
+
+                    if receivableAndIgnored then
+                        observedGeneratedIgnoredDiscards <- observedGeneratedIgnoredDiscards + 1
                 | Op.Enable signal
                 | Op.Disable signal
                 | Op.Block (_, signal)
@@ -1615,6 +1673,7 @@ module TestSignalState =
         observedGeneratedTerminations |> shouldBeGreaterThan 20
         observedGeneratedStops |> shouldBeGreaterThan 5
         observedGeneratedQueued |> shouldBeGreaterThan 20
+        observedGeneratedIgnoredDiscards |> shouldBeGreaterThan 20
 
         // The generation-versus-delivery halves of the ignore rule are
         // flavour-divergent, so their counters are too: only Darwin drops at
