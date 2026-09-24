@@ -298,7 +298,8 @@ public class LayoutClass { public int A; }
         if List.contains fieldType referenceFieldTypes then
             // Which native types a reference field admits depends on what it references, which
             // PawPrint does not model; but no reference type admits a native number, a
-            // `ByValTStr` except on a string, or a `ByValArray` except on an array.
+            // `ByValTStr` except on a string, or a `ByValArray` except on an array, whose
+            // elements PawPrint sizes.
             match marshalAs with
             | Some UnmanagedType.I1
             | Some UnmanagedType.U1
@@ -313,9 +314,8 @@ public class LayoutClass { public int A; }
             | Some UnmanagedType.SysInt
             | Some UnmanagedType.SysUInt
             | Some UnmanagedType.Error
-            | Some UnmanagedType.ByValTStr -> false
-            // The descriptor names no `ArraySubType`, which PawPrint does not default.
-            | Some UnmanagedType.ByValArray -> fieldType = "int[]"
+            | Some UnmanagedType.ByValTStr
+            | Some UnmanagedType.ByValArray -> false
             | _ -> true
         else
             // `MARSHAL_TYPE_CURRENCY`: an OLE `CY`, eight bytes. Named by string because naming

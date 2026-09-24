@@ -34,6 +34,7 @@ module TestFabricatedFieldMarshal =
         | Int32
         | Int32Array
         | CharArray
+        | BoolArray
         | String
 
     /// One struct, `Name`, with one field of `Shape`. `Blob` is the field's `FieldMarshal` row, or
@@ -108,6 +109,7 @@ module TestFabricatedFieldMarshal =
             | FieldShape.Int32 -> encoder.Int32 ()
             | FieldShape.Int32Array -> encoder.SZArray().Int32 ()
             | FieldShape.CharArray -> encoder.SZArray().Char ()
+            | FieldShape.BoolArray -> encoder.SZArray().Boolean ()
             | FieldShape.String -> encoder.String ()
 
             metadata.GetOrAddBlob blob
@@ -236,6 +238,25 @@ public static class Driver
                     (Some 20)
                 // Bytes after the element type are never read.
                 case "TrailingBytes" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x07uy ; 0xFFuy ; 0xFFuy |] (Some 16)
+            ]
+
+    [<Test>]
+    let ``a FixedArray element type is consulted only by an element type with more than one native form`` () : unit =
+        run
+            [
+                // An `int` element is four bytes whether the blob names NATIVE_TYPE_I1 (0x03), names
+                // nothing, or names a byte that is no native type at all.
+                case "IntElementAsI1" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x03uy |] (Some 16)
+                case "IntElementWithoutType" FieldShape.Int32Array [| 0x1Euy ; 0x04uy |] (Some 16)
+                case "IntElementAsNoNativeType" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x7Fuy |] (Some 16)
+                // A `bool` element is a four-byte BOOL unless the blob names a one-byte type.
+                case "BoolElementWithoutType" FieldShape.BoolArray [| 0x1Euy ; 0x04uy |] (Some 16)
+                case "BoolElementAsU1" FieldShape.BoolArray [| 0x1Euy ; 0x04uy ; 0x04uy |] (Some 4)
+                case "BoolElementAsI2" FieldShape.BoolArray [| 0x1Euy ; 0x04uy ; 0x05uy |] (Some 16)
+                // A `char` element in these ANSI structs is one byte unless the blob names a
+                // two-byte type.
+                case "CharElementWithoutType" FieldShape.CharArray [| 0x1Euy ; 0x04uy |] (Some 4)
+                case "CharElementAsNoNativeType" FieldShape.CharArray [| 0x1Euy ; 0x04uy ; 0x7Fuy |] (Some 4)
             ]
 
     [<Test>]

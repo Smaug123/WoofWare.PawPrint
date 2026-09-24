@@ -3461,68 +3461,6 @@ and CliValueType =
         | CliType.RuntimePointer _
         | CliType.ValueType _ -> None
 
-    /// Unmanaged size of a fixed-width scalar `UnmanagedType`. Used both as the per-element
-    /// size for `[MarshalAs(ByValArray)]` and as the basis for the compatibility check when a
-    /// scalar `UnmanagedType` is supplied directly via `[MarshalAs(...)]`. Only the
-    /// unambiguous fixed-width primitive cases are decoded; everything else is rejected so the
-    /// caller can decide whether a richer mapping is needed. `Error` (HRESULT) is included
-    /// because CoreCLR accepts it on `int`/`uint` fields and it has the same width as `I4`.
-    static member private MarshalSizeOfScalar (unmanagedType : UnmanagedType) : Result<SizeofResult, MarshalSizeError> =
-        match unmanagedType with
-        | UnmanagedType.I1
-        | UnmanagedType.U1 ->
-            Result.Ok
-                {
-                    Size = 1
-                    Alignment = 1
-                }
-        | UnmanagedType.I2
-        | UnmanagedType.U2 ->
-            Result.Ok
-                {
-                    Size = 2
-                    Alignment = 2
-                }
-        | UnmanagedType.I4
-        | UnmanagedType.U4
-        | UnmanagedType.R4
-        | UnmanagedType.Error ->
-            Result.Ok
-                {
-                    Size = 4
-                    Alignment = 4
-                }
-        | UnmanagedType.I8
-        | UnmanagedType.U8
-        | UnmanagedType.R8 ->
-            Result.Ok
-                {
-                    Size = 8
-                    Alignment = 8
-                }
-        | UnmanagedType.SysInt
-        | UnmanagedType.SysUInt ->
-            Result.Ok
-                {
-                    Size = NATIVE_INT_SIZE
-                    Alignment = NATIVE_INT_SIZE
-                }
-        | other ->
-            MarshalSizeError.NotImplemented
-                $"UnmanagedType %O{other} is not yet supported by marshalled-size computation"
-            |> Result.Error
-
-    /// True iff the given handle refers to a CLI array type. CoreCLR only accepts
-    /// `[MarshalAs(ByValArray)]` on array-typed fields, so we use this as the shape guard.
-    static member private IsArrayFieldType (handle : ConcreteTypeHandle) : bool =
-        match handle with
-        | ConcreteTypeHandle.OneDimArrayZero _
-        | ConcreteTypeHandle.Array _ -> true
-        | ConcreteTypeHandle.Concrete _
-        | ConcreteTypeHandle.Byref _
-        | ConcreteTypeHandle.Pointer _
-        | ConcreteTypeHandle.FunctionPointer _ -> false
-
     /// True iff `handle` names the given non-generic corelib type.
     ///
     /// A structural handle answers `false` because `AllConcreteTypes.lookup` has no row for one.
@@ -3659,6 +3597,32 @@ and CliValueType =
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ -> false
 
+    /// The primitive type of the enum `handle`'s single instance field, `value__` (ECMA-335
+    /// II.14.3), read from its signature. The caller has established that `handle` is an enum.
+    static member private EnumUnderlyingPrimitive
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (handle : ConcreteTypeHandle)
+        : PrimitiveType
+        =
+        match AllConcreteTypes.tryTypeInfo assemblies concreteTypes handle with
+        | None -> failwith $"CliValueType.EnumUnderlyingPrimitive: %O{handle} is not a registered concrete type"
+        | Some (_, typeDef) ->
+            let instanceFields =
+                typeDef.Fields
+                |> List.filter (fun field -> not (field.Attributes.HasFlag FieldAttributes.Static))
+
+            match instanceFields with
+            | [ field ] ->
+                match field.Signature with
+                | TypeDefn.PrimitiveType primitive -> primitive
+                | other ->
+                    failwith
+                        $"CliValueType.EnumUnderlyingPrimitive: the enum %O{handle}'s instance field has signature %O{other}, not a primitive type"
+            | fields ->
+                failwith
+                    $"CliValueType.EnumUnderlyingPrimitive: the enum %O{handle} has %d{fields.Length} instance fields rather than the single `value__` that ECMA-335 II.14.3 requires"
+
     /// If `contents` is a value of a CLR enum type, the declared type and contents of its single
     /// `value__` field, i.e. of the enum's underlying primitive; `None` for anything else.
     static member TryEnumUnderlying
@@ -3693,6 +3657,152 @@ and CliValueType =
         : bool
         =
         CliValueType.IsAutoLayoutHandle concreteTypes assemblies vt._Declared
+
+    /// The native size of one element of a `[MarshalAs(UnmanagedType.ByValArray)]` field whose
+    /// managed element type is `elementType`, on a CoreCLR built without `FEATURE_COMINTEROP`.
+    ///
+    /// The managed element type chooses the native form (`ArrayMarshalInfo::InitElementInfo`,
+    /// mlinfo.cpp, then `OleVariant::GetNativeMethodTableForVarType`, olevariant.cpp).
+    /// `arraySubType` is the field's `ArraySubType`, `None` where the blob leaves it at
+    /// `NATIVE_TYPE_DEFAULT`, and only a `bool`, `char`, `string`, `object`, `DateTime` or `Decimal`
+    /// element consults it: every primitive and enum element keeps its own width whatever it says.
+    /// `NotMarshalable` where CoreCLR refuses the element type, or the pairing.
+    static member private FixedArrayElementMarshalSize
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (charSet : CharSet)
+        (arraySubType : UnmanagedType option)
+        (elementType : ConcreteTypeHandle)
+        : Result<SizeofResult, MarshalSizeError>
+        =
+        let naturallyAligned (size : int) : SizeofResult =
+            {
+                Size = size
+                Alignment = size
+            }
+
+        let refuse (reason : string) : Result<SizeofResult, MarshalSizeError> =
+            MarshalSizeError.NotMarshalable reason |> Result.Error
+
+        let isCorelib (target : TypeInfo<GenericParamFromMetadata, TypeDefn>) : bool =
+            CliValueType.IsNominallyCorelibType concreteTypes assemblies corelib target elementType
+
+        let subTypeDescription : string =
+            match arraySubType with
+            | None -> "no ArraySubType"
+            | Some subType -> $"ArraySubType %O{subType}"
+
+        // Every primitive, `IntPtr` and `UIntPtr` included, is its own native element
+        // (`GetNativeMethodTableForVarType`'s default arm hands back the managed type).
+        let primitiveWidths : (TypeInfo<GenericParamFromMetadata, TypeDefn> * int) list =
+            [
+                corelib.SByte, 1
+                corelib.Byte, 1
+                corelib.Int16, 2
+                corelib.UInt16, 2
+                corelib.Int32, 4
+                corelib.UInt32, 4
+                corelib.Int64, 8
+                corelib.UInt64, 8
+                corelib.Single, 4
+                corelib.Double, 8
+                corelib.IntPtr, NATIVE_INT_SIZE
+                corelib.UIntPtr, NATIVE_INT_SIZE
+            ]
+
+        match elementType with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> refuse "an array whose elements are themselves arrays cannot be marshalled"
+        | ConcreteTypeHandle.Pointer _ ->
+            // CoreCLR takes a pointer element's native size from its pointee, so `int*[]` has
+            // four-byte elements.
+            MarshalSizeError.NotImplemented
+                "a ByValArray of pointers, whose native elements CoreCLR sizes as their pointees"
+            |> Result.Error
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            MarshalSizeError.NotImplemented "a ByValArray of function pointers"
+            |> Result.Error
+        | ConcreteTypeHandle.Byref _ ->
+            failwith $"CliValueType.FixedArrayElementMarshalSize: %O{elementType} is a byref, which no array can hold"
+        | ConcreteTypeHandle.Concrete _ ->
+
+        match primitiveWidths |> List.tryFind (fun (target, _) -> isCorelib target) with
+        | Some (_, width) -> Result.Ok (naturallyAligned width)
+        | None ->
+
+        if isCorelib corelib.Boolean then
+            // A C `bool` for a one-byte subtype, and a Win32 `BOOL` for anything else, even a
+            // subtype that makes no sense for a Boolean.
+            match arraySubType with
+            | Some UnmanagedType.I1
+            | Some UnmanagedType.U1 -> Result.Ok (naturallyAligned 1)
+            | _ -> Result.Ok (naturallyAligned 4)
+        elif isCorelib corelib.Char then
+            // A width subtype decides, and anything else falls back to the struct's `CharSet`.
+            match arraySubType with
+            | Some UnmanagedType.I1
+            | Some UnmanagedType.U1 -> Result.Ok (naturallyAligned 1)
+            | Some UnmanagedType.I2
+            | Some UnmanagedType.U2 -> Result.Ok (naturallyAligned 2)
+            | _ -> CliValueType.CharSetByteSize charSet |> Result.map naturallyAligned
+        elif isCorelib corelib.String then
+            // A pointer to a native string, in whichever encoding.
+            match arraySubType with
+            | None
+            | Some UnmanagedType.LPStr
+            | Some UnmanagedType.LPWStr
+            | Some UnmanagedType.LPTStr
+            | Some UnmanagedType.BStr -> Result.Ok (naturallyAligned NATIVE_INT_SIZE)
+            | Some _ -> refuse $"a ByValArray of System.String with %s{subTypeDescription}"
+        elif isCorelib corelib.Object then
+            match arraySubType with
+            | Some UnmanagedType.IUnknown -> Result.Ok (naturallyAligned NATIVE_INT_SIZE)
+            | _ -> refuse $"a ByValArray of System.Object with %s{subTypeDescription}"
+        elif isCorelib corelib.DateTime then
+            // An OLE Automation date, which is a double.
+            match arraySubType with
+            | None
+            | Some UnmanagedType.Struct -> Result.Ok (naturallyAligned 8)
+            | Some _ -> refuse $"a ByValArray of System.DateTime with %s{subTypeDescription}"
+        elif isCorelib corelib.Decimal then
+            // Native `DECIMAL`, whose widest member is a `ULONGLONG`.
+            match arraySubType with
+            | None
+            | Some UnmanagedType.Struct ->
+                Result.Ok
+                    {
+                        Size = 16
+                        Alignment = 8
+                    }
+            | Some _ -> refuse $"a ByValArray of System.Decimal with %s{subTypeDescription}"
+        elif CliValueType.IsEnumHandle concreteTypes assemblies corelib elementType then
+            match CliValueType.EnumUnderlyingPrimitive concreteTypes assemblies elementType with
+            | PrimitiveType.SByte
+            | PrimitiveType.Byte
+            | PrimitiveType.Int16
+            | PrimitiveType.UInt16
+            | PrimitiveType.Int32
+            | PrimitiveType.UInt32
+            | PrimitiveType.Int64
+            | PrimitiveType.UInt64 as underlying -> Result.Ok (naturallyAligned (PrimitiveType.sizeOf underlying))
+            | other ->
+                MarshalSizeError.NotImplemented $"a ByValArray of an enum whose underlying type is %O{other}"
+                |> Result.Error
+        else
+
+        match AllConcreteTypes.tryIsValueType corelib assemblies concreteTypes elementType with
+        | Some true ->
+            MarshalSizeError.NotImplemented
+                $"a ByValArray of the struct %s{AllConcreteTypes.describe assemblies concreteTypes elementType}, whose elements take their native layout from that struct"
+            |> Result.Error
+        | Some false ->
+            // Every other class, interface and delegate would be a COM interface pointer, which
+            // needs `FEATURE_COMINTEROP`.
+            refuse
+                $"a ByValArray of the reference type %s{AllConcreteTypes.describe assemblies concreteTypes elementType}"
+        | None ->
+            failwith $"CliValueType.FixedArrayElementMarshalSize: %O{elementType} is not a registered concrete type"
 
     /// The native types CoreCLR's `MarshalInfo` pairs a primitive field with, besides no
     /// `[MarshalAs]` at all (mlinfo.cpp:1073-1245); `None` when the field is not one it treats as a
@@ -3824,29 +3934,37 @@ and CliValueType =
                                 Alignment = bpc
                             }
                     )
-            | Some (FieldMarshalDescriptor.ByValArray _) when not (CliValueType.IsArrayFieldType fieldType) ->
+            | Some (FieldMarshalDescriptor.ByValArray (sizeConst, arraySubType)) ->
                 // Likewise, ByValArray requires an array-typed field; reject anything else.
-                MarshalSizeError.NotMarshalable
-                    "[MarshalAs(UnmanagedType.ByValArray)] is only valid on array-typed fields"
-                |> Result.Error
-            | Some (FieldMarshalDescriptor.ByValArray (sizeConst, Some elementType)) ->
-                if sizeConst <= 0 then
-                    MarshalSizeError.NotMarshalable $"ByValArray SizeConst=%d{sizeConst} is not positive"
+                match fieldType with
+                | ConcreteTypeHandle.OneDimArrayZero elementType
+                | ConcreteTypeHandle.Array (elementType, _) ->
+                    if sizeConst <= 0 then
+                        MarshalSizeError.NotMarshalable $"ByValArray SizeConst=%d{sizeConst} is not positive"
+                        |> Result.Error
+                    else
+                        CliValueType.FixedArrayElementMarshalSize
+                            concreteTypes
+                            assemblies
+                            corelib
+                            charSet
+                            arraySubType
+                            elementType
+                        |> Result.mapError (MarshalSizeError.prefix "ByValArray element type: ")
+                        |> Result.map (fun elementSize ->
+                            MarshalFieldNative.Leaf
+                                {
+                                    Size = sizeConst * elementSize.Size
+                                    Alignment = elementSize.Alignment
+                                }
+                        )
+                | ConcreteTypeHandle.Concrete _
+                | ConcreteTypeHandle.Byref _
+                | ConcreteTypeHandle.Pointer _
+                | ConcreteTypeHandle.FunctionPointer _ ->
+                    MarshalSizeError.NotMarshalable
+                        "[MarshalAs(UnmanagedType.ByValArray)] is only valid on array-typed fields"
                     |> Result.Error
-                else
-                    CliValueType.MarshalSizeOfScalar elementType
-                    |> Result.mapError (MarshalSizeError.prefix "ByValArray element type: ")
-                    |> Result.map (fun elementSize ->
-                        MarshalFieldNative.Leaf
-                            {
-                                Size = sizeConst * elementSize.Size
-                                Alignment = elementSize.Alignment
-                            }
-                    )
-            | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
-                MarshalSizeError.NotImplemented
-                    "ByValArray descriptor without an explicit element type is not supported"
-                |> Result.Error
             | Some (FieldMarshalDescriptor.Malformed nativeType) ->
                 MarshalSizeError.NotMarshalable
                     $"the field's marshalling descriptor (NATIVE_TYPE 0x%02x{nativeType}) is malformed, and CoreCLR refuses to marshal it"
