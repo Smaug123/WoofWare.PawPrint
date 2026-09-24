@@ -3236,8 +3236,8 @@ module TestImpureCases =
 
             let terminalState =
                 match pawPrintResult with
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"Guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
                 | RunOutcome.Aborted (_, _, fatal) ->
                     let m = fatal.Message |> Option.defaultValue "<no message>"
                     failwith $"Guest aborted (%O{fatal.Code}): %s{m}"
