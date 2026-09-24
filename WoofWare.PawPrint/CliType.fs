@@ -3598,7 +3598,8 @@ and CliValueType =
         | ConcreteTypeHandle.FunctionPointer _ -> false
 
     /// The primitive type of the enum `handle`'s single instance field, `value__` (ECMA-335
-    /// II.14.3), read from its signature. The caller has established that `handle` is an enum.
+    /// II.14.3), read from its signature past any custom modifiers. The caller has established that
+    /// `handle` is an enum.
     static member private EnumUnderlyingPrimitive
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
@@ -3614,7 +3615,7 @@ and CliValueType =
 
             match instanceFields with
             | [ field ] ->
-                match field.Signature with
+                match TypeDefn.stripCustomModifiers field.Signature with
                 | TypeDefn.PrimitiveType primitive -> primitive
                 | other ->
                     failwith
