@@ -93,10 +93,11 @@ module TestMarshalLayout =
     /// here would pass vacuously on a `NotMarshalable` result.
     let private declaredHandle : ConcreteTypeHandle = handleOf bct.TypedReference
 
-    let private cliFieldAt
+    let private cliFieldDescribedAt
         (name : string)
         (contents : CliType)
         (ty : ConcreteTypeHandle)
+        (descriptor : FieldMarshalDescriptor option)
         (offset : int option)
         : CliField
         =
@@ -106,8 +107,17 @@ module TestMarshalLayout =
             Contents = contents
             Offset = offset
             Type = ty
-            MarshallingDescriptor = None
+            MarshallingDescriptor = descriptor
         }
+
+    let private cliFieldAt
+        (name : string)
+        (contents : CliType)
+        (ty : ConcreteTypeHandle)
+        (offset : int option)
+        : CliField
+        =
+        cliFieldDescribedAt name contents ty None offset
 
     let private cliField (name : string) (contents : CliType) (ty : ConcreteTypeHandle) : CliField =
         cliFieldAt name contents ty None
@@ -167,23 +177,39 @@ module TestMarshalLayout =
     /// `_dateData` image, and the sizes coincide only by luck — the alignment claim is what places
     /// it. `Decimal` is the other: its 16 bytes are 8-byte aligned, so it is the one kind whose
     /// size and alignment differ. An enum is sized as its underlying integer: CoreCLR normalises an
-    /// enum field's element type to that integer before choosing a marshaller.
-    let private fieldKinds : (string * (int -> CliType) * ConcreteTypeHandle * int) list =
+    /// enum field's element type to that integer before choosing a marshaller. A `bool` is a 4-byte
+    /// BOOL unless `[MarshalAs(U1)]` makes it a 1-byte C bool, and a `char` in these structs'
+    /// Ansi `CharSet` is one byte unless `[MarshalAs(U2)]` keeps it a UTF-16 code unit.
+    let private fieldKinds : (string * (int -> CliType) * ConcreteTypeHandle * FieldMarshalDescriptor option * int) list =
         [
             "u8",
             (fun i -> CliType.Numeric (CliNumericType.UInt8 (UInt8Source.Verbatim (byte i)))),
             handleOf bct.Byte,
+            None,
             1
-            "i16", (fun i -> CliType.Numeric (CliNumericType.Int16 (int16 i))), handleOf bct.Int16, 2
-            "i32", (fun i -> CliType.Numeric (CliNumericType.Int32 i)), handleOf bct.Int32, 4
+            "i16", (fun i -> CliType.Numeric (CliNumericType.Int16 (int16 i))), handleOf bct.Int16, None, 2
+            "i32", (fun i -> CliType.Numeric (CliNumericType.Int32 i)), handleOf bct.Int32, None, 4
             "i64",
             (fun i -> CliType.Numeric (CliNumericType.Int64 (Int64Source.Verbatim (int64 i)))),
             handleOf bct.Int64,
+            None,
             8
-            "f32", (fun i -> CliType.Numeric (CliNumericType.Float32 (float32 i))), handleOf bct.Single, 4
-            "f64", (fun i -> CliType.Numeric (CliNumericType.Float64 (float i))), handleOf bct.Double, 8
-            "date", (fun _ -> dateTimeValue), dateTimeHandle, 8
-            "decimal", (fun i -> decimalValue (i <<< 16) (-i) (int64 i * 0x1_0000_0001L)), decimalHandle, 16
+            "f32", (fun i -> CliType.Numeric (CliNumericType.Float32 (float32 i))), handleOf bct.Single, None, 4
+            "f64", (fun i -> CliType.Numeric (CliNumericType.Float64 (float i))), handleOf bct.Double, None, 8
+            "date", (fun _ -> dateTimeValue), dateTimeHandle, None, 8
+            "decimal", (fun i -> decimalValue (i <<< 16) (-i) (int64 i * 0x1_0000_0001L)), decimalHandle, None, 16
+            "bool", (fun i -> CliType.ofBool (i % 2 = 0)), handleOf bct.Boolean, None, 4
+            "cbool",
+            (fun i -> CliType.ofBool (i % 2 = 1)),
+            handleOf bct.Boolean,
+            Some (FieldMarshalDescriptor.Other UnmanagedType.U1),
+            1
+            "char", (fun i -> CliType.ofChar (char (0x40 + i))), handleOf bct.Char, None, 1
+            "u2char",
+            (fun i -> CliType.ofChar (char (0x3040 + i))),
+            handleOf bct.Char,
+            Some (FieldMarshalDescriptor.Other UnmanagedType.U2),
+            2
             "enum8",
             (fun i ->
                 enumValue
@@ -192,14 +218,17 @@ module TestMarshalLayout =
                     (handleOf bct.Byte)
             ),
             enumHandles.[0],
+            None,
             1
             "enum16",
             (fun i -> enumValue 1 (CliType.Numeric (CliNumericType.Int16 (int16 i))) (handleOf bct.Int16)),
             enumHandles.[1],
+            None,
             2
             "enum32",
             (fun i -> enumValue 2 (CliType.Numeric (CliNumericType.Int32 i)) (handleOf bct.Int32)),
             enumHandles.[2],
+            None,
             4
             "enum64",
             (fun i ->
@@ -209,6 +238,7 @@ module TestMarshalLayout =
                     (handleOf bct.Int64)
             ),
             enumHandles.[3],
+            None,
             8
         ]
 
@@ -227,9 +257,9 @@ module TestMarshalLayout =
 
             return
                 kinds
-                |> List.mapi (fun i (kindName, make, ty, width) ->
+                |> List.mapi (fun i (kindName, make, ty, descriptor, width) ->
                     {
-                        Field = cliField $"f%d{i}_%s{kindName}" (make (i + 1)) ty
+                        Field = cliFieldDescribedAt $"f%d{i}_%s{kindName}" (make (i + 1)) ty descriptor None
                         NativeWidth = width
                     }
                 )
@@ -253,9 +283,10 @@ module TestMarshalLayout =
 
             return
                 List.zip kinds (List.ofArray slots)
-                |> List.mapi (fun i ((kindName, make, ty, width), slot) ->
+                |> List.mapi (fun i ((kindName, make, ty, descriptor, width), slot) ->
                     {
-                        Field = cliFieldAt $"f%d{i}_%s{kindName}" (make (i + 1)) ty (Some (slot * 16))
+                        Field =
+                            cliFieldDescribedAt $"f%d{i}_%s{kindName}" (make (i + 1)) ty descriptor (Some (slot * 16))
                         NativeWidth = width
                     }
                 )
@@ -522,10 +553,11 @@ module TestMarshalLayout =
     let ``Every swept field kind has a struct-marshal step, placed where the layout puts it`` () : unit =
         // The plan is the layout plus a per-field classification, so for every field the sweep can
         // draw it must agree with the layout on placement and pick CoreCLR's marshaller: an
-        // OADate conversion for `DateTime`, and a verbatim copy of the managed value for
-        // everything else — including `Decimal`, whose `ILDecimalMarshaler` is a copy marshaler
-        // with `System.Decimal` itself as its native type, and enums, which are copied as their
-        // underlying integer.
+        // OADate conversion for `DateTime`, a BOOL or C bool for a `bool` by its `[MarshalAs]`, an
+        // ANSI conversion for a `char` unless `[MarshalAs(U2)]` keeps it UTF-16, and a verbatim
+        // copy of the managed value for everything else — including a UTF-16 `char`, `Decimal`,
+        // whose `ILDecimalMarshaler` is a copy marshaler with `System.Decimal` itself as its
+        // native type, and enums, which are copied as their underlying integer.
         let property (fields : GeneratedField list) (layout : Layout) : unit =
             let vt = ofFields layout (fields |> List.map _.Field)
             let size, placements = layoutOf layout fields
@@ -537,13 +569,29 @@ module TestMarshalLayout =
                 plan.Steps |> List.map _.Placement |> shouldEqual placements
 
                 for generated, step in List.zip fields plan.Steps do
-                    let expectedKind, expectedValue =
-                        if generated.Field.Type = dateTimeHandle then
-                            StructMarshalFieldKind.OADate, generated.Field.Contents
-                        else
-                            StructMarshalFieldKind.CopyBytes, CliType.unwrapPrimitiveLikeDeep generated.Field.Contents
+                    let field = generated.Field
 
-                    step.Kind |> shouldEqual expectedKind
+                    let expectedKind, expectedValue =
+                        if field.Type = dateTimeHandle then
+                            Some StructMarshalFieldKind.OADate, field.Contents
+                        elif field.Type = handleOf bct.Boolean then
+                            match field.MarshallingDescriptor with
+                            | None -> Some StructMarshalFieldKind.WinBool, field.Contents
+                            | Some _ -> Some StructMarshalFieldKind.CBool, field.Contents
+                        elif field.Type = handleOf bct.Char then
+                            match field.MarshallingDescriptor with
+                            // The best-fit flags come from attributes on the declaring type and
+                            // its assembly, which are not what this sweep varies.
+                            | None -> None, field.Contents
+                            | Some _ -> Some StructMarshalFieldKind.CopyBytes, field.Contents
+                        else
+                            Some StructMarshalFieldKind.CopyBytes, CliType.unwrapPrimitiveLikeDeep field.Contents
+
+                    match expectedKind, step.Kind with
+                    | None, StructMarshalFieldKind.AnsiChar _ -> ()
+                    | None, other -> failwith $"expected an ANSI char step for %s{field.Name}, got %O{other}"
+                    | Some expected, actual -> actual |> shouldEqual expected
+
                     step.Value |> shouldEqual expectedValue
 
         Prop.forAll
@@ -565,8 +613,7 @@ module TestMarshalLayout =
                 ]
             |> CliType.ValueType
 
-        StructMarshalStub.isStructStrictlyNumericBlittable allCt loaded bct inner
-        |> shouldEqual false
+        StructMarshalStub.isBlittableStruct allCt loaded bct inner |> shouldEqual false
 
         let outer =
             ofFields
