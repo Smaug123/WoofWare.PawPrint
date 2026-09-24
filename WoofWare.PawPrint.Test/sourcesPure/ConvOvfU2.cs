@@ -8,9 +8,8 @@ public class ConvOvfU2
     //
     // Only *signed* sources belong in this file. Roslyn emits `conv.ovf.u2` for
     // `checked((ushort)x)` and `checked((char)x)` from int, long and double, but
-    // it emits `conv.ovf.u2.un` from uint or ulong, and that opcode is not
-    // implemented. An unsigned source added here would abort the interpreter and
-    // take every assertion below it down with it.
+    // it emits `conv.ovf.u2.un` from uint or ulong, which
+    // `ConvOvfWideAndUnsigned.cs` exercises.
     //
     // Note that `conv.ovf.u2` range-checks the source's full signed width rather
     // than truncating it, which is why `s_lowBitsFitLong` overflows despite its
