@@ -11,26 +11,32 @@ type MarshalSpecString =
         Length : int
     }
 
-/// What CoreCLR's `ParseNativeTypeInfo` (mlinfo.cpp) extracts from a MarshalSpec blob (ECMA-335
-/// II.23.4), as the `MetaDataImport::GetMarshalAs` FCall (managedmdimport.cpp) sees it: starting
-/// from a zeroed `NativeTypeParamInfo` rather than from that struct's constructor defaults, on a
-/// build without `FEATURE_COMINTEROP`. That is every non-Windows CoreCLR, and so the platform
-/// PawPrint emulates; on such a build the COM shapes (`NATIVE_TYPE_INTF`, `IUNKNOWN`, `IDISPATCH`,
-/// `SAFEARRAY`) carry nothing beyond their leading byte, and the FCall reports
-/// `SafeArraySubType = VT_EMPTY`, a null `SafeArrayUserDefinedSubType` and `IidParameterIndex = 0`.
+/// What CoreCLR's `ParseNativeTypeInfo` (mlinfo.cpp) writes into its `NativeTypeParamInfo` from a
+/// MarshalSpec blob (ECMA-335 II.23.4), on a build without `FEATURE_COMINTEROP`. That is every
+/// non-Windows CoreCLR, and so the platform PawPrint emulates; on such a build the COM shapes
+/// (`NATIVE_TYPE_INTF`, `IUNKNOWN`, `IDISPATCH`, `SAFEARRAY`) carry nothing beyond their leading byte.
+///
+/// A field is `None` where the parse left it unwritten, because CoreCLR's two callers start from
+/// different structs: the `MetaDataImport::GetMarshalAs` FCall (managedmdimport.cpp) zeroes it, so
+/// an unwritten field reads as 0, while `MarshalInfo` (mlinfo.cpp), which lays out fields and
+/// parameters for marshalling, keeps the constructor's defaults — `NATIVE_TYPE_DEFAULT` (0x50) for
+/// the element type and 1 for the additive.
 type NativeTypeParamInfo =
     {
         /// The blob's leading `NATIVE_TYPE_*` byte; `MarshalAsAttribute.Value`.
         NativeType : byte
-        /// `MarshalAsAttribute.ArraySubType`. Zero unless the blob is `NATIVE_TYPE_FIXEDARRAY` or
-        /// `NATIVE_TYPE_ARRAY` and carries an element type.
-        ArrayElementType : uint32
-        /// `MarshalAsAttribute.SizeParamIndex`. CoreCLR stores it in a `UINT16`, so a larger
-        /// compressed integer in the blob arrives here truncated to its low 16 bits.
-        CountParamIndex : uint16
+        /// `MarshalAsAttribute.ArraySubType`. Written only for a `NATIVE_TYPE_FIXEDARRAY` or
+        /// `NATIVE_TYPE_ARRAY` blob that carries a well-formed element type.
+        ArrayElementType : uint32 option
+        /// `MarshalAsAttribute.SizeParamIndex`, written only for a `NATIVE_TYPE_ARRAY` blob that
+        /// carries one. CoreCLR stores it in a `UINT16`, so a larger compressed integer in the blob
+        /// arrives here truncated to its low 16 bits.
+        CountParamIndex : uint16 option
         /// `MarshalAsAttribute.SizeConst`: the `NATIVE_TYPE_FIXEDSYSSTRING` / `NATIVE_TYPE_FIXEDARRAY`
-        /// size, or the `NATIVE_TYPE_ARRAY` additive.
-        Additive : uint32
+        /// size, which a successful parse of those shapes always writes, or the `NATIVE_TYPE_ARRAY`
+        /// additive. The latter is written as 0 whenever a size-param index is present, and then
+        /// overwritten if the additive itself follows.
+        Additive : uint32 option
         /// `NATIVE_TYPE_CUSTOMMARSHALER`'s marshaler type name, and `None` for every other shape.
         MarshalerTypeName : MarshalSpecString option
         /// `NATIVE_TYPE_CUSTOMMARSHALER`'s cookie, and `None` for every other shape.
@@ -50,6 +56,12 @@ module NativeTypeParamInfo =
 
     [<Literal>]
     let NativeTypeCustomMarshaler = 0x2Cuy
+
+    /// `NATIVE_TYPE_MAX`, which CoreCLR's `MarshalInfo` names `NATIVE_TYPE_DEFAULT` and treats as
+    /// "no `[MarshalAs]`": it is the native type and element type `MarshalInfo` starts from, so a
+    /// blob that spells it out is indistinguishable there from one that is absent.
+    [<Literal>]
+    let NativeTypeDefault = 0x50uy
 
     /// `CheckForCompressedData` (mlinfo.cpp): S_FALSE, S_OK or a failure HRESULT.
     [<RequireQualifiedAccess>]
@@ -121,31 +133,32 @@ module NativeTypeParamInfo =
                         Length = int length
                     }
 
-    let private zero (nativeType : byte) : NativeTypeParamInfo =
+    let private unwritten (nativeType : byte) : NativeTypeParamInfo =
         {
             NativeType = nativeType
-            ArrayElementType = 0u
-            CountParamIndex = 0us
-            Additive = 0u
+            ArrayElementType = None
+            CountParamIndex = None
+            Additive = None
             MarshalerTypeName = None
             Cookie = None
         }
 
     /// CoreCLR's `ParseNativeTypeInfo` over one MarshalSpec blob, or `None` where it returns
     /// `FALSE` — which the managed `MetadataImport.GetMarshalAs` turns into a
-    /// `BadImageFormatException`.
+    /// `BadImageFormatException`, and which makes `MarshalInfo` refuse to marshal the field or
+    /// parameter at all.
     ///
     /// The quirks are CoreCLR's, reproduced deliberately: an empty blob fails; trailing bytes after
     /// the last item a shape reads are ignored; a `NATIVE_TYPE_FIXEDARRAY` whose element type is
-    /// malformed *succeeds*, reporting element type 0; and a `NATIVE_TYPE_CUSTOMMARSHALER` fails
-    /// unless all four of its strings are present and in bounds.
+    /// malformed *succeeds*, leaving the element type unwritten; and a `NATIVE_TYPE_CUSTOMMARSHALER`
+    /// fails unless all four of its strings are present and in bounds.
     let parse (blob : ImmutableArray<byte>) : NativeTypeParamInfo option =
         if blob.Length = 0 then
             None
         else
 
         let nativeType = blob.[0]
-        let info = zero nativeType
+        let info = unwritten nativeType
 
         match nativeType with
         | NativeTypeFixedArray ->
@@ -155,7 +168,7 @@ module NativeTypeParamInfo =
             | CompressedData.Present width ->
                 let info =
                     { info with
-                        Additive = uncompress blob 1 width
+                        Additive = Some (uncompress blob 1 width)
                     }
 
                 let offset = 1 + width
@@ -167,7 +180,7 @@ module NativeTypeParamInfo =
                 | CompressedData.Present width ->
                     Some
                         { info with
-                            ArrayElementType = uncompress blob offset width
+                            ArrayElementType = Some (uncompress blob offset width)
                         }
         | NativeTypeFixedSysString ->
             match checkForCompressedData blob 1 with
@@ -176,7 +189,7 @@ module NativeTypeParamInfo =
             | CompressedData.Present width ->
                 Some
                     { info with
-                        Additive = uncompress blob 1 width
+                        Additive = Some (uncompress blob 1 width)
                     }
         | NativeTypeArray ->
             // Each item is optional, but only as a suffix: an absent item leaves the cursor where
@@ -197,15 +210,16 @@ module NativeTypeParamInfo =
             | None -> None
             | Some values ->
                 let item (index : int) : uint32 option = List.tryItem index values
+                let countParamIndex = item 1
 
                 Some
                     { info with
-                        ArrayElementType = item 0 |> Option.defaultValue 0u
-                        CountParamIndex =
-                            item 1
-                            |> Option.map (fun index -> uint16 (index &&& 0xFFFFu))
-                            |> Option.defaultValue 0us
-                        Additive = item 2 |> Option.defaultValue 0u
+                        ArrayElementType = item 0
+                        CountParamIndex = countParamIndex |> Option.map (fun index -> uint16 (index &&& 0xFFFFu))
+                        Additive =
+                            match countParamIndex with
+                            | None -> None
+                            | Some _ -> item 2 |> Option.defaultValue 0u |> Some
                     }
         | NativeTypeCustomMarshaler ->
             // The typelib GUID and the native type name are skipped; the marshaler type name and
