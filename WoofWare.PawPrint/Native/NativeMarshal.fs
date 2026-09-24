@@ -337,16 +337,17 @@ module NativeMarshal =
             with
             // The two error cases are kept apart because they call for different eventual
             // handling, and flattening them to a string would destroy the distinction the sibling
-            // `MarshalNative_SizeOfHelper` arm above relies on. Both still fail the host today:
-            // CoreCLR reports an unmarshalable *field* by throwing from stub synthesis
-            // (`CreateStructMarshalILStub`), and which exception reaches the guest is not
-            // something we should guess — `Marshal.StructureToPtr`'s own `ArgumentException` is
-            // reachable only via the no-layout arm returning FALSE, which is a different
-            // rejection. Establishing what CoreCLR actually throws here wants a differential
-            // test, and that is its own change; until then, say which kind of refusal this is.
+            // `MarshalNative_SizeOfHelper` arm above relies on. Both still fail the host today.
+            //
+            // `NotMarshalable` is an illegal field, of this type or of a value type nested in it at
+            // any depth. CoreCLR's stub synthesis (`CreateStructMarshalILStub`) throws from this
+            // QCall for it, with a `TypeLoadException` naming the first such field depth-first and
+            // the type that declares it: `IDS_EE_BADMARSHALFIELD_ERROR_MSG` (mscorrc.rc:201), whose
+            // last part is the `MarshalInfo` resource for the refused pairing. PawPrint's reasons
+            // are not those resources, so it does not raise that exception yet.
             | Result.Error (MarshalSizeError.NotMarshalable reason) ->
                 failwith
-                    $"TODO %s{operation}: type %O{typeHandle} has layout, but CoreCLR would reject it as unmarshalable too: %s{reason}. PawPrint does not yet model the guest-visible exception CoreCLR raises for this"
+                    $"TODO %s{operation}: type %O{typeHandle} has layout, but CoreCLR refuses to build its struct stub: %s{reason}. PawPrint does not yet raise the TypeLoadException CoreCLR does for this"
             | Result.Error (MarshalSizeError.NotImplemented reason) ->
                 failwith
                     $"TODO %s{operation}: type %O{typeHandle} has layout but is not blittable, and PawPrint has not implemented its marshalling: %s{reason}"

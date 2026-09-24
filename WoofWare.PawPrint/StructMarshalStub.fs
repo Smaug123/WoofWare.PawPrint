@@ -81,11 +81,14 @@ type StructMarshalPlan =
 module StructMarshalStub =
 
     /// Whether a field's managed byte image is also its native image, i.e. whether CoreCLR's
-    /// `IsFieldBlittable` would accept it. `charSet` is the declaring type's and `descriptor` the
-    /// field's own `[MarshalAs]`, which between them decide whether a `char` field is a UTF-16
-    /// code unit (blittable) or an ANSI byte (not). The descriptor is consulted for `bool` and
-    /// `char` fields only: a `[MarshalAs]` that CoreCLR would refuse on a numeric or struct field
-    /// is not caught here.
+    /// `IsFieldBlittable` (fieldmarshaler.cpp:202) would accept it. `charSet` is the declaring
+    /// type's, `descriptor` the field's own `[MarshalAs]`, and `fieldType` its declared type, which
+    /// tells a function pointer from the native integer that holds one.
+    ///
+    /// A field PawPrint's native layout calls illegal (`MarshalFieldNative.Illegal`) is never
+    /// blittable: CoreCLR accepts a primitive under exactly the native types it pairs the
+    /// primitive with (`CliValueType.PrimitiveFieldNativeTypes`), a value type under `Struct`
+    /// alone, and a type with no layout of its own not at all.
     ///
     /// Shared by the blittable arm of `MarshalNative_TryGetStructMarshalStub` (which needs the
     /// bare yes/no) and by `tryComputePlan` (which needs it per field). One recursion, so the two
@@ -97,6 +100,7 @@ module StructMarshalStub =
         (corelib : BaseClassTypes<DumpedAssembly>)
         (charSet : System.Runtime.InteropServices.CharSet)
         (descriptor : FieldMarshalDescriptor option)
+        (fieldType : ConcreteTypeHandle)
         (t : CliType)
         : bool
         =
@@ -104,13 +108,22 @@ module StructMarshalStub =
         // (classlayoutinfo.cpp:445), under the *containing* type's `CharSet`: an enum over `char`
         // is a `char` field, not a struct with a `CharSet` of its own.
         match CliValueType.TryEnumUnderlying concreteTypes assemblies corelib t with
-        | Some (_, underlying) -> isBlittableField concreteTypes assemblies corelib charSet descriptor underlying
+        | Some (underlyingType, underlying) ->
+            isBlittableField concreteTypes assemblies corelib charSet descriptor underlyingType underlying
         | None ->
 
         match t with
         | CliType.Bool _
         | CliType.Char _ ->
             CliValueType.TryBoolCharFieldMarshal charSet descriptor t = Some (Result.Ok BoolCharMarshal.Utf16Char)
+        // CoreCLR blits a pointer field. A PawPrint pointer cell carries provenance with no byte
+        // rendering, so it is never called blittable here.
+        | CliType.RuntimePointer _ -> false
+        | CliType.ObjectRef _ -> false
+        | CliType.Numeric _
+        | CliType.ValueType _ ->
+
+        match CliValueType.PrimitiveFieldNativeTypes fieldType t with
         // `NativeInt` cells carry provenance under PawPrint (e.g. a pointer from
         // `Marshal.AllocHGlobal`, or `TypeHandlePtr` from `typeof(T).TypeHandle.Value`). CoreCLR
         // memmoves the integer-width bits regardless; PawPrint cannot, because
@@ -121,11 +134,31 @@ module StructMarshalStub =
         // (`readSource`) and writes each field as a typed value, so a pointer cell survives into
         // the destination intact. Reading the destination back through a byte view
         // (`Marshal.ReadIntPtr`) is refused by `executeLdind` (#801).
-        | CliType.Numeric (CliNumericType.NativeInt _) -> true
-        | CliType.Numeric _ -> true
-        | CliType.ObjectRef _
-        | CliType.RuntimePointer _ -> false
+        | Some accepted ->
+            // `IsFieldBlittable` reads only a blob's first byte, and an empty blob as
+            // `NATIVE_TYPE_DEFAULT`. A malformed blob is led by `ByValTStr`, `ByValArray` or
+            // `CustomMarshaler`, none of which a primitive accepts.
+            match descriptor with
+            | None
+            | Some FieldMarshalDescriptor.Empty -> true
+            | Some (FieldMarshalDescriptor.Other unmanagedType) -> List.contains unmanagedType accepted
+            | Some (FieldMarshalDescriptor.ByValTStr _)
+            | Some (FieldMarshalDescriptor.ByValArray _)
+            | Some (FieldMarshalDescriptor.Malformed _) -> false
+        | None ->
+
+        match t with
         | CliType.ValueType vt ->
+            let isDefaultOrStruct =
+                match descriptor with
+                | None
+                | Some FieldMarshalDescriptor.Empty
+                | Some (FieldMarshalDescriptor.Other System.Runtime.InteropServices.UnmanagedType.Struct) -> true
+                | Some (FieldMarshalDescriptor.Other _)
+                | Some (FieldMarshalDescriptor.ByValTStr _)
+                | Some (FieldMarshalDescriptor.ByValArray _)
+                | Some (FieldMarshalDescriptor.Malformed _) -> false
+
             // DateTime is structurally a single `ulong _dateData` and would otherwise qualify as
             // strictly numeric, but CoreCLR's `MarshalInfo` (mlinfo.cpp:1747) special-cases
             // DateTime fields as `MARSHAL_TYPE_DATE`: 8 bytes of OADate, NOT the managed
@@ -142,7 +175,11 @@ module StructMarshalStub =
             // offset the native layout walk gives it.
             let isDecimal = CliValueType.IsHostKnownDecimal concreteTypes assemblies corelib vt
 
-            if isDateTime || isDecimal then
+            // `MethodTable::IsBlittable` requires layout, which an auto-layout type lacks.
+            let hasNoLayout =
+                CliValueType.IsAutoLayoutHandle concreteTypes assemblies vt.Declared
+
+            if not isDefaultOrStruct || isDateTime || isDecimal || hasNoLayout then
                 false
             else
                 match vt._Storage with
@@ -151,6 +188,13 @@ module StructMarshalStub =
                 // CoreCLR marshal size diverges from the byte image.
                 | CliValueTypeStorage.RawBytes _ -> false
                 | CliValueTypeStorage.Fields storage -> areFieldsBlittable concreteTypes assemblies corelib vt storage
+        | CliType.Numeric _ ->
+            failwith
+                $"unreachable: CliValueType.PrimitiveFieldNativeTypes classifies every numeric field, but %O{t} fell through"
+        | CliType.Bool _
+        | CliType.Char _
+        | CliType.RuntimePointer _
+        | CliType.ObjectRef _ -> failwith $"unreachable: %O{t} was classified above"
 
     /// Whether every field of `vt` is blittable, each judged under `vt`'s own `CharSet`: CoreCLR
     /// computes a nested struct's blittability once, for its own `MethodTable`.
@@ -164,7 +208,14 @@ module StructMarshalStub =
         =
         storage.Fields
         |> List.forall (fun field ->
-            isBlittableField concreteTypes assemblies corelib vt.CharSet field.MarshallingDescriptor field.Contents
+            isBlittableField
+                concreteTypes
+                assemblies
+                corelib
+                vt.CharSet
+                field.MarshallingDescriptor
+                field.Type
+                field.Contents
         )
 
     /// Whether the whole struct is blittable, i.e. whether CoreCLR's `th.IsBlittable()` arm of
@@ -251,9 +302,13 @@ module StructMarshalStub =
 
     /// Derive the write plan for `value`'s unmanaged image, or say why we can't.
     ///
-    /// The offsets come from `CliValueType.TryComputeMarshalLayout`, i.e. from the same walk that
+    /// The offsets come from `CliValueType.TryComputeNativeLayout`, i.e. from the same walk that
     /// answers `Marshal.SizeOf`, so a field cannot land in one place for sizing and another for
     /// writing. Only the *classification* is added here.
+    ///
+    /// `NotMarshalable` means CoreCLR fails to build the type's struct stub, because a field of the
+    /// type, or of a value type nested in it at any depth, is illegal (`MarshalFieldNative.Illegal`).
+    /// The reason names the first such field depth-first, which is the one CoreCLR names.
     let tryComputePlan
         (concreteTypes : AllConcreteTypes)
         (assemblies : LoadedAssemblies)
@@ -265,22 +320,34 @@ module StructMarshalStub =
         | CliType.ValueType vt ->
             match vt._Storage with
             | CliValueTypeStorage.RawBytes _ ->
-                // `TryComputeMarshalLayout` reports no placements for raw-byte storage because
+                // `TryComputeNativeLayout` reports no placements for raw-byte storage because
                 // there are no declared fields — which is not the same as "nothing to write".
                 MarshalSizeError.NotImplemented
                     "the type has raw-byte storage rather than declared fields, so there are no per-field placements to marshal"
                 |> Result.Error
             | CliValueTypeStorage.Fields _ ->
 
-            match CliValueType.TryComputeMarshalLayout concreteTypes assemblies corelib vt with
+            match CliValueType.TryComputeNativeLayout concreteTypes assemblies corelib vt with
             | Result.Error err -> Result.Error err
-            | Result.Ok (nativeSize, placements) ->
+            | Result.Ok layout ->
+
+            // Building the stub builds each nested value type's stub as it reaches that field
+            // (ilmarshalers.cpp:1111), so an illegal field at any depth fails it, whatever else the
+            // type holds.
+            match layout.FirstIllegalFieldAnywhere with
+            | Some (path, reason) ->
+                (path, MarshalSizeError.NotMarshalable reason)
+                ||> List.foldBack MarshalSizeError.prefixField
+                |> Result.Error
+            | None ->
+
+            let nativeSize, placements = layout.Size, layout.Placements
 
             // A `CopyBytes` step writes the managed value itself at the native offset, which is
             // sound only when the managed image of that value *is* its native image. Definitional
             // for a primitive. For a composite it is a claim about the interior, and the managed
             // layout walk (`CliValueType.SizeOf`) is not the marshal layout walk
-            // (`TryComputeMarshalLayout`) — CoreCLR repositions some fields between the two
+            // (`TryComputeNativeLayout`) — CoreCLR repositions some fields between the two
             // forms. So accept composites only where the interior is trivial: a primitive-like
             // wrapper (an enum, `IntPtr`, …) is a single field at offset 0, whose image is that
             // field's image under either walk. Anything else needs a recursive plan.
@@ -295,14 +362,14 @@ module StructMarshalStub =
             //
             // Only a field with no `[MarshalAs]` descriptor reaches this (see below), so the
             // descriptor it is judged under is `None`.
-            let isBlittableUndescribed (contents : CliType) : bool =
-                isBlittableField concreteTypes assemblies corelib vt.CharSet None contents
+            let isBlittableUndescribed (fieldType : ConcreteTypeHandle) (contents : CliType) : bool =
+                isBlittableField concreteTypes assemblies corelib vt.CharSet None fieldType contents
 
-            let isCopyableVerbatim (contents : CliType) : bool =
+            let isCopyableVerbatim (fieldType : ConcreteTypeHandle) (contents : CliType) : bool =
                 match contents with
                 | CliType.ValueType vt when CliValueType.IsHostKnownDecimal concreteTypes assemblies corelib vt -> true
-                | CliType.ValueType vt -> vt.PrimitiveLikeKind.IsSome && isBlittableUndescribed contents
-                | _ -> isBlittableUndescribed contents
+                | CliType.ValueType vt -> vt.PrimitiveLikeKind.IsSome && isBlittableUndescribed fieldType contents
+                | _ -> isBlittableUndescribed fieldType contents
 
             let bestFit = lazy (bestFitFlags concreteTypes assemblies vt._Declared)
 
@@ -356,7 +423,7 @@ module StructMarshalStub =
                     // Necessary condition on top of the shape restriction above: a field
                     // whose native width differs from its managed one cannot be written by
                     // copying the managed value, whatever its interior looks like.
-                    else if isCopyableVerbatim contents then
+                    else if isCopyableVerbatim placement.Field.Type contents then
                         let managedSize = CliType.SizeOf contents
 
                         if managedSize.Size <> placement.NativeSize.Size then
@@ -392,7 +459,7 @@ module StructMarshalStub =
                                 Kind = StructMarshalFieldKind.OADate
                                 Value = contents
                             }
-                    | _ when isBlittableUndescribed contents ->
+                    | _ when isBlittableUndescribed placement.Field.Type contents ->
                         MarshalSizeError.NotImplemented
                             $"field %s{placement.Field.Name} is a nested composite whose fields are individually blittable, but writing it verbatim would assume its managed and unmanaged interiors coincide; that needs a recursive marshal plan"
                         |> Result.Error

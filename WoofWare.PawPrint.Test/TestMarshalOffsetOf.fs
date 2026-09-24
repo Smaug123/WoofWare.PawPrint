@@ -21,7 +21,7 @@ module internal MarshalOffsetOfCorpus =
 
     let corpusNamespace : string = "PawPrint.MarshalOffsetOf"
 
-    /// Field types, as C# spells them. Every one is a shape `CliValueType.TryComputeMarshalLayout`
+    /// Field types, as C# spells them. Every one is a shape `CliValueType.TryComputeNativeLayout`
     /// sizes, so a disagreement is a wrong answer rather than a refusal.
     let fieldKinds : string list =
         [
@@ -68,6 +68,16 @@ module internal MarshalOffsetOfCorpus =
             "NestCharAuto"
             "NestCharU1"
             "NestCharU2"
+            // Each of these declares a field CoreCLR refuses, so cannot itself be marshalled, but
+            // is laid out as a field all the same, the refused field taking one byte.
+            "NestVariantBool"
+            "NestIllegalWide"
+            "NestHoldsAuto"
+            "NestR4Int"
+            "NestI8Date"
+            "NestPackedIllegal"
+            // And a struct holding one of those, which can be marshalled.
+            "NestHoldsIllegal"
         ]
 
     let private fixedCorpus : string =
@@ -101,6 +111,14 @@ public struct NestCharAuto { public byte T; public char K; }
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
 public struct NestCharU1 { public byte T; [MarshalAs(UnmanagedType.U1)] public char K; }
 public struct NestCharU2 { public byte T; [MarshalAs(UnmanagedType.U2)] public char K; }
+public struct NestVariantBool { public byte T; [MarshalAs(UnmanagedType.VariantBool)] public bool K; }
+public struct NestIllegalWide { public long L; [MarshalAs(UnmanagedType.VariantBool)] public bool K; public byte T; }
+public struct NestHoldsAuto { public int A; public NestAuto K; }
+public struct NestR4Int { public short T; [MarshalAs(UnmanagedType.R4)] public int K; }
+public struct NestI8Date { [MarshalAs(UnmanagedType.I8)] public DateTime K; public int T; }
+[StructLayout(LayoutKind.Sequential, Pack = 2)]
+public struct NestPackedIllegal { public long L; [MarshalAs(UnmanagedType.VariantBool)] public bool K; }
+public struct NestHoldsIllegal { public byte T; public NestIllegalWide K; }
 """
 
     [<RequireQualifiedAccess>]
@@ -201,6 +219,11 @@ public struct NestCharU2 { public byte T; [MarshalAs(UnmanagedType.U2)] public c
             ShapeLayout.Sequential (0, 0),
             Some CharSet.Unicode,
             [ "byte", None ; "bool", None ; "char", None ; "byte", None ]
+            // A struct CoreCLR cannot marshal, because a field of its own is refused, is laid out
+            // as a field nonetheless.
+            ShapeLayout.Sequential (0, 0), None, [ "byte", None ; "NestIllegalWide", None ; "byte", None ]
+            // The seeded sample happens not to draw a `float` under explicit layout.
+            ShapeLayout.Explicit 0, None, [ "float", Some 3 ; "NestPackedIllegal", Some 1 ]
         ]
 
     /// A fixed, seeded sample rather than a fresh FsCheck run: the whole corpus has to be compiled
@@ -413,6 +436,12 @@ module TestMarshalOffsetOf =
         |> List.map _.CharSet
         |> Set.ofList
         |> shouldEqual (Set.ofList [ None ; Some CharSet.Ansi ; Some CharSet.Unicode ; Some CharSet.Auto ])
+
+        // `NestIllegalWide` is `{ long; illegal; byte }`: 16 bytes, 8-aligned, the refused field
+        // one byte at offset 8.
+        [ 0 ; 1 ; 2 ]
+        |> List.map (hostAnswer shapes.[6])
+        |> shouldEqual [ HostAnswer.Offset 0 ; HostAnswer.Offset 8 ; HostAnswer.Offset 24 ]
 
         match hostAnswer shapes.[1] 0 with
         | HostAnswer.CannotMarshal _ -> ()
