@@ -1,4 +1,3 @@
-#nowarn "9"
 namespace WoofWare.PawPrint.Test
 
 open System
@@ -215,89 +214,6 @@ public static class Driver
 }
 """
 
-    [<Test>]
-    let ``PROBE`` () : unit =
-        let cases =
-            [
-                { case "RowWithoutFlag" FieldShape.Int32 [| 0x17uy |] None with
-                    Flag = false
-                }
-                case "RowWithFlag" FieldShape.Int32 [| 0x17uy |] None
-                { case "RowWithoutFlagParsed" FieldShape.Int32Array [| 0x1Euy ; 0x03uy ; 0x07uy |] (Some 12) with
-                    Flag = false
-                }
-                case "EmptyBlob" FieldShape.Int32 [||] None
-                { case "FlagNoRow" FieldShape.Int32 [||] None with
-                    Blob = None
-                }
-                case "FixedArrayWithoutSize" FieldShape.Int32Array [| 0x1Euy |] None
-                case "ElemDefault" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x50uy |] None
-                case "ElemI1" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0x01uy |] None
-                case "ElemCorrupt" FieldShape.Int32Array [| 0x1Euy ; 0x04uy ; 0xE0uy |] None
-            ]
-
-        let image = fabricate cases
-        let alc = System.Runtime.Loader.AssemblyLoadContext ("probe", true)
-        let asm = alc.LoadFromStream (new System.IO.MemoryStream (image))
-
-        for c in cases do
-            let t = asm.GetType c.Name
-
-            let r =
-                try
-                    string (System.Runtime.InteropServices.Marshal.SizeOf t)
-                with e ->
-                    e.GetType().Name + ": " + e.Message
-
-            let f = t.GetField "Value"
-
-            let ma =
-                try
-                    (match f.GetCustomAttributes (typeof<System.Runtime.InteropServices.MarshalAsAttribute>, false) with
-                     | [| a |] ->
-                         let a = a :?> System.Runtime.InteropServices.MarshalAsAttribute in
-                         $"{int a.Value} sub={int a.ArraySubType} sc={a.SizeConst}"
-                     | _ -> "none")
-                with e ->
-                    e.GetType().Name
-
-            Console.Error.WriteLine $"PROBE {c.Name}: {r} attrs={f.Attributes} marshalAs={ma}"
-
-    [<Test>]
-    let ``PROBE2`` () : unit =
-        let all =
-            [
-                { case "RowWithoutFlag" FieldShape.Int32 [| 0x17uy |] None with
-                    Flag = false
-                }
-                { case "RowWithoutFlagParsed" FieldShape.Int32Array [| 0x1Euy ; 0x03uy ; 0x07uy |] (Some 12) with
-                    Flag = false
-                }
-            ]
-
-        let image = fabricate all
-        let pe = new PEReader (ImmutableArray.CreateRange image)
-        let mr = pe.GetMetadataReader ()
-        Console.Error.WriteLine $"PROBE2 fieldmarshal rows {mr.GetTableRowCount TableIndex.FieldMarshal}"
-
-        for fh in mr.FieldDefinitions do
-            let fd = mr.GetFieldDefinition fh
-            let b = fd.GetMarshallingDescriptor ()
-
-            Console.Error.WriteLine
-                $"PROBE2 field {mr.GetString fd.Name} {fd.Attributes} nil={b.IsNil} bytes=%A{if b.IsNil then [||] else mr.GetBlobBytes b}"
-
-        for c in all do
-            let host, _ =
-                FabricatedGuest.runOnBoth "FieldMarshal" (fabricate [ c ]) "FieldMarshalDriver" (driverSource [ c ])
-
-            Console.Error.WriteLine $"PROBE2 {c.Name}: %A{host}"
-
-        let host, _ =
-            FabricatedGuest.runOnBoth "FieldMarshal" (fabricate all) "FieldMarshalDriver" (driverSource all)
-
-        Console.Error.WriteLine $"PROBE2 all: %A{host}"
-
     let private run (cases : Case list) : unit =
         FabricatedGuest.run "FieldMarshal" (fabricate cases) "FieldMarshalDriver" (driverSource cases) 0
 
@@ -353,6 +269,10 @@ public static class Driver
                 { case "RowWithoutFlagParsed" FieldShape.Int32Array [| 0x1Euy ; 0x03uy ; 0x07uy |] (Some 12) with
                     Flag = false
                 }
+                // And a flag without a row is no descriptor.
+                { case "FlagWithoutRow" FieldShape.Int32 [||] (Some 4) with
+                    Blob = None
+                }
             ]
 
     /// The field's descriptor as `FieldInfo.make` reads it out of the fabricated image.
@@ -369,14 +289,20 @@ public static class Driver
 
     /// `FieldMarshal` rows and the `HasFieldMarshal` flag in every combination the image can
     /// express. System.Reflection.Metadata reports a row naming the empty blob exactly as it reports
-    /// no row at all, so it is the flag that separates those two.
+    /// no row at all, and CoreCLR ignores the flag, so only the row itself separates those two.
     [<Test>]
-    let ``FieldInfo reads the FieldMarshal row whatever the flag, and the flag alone marks an empty blob`` () : unit =
+    let ``FieldInfo reads the FieldMarshal row whatever the flag, including a row naming the empty blob`` () : unit =
         let cases =
             [
                 case "EmptyWithFlag" FieldShape.Int32 [||] None
+                { case "EmptyWithoutFlag" FieldShape.Int32 [||] None with
+                    Flag = false
+                }
                 { case "RowWithoutFlag" FieldShape.Int32 [| 0x07uy |] None with
                     Flag = false
+                }
+                { case "FlagWithoutRow" FieldShape.Int32 [||] None with
+                    Blob = None
                 }
                 { case "NoRowNoFlag" FieldShape.Int32 [||] None with
                     Blob = None
@@ -388,6 +314,8 @@ public static class Driver
         |> shouldEqual
             [
                 Some FieldMarshalDescriptor.Empty
+                Some FieldMarshalDescriptor.Empty
                 Some (FieldMarshalDescriptor.Other UnmanagedType.I4)
+                None
                 None
             ]

@@ -1,9 +1,13 @@
 namespace WoofWare.PawPrint
 
+#nowarn "9"
+
 open System.Collections.Immutable
 open System.Reflection
 open System.Reflection.Metadata
+open System.Reflection.Metadata.Ecma335
 open System.Runtime.InteropServices
+open Microsoft.FSharp.NativeInterop
 
 /// A field's marshalling descriptor (ECMA-335 II.23.4) as CoreCLR's `MarshalInfo` (mlinfo.cpp) sees
 /// it when laying the field out for marshalling. Only the cases the interpreter consumes are
@@ -135,6 +139,57 @@ module FieldMarshalDescriptor =
 
 [<RequireQualifiedAccess>]
 module FieldInfo =
+    /// Whether the FieldMarshal table (ECMA-335 II.22.17) has a row whose Parent is `field`.
+    /// System.Reflection.Metadata's `GetMarshallingDescriptor` answers a nil handle both for no row
+    /// and for a row naming the empty blob at heap offset 0, which CoreCLR treats differently, so
+    /// this reads the Parent column itself.
+    let private hasFieldMarshalRow (mr : MetadataReader) (field : FieldDefinitionHandle) : bool =
+        let rows = mr.GetTableRowCount TableIndex.FieldMarshal
+
+        if rows = 0 then
+            false
+        else
+
+        // II.24.2.6: HasFieldMarshal spends one tag bit, so it is two bytes wide while both of the
+        // tables it can index have fewer than 2^15 rows.
+        let parentWidth =
+            if max (mr.GetTableRowCount TableIndex.Field) (mr.GetTableRowCount TableIndex.Param) < 0x8000 then
+                2
+            else
+                4
+
+        let rowSize = mr.GetTableRowSize TableIndex.FieldMarshal
+        let blobWidth = rowSize - parentWidth
+
+        if blobWidth <> 2 && blobWidth <> 4 then
+            failwith
+                $"FieldMarshal row size %d{rowSize} leaves %d{blobWidth} bytes for the NativeType blob index after a %d{parentWidth}-byte Parent; ECMA-335 II.24.2.6 allows only 2 or 4"
+
+        let target =
+            CodedIndex.HasFieldMarshal (FieldDefinitionHandle.op_Implicit field : EntityHandle)
+
+        let offset = mr.GetTableMetadataOffset TableIndex.FieldMarshal
+
+        // `BlobReader` is a struct, so it must be mutable for its reads to advance it.
+        let mutable reader =
+            BlobReader (NativePtr.add mr.MetadataPointer offset, rows * rowSize)
+
+        let mutable found = false
+        let mutable remaining = rows
+
+        while not found && remaining > 0 do
+            let parent =
+                if parentWidth = 2 then
+                    int (reader.ReadUInt16 ())
+                else
+                    reader.ReadInt32 ()
+
+            reader.Offset <- reader.Offset + blobWidth
+            found <- parent = target
+            remaining <- remaining - 1
+
+        found
+
     /// Does this field carry `[System.ThreadStaticAttribute]`?
     ///
     /// Accepted risk (consistent with the existing precedent in `MethodInfo.isIntrinsicAttribute`,
@@ -189,17 +244,14 @@ module FieldInfo =
             let v = def.GetRelativeVirtualAddress ()
             if v = 0 then None else Some v
 
-        // CoreCLR looks up the `FieldMarshal` row whatever the field's flags say. A nil handle is
-        // either no row or a row naming the empty blob at heap offset 0, which System.Reflection.Metadata
-        // does not tell apart; ECMA-335 II.22.15 requires the `HasFieldMarshal` flag exactly when
-        // the row exists, so the flag decides between them.
+        // CoreCLR looks up the `FieldMarshal` row whatever the field's `HasFieldMarshal` flag says.
         let marshallingDescriptor =
-            let handle = def.GetMarshallingDescriptor ()
+            let blob = def.GetMarshallingDescriptor ()
 
-            if handle.IsNil && not (def.Attributes.HasFlag FieldAttributes.HasFieldMarshal) then
+            if blob.IsNil && not (hasFieldMarshalRow mr handle) then
                 None
             else
-                FieldMarshalDescriptor.parse mr handle
+                FieldMarshalDescriptor.parse mr blob
 
         // `[ThreadStatic]` is a custom attribute rather than a `FieldAttributes` flag, so it is
         // computed once here at parse time rather than re-walking metadata at each access.
