@@ -200,13 +200,13 @@ module TestFSharpPureCases =
             | RealRuntimeResult.NormalExit exitCode, RunOutcome.NormalExit (terminalState, _) ->
                 exitCode |> shouldEqual expectedExitCode
                 terminalState.LatchedExitCode |> shouldEqual exitCode
-            | RealRuntimeResult.UnhandledException _, RunOutcome.GuestUnhandledException _ ->
+            | RealRuntimeResult.UnhandledException realExn, RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                 if not (expectsUnhandledException.Contains testCaseName) then
                     failwith
-                        $"Both runtimes threw unhandled exceptions for %s{testCaseName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional."
-            | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (_, _, exn) ->
+                        $"Both runtimes threw unhandled exceptions for %s{testCaseName}, but this test was not expected to throw. Add to expectsUnhandledException if intentional.\nReal runtime:\n%s{realExn}\nPawPrint:\n%s{UnhandledExceptionReport.describe finalState exn}"
+            | RealRuntimeResult.NormalExit exitCode, RunOutcome.GuestUnhandledException (finalState, _, exn) ->
                 failwith
-                    $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception: %O{exn.ExceptionObject}"
+                    $"Real runtime exited normally with code %d{exitCode}, but PawPrint threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             | RealRuntimeResult.Aborted (_code, report), _ ->
                 failwith
                     $"Real runtime called Environment.FailFast for %s{testCaseName}; this fixture does not exercise FailFast:\n%s{report}"

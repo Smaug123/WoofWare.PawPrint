@@ -175,6 +175,7 @@
     <Compile Include="TestDynamicMethodMintOutcome.fs" />
     <Compile Include="TestDynamicMethodTracing.fs" />
     <Compile Include="TestFloatWidthJoin.fs" />
+    <Compile Include="TestUnhandledExceptionReport.fs" />
     <Compile Include="TestFloatWidthUntypedBlock.fs" />
     <Compile Include="TestMethodHandleRegistry.fs" />
     <Compile Include="TestLdtokenMemberTokens.fs" />

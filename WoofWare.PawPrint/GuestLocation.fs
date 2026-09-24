@@ -334,7 +334,10 @@ module GuestLocation =
             }
         )
 
-    let private renderFrame (frame : GuestFrame) : string =
+    /// <summary>
+    /// <c>Method at IL offset N</c>, without the source position.
+    /// </summary>
+    let renderFrame (frame : GuestFrame) : string =
         $"%s{frame.Method} at IL offset %d{frame.IlOffset}"
 
     let renderThread (location : GuestThreadLocation) : string =
