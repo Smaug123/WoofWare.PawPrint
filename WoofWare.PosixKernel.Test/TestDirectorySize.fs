@@ -569,9 +569,6 @@ module TestDirectorySize =
     [<DllImport("libSystem.Native", EntryPoint = "SystemNative_Stat", SetLastError = true)>]
     extern int private hostStat(string path, byte[] output)
 
-    [<DllImport("libSystem.Native", EntryPoint = "SystemNative_GetFileSystemType", SetLastError = true)>]
-    extern uint32 private hostGetFileSystemType(nativeint fd)
-
     [<DllImport("libc", EntryPoint = "open", SetLastError = true)>]
     extern int private hostOpen(string path, int flags, int mode)
 
@@ -640,7 +637,9 @@ module TestDirectorySize =
             | SimulatedUnixFlavour.Darwin -> Path.GetTempPath ()
 
         let wanted =
-            EmulatedFileSystemType.magic (EmulatedFileSystemType.defaultFor flavour)
+            EmulatedFileSystemType.defaultFor flavour
+            |> EmulatedFileSystemType.fieldsFor flavour
+            |> FileSystemTypeAnswer.Reported
 
         if not (Directory.Exists candidate) then
             None
@@ -653,7 +652,7 @@ module TestDirectorySize =
         else
 
         try
-            if hostGetFileSystemType (nativeint fd) = wanted then
+            if HostFileSystemType.answerFor flavour fd = wanted then
                 Some candidate
             else
                 None

@@ -38,7 +38,7 @@ type MkDirRules =
         /// unconditionally when its parent carries it. The group-membership
         /// proviso beside it in that function applies only to non-directories,
         /// which is source-derived rather than measured, and is unobservable
-        /// here anyway: PawPrint has one process-wide gid, so a new inode's
+        /// here anyway: this library has one process-wide gid, so a new inode's
         /// group always matches its parent's. (`mount -o grpid` varies *gid*
         /// inheritance, not the bit, and one gid cannot see that either.)
         InheritsSetGroupIdFromParent : bool
@@ -136,7 +136,7 @@ module MkDirRules =
                 | InodePermissions.Stored bits -> bits
                 | InodePermissions.PlatformSymlinkDefault ->
                     failwith
-                        $"MkDirRules.verdict: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is an interpreter bug)."
+                        $"MkDirRules.verdict: the walk resolved \"%s{DirectoryEntryName.toEscaped name}\" inside inode %O{directory}, which reports platform-default symlink permissions -- but only a directory can hold an entry (this is a bug in this library's path walk, or in a caller that assembled the resolution itself)."
             | None ->
                 failwith
                     $"MkDirRules.verdict: resolution named inode %O{directory} as the directory to create \"%s{DirectoryEntryName.toEscaped name}\" in, but the filesystem does not contain it. Run VirtualFileSystem.checkInvariants."

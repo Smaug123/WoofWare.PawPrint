@@ -2,8 +2,8 @@ namespace WoofWare.PosixKernel
 
 /// The filesystem an emulated mount claims to be, as `fstatfs(2)` reports it.
 ///
-/// A *choice* rather than a measured fact, because PawPrint's filesystem is an
-/// in-memory graph that is not any real filesystem. That is why it is
+/// A *choice* rather than a measured fact, because this library's filesystem
+/// is an in-memory graph that is not any real filesystem. That is why it is
 /// something a client configures rather than a derivation from the flavour the
 /// way the errno numbering is: a single Linux reports `0xEF53`,
 /// `0x01021994` and `0x9FA0` for three directories in one process, so a flavour
@@ -17,54 +17,92 @@ namespace WoofWare.PosixKernel
 /// does.
 ///
 /// Only three cases, because only three have a consumer. Note that a fourth
-/// could not be `Ext4`: the managed layer cannot distinguish it, CoreLib's
-/// `UnixFileSystemTypes` having no such member (it is `ext2 = 0xEF53`, with
-/// `ext4` commented out as an alias).
+/// could not be told apart as `Ext4` by `fstatfs(2)` alone: Linux reports
+/// `0xEF53` for ext2, ext3 and ext4 alike.
 [<RequireQualifiedAccess>]
 type EmulatedFileSystemType =
     /// Linux's in-memory filesystem, and so the honest analogue of a
     /// filesystem that only ever exists in memory.
     | Tmpfs
-    /// What a macOS file is on. Darwin's answer, since it mounts no tmpfs.
+    /// What a macOS file is on. Darwin's answer, since a default macOS mounts
+    /// no tmpfs.
     | Apfs
-    /// One of the four filesystems CoreCLR refuses to take a *shared* lock on
-    /// (`SafeFileHandle.CanLockTheFile`), so a mount of this type is the one
-    /// configuration under which a `FileShare.Read` handle opened for writing
-    /// takes no `flock` at all.
+    /// A network filesystem, which both flavours can mount. Code that treats
+    /// network mounts specially (for example, by declining to take a `flock`
+    /// on one) sees one under this configuration.
     | Nfs
 
-/// What `fstatfs(2)` does when asked about one descriptor.
+/// The fields of `struct statfs` that name the type of filesystem a
+/// descriptor is on, as one flavour's `fstatfs(2)` fills them in.
 ///
-/// Modelled as a success-or-failure rather than as the bare `uint32` the PAL
-/// returns, because the PAL folds *every* failure to 0 and the errno the
-/// kernel left behind is still observable to a guest that declares
-/// `SetLastError`. Collapsing the two here would lose it.
+/// The flavours name a filesystem differently, so each case carries its own
+/// flavour's fields and nothing else.
+[<RequireQualifiedAccess>]
+type FileSystemTypeFields =
+    /// Linux's `f_type`: the filesystem's magic number, such as `0x01021994`
+    /// for tmpfs. The field is a `__fsword_t`, which is a `long` on the 64-bit
+    /// Linuxes modelled.
+    | Linux of fType : int64
+    /// Darwin's `f_type` and `f_fstypename`. The `f_type` is the number the
+    /// kernel gave the filesystem when it registered it, not a magic number
+    /// taken from the filesystem's format; the `f_fstypename` is its name,
+    /// such as `apfs`.
+    | Darwin of fType : uint32 * fsTypeName : UnixByteString
+
+/// What `fstatfs(2)` does when asked about one descriptor.
 [<RequireQualifiedAccess>]
 type FileSystemTypeAnswer =
-    /// `fstatfs` succeeded and named this filesystem.
-    | Reported of magic : uint32
-    /// `fstatfs` failed, leaving this errno. The PAL reports 0 to its caller.
+    /// `fstatfs` succeeded, naming the filesystem with these fields.
+    | Reported of fields : FileSystemTypeFields
+    /// `fstatfs` failed with this errno.
     | Failed of error : UnixError
 
 [<RequireQualifiedAccess>]
 module EmulatedFileSystemType =
-    /// The number `fstatfs(2)` reports for a file on a mount of this type.
+    /// The type-naming fields `fstatfs(2)` reports for a file on a mount of
+    /// this type, under a kernel of this flavour.
     ///
-    /// These are the values CoreLib's `Interop.Sys.UnixFileSystemTypes` gives
-    /// them, which is what matters: that enum is how the only managed consumer
-    /// reads the number back. Each was also measured on a live kernel — tmpfs
-    /// on Linux's `/dev/shm`, APFS on a macOS `/tmp`.
-    ///
-    /// Linux returns its `statfs.f_type` verbatim while Darwin maps
-    /// `f_fstypename` through a name table (`MapFileSystemNameToEnum`,
-    /// `pal_io.c`), so the two arrive at the same number by different routes;
-    /// `Nfs` is the one case both flavours can produce, and both produce
-    /// `0x6969`.
-    let magic (fsType : EmulatedFileSystemType) : uint32 =
-        match fsType with
-        | EmulatedFileSystemType.Tmpfs -> 0x01021994u
-        | EmulatedFileSystemType.Apfs -> 0x1Au
-        | EmulatedFileSystemType.Nfs -> 0x6969u
+    /// Refuses a `flavour` and `fsType` that do not describe one machine (see
+    /// `isReportableUnder`).
+    let fieldsFor (flavour : SimulatedUnixFlavour) (fsType : EmulatedFileSystemType) : FileSystemTypeFields =
+        let darwinName (name : string) : UnixByteString =
+            match UnixByteString.ofString name with
+            | Ok name -> name
+            | Error defect ->
+                failwith
+                    $"EmulatedFileSystemType.fieldsFor: the filesystem name %s{name} is not a Unix string (%O{defect}) (this is a bug in this library)"
+
+        match flavour, fsType with
+        // Linux's magic numbers, `<linux/magic.h>`. Tmpfs measured on
+        // `/dev/shm` (Linux 6.18.5); NFS is `NFS_SUPER_MAGIC`, which no local
+        // NFS mount was available to measure.
+        | SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Tmpfs -> FileSystemTypeFields.Linux 0x01021994L
+        | SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Nfs -> FileSystemTypeFields.Linux 0x6969L
+        // Measured 2026-09-23 on macOS 26.6 (Darwin 25.6.0, arm64): `fstatfs`
+        // on a file and a directory of every APFS volume mounted (`/`,
+        // `/System/Volumes/Data`, `/private/tmp`, a home directory) reported
+        // `f_type` 0x1A and `f_fstypename` "apfs", before and after a reboot,
+        // and `/nix`'s volume too the second time. Darwin hands out type
+        // numbers from 24 upwards in the order filesystems register, unless
+        // the filesystem asks for a fixed one (`vfs_fsadd` in XNU's
+        // `bsd/vfs/kpi_vfs.c`), and APFS's source is not published, so 0x1A is
+        // a measurement of that release rather than a constant of the format.
+        | SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Apfs ->
+            FileSystemTypeFields.Darwin (0x1Au, darwinName "apfs")
+        // NFS asks for a fixed number: `install_nfs_vfs_fs` in the NFS kext
+        // (apple-oss-distributions/NFS, `kext/nfs_vfsops.c`) registers
+        // `vfe_fstypenum = VT_NFS`, which is 2, under the name "nfs", and sets
+        // no name override. `vfs_get_statfs64` (`bsd/vfs/vfs_syscalls.c`,
+        // which `fstatfs64` answers from, and arm64's `fstatfs` is the same
+        // libSystem symbol) copies both into `struct statfs`. Both read at
+        // xnu `main` and NFS `main` on 2026-09-23. Measured the same day on macOS 26.6 by
+        // `getvfsbyname("nfs")`, which reported type number 2 for the loaded
+        // kext. No NFS mount was available to call `fstatfs` on.
+        | SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Nfs -> FileSystemTypeFields.Darwin (2u, darwinName "nfs")
+        | SimulatedUnixFlavour.Linux, EmulatedFileSystemType.Apfs
+        | SimulatedUnixFlavour.Darwin, EmulatedFileSystemType.Tmpfs ->
+            failwith
+                $"EmulatedFileSystemType.fieldsFor: asked what a %O{flavour} kernel reports for a %O{fsType} mount, which %O{flavour} cannot have. The flavour and the mount type have come apart; they constrain each other (see EmulatedFileSystemType.isReportableUnder) and must be chosen together rather than set one at a time."
 
     /// A directory's `st_size` on a mount of this type, given how many names it
     /// holds besides `.` and `..`, or `None` where the mount's type does not
@@ -101,9 +139,8 @@ module EmulatedFileSystemType =
 
     /// The type a mount reports when a host expresses no preference.
     ///
-    /// `Tmpfs` under Linux because PawPrint's filesystem really is in memory,
-    /// and `Apfs` under Darwin because macOS mounts no tmpfs, so nothing there
-    /// could report one.
+    /// `Tmpfs` under Linux because this library's filesystem really is in
+    /// memory, and `Apfs` under Darwin because a default macOS mounts no tmpfs.
     let defaultFor (flavour : SimulatedUnixFlavour) : EmulatedFileSystemType =
         match flavour with
         | SimulatedUnixFlavour.Linux -> EmulatedFileSystemType.Tmpfs
@@ -120,26 +157,23 @@ module EmulatedFileSystemType =
     /// stops compiling until someone has looked the combination up.
     let isReportableUnder (flavour : SimulatedUnixFlavour) (fsType : EmulatedFileSystemType) : bool =
         match fsType, flavour with
-        // Measured: `/dev/shm` reports it. macOS mounts no tmpfs at all, so
-        // its `f_fstypename` is never "tmpfs" — the name table has a row for
-        // it, but nothing on Darwin ever hits that row.
+        // Measured: `/dev/shm` reports it. A default macOS mounts no tmpfs,
+        // and no Darwin tmpfs has been measured. Darwin can have one, though:
+        // macOS 26.6 registers a "tmpfs" (type number 28 from
+        // `getvfsbyname`) and ships `mount_tmpfs`, which refused uid 501 with
+        // EPERM on 2026-09-23.
         | EmulatedFileSystemType.Tmpfs, SimulatedUnixFlavour.Linux -> true
         | EmulatedFileSystemType.Tmpfs, SimulatedUnixFlavour.Darwin -> false
         // No mainline Linux filesystem reports `0x1A`; a FUSE-mounted APFS
         // reports fuse's own `0x65735546`.
         | EmulatedFileSystemType.Apfs, SimulatedUnixFlavour.Linux -> false
         | EmulatedFileSystemType.Apfs, SimulatedUnixFlavour.Darwin -> true
-        // Both mount NFS, and both report `0x6969` for it.
+        // Both mount NFS.
         | EmulatedFileSystemType.Nfs, SimulatedUnixFlavour.Linux
         | EmulatedFileSystemType.Nfs, SimulatedUnixFlavour.Darwin -> true
 
     /// What `fstatfs(2)` answers about one descriptor: `None` for an fd the
     /// process does not hold.
-    ///
-    /// The whole table lives here rather than in the handler, so that the unit
-    /// tests, the host-comparison oracle and the guest all exercise the same
-    /// function — a mutation swapping two of the rows below has nowhere to
-    /// hide.
     ///
     /// Every row measured on both flavours (macOS 26.6, Linux 6.x), for both
     /// ends of a pipe, an `AF_INET` and an `AF_UNIX` socket, an epoll port, a
@@ -171,24 +205,24 @@ module EmulatedFileSystemType =
         /// measured number rather than an invention — unlike `fstat`, which
         /// refuses the same descriptors because it owes them seventeen fields
         /// and the platforms agree on none of them.
-        let pseudoFileSystem (linux : uint32) : FileSystemTypeAnswer =
+        let pseudoFileSystem (linux : int64) : FileSystemTypeAnswer =
             match flavour with
-            | SimulatedUnixFlavour.Linux -> FileSystemTypeAnswer.Reported linux
+            | SimulatedUnixFlavour.Linux -> FileSystemTypeAnswer.Reported (FileSystemTypeFields.Linux linux)
             | SimulatedUnixFlavour.Darwin -> FileSystemTypeAnswer.Failed UnixError.EINVAL
 
         match target with
         | None -> FileSystemTypeAnswer.Failed UnixError.EBADF
         // Regular files and directories alike: measured identical, and one
         // mount has one answer.
-        | Some (OpenFileObject.File _) -> FileSystemTypeAnswer.Reported (magic mount)
-        // PawPrint models the standard streams as pipes (see
+        | Some (OpenFileObject.File _) -> FileSystemTypeAnswer.Reported (fieldsFor flavour mount)
+        // This library models the standard streams as pipes (see
         // `FileDescriptorRegistry.initial`), so this row is a consequence of
         // that existing decision rather than a new one: Linux's `pipefs`.
-        | Some (OpenFileObject.StandardStream _) -> pseudoFileSystem 0x50495045u
+        | Some (OpenFileObject.StandardStream _) -> pseudoFileSystem 0x50495045L
         // Linux's `sockfs`.
-        | Some (OpenFileObject.Socket _) -> pseudoFileSystem 0x534F434Bu
+        | Some (OpenFileObject.Socket _) -> pseudoFileSystem 0x534F434BL
         // Linux's `anon_inodefs`, which is where an epoll port lives — and
         // exactly the granularity this answer needs, which is why
         // `OpenFileObject` folding every anonymous object into one case costs
         // nothing here.
-        | Some OpenFileObject.AnonymousInode -> pseudoFileSystem 0x09041934u
+        | Some OpenFileObject.AnonymousInode -> pseudoFileSystem 0x09041934L

@@ -33,7 +33,7 @@ type SymlinkPolicy =
 /// a directory" is a demand to record or a refusal to make.
 ///
 /// The two Unixes split here for a *creating* open, and the split is not a
-/// choice PawPrint makes — it is measured. Linux refuses such a path outright,
+/// choice this library makes — it is measured. Linux refuses such a path outright,
 /// XNU resolves it as any other lookup would.
 [<RequireQualifiedAccess>]
 type TrailingSeparatorPolicy =
@@ -170,7 +170,7 @@ type Resolution =
         /// `rmdir` is where the pair finally costs something. Measured on both
         /// and dispatched by `SimulatedUnixPlatform.rmDirRules`: with
         /// `ld -> d` and `d` empty, `rmdir("ld/")` removes `d` on Darwin and is
-        /// ENOTDIR on Linux. Every mutating operation PawPrint models is now
+        /// ENOTDIR on Linux. Every mutating operation this library models is now
         /// measured on both columns, so nothing here owes a loud failure any
         /// more — but a *new* one still does, and for the same reason.
         ///

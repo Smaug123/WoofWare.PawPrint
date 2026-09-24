@@ -82,3 +82,27 @@ module SocketEventsPal =
         else
             level
         |> ofReadiness
+
+    /// The stride of the event buffer `SystemNative_CreateSocketEventBuffer`
+    /// allocates and `SystemNative_WaitForSocketEvents` fills, in bytes.
+    ///
+    /// A compile-time property of the native shim:
+    /// `pal_networking.c` defines `SocketEventBufferElementSize` once per backend,
+    /// as `max(sizeof(struct epoll_event), sizeof(SocketEvent))` under epoll and
+    /// `sizeof(struct kevent)` under kqueue.
+    ///
+    /// Note what the epoll `max` does, because it is the reason this is a total
+    /// function of the flavour where `LinuxEpollLimits.EventSize` is not.
+    /// `sizeof(struct epoll_event)` is architecture-dependent — 12 on x86-64 under
+    /// `EPOLL_PACKED`, 16 everywhere else — and the `max` against the 16-byte
+    /// `SocketEvent` erases exactly that difference, since `max(12, 16)` and
+    /// `max(16, 16)` are both 16. So the buffer stride follows the flavour alone,
+    /// while the `epoll_wait` constants that skip the `max` do not.
+    ///
+    /// `sizeof(struct kevent)` is 32 on every 64-bit Darwin:
+    /// `{ uintptr_t ident; int16_t filter; uint16_t flags; uint32_t fflags;
+    /// intptr_t data; void* udata; }`, measured rather than recalled.
+    let socketEventBufferElementSize (platform : SimulatedUnixPlatform) : int =
+        match SimulatedUnixPlatform.flavour platform with
+        | SimulatedUnixFlavour.Linux -> 16
+        | SimulatedUnixFlavour.Darwin -> 32

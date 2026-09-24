@@ -101,13 +101,12 @@ type RenameOutcome =
 
 /// Where `lseek(2)` measures its offset from.
 ///
-/// Exactly the three `Interop.Sys.SeekWhence` values (`Interop.LSeek.cs`), which
-/// are also the three POSIX ones — and *not* the platforms' full `<unistd.h>`
+/// Exactly the three POSIX values — and *not* the platforms' full `<unistd.h>`
 /// vocabulary, which continues with `SEEK_DATA` and `SEEK_HOLE`. Those two are
 /// deliberately absent: they are numbered 3 and 4 on Linux and **4 and 3** on
 /// Darwin, so a raw whence of 3 does not name the same operation on the two
-/// kernels, and there is no portable case to add. `SystemNative_LSeek` decodes
-/// the raw integer and refuses them; see the handler.
+/// kernels, and there is no portable case to add. `UnixDescriptor.lseek`
+/// decodes a raw `whence` under the flavour and refuses them.
 [<RequireQualifiedAccess>]
 type SeekWhence =
     /// `SEEK_SET` (0): from the start of the file.
@@ -117,7 +116,7 @@ type SeekWhence =
     /// `SEEK_END` (2): from the end of the file.
     | End
 
-/// Why a write to a regular file has no answer PawPrint can give.
+/// Why a write to a regular file has no answer this library can give.
 ///
 /// Not a `UnixError`, and deliberately: this is a limit of the model rather than
 /// anything a kernel does, so a caller must fail loudly rather than translate it
@@ -153,7 +152,7 @@ type FileTruncationRefusal =
 /// Split into two cases rather than one because the platforms disagree about
 /// only one of them: a computation landing below zero is `EINVAL` on both,
 /// while one that leaves `int64` is `EINVAL` on Linux and `EOVERFLOW` on Darwin.
-/// Collapsing them here would push that distinction into the handler as a
+/// Collapsing them here would push that distinction into the caller as a
 /// second computation of the same arithmetic.
 [<RequireQualifiedAccess>]
 type SeekFault =
@@ -167,7 +166,7 @@ type SeekFault =
 
 /// A name a directory stream can hand back. Neither "." nor ".." is a
 /// `FileName` — `FileNameError.Reserved` rejects both, because a directory
-/// binds neither and PawPrint derives both from the graph — so a stream that
+/// binds neither and this library derives both from the graph — so a stream that
 /// must produce all three needs a type that can say which it produced.
 [<RequireQualifiedAccess>]
 type DirectoryStreamName =
@@ -210,10 +209,10 @@ module DirectoryStreamName =
 /// past glibc's 32 KB `readdir` buffer — deleting each entry as it is returned
 /// skips nothing and leaves the directory empty, so a real filesystem hands out
 /// a stable per-entry cookie rather than an index into a shifting list. A
-/// position would make `Directory.Delete(recursive: true)` fail: CoreLib's
-/// `FileSystem.RemoveDirectoryRecursive` deletes each child inside the
-/// `foreach` over the live enumerator and then `rmdir`s the parent, so an
-/// enumeration that skipped anything would answer ENOTEMPTY.
+/// position would break the usual recursive delete, which removes each child
+/// while enumerating the live stream and then `rmdir`s the parent: an
+/// enumeration that skipped anything would leave the parent non-empty, and the
+/// `rmdir` would answer ENOTEMPTY.
 ///
 /// Four cases rather than a `FileName option`, because "returned `..`, not yet
 /// `.`" is a real position of the stream and neither dot is expressible as a
@@ -238,13 +237,13 @@ type DirectoryCursor =
     /// `.` has been handed back, which is the end of the stream.
     | ReturnedDot
 
-/// Identity of one open directory stream. Never guest-visible: a guest holds a
-/// `DIR*`, and what that pointer is made of is the client's business, not this
-/// kernel's.
+/// Identity of one open directory stream. Never visible to the simulated
+/// process: it holds a `DIR*`, and what that pointer is made of is the
+/// client's business, not this kernel's.
 ///
 /// Minted monotonically and never reused, as `SocketId` and `InodeNumber` are;
-/// `EmulatedKernel.NextDirectoryStreamId` is the counter, and `checkInvariants`
-/// refuses a table holding an id at or above it.
+/// `UnixProcessState.NextDirectoryStreamId` is the counter, and
+/// `UnixSystem.checkInvariants` refuses a table holding an id at or above it.
 [<Struct>]
 type DirectoryStreamId =
     | DirectoryStreamId of value : int64
@@ -256,12 +255,12 @@ type DirectoryStreamId =
 /// One open directory stream: what `opendir(3)` returns and `readdir`/`closedir`
 /// consume.
 ///
-/// Held in `EmulatedKernel.DirectoryStreams` rather than on the descriptor,
+/// Held in `UnixProcessState.DirectoryStreams` rather than on the descriptor,
 /// because libc keeps a `DIR`'s buffer and position in userspace and the
 /// descriptor carries only the kernel's. The consequence is that two `opendir`s
 /// of one directory advance independently, and a `dup` of the descriptor would
-/// not share the cursor. Unobservable: `dirfd` appears nowhere in CoreLib or
-/// the PAL, so no managed caller can reach the descriptor to `dup` it.
+/// not share the cursor. A process reaches that descriptor only through
+/// `dirfd(3)`, which this library does not model.
 type DirectoryStream =
     {
         /// The descriptor `opendir` opened, closed again by `closedir`.
@@ -269,8 +268,7 @@ type DirectoryStream =
         /// The directory being enumerated. Also reachable through `Fd`, but
         /// held directly so that a guest which closed that descriptor behind the
         /// stream's back — undefined behaviour on a real libc, and possible here
-        /// because fd numbers are guessable — does not turn into an interpreter
-        /// crash.
+        /// because fd numbers are guessable — does not turn into a crash.
         Inode : InodeNumber
         /// How far through `Inode` this stream has read.
         Cursor : DirectoryCursor
@@ -297,9 +295,8 @@ module VirtualFileSystem =
     /// A filesystem containing nothing but an empty root directory, created at
     /// `now`.
     ///
-    /// Takes the time rather than reading a clock: this file compiles before
-    /// `EmulatedKernel.fs`, and a filesystem that read the host's clock would
-    /// make a replay depend on when it was recorded.
+    /// Takes the time rather than reading a clock: a filesystem that read the
+    /// host's clock would make a replay depend on when it was recorded.
     let empty (now : UnixTimestamp) : VirtualFileSystem =
         {
             Inodes =
@@ -353,7 +350,7 @@ module VirtualFileSystem =
     /// same on Linux and Darwin. So is a zero-length request, which is why
     /// callers must not treat 0 as EOF-specific.
     let readTransferCount (offset : int64) (count : int) (length : int) : int =
-        // The handler is responsible for rejecting a negative offset (EINVAL)
+        // The caller is responsible for rejecting a negative offset (EINVAL)
         // and refusing a negative size, so both are established before here.
         System.Diagnostics.Debug.Assert (offset >= 0L, "readTransferCount: offset must not be negative")
         System.Diagnostics.Debug.Assert (count >= 0, "readTransferCount: count must not be negative")
@@ -416,10 +413,10 @@ module VirtualFileSystem =
     /// in place, and never truncates what follows it.
     ///
     /// Separated from `writeFile` for the reason `readTransferCount` is
-    /// separated from the handlers that use it: as a function of a byte array, an
+    /// separated from the syscalls that use it: as a function of a byte array, an
     /// offset and a byte array it is property-testable against naive splicing,
-    /// where the same arithmetic inlined into a syscall handler is reachable only
-    /// through a guest.
+    /// where the same arithmetic inlined into a syscall is reachable only
+    /// through a whole simulated system.
     let writtenContents
         (contents : ImmutableArray<byte>)
         (offset : int64)
@@ -438,7 +435,7 @@ module VirtualFileSystem =
             failwith
                 "VirtualFileSystem.writtenContents: bytes is the default ImmutableArray, whose underlying array is null. That is not an empty write; pass ImmutableArray<byte>.Empty."
 
-        // The handler is responsible for rejecting a negative offset (EINVAL), so
+        // The caller is responsible for rejecting a negative offset (EINVAL), so
         // it is established before here.
         System.Diagnostics.Debug.Assert (offset >= 0L, "writtenContents: offset must not be negative")
 
@@ -468,7 +465,7 @@ module VirtualFileSystem =
     /// separate from `writtenContents`: it is the only way to check both sides of
     /// the ceiling without allocating two gigabytes to do it.
     ///
-    /// A negative length is the handler's to reject (EINVAL), so it is
+    /// A negative length is the caller's to reject (EINVAL), so it is
     /// established before here.
     let truncatedLength (length : int64) : Result<int, FileTruncationRefusal> =
         System.Diagnostics.Debug.Assert (length >= 0L, "truncatedLength: length must not be negative")
@@ -490,7 +487,7 @@ module VirtualFileSystem =
     /// Separated from `truncateFile` for the reason `writtenContents` is
     /// separated from `writeFile`: as a function of a byte array and a length it
     /// is property-testable against naive take/pad, where the same arithmetic
-    /// inlined into a syscall handler is reachable only through a guest.
+    /// inlined into a syscall is reachable only through a whole simulated system.
     let truncatedContents
         (contents : ImmutableArray<byte>)
         (length : int64)
@@ -519,8 +516,8 @@ module VirtualFileSystem =
     ///
     /// The whole of what `lseek` computes, separated out for the same reason as
     /// `readTransferCount`: as a function of four integers it is
-    /// property-testable, where the same arithmetic inlined in a handler is
-    /// reachable only through a guest.
+    /// property-testable, where the same arithmetic inlined in a syscall is
+    /// reachable only through a whole simulated system.
     ///
     /// **Not bounded above by `size`.** Seeking past the end of a file is legal
     /// — it is how sparse files are made — and a subsequent read there simply
@@ -529,7 +526,7 @@ module VirtualFileSystem =
     /// **No filesystem ceiling either.** A real Linux rejects an offset above
     /// the filesystem's `s_maxbytes` with `EINVAL`: measured, ext4 stops at
     /// `0xffffffff000` while **tmpfs accepts the full `int64` range**, as does
-    /// macOS's APFS. PawPrint's filesystem is in memory, so tmpfs is the honest
+    /// macOS's APFS. This library's filesystem is in memory, so tmpfs is the honest
     /// analogue and the ceiling is `Int64.MaxValue`. The divergence is a
     /// *filesystem* difference, not a platform one, even though a dev box's
     /// APFS accepts what a CI container's ext4 refuses.
@@ -908,7 +905,7 @@ module VirtualFileSystem =
     /// This is `st_nlink` as a *file* reports it. It is not what a directory
     /// reports, which also counts its own "." and each child's ".."; those are
     /// derived here rather than stored (see `DirectoryContent.Entries`), so
-    /// counting them would mean re-deriving them, and no syscall PawPrint models
+    /// counting them would mean re-deriving them, and no syscall this library models
     /// reports the number anyway — `FileStatus` has no `nlink` field.
     ///
     /// Zero means the inode has no name: either it is the root, or its last link
@@ -1233,7 +1230,7 @@ module VirtualFileSystem =
     /// position for anything, and this is the less convenient of the two — it
     /// refuses a guest that consumes two entries to skip the dots, or that
     /// expects the first entry to be one. A guest doing either is already broken
-    /// on ext4, and the point of this interpreter is to say so deterministically
+    /// on ext4, and the point of this simulation is to say so deterministically
     /// rather than on whichever machine happens to run it.
     ///
     /// No caller may compare an enumeration order against a host: the order
@@ -1262,7 +1259,7 @@ module VirtualFileSystem =
             | Some _
             | None ->
                 failwith
-                    $"VirtualFileSystem.nextDirectoryEntry: inode %O{directory} is not a directory this filesystem holds. A directory stream's inode is pinned by the descriptor that opened it, so this is an interpreter bug."
+                    $"VirtualFileSystem.nextDirectoryEntry: inode %O{directory} is not a directory this filesystem holds. A directory stream's inode is pinned by the descriptor that opened it, so this is a bug in the caller of VirtualFileSystem.nextDirectoryEntry."
 
         if isOrphanedDirectory directory vfs then
             None
@@ -1300,7 +1297,7 @@ module VirtualFileSystem =
     /// name for a file has gone *and* no open description is holding it.
     ///
     /// Partial, deliberately: the inode must be present and nothing may still
-    /// name it. Both are interpreter bugs rather than anything a guest can
+    /// name it. Both are bugs in the caller rather than anything a process can
     /// cause — the caller has just unbound the last name and consulted the
     /// descriptor table — and forgetting a still-bound inode would leave a
     /// dangling entry that every later walk would trip over far from here.
@@ -1309,11 +1306,11 @@ module VirtualFileSystem =
     let forget (inode : InodeNumber) (vfs : VirtualFileSystem) : VirtualFileSystem =
         if not (Map.containsKey inode vfs.Inodes) then
             failwith
-                $"VirtualFileSystem.forget: inode %O{inode} is not in the graph, so it cannot be forgotten (this is an interpreter bug)."
+                $"VirtualFileSystem.forget: inode %O{inode} is not in the graph, so it cannot be forgotten (this is a bug in the caller of VirtualFileSystem.forget)."
 
         if inode = vfs.Root then
             failwith
-                "VirtualFileSystem.forget: the root cannot be forgotten; every path resolves from it (this is an interpreter bug)."
+                "VirtualFileSystem.forget: the root cannot be forgotten; every path resolves from it (this is a bug in the caller of VirtualFileSystem.forget)."
 
         match bindingCount inode vfs with
         | 0 ->
@@ -1322,7 +1319,7 @@ module VirtualFileSystem =
             }
         | count ->
             failwith
-                $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is an interpreter bug)."
+                $"VirtualFileSystem.forget: inode %O{inode} is still named by %d{count} directory entry/entries, so forgetting it would leave the graph with a dangling entry (this is a bug in the caller of VirtualFileSystem.forget)."
 
     /// Write `bytes` at `offset` into the regular file at `inode`, moving its
     /// `mtime` and `ctime` and — unless `privilege` says otherwise — stripping its
@@ -1335,7 +1332,7 @@ module VirtualFileSystem =
     /// contains. A caller arrives here having resolved a descriptor open for
     /// writing, and only a regular file can be opened that way — `open(2)`
     /// answers EISDIR for a directory and resolves a symlink to whatever it names
-    /// — so anything else is an interpreter bug rather than a guest error.
+    /// — so anything else is a bug in the caller rather than a process's error.
     ///
     /// Must not be called with an empty `bytes`: a zero-length write moves no
     /// timestamp and strips no bit, so treating it as an ordinary write of nothing
@@ -1368,12 +1365,12 @@ module VirtualFileSystem =
                    Content = InodeContent.Directory _
                } ->
             failwith
-                $"VirtualFileSystem.writeFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode. The caller resolved a writable descriptor to it anyway (this is an interpreter bug)."
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode. The caller resolved a writable descriptor to it anyway (this is a bug in the caller)."
         | Some {
                    Content = InodeContent.Symlink _
                } ->
             failwith
-                $"VirtualFileSystem.writeFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is an interpreter bug)."
+                $"VirtualFileSystem.writeFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -1437,7 +1434,7 @@ module VirtualFileSystem =
         // offset, and for the same reason.
         if length < 0L then
             failwith
-                $"VirtualFileSystem.truncateFile: inode %O{inode} was asked to become %d{length} bytes, which is negative. No kernel permits it; the caller must reject this as EINVAL before committing it (this is an interpreter bug)."
+                $"VirtualFileSystem.truncateFile: inode %O{inode} was asked to become %d{length} bytes, which is negative. No kernel permits it; the caller must reject this as EINVAL before committing it (this is a bug in the caller)."
 
 
         match Map.tryFind inode vfs.Inodes with
@@ -1448,12 +1445,12 @@ module VirtualFileSystem =
                    Content = InodeContent.Directory _
                } ->
             failwith
-                $"VirtualFileSystem.truncateFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode, and `ftruncate(2)` answers EINVAL for the read-only descriptor that is left. The caller resolved a writable descriptor to it anyway (this is an interpreter bug)."
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a directory, so no descriptor naming it can be open for writing — `open(2)` answers EISDIR for every write access mode, and `ftruncate(2)` answers EINVAL for the read-only descriptor that is left. The caller resolved a writable descriptor to it anyway (this is a bug in the caller)."
         | Some {
                    Content = InodeContent.Symlink _
                } ->
             failwith
-                $"VirtualFileSystem.truncateFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is an interpreter bug)."
+                $"VirtualFileSystem.truncateFile: inode %O{inode} is a symbolic link. `open` resolves symlinks, so no descriptor should name one (this is a bug in the caller)."
         | Some ({
                     Content = InodeContent.RegularFile (contents, permissions)
                 } as entry) ->
@@ -1740,9 +1737,8 @@ module VirtualFileSystem =
     ///
     /// `createdAt` is every seeded inode's birth, mtime, ctime and atime — the
     /// filesystem springs into existence at one instant. Passed in rather than
-    /// read from a clock: this file compiles before `EmulatedKernel`, and a
-    /// filesystem that read the host's clock would make a replay depend on when
-    /// it was recorded.
+    /// read from a clock: a filesystem that read the host's clock would make a
+    /// replay depend on when it was recorded.
     let ofFileSystemSeed
         (createdAt : UnixTimestamp)
         (entries : Map<DirectoryEntryName, SeedEntry>)
@@ -1792,7 +1788,7 @@ module VirtualFileSystem =
     ///
     /// Exists so that `checkInvariants` can be tested: a defect no test can
     /// construct is documentation rather than a check. Deliberately one
-    /// greppable token, so that any interpreter code reaching for it is visible
+    /// greppable token, so that any non-test code reaching for it is visible
     /// in review — nothing outside tests should.
     [<RequireQualifiedAccess>]
     module Unchecked =
