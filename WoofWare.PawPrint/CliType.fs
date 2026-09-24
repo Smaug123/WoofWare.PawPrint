@@ -3584,6 +3584,14 @@ and CliValueType =
         | Some (FieldMarshalDescriptor.ByValArray (_, None)) ->
             MarshalSizeError.NotImplemented "ByValArray descriptor without an explicit element type is not supported"
             |> Result.Error
+        | Some (FieldMarshalDescriptor.Malformed nativeType) ->
+            MarshalSizeError.NotMarshalable
+                $"the field's marshalling descriptor (NATIVE_TYPE 0x%02x{nativeType}) is malformed, and CoreCLR refuses to marshal it"
+            |> Result.Error
+        | Some FieldMarshalDescriptor.Empty ->
+            MarshalSizeError.NotImplemented
+                "the field's marshalling descriptor is empty, which CoreCLR accepts in a blittable struct and refuses in any other; PawPrint does not model struct blittability"
+            |> Result.Error
         | Some (FieldMarshalDescriptor.Other UnmanagedType.Struct) ->
             // `[MarshalAs(UnmanagedType.Struct)]` on a value-type field instructs the
             // marshaller to lay out that struct inline using its own native layout. Recurse

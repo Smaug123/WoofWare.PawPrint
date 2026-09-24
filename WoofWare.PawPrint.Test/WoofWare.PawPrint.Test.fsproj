@@ -95,6 +95,7 @@
     <Compile Include="TestByrefContainer.fs" />
     <Compile Include="TestByteViewCrossesContainer.fs" />
     <Compile Include="TestPointerArrayCellByteView.fs" />
+    <Compile Include="TestPointerFieldByteView.fs" />
     <Compile Include="TestStructLeadingByteView.fs" />
     <Compile Include="TestStorageLocation.fs" />
     <Compile Include="TestEmptyArrayByrefWalks.fs" />
@@ -301,6 +302,7 @@
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />
+    <Compile Include="TestFabricatedFieldMarshal.fs" />
     <Compile Include="TestSetupShape.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />

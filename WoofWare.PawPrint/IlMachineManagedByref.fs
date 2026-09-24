@@ -339,10 +339,10 @@ module IlMachineManagedByref =
             | _ -> false
         )
 
-    /// The cell a byte-renderable access names by its extent, when the storage it lands in has no
+    /// The cell a byte-renderable write names by its extent, when the storage it lands in has no
     /// byte image. See `isCellByteAccessible` for which cells qualify, and
-    /// `readCellNamedForByteAccess` and `writeIntoCellNamedForByteAccess` for how the access must
-    /// then be performed.
+    /// `writeIntoCellNamedForByteAccess` for how the write must then be performed. A read names
+    /// its cell with `tryNameCellForByteRead`, which accepts more.
     let private tryNameCellForByteAccess
         (byteOffset : int)
         (storage : CliType)
@@ -351,17 +351,42 @@ module IlMachineManagedByref =
         =
         tryNameCellWith isCellByteAccessible byteOffset storage target
 
+    /// `true` iff a read of a whole cell holding `cell` as a `target` has an answer, where storage
+    /// with no byte image has to name the cell to reach it at all.
+    ///
+    /// Everything `isCellByteAccessible` accepts qualifies. So does a cell with no byte image that
+    /// already *is* the target once put into the target's shape: a primitive-like wrapper and what
+    /// it wraps (`isCellCoercionCompatible`), or a pointer cell read as a native int
+    /// (`isPointerCellReadAsNativeInt`). Such a cell has no bits to reinterpret, so a read of it
+    /// as anything else — an `int64`, or anything narrower — is still refused.
+    ///
+    /// Read side only. A write of a native int into a pointer cell would restamp the cell with the
+    /// payload's shape, which is why `tryNameCellForByteAccess` does not accept that pair.
+    let private isCellByteReadable (cell : CliType) (target : CliType) : bool =
+        isCellByteAccessible cell target
+        || isCellCoercionCompatible cell target
+        || isPointerCellReadAsNativeInt cell target
+
+    /// The cell a read names by its extent, when the storage it lands in has no byte image. See
+    /// `isCellByteReadable` for which cells qualify, and `readCellNamedForByteRead` for how the
+    /// read must then be performed.
+    let private tryNameCellForByteRead (byteOffset : int) (storage : CliType) (target : CliType) : FieldId list option =
+        tryNameCellWith isCellByteReadable byteOffset storage target
+
     /// Read the cell at `path` of `storage` as a `template`, the path having come from
-    /// `tryNameCellForByteAccess`. A cell `isCellIdentityCompatible` accepts is returned as it is,
-    /// so a provenance-bearing cell keeps its provenance; any other cell's bytes are decoded as
-    /// the template.
-    let private readCellNamedForByteAccess (path : FieldId list) (storage : CliType) (template : CliType) : CliType =
+    /// `tryNameCellForByteRead`. A cell `isCellIdentityCompatible` accepts is returned as it is,
+    /// so a provenance-bearing cell keeps its provenance; a cell with a byte image has its bytes
+    /// decoded as the template; and a cell with none is put into the template's shape, which
+    /// keeps its provenance too.
+    let private readCellNamedForByteRead (path : FieldId list) (storage : CliType) (template : CliType) : CliType =
         let cell = CliType.getCellAtPath path storage
 
         if isCellIdentityCompatible cell template then
             cell
-        else
+        elif isCellByteAccessible cell template then
             CliType.ofBytesLike template (CliType.ToBytes cell)
+        else
+            coerceToCellShape template cell
 
     /// Write `newValue` into the cell at `path` of `storage`, the path having come from
     /// `tryNameCellForByteAccess`. A cell with a byte image keeps its own type and takes the value's
@@ -891,26 +916,20 @@ module IlMachineManagedByref =
                 match CliType.ByteAddressability cellValue with
                 // A cell whose bytes only *name* a native int belongs here for exactly the reason
                 // in (a): the byte-scatter path cannot serve it without losing the identity those
-                // names carry. This arm is wider than `tryNameCellForByteAccess` below, which
-                // gates a cell with no byte image on `isCellIdentityCompatible` and so refuses the wrapper layer
-                // `haveSameCliShape` bridges -- reading an `IntPtr[]` cell holding a type handle
-                // through an `IntPtr` template is that pair, and it is served here or nowhere.
+                // names carry. Reading an `IntPtr[]` cell holding a type handle through an `IntPtr`
+                // template is that pair. Every whole cell this arm does not take, including a
+                // pointer cell read as a native int, is left to the named read below.
                 | CliByteAddressability.SymbolicallyAddressable _
                 | CliByteAddressability.Rejected _ when haveSameCliShape cellValue targetTemplate -> ValueSome cellValue
-                // A pointer cell read as a native int, which `MemoryMarshal.GetArrayDataReference`
-                // over an `int*[]` produces. Unlike the arm above, the result is put into the
-                // template's shape: a caller unwrapping it to a native int would otherwise meet a
-                // `RuntimePointer`, a different constructor rather than a wrapper layer.
-                | _ when isPointerCellReadAsNativeInt cellValue targetTemplate ->
-                    ValueSome (coerceToCellShape targetTemplate cellValue)
                 | _ -> ValueNone
             else
                 ValueNone
 
-        // The short-circuit above only recognises a *whole* element. An element that is a value
-        // type containing object references has no byte image at all, so a read that lands inside
-        // one cannot be served by the byte-scatter loop below either — the only thing to return is
-        // the cell the byte range names, read as the target. `tryNameCellForByteAccess` yields `None` for
+        // An element with no byte image — a pointer, or a value type containing object references
+        // or pointers — cannot be served by the byte-scatter loop below, so the only thing to
+        // return is the cell the byte range names, read as the target. That is the element itself
+        // for a whole-element read (`MemoryMarshal.GetArrayDataReference` over an `int*[]`), and a
+        // field of it for a read that lands inside one. `tryNameCellForByteRead` yields `None` for
         // byte-addressable elements, so nothing that reaches the byte walk today is diverted.
         // A range spilling past the element yields `None` too, and falls through to the walk,
         // which reports the unrenderable cell.
@@ -927,8 +946,8 @@ module IlMachineManagedByref =
 
             let cellValue = ManagedHeap.getArrayValue arr targetCell state.ManagedHeap
 
-            tryNameCellForByteAccess inCellStart cellValue targetTemplate
-            |> Option.map (fun path -> readCellNamedForByteAccess path cellValue targetTemplate)
+            tryNameCellForByteRead inCellStart cellValue targetTemplate
+            |> Option.map (fun path -> readCellNamedForByteRead path cellValue targetTemplate)
             |> ValueOption.ofOption
 
         match shortCircuitCell, namedInnerCell with
@@ -1153,8 +1172,8 @@ module IlMachineManagedByref =
         let namedCell =
             let boxed = CliType.ValueType (ManagedHeap.get addr state.ManagedHeap).Contents
 
-            tryNameCellForByteAccess byteOffset boxed targetTemplate
-            |> Option.map (fun path -> readCellNamedForByteAccess path boxed targetTemplate)
+            tryNameCellForByteRead byteOffset boxed targetTemplate
+            |> Option.map (fun path -> readCellNamedForByteRead path boxed targetTemplate)
 
         match namedCell with
         | Some cell -> cell
@@ -1739,8 +1758,8 @@ module IlMachineManagedByref =
                     let named =
                         let cellHere = readProjectedValue rootValue prefixProjs
 
-                        tryNameCellForByteAccess byteOffset cellHere targetTemplate
-                        |> Option.map (fun path -> readCellNamedForByteAccess path cellHere targetTemplate)
+                        tryNameCellForByteRead byteOffset cellHere targetTemplate
+                        |> Option.map (fun path -> readCellNamedForByteRead path cellHere targetTemplate)
 
                     match named with
                     | Some cell -> cell
@@ -2861,9 +2880,13 @@ module IlMachineManagedByref =
                 //
                 // Probed only for roots whose typed read is total. `readRootValue` throws for
                 // `PeByteRange`, and for the raw byte pools when no typed cell starts at the
-                // offset; those roots are byte storage by construction and can never hold a
-                // reference anyway. `tryNameCellForByteAccess` yields `None` for byte-addressable
-                // storage, so nothing that reaches the writers below today is diverted.
+                // offset. A raw pool can nonetheless hold a cell with no byte image — `*p = new
+                // Outer { ... }` through a stackalloc'd `Outer*` installs one when `Outer` holds a
+                // pointer — and `ref p->I` reaches into it with a structural prefix; the
+                // `_, prefixProjs` arm below names the cell for that shape, having committed to a
+                // typed read of the root. `tryNameCellForByteAccess` yields `None` for
+                // byte-addressable storage, so nothing that reaches the writers below today is
+                // diverted.
                 //
                 // This reads the root value for `ArrayElement` and `HeapValue`. Both reads are
                 // total: those roots are only ever built by `ldelema` and by boxing, which
@@ -2930,6 +2953,13 @@ module IlMachineManagedByref =
                     // rather than at the structural writer, but the *storage* is not.
                     // `tryNameCellForByteAccess` yields `None` for byte-addressable storage, so
                     // nothing that reaches `resolveCell` today is diverted.
+                    //
+                    // For every root the probe above covers, this repeats it on the same inputs and
+                    // so finds nothing. It is the only naming attempt for a `StackMemoryByte` or
+                    // `NativeMemoryByte` root with a structural prefix, which the probe above
+                    // skips: `Unsafe.As<Inner, byte>(ref p->I)` through a stackalloc'd or natively
+                    // allocated `Outer*` whose `Inner` holds a pointer
+                    // (`StackallocFieldPrefixByteViewStore.cs`).
                     let namedWrite =
                         let cellHere = readProjectedValue rootValue prefixProjs
 
