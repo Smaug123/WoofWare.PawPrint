@@ -57,25 +57,6 @@ type SimulatedUnixPlatform =
     override this.GetHashCode () : int =
         System.HashCode.Combine (this.Flavour, this.Release)
 
-/// What the PAL puts in `DirectoryEntry.NameLength`, which is a fact about the
-/// libc it was compiled against rather than about any directory.
-///
-/// `ConvertDirent` (`pal_io.c:497`) copies `d_namlen` under
-/// `HAVE_DIRENT_NAME_LEN` and writes `-1` otherwise, the sentinel meaning "walk
-/// to the NUL yourself". Established by compiling rather than by reading:
-/// glibc's `struct dirent` has no `d_namlen` member at all (`gcc` rejects
-/// `d.d_namlen`), while macOS's `sys/dirent.h` declares one.
-///
-/// Invisible to managed code — `DirectoryEntry.GetName` takes
-/// `CreateReadOnlySpanFromNullTerminated` for the sentinel and a plain span
-/// otherwise — so only a guest that hand-rolls the P/Invoke can tell.
-[<RequireQualifiedAccess>]
-type DirectoryEntryNameLength =
-    /// The name's length in bytes, as macOS reports it.
-    | Reported
-    /// `-1`, as every libc without `d_namlen` gets.
-    | WalkToTerminator
-
 /// What `getcwd(3)` answers when the current directory has been *removed* — so
 /// there is no path to report — and how small a buffer can still change that
 /// answer.
@@ -357,13 +338,6 @@ module SimulatedUnixPlatform =
         match flavour platform with
         | SimulatedUnixFlavour.Linux -> false
         | SimulatedUnixFlavour.Darwin -> true
-
-    /// What this platform's PAL puts in `DirectoryEntry.NameLength`. See
-    /// `DirectoryEntryNameLength`.
-    let directoryEntryNameLength (platform : SimulatedUnixPlatform) : DirectoryEntryNameLength =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> DirectoryEntryNameLength.WalkToTerminator
-        | SimulatedUnixFlavour.Darwin -> DirectoryEntryNameLength.Reported
 
     /// Whether this platform's `stat` reports a creation time.
     ///
@@ -654,18 +628,8 @@ module SimulatedUnixPlatform =
     /// defined, and `socketAddressSizes` reads it rather than repeating it.
     let maximumSocketAddressSize : int = 128
 
-    /// The sizes `SystemNative_GetSocketAddressSizes` reports. See
-    /// `SocketAddressSizes` for where each number was measured.
-    let socketAddressSizes (platform : SimulatedUnixPlatform) : SocketAddressSizes =
-        {
-            InterNetwork = 16
-            InterNetworkV6 = 28
-            UnixDomain =
-                match flavour platform with
-                | SimulatedUnixFlavour.Linux -> 110
-                | SimulatedUnixFlavour.Darwin -> 106
-            Storage = maximumSocketAddressSize
-        }
+    /// `sizeof(struct sockaddr_in)`: 16 on both flavours.
+    let internetSocketAddressSize : int = 16
 
     /// The order `bind(2)` reports its faults in, which is **not** the same on
     /// the two flavours.
@@ -917,64 +881,6 @@ module SimulatedUnixPlatform =
         | SimulatedUnixFlavour.Linux -> SockaddrFamilyField.TwoBytesAtOffsetZero
         | SimulatedUnixFlavour.Darwin -> SockaddrFamilyField.OneByteAtOffsetOne
 
-    /// Whether this platform's sockets report IPv4 packet information on a
-    /// dual-mode socket — an IPv6 socket receiving IPv4-mapped traffic. Reported
-    /// to the guest by `SystemNative_PlatformSupportsDualModeIPv4PacketInfo`.
-    ///
-    /// A compile-time property of the native shim rather than of any socket, like
-    /// `reportsBirthTime`: upstream the whole function body is
-    /// `#if HAVE_SUPPORT_FOR_DUAL_MODE_IPV4_PACKET_INFO return 1 #else return 0`,
-    /// and `configure.cmake` sets that define to 1 for every Linux target and
-    /// leaves it 0 elsewhere. There is no probe of the running kernel involved, so
-    /// this is not a fact about the machine but about which shim was built.
-    ///
-    /// (Linux includes Android here: the `NOT CLR_CMAKE_TARGET_ANDROID` test
-    /// nested inside that `if` scopes only a `CMAKE_REQUIRED_LIBRARIES` setting,
-    /// not the define.)
-    ///
-    /// Follows the flavour rather than conservatively reporting `false`
-    /// everywhere, because both of CoreLib's readers of it are guest-visible
-    /// control flow (see the handler arm for which): answering `false` while
-    /// impersonating Linux makes a guest see a `PlatformNotSupportedException`
-    /// real Linux does not raise, and does so silently, with no abort and no
-    /// diagnostic.
-    ///
-    /// Answering `true` carries an obligation for whoever implements the socket
-    /// emulation this leads on to: a Linux-flavour `recvmsg` on a dual-mode
-    /// socket must actually produce the IPv4 `pktinfo` control message, because
-    /// CoreLib latches this once per process and will thereafter ask for the
-    /// packet information and expect to be given it. Reporting support and then
-    /// handing back a default `IPPacketInformation` would be the data-level
-    /// version of the lie this function exists to avoid.
-    let supportsDualModeIPv4PacketInfo (platform : SimulatedUnixPlatform) : bool =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> true
-        | SimulatedUnixFlavour.Darwin -> false
-
-    /// The stride of the event buffer `SystemNative_CreateSocketEventBuffer`
-    /// allocates and `SystemNative_WaitForSocketEvents` fills, in bytes.
-    ///
-    /// A compile-time property of the native shim, like `reportsBirthTime`:
-    /// `pal_networking.c` defines `SocketEventBufferElementSize` once per backend,
-    /// as `max(sizeof(struct epoll_event), sizeof(SocketEvent))` under epoll and
-    /// `sizeof(struct kevent)` under kqueue.
-    ///
-    /// Note what the epoll `max` does, because it is the reason this is a total
-    /// function of the flavour where `LinuxEpollLimits.EventSize` is not.
-    /// `sizeof(struct epoll_event)` is architecture-dependent — 12 on x86-64 under
-    /// `EPOLL_PACKED`, 16 everywhere else — and the `max` against the 16-byte
-    /// `SocketEvent` erases exactly that difference, since `max(12, 16)` and
-    /// `max(16, 16)` are both 16. So the buffer stride follows the flavour alone,
-    /// while the `epoll_wait` constants that skip the `max` do not.
-    ///
-    /// `sizeof(struct kevent)` is 32 on every 64-bit Darwin:
-    /// `{ uintptr_t ident; int16_t filter; uint16_t flags; uint32_t fflags;
-    /// intptr_t data; void* udata; }`, measured rather than recalled.
-    let socketEventBufferElementSize (platform : SimulatedUnixPlatform) : int =
-        match flavour platform with
-        | SimulatedUnixFlavour.Linux -> 16
-        | SimulatedUnixFlavour.Darwin -> 32
-
     /// What `fcntl(F_SETFL)` answers on a socket event port — `None` for
     /// success — the `O_NONBLOCK` bit having changed *either way*.
     ///
@@ -1051,7 +957,7 @@ module SimulatedUnixPlatform =
     /// a shorter declared length truncates what it writes rather than asking for
     /// a shorter blob.
     let encodeInternetSockaddr (platform : SimulatedUnixPlatform) (endpoint : InternetEndpoint) : byte[] =
-        let realLength = (socketAddressSizes platform).InterNetwork
+        let realLength = internetSocketAddressSize
         let blob = Array.zeroCreate<byte> realLength
 
         BinaryPrimitives.WriteUInt16BigEndian (

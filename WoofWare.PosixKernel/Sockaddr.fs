@@ -1,37 +1,5 @@
 namespace WoofWare.PosixKernel
 
-/// The four `sizeof`s `SystemNative_GetSocketAddressSizes` reports in one call,
-/// which `System.Net.Primitives`' `SocketAddressPal` class initialiser latches
-/// and every `SocketAddress` is then sized by.
-///
-/// Compile-time properties of the native shim rather than of any socket, like
-/// `reportsBirthTime`. Measured with a `sizeof` probe compiled on macOS arm64 and
-/// on Linux, rather than recalled; all four are invariant of pointer width, since
-/// every member of these structs is fixed-width and the two variable-length tails
-/// (`sun_path`, `sockaddr_storage`'s padding) are sized from a constant.
-type SocketAddressSizes =
-    {
-        /// <summary>
-        /// <c>sizeof(struct sockaddr_in)</c>.
-        /// </summary>
-        /// <example>16 on both Linux and Darwin.</example>
-        InterNetwork : int
-        /// <summary>
-        /// <c>sizeof(struct sockaddr_in6)</c>.
-        /// </summary>
-        /// <example>28 on both Linux and Darwin.</example>
-        InterNetworkV6 : int
-        /// `sizeof(struct sockaddr_un)`. The one of the four that differs: 110 on
-        /// Linux, whose `sun_path` is 108 bytes, against 106 on Darwin, whose is
-        /// 104.
-        UnixDomain : int
-        /// `sizeof(struct sockaddr_storage)`. 128 on both, and the same number
-        /// `SystemNative_GetMaximumAddressSize` reports through its own entry
-        /// point — hence `SimulatedUnixPlatform.maximumSocketAddressSize` rather
-        /// than a second literal.
-        Storage : int
-    }
-
 /// Where a `struct sockaddr`'s address family sits and how wide it is — the only
 /// part of the socket-address layout the two Unixes lay out differently.
 ///

@@ -404,7 +404,7 @@ module UnixSocket =
         | SocketDomain.InterNetwork ->
 
         let platform = system.Machine.UnixPlatform
-        let exactSize = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+        let exactSize = SimulatedUnixPlatform.internetSocketAddressSize
 
         // The oversized-length rejection happens in the copy helper before any
         // byte moves, so it precedes every buffer answer below.
@@ -615,7 +615,7 @@ module UnixSocket =
         let lengthFault =
             SimulatedUnixPlatform.bindAddressLength
                 platform
-                (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+                SimulatedUnixPlatform.internetSocketAddressSize
                 declaredLength
             <> BindLengthVerdict.Accepted
 
@@ -941,8 +941,7 @@ module UnixSocket =
         | SocketDomain.Unix -> Error (GetSockNameRefusal.UnmodelledDomain (socketId, socket.Domain))
         | SocketDomain.InterNetwork ->
 
-        let reportedLength =
-            (SimulatedUnixPlatform.socketAddressSizes system.Machine.UnixPlatform).InterNetwork
+        let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
 
         // An unbound socket reports its family and nothing else: the wildcard
         // address and port zero. Measured on both flavours -- a fresh AF_INET

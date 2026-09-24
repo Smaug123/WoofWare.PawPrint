@@ -250,7 +250,7 @@ module UnixConnection =
         let sock = UnixMachineState.socket socketId system.Machine
         let platform = system.Machine.UnixPlatform
         let flavour = SimulatedUnixPlatform.flavour platform
-        let exactSize = (SimulatedUnixPlatform.socketAddressSizes platform).InterNetwork
+        let exactSize = SimulatedUnixPlatform.internetSocketAddressSize
 
         // connect(2) copies the sockaddr in through the same helpers bind(2)
         // uses (Linux's move_addr_to_kernel, Darwin's getsockaddr), and the
@@ -1288,8 +1288,7 @@ module UnixConnection =
                 Error (AcceptRefusal.WouldPark socketId)
         | _ :: _ ->
 
-        let reportedLength =
-            (SimulatedUnixPlatform.socketAddressSizes system.Machine.UnixPlatform).InterNetwork
+        let reportedLength = SimulatedUnixPlatform.internetSocketAddressSize
 
         // The destination is screened after the queue and before the dequeue,
         // which is the only place it can go: there is nothing to copy out until
