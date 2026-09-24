@@ -17,8 +17,9 @@ module TestHardwareIntrinsicsProfile =
             failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"PawPrint guest was terminated by POSIX signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            failwith $"PawPrint threw an unexpected guest exception: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            failwith
+                $"PawPrint threw an unexpected guest exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     let private runSource (sourceFileName : string) (source : string) : RunOutcome =
         let image = Roslyn.compile [ source ]
