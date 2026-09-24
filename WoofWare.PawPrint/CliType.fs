@@ -1298,18 +1298,6 @@ and NativeLayout =
         Placements : MarshalFieldPlacement list
     }
 
-    /// The first of this type's *own* fields whose native form is illegal, with the reason; `None`
-    /// exactly when CoreCLR's `EEClassNativeLayoutInfo::IsMarshalable` holds
-    /// (classlayoutinfo.cpp:1029). An illegal field of a nested value type does not count.
-    member this.FirstIllegalField : (string * string) option =
-        this.Placements
-        |> List.tryPick (fun placement ->
-            match placement.Native with
-            | MarshalFieldNative.Illegal reason -> Some (placement.Field.Name, reason)
-            | MarshalFieldNative.Leaf _
-            | MarshalFieldNative.Nested _ -> None
-        )
-
     /// The first illegal field at any depth, searching depth-first in declaration order, with the
     /// names of the fields leading to it. This is the field CoreCLR names when building this
     /// type's struct stub fails: the stub builds each nested value type's stub as it reaches that
@@ -3975,153 +3963,182 @@ and CliValueType =
                     Placements = []
                 }
         | CliValueTypeStorage.Fields storage ->
-            let minimumSize, packingSize =
-                match vt.Layout with
-                | Layout.Custom (size = size ; packingSize = packing) ->
-                    size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
-                | Layout.Default -> 0, DEFAULT_PACKING_SIZE
+            CliValueType.ClassifyOwnFields concreteTypes assemblies corelib vt storage
+            |> CliValueType.LayOutClassified vt
 
-            // CoreCLR's `EEClassNativeLayoutInfo::CollectNativeLayoutFieldMetadataThrowing`
-            // (classlayoutinfo.cpp:984-988) bumps a computed native layout size of 0 to 1
-            // so the type has a distinct native address. This is universal post-processing
-            // and applies whether the zero came from an empty field list, all fields
-            // eliding to nothing, or an explicit `Size = 0` on the `[StructLayout]`. Apply
-            // here so every concrete return path through the marshal-size walk respects
-            // the same invariant.
-            let bumpZeroSized (size : SizeofResult) : SizeofResult =
-                if size.Size = 0 then
-                    { size with
-                        Size = 1
-                    }
+    /// What each of `vt`'s own fields contributes to its native image, in declaration order, or
+    /// the reason PawPrint does not implement a field's native form.
+    static member private ClassifyOwnFields
+        (concreteTypes : AllConcreteTypes)
+        (assemblies : LoadedAssemblies)
+        (corelib : BaseClassTypes<DumpedAssembly>)
+        (vt : CliValueType)
+        (storage : CliFieldBackedStorage)
+        : (CliConcreteField * Result<MarshalFieldNative, string>) list
+        =
+        storage.Fields
+        |> List.map (fun field ->
+            field,
+            CliValueType.TryFieldNative
+                concreteTypes
+                assemblies
+                corelib
+                vt.CharSet
+                field.MarshallingDescriptor
+                field.Type
+                field.Contents
+        )
+
+    /// Lay out `vt`'s own fields, as `ClassifyOwnFields` classified them, into its native image;
+    /// `NotImplemented` for the first field PawPrint cannot classify.
+    static member private LayOutClassified
+        (vt : CliValueType)
+        (classified : (CliConcreteField * Result<MarshalFieldNative, string>) list)
+        : Result<NativeLayout, MarshalSizeError>
+        =
+        let sized =
+            (classified, Result.Ok [])
+            ||> List.foldBack (fun (field, native) rest ->
+                match native, rest with
+                | Result.Error reason, _ ->
+                    MarshalSizeError.prefixField field.Name (MarshalSizeError.NotImplemented reason)
+                    |> Result.Error
+                | Result.Ok native, Result.Ok rest -> Result.Ok ((field, native) :: rest)
+                | Result.Ok _, Result.Error err -> Result.Error err
+            )
+
+        match sized with
+        | Result.Error err -> Result.Error err
+        | Result.Ok sized ->
+
+        let minimumSize, packingSize =
+            match vt.Layout with
+            | Layout.Custom (size = size ; packingSize = packing) ->
+                size, if packing = 0 then DEFAULT_PACKING_SIZE else packing
+            | Layout.Default -> 0, DEFAULT_PACKING_SIZE
+
+        // CoreCLR's `EEClassNativeLayoutInfo::CollectNativeLayoutFieldMetadataThrowing`
+        // (classlayoutinfo.cpp:984-988) bumps a computed native layout size of 0 to 1
+        // so the type has a distinct native address. This is universal post-processing
+        // and applies whether the zero came from an empty field list, all fields
+        // eliding to nothing, or an explicit `Size = 0` on the `[StructLayout]`. Apply
+        // here so every concrete return path through the marshal-size walk respects
+        // the same invariant.
+        let bumpZeroSized (size : SizeofResult) : SizeofResult =
+            if size.Size = 0 then
+                { size with
+                    Size = 1
+                }
+            else
+                size
+
+        // Native layout takes a declared `Size` by exactly the same rule the managed layout
+        // does, through the same helper: `CollectNativeLayoutFieldMetadataThrowing` calls
+        // `CalculateSizeWithMetadataSize` when the type `HasExplicitSize()` and `AlignSize`
+        // otherwise (classlayoutinfo.cpp:939-977). So the floor and the rounding are
+        // alternatives here too -- `Marshal.SizeOf` of `[Sequential, Size = 13] { long; int }`
+        // is 13, and of the same type with `Size = 4` is 12.
+        let computeFinal (currentEnd : int) (maxAlign : int) : SizeofResult =
+            let alignment = max maxAlign 1
+
+            let totalSize =
+                if minimumSize > 0 then
+                    max minimumSize currentEnd
                 else
-                    size
+                    roundUpToAlignment alignment currentEnd
 
-            // Native layout takes a declared `Size` by exactly the same rule the managed layout
-            // does, through the same helper: `CollectNativeLayoutFieldMetadataThrowing` calls
-            // `CalculateSizeWithMetadataSize` when the type `HasExplicitSize()` and `AlignSize`
-            // otherwise (classlayoutinfo.cpp:939-977). So the floor and the rounding are
-            // alternatives here too -- `Marshal.SizeOf` of `[Sequential, Size = 13] { long; int }`
-            // is 13, and of the same type with `Size = 4` is 12.
-            let computeFinal (currentEnd : int) (maxAlign : int) : SizeofResult =
-                let alignment = max maxAlign 1
+            bumpZeroSized
+                {
+                    Size = totalSize
+                    // The native layout takes a nominally-aligned type's managed alignment
+                    // too, stamped after the size has been computed from the fields
+                    // (classlayoutinfo.cpp:992), exactly as the managed layout does.
+                    Alignment = vt._NominalAlignment |> Option.defaultValue alignment
+                }
 
-                let totalSize =
-                    if minimumSize > 0 then
-                        max minimumSize currentEnd
-                    else
-                        roundUpToAlignment alignment currentEnd
+        let seqFields, nonSeqFields =
+            sized |> List.partition (fun (field, _) -> field.ConfiguredOffset.IsNone)
 
-                bumpZeroSized
-                    {
-                        Size = totalSize
-                        // The native layout takes a nominally-aligned type's managed alignment
-                        // too, stamped after the size has been computed from the fields
-                        // (classlayoutinfo.cpp:992), exactly as the managed layout does.
-                        Alignment = vt._NominalAlignment |> Option.defaultValue alignment
-                    }
+        // Accumulator for both folds: placements so far (reversed), the running
+        // offset/extent, and the widest alignment seen. Placements are recorded by the same
+        // step that consumes the offset, so the two can never drift apart.
+        let placeField
+            ((field, native) : CliConcreteField * MarshalFieldNative)
+            (offsetOf : int -> int -> int)
+            ((placed, running, maxAlign) : MarshalFieldPlacement list * int * int)
+            : MarshalFieldPlacement list * int * int
+            =
+            let size = native.Size
+            let alignmentCap = min size.Alignment packingSize
+            let offset = offsetOf running alignmentCap
 
-            let seqFields, nonSeqFields =
-                storage.Fields |> List.partition (fun field -> field.ConfiguredOffset.IsNone)
+            let placement =
+                {
+                    Field = CliConcreteField.ToCliField field
+                    NativeOffset = offset
+                    Native = native
+                }
 
-            // Accumulator for both folds: placements so far (reversed), the running
-            // offset/extent, and the widest alignment seen. Placements are recorded by the same
-            // step that consumes the offset, so the two can never drift apart.
-            let placeField
-                (field : CliConcreteField)
-                (offsetOf : int -> int -> int)
-                (acc : Result<MarshalFieldPlacement list * int * int, MarshalSizeError>)
-                : Result<MarshalFieldPlacement list * int * int, MarshalSizeError>
-                =
-                match acc with
-                | Result.Error _ -> acc
-                | Result.Ok (placed, running, maxAlign) ->
-                    match
-                        CliValueType.TryFieldNative
-                            concreteTypes
-                            assemblies
-                            corelib
-                            vt.CharSet
-                            field.MarshallingDescriptor
-                            field.Type
-                            field.Contents
-                    with
-                    | Result.Error reason ->
-                        Result.Error (MarshalSizeError.prefixField field.Name (MarshalSizeError.NotImplemented reason))
-                    | Result.Ok native ->
-                        let size = native.Size
-                        let alignmentCap = min size.Alignment packingSize
-                        let offset = offsetOf running alignmentCap
+            // Sequential layout advances the cursor past this field; explicit layout
+            // instead tracks the furthest extent, because fields may be declared out
+            // of offset order and may overlap.
+            placement :: placed, max running (offset + size.Size), max maxAlign alignmentCap
 
-                        let placement =
+        let finish ((placed, extent, align) : MarshalFieldPlacement list * int * int) : NativeLayout =
+            {
+                Size = computeFinal extent align
+                Placements = List.rev placed
+            }
+
+        match seqFields, nonSeqFields with
+        | [], [] ->
+            Result.Ok
+                {
+                    Size =
+                        bumpZeroSized
                             {
-                                Field = CliConcreteField.ToCliField field
-                                NativeOffset = offset
-                                Native = native
+                                Size = minimumSize
+                                Alignment = 1
                             }
+                    Placements = []
+                }
+        | _ :: _, [] ->
+            (([], 0, 0), seqFields)
+            ||> List.fold (fun acc sizedField ->
+                placeField
+                    sizedField
+                    (fun currentOffset alignmentCap ->
+                        if alignmentCap = 0 then
+                            currentOffset
+                        else
+                            let err = currentOffset % alignmentCap
 
-                        // Sequential layout advances the cursor past this field; explicit layout
-                        // instead tracks the furthest extent, because fields may be declared out
-                        // of offset order and may overlap.
-                        Result.Ok (placement :: placed, max running (offset + size.Size), max maxAlign alignmentCap)
-
-            let finish
-                (acc : Result<MarshalFieldPlacement list * int * int, MarshalSizeError>)
-                : Result<NativeLayout, MarshalSizeError>
-                =
-                acc
-                |> Result.map (fun (placed, extent, align) ->
-                    {
-                        Size = computeFinal extent align
-                        Placements = List.rev placed
-                    }
-                )
-
-            match seqFields, nonSeqFields with
-            | [], [] ->
-                Result.Ok
-                    {
-                        Size =
-                            bumpZeroSized
-                                {
-                                    Size = minimumSize
-                                    Alignment = 1
-                                }
-                        Placements = []
-                    }
-            | _ :: _, [] ->
-                (Result.Ok ([], 0, 0), seqFields)
-                ||> List.fold (fun acc field ->
-                    placeField
-                        field
-                        (fun currentOffset alignmentCap ->
-                            if alignmentCap = 0 then
+                            if err = 0 then
                                 currentOffset
                             else
-                                let err = currentOffset % alignmentCap
-
-                                if err = 0 then
-                                    currentOffset
-                                else
-                                    currentOffset + (alignmentCap - err)
-                        )
-                        acc
-                )
-                |> finish
-            | [], _ :: _ ->
-                (Result.Ok ([], 0, 0), nonSeqFields)
-                ||> List.fold (fun acc field -> placeField field (fun _ _ -> field.Offset) acc)
-                |> finish
-            | _ :: _, _ :: _ ->
-                MarshalSizeError.NotMarshalable "unexpectedly mixed explicit and automatic field offsets"
-                |> Result.Error
+                                currentOffset + (alignmentCap - err)
+                    )
+                    acc
+            )
+            |> finish
+            |> Result.Ok
+        | [], _ :: _ ->
+            (([], 0, 0), nonSeqFields)
+            ||> List.fold (fun acc (field, native) -> placeField (field, native) (fun _ _ -> field.Offset) acc)
+            |> finish
+            |> Result.Ok
+        | _ :: _, _ :: _ ->
+            MarshalSizeError.NotMarshalable "unexpectedly mixed explicit and automatic field offsets"
+            |> Result.Error
 
     /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would, *and* where each
     /// declared field lands in that unmanaged image. See `TryComputeMarshalSize` for the
     /// size-only entry point, which is this function with the placements dropped.
     ///
     /// This is `TryComputeNativeLayout`, refused with `NotMarshalable` as CoreCLR's
-    /// `IsStructMarshalable` refuses it when one of the type's own fields is illegal. Every
-    /// placement it returns is therefore a `Leaf` or `Nested` one.
+    /// `IsStructMarshalable` refuses it when one of the type's own fields is illegal, whether or
+    /// not PawPrint can lay out the rest. Every placement it returns is therefore a `Leaf` or
+    /// `Nested` one.
     ///
     /// A `RawBytes`-backed value type has no declared fields, so it yields an empty placement
     /// list alongside a non-zero size. That is not "nothing to marshal": consumers that write
@@ -4134,14 +4151,31 @@ and CliValueType =
         (vt : CliValueType)
         : Result<SizeofResult * MarshalFieldPlacement list, MarshalSizeError>
         =
-        CliValueType.TryComputeNativeLayout concreteTypes assemblies corelib vt
-        |> Result.bind (fun layout ->
-            match layout.FirstIllegalField with
-            | Some (fieldName, reason) ->
-                MarshalSizeError.prefixField fieldName (MarshalSizeError.NotMarshalable reason)
-                |> Result.Error
-            | None -> Result.Ok (layout.Size, layout.Placements)
-        )
+        let layout =
+            match vt._Storage with
+            | CliValueTypeStorage.Fields storage when not (CliValueType.IsAutoLayout concreteTypes assemblies vt) ->
+                let classified =
+                    CliValueType.ClassifyOwnFields concreteTypes assemblies corelib vt storage
+
+                let firstIllegal =
+                    classified
+                    |> List.tryPick (fun (field, native) ->
+                        match native with
+                        | Result.Ok (MarshalFieldNative.Illegal reason) -> Some (field.Name, reason)
+                        | Result.Ok (MarshalFieldNative.Leaf _)
+                        | Result.Ok (MarshalFieldNative.Nested _)
+                        | Result.Error _ -> None
+                    )
+
+                match firstIllegal with
+                | Some (fieldName, reason) ->
+                    MarshalSizeError.prefixField fieldName (MarshalSizeError.NotMarshalable reason)
+                    |> Result.Error
+                | None -> CliValueType.LayOutClassified vt classified
+            | CliValueTypeStorage.Fields _
+            | CliValueTypeStorage.RawBytes _ -> CliValueType.TryComputeNativeLayout concreteTypes assemblies corelib vt
+
+        layout |> Result.map (fun layout -> layout.Size, layout.Placements)
 
     /// Compute the unmanaged size of a value type as `Marshal.SizeOf` would. This is
     /// `TryComputeMarshalLayout` with the per-field placements dropped; see there for the layout

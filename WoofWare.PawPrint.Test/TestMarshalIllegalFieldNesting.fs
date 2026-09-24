@@ -424,3 +424,65 @@ public class LayoutClass { public int A; }
         |> List.collect (fun (_, hostShape, hostHolder, _, _) -> [ hostShape.Stub ; hostHolder.Stub ])
         |> Set.ofList
         |> shouldEqual (Set.ofList [ Stub.Blittable ; Stub.Synthesised ; Stub.Refused ])
+
+    let private mixedNamespace : string = "PawPrint.MarshalIllegalMixed"
+
+    /// Each struct declares a field CoreCLR refuses and a field PawPrint cannot size, in both
+    /// orders.
+    let private mixedBytes : byte array =
+        Roslyn.compileAssembly
+            mixedNamespace
+            Microsoft.CodeAnalysis.OutputKind.DynamicallyLinkedLibrary
+            []
+            [
+                $"""
+using System.Runtime.InteropServices;
+namespace %s{mixedNamespace};
+public struct IllegalFirst {{ [MarshalAs(UnmanagedType.I1)] public int F; public string S; }}
+public struct IllegalLast {{ public string S; [MarshalAs(UnmanagedType.I1)] public int F; }}
+"""
+            ]
+
+    [<TestCase "IllegalFirst">]
+    [<TestCase "IllegalLast">]
+    let ``a struct with an illegal field of its own is refused, whatever else it holds`` (name : string) : unit =
+        let hostType =
+            (System.Reflection.Assembly.Load mixedBytes).GetType $"%s{mixedNamespace}.%s{name}"
+
+        Assert.Throws<ArgumentException> (fun () -> Marshal.SizeOf hostType |> ignore)
+        |> ignore
+
+        let dumped =
+            use stream = new MemoryStream (mixedBytes)
+            AssemblyApi.read loggerFactory (Some $"%s{mixedNamespace}.dll") stream
+
+        let typeInfo =
+            dumped.TypeDefs
+            |> Seq.map (fun kvp -> kvp.Value)
+            |> Seq.filter (fun ti -> ti.Name = name)
+            |> Seq.exactlyOne
+
+        let state, handle =
+            IlMachineTypeResolution.concretizeType
+                loggerFactory
+                bct
+                (baseState.WithLoadedAssembly dumped)
+                typeInfo.AssemblyFullName
+                ImmutableArray.Empty
+                ImmutableArray.Empty
+                (TypeDefn.FromDefinition (typeInfo.Identity, System.Reflection.Metadata.SignatureTypeKind.ValueType))
+
+        let vt =
+            match IlMachineState.cliTypeZeroOfHandle state bct handle with
+            | CliType.ValueType vt, _ -> vt
+            | other, _ -> failwith $"%s{name} should be a value type, but its zero is %O{other}"
+
+        // PawPrint cannot lay the type out at all, because of the string field...
+        match CliValueType.TryComputeNativeLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+        | Result.Error (MarshalSizeError.NotImplemented _) -> ()
+        | other -> failwith $"%s{name}: expected PawPrint not to lay out a string field, got %A{other}"
+
+        // ...but it need not, to know that `Marshal.SizeOf` refuses it.
+        match CliValueType.TryComputeMarshalLayout state.ConcreteTypes state._LoadedAssemblies bct vt with
+        | Result.Error (MarshalSizeError.NotMarshalable _) -> ()
+        | other -> failwith $"%s{name}: expected NotMarshalable, got %A{other}"
