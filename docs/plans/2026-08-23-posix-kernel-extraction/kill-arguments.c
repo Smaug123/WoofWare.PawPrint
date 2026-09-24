@@ -43,12 +43,16 @@ int main(void) {
     alarm(30);
 
     // A pid that certainly names no process: a child that has been reaped.
+    // A failed fork would leave -1 here, which kill(2) reads as every
+    // process the caller may signal: stop rather than aim anything at it.
     pid_t gone = fork();
+    if (gone < 0) { perror("fork"); return 1; }
     if (gone == 0) _exit(0);
     waitpid(gone, NULL, 0);
 
     // A live process other than this one, which we may signal.
     pid_t other = fork();
+    if (other < 0) { perror("fork"); return 1; }
     if (other == 0) { alarm(20); pause(); _exit(0); }
 
     pid_t self = getpid();
