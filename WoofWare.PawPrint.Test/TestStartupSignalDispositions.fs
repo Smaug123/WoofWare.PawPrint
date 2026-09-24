@@ -1,6 +1,7 @@
 namespace WoofWare.PawPrint.Test
 
 open System.Collections.Concurrent
+open System.Runtime.InteropServices
 open System.Threading.Tasks
 open NUnit.Framework
 open WoofWare.PawPrint
@@ -14,6 +15,26 @@ open WoofWare.PosixKernel.Test
 [<TestFixture>]
 [<Parallelizable(ParallelScope.All)>]
 module TestStartupSignalDispositions =
+
+    [<DllImport("libc", EntryPoint = "sigaction", SetLastError = true)>]
+    extern int private hostSigaction(int signo, nativeint act, nativeint oldAct)
+
+    /// Whether this test host ignores `signo`. An ignored disposition survives
+    /// `execve`, so the oracle's child starts with it too, and a launcher that
+    /// ignores a signal (`nohup`, or a shell running a job in the background)
+    /// would otherwise read as a runtime that survives it. `struct sigaction`
+    /// begins with the handler on both flavours, and `SIG_IGN` is 1 on both.
+    let private hostIgnores (signo : int) : bool =
+        let buffer = Marshal.AllocHGlobal 1024
+
+        try
+            for offset in 0..8..1016 do
+                Marshal.WriteInt64 (buffer, offset, 0L)
+
+            // A failure (glibc's reserved 32 and 33) reads as "not ignored".
+            hostSigaction (signo, 0n, buffer) = 0 && Marshal.ReadInt64 buffer = 1L
+        finally
+            Marshal.FreeHGlobal buffer
 
     let private guest : string =
         """
@@ -79,7 +100,14 @@ class Program
                             else
                                 RealRuntimeResult.NormalExit (128 + signo)
 
-                        if observed.[signo] <> expected then
+                        // A row the launcher ignores says nothing about the
+                        // runtime unless the runtime survives it anyway.
+                        let inherited = hostIgnores signo && not survives
+
+                        if inherited then
+                            printfn
+                                $"signo %d{signo} (%O{signal}): not checked, because this test host ignores it and the oracle's child inherits that."
+                        elif observed.[signo] <> expected then
                             yield
                                 $"signo %d{signo} (%O{signal}): expected %O{expected}, the real runtime gave %O{observed.[signo]}"
                 ]
