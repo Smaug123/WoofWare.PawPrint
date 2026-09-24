@@ -142,13 +142,16 @@ module NativeRuntimeFieldHandle =
             ->
             // CoreCLR's RuntimeFieldHandle::GetApproxDeclaringMethodTable
             // (runtimehandles.cpp:2192) is an FCall returning
-            // pField->GetApproxEnclosingMethodTable() — the canonical MethodTable for
-            // the field's declaring type. Under shared-generic codegen the canonical
-            // form is the open instantiation. With PawPrint's per-canonical
-            // FieldHandle model, the stored DeclaringType is `Closed` for non-generic
-            // declaring types and `OpenGenericTypeDefinition` for generic ones.
-            // `NativeIntSource.MethodTablePtr` carries the full `RuntimeTypeHandleTarget`,
-            // so the open-generic case surfaces directly.
+            // pField->GetApproxEnclosingMethodTable() — the MethodTable the FieldDesc belongs
+            // to, which for a reference-type instantiation of a generic type is the shared
+            // canonical (`__Canon`) one rather than the exact instantiation.
+            // PawPrint shares no field descriptions between instantiations (see
+            // `AcquiresContextFromThis` below): a `FieldHandle` records the exact
+            // `RuntimeTypeHandleTarget` it was minted against — `Closed` for any closed type,
+            // generic instantiations included, and `OpenGenericTypeDefinition` only for a
+            // handle taken from the generic definition itself — so the answer is that exact
+            // type. `NativeIntSource.MethodTablePtr` carries the full `RuntimeTypeHandleTarget`,
+            // so both arms surface directly.
             let operation = "RuntimeFieldHandle.GetApproxDeclaringMethodTable"
 
             let fieldHandle =
@@ -467,10 +470,75 @@ module NativeRuntimeFieldHandle =
                 isClassInitializedPtr
                 (CliType.Numeric (CliNumericType.Int32 (if classIsInitialised then 1 else 0)))
 
+    /// The value to store in a field of the unmanaged pointer or function-pointer type
+    /// `fieldTypeHandle`, given the `object?` the managed caller passed. Mirrors the
+    /// `ELEMENT_TYPE_PTR` and `ELEMENT_TYPE_FNPTR` arms of `InvokeUtil::SetValidField`
+    /// (invokeutil.cpp:878-895): null stores a null pointer, a `System.Reflection.Pointer` into a
+    /// pointer field stores its `_ptr`, and anything else stores the pointer-width payload of the
+    /// box. The stored cell keeps whatever provenance the value carries.
+    let private pointerToStore
+        (ctx : NativeCallContext)
+        (operation : string)
+        (fieldTypeHandle : ConcreteTypeHandle)
+        (value : ManagedHeapAddress option)
+        (state : IlMachineState)
+        : IlMachineState * CliType
+        =
+        let zero, state =
+            IlMachineState.cliTypeZeroOfHandle state ctx.BaseClassTypes fieldTypeHandle
+
+        match value with
+        | None ->
+            // Managed `CheckValue` passes a null through unchanged for a pointer field, which is
+            // not an "actual value type" (FieldAccessor.cs:370), so this arm is reachable.
+            state, zero
+        | Some valueAddr ->
+
+        let isPointerField =
+            match fieldTypeHandle with
+            | ConcreteTypeHandle.Pointer _ -> true
+            | _ -> false
+
+        match NativeReflectionPointer.tryPointerValue state valueAddr with
+        | Some ptr when isPointerField -> state, EvalStackValue.toCliTypeCoerced zero (EvalStackValue.ofCliType ptr)
+        | Some _ ->
+            // CoreCLR would read a `Pointer`'s first pointer-width bytes as if it were a boxed
+            // `IntPtr`. Managed `RuntimeType.CheckValue` refuses a `Pointer` for a function-pointer
+            // field before the QCall (`CanValueSpecialCast`, RuntimeType.CoreCLR.cs:3739), so no
+            // guest reaches this.
+            failwith
+                $"%s{operation}: a System.Reflection.Pointer for the function-pointer field type %O{fieldTypeHandle}; the managed caller refuses one before the QCall"
+        | None ->
+
+        let boxed =
+            match ManagedHeap.tryGet valueAddr state.ManagedHeap with
+            | Some boxed -> boxed
+            | None ->
+                failwith
+                    $"%s{operation}: value for the pointer field type %O{fieldTypeHandle} is not a boxed value type (it is an array or is not on the non-array heap)"
+
+        // `InvokeUtil::GetIntPtrValue` reads the box's payload as a `void*` whatever its type.
+        // Managed `CheckValue` converts a `Pointer` to an `IntPtr` before the QCall and otherwise
+        // accepts only an `IntPtr`, or, for a `void*` field, a `UIntPtr` too
+        // (`CanValueSpecialCast` and `InvokeUtils.TryConvertPointer`); every other type is
+        // refused there. So those two are the only payloads this reads.
+        match boxed.ConcreteType with
+        | ConcretePrimitive state.ConcreteTypes PrimitiveType.IntPtr
+        | ConcretePrimitive state.ConcreteTypes PrimitiveType.UIntPtr ->
+            let contents, state =
+                BoxedValue.contents ctx.BaseClassTypes boxed.ConcreteType boxed.Contents state
+
+            // `ofCliType` flattens the primitive-like wrapper to its native int, provenance and all.
+            state, EvalStackValue.toCliTypeCoerced zero (EvalStackValue.ofCliType contents)
+        | other ->
+            failwith
+                $"%s{operation}: cannot store a value boxed as %O{other} into the pointer field type %O{fieldTypeHandle}; the managed caller converts or refuses everything but an IntPtr, a UIntPtr or a System.Reflection.Pointer"
+
     /// The value to store in a field of type `fieldTypeHandle`, given the `object?` the managed
     /// caller boxed it into. Mirrors the split in `InvokeUtil::SetValidField`
     /// (invokeutil.cpp:820-960) between the reference-typed arms, which copy the `OBJECTREF`
-    /// straight through, and the rest, which read the payload out of the box.
+    /// straight through, and the rest, which read the payload out of the box. The pointer and
+    /// function-pointer arms are `pointerToStore`.
     let private valueToStore
         (ctx : NativeCallContext)
         (operation : string)
@@ -480,6 +548,16 @@ module NativeRuntimeFieldHandle =
         : IlMachineState * CliType
         =
         let baseClassTypes = ctx.BaseClassTypes
+
+        match fieldTypeHandle with
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ -> pointerToStore ctx operation fieldTypeHandle value state
+        | ConcreteTypeHandle.Byref _ ->
+            failwith
+                $"BUG: %s{operation} on a field of byref type %O{fieldTypeHandle}; only a ref struct declares one, and a ref struct instance cannot be handed to reflection"
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _
+        | ConcreteTypeHandle.Concrete _ ->
 
         if IlMachineState.isReferenceTypeHandle baseClassTypes operation state fieldTypeHandle then
             state, CliType.ObjectRef value
@@ -533,7 +611,8 @@ module NativeRuntimeFieldHandle =
     /// answer the `OBJECTREF` itself, and every value-typed arm allocates a box of the *field's*
     /// type and copies the cell into it — so an enum field answers a boxed enum, not a boxed
     /// integer — with `Nullable::NormalizeBox` then turning a `Nullable<T>` box into null or a
-    /// boxed `T`. `Boxing.boxValue` is that whole rule, shared with the `box` opcode.
+    /// boxed `T`. `Boxing.boxValue` is that whole rule, shared with the `box` opcode. The pointer
+    /// and function-pointer arms answer `NativeReflectionPointer.toObject`'s wrapper instead.
     let private valueToReturn
         (ctx : NativeCallContext)
         (operation : string)
@@ -545,13 +624,10 @@ module NativeRuntimeFieldHandle =
         match fieldTypeHandle with
         | ConcreteTypeHandle.Pointer _
         | ConcreteTypeHandle.FunctionPointer _ ->
-            // CoreCLR's `ELEMENT_TYPE_PTR` arm answers a `System.Reflection.Pointer` around the raw
-            // address, and its `ELEMENT_TYPE_FNPTR` arm a boxed `IntPtr` holding it (measured:
-            // `typeof(P).GetField("Ptr").GetValue(p).GetType()` is `System.Reflection.Pointer`).
-            // PawPrint's pointer cell carries provenance rather than an address to wrap, and the
-            // `box` opcode refuses a pointer type for the same reason (`executeBox`).
-            failwith
-                $"TODO: %s{operation} on a field of pointer type %O{fieldTypeHandle}; CoreCLR answers a System.Reflection.Pointer (or a boxed IntPtr for a function pointer) around the raw address, which PawPrint's provenance-tracked pointer cannot supply"
+            let addr, state =
+                NativeReflectionPointer.toObject ctx fieldTypeHandle (EvalStackValue.ofCliType cell) state
+
+            state, CliType.ObjectRef (Some addr)
         | ConcreteTypeHandle.Byref _ ->
             // A `ref` field lives only in a ref struct, which cannot be boxed, so no instance can
             // reach `FieldInfo.GetValue` with one.

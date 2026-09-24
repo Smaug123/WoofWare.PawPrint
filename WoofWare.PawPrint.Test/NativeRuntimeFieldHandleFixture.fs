@@ -48,6 +48,7 @@ public sealed class RvaHolder
 public sealed unsafe class PointerHolder
 {
     public int* Ptr;
+    public delegate*<int, int> Fn;
 }
 
 public sealed class GenericHolder<T>
@@ -195,6 +196,26 @@ public sealed class GenericHolder<T>
             HolderType = holderType
             HolderTypeHandle = holderTypeHandle
             Int32Handle = int32Handle
+            State = state
+        }
+
+    /// `fixture`, driving `entry` instead, over the same guest assembly and the same state, so
+    /// that a test can run one native method on the state another has left behind.
+    let retarget (entry : NativeEntry) (fixture : Fixture) : Fixture =
+        let state, nativeMethod, _ =
+            ExecutionConcretization.concretizeMethodWithTypeGenerics
+                fixture.LoggerFactory
+                fixture.BaseClassTypes
+                ImmutableArray.Empty
+                (findNativeMethod entry fixture.RuntimeFieldHandleType)
+                None
+                fixture.Corelib.DefinitionFullName
+                ImmutableArray.Empty
+                fixture.State
+
+        { fixture with
+            Entry = entry
+            NativeMethod = nativeMethod
             State = state
         }
 

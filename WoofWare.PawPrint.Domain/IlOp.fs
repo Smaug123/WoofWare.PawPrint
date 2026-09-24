@@ -370,8 +370,9 @@ type NullaryIlOp =
 type UnaryConstIlOp =
     | Stloc of uint16
     /// ECMA-335 III.3.63: the index is an *unsigned* one-byte slot number, as for every
-    /// other short-form local/argument accessor. Roslyn emits this form for slots 4..255,
-    /// so a method with enough locals reaches the half above 127.
+    /// other short-form local/argument accessor. Roslyn emits this form for slots 4..254
+    /// (and the long form from 255 up), so a method with enough locals reaches the half
+    /// above 127.
     | Stloc_s of uint8
     | Ldc_I8 of int64
     | Ldc_I4 of int32

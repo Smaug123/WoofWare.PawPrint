@@ -281,7 +281,7 @@ state; a half-finished migration taxes every later change.
 
 ## Plan
 
-Stage 1 — this PR. `Native/NativeStackTrace.fs`, registered in `NativeQCall.fs`, plus the
+Stage 1 — landed (#1119). `Native/NativeStackTrace.fs`, registered in `NativeQCall.fs`, plus the
 current-thread walk.
 
 1. A guest-observable current-thread walk returning `ExceptionStackFrame<ConcreteTypeHandle, ...>
@@ -324,7 +324,7 @@ Tests:
   `new StackTrace(ex, fNeedFileInfo: true)` (blocked at the `[UnsafeAccessor]` TODO,
   `AbstractMachine.fs:402`).
 
-Stage 2 — separate PR, not this one. `RuntimeMethodHandle.IsTypicalMethodDefinition` (InternalCall)
+Stage 2 — landed (#1482). `RuntimeMethodHandle.IsTypicalMethodDefinition` (InternalCall)
 and `RuntimeMethodHandle_GetTypicalMethodDefinition` (QCall), together.
 
 The order is settled by observability, not preference: `GetTypicalMethodDefinition`'s **only**
@@ -342,3 +342,10 @@ those green guests is three features long: this QCall, the pair, and then `[Unsa
 dispatch — or, more cheaply, making an unresolvable `[UnsafeAccessor]` raise a *guest* exception,
 which the surrounding `try/catch` would swallow exactly as real .NET does when
 `System.Diagnostics.StackTrace.dll` is absent.
+
+Status: `[UnsafeAccessor]` dispatch has landed, and `CreateStackTraceSymbols()` now stops at
+`UnsafeAccessorDispatch`'s refusal of an accessor that names its type with `[UnsafeAccessorType]`.
+The cheaper route above would not be faithful: `System.Diagnostics.StackTrace` ships in the shared
+framework, so real .NET resolves the name and constructs a `StackTraceSymbols` rather than taking
+the `catch`. What remains is `[UnsafeAccessorType]` resolution, which CoreCLR does through the
+managed `TypeNameResolver.GetTypeHelper` and so through the `AssemblyNative_InternalLoad` QCall.

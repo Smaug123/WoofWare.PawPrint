@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 
 // How `[UnsafeAccessor]` behaves around generics, which is stricter than it looks. CoreCLR compares
 // the declaration's signature blob against the candidate's with *no substitution on either side*
-// (`pSubst1 = pSubst2 = NULL`, vm/unsafeaccessors.cpp:399 and :409), so a target spelling `!0`
+// (`pSubst1 = pSubst2 = NULL`, vm/unsafeaccessors.cpp:401 and :408), so a target spelling `!0`
 // matches only a declaration spelling `!0` -- never one spelling the type that instantiates it.
 //
 // Consequences, all measured on real .NET 10:

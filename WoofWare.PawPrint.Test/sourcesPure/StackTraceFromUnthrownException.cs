@@ -10,8 +10,8 @@ using System.Diagnostics;
 // Deliberately the *single-argument* `StackTrace(Exception)` overload. It passes
 // `fNeedFileInfo: false` (StackTrace.cs:81-86), and the `true` overloads are not reachable under
 // PawPrint yet: `InitializeSourceInfo` calls `CreateStackTraceSymbols()` before looking at any
-// frame, gated only on that flag, and it is an `[UnsafeAccessor]` constructor, whose dispatch is
-// unimplemented. Zero frames does not protect against it —
+// frame, gated only on that flag, and it is an `[UnsafeAccessor]` constructor naming its type with
+// `[UnsafeAccessorType]`, which PawPrint does not resolve. Zero frames does not protect against it —
 // `sourcesPure/StackTraceFromExceptionNeedFileInfo.cs` is the parked guest for that shape.
 //
 // Every assertion here holds on both runtimes, measured. In particular `GetFrames()` answers an

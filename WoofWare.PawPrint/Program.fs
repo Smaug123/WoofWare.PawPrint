@@ -1570,8 +1570,8 @@ module Program =
             let message = fatal.Message |> Option.defaultValue "<no message>"
             $"aborted on %O{thread} with %O{fatal.Code}: %s{message}"
         | RunOutcome.SignalTerminated (_, signal) -> $"was terminated by signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, thread, exn) ->
-            $"threw an unhandled exception on %O{thread}: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, thread, exn) ->
+            $"threw an unhandled exception on %O{thread}:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     /// Advance startup by one guest instruction, crossing a phase boundary when the entry
     /// thread's current frame returns.

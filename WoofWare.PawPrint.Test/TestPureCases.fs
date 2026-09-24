@@ -36,7 +36,7 @@ module TestPureCases =
             "DelegateBindOpenGenericDefinitionFormalSignature.cs" // `CreateDelegate` over a method of an open generic definition, where deciding compatibility needs a comparison against a type naming the definition's own variables: a parameter or return spelled with `T`, or an instance target's receiver, which is the typical instantiation `G<T>`. CoreCLR reads the signature against that typical instantiation and compares such a type as a `TypeVarTypeDesc` under its constraints (`IsLocationAssignable`, comdelegate.cpp:2367-2489), and the answer is not simply "incompatible": `T : class` makes a `T` return assignable to `object`, a nested enum `G<T>.E` matches `int` by the enum rule, and a contravariant `IContra<in T>`'s closed implementation passes as the receiver and binds to a working delegate. `NativeDelegate.isCompatible` refuses each such comparison at the point CoreCLR would make it, since every type it compares is a `ConcreteTypeHandle`. Measured on the first check: "TODO: Delegate_BindToMethodInfo must compare the target's first argument, <type param 0>, which names a type variable of the open generic definition declaring the target". Each of the eleven checks was measured separately to reach that refusal rather than a wrong answer. Un-park when delegate compatibility can compare a type in a definition's formal context. `IlMachineRuntimeMetadata.isRuntimeTypeHandleTargetAssignableTo` answers `CanCastTo` over such types for constraint validation, but `isCompatible` does not yet read the target's signature as `RuntimeTypeHandleTarget`s it could hand that oracle, and the enum and primitive rules of `IsLocationAssignable` are more than a cast. `DelegateBindOpenGenericDefinitionMethod.cs` covers the cases that never make such a comparison. Verified to exit 0 on real .NET.
             "DelegateBindOpenGenericDefinitionStaticVirtual.cs" // `CreateDelegate` over a static virtual method of an open generic interface definition, `typeof(I<>).GetMethod("M")`. Unlike every other method of an open definition, real .NET *binds* it: `BindToMethod` sends a virtual target on a non-value type to a virtual call stub over the typical instantiation (comdelegate.cpp:1237-1244), or virtualises it when closed over an object, and neither path asks for a code address, so no `InvalidOperationException`; the delegate raises `EntryPointNotFoundException` when invoked. PawPrint cannot build that stub, because `FunctionPointerTarget.VirtualCallStub` names a closed declaring type. Measured: "TODO: Delegate_BindToMethodInfo was asked to bind Abstract, a static virtual method of the open generic definition". Un-park when a virtual call stub can be minted over a definition's typical instantiation. Verified to exit 0 on real .NET.
             "PointerFieldAliasedWidthStore.cs" // Storing into a pointer-typed field through a byref aliased as `long*`/`double*` rather than `void**`. A pointer slot is a `CliType.RuntimePointer` cell with no byte image, so the byte-scatter writer refuses it; the sibling `PointerFieldIndirectStore.cs` fixes that for the pointer-shaped payloads by replacing the whole cell instead. That route is deliberately *not* taken here, because whole-cell replacement restamps the cell with the payload's shape: on a 64-bit runtime `stind.i8`/`stind.r8` are exact-width stores into a `void*` slot too, and taking them would leave the field holding `Numeric Int64`/`Float64`, so the next read pushes the wrong evaluation-stack kind and fails downstream (measured: `bad ceq: Int64 vs NativeInt(0)`) with a message naming neither the field nor the store. Un-parking needs a pointer cell that can hold a non-pointer bit pattern while still reading back as a pointer — i.e. the same "materialise bits late" question as the rest of the provenance model — not a wider routing predicate.
-            "StackTraceFromExceptionNeedFileInfo.cs" // `new StackTrace(exception, fNeedFileInfo: true)` on an exception with no captured trace. The blocker is not the frame count, which is zero and correctly reported: `InitializeSourceInfo` calls `CreateStackTraceSymbols()` *before* the loop over frames, gated only on `fNeedFileInfo` (StackFrameHelper.cs:95-113), so an empty capture does not avoid it. Measured: "TODO: dispatch [UnsafeAccessor] is unimplemented for System.Diagnostics.StackFrameHelper::CreateStackTraceSymbols (kind=Constructor)". CoreLib wraps that block in `try { } catch { }`, which is how real .NET copes when `System.Diagnostics.StackTrace.dll` is absent, but that swallows a *guest* exception and a host-level refusal is not one. Un-park with `[UnsafeAccessor]` dispatch, or more cheaply by making an unresolvable `[UnsafeAccessor]` raise a guest exception, which CoreLib's own catch then absorbs. This is the blocker standing between `Exception.StackTrace` (Exception.cs:232) and `ExceptionDispatchInfo.SetCurrentStackTrace` (Exception.cs:247) and working, both of which pass `fNeedFileInfo: true`. Verified to exit 0 on real .NET.
+            "StackTraceFromExceptionNeedFileInfo.cs" // `new StackTrace(exception, fNeedFileInfo: true)` on an exception with no captured trace. The blocker is not the frame count, which is zero and correctly reported: `InitializeSourceInfo` calls `CreateStackTraceSymbols()` *before* the loop over frames, gated only on `fNeedFileInfo` (StackFrameHelper.cs:95-113), so an empty capture does not avoid it. `CreateStackTraceSymbols` is an `[UnsafeAccessor]` constructor whose return type is named by `[UnsafeAccessorType("System.Diagnostics.StackTraceSymbols, System.Diagnostics.StackTrace, ...")]`, and `UnsafeAccessorDispatch.resolve` refuses any accessor that names a type that way (measured: "names at least one of its types with [UnsafeAccessorType]"). Raising that refusal as a guest exception for CoreLib's surrounding `try { } catch { }` to absorb would not be faithful: `System.Diagnostics.StackTrace` ships in the shared framework, so real .NET resolves the name and constructs a `StackTraceSymbols`. Un-park with `[UnsafeAccessorType]` resolution. CoreCLR resolves the name through the managed `TypeNameResolver.GetTypeHelper` (vm/typeparse.cpp), which loads the named assembly with `RuntimeAssembly.InternalLoad`, so that needs the `AssemblyNative_InternalLoad` QCall, which PawPrint does not yet answer. This is the blocker standing between `Exception.StackTrace` (Exception.cs:232) and `ExceptionDispatchInfo.SetCurrentStackTrace` (Exception.cs:247) and working, both of which pass `fNeedFileInfo: true`. Verified to exit 0 on real .NET.
         ]
         |> Set.ofList
 
@@ -761,8 +761,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -822,8 +822,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -877,8 +877,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -919,8 +919,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -952,8 +952,9 @@ class Program
                 | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected FailFast, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"expected FailFast, got guest unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith
+                        $"expected FailFast, got guest unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<TestCaseSource(nameof simpleCases)>]
@@ -1081,8 +1082,8 @@ class Program
             failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     /// The variables `Environment.GetEnvironmentVariables` is asserted against
     /// below, chosen so that no single mistake in the environment block satisfies
