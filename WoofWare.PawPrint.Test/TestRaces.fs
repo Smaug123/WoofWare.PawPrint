@@ -42,8 +42,9 @@ module TestRaces =
             failwith $"%s{sourceName} (seed=%A{seed}) aborted (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"%s{sourceName} (seed=%A{seed}) was terminated by POSIX signal %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            failwith $"%s{sourceName} (seed=%A{seed}) threw unhandled exception: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            failwith
+                $"%s{sourceName} (seed=%A{seed}) threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     /// Run `image` through the real .NET runtime once. Fails the test on
     /// unhandled exception. The host's threading and memory ordering pin
