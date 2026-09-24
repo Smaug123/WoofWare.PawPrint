@@ -2880,9 +2880,13 @@ module IlMachineManagedByref =
                 //
                 // Probed only for roots whose typed read is total. `readRootValue` throws for
                 // `PeByteRange`, and for the raw byte pools when no typed cell starts at the
-                // offset; those roots are byte storage by construction and can never hold a
-                // reference anyway. `tryNameCellForByteAccess` yields `None` for byte-addressable
-                // storage, so nothing that reaches the writers below today is diverted.
+                // offset. A raw pool can nonetheless hold a cell with no byte image — `*p = new
+                // Outer { ... }` through a stackalloc'd `Outer*` installs one when `Outer` holds a
+                // pointer — and `ref p->I` reaches into it with a structural prefix; the
+                // `_, prefixProjs` arm below names the cell for that shape, having committed to a
+                // typed read of the root. `tryNameCellForByteAccess` yields `None` for
+                // byte-addressable storage, so nothing that reaches the writers below today is
+                // diverted.
                 //
                 // This reads the root value for `ArrayElement` and `HeapValue`. Both reads are
                 // total: those roots are only ever built by `ldelema` and by boxing, which
@@ -2949,6 +2953,13 @@ module IlMachineManagedByref =
                     // rather than at the structural writer, but the *storage* is not.
                     // `tryNameCellForByteAccess` yields `None` for byte-addressable storage, so
                     // nothing that reaches `resolveCell` today is diverted.
+                    //
+                    // For every root the probe above covers, this repeats it on the same inputs and
+                    // so finds nothing. It is the only naming attempt for a `StackMemoryByte` or
+                    // `NativeMemoryByte` root with a structural prefix, which the probe above
+                    // skips: `Unsafe.As<Inner, byte>(ref p->I)` through a stackalloc'd or natively
+                    // allocated `Outer*` whose `Inner` holds a pointer
+                    // (`StackallocFieldPrefixByteViewStore.cs`).
                     let namedWrite =
                         let cellHere = readProjectedValue rootValue prefixProjs
 

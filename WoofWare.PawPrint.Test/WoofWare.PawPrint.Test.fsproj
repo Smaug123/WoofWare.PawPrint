@@ -301,6 +301,7 @@
     <Compile Include="TestFabricatedArrayConstructorNewobj.fs" />
     <Compile Include="TestFabricatedEntryPoint.fs" />
     <Compile Include="TestFabricatedIntrinsicWithoutIl.fs" />
+    <Compile Include="TestFabricatedFieldMarshal.fs" />
     <Compile Include="TestSetupShape.fs" />
     <Compile Include="TestUnresolvableDeclaration.fs" />
     <Compile Include="TestCrossAssemblySlotContent.fs" />

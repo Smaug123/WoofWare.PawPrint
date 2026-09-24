@@ -8,6 +8,7 @@ namespace WoofWare.PawPrint.Test
 open System
 open System.Collections.Immutable
 open System.Reflection
+open System.Runtime.InteropServices
 open System.Text
 open FsCheck
 open FsCheck.FSharp
@@ -206,7 +207,7 @@ module TestNativeTypeParamInfo =
         | _ -> failwith "unreachable: hostCall returns six ints and three pointers"
 
     /// PawPrint's verdict: the parse, mapped to out-params exactly as the `GetMarshalAs` handler
-    /// writes them.
+    /// writes them, with every field the parse left unwritten read from the FCall's zeroed struct.
     let private ourOutcome (blob : byte array) : MarshalAsOutcome option =
         NativeTypeParamInfo.parse (ImmutableArray.CreateRange blob)
         |> Option.map (fun info ->
@@ -214,9 +215,9 @@ module TestNativeTypeParamInfo =
                 UnmanagedType = int info.NativeType
                 SafeArraySubType = 0
                 SafeArrayUserDefinedSubType = None
-                ArraySubType = int info.ArrayElementType
-                SizeParamIndex = int info.CountParamIndex
-                SizeConst = int info.Additive
+                ArraySubType = info.ArrayElementType |> Option.map int |> Option.defaultValue 0
+                SizeParamIndex = info.CountParamIndex |> Option.map int |> Option.defaultValue 0
+                SizeConst = info.Additive |> Option.map int |> Option.defaultValue 0
                 MarshalType = info.MarshalerTypeName |> Option.map (fun s -> int64 s.Offset)
                 MarshalCookie = info.Cookie |> Option.map (fun s -> int64 s.Offset)
                 IidParamIndex = 0
@@ -397,37 +398,39 @@ module TestNativeTypeParamInfo =
     /// What `ParseNativeTypeInfo` must report for a well-formed spec, stated from the model rather
     /// than from the bytes.
     let private expected (spec : MarshalSpec) : NativeTypeParamInfo =
-        let zero (nativeType : byte) : NativeTypeParamInfo =
+        let unwritten (nativeType : byte) : NativeTypeParamInfo =
             {
                 NativeType = nativeType
-                ArrayElementType = 0u
-                CountParamIndex = 0us
-                Additive = 0u
+                ArrayElementType = None
+                CountParamIndex = None
+                Additive = None
                 MarshalerTypeName = None
                 Cookie = None
             }
 
         match spec with
-        | MarshalSpec.Simple nativeType -> zero nativeType
+        | MarshalSpec.Simple nativeType -> unwritten nativeType
         | MarshalSpec.FixedSysString size ->
-            { zero 0x17uy with
-                Additive = size.Value
+            { unwritten 0x17uy with
+                Additive = Some size.Value
             }
         | MarshalSpec.FixedArray (size, elementType) ->
-            { zero 0x1Euy with
-                Additive = size.Value
-                ArrayElementType = elementType |> Option.map (fun e -> e.Value) |> Option.defaultValue 0u
+            { unwritten 0x1Euy with
+                Additive = Some size.Value
+                ArrayElementType = elementType |> Option.map (fun e -> e.Value)
             }
         | MarshalSpec.Array items ->
-            let item (index : int) : uint32 =
-                List.tryItem index items
-                |> Option.map (fun c -> c.Value)
-                |> Option.defaultValue 0u
+            let item (index : int) : uint32 option =
+                List.tryItem index items |> Option.map (fun c -> c.Value)
 
-            { zero 0x2Auy with
+            { unwritten 0x2Auy with
                 ArrayElementType = item 0
-                CountParamIndex = uint16 (item 1 &&& 0xFFFFu)
-                Additive = item 2
+                CountParamIndex = item 1 |> Option.map (fun index -> uint16 (index &&& 0xFFFFu))
+                // A size-param index resets the additive to 0 before the additive itself is read.
+                Additive =
+                    match item 1 with
+                    | None -> None
+                    | Some _ -> Some (item 2 |> Option.defaultValue 0u)
             }
         | MarshalSpec.CustomMarshaler (guid, nativeTypeName, marshaler, cookie) ->
             let afterGuid = 1 + guid.PrefixWidth + guid.Bytes.Length
@@ -438,7 +441,7 @@ module TestNativeTypeParamInfo =
             let marshalerOffset = afterNativeTypeName + marshaler.PrefixWidth
             let cookieOffset = marshalerOffset + marshaler.Bytes.Length + cookie.PrefixWidth
 
-            { zero 0x2Cuy with
+            { unwritten 0x2Cuy with
                 MarshalerTypeName =
                     Some
                         {
@@ -554,14 +557,19 @@ module TestNativeTypeParamInfo =
         agreesWithHost [||]
 
     [<Test>]
-    let ``absent optional fields are zero, not the NativeTypeParamInfo constructor's defaults`` () : unit =
+    let ``absent optional fields are unwritten, which the FCall reports as zero`` () : unit =
         // The FCall zeroes the struct before parsing, so an LPArray with nothing after its leading
         // byte reports `ArraySubType = 0` rather than NATIVE_TYPE_DEFAULT (0x50), and `SizeConst = 0`
         // rather than the constructor's 1.
         let parsed = NativeTypeParamInfo.parse (ImmutableArray.Create 0x2Auy) |> Option.get
-        parsed.ArrayElementType |> shouldEqual 0u
-        parsed.Additive |> shouldEqual 0u
-        parsed.CountParamIndex |> shouldEqual 0us
+        parsed.ArrayElementType |> shouldEqual None
+        parsed.Additive |> shouldEqual None
+        parsed.CountParamIndex |> shouldEqual None
+
+        ourOutcome [| 0x2Auy |]
+        |> Option.map (fun outcome -> outcome.ArraySubType, outcome.SizeConst, outcome.SizeParamIndex)
+        |> shouldEqual (Some (0, 0, 0))
+
         agreesWithHost [| 0x2Auy |]
 
     [<Test>]
@@ -572,18 +580,18 @@ module TestNativeTypeParamInfo =
         let parsed =
             NativeTypeParamInfo.parse (ImmutableArray.CreateRange blob) |> Option.get
 
-        parsed.CountParamIndex |> shouldEqual 0x0304us
+        parsed.CountParamIndex |> shouldEqual (Some 0x0304us)
         agreesWithHost blob
 
     [<Test>]
     let ``a malformed FixedArray element type still succeeds`` () : unit =
         // mlinfo.cpp's one `return TRUE` on a failed check: the size is kept and the element type
-        // stays zero.
+        // is left unwritten.
         let blob = [| 0x1Euy ; 0x04uy ; 0xE0uy |]
 
         NativeTypeParamInfo.parse (ImmutableArray.CreateRange blob)
         |> Option.map (fun info -> info.Additive, info.ArrayElementType)
-        |> shouldEqual (Some (4u, 0u))
+        |> shouldEqual (Some (Some 4u, None))
 
         agreesWithHost blob
 
@@ -621,12 +629,140 @@ module TestNativeTypeParamInfo =
                 Some
                     {
                         NativeType = blob.[0]
-                        ArrayElementType = 0u
-                        CountParamIndex = 0us
-                        Additive = 0u
+                        ArrayElementType = None
+                        CountParamIndex = None
+                        Additive = None
                         MarshalerTypeName = None
                         Cookie = None
                     }
             )
 
             agreesWithHost blob
+
+    // ---- the field-layout projection -----------------------------------------
+
+    /// What `MarshalInfo` lays a field out by for a well-formed spec, stated from the model.
+    let private expectedField (spec : MarshalSpec) : FieldMarshalDescriptor option =
+        match spec with
+        | MarshalSpec.Simple 0x50uy -> None
+        | MarshalSpec.Simple nativeType ->
+            Some (FieldMarshalDescriptor.Other (LanguagePrimitives.EnumOfValue (int nativeType)))
+        | MarshalSpec.FixedSysString size -> Some (FieldMarshalDescriptor.ByValTStr (int size.Value))
+        | MarshalSpec.FixedArray (size, elementType) ->
+            let elementType =
+                elementType
+                |> Option.map (fun e -> e.Value)
+                |> Option.filter (fun e -> e <> 0x50u)
+                |> Option.map (fun e -> (LanguagePrimitives.EnumOfValue (int e) : UnmanagedType))
+
+            Some (FieldMarshalDescriptor.ByValArray (int size.Value, elementType))
+        | MarshalSpec.Array _ -> Some (FieldMarshalDescriptor.Other UnmanagedType.LPArray)
+        | MarshalSpec.CustomMarshaler _ -> Some (FieldMarshalDescriptor.Other UnmanagedType.CustomMarshaler)
+
+    /// Specs as `specGen` draws them, with the `NATIVE_TYPE_DEFAULT` byte made likely both as a
+    /// leading byte and as a `ByValArray` element type, since that is where the field projection
+    /// departs from the parse.
+    let private fieldSpecGen : Gen<MarshalSpec> =
+        let defaultByte : Compressed =
+            {
+                Value = 0x50u
+                Width = 1
+            }
+
+        Gen.frequency
+            [
+                6, specGen
+                1, Gen.constant (MarshalSpec.Simple 0x50uy)
+                1,
+                compressedGen
+                |> Gen.map (fun size -> MarshalSpec.FixedArray (size, Some defaultByte))
+            ]
+
+    [<Test>]
+    let ``the field projection recovers every well-formed spec from its encoding`` () : unit =
+        let property (spec : MarshalSpec, junk : byte array) : unit =
+            let junk = if isComplete spec then junk else [||]
+            let blob = Array.append (encode spec) junk
+
+            FieldMarshalDescriptor.ofBlob (ImmutableArray.CreateRange blob)
+            |> shouldEqual (expectedField spec)
+
+        Check.One (
+            Config.QuickThrowOnFailure.WithMaxTest 2000,
+            Prop.forAll (Arb.fromGen (Gen.zip fieldSpecGen junkGen)) property
+        )
+
+    /// The field projection against the host's own parse, on any byte string: a blob is `Empty` or
+    /// `Malformed` exactly where the host's `ParseNativeTypeInfo` fails, and otherwise every number
+    /// the projection keeps is the one the host reports.
+    let private fieldAgreesWithHost (blob : byte array) : unit =
+        if OperatingSystem.IsWindows () then
+            Assert.Ignore "the host CLR has FEATURE_COMINTEROP, which the emulated platform does not"
+
+        let ours = FieldMarshalDescriptor.ofBlob (ImmutableArray.CreateRange blob)
+
+        let fail () =
+            failwith
+                $"blob [%s{BitConverter.ToString blob}]\n  PawPrint's field descriptor: %A{ours}\n  host:     %A{hostOutcome blob}"
+
+        match hostOutcome blob, ours with
+        | None, Some FieldMarshalDescriptor.Empty ->
+            if blob.Length <> 0 then
+                fail ()
+        | None, Some (FieldMarshalDescriptor.Malformed nativeType) ->
+            if blob.Length = 0 || nativeType <> blob.[0] then
+                fail ()
+        | None, _ -> fail ()
+        | Some host, None ->
+            if host.UnmanagedType <> 0x50 then
+                fail ()
+        | Some host, Some (FieldMarshalDescriptor.ByValTStr size) ->
+            if host.UnmanagedType <> 0x17 || host.SizeConst <> size then
+                fail ()
+        | Some host, Some (FieldMarshalDescriptor.ByValArray (size, elementType)) ->
+            if host.UnmanagedType <> 0x1E || host.SizeConst <> size then
+                fail ()
+
+            match elementType with
+            // The FCall reports an unwritten element type as 0, where `MarshalInfo` keeps 0x50.
+            | None ->
+                if host.ArraySubType <> 0 && host.ArraySubType <> 0x50 then
+                    fail ()
+            | Some elementType ->
+                if host.ArraySubType <> int elementType then
+                    fail ()
+        | Some host, Some (FieldMarshalDescriptor.Other unmanagedType) ->
+            if
+                host.UnmanagedType <> int unmanagedType
+                || host.UnmanagedType = 0x17
+                || host.UnmanagedType = 0x1E
+                || host.UnmanagedType = 0x50
+            then
+                fail ()
+        | Some _, Some FieldMarshalDescriptor.Empty
+        | Some _, Some (FieldMarshalDescriptor.Malformed _) -> fail ()
+
+    [<Test>]
+    let ``the field projection agrees with the host runtime on generated blobs`` () : unit =
+        let blobGen =
+            Gen.frequency [ 8, perturbedGen ; 1, fieldSpecGen |> Gen.map encode ; 1, Gen.constant [||] ]
+
+        Check.One (Config.QuickThrowOnFailure.WithMaxTest 3000, Prop.forAll (Arb.fromGen blobGen) fieldAgreesWithHost)
+
+    [<Test>]
+    let ``an empty field blob is Empty rather than no descriptor`` () : unit =
+        FieldMarshalDescriptor.ofBlob ImmutableArray.Empty
+        |> shouldEqual (Some FieldMarshalDescriptor.Empty)
+
+    [<Test>]
+    let ``a FixedArray element type spelled NATIVE_TYPE_DEFAULT, or malformed, is no element type`` () : unit =
+        for blob in
+            [
+                [| 0x1Euy ; 0x04uy ; 0x50uy |]
+                [| 0x1Euy ; 0x04uy ; 0xE0uy |]
+                [| 0x1Euy ; 0x04uy |]
+            ] do
+            FieldMarshalDescriptor.ofBlob (ImmutableArray.CreateRange blob)
+            |> shouldEqual (Some (FieldMarshalDescriptor.ByValArray (4, None)))
+
+            fieldAgreesWithHost blob
