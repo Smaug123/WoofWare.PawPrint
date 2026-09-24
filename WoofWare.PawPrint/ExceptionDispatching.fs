@@ -1203,10 +1203,12 @@ module ExceptionDispatching =
             }
 
     /// CoreCLR's `ExceptionObject::ClearStackTraceForThrow` (object.h): null the three fields a
-    /// previous raise left a trace in. The runtime applies it to a cached
-    /// `TypeInitializationException` before throwing it again (`MethodTable::DoRunClassInitThrowing`),
-    /// which matters to a caller that catches that throw in native code: there no frame is
-    /// appended afterwards, so the exception is left reporting no trace at all.
+    /// previous raise, or a guest's own write, left a trace in — `_remoteStackTraceString`,
+    /// `_stackTrace` and `_stackTraceString`. The runtime applies it to a cached
+    /// `TypeInitializationException` every time it throws it again
+    /// (`MethodTable::DoRunClassInitThrowing`), so each rethrow of that instance must come through
+    /// here first. A caller that catches the rethrow in native code, before any frame is appended,
+    /// is left with an exception reporting no trace at all.
     let clearStackTraceForThrow
         (corelib : BaseClassTypes<DumpedAssembly>)
         (exceptionAddr : ManagedHeapAddress)
