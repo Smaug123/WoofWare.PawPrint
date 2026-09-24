@@ -82,6 +82,7 @@
     <Compile Include="IlBodyFingerprint.fs" />
     <Compile Include="IlMachineStateModel.fs" />
     <Compile Include="GuestLocation.fs" />
+    <Compile Include="UnhandledExceptionReport.fs" />
     <Compile Include="IlMachineTypeResolution.fs" />
     <Compile Include="SzArrayAllocation.fs" />
     <Compile Include="MultiDimArrayAllocation.fs" />

@@ -220,8 +220,9 @@ public class Probe
         match outcome with
         | RunOutcome.NormalExit (terminalState, _)
         | RunOutcome.ProcessExit (terminalState, _) -> terminalState.LatchedExitCode
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            failwith $"%s{sourceName}: guest threw an unhandled exception: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            failwith
+                $"%s{sourceName}: guest threw an unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
         | RunOutcome.Aborted (_, _, fatal) ->
             let message = fatal.Message |> Option.defaultValue "<no message>"
             failwith $"%s{sourceName}: guest aborted (%O{fatal.Code}): %s{message}"

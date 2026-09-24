@@ -290,8 +290,9 @@ module private Harness =
             failwith $"PawPrint guest aborted (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"PawPrint guest was terminated by POSIX signal %O{signal} during benchmark"
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            failwith $"PawPrint threw an unhandled guest exception: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            failwith
+                $"PawPrint threw an unhandled guest exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     /// Compile `source`, establish the expected exit code on real .NET, and check PawPrint agrees
     /// before any timing is taken.

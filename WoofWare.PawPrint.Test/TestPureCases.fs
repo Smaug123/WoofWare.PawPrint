@@ -761,8 +761,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -822,8 +822,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -877,8 +877,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -919,8 +919,8 @@ class Program
                     failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<Test>]
@@ -952,8 +952,9 @@ class Program
                 | RunOutcome.ProcessExit _ -> failwith "expected FailFast, got process exit"
                 | RunOutcome.SignalTerminated (_, signal) ->
                     failwith $"expected FailFast, got POSIX signal termination: %O{signal}"
-                | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                    failwith $"expected FailFast, got guest unhandled exception: %O{exn.ExceptionObject}"
+                | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                    failwith
+                        $"expected FailFast, got guest unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             )
 
     [<TestCaseSource(nameof simpleCases)>]
@@ -1081,8 +1082,8 @@ class Program
             failwith $"expected normal exit, got an abort (%O{fatal.Code}): %s{m}"
         | RunOutcome.SignalTerminated (_, signal) ->
             failwith $"expected normal exit, got POSIX signal termination: %O{signal}"
-        | RunOutcome.GuestUnhandledException (_, _, exn) ->
-            failwith $"guest threw unhandled exception: %O{exn.ExceptionObject}"
+        | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+            failwith $"guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
 
     /// The variables `Environment.GetEnvironmentVariables` is asserted against
     /// below, chosen so that no single mistake in the environment block satisfies
