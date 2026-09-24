@@ -7,7 +7,7 @@ open NUnit.Framework
 open WoofWare.PawPrint
 
 /// PawPrint has ~2,400 `failwith` sites and almost none of them can say where the guest was:
-/// the most context-free of all live in pure helpers (`convOvfI4Un`, `divUnValues`) that have no
+/// the most context-free of all live in pure helpers (`convOvfI`, `divUnValues`) that have no
 /// `IlMachineState` to consult. Rather than thread state into all of them, `Program.stepDecided`
 /// annotates whatever escapes a tick — so every one of those sites gains a guest location at once.
 ///

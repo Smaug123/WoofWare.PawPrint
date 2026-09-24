@@ -2097,7 +2097,7 @@ module TypeConcretization =
 
     /// `signaturesEquivalent` with no substitution applied to either side: `MetaSig::CompareElementType`
     /// handed a null `Substitution` for both blobs, which is how `[UnsafeAccessor]` matching compares
-    /// a declaration against a candidate (unsafeaccessors.cpp:399 and :409).
+    /// a declaration against a candidate (unsafeaccessors.cpp:401 and :408).
     ///
     /// A generic type parameter is then compared by its index alone, like a generic method
     /// parameter, so `!0` in one signature equals `!0` in the other whichever types declared them,

@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 
 // The documented way to reach a generic type's members: declare the accessor on a generic type of
 // its own, so that the two spell their type variables at the same positions. CoreCLR compares the
-// two signature blobs with no substitution on either side (vm/unsafeaccessors.cpp:399 and :409), so
+// two signature blobs with no substitution on either side (vm/unsafeaccessors.cpp:401 and :408), so
 // this positional agreement is the whole mechanism -- `sourcesPure/UnsafeAccessorGenericTarget.cs`
 // pins the other side of it, that a *non*-generic accessor cannot reach the same members.
 //

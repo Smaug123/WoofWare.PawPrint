@@ -45,8 +45,8 @@ module TestStackShapeDynamicScope =
             match BoundedRun.run loggerFactory sourceName None peImage hostConfig with
             | RunOutcome.NormalExit (state, _) -> state
             | RunOutcome.ProcessExit (state, _) -> state
-            | RunOutcome.GuestUnhandledException (_, _, exn) ->
-                failwith $"Guest threw unhandled exception: %O{exn.ExceptionObject}"
+            | RunOutcome.GuestUnhandledException (finalState, _, exn) ->
+                failwith $"Guest threw unhandled exception:\n%s{UnhandledExceptionReport.describe finalState exn}"
             | RunOutcome.Aborted (_, _, fatal) ->
                 let message = fatal.Message |> Option.defaultValue "<no message>"
                 failwith $"Guest aborted (%O{fatal.Code}): %s{message}"

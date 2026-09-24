@@ -181,14 +181,16 @@ leaving them open for the three that already exist. It would also strip `Conv_U`
 
 ## Remaining work
 
-1. **(B), the two mixed subtraction arms for array roots.** Done, as option 2a: the arms compute
+1. **(B), the two mixed subtraction arms for array roots.** Done (#1473), as option 2a: the arms compute
    through `subtractArrayByteLocations` with offset zero on the bare side, and require an empty
    prefix under the view, as the string arms do. `MixedArrayByrefSubtraction.cs` is un-parked and
    `Utf8FromUtf16Span.cs` is the guest above. Comparisons (`ceq`, `cgt.un`, `clt.un`) needed
    nothing: they already order and equate the mixed pair, which the un-parked guest now checks.
 2. **(C), `RuntimePointer` paired with a `NativeInt` template** in `readArrayBytesAs`'s whole-cell
-   short-circuit, matching what `destinationNeedsWholeCellStore` already accepts on the write side
-   and what a bare `ldind.i` already does. Un-parks `PointerArrayCellThroughByteView.cs`.
+   short-circuit, matching what a bare `ldind.i` already does. Done (#1490), un-parking
+   `PointerArrayCellThroughByteView.cs`. The write side is still open: `destinationNeedsWholeCellStore`
+   routes a native-int store into a pointer cell to the typed store, but
+   `writeExactWidthPrimitiveTypedStore` then refuses it at its `haveSameCliShape` check.
 3. **(D), optional.** `IntrinsicHelpers.offsetManagedPointerByElements` refuses a bare array byref
    whose element size differs from `T`, which is the *only* thing `Conv_U`'s anchor buys. Making
    it total the way this arm now is would leave that anchor carrying no information, after which

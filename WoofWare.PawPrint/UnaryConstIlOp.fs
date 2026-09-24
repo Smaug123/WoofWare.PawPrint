@@ -62,6 +62,56 @@ module internal UnaryConstIlOp =
             },
             WhatWeDid.Executed
 
+    // ECMA-335 gives each argument and local accessor a short form with a one-byte unsigned index
+    // and a long form with a two-byte one, and nothing else distinguishes the two. So both forms
+    // of each accessor in `execute` call the one helper below, which takes the long form's width.
+
+    let private loadLocal (currentThread : ThreadId) (index : uint16) (state : IlMachineState) : IlMachineState =
+        let threadState = state.ThreadState.[currentThread]
+
+        state
+        |> IlMachineState.pushToEvalStack threadState.MethodState.LocalVariables.[int<uint16> index] currentThread
+
+    let private loadLocalAddress (currentThread : ThreadId) (index : uint16) (state : IlMachineState) : IlMachineState =
+        let threadState = state.ThreadState.[currentThread]
+
+        state
+        |> IlMachineState.pushToEvalStack'
+            (EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref (
+                    ByrefRoot.LocalVariable (currentThread, threadState.ActiveMethodState, index),
+                    []
+                )
+            ))
+            currentThread
+
+    let private storeLocal (currentThread : ThreadId) (index : uint16) (state : IlMachineState) : IlMachineState =
+        IlMachineState.popFromStackToLocalVariable currentThread (int<uint16> index) state
+
+    let private loadArgument (currentThread : ThreadId) (index : uint16) (state : IlMachineState) : IlMachineState =
+        IlMachineState.loadArgument currentThread (int<uint16> index) state
+
+    let private loadArgumentAddress
+        (currentThread : ThreadId)
+        (index : uint16)
+        (state : IlMachineState)
+        : IlMachineState
+        =
+        let threadState = state.ThreadState.[currentThread]
+
+        state
+        |> IlMachineState.pushToEvalStack'
+            (EvalStackValue.ManagedPointer (
+                ManagedPointerSource.Byref (
+                    ByrefRoot.Argument (currentThread, threadState.ActiveMethodState, index),
+                    []
+                )
+            ))
+            currentThread
+
+    let private storeArgument (currentThread : ThreadId) (index : uint16) (state : IlMachineState) : IlMachineState =
+        IlMachineState.popFromStackToArgument currentThread (int<uint16> index) state
+
     let execute
         (baseClassTypes : BaseClassTypes<DumpedAssembly>)
         (state : IlMachineState)
@@ -72,12 +122,12 @@ module internal UnaryConstIlOp =
         match op with
         | Stloc s ->
             state
-            |> IlMachineState.popFromStackToLocalVariable currentThread (int s)
+            |> storeLocal currentThread s
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Stloc_s b ->
             state
-            |> IlMachineState.popFromStackToLocalVariable currentThread (int b)
+            |> storeLocal currentThread (uint16<uint8> b)
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldc_I8 i ->
@@ -479,72 +529,56 @@ module internal UnaryConstIlOp =
                else
                    id
             |> Tuple.withRight WhatWeDid.Executed
-        | Ldloc_s b ->
-            let threadState = state.ThreadState.[currentThread]
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack threadState.MethodState.LocalVariables.[int<uint8> b] currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            state, WhatWeDid.Executed
-        | Ldloca_s b ->
-            let threadState = state.ThreadState.[currentThread]
-
-            let state =
-                state
-                |> IlMachineState.pushToEvalStack'
-                    (EvalStackValue.ManagedPointer (
-                        ManagedPointerSource.Byref (
-                            ByrefRoot.LocalVariable (currentThread, threadState.ActiveMethodState, uint16<uint8> b),
-                            []
-                        )
-                    ))
-                    currentThread
-                |> IlMachineState.advanceProgramCounter currentThread
-
-            state, WhatWeDid.Executed
-        | Ldarga s ->
-            let executingMethod = state.ThreadState.[currentThread]
-
-            let ptr =
-                ManagedPointerSource.Byref (
-                    ByrefRoot.Argument (currentThread, executingMethod.ActiveMethodState, s),
-                    []
-                )
-
+        | Ldloc s ->
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> loadLocal currentThread s
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldloc_s b ->
+            state
+            |> loadLocal currentThread (uint16<uint8> b)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldloca s ->
+            state
+            |> loadLocalAddress currentThread s
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldloca_s b ->
+            state
+            |> loadLocalAddress currentThread (uint16<uint8> b)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldarga s ->
+            state
+            |> loadArgumentAddress currentThread s
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldarga_s b ->
-            let executingMethod = state.ThreadState.[currentThread]
-
-            let ptr =
-                ManagedPointerSource.Byref (
-                    ByrefRoot.Argument (currentThread, executingMethod.ActiveMethodState, uint16<byte> b),
-                    []
-                )
-
             state
-            |> IlMachineState.pushToEvalStack' (EvalStackValue.ManagedPointer ptr) currentThread
+            |> loadArgumentAddress currentThread (uint16<uint8> b)
+            |> IlMachineState.advanceProgramCounter currentThread
+            |> Tuple.withRight WhatWeDid.Executed
+        | Ldarg s ->
+            state
+            |> loadArgument currentThread s
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Ldarg_s b ->
             state
-            |> IlMachineState.loadArgument currentThread (int b)
+            |> loadArgument currentThread (uint16<uint8> b)
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Leave i -> leave currentThread i state
         | Leave_s b -> leave currentThread (int<int8> b) state
         | Starg_s b ->
             state
-            |> IlMachineState.popFromStackToArgument currentThread (int b)
+            |> storeArgument currentThread (uint16<uint8> b)
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Starg s ->
             state
-            |> IlMachineState.popFromStackToArgument currentThread (int s)
+            |> storeArgument currentThread s
             |> IlMachineState.advanceProgramCounter currentThread
             |> Tuple.withRight WhatWeDid.Executed
         | Unaligned alignment ->
@@ -582,6 +616,3 @@ module internal UnaryConstIlOp =
             | other ->
                 failwith
                     $"unaligned. %d{other}: alignment must be 1, 2 or 4, so this method body would raise InvalidProgramException on the real runtime"
-        | Ldloc s -> failwith "TODO: Ldloc unimplemented"
-        | Ldloca s -> failwith "TODO: Ldloca unimplemented"
-        | Ldarg s -> failwith "TODO: Ldarg unimplemented"

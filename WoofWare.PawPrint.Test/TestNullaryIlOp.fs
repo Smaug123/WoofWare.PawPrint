@@ -1359,236 +1359,6 @@ module TestNullaryIlOp =
             faultingFrame.EvaluationStack.Values |> shouldEqual []
         | other -> failwith $"Expected Conv_ovf_i_un overflow to step, got %O{other}"
 
-    /// A `conv.ovf.u2` source operand. Only the shapes the opcode serves appear:
-    /// every tagged byref, hash-bits or cross-array-offset source is a deliberate
-    /// `failwith`, for the reason
-    /// docs/plans/2026-08-08-narrowing-conv-pointer-hash.md gives for the whole
-    /// narrowing `conv.ovf.*` family.
-    [<RequireQualifiedAccess>]
-    type private ConvOvfU2Case =
-        | Int32Value of int32
-        | Int64Value of int64
-        | NativeIntVerbatim of int64
-        | FloatValue of float
-        | NativeIntManagedPointerNull
-
-    /// The host runs `conv.ovf.u2` for us, emitted into a `DynamicMethod` whose
-    /// parameter has the source's own stack type. The declared return type is
-    /// `int32` — the stack type the opcode actually pushes — so the host also
-    /// says what the *top* 16 bits of the result must be; declaring `uint16`
-    /// would discard them and hide a sign-extending implementation. This, not
-    /// this file, is what says the source is read as signed at its full width.
-    let private hostConvOvfU2<'source> () : 'source -> Result<int32, unit> =
-        let dm =
-            DynamicMethod ($"convOvfU2_%s{typeof<'source>.Name}", typeof<int32>, [| typeof<'source> |])
-
-        let il = dm.GetILGenerator ()
-        il.Emit OpCodes.Ldarg_0
-        il.Emit OpCodes.Conv_Ovf_U2
-        il.Emit OpCodes.Ret
-
-        let compiled =
-            dm.CreateDelegate typeof<Func<'source, int32>> :?> Func<'source, int32>
-
-        fun value ->
-            try
-                compiled.Invoke value |> Ok
-            with :? OverflowException ->
-                Error ()
-
-    let private hostConvOvfU2FromInt32 : int32 -> Result<int32, unit> =
-        hostConvOvfU2<int32> ()
-
-    let private hostConvOvfU2FromInt64 : int64 -> Result<int32, unit> =
-        hostConvOvfU2<int64> ()
-
-    let private hostConvOvfU2FromNativeInt : nativeint -> Result<int32, unit> =
-        hostConvOvfU2<nativeint> ()
-
-    let private hostConvOvfU2FromFloat : float -> Result<int32, unit> =
-        hostConvOvfU2<float> ()
-
-    let private convOvfU2CaseInput (case : ConvOvfU2Case) : EvalStackValue =
-        match case with
-        | ConvOvfU2Case.Int32Value value -> EvalStackValue.Int32 (Int32Source.Verbatim value)
-        | ConvOvfU2Case.Int64Value value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
-        | ConvOvfU2Case.NativeIntVerbatim value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
-        | ConvOvfU2Case.FloatValue value -> EvalStackValue.Float (EvalStackFloat.Double value)
-        | ConvOvfU2Case.NativeIntManagedPointerNull ->
-            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
-
-    /// The int32 the host pushes for each case. The comparison is against the
-    /// pushed int32 rather than a uint16 so that the range check and the
-    /// zero-extension are one assertion.
-    let private convOvfU2Expected (case : ConvOvfU2Case) : Result<int32, unit> =
-        match case with
-        | ConvOvfU2Case.Int32Value value -> hostConvOvfU2FromInt32 value
-        | ConvOvfU2Case.Int64Value value -> hostConvOvfU2FromInt64 value
-        | ConvOvfU2Case.NativeIntVerbatim value -> hostConvOvfU2FromNativeInt (nativeint value)
-        | ConvOvfU2Case.FloatValue value -> hostConvOvfU2FromFloat value
-        // A null byref the guest already converted to a native int is the number
-        // zero, so it narrows. That is PawPrint's modelling choice rather than a
-        // fact about the host, which has no such source shape.
-        | ConvOvfU2Case.NativeIntManagedPointerNull -> Ok 0
-
-    /// Doubles on and around every boundary `conv.ovf.u2` cares about: `65536.0`
-    /// (exactly representable, the smallest double above UInt16.MaxValue), its
-    /// representable neighbour below, and the truncate-toward-zero cases straddling
-    /// `-1.0` and `0.0`.
-    let private convOvfU2FloatEdges : float list =
-        [
-            0.0
-            -0.0
-            0.5
-            -0.5
-            // The largest double below zero, and the largest below -1.0: the first
-            // truncates to 0 and is in range, the second to -1 and overflows.
-            Math.BitDecrement 0.0
-            Math.BitDecrement -1.0
-            // The largest double above -1.0 truncates to 0, so it is in range,
-            // whereas -1.0 itself overflows.
-            Math.BitIncrement -1.0
-            -1.0
-            -1.5
-            1.0
-            100.5
-            65534.5
-            65535.0
-            65535.5
-            Math.BitDecrement 65536.0
-            65536.0
-            65536.5
-            -65536.0
-            Double.MaxValue
-            -Double.MaxValue
-            Double.PositiveInfinity
-            Double.NegativeInfinity
-            Double.NaN
-        ]
-
-    /// Integer values on and around the `[0, 65535]` boundary, plus the shapes
-    /// that separate a range check from a truncation.
-    let private convOvfU2IntegerEdges : int64 list =
-        [
-            Int64.MinValue
-            int64 Int32.MinValue
-            -65536L
-            -1L
-            0L
-            1L
-            65534L
-            65535L
-            65536L
-            // Low 16 bits are 0xFFFF, but the value is far outside `[0, 65535]`.
-            // An implementation that truncated to 16 bits instead of range-checking
-            // the full signed width would wrongly accept this and answer 65535.
-            0x1_0000_FFFFL
-            4294967295L
-            int64 Int32.MaxValue
-            Int64.MaxValue
-        ]
-
-    let private convOvfU2EdgeCases : ConvOvfU2Case list =
-        [
-            // Each integer edge is applied to every integer source shape: the
-            // implementation range-checks int32 and 64-bit sources through separate
-            // paths, so an edge exercised only as an `Int32Value` leaves the 64-bit
-            // bounds unpinned.
-            for value in convOvfU2IntegerEdges do
-                ConvOvfU2Case.Int64Value value
-                ConvOvfU2Case.NativeIntVerbatim value
-
-                if value >= int64 Int32.MinValue && value <= int64 Int32.MaxValue then
-                    ConvOvfU2Case.Int32Value (int32 value)
-
-            for value in convOvfU2FloatEdges do
-                ConvOvfU2Case.FloatValue value
-
-            ConvOvfU2Case.NativeIntManagedPointerNull
-        ]
-
-    /// Straddles `[0, 65535]`: the default FsCheck integer generators are
-    /// size-bounded to roughly +-100, so on their own they would never produce a
-    /// source above the boundary, while full-range draws essentially never produce
-    /// one below it.
-    let private genConvOvfU2Band : Gen<int32> = Gen.choose (-4, 65540)
-
-    let private genConvOvfU2Float : Gen<float> =
-        let band =
-            gen {
-                let! whole = genConvOvfU2Band
-                let! thousandths = Gen.choose (0, 999)
-                return float whole + float thousandths / 1000.0
-            }
-
-        Gen.frequency
-            [
-                5, band
-                // Reuses the `conv.ovf.i` float generator for the pathological draws
-                // (infinities, NaN, huge magnitudes), all of which overflow here.
-                3, genConvOvfIFloat
-                2, Gen.elements convOvfU2FloatEdges
-            ]
-
-    let private genConvOvfU2Case : Gen<ConvOvfU2Case> =
-        let genInt32 =
-            Gen.frequency
-                [
-                    4, genConvOvfU2Band
-                    3, Gen.choose (Int32.MinValue, Int32.MaxValue)
-                    3,
-                    convOvfU2IntegerEdges
-                    |> List.filter (fun v -> v >= int64 Int32.MinValue && v <= int64 Int32.MaxValue)
-                    |> List.map int32
-                    |> Gen.elements
-                ]
-
-        let genInt64 =
-            Gen.frequency
-                [
-                    4, genConvOvfU2Band |> Gen.map int64
-                    3, genWideInt64
-                    3, Gen.elements convOvfU2IntegerEdges
-                ]
-
-        Gen.frequency
-            [
-                4, genInt32 |> Gen.map ConvOvfU2Case.Int32Value
-                4, genInt64 |> Gen.map ConvOvfU2Case.Int64Value
-                4, genInt64 |> Gen.map ConvOvfU2Case.NativeIntVerbatim
-                4, genConvOvfU2Float |> Gen.map ConvOvfU2Case.FloatValue
-                1, Gen.constant ConvOvfU2Case.NativeIntManagedPointerNull
-            ]
-
-    [<Test>]
-    let ``Conv_ovf_u2 agrees with the host's checked conversion`` () : unit =
-        let mutable overflows = 0
-        let mutable successes = 0
-
-        let property (case : ConvOvfU2Case) : unit =
-            match convOvfU2Expected case with
-            | Ok _ -> successes <- successes + 1
-            | Error () -> overflows <- overflows + 1
-
-            // `int32` of a `uint16` zero-extends, which is what the `Conv_ovf_u2`
-            // arm of `execute` does to reach the int32 stack type.
-            NullaryIlOp.convOvfU2 (convOvfU2CaseInput case)
-            |> Result.map int32
-            |> shouldEqual (convOvfU2Expected case)
-
-        for case in convOvfU2EdgeCases do
-            property case
-
-        Check.One (config, Prop.forAll (Arb.fromGen genConvOvfU2Case) property)
-
-        // Guard against a generator that silently stops exercising one side.
-        // `[0, 65535]` is a vanishing fraction of every source range here, so it is
-        // the *success* count that starves if the band generators are ever weakened
-        // or dropped; the overflow count is in no real danger. Both floors are wide
-        // margins rather than thresholds a run can drift across.
-        if overflows < 30 || successes < 30 then
-            failwith $"Conv_ovf_u2 generator was unbalanced: %d{overflows} overflows, %d{successes} successes"
-
     [<Test>]
     let ``Conv_ovf_u2 pushes a zero-extended int32 and advances past its own encoding`` () : unit =
         let _, loggerFactory = LoggerFactory.makeTest ()
@@ -3063,3 +2833,438 @@ module TestNullaryIlOp =
 
         for following in [ None ; Some NullaryIlOp.Conv_R8 ; Some NullaryIlOp.Pop ] do
             convRUnBefore following input |> doubleBits |> shouldEqual 0x43E0000010000000L
+
+    /// The stack type a checked conversion pushes. The host oracle's `DynamicMethod` returns
+    /// exactly this type: returning anything narrower would let the host discard the slot's
+    /// upper bits, and so hide a result extended the wrong way into its slot.
+    [<RequireQualifiedAccess>]
+    type private CheckedPushes =
+        | Int32
+        | Int64
+        | NativeInt
+
+    /// All twenty checked integer conversions, by name (NUnit `TestCase` arguments must be
+    /// constants), with the opcode the host emits for each.
+    let private checkedConversions : (string * NullaryIlOp * OpCode * CheckedPushes) list =
+        [
+            "Conv_ovf_i1", NullaryIlOp.Conv_ovf_i1, OpCodes.Conv_Ovf_I1, CheckedPushes.Int32
+            "Conv_ovf_u1", NullaryIlOp.Conv_ovf_u1, OpCodes.Conv_Ovf_U1, CheckedPushes.Int32
+            "Conv_ovf_i2", NullaryIlOp.Conv_ovf_i2, OpCodes.Conv_Ovf_I2, CheckedPushes.Int32
+            "Conv_ovf_u2", NullaryIlOp.Conv_ovf_u2, OpCodes.Conv_Ovf_U2, CheckedPushes.Int32
+            "Conv_ovf_i4", NullaryIlOp.Conv_ovf_i4, OpCodes.Conv_Ovf_I4, CheckedPushes.Int32
+            "Conv_ovf_u4", NullaryIlOp.Conv_ovf_u4, OpCodes.Conv_Ovf_U4, CheckedPushes.Int32
+            "Conv_ovf_i8", NullaryIlOp.Conv_ovf_i8, OpCodes.Conv_Ovf_I8, CheckedPushes.Int64
+            "Conv_ovf_u8", NullaryIlOp.Conv_ovf_u8, OpCodes.Conv_Ovf_U8, CheckedPushes.Int64
+            "Conv_ovf_i", NullaryIlOp.Conv_ovf_i, OpCodes.Conv_Ovf_I, CheckedPushes.NativeInt
+            "Conv_ovf_u", NullaryIlOp.Conv_ovf_u, OpCodes.Conv_Ovf_U, CheckedPushes.NativeInt
+            "Conv_ovf_i1_un", NullaryIlOp.Conv_ovf_i1_un, OpCodes.Conv_Ovf_I1_Un, CheckedPushes.Int32
+            "Conv_ovf_u1_un", NullaryIlOp.Conv_ovf_u1_un, OpCodes.Conv_Ovf_U1_Un, CheckedPushes.Int32
+            "Conv_ovf_i2_un", NullaryIlOp.Conv_ovf_i2_un, OpCodes.Conv_Ovf_I2_Un, CheckedPushes.Int32
+            "Conv_ovf_u2_un", NullaryIlOp.Conv_ovf_u2_un, OpCodes.Conv_Ovf_U2_Un, CheckedPushes.Int32
+            "Conv_ovf_i4_un", NullaryIlOp.Conv_ovf_i4_un, OpCodes.Conv_Ovf_I4_Un, CheckedPushes.Int32
+            "Conv_ovf_u4_un", NullaryIlOp.Conv_ovf_u4_un, OpCodes.Conv_Ovf_U4_Un, CheckedPushes.Int32
+            "Conv_ovf_i8_un", NullaryIlOp.Conv_ovf_i8_un, OpCodes.Conv_Ovf_I8_Un, CheckedPushes.Int64
+            "Conv_ovf_u8_un", NullaryIlOp.Conv_ovf_u8_un, OpCodes.Conv_Ovf_U8_Un, CheckedPushes.Int64
+            "Conv_ovf_i_un", NullaryIlOp.Conv_ovf_i_un, OpCodes.Conv_Ovf_I_Un, CheckedPushes.NativeInt
+            "Conv_ovf_u_un", NullaryIlOp.Conv_ovf_u_un, OpCodes.Conv_Ovf_U_Un, CheckedPushes.NativeInt
+        ]
+
+    let private checkedConversion (name : string) : NullaryIlOp * OpCode * CheckedPushes =
+        match checkedConversions |> List.tryFind (fun (n, _, _, _) -> n = name) with
+        | Some (_, op, opcode, pushes) -> op, opcode, pushes
+        | None -> failwith $"test bug: %s{name} is not a checked conversion"
+
+    /// A plain number, of each stack type a checked conversion accepts.
+    [<RequireQualifiedAccess>]
+    type private NumericSource =
+        | Int32 of int32
+        | Int64 of int64
+        | NativeInt of int64
+        | Float64 of float
+        | Float32 of float32
+
+    let private numericSourceInput (source : NumericSource) : EvalStackValue =
+        match source with
+        | NumericSource.Int32 value -> EvalStackValue.Int32 (Int32Source.Verbatim value)
+        | NumericSource.Int64 value -> EvalStackValue.Int64 (Int64Source.Verbatim value)
+        | NumericSource.NativeInt value -> EvalStackValue.NativeInt (NativeIntSource.Verbatim value)
+        | NumericSource.Float64 value -> EvalStackValue.Float (EvalStackFloat.Double value)
+        | NumericSource.Float32 value -> EvalStackValue.Float (EvalStackFloat.Single value)
+
+    /// `opcode` alone, run by the host on a parameter of the source's own stack type.
+    let private hostOpcode<'source, 'result> (opcode : OpCode) : 'source -> Result<'result, unit> =
+        let dm =
+            DynamicMethod (
+                $"%s{opcode.Name}_%s{typeof<'source>.Name}_%s{typeof<'result>.Name}",
+                typeof<'result>,
+                [| typeof<'source> |]
+            )
+
+        let il = dm.GetILGenerator ()
+        il.Emit OpCodes.Ldarg_0
+        il.Emit opcode
+        il.Emit OpCodes.Ret
+
+        let compiled =
+            dm.CreateDelegate typeof<Func<'source, 'result>> :?> Func<'source, 'result>
+
+        fun value ->
+            try
+                compiled.Invoke value |> Ok
+            with :? OverflowException ->
+                Error ()
+
+    let private hostCheckedConversionReturning<'result>
+        (opcode : OpCode)
+        (wrap : 'result -> EvalStackValue)
+        : NumericSource -> Result<EvalStackValue, unit>
+        =
+        let fromInt32 = hostOpcode<int32, 'result> opcode
+        let fromInt64 = hostOpcode<int64, 'result> opcode
+        let fromNativeInt = hostOpcode<nativeint, 'result> opcode
+        let fromFloat64 = hostOpcode<float, 'result> opcode
+        let fromFloat32 = hostOpcode<float32, 'result> opcode
+
+        fun source ->
+            match source with
+            | NumericSource.Int32 value -> fromInt32 value
+            | NumericSource.Int64 value -> fromInt64 value
+            | NumericSource.NativeInt value -> fromNativeInt (nativeint value)
+            | NumericSource.Float64 value -> fromFloat64 value
+            | NumericSource.Float32 value -> fromFloat32 value
+            |> Result.map wrap
+
+    /// The host is the oracle for every numeric source: it, not this file, says how each
+    /// opcode reads its source (signed, or unsigned for `.un`; a float ignoring `.un`), where
+    /// each range ends, and how the result is extended into the slot it is pushed as.
+    let private hostCheckedConversion
+        (opcode : OpCode)
+        (pushes : CheckedPushes)
+        : NumericSource -> Result<EvalStackValue, unit>
+        =
+        match pushes with
+        | CheckedPushes.Int32 ->
+            hostCheckedConversionReturning<int32> opcode (Int32Source.Verbatim >> EvalStackValue.Int32)
+        | CheckedPushes.Int64 ->
+            hostCheckedConversionReturning<int64> opcode (Int64Source.Verbatim >> EvalStackValue.Int64)
+        | CheckedPushes.NativeInt ->
+            hostCheckedConversionReturning<nativeint>
+                opcode
+                (int64 >> NativeIntSource.Verbatim >> EvalStackValue.NativeInt)
+
+    /// What an opcode did with its operand: pushed a value, raised `OverflowException`, or refused
+    /// (a PawPrint `failwith`).
+    [<RequireQualifiedAccess>]
+    type private NullaryOutcome =
+        | Pushed of EvalStackValue
+        | Overflowed
+        | Refused
+
+    /// `op` on `input`, run through `NullaryIlOp.execute`. Whatever it did, the frame must be left
+    /// as the opcode's contract says: advanced past the instruction on success, and on overflow
+    /// still sitting on it with its operand consumed, since exception dispatch reads the faulting
+    /// PC. Only the interpreter's own exceptions count as a refusal; an assertion failing here
+    /// propagates.
+    let private nullaryOutcome
+        (loggerFactory : Microsoft.Extensions.Logging.ILoggerFactory)
+        (op : NullaryIlOp)
+        (input : EvalStackValue)
+        : NullaryOutcome
+        =
+        let state, thread = stateWithNullary loggerFactory op input
+
+        let executed =
+            try
+                NullaryIlOp.execute loggerFactory baseClassTypes state thread op |> Some
+            with _ ->
+                None
+
+        match executed with
+        | None -> NullaryOutcome.Refused
+        | Some (ExecutionResult.Stepped (state, whatWeDid, _)) ->
+            whatWeDid |> shouldEqual WhatWeDid.Executed
+            let threadState = state.ThreadState.[thread]
+            let executing = threadState.MethodState.ExecutingMethod
+
+            if
+                executing.Name = ".ctor"
+                && executing.RequiredDeclaringType.Namespace = "System"
+                && executing.RequiredDeclaringType.Name = "OverflowException"
+            then
+                let faultingFrame =
+                    threadState.MethodStates
+                    |> Map.toSeq
+                    |> Seq.filter (fun (frameId, _) -> frameId <> threadState.ActiveMethodState)
+                    |> Seq.exactlyOne
+                    |> snd
+
+                faultingFrame.IlOpIndex |> shouldEqual 0
+                faultingFrame.EvaluationStack.Values |> shouldEqual []
+                NullaryOutcome.Overflowed
+            else
+                let methodState = threadState.MethodState
+                methodState.IlOpIndex |> shouldEqual (IlOp.NumberOfBytes (IlOp.Nullary op))
+
+                match methodState.EvaluationStack.Values with
+                | [ pushed ] -> NullaryOutcome.Pushed pushed
+                | other -> failwith $"Expected %O{op} to leave one value on the stack, got %O{other}"
+        | Some other -> failwith $"Expected %O{op} to step, got %O{other}"
+
+    /// Every inclusive bound of every checked conversion's target range, exactly.
+    let private checkedTargetBounds : bigint list =
+        [
+            -(pown 2I 63)
+            -(pown 2I 31)
+            -(pown 2I 15)
+            -(pown 2I 7)
+            0I
+            pown 2I 7 - 1I
+            pown 2I 8 - 1I
+            pown 2I 15 - 1I
+            pown 2I 16 - 1I
+            pown 2I 31 - 1I
+            pown 2I 32 - 1I
+            pown 2I 63 - 1I
+            pown 2I 64 - 1I
+        ]
+
+    /// The low `widthBits` bits of `value`, as a non-negative integer: how a source slot of that
+    /// width holds a value, whichever way an opcode later reads it.
+    let private lowBits (widthBits : int) (value : bigint) : bigint =
+        let modulus = pown 2I widthBits
+        ((value % modulus) + modulus) % modulus
+
+    let private integerSources (value : bigint) : NumericSource list =
+        let bits64 = int64 (uint64 (lowBits 64 value))
+
+        [
+            NumericSource.Int32 (int32 (uint32 (lowBits 32 value)))
+            NumericSource.Int64 bits64
+            NumericSource.NativeInt bits64
+        ]
+
+    /// Doubles on and either side of every bound, and of the first integer past each bound
+    /// (where truncation toward zero stops landing in range), plus the non-finite values.
+    let private checkedFloatEdges : float list =
+        [
+            for bound in checkedTargetBounds do
+                for anchor in [ bound - 1I ; bound ; bound + 1I ] do
+                    let f = float anchor
+                    f
+                    Math.BitIncrement f
+                    Math.BitDecrement f
+                    f + 0.5
+                    f - 0.5
+            0.5
+            -0.5
+            Double.Epsilon
+            -Double.Epsilon
+            Double.MaxValue
+            -Double.MaxValue
+            Double.PositiveInfinity
+            Double.NegativeInfinity
+            Double.NaN
+        ]
+
+    let private checkedEdgeSources : NumericSource list =
+        [
+            for bound in checkedTargetBounds do
+                for delta in [ -1I ; 0I ; 1I ] do
+                    yield! integerSources (bound + delta)
+            for f in checkedFloatEdges do
+                NumericSource.Float64 f
+                let single = float32 f
+                NumericSource.Float32 single
+                NumericSource.Float32 (MathF.BitIncrement single)
+                NumericSource.Float32 (MathF.BitDecrement single)
+        ]
+
+    /// Banded around the bounds, since every range here is a vanishing fraction of a full-width
+    /// draw: on its own a uniform draw almost never lands where the answer changes.
+    let private genNumericSource : Gen<NumericSource> =
+        let nearBound =
+            gen {
+                let! bound = Gen.elements checkedTargetBounds
+                let! delta = Gen.choose (-300, 300)
+                return bound + bigint delta
+            }
+
+        let scaledBound =
+            gen {
+                let! bound = Gen.elements checkedTargetBounds
+                let! perMille = Gen.choose (-50, 50)
+                let! offset = Gen.choose (-1000, 1000)
+                return float bound * (1.0 + float perMille / 1000.0) + float offset / 7.0
+            }
+
+        Gen.frequency
+            [
+                4, nearBound |> Gen.bind (integerSources >> Gen.elements)
+                2, ArbMap.defaults |> ArbMap.generate<int32> |> Gen.map NumericSource.Int32
+                2, ArbMap.defaults |> ArbMap.generate<int64> |> Gen.map NumericSource.Int64
+                2, ArbMap.defaults |> ArbMap.generate<int64> |> Gen.map NumericSource.NativeInt
+                4, scaledBound |> Gen.map NumericSource.Float64
+                3, scaledBound |> Gen.map (float32 >> NumericSource.Float32)
+                1,
+                ArbMap.defaults
+                |> ArbMap.generate<NormalFloat>
+                |> Gen.map (fun f -> NumericSource.Float64 f.Get)
+            ]
+
+    [<TestCase("Conv_ovf_i1")>]
+    [<TestCase("Conv_ovf_u1")>]
+    [<TestCase("Conv_ovf_i2")>]
+    [<TestCase("Conv_ovf_u2")>]
+    [<TestCase("Conv_ovf_i4")>]
+    [<TestCase("Conv_ovf_u4")>]
+    [<TestCase("Conv_ovf_i8")>]
+    [<TestCase("Conv_ovf_u8")>]
+    [<TestCase("Conv_ovf_i")>]
+    [<TestCase("Conv_ovf_u")>]
+    [<TestCase("Conv_ovf_i1_un")>]
+    [<TestCase("Conv_ovf_u1_un")>]
+    [<TestCase("Conv_ovf_i2_un")>]
+    [<TestCase("Conv_ovf_u2_un")>]
+    [<TestCase("Conv_ovf_i4_un")>]
+    [<TestCase("Conv_ovf_u4_un")>]
+    [<TestCase("Conv_ovf_i8_un")>]
+    [<TestCase("Conv_ovf_u8_un")>]
+    [<TestCase("Conv_ovf_i_un")>]
+    [<TestCase("Conv_ovf_u_un")>]
+    let ``a checked conversion of a number agrees with the host's own opcode`` (name : string) : unit =
+        let op, opcode, pushes = checkedConversion name
+        let host = hostCheckedConversion opcode pushes
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        let mutable overflows = 0
+        let mutable successes = 0
+
+        let property (source : NumericSource) : unit =
+            let expected = host source
+
+            match expected with
+            | Ok _ -> successes <- successes + 1
+            | Error () -> overflows <- overflows + 1
+
+            let actual =
+                match nullaryOutcome loggerFactory op (numericSourceInput source) with
+                | NullaryOutcome.Pushed pushed -> Ok pushed
+                | NullaryOutcome.Overflowed -> Error ()
+                | NullaryOutcome.Refused -> failwith $"%s{name} refused the number %O{source}"
+
+            if actual <> expected then
+                failwith $"%s{name} of %O{source}: PawPrint gave %O{actual}, the host %O{expected}"
+
+        for source in checkedEdgeSources do
+            property source
+
+        Check.One (config, Prop.forAll (Arb.fromGen genNumericSource) property)
+
+        // Every target's range is crossed by the edge list from both sides, so each outcome has
+        // hundreds of instances; a floor this low fails only if one side stops being generated.
+        if overflows < 50 || successes < 50 then
+            failwith $"%s{name} inputs were unbalanced: %d{overflows} overflows, %d{successes} successes"
+
+    /// Sources that carry provenance rather than a plain number.
+    let private taggedSources : EvalStackValue list =
+        [
+            EvalStackValue.Int64 (
+                Int64Source.SyntheticCrossArrayOffset (
+                    SyntheticCrossArrayOffset.make syntheticStorageIdentities.[0] 0L syntheticStorageIdentities.[1] 0L
+                )
+            )
+            EvalStackValue.NativeInt (
+                NativeIntSource.SyntheticCrossArrayOffset (
+                    SyntheticCrossArrayOffset.make syntheticStorageIdentities.[2] -1L syntheticStorageIdentities.[3] 1L
+                )
+            )
+            EvalStackValue.Int64 (Int64Source.OpaqueHashBits 5L)
+            EvalStackValue.Int64 (Int64Source.OpaqueHashBits -5L)
+            EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits 5L)
+            EvalStackValue.NativeInt (NativeIntSource.OpaqueHashBits -5L)
+            EvalStackValue.Int64 (Int64Source.widenedNativeInt widenedPointerSource true)
+            EvalStackValue.Int64 (Int64Source.widenedNativeInt widenedPointerSource false)
+            EvalStackValue.NativeInt widenedPointerSource
+            EvalStackValue.ManagedPointer ManagedPointerSource.Null
+            EvalStackValue.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder 5L)
+            EvalStackValue.NativeInt (NativeIntSource.ManagedPointer (ManagedPointerSource.NativeIntPlaceholder 5L))
+            EvalStackValue.NullObjectRef
+        ]
+
+    /// For every source these three can see, the checked conversion cannot overflow — a signed
+    /// 32- or 64-bit source always fits in int64, and an unsigned one in uint64 — so for tagged
+    /// sources it is exactly the unchecked conversion, provenance handling included.
+    [<TestCase("Conv_ovf_i8", "Conv_I8")>]
+    [<TestCase("Conv_ovf_u8_un", "Conv_U8")>]
+    [<TestCase("Conv_ovf_u_un", "Conv_U")>]
+    let ``a checked conversion that cannot overflow treats a tagged source as the unchecked one does``
+        (checkedName : string)
+        (uncheckedName : string)
+        : unit
+        =
+        let checkedOp, _, _ = checkedConversion checkedName
+
+        let uncheckedOp =
+            match uncheckedName with
+            | "Conv_I8" -> NullaryIlOp.Conv_I8
+            | "Conv_U8" -> NullaryIlOp.Conv_U8
+            | "Conv_U" -> NullaryIlOp.Conv_U
+            | other -> failwith $"test bug: %s{other} is not an unchecked conversion here"
+
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        for source in taggedSources do
+            let expected = nullaryOutcome loggerFactory uncheckedOp source
+            let actual = nullaryOutcome loggerFactory checkedOp source
+
+            if actual <> expected then
+                failwith $"%s{checkedName} of %O{source}: %O{actual}, but %s{uncheckedName} gave %O{expected}"
+
+        // The comparison is vacuous if the unchecked conversion refused everything.
+        taggedSources
+        |> List.filter (fun source ->
+            match nullaryOutcome loggerFactory uncheckedOp source with
+            | NullaryOutcome.Pushed _ -> true
+            | _ -> false
+        )
+        |> List.length
+        |> shouldBeGreaterThan 5
+
+    /// Where overflow is possible, the check needs the source's bits, and a tagged source has none
+    /// PawPrint can vouch for, so these refuse it. A native int that is a null byref is the
+    /// exception: the guest has already asked for that as the number zero.
+    [<TestCase("Conv_ovf_u8", "Int64")>]
+    [<TestCase("Conv_ovf_i8_un", "Int64")>]
+    [<TestCase("Conv_ovf_i1", "Int32")>]
+    [<TestCase("Conv_ovf_u1", "Int32")>]
+    [<TestCase("Conv_ovf_i2", "Int32")>]
+    [<TestCase("Conv_ovf_u2", "Int32")>]
+    [<TestCase("Conv_ovf_i4", "Int32")>]
+    [<TestCase("Conv_ovf_u4", "Int32")>]
+    [<TestCase("Conv_ovf_i1_un", "Int32")>]
+    [<TestCase("Conv_ovf_u1_un", "Int32")>]
+    [<TestCase("Conv_ovf_i2_un", "Int32")>]
+    [<TestCase("Conv_ovf_u2_un", "Int32")>]
+    [<TestCase("Conv_ovf_i4_un", "Int32")>]
+    [<TestCase("Conv_ovf_u4_un", "Int32")>]
+    let ``a checked conversion that can overflow refuses a tagged source`` (name : string) (pushes : string) : unit =
+        let op, _, _ = checkedConversion name
+        let _, loggerFactory = LoggerFactory.makeTest ()
+        use _loggerFactoryResource = loggerFactory
+
+        for source in taggedSources do
+            match nullaryOutcome loggerFactory op source with
+            | NullaryOutcome.Refused -> ()
+            | other -> failwith $"%s{name} of %O{source}: expected a refusal, got %O{other}"
+
+        let zero =
+            match pushes with
+            | "Int32" -> EvalStackValue.Int32 (Int32Source.Verbatim 0)
+            | "Int64" -> EvalStackValue.Int64 (Int64Source.Verbatim 0L)
+            | other -> failwith $"test bug: %s{other}"
+
+        EvalStackValue.NativeInt (NativeIntSource.ManagedPointer ManagedPointerSource.Null)
+        |> nullaryOutcome loggerFactory op
+        |> shouldEqual (NullaryOutcome.Pushed zero)

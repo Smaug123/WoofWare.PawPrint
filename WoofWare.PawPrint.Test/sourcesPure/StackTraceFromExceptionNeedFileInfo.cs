@@ -7,20 +7,20 @@ using System.Diagnostics;
 // PARKED, and the blocker is *not* the frame count. `InitializeSourceInfo` calls
 // `CreateStackTraceSymbols()` before the loop that walks frames, gated only on `fNeedFileInfo`
 // (StackFrameHelper.cs:95-113), so zero frames does not avoid it. It is an `[UnsafeAccessor]`
-// constructor into the `System.Diagnostics.StackTrace` assembly, and PawPrint's `[UnsafeAccessor]`
-// dispatch is an unimplemented TODO (AbstractMachine.fs:395-402).
+// constructor whose return type is named by `[UnsafeAccessorType]` as
+// `System.Diagnostics.StackTraceSymbols` in the `System.Diagnostics.StackTrace` assembly, and
+// PawPrint refuses any accessor that names a type that way (`UnsafeAccessorDispatch.resolve`).
 //
-// The `try { } catch { }` CoreLib wraps that block in cannot save PawPrint here: it swallows a
-// *guest* exception, which is how real .NET copes when `System.Diagnostics.StackTrace.dll` is
-// absent, but a host-level refusal is not a guest exception and kills the run. So un-parking needs
-// either `[UnsafeAccessor]` dispatch, or — cheaper and enough for this — an unresolvable
-// `[UnsafeAccessor]` to raise a guest exception, at which point CoreLib's own catch absorbs it and
-// the answers below are reached exactly as on real .NET.
+// Raising that refusal as a guest exception, for the `try { } catch { }` CoreLib wraps the block in
+// to absorb, would not match real .NET: that assembly ships in the shared framework, so real .NET
+// resolves the name and constructs a `StackTraceSymbols`. Un-parking needs `[UnsafeAccessorType]`
+// resolution. CoreCLR resolves the name through the managed `TypeNameResolver.GetTypeHelper`
+// (vm/typeparse.cpp), which loads the named assembly with `RuntimeAssembly.InternalLoad`, so that
+// in turn needs the `AssemblyNative_InternalLoad` QCall.
 //
 // This matters beyond this file: `fNeedFileInfo: true` is what `Exception.StackTrace`'s
 // `GetStackTrace()` passes (Exception.cs:232) and what `ExceptionDispatchInfo.SetCurrentStackTrace`
-// passes (Exception.cs:247), so this is the blocker standing between those two and working. It is
-// the third feature in the chain, after this QCall and the `GetTypicalMethodDefinition` pair.
+// passes (Exception.cs:247), so this is the blocker standing between those two and working.
 //
 // Verified to exit 0 on real .NET.
 class StackTraceFromExceptionNeedFileInfo
