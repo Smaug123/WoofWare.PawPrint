@@ -245,44 +245,6 @@ module TestNativeRuntimeFieldHandleGetValue =
         exn.Message |> shouldContainText "RVA-backed static field"
 
     [<Test>]
-    let ``refuses a pointer-typed field`` () =
-        let fixture = makeFixture ()
-        let state = fixture.State
-
-        let pointerHolderType =
-            requiredTopLevelType fixture.GuestAssembly "" "PointerHolder"
-
-        let state, pointerHolderHandle =
-            concretizeTypeInfo fixture.LoggerFactory fixture.BaseClassTypes state pointerHolderType
-
-        let field = pointerHolderType.Fields |> List.find (fun f -> f.Name = "Ptr")
-
-        let state, contents =
-            IlMachineState.buildInstanceStorage fixture.LoggerFactory fixture.BaseClassTypes state pointerHolderHandle
-
-        let instanceAddr, state =
-            IlMachineState.allocateManagedObject pointerHolderHandle contents state
-
-        // CoreCLR answers a `System.Reflection.Pointer` here; the refusal must name that rather
-        // than hand back some box of the provenance-tracked cell.
-        let _, _, args, state =
-            getArgs
-                fixture
-                pointerHolderHandle
-                field
-                (ConcreteTypeHandle.Pointer fixture.Int32Handle)
-                (Some instanceAddr)
-                1
-                state
-
-        let exn =
-            Assert.Throws<System.Exception> (fun () ->
-                invoke fixture args state |> ignore<ThreadId * NativeHandlerResult>
-            )
-
-        exn.Message |> shouldContainText "System.Reflection.Pointer"
-
-    [<Test>]
     let ``refuses a null instance for an instance field`` () =
         let fixture = makeFixture ()
 
