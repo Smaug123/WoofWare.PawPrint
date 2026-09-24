@@ -311,6 +311,41 @@ module IlMachineRuntimeMetadata =
         | TypeDefn.FromDefinition _
         | TypeDefn.Void -> false
 
+    /// Whether CoreCLR shares code over `System.__Canon` for an instantiation with this type
+    /// argument: `ClassLoader::CanonicalizeGenericArg` (generics.cpp:27) replaces a reference type,
+    /// arrays included, by `__Canon`, and a value type by its canonical MethodTable. So a value type
+    /// is shared exactly when one of its own type arguments is -- `ValueTuple<string>` shares with
+    /// `ValueTuple<object>` -- and a non-generic one never is.
+    ///
+    /// A byref, pointer or function pointer is not a valid type argument, and CoreCLR asserts that
+    /// none reaches the canonicalisation; one is refused rather than classified.
+    let rec isSharedTypeArgument
+        (baseClassTypes : BaseClassTypes<DumpedAssembly>)
+        (state : IlMachineState)
+        (describe : string)
+        (argument : ConcreteTypeHandle)
+        : bool
+        =
+        match argument with
+        | ConcreteTypeHandle.OneDimArrayZero _
+        | ConcreteTypeHandle.Array _ -> true
+        | ConcreteTypeHandle.Byref _
+        | ConcreteTypeHandle.Pointer _
+        | ConcreteTypeHandle.FunctionPointer _ ->
+            failwith
+                $"TODO: %s{describe} is instantiated with %s{AllConcreteTypes.describe state._LoadedAssemblies state.ConcreteTypes argument}, which is not a valid type argument; PawPrint does not model how CoreCLR refuses it"
+        | ConcreteTypeHandle.Concrete _ ->
+
+        match AllConcreteTypes.tryTypeInfo state._LoadedAssemblies state.ConcreteTypes argument with
+        | None ->
+            failwith $"BUG: %s{describe} is instantiated with the handle %O{argument}, which names no registered type"
+        | Some (concrete, typeInfo) ->
+            if DumpedAssembly.isValueType baseClassTypes state._LoadedAssemblies typeInfo then
+                concrete.Generics
+                |> Seq.exists (isSharedTypeArgument baseClassTypes state describe)
+            else
+                true
+
     /// Given a `RuntimeTypeHandleTarget`, resolve and return its parent's
     /// `RuntimeTypeHandleTarget`. Returns `None` only at `System.Object`.
     ///
