@@ -2,7 +2,7 @@ public class ManyLocalsShortFormTests
 {
     // `stloc.s`/`ldloc.s` take an *unsigned* one-byte index (ECMA-335 III.3.63, III.3.47),
     // so slots 128..255 are reachable through the short form. Roslyn emits the short form
-    // for every slot in [4, 255], so a method with enough locals exercises the high half.
+    // for every slot in [4, 254], so a method with enough locals exercises the high half.
     //
     // The weights make the check sensitive to *which* slot each value landed in: a store or
     // load that reached the wrong slot changes the weighted sum even when the multiset of
