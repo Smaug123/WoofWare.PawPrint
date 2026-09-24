@@ -366,29 +366,40 @@ module internal UnaryMetadataTokenOps =
 
                 cur, cleared
 
-        let state, target =
-            match pendingConstrained with
-            | None -> state, concretizedMethod
-            | Some constrainedTypeHandle ->
-                let state, implementation, _declaringTypeHandle =
-                    UnaryMetadataCallOps.resolveConstrainedStaticInterfaceMethod
-                        "Ldftn"
-                        ctx
-                        constrainedTypeHandle
-                        method
-                        concretizedMethod
-                        state
+        let pushTarget
+            (target : WoofWare.PawPrint.MethodInfo<ConcreteTypeHandle, ConcreteTypeHandle, ConcreteTypeHandle>)
+            (state : IlMachineState)
+            : IlMachineState * WhatWeDid
+            =
+            logger.LogDebug (
+                "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
+                method.DeclaringAssemblyFullName,
+                method.RequiredDeclaringType.Name,
+                method.Name
+            )
 
-                state, implementation
+            pushFunctionPointer ctx target state
 
-        logger.LogDebug (
-            "Pushed pointer to function {LdFtnAssembly}.{LdFtnType}.{LdFtnMethodName}",
-            method.DeclaringAssemblyFullName,
-            method.RequiredDeclaringType.Name,
-            method.Name
-        )
+        match pendingConstrained with
+        | Some constrainedTypeHandle ->
+            let state, implementation, _declaringTypeHandle =
+                UnaryMetadataCallOps.resolveConstrainedStaticInterfaceMethod
+                    "Ldftn"
+                    ctx
+                    constrainedTypeHandle
+                    method
+                    concretizedMethod
+                    state
 
-        pushFunctionPointer ctx target state
+            pushTarget implementation state
+        | None ->
+
+        match concretizedMethod.Body with
+        | MethodBody.Abstract -> UnaryMetadataCallOps.raiseNamedAbstractMethod ctx state
+        | MethodBody.Il _
+        | MethodBody.InternalCall
+        | MethodBody.PInvoke
+        | MethodBody.RuntimeProvided _ -> pushTarget concretizedMethod state
 
     /// ECMA-335 III.4.18. Pops an object reference and pushes a function pointer to the body that
     /// a `callvirt` of the same token on the same receiver would have run.
@@ -509,10 +520,10 @@ module internal UnaryMetadataTokenOps =
             // Calling through the pointer is unaffected, which is why the boxed-receiver case in
             // `LdvirtftnVirtualDispatch.cs` passes: `callMethodWithCommitment` converts an
             // `ObjectRef` receiver to a byref into the box for a value-type callee, which is what
-            // an unboxing stub does. Only pointer *identity* is lost, and observing that needs two
-            // pointers to the same struct method obtained by different routes — which C# cannot
-            // express, since it offers no way to take `ldftn` of a struct method against an object
-            // receiver.
+            // an unboxing stub does. Only pointer *identity* is lost. `RuntimeMethodHandle.GetFunctionPointer`
+            // does answer the stub for a struct's virtual method, but C# can hold this pointer only
+            // inside a delegate, whose `_methodPtr` is private, so comparing the two takes private
+            // reflection.
             //
             // This cannot be guarded the way the sealed-declaring-type case above is: that shape is
             // unreachable from C#, whereas this one is ordinary code (`ICounter c = someStruct;

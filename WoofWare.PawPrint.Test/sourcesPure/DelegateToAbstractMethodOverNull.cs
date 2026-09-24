@@ -15,8 +15,8 @@ using System.Reflection;
 // frame, because the failure happens while it is preparing to enter it; PawPrint pops the
 // delegate's synthetic frame first, so the trace starts at the caller. Nothing here asserts the
 // trace, because that would pin a known divergence as though it were the intended answer — see
-// docs/divergences.md, "A delegate invocation that fails before entering its target names no frame
-// for it".
+// docs/divergences.md, "A delegate invocation or `calli` that fails before entering its target names
+// no frame for it".
 //
 // Returns 0 on success, or the number of the first check that failed.
 
